@@ -162,6 +162,20 @@ describe('the channels that exist', () => {
       // editor ID, never a path and never a URL.
       'editors:list',
       'editors:open',
+      /*
+       * The notification sound. Note that not one of these takes a path:
+       * `choose` opens the OS picker in this process and the other three act on
+       * whatever it stored, so there is nothing for a renderer to supply and
+       * nothing for it to point at. The same rule `pty:spawn` follows about
+       * directories and commands.
+       */
+      'sounds:choose',
+      'sounds:clear',
+      'sounds:current',
+      'sounds:read',
+      // Asking for an OS banner. The renderer asks; this process decides,
+      // because only it can see whether the window is actually in front.
+      'notifications:attention',
     ].sort());
   });
 });

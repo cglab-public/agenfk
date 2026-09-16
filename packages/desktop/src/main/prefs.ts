@@ -29,9 +29,40 @@ export interface Prefs {
    * and turned it on, in this app.
    */
   autoApprove: boolean;
+
+  /**
+   * The notification sound the user chose, or '' for the built-in one.
+   *
+   * Here rather than in the server's `/settings` with the other notification
+   * preferences, and for the same reason `autoApprove` is here: this one is a
+   * PATH, and it reaches the filesystem. Written through an unauthenticated
+   * local HTTP route it would be a path any page on the machine could set.
+   *
+   * Written by exactly one caller — the main-process file dialog — so nothing
+   * on the renderer side of the border ever supplies the value. It is still
+   * contained-checked when it is read back, because this file is an ordinary
+   * file on disk that anything running as the user can edit. See
+   * main/customSound.ts.
+   */
+  customSoundPath: string;
+
+  /**
+   * What the user calls that file.
+   *
+   * Stored separately because the COPY is named from its extension —
+   * `custom.wav` — so that a hostile filename has nothing to contribute to a
+   * path this process builds. That is the right trade, and it costs the screen
+   * the only string a person would recognise: "custom.wav" tells them nothing
+   * about which of their three chimes is in use.
+   */
+  customSoundName: string;
 }
 
-export const DEFAULT_PREFS: Prefs = { autoApprove: false };
+export const DEFAULT_PREFS: Prefs = {
+  autoApprove: false,
+  customSoundPath: '',
+  customSoundName: '',
+};
 
 /** The closed set. A write outside it is refused, not ignored. */
 export const PREF_KEYS = Object.keys(DEFAULT_PREFS) as ReadonlyArray<keyof Prefs>;

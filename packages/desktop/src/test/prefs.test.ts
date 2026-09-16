@@ -101,7 +101,11 @@ describe('writing', () => {
 describe('reading what is stored', () => {
   it('ignores a key it does not know rather than passing it on', () => {
     fs.writeFileSync(file(), JSON.stringify({ autoApprove: true, injected: 'x' }));
-    expect(readPrefs(dir)).toEqual({ autoApprove: true });
+    // Every key the defaults define and nothing else. Spelled as the defaults
+    // plus the override rather than as a literal, so adding a preference does
+    // not quietly turn this into a test about the shape it used to have.
+    expect(readPrefs(dir)).toEqual({ ...DEFAULT_PREFS, autoApprove: true });
+    expect(readPrefs(dir)).not.toHaveProperty('injected');
   });
 
   it('ignores a stored value of the wrong type', () => {
@@ -121,5 +125,48 @@ describe('reading what is stored', () => {
 describe('the key list is closed', () => {
   it('lists exactly the keys the defaults define', () => {
     expect([...PREF_KEYS].sort()).toEqual(Object.keys(DEFAULT_PREFS).sort());
+  });
+});
+
+/**
+ * The custom notification sound, which is here and not in the server's settings.
+ *
+ * Every other notification preference is installation-wide and lives on the
+ * server. This one is a PATH, and it reaches the filesystem. The server's
+ * settings route is unauthenticated on loopback, so a path stored through it
+ * would be a path any page on the machine can set — which is the same line this
+ * file already draws for autoApprove, arrived at from a different direction.
+ *
+ * It is written by exactly one caller: the main-process file dialog. Nothing on
+ * the renderer side of the border ever supplies the value.
+ */
+describe('the custom sound path', () => {
+  it('starts empty, because no sound is the normal state', () => {
+    expect(DEFAULT_PREFS.customSoundPath).toBe('');
+  });
+
+  it('keeps a path it is given', () => {
+    const stored = writePref(dir, 'customSoundPath', '/Users/x/Library/AgEnFK/sounds/custom.wav');
+    expect(stored.customSoundPath).toBe('/Users/x/Library/AgEnFK/sounds/custom.wav');
+    expect(readPrefs(dir).customSoundPath).toBe('/Users/x/Library/AgEnFK/sounds/custom.wav');
+  });
+
+  it('does not disturb autoApprove when it is written', () => {
+    // The failure a read-modify-write gets wrong: setting a sound must not
+    // silently take an agent's permission prompts away, or put them back.
+    writePref(dir, 'autoApprove', true);
+    writePref(dir, 'customSoundPath', '/tmp/custom.wav');
+    expect(readPrefs(dir).autoApprove).toBe(true);
+  });
+
+  it('refuses a non-string instead of coercing it', () => {
+    // Coercion here would store "true" or "[object Object]" as a path, and the
+    // read side would then try to open it.
+    expect(() => writePref(dir, 'customSoundPath', 42 as unknown as string)).toThrow();
+  });
+
+  it('falls back to the default when the file holds the wrong type', () => {
+    fs.writeFileSync(file(), JSON.stringify({ autoApprove: false, customSoundPath: 42 }));
+    expect(readPrefs(dir).customSoundPath).toBe('');
   });
 });

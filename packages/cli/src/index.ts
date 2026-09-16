@@ -4,7 +4,7 @@ import figlet from 'figlet';
 import axios from 'axios';
 import { ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, isUpgrade } from '@agenfk/core';
 import { writeActiveWork } from './activeWork.js';
-import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
+import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT, setTelemetryEnabled } from '@agenfk/telemetry';
 import { checkClaudeCodeEnforcement, checkPiEnforcement } from './enforcement.js';
 import { prunableWorktrees } from '@agenfk/core';
 import { execSync, execFileSync, spawn, spawnSync } from 'child_process';
@@ -2430,14 +2430,12 @@ configSetCommand
       process.exit(1);
     }
     const enabled = normalised === 'true';
-    const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
     try {
-      let config: Record<string, unknown> = {};
-      if (fs.existsSync(configPath)) {
-        config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      }
-      config.telemetry = enabled;
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+      // The shared writer rather than a read-modify-write here. The settings
+      // screen sets the same flag, and two hand-rolled versions of "keep the
+      // other keys" is how one of them eventually drops flowRegistry or the
+      // GitHub repo mappings. See packages/telemetry/src/index.ts.
+      setTelemetryEnabled(enabled);
       if (enabled) {
         console.log(chalk.green('Telemetry enabled.') + ' Anonymous usage data will be sent to help improve AgEnFK.');
         console.log(chalk.gray('  To opt out at any time: agenfk config set telemetry false'));

@@ -8,7 +8,7 @@
  * needs no special case for app:// or file://, and nothing about the web flow
  * has to change to support the desktop one.
  */
-import { app, BrowserWindow, dialog, ipcMain, shell, utilityProcess, type UtilityProcess } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Notification, shell, utilityProcess, type UtilityProcess } from 'electron';
 import * as path from 'path';
 import * as os from 'os';
 import { readFileSync } from 'fs';
@@ -29,6 +29,21 @@ import { detectTmux, type TmuxStatus } from './tmux.js';
 import { whichOnPath, setAgentDetectionDeps } from './detectAgents.js';
 import { makeEmit } from './windowEmit.js';
 import { makeLoginPathCache } from './loginPathCache.js';
+import { SOUND_EXTENSIONS } from './customSound.js';
+import { showAttentionNotice } from './attentionNotice.js';
+
+/**
+ * What the sound picker offers.
+ *
+ * The filter list is derived from the same allowlist `storeCustomSound`
+ * enforces, so the dialog cannot offer a format the copy would then refuse —
+ * which would read to the user as the app losing their file.
+ */
+const SOUND_DIALOG: Electron.OpenDialogOptions = {
+  title: 'Choose a notification sound',
+  properties: ['openFile'],
+  filters: [{ name: 'Audio', extensions: SOUND_EXTENSIONS.map(e => e.slice(1)) }],
+};
 
 let mainWindow: BrowserWindow | null = null;
 /**
@@ -445,6 +460,37 @@ async function boot(): Promise<void> {
         // else — see openExternally.
         openExternal: async url => { openExternally(url); },
         resolveCwd: itemId => resolveWorktree(itemId, { port, get: httpGet, post: httpPost }),
+      }, {
+        /*
+         * The native picker, and the only way a sound file's path enters this
+         * app. The renderer names no file — it asks for this dialog, and the
+         * OS answers with what the user actually clicked.
+         *
+         * Modal to the window when there is one: a file dialog that can end up
+         * behind the app looks like a frozen click.
+         */
+        chooseSoundFile: async () => {
+          const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+          const result = owner
+            ? await dialog.showOpenDialog(owner, SOUND_DIALOG)
+            : await dialog.showOpenDialog(SOUND_DIALOG);
+          return result.canceled ? null : result.filePaths;
+        },
+        /*
+         * The OS banner. `Notification.isSupported()` is asked rather than
+         * assumed: a Linux desktop with no notification daemon answers false,
+         * and constructing one there throws — inside a path reached from a pty
+         * callback, which would cost the user the agent-state display over a
+         * banner.
+         */
+        notify: notice => showAttentionNotice(notice, {
+          // The WINDOW, not the document. A window behind another application
+          // can still contain a document that reports focus, and that is
+          // precisely the case this setting exists for.
+          isFocused: () => Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused()),
+          supported: () => Notification.isSupported(),
+          show: options => { new Notification(options).show(); },
+        }),
       });
     } catch (e) {
       console.warn('[DESKTOP] Terminals unavailable:', (e as Error).message);

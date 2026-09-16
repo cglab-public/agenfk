@@ -33,7 +33,10 @@
  */
 import type { IpcMainInvokeEvent, WebContents } from 'electron';
 import { PtyRegistry } from './ptyRegistry.js';
-import { readPrefs, writePref, PREF_KEYS } from './prefs';
+import { readPrefs, writePref, PREF_KEYS, DEFAULT_PREFS } from './prefs';
+import {
+  SOUND_EXTENSIONS, storeCustomSound, readCustomSound, clearCustomSound,
+} from './customSound';
 import { detectEditors, editorUrlFor } from './editors';
 import { detectAgents, __resetAgentDetectionCache } from './detectAgents.js';
 import { HIGH_WATERMARK } from './flowControl.js';
@@ -94,6 +97,20 @@ export function registerPtyIpc(
     which: (command: string) => Promise<boolean>;
     openExternal: (url: string) => Promise<void>;
     resolveCwd: (itemId: string) => Promise<{ cwd: string }>;
+  },
+  /**
+   * The two things only a main process can do: open a file picker and raise an
+   * OS banner.
+   *
+   * Injected, and optional. A build without them answers "not available"
+   * instead of throwing — the settings screen renders the rows either way and
+   * must be able to say the control cannot be used here, which it can only do
+   * if the call returns.
+   */
+  alerts?: {
+    /** Opens the native picker. Returns the chosen paths, or null on cancel. */
+    chooseSoundFile: () => Promise<string[] | null>;
+    notify: (notice: { agentLabel: string; cardTitle?: string }) => boolean;
   },
 ): void {
   ipc.handle('pty:spawn', async (event, raw) => {
@@ -218,10 +235,112 @@ export function registerPtyIpc(
     if (!(PREF_KEYS as readonly string[]).includes(key)) {
       throw new Error(`Unknown preference "${key}". Expected one of: ${PREF_KEYS.join(', ')}`);
     }
+    /*
+     * BOOLEAN preferences only, and this channel is the reason the restriction
+     * has to be written down. `customSoundPath` is in PREF_KEYS, so it passes
+     * the allowlist above — and the line below coerces every value to a
+     * boolean, which writePref then rejects with a message about types rather
+     * than about permission. Refusing here says what is actually true: that
+     * preference is set by the file picker, in this process, and there is no
+     * route to it from the renderer at all.
+     */
+    if (typeof DEFAULT_PREFS[key as keyof typeof DEFAULT_PREFS] !== 'boolean') {
+      throw new Error(`Preference "${key}" cannot be set from the renderer.`);
+    }
     // Strict === true, like pty:spawn's autoApprove and for the same reason:
     // this is the switch that takes an agent's safety prompts away, so a
     // truthy string must not be enough to flip it.
     return writePref(prefsDir(), key as 'autoApprove', req.value === true);
+  });
+
+  /*
+   * The notification sound.
+   *
+   * `sounds:choose` takes NO arguments, and that is the design rather than an
+   * omission: there is nothing for a caller to pass, so no renderer can name a
+   * file. The path comes from the OS picker; the copy and the extension
+   * allowlist are in customSound.ts.
+   *
+   * `sounds:read` takes no arguments either, for the reason `pty:spawn`
+   * learned the hard way. That handler read `autoApprove` from the payload for
+   * a while, after the whole preference had been moved into this process
+   * precisely so the renderer could not set it — the border was there and it
+   * was decorative. A renderer that could name the file to read here would
+   * have arbitrary file read through a channel whose entire point is that it
+   * does not.
+   */
+  /**
+   * Which file is in use, named the way the user named it.
+   *
+   * The copy on disk is `custom.wav` whatever it was called, so the friendly
+   * name is read from prefs — but only after the copy is confirmed present.
+   * Answering with a name for a file that is no longer there would have the
+   * screen state a sound it cannot play.
+   */
+  const currentSoundName = (): string | null => {
+    const prefs = readPrefs(prefsDir());
+    if (!prefs.customSoundPath) return null;
+    const sound = readCustomSound({ userData: prefsDir(), storedPath: prefs.customSoundPath });
+    if (!sound) return null;
+    return prefs.customSoundName || sound.name;
+  };
+
+  ipc.handle('sounds:current', async () => ({ name: currentSoundName() }));
+
+  ipc.handle('sounds:choose', async () => {
+    if (!alerts) return { name: null, error: 'Choosing a file is not available in this build.' };
+    const picked = await alerts.chooseSoundFile();
+    // Cancel is not a change. Clearing the stored choice here would make
+    // "think better of it" indistinguishable from "remove my sound".
+    if (!picked || picked.length === 0) return { name: currentSoundName() };
+
+    const stored = storeCustomSound({ userData: prefsDir(), sourcePath: picked[0] });
+    if (!stored) {
+      // Nothing written. A path recorded to a file this app cannot play is a
+      // preference that reads as set and behaves as absent.
+      return {
+        name: null,
+        error: `Choose a ${SOUND_EXTENSIONS.join(', ')} file under 5 MB.`,
+      };
+    }
+    writePref(prefsDir(), 'customSoundPath', stored.path);
+    writePref(prefsDir(), 'customSoundName', stored.name);
+    return { name: stored.name };
+  });
+
+  ipc.handle('sounds:read', async () => {
+    const stored = readPrefs(prefsDir()).customSoundPath;
+    if (!stored) return { dataUrl: null, name: null };
+    const sound = readCustomSound({ userData: prefsDir(), storedPath: stored });
+    // Null rather than an error: the caller falls back to the built-in tone,
+    // which it can only do if this answers.
+    return sound ? { dataUrl: sound.dataUrl, name: sound.name } : { dataUrl: null, name: null };
+  });
+
+  ipc.handle('sounds:clear', async () => {
+    clearCustomSound({ userData: prefsDir() });
+    writePref(prefsDir(), 'customSoundPath', '');
+    writePref(prefsDir(), 'customSoundName', '');
+    return { name: null };
+  });
+
+  /*
+   * The OS banner.
+   *
+   * The renderer asks; this process decides. Whether the window is in front is
+   * a fact only this side can see — `document.hasFocus()` answers a different
+   * question — so the "only when unfocused" rule lives in attentionNotice.ts
+   * rather than being trusted from the caller.
+   */
+  ipc.handle('notifications:attention', async (_event, raw) => {
+    if (!alerts) return false;
+    const req = (raw ?? {}) as Record<string, unknown>;
+    // ipcMain.handle delivers whatever was serialised, including nothing.
+    if (typeof req.agentLabel !== 'string' || req.agentLabel === '') return false;
+    return alerts.notify({
+      agentLabel: req.agentLabel,
+      cardTitle: typeof req.cardTitle === 'string' ? req.cardTitle : undefined,
+    });
   });
 
   // After the user installs a CLI, so the picker updates without an app

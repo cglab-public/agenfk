@@ -149,6 +149,92 @@ export interface AppSettings {
    * a Mac is not erased by opening the app on Windows.
    */
   tmuxByDefault: boolean;
+
+  /**
+   * Say something when an agent stops and waits for a person.
+   *
+   * The master switch, and the one a user reaches for when the app is being
+   * annoying — so it silences every channel below rather than most of them.
+   *
+   * On by default, which is the one default here that changes an existing
+   * install's behaviour, and it is the exception on purpose: this fires only
+   * when an agent has published that it is blocked, which is precisely the
+   * moment the user wants to be interrupted. The sound stays quiet while the
+   * window has focus (see `soundTiming`), so the behaviour an upgrade
+   * introduces is a banner on a window the user is not looking at.
+   */
+  attentionAlerts: boolean;
+
+  /**
+   * Make a sound as well as showing a banner.
+   *
+   * Separate from `osNotifications` because the two cost different things. A
+   * sound is intrusive in a shared office; a banner is intrusive in a screen
+   * share. Collapsing them into one switch means the only way to stop the one
+   * you mind is to stop being told at all.
+   */
+  attentionSound: boolean;
+
+  /**
+   * When that sound is allowed to play.
+   *
+   * Applies to the SOUND only. The banner's own "when the app is unfocused"
+   * rule is decided in the desktop's main process, which is the only side that
+   * can see whether the window is actually in front — see
+   * packages/desktop/src/main/attentionNotice.ts. Two answers to one question
+   * is how a banner ends up suppressed by whichever side was wrong.
+   */
+  soundTiming: SoundTiming;
+
+  /**
+   * Hand the alert to the operating system's own notification centre.
+   *
+   * Only meaningful in the desktop app, and only when the window is not in
+   * front. A browser tab has no such thing, and a preference that silently does
+   * nothing there is the shape this repo keeps correcting elsewhere — so the UI
+   * says so rather than the setting disappearing.
+   */
+  osNotifications: boolean;
+}
+
+/** The legal values for `soundTiming`, in the order the UI offers them. */
+export const SOUND_TIMINGS = ['always', 'unfocused'] as const;
+export type SoundTiming = typeof SOUND_TIMINGS[number];
+
+/**
+ * The settings whose legal values are a fixed set rather than a type.
+ *
+ * Every store in this repo validates a setting by comparing `typeof value`
+ * against `typeof DEFAULT_APP_SETTINGS[key]`. That is exactly right for a
+ * boolean and completely blind for an enum: 'always' and 'whenever' are both
+ * strings, so the second one is accepted, stored, read back, and then falls
+ * through every `=== 'always'` comparison in the UI to behave as the other
+ * option. A setting the user chose that quietly means something else.
+ *
+ * It lives beside the defaults rather than in the server route because the
+ * route is not the only reader — storage rebuilds settings from rows on every
+ * read, and would otherwise hand back a value the route would have refused.
+ */
+const APP_SETTING_VALUES: Partial<Record<keyof AppSettings, readonly unknown[]>> = {
+  soundTiming: SOUND_TIMINGS,
+};
+
+/**
+ * Is this a value that key may hold?
+ *
+ * One predicate for every key, so a caller never has to remember which settings
+ * have a fixed set and which only have a type. Answers `false` for a key that
+ * is not a setting at all, because callers pass keys read straight off a JSON
+ * body — a predicate that said `true` there would be the hole rather than the
+ * guard.
+ */
+export function isLegalSettingValue(key: keyof AppSettings, value: unknown): boolean {
+  // hasOwnProperty through Object.prototype: `'constructor' in DEFAULT_APP_SETTINGS`
+  // is true, and the keys arrive from parsed JSON.
+  if (!Object.prototype.hasOwnProperty.call(DEFAULT_APP_SETTINGS, key)) return false;
+  if (typeof value !== typeof DEFAULT_APP_SETTINGS[key]) return false;
+  const allowed = APP_SETTING_VALUES[key];
+  return allowed ? allowed.includes(value) : true;
 }
 
 /*
@@ -170,9 +256,27 @@ export interface AppSettings {
  * without a token. See packages/desktop/src/main/prefs.ts.
  */
 
+/*
+ * Deliberately NOT here either: the path to a custom notification sound.
+ *
+ * Same line, arrived at from a different direction. Every value in this object
+ * is written through an unauthenticated local HTTP route; a PATH written that
+ * way is a path any page open on the machine can set, and this one reaches the
+ * filesystem. It lives in the desktop's prefs, written by exactly one caller —
+ * the main-process file dialog — so the renderer never supplies a path at all.
+ * See packages/desktop/src/main/customSound.ts.
+ */
+
 /** What an unwritten settings store answers. Also the upgrade contract. */
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   tmuxByDefault: false,
+  attentionAlerts: true,
+  attentionSound: true,
+  // Silent while you are looking at the window. A sound aimed at somebody
+  // already watching the thing that made it carries no information, and noise
+  // with no information is what trains a user to switch the feature off.
+  soundTiming: 'unfocused',
+  osNotifications: true,
 };
 
 export interface IngestionState {

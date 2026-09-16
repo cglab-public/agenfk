@@ -15,6 +15,7 @@ import {
   IngestionState,
   AppSettings,
   DEFAULT_APP_SETTINGS,
+  isLegalSettingValue,
   TerminalSession,
   Pr,
   PrSizing,
@@ -951,7 +952,12 @@ export class SQLiteStorageProvider implements StorageProvider {
     // another version and is none of this one's business.
     for (const key of Object.keys(DEFAULT_APP_SETTINGS) as Array<keyof AppSettings>) {
       const value = stored[key];
-      if (typeof value === typeof DEFAULT_APP_SETTINGS[key]) {
+      // `isLegalSettingValue`, not a `typeof` comparison. They agree for every
+      // boolean; they part company on an enum, where `typeof` accepts any
+      // string at all. A row saying soundTiming is 'whenever' — written by an
+      // older build, a newer one, or a hand-edited database — would otherwise
+      // come back out and behave as whichever branch the UI falls through to.
+      if (isLegalSettingValue(key, value)) {
         (settings[key] as unknown) = value;
       }
     }

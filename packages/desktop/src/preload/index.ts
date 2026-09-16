@@ -125,6 +125,43 @@ export interface AgenfkPrefsApi {
   setAutoApprove(value: boolean): Promise<{ autoApprove: boolean }>;
 }
 
+/**
+ * The notification sound.
+ *
+ * Note what is NOT here: any way to name a file. `choose` opens the OS picker
+ * in the main process and `read` reads whatever was stored by it — neither
+ * takes a path, so a renderer has nothing to supply and nothing to point at.
+ * That is the same rule `spawn` follows one interface up, arrived at for the
+ * same reason: a general-purpose surface here turns an XSS in this bundle into
+ * filesystem access on the user's machine.
+ */
+export interface AgenfkSoundsApi {
+  /** Which file is in use, for the screen to name. Null means the built-in cue. */
+  current(): Promise<{ name: string | null }>;
+  /** Opens the picker. `error` explains a file that was refused. */
+  choose(): Promise<{ name: string | null; error?: string }>;
+  clear(): Promise<{ name: string | null }>;
+  /**
+   * The chosen sound's BYTES, as a data URL.
+   *
+   * Bytes rather than a path because the renderer is sandboxed and has no
+   * filesystem: a path would be a string it can do nothing with.
+   */
+  read(): Promise<{ dataUrl: string | null; name: string | null }>;
+}
+
+/**
+ * OS banners.
+ *
+ * The renderer ASKS; main decides whether to show one. Whether the window is
+ * in front is a fact only main can see — `document.hasFocus()` answers a
+ * different question — so the "only when unfocused" rule is not something the
+ * caller can assert or override from here.
+ */
+export interface AgenfkNotificationsApi {
+  attention(notice: { agentLabel: string; cardTitle?: string }): Promise<boolean>;
+}
+
 export interface AgenfkDesktopApi {
   /** Marks this as the desktop shell. Checked by the UI at startup. */
   readonly isDesktop: true;
@@ -137,6 +174,8 @@ export interface AgenfkDesktopApi {
   readonly terminal: AgenfkTerminalApi;
   readonly prefs: AgenfkPrefsApi;
   readonly editors: AgenfkEditorsApi;
+  readonly sounds: AgenfkSoundsApi;
+  readonly notifications: AgenfkNotificationsApi;
 }
 
 /**
@@ -184,11 +223,31 @@ const editors: AgenfkEditorsApi = {
   open: (itemId, editorId) => ipcRenderer.invoke('editors:open', { itemId, editorId }),
 };
 
+const sounds: AgenfkSoundsApi = {
+  current: () => ipcRenderer.invoke('sounds:current'),
+  // No arguments, deliberately. See AgenfkSoundsApi.
+  choose: () => ipcRenderer.invoke('sounds:choose'),
+  clear: () => ipcRenderer.invoke('sounds:clear'),
+  read: () => ipcRenderer.invoke('sounds:read'),
+};
+
+const notifications: AgenfkNotificationsApi = {
+  attention: notice => ipcRenderer.invoke('notifications:attention', {
+    // Narrowed here as well as in main: the renderer is our own bundle, but it
+    // is also the part an XSS would control, and this text ends up rendered by
+    // the operating system.
+    agentLabel: String(notice?.agentLabel ?? ''),
+    cardTitle: notice?.cardTitle === undefined ? undefined : String(notice.cardTitle),
+  }),
+};
+
 const api: AgenfkDesktopApi = {
   isDesktop: true,
   terminal,
   prefs,
   editors,
+  sounds,
+  notifications,
   platform: process.platform,
   versions: {
     electron: process.versions.electron,

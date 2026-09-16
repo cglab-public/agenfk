@@ -33,8 +33,30 @@ export interface TerminalSessionDto {
   openedAt: string;
 }
 
+/** Where a notification sound may play. Mirrors core's `SoundTiming`. */
+export type SoundTimingDto = 'always' | 'unfocused';
+
+/**
+ * The installation's settings, as the wire sees them.
+ *
+ * A COPY of core's `AppSettings`, and it has to be one: `@agenfk/core` compiles
+ * to CommonJS, and importing it from the browser bundle is the mistake
+ * `claimState.ts` documents at length — a named import fails the build, a
+ * namespace import ships a black window that throws `exports is not defined`
+ * while every test and the build itself report success.
+ *
+ * A copy that DRIFTS is worse than either sharing or not, and the drift here
+ * has a specific shape: a setting added to core and not to this type is one the
+ * screen cannot write, refused at runtime by a route the caller cannot see. So
+ * `appSettingsDto.test.ts` pins the two together — that test CAN import core,
+ * because it runs where core resolves to source.
+ */
 export interface AppSettingsDto {
   tmuxByDefault: boolean;
+  attentionAlerts: boolean;
+  attentionSound: boolean;
+  soundTiming: SoundTimingDto;
+  osNotifications: boolean;
 }
 
 export const api = {
@@ -318,6 +340,45 @@ export const api = {
       return { configured: false };
     }
   },
+  /**
+   * Who this machine is signed in to GitHub as.
+   *
+   * Deliberately not `getGitHubStatus` with more fields: that one is
+   * PROJECT-scoped and answers which repo a card maps to. An account belongs to
+   * the installation, and conflating the two is how a settings screen reports
+   * "not connected" because no project happens to have a repo configured.
+   *
+   * There is no second credential behind this. The server asks `gh`, which is
+   * the same credential `agenfk github setup` already depends on.
+   */
+  getGitHubAccount: async (): Promise<
+    | { connected: true; login: string; name: string | null; email: string | null; avatarUrl: string | null }
+    | { connected: false; reason: 'gh_missing' | 'not_authenticated' | 'unreadable' }
+  > => {
+    try {
+      const { data } = await axios.get(`${API_URL}/github/account`);
+      return data;
+    } catch {
+      // A server that is not running is not an account that is signed out, but
+      // it is indistinguishable from here, and 'unreadable' is the honest one
+      // of the three: it makes the screen say "could not check" rather than
+      // sending the user off to re-authenticate something that is fine.
+      return { connected: false, reason: 'unreadable' };
+    }
+  },
+  /**
+   * Log the GitHub CLI out.
+   *
+   * The custom header forces a CORS preflight, which the API's localhost-origin
+   * allowlist gates — without it any page open on the machine could log the
+   * user out of `gh`. Same guard as `triggerUpdate`. (bug 968259c4.)
+   */
+  signOutGitHub: async (): Promise<{ signedOut: boolean; error?: string }> => {
+    const { data } = await axios.post(`${API_URL}/github/signout`, undefined, {
+      headers: { 'x-agenfk-ui': '1' },
+    });
+    return data;
+  },
   listGitHubIssues: async (projectId: string, params?: { state?: string; search?: string }): Promise<{ number: number; title: string; state: string; labels: string[]; url: string }[]> => {
     const { data } = await axios.get(`${API_URL}/github/issues`, { params: { projectId, ...params } });
     return data;
@@ -332,6 +393,34 @@ export const api = {
   },
   getLatestRelease: async () => {
     const { data } = await axios.get(`${API_URL}/releases/latest`);
+    return data;
+  },
+  /**
+   * The telemetry opt-in, read from the same place `agenfk config set
+   * telemetry` writes it.
+   *
+   * Not stored in `/settings` with the other preferences, deliberately: the
+   * CLI has always owned `~/.agenfk/config.json` and copying the flag into the
+   * settings table would give one value two homes, so whichever the UI read,
+   * the other would silently disagree.
+   */
+  getTelemetryConfig: async (): Promise<{ telemetryEnabled: boolean; installationId: string | null }> => {
+    const { data } = await axios.get(`${API_URL}/api/telemetry/config`);
+    return data;
+  },
+  /**
+   * The read above is open; this write is not.
+   *
+   * Opting somebody IN to analytics is a privacy decision, and this API is
+   * unauthenticated on loopback — so the same preflight-forcing header that
+   * guards the update trigger guards this. (bug 968259c4.)
+   */
+  setTelemetryConfig: async (enabled: boolean): Promise<{ telemetryEnabled: boolean }> => {
+    const { data } = await axios.put(
+      `${API_URL}/api/telemetry/config`,
+      { telemetryEnabled: enabled },
+      { headers: { 'x-agenfk-ui': '1' } },
+    );
     return data;
   },
   triggerUpdate: async (): Promise<{ jobId: string }> => {

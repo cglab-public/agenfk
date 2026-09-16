@@ -137,6 +137,35 @@ export function isTelemetryEnabled(): boolean {
   return config.telemetry !== false;
 }
 
+/**
+ * Record the opt-in/opt-out choice, next to the only thing that reads it.
+ *
+ * `agenfk config set telemetry` wrote this file itself, inline in the command,
+ * and that was fine while the CLI was the only writer. The settings screen is a
+ * second one. Two hand-rolled read-modify-writes over the same JSON is how a
+ * config file loses the keys the other writer did not know about — flowRegistry
+ * and the GitHub repo mappings live in here, and the JIRA credentials will.
+ *
+ * Deliberately NOT `readConfig()`, which answers `{}` for a file it cannot
+ * parse. That is the right reading for "tell me the flag" and the wrong one
+ * here: writing `{telemetry:false}` over unparseable JSON throws away whatever
+ * was in it, including credentials the user cannot regenerate. Refusing is
+ * recoverable; a silent overwrite is not.
+ */
+export function setTelemetryEnabled(enabled: boolean): void {
+  const file = configPath();
+  let config: Record<string, unknown> = {};
+  if (fs.existsSync(file)) {
+    // Throws on malformed JSON, on purpose. See above.
+    config = JSON.parse(fs.readFileSync(file, 'utf8'));
+  }
+  config.telemetry = enabled;
+  // The directory may not exist: this screen is reachable on a machine where no
+  // agenfk command has ever been typed.
+  fs.mkdirSync(agenfkDir(), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(config, null, 2), 'utf8');
+}
+
 export {
   agenfkDir,
   serverPortFile,

@@ -116,3 +116,91 @@ export const openInEditorFromBridge = (itemId: string, editorId: string): Promis
   }
   return editors.open(itemId, editorId);
 };
+
+/**
+ * The notification sound and OS banners.
+ *
+ * Every one of these degrades to "not here" in a browser, and that is the
+ * literal truth rather than a fallback: a page has no file picker that can
+ * write into the app's own directory, no filesystem to read the bytes back
+ * from, and no window whose focus the app can ask about. The built-in tone
+ * still works there, because it is Web Audio and needs nobody's help.
+ *
+ * `typeof` rather than `?.` throughout, for the reason `sessionPersistence`
+ * carries above: the renderer bundle and the preload are separate artifacts and
+ * can be mismatched, so a desktop build made before this existed exposes
+ * `agenfkDesktop` without these — and calling one blind threw a TypeError that
+ * took down whatever was rendering.
+ */
+interface SoundsBridgeApi {
+  current?(): Promise<{ name: string | null }>;
+  choose?(): Promise<{ name: string | null; error?: string }>;
+  clear?(): Promise<{ name: string | null }>;
+  read?(): Promise<{ dataUrl: string | null; name: string | null }>;
+}
+
+interface NotificationsBridgeApi {
+  attention?(notice: { agentLabel: string; cardTitle?: string }): Promise<boolean>;
+}
+
+const soundsBridge = (): SoundsBridgeApi | null =>
+  (window as unknown as { agenfkDesktop?: { sounds?: SoundsBridgeApi } }).agenfkDesktop?.sounds ?? null;
+
+const notificationsBridge = (): NotificationsBridgeApi | null =>
+  (window as unknown as { agenfkDesktop?: { notifications?: NotificationsBridgeApi } })
+    .agenfkDesktop?.notifications ?? null;
+
+/** Whether this build can offer a custom sound at all. Drives whether the row exists. */
+export const canChooseSound = (): boolean => typeof soundsBridge()?.choose === 'function';
+
+export const currentSoundFromBridge = (): Promise<{ name: string | null }> => {
+  const sounds = soundsBridge();
+  if (typeof sounds?.current !== 'function') return Promise.resolve({ name: null });
+  return sounds.current();
+};
+
+export const chooseSoundOnBridge = (): Promise<{ name: string | null; error?: string }> => {
+  const sounds = soundsBridge();
+  if (typeof sounds?.choose !== 'function') {
+    // Refused loudly rather than silently doing nothing: the settings screen
+    // must be able to tell the user the picker did not open.
+    return Promise.reject(new Error('This build cannot choose a sound file.'));
+  }
+  return sounds.choose();
+};
+
+export const clearSoundOnBridge = (): Promise<{ name: string | null }> => {
+  const sounds = soundsBridge();
+  if (typeof sounds?.clear !== 'function') {
+    return Promise.reject(new Error('This build cannot change the sound.'));
+  }
+  return sounds.clear();
+};
+
+/**
+ * The chosen sound's BYTES.
+ *
+ * Null in a browser, which sends the caller to the built-in tone — the correct
+ * outcome rather than a degraded one, since there is no chosen file to read.
+ */
+export const readSoundFromBridge = (): Promise<{ dataUrl: string; name: string } | null> => {
+  const sounds = soundsBridge();
+  if (typeof sounds?.read !== 'function') return Promise.resolve(null);
+  return sounds.read().then(r => (r?.dataUrl ? { dataUrl: r.dataUrl, name: r.name ?? '' } : null));
+};
+
+/**
+ * Ask for an OS banner.
+ *
+ * Resolves false where there is no main process to ask, rather than rejecting:
+ * this is called from the render path that also draws the sessions rail, and a
+ * rejection nobody caught would surface as an unhandled rejection on every
+ * blocked agent in a browser tab.
+ */
+export const notifyAttentionOnBridge = (
+  notice: { agentLabel: string; cardTitle?: string },
+): Promise<boolean> => {
+  const notifications = notificationsBridge();
+  if (typeof notifications?.attention !== 'function') return Promise.resolve(false);
+  return notifications.attention(notice).catch(() => false);
+};
