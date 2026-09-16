@@ -51,7 +51,14 @@ describe('what reaches git', () => {
   });
 
   it('commits without touching the working tree', () => {
-    // No `-a` either, which is `add -A` by another spelling for tracked files.
+    /*
+     * The name was a false claim for as long as claims existed: `-a` is not
+     * the only spelling of "take the working tree", and `git commit -- <paths>`
+     * is the other one. That defect lived behind this green test until an
+     * adversarial review reproduced it; the case that catches it needs a REAL
+     * repository with the index and worktree differing, and lives in
+     * worktree-api.test.ts. This one keeps the flag half honest.
+     */
     const git = spyGit();
     commitStagedForCard(card, '/repo', { run: git.run });
     const commit = git.calls.find(a => a.includes('commit'))!;

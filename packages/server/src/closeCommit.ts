@@ -36,7 +36,7 @@
  * week was invisible until the arguments were observable.
  */
 
-import { isWellFormedClaim } from '@agenfk/core';
+import { isWellFormedClaim, claimsCollide } from '@agenfk/core';
 
 export interface CloseCommitDeps {
   /** Run git with these arguments and return stdout. Throws if git fails. */
@@ -119,8 +119,22 @@ export function commitStagedForCard(
    * or succeed on a sibling's file and call it this card's work.
    */
   const stagedPaths = staged.split('\n').map(l => l.trim()).filter(Boolean);
+  /*
+   * `claimsCollide`, not a second implementation of it.
+   *
+   * The filter here used to be `f === p || f.startsWith(p.replace(/\/+$/,'') + '/')`,
+   * and it DISAGREED with the gate on inputs the gate accepts: `src\a.ts`
+   * against `src/a.ts`, `src//a.ts` against `src/a.ts`, `packages\ui` against
+   * a file beneath it. A card told its claim was valid would then find that
+   * none of its files matched. It also carried the quadratic trailing trim
+   * that was removed from utils.ts and reintroduced twice since - measured at
+   * 14 s for 200,000 separators, through input this module accepts.
+   *
+   * One question, asked in one place: does this staged file fall under a path
+   * this card owns?
+   */
   const mine = paths.length
-    ? stagedPaths.filter(f => paths.some(p => f === p || f.startsWith(p.replace(/\/+$/, '') + '/')))
+    ? stagedPaths.filter(f => paths.some(p => claimsCollide(f, p)))
     : stagedPaths;
 
   if (!mine.length) {
@@ -133,14 +147,58 @@ export function commitStagedForCard(
     };
   }
 
+  /*
+   * `git commit -- <pathspec>` COMMITS THE WORKING TREE, not the index.
+   *
+   * This module's whole premise is that it commits what you staged, and the
+   * first version of the pathspec broke exactly that: adding a claim silently
+   * turned the close into `git add -A -- <claims> && git commit`. Reproduced
+   * by hand - index holding "reviewed", worktree holding "unreviewed", and the
+   * commit took the worktree. It made the close LESS safe in the one dimension
+   * this file exists for, and it is the 2026-09-14 incident narrowed to a
+   * subtree rather than fixed.
+   *
+   * Git has no "commit the index, limited to these paths" in one command. What
+   * it does have is an equivalence: when the worktree and the index agree on a
+   * path, committing that path from either takes the same bytes. So the check
+   * below establishes the equivalence, and REFUSES when it does not hold.
+   *
+   * Refusing is the right answer rather than a limitation. A claimed file that
+   * differs between index and worktree means somebody edited this card's files
+   * after it staged them - which is either the card being careless or another
+   * agent inside its claim, and both are worth stopping for.
+   */
+  if (paths.length) {
+    let drifted: string;
+    try {
+      drifted = deps.run(at('diff', '--name-only', '--', ...mine));
+    } catch (e: any) {
+      return { committed: false, reason: `Could not compare the index with the working tree: ${gitSaid(e)}` };
+    }
+    const changed = drifted.split('\n').map(l => l.trim()).filter(Boolean);
+    if (changed.length) {
+      return {
+        committed: false,
+        reason: 'These files were staged and then changed again, so committing them would take '
+          + `the newer version rather than the one you staged: ${changed.join(', ')}. `
+          + 'Stage them again if the change is yours. If it is not, another agent is editing '
+          + 'inside this card\'s claim and that is worth finding out about before closing.',
+      };
+    }
+  }
+
   try {
     /*
-     * No `-a`, which is `add -A` by another spelling for tracked files, and no
-     * pathspec - the index is already the answer to "which files". An argument
-     * array rather than a shell string: the title is user data and reaches here
-     * unescaped.
+     * The pathspec is the STAGED FILES, never the claims themselves. A claim
+     * may name a directory that does not exist yet - git answers `pathspec
+     * 'docs' did not match any file(s) known to git` and exits non-zero, so a
+     * card that claimed ahead of creating could never close. `mine` is by
+     * construction a list of paths git just told us about.
+     *
+     * An argument array rather than a shell string: the title is user data and
+     * reaches here unescaped.
      */
-    const output = deps.run(at('commit', '-m', message, ...(paths.length ? ['--', ...paths] : [])));
+    const output = deps.run(at('commit', '-m', message, ...(paths.length ? ['--', ...mine] : [])));
     return { committed: true, output: output.trim() };
   } catch (e: any) {
     return { committed: false, reason: gitSaid(e) };

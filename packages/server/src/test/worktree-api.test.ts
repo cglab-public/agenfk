@@ -505,3 +505,81 @@ describe('PUT /items/:id and the claims field', () => {
     expect((await agent().get(`/items/${item.id}`)).body.claims).toEqual(['packages/server/']);
   });
 });
+
+/**
+ * `git commit -- <pathspec>` takes the WORKING TREE (review of ee57cb6f).
+ *
+ * The module says it commits what you staged. The pathspec broke exactly that:
+ * adding a claim silently turned the close into `git add -A -- <claims> &&
+ * git commit`. Found by an adversarial review and reproduced by hand before
+ * being written down - index holding "reviewed", worktree holding
+ * "unreviewed", commit taking the worktree.
+ *
+ * NO TEST IN THIS SUITE EVER MADE THE INDEX AND THE WORKING TREE DIFFER, which
+ * is why 3999 green tests could not see it. Every case here does.
+ */
+describe('the close never takes unstaged content', () => {
+  const card = (claims?: string[]) =>
+    ({ id: 'card-drift', type: 'TASK', title: 'Owns its files', claims } as never);
+
+  it('refuses when a claimed file changed after it was staged', async () => {
+    fs.writeFileSync(path.join(repo, 'mine.ts'), 'export const reviewed = 1;\n');
+    git(repo, 'add', 'mine.ts');
+    // The dangerous edit: after staging, before closing. Another agent inside
+    // this card's claim, or the card itself being careless.
+    fs.writeFileSync(path.join(repo, 'mine.ts'), 'export const UNREVIEWED = 2;\n');
+    const before = git(repo, 'rev-parse', 'HEAD').trim();
+
+    const outcome = await autoGitCommit(card(['mine.ts']), repo);
+
+    expect(outcome.success, 'it committed the working tree over the index').toBe(false);
+    expect(outcome.error ?? '').toMatch(/staged and then changed again/i);
+    expect(git(repo, 'rev-parse', 'HEAD').trim()).toBe(before);
+  });
+
+  it('commits the staged bytes when nothing drifted', async () => {
+    fs.writeFileSync(path.join(repo, 'mine.ts'), 'export const reviewed = 1;\n');
+    git(repo, 'add', 'mine.ts');
+
+    expect((await autoGitCommit(card(['mine.ts']), repo)).success).toBe(true);
+    expect(git(repo, 'show', 'HEAD:mine.ts')).toContain('reviewed');
+  });
+
+  it('ignores drift in a file this card does not claim', async () => {
+    // A sibling editing its OWN files must not block this card's close - that
+    // would make every close depend on everybody else standing still.
+    fs.writeFileSync(path.join(repo, 'mine.ts'), 'export const mine = 1;\n');
+    fs.writeFileSync(path.join(repo, 'theirs.ts'), 'export const theirs = 1;\n');
+    git(repo, 'add', 'mine.ts', 'theirs.ts');
+    fs.writeFileSync(path.join(repo, 'theirs.ts'), 'export const theirs = 2;\n');
+
+    expect((await autoGitCommit(card(['mine.ts']), repo)).success).toBe(true);
+    const committed = git(repo, 'log', '-1', '--name-only', '--format=').trim().split('\n').filter(Boolean);
+    expect(committed).toEqual(['mine.ts']);
+  });
+
+  it('closes when the card claims a directory it has not created yet', async () => {
+    /*
+     * `git commit -- docs` where docs/ does not exist is a hard error -
+     * "pathspec 'docs' did not match any file(s) known to git" - and the card
+     * could never close. The pathspec is now the STAGED FILES, which git has
+     * just told us about, rather than the claims themselves.
+     */
+    fs.writeFileSync(path.join(repo, 'mine.ts'), 'export const mine = 1;\n');
+    git(repo, 'add', 'mine.ts');
+
+    const outcome = await autoGitCommit(card(['mine.ts', 'docs/']), repo);
+    expect(outcome.success, `a claim on a future directory blocked the close: ${outcome.error ?? ''}`).toBe(true);
+  });
+
+  it('matches a claim spelled with backslashes, as the gate says it does', async () => {
+    // The old filter was a raw string compare and disagreed with claimsCollide
+    // on exactly the spellings the gate accepts as equivalent.
+    fs.mkdirSync(path.join(repo, 'pkg'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'pkg', 'deep.ts'), 'export const d = 1;\n');
+    git(repo, 'add', 'pkg/deep.ts');
+
+    expect((await autoGitCommit(card(['pkg\\']), repo)).success).toBe(true);
+    expect(git(repo, 'log', '-1', '--name-only', '--format=')).toContain('pkg/deep.ts');
+  });
+});
