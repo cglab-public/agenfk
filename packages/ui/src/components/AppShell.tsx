@@ -1969,43 +1969,69 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
           what window they are in. On Windows and Linux there are no lights to
           clear, so it sits at the normal inset and the row is not a drag
           handle - those platforms draw their own title bar. */}
+      {/*
+        The brand and the toggle share ONE row now.
+
+        Collapsed, the name gives way to the FK mark alone - the same shape,
+        cropped, not a second asset: the wordmark is one path clipped in two and
+        the right half is already the brand colour, so there is nothing to keep
+        in sync.
+
+        THE DRAG REGION IS WHY THIS WAS TWO ROWS. On macOS the title bar is
+        hidden and this strip is what you grab to move the window - and a drag
+        region SWALLOWS POINTER EVENTS, so a button dropped in here is simply
+        dead. The button carries `no-drag` to cut itself back out, which is the
+        only reason it can live beside the logo at all.
+
+        And the toggle stays ONE element in both modes, at the same position
+        under the same parent. Rendering two different trees made React destroy
+        and recreate it on every collapse, which dropped keyboard focus to
+        <body> - a keyboard user thrown to the top of the document by their own
+        click. The test at "keeps keyboard focus on the toggle across a
+        collapse" pins that.
+      */}
       <div
         data-app-region={isMac ? 'drag' : undefined}
-        className={clsx('flex h-9 shrink-0 items-center', isMac ? 'pl-[76px]' : 'pl-3')}
-      >
-        {open && <AgenfkWordmark size={13} />}
-      </div>
-
-      {/* The toggle's OWN row, and the only thing in it.
-          It used to share this row with the Projects label and its two
-          actions, which is no longer where Projects starts — WORK sits above
-          it now, so the label moved down to the tree it names.
-
-          The property that must survive is the toggle keeping keyboard focus
-          across a collapse, which the test at "keeps keyboard focus on the
-          toggle across a collapse" pins: the button has to stay at the same
-          position under the same parent in both modes, or React destroys and
-          recreates it and focus falls to <body>. It did before this change
-          (a falsy `{open && …}` child still holds its slot) and it does now,
-          for the simpler reason that this row has exactly one child. */}
-      <div
         className={clsx(
-          'flex shrink-0 items-center',
-          open ? 'justify-end px-2 pr-1' : 'justify-center pt-2',
+          'flex shrink-0',
+          open
+            /*
+             * Open: one row. The 76px clears the traffic lights, which sit on
+             * this strip because the sidebar is the leftmost column.
+             */
+            ? clsx('h-9 items-center justify-between pr-1', isMac ? 'pl-[76px]' : 'pl-3')
+            /*
+             * Collapsed: a COLUMN, and the padding is chosen here rather than
+             * overridden.
+             *
+             * `pl-[76px]` was applied in both modes with `pl-0` after it, which
+             * is not an override - they are the same property at the same
+             * specificity, so the winner is whichever Tailwind emitted later.
+             * On a 40px rail the 76px won and pushed the mark off the edge,
+             * which is why there was no FK on screen at all.
+             *
+             * And on macOS the lights own the top of the rail, so the mark
+             * stacks UNDER them rather than fighting for the same row.
+             */
+            : clsx('flex-col items-center gap-2 px-0', isMac ? 'pt-[34px]' : 'pt-2'),
         )}
       >
+        {open
+          ? <AgenfkWordmark size={13} />
+          : <AgenfkWordmark size={15} markOnly />}
         <button
           onClick={onToggle}
+          // `no-drag`: see above. Without it this button is unclickable on macOS.
+          data-app-region={isMac ? 'no-drag' : undefined}
           aria-label={open ? 'Collapse sidebar' : 'Expand sidebar'}
           title={open ? 'Collapse sidebar' : 'Expand sidebar'}
-          className="flex items-center rounded p-1 text-ink-tertiary transition-colors hover:bg-canvas hover:text-ink-secondary"
+          className={clsx(
+            'flex items-center rounded p-1 text-ink-tertiary transition-colors hover:bg-canvas hover:text-ink-secondary',
+          )}
         >
           {open ? <PanelLeftClose size={14} /> : <PanelLeftOpen size={14} />}
         </button>
       </div>
-
-      {!open ? null : (
-      <div className="flex min-h-0 flex-1 flex-col px-2 pb-2">
 
       {/* WORK, above PROJECTS (CGLAB-164). Where you GO, over what you have.
           A <nav> rather than a list of buttons in a div: this is the shell's
@@ -2018,7 +2044,10 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
           exists in two places, and only the visible half was asked to go. The
           padding the heading used to contribute moves onto the <nav>, or the
           first row butts against the collapse control above it. */}
-      <nav aria-label="Work" className="shrink-0 pt-2">
+      {/* `pt-4` on the rail, not `pt-2`: with the labels gone the toggle and
+          the first icon are two glyphs of the same size, and two pixels of gap
+          reads as one control with a hiccup rather than as two things. */}
+      <nav aria-label="Work" className={clsx('shrink-0', open ? 'px-2 pt-2' : 'px-1 pt-4')}>
         <ul className="flex flex-col gap-px">
           {WORK_ROWS.map(row => {
             const { label, Icon } = row;
@@ -2042,31 +2071,68 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                   // keeps the row in the tab order and lets the reason be read
                   // out, at the cost of having to refuse the click ourselves.
                   aria-disabled={disabled || undefined}
-                  title={disabled ? 'Open a project to edit its flow' : undefined}
+                  /*
+                   * ONE title, deciding between two reasons.
+                   *
+                   * A second `title` was added for the collapsed rail and JSX
+                   * silently kept the last one - so the "open a project first"
+                   * hint vanished the moment the rail hint arrived, with no
+                   * error beyond a build warning nobody reads in a test run.
+                   *
+                   * The disabled reason wins when both apply: being told why a
+                   * control is dead beats being told what it is called.
+                   */
+                  title={
+                    disabled ? 'Open a project to edit its flow'
+                    : !open ? label
+                    : undefined
+                  }
                   // `page`, not `true`: views are destinations, and a screen
                   // reader should say "current page" rather than the generic
                   // "current". Absent — not `false` — on the others, so exactly
                   // one row in the group ever carries it, and an action row
                   // never does.
                   aria-current={current ? 'page' : undefined}
+                  /*
+                   * NAMED EVEN WHEN THE TEXT IS GONE. On the rail the only
+                   * child is an aria-hidden icon, so without this the button
+                   * has no accessible name at all - a screen reader announces
+                   * "button" three times and the nav becomes unusable at
+                   * precisely the width where it is the only navigation left.
+                   *
+                   * `title` too, so a pointer user gets the same answer by
+                   * hovering rather than by guessing at a glyph.
+                   */
+                  aria-label={label}
                   className={clsx(
-                    'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors',
+                    'flex w-full items-center gap-2 rounded-md py-1.5 text-left text-[13px] transition-colors',
+                    open ? 'px-2' : 'justify-center px-0',
                     current
                       ? 'bg-canvas font-semibold text-ink'
                       : 'text-ink-secondary hover:bg-canvas/60 hover:text-ink',
                     disabled && 'cursor-not-allowed opacity-50 hover:bg-transparent hover:text-ink-secondary',
                   )}
                 >
-                  {/* Decorative: the label beside it is the accessible name, and
-                      a second one here would make it say everything twice. */}
+                  {/* Decorative: the name is on the button, and a second one
+                      here would make it say everything twice. */}
                   <Icon size={14} aria-hidden="true" className="shrink-0 text-ink-tertiary" />
-                  {label}
+                  {/*
+                    The label goes away on the rail, the ICON DOES NOT.
+                    Collapsing used to take this whole nav with it, so the only
+                    way to Tasks, Flows or Agents was to expand first - a rail
+                    that offers nothing is a rail nobody leaves open.
+                  */}
+                  {open && label}
                 </button>
               </li>
             );
           })}
         </ul>
       </nav>
+
+      {!open ? null : (
+      <div className="flex min-h-0 flex-1 flex-col px-2 pb-2">
+
 
       <div data-testid="projects-section" className="mt-3 flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center pr-1">
@@ -2210,7 +2276,10 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                     second label here would make screen readers say it twice. */}
                 <span data-folder-icon aria-hidden="true" className="shrink-0 text-ink-tertiary">
                   {isOpen && work.length > 0
-                    ? <FolderOpen size={13} />
+                    /* The SAME size as its closed twin. They were 13 and 15,
+                       so the row shifted by two pixels every time a project was
+                       expanded - a wobble nobody can name and everybody sees. */
+                    ? <FolderOpen size={15} />
                     : <Folder size={15} className={work.length === 0 ? 'opacity-50' : undefined} />}
                 </span>
                 {/* flex-1, or `justify-between` above shares the free space between all

@@ -8,6 +8,7 @@ import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT, setTeleme
 import { checkClaudeCodeEnforcement, checkPiEnforcement } from './enforcement.js';
 import { prunableWorktrees } from '@agenfk/core';
 import { execSync, execFileSync, spawn, spawnSync } from 'child_process';
+import { chooseOpenTarget } from './openTarget.js';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -834,9 +835,10 @@ program
 
 program
   .command('ui')
-  .description('Show dashboard information and open in browser')
+  .description('Open the dashboard: the desktop app when there is one, otherwise the browser')
   .option('--open <itemId>', 'Open the dashboard with that item highlighted (deep-links the Search Box to the item id)')
-  .action(async (options: { open?: string }) => {
+  .option('--web', 'Force the browser, even when the desktop app is installed or running')
+  .action(async (options: { open?: string; web?: boolean }) => {
     console.log(chalk.cyan('🌐 Opening UI...'));
 
     const rootDir = path.resolve(__dirname, '../../..');
@@ -863,7 +865,62 @@ program
     }
 
     console.log(chalk.white(`Dashboard: ${uiUrl}`));
-    
+
+    /*
+     * THE DESKTOP APP FIRST, when there is one (cb05216e).
+     *
+     * This opened a browser unconditionally, and the browser surface does not
+     * have the projects tree, the terminals or the preload bridge - the app
+     * serves the same bundle, so the two look alike and only one of them can do
+     * the things people come here for. The case that made it obvious: the app
+     * is open on screen and this puts a tab next to it.
+     */
+    const appCandidates = process.platform === 'darwin'
+      ? [
+          '/Applications/AgEnFK.app',
+          path.join(os.homedir(), 'Applications', 'AgEnFK.app'),
+          // The build from source, which is where development happens.
+          path.resolve(rootDir, 'packages/desktop/release/mac-arm64/AgEnFK.app'),
+          path.resolve(rootDir, 'packages/desktop/release/mac/AgEnFK.app'),
+        ].filter(p => fs.existsSync(p))
+      : [];
+
+    /*
+     * Matched on the BUNDLE ID, not on "is some Electron running". Every
+     * Electron app on the machine would answer yes to the looser question, and
+     * the command would then try to focus somebody else's editor.
+     */
+    let appIsRunning = false;
+    if (process.platform === 'darwin') {
+      try {
+        execSync('pgrep -f "AgEnFK.app/Contents/MacOS/AgEnFK"', { stdio: 'ignore' });
+        appIsRunning = true;
+      } catch { /* not running, which is not an error */ }
+    }
+
+    const target = chooseOpenTarget({
+      forceWeb: options.web === true,
+      appIsRunning,
+      installedApps: appCandidates,
+    });
+
+    if (target.kind === 'desktop') {
+      // `open -a` FOCUSES a running app rather than starting a second one, and
+      // the main process holds a single-instance lock anyway - so a second
+      // launch would exit silently and look like this did nothing.
+      console.log(chalk.cyan(`Opening the desktop app (${target.why}). Use --web for the browser.`));
+      try {
+        execFileSync('open', ['-a', target.appPath], { stdio: 'ignore' });
+        return;
+      } catch {
+        // Falls through to the browser rather than failing: a dashboard in the
+        // wrong surface beats no dashboard.
+        console.log(chalk.yellow('Could not open the desktop app; falling back to the browser.'));
+      }
+    } else {
+      console.log(chalk.white(`Opening the browser (${target.why}).`));
+    }
+
     try {
       if (isMinGW()) {
         try {

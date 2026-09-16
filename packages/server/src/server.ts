@@ -547,6 +547,30 @@ const syncParentStatus = async (parentId: string) => {
   }
 };
 
+/**
+ * Where a path really lands, following symlinks as far as the filesystem knows.
+ *
+ * `path.resolve` collapses `..` and stops there, which is why a lexical
+ * containment check is defeated by a single link. The target usually does not
+ * exist yet, so this resolves the deepest ancestor that DOES and re-attaches
+ * the rest.
+ */
+function realBase(p: string): string {
+  let head = path.resolve(p);
+  const tail: string[] = [];
+  while (!fs.existsSync(head)) {
+    const parent = path.dirname(head);
+    if (parent === head) return path.resolve(p);
+    tail.unshift(path.basename(head));
+    head = parent;
+  }
+  try {
+    return path.join(fs.realpathSync(head), ...tail);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
 export const findProjectRoot = (startDir: string): string => {
   const home = os.homedir();
   /*
@@ -2302,9 +2326,33 @@ app.post("/items/:id/worktree", limitExpensive, asyncHandler(async (req: any, re
   // creation. (The CLI only ever forwards --root, which stays inside it.)
   const requested = typeof req.body?.root === 'string' && req.body.root ? req.body.root : undefined;
   const base = defaultWorktreeRoot();
-  const root = requested ?? base;
-  if (requested && !path.resolve(requested).startsWith(path.resolve(base) + path.sep)) {
-    return res.status(400).json({ error: `root must be inside ${base}` });
+  /*
+   * RESOLVED, NOT COMPARED AS STRINGS, and checked BEFORE `root` exists.
+   *
+   * Two defects lived here. `const root = requested ?? base` ran ABOVE the
+   * guard, so the value that flowed onward was a different name from the one
+   * that was checked - check one thing, use another, a line apart.
+   *
+   * And `path.resolve(x).startsWith(base)` is LEXICAL: it collapses `..` and
+   * stops. It does not follow symlinks, so a path of innocent-looking segments
+   * under the worktree area, where one segment links out, passes it - and then
+   * `git worktree add` checks out a whole repository at the link's target. Not
+   * hypothetical in a workspace monorepo: `npm install` inside a worktree
+   * creates `node_modules/@scope/pkg` links that leave it, and this route has
+   * no token gate.
+   *
+   * `realBase` answers where the path actually LANDS, which is the only
+   * question worth asking.
+   */
+  let root = base;
+  if (requested !== undefined) {
+    if (containedPath(realBase(base), realBase(requested)) === null) {
+      return res.status(400).json({
+        error: `root must be inside ${base}. If it looks like it is, a directory on the way `
+          + 'there is a symlink pointing somewhere else.',
+      });
+    }
+    root = requested;
   }
 
   let result;

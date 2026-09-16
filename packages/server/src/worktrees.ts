@@ -222,25 +222,33 @@ export function createWorktree(opts: CreateWorktreeOptions): CreatedWorktree {
   assertGitRepo(repoRoot);
 
   /*
-   * CONTAINMENT ASSERTED AT THE POINT OF USE, after `canonical`.
+   * CONTAINMENT, AND THE VERSION THAT MEANT NOTHING.
    *
-   * `buildWorktreePath` already collapses a hostile branch name into one
-   * segment - `../../.ssh` becomes `ssh-2650503b` - so the arithmetic is safe.
-   * What it cannot speak for is `canonical`, which resolves SYMLINKS: if the
-   * worktree root, or the repo segment under it, is a link pointing elsewhere,
-   * the resolved target lands outside `root` while every string operation
-   * before it looked correct.
+   * This was `containedPath(canonical(root), canonical(built))`, with a comment
+   * claiming it caught symlinked roots. It caught nothing: `root` is the
+   * caller's string, so resolving it and then asking whether a path DERIVED
+   * from it sits inside the resolved version of itself is a tautology. Tested
+   * afterwards, it refused 0 of 40 attacker-chosen pairs - `root=/etc` and
+   * `root=/` both sailed through. The fence and the thing inside it came from
+   * the same hand.
    *
-   * So the check is here rather than trusted from upstream, and it uses the
-   * returned value: everything below operates on a path that was verified
-   * AFTER every transformation, not before them.
+   * What this can honestly assert is narrower and still worth having: the path
+   * BUILT from the branch name stays under the root it was given. That catches
+   * a symlink in the repo or slug segments, which is the part this module
+   * owns.
+   *
+   * WHAT IT CANNOT DO IS VALIDATE ITS OWN `root`. Nothing here knows which
+   * roots are legitimate; only the caller does. `POST /items/:id/worktree`
+   * takes that from the request body and is where the real check belongs -
+   * see the resolve-then-compare there, which follows symlinks rather than
+   * comparing strings.
    */
-  const target = containedPath(canonical(root), canonical(buildWorktreePath(root, repoNameFor(repoRoot), branchName)));
+  const base = canonical(root);
+  const target = containedPath(base, canonical(buildWorktreePath(root, repoNameFor(repoRoot), branchName)));
   if (target === null) {
     throw new Error(
-      `Refusing to make a worktree outside ${root}. The branch name is sanitised before it `
-      + 'becomes a directory, so this means the worktree root or a directory under it is a '
-      + 'symlink pointing somewhere else.',
+      `Refusing to make a worktree outside ${root}: the path built from the branch name `
+      + 'resolves somewhere else, which means a directory under the root is a symlink.',
     );
   }
 

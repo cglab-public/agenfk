@@ -339,13 +339,29 @@ describe('AppShell — sidebar', () => {
     expect((await screen.findByRole('button', { name: 'horizon-lab' })).getAttribute('aria-current')).toBe('true');
   });
 
-  it('puts the collapse control with the projects it collapses, not in the drag strip', async () => {
+  it('keeps the collapse control clickable, now that it shares the logo row', async () => {
+    /*
+     * This asserted the toggle was NOT inside the drag strip. That was a proxy:
+     * the comment said why - a drag region swallows pointer events, so a button
+     * in one is dead on macOS.
+     *
+     * The toggle moved onto the logo row deliberately, so the position is no
+     * longer the property. The property is the one the old comment named, and
+     * it is now carried by `no-drag` on the button itself: whatever region a
+     * control sits in, the NEAREST app-region ancestor has to be one that lets
+     * clicks through.
+     */
     const { container } = renderShell();
     await screen.findByRole('button', { name: 'horizon-lab' });
     const toggle = screen.getByRole('button', { name: /collapse sidebar/i });
-    // In the sidebar — and outside the drag region, which would swallow clicks.
     expect(container.querySelector('aside')?.contains(toggle)).toBe(true);
-    expect(container.querySelector('[data-app-region="drag"]')?.contains(toggle)).toBe(false);
+
+    const region = toggle.closest('[data-app-region="drag"], [data-app-region="no-drag"]');
+    // Either outside any drag region, or explicitly cut back out of one.
+    expect(
+      region === null || region.getAttribute('data-app-region') === 'no-drag',
+      'the toggle sits in a live drag region, which swallows the click',
+    ).toBe(true);
   });
 
   it('runs the sidebar the full height, with no banner above it', () => {
@@ -1719,13 +1735,38 @@ describe('the WORK group in the sidebar (CGLAB-164)', () => {
     expect(terminal!.childElementCount, 'the terminal pane itself was torn down').toBeGreaterThan(0);
   });
 
-  it('is gone with the sidebar when it is collapsed, and comes back with it', async () => {
+  it('SURVIVES a collapse as icons, because the rail is still navigation', async () => {
+    /*
+     * This asserted the opposite - that the whole nav went away with the
+     * sidebar - and that was the defect: collapsing took Tasks, Flows and
+     * Agents with it, so the only way to reach any of them was to expand
+     * first. A rail that offers nothing is a rail nobody leaves collapsed,
+     * which makes the collapse pointless.
+     *
+     * The labels go; the icons stay.
+     */
     renderShell();
     await screen.findByRole('button', { name: 'horizon-lab' });
     fireEvent.click(screen.getByRole('button', { name: /collapse sidebar/i }));
-    expect(screen.queryByRole('navigation', { name: /work/i })).toBeNull();
+
+    const nav = screen.getByRole('navigation', { name: /work/i });
+    expect(nav, 'collapsing took the navigation with it').toBeDefined();
+
+    // Each row is still reachable AND still named, which is the part that
+    // breaks silently: with the text gone the only child is an aria-hidden
+    // icon, so without an explicit name a screen reader says "button" three
+    // times and the rail is unusable exactly where it is the only nav left.
+    for (const name of ['Tasks', 'Flows', 'Agents']) {
+      expect(
+        within(nav).getByRole('button', { name: new RegExp(`^${name}$`, 'i') }),
+        `${name} lost its accessible name on the rail`,
+      ).toBeDefined();
+    }
+
+    // And the visible text really is gone - otherwise this is not a rail.
+    expect(nav.textContent?.trim()).toBe('');
 
     fireEvent.click(screen.getByRole('button', { name: /expand sidebar/i }));
-    expect(screen.getByRole('navigation', { name: /work/i })).toBeDefined();
+    expect(screen.getByRole('navigation', { name: /work/i }).textContent).toMatch(/tasks/i);
   });
 });

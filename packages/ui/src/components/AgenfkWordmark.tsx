@@ -22,6 +22,16 @@ export interface AgenfkWordmarkProps {
   /** Rendered height in px. Width follows from the book's own proportions. */
   size?: number;
   className?: string;
+  /**
+   * Draw the FK half alone, for the collapsed rail.
+   *
+   * Not a second asset. The wordmark is ONE path clipped into two halves, and
+   * the right half is already filled with the brand colour - so the mark is
+   * something this component can crop to rather than something that has to be
+   * drawn again and kept in sync. A separate FK file would be a second copy of
+   * a shape that changes when the logo changes.
+   */
+  markOnly?: boolean;
 }
 
 /**
@@ -30,14 +40,26 @@ export interface AgenfkWordmarkProps {
  */
 let seq = 0;
 
-export function AgenfkWordmark({ size = 13, className = '' }: AgenfkWordmarkProps) {
+export function AgenfkWordmark({ size = 13, className = '', markOnly = false }: AgenfkWordmarkProps) {
   const id = React.useMemo(() => `agenfk-word-${(seq += 1)}`, []);
+  /*
+   * Cropping the viewBox rather than scaling the whole thing down: the mark has
+   * to sit at the same optical size as the full wordmark's FK, or the collapse
+   * reads as the logo shrinking rather than as the name being tucked away.
+   */
+  const [vx, vy, vw, vh] = WORD_VIEWBOX.split(/\s+/).map(Number);
+  const box = markOnly
+    ? `${WORD_SPLIT_X} ${vy} ${vw - (WORD_SPLIT_X - vx)} ${vh}`
+    : WORD_VIEWBOX;
+  const aspect = markOnly ? (vw - (WORD_SPLIT_X - vx)) / vh : WORD_ASPECT;
   return (
     <svg
-      viewBox={WORD_VIEWBOX}
-      width={Math.round(size * WORD_ASPECT)}
+      viewBox={box}
+      width={Math.round(size * aspect)}
       height={size}
       role="img"
+      // The name it stands for, not "FK". A rail that announces two letters
+      // tells a screen-reader user nothing about which app they are in.
       aria-label="agenFK"
       /*
        * `text-ink` so `agen` follows the theme through currentColor: the token
@@ -58,8 +80,12 @@ export function AgenfkWordmark({ size = 13, className = '' }: AgenfkWordmarkProp
           <rect x={WORD_SPLIT_X} y="-20" width="600" height="240" />
         </clipPath>
       </defs>
-      {/* `agen` in the ink colour, inherited so it follows the theme. */}
-      <path fill="currentColor" fillRule="evenodd" d={WORD_PATH} clipPath={`url(#${id}-a)`} />
+      {/* `agen` in the ink colour, inherited so it follows the theme. Dropped
+          entirely in mark mode - clipping it out of view would still leave it
+          in the accessibility tree and in the paint cost. */}
+      {!markOnly && (
+        <path fill="currentColor" fillRule="evenodd" d={WORD_PATH} clipPath={`url(#${id}-a)`} />
+      )}
       {/* `FK` in the brand colour. */}
       <path fill="var(--brand)" fillRule="evenodd" d={WORD_PATH} clipPath={`url(#${id}-b)`} />
     </svg>

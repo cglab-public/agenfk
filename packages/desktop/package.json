@@ -16,6 +16,7 @@
     "bundle:preload": "node scripts/bundle-preload.mjs"
   },
   "dependencies": {
+    "@agenfk/core": "1.1.18",
     "@agenfk/telemetry": "1.1.18",
     "@lydell/node-pty": "1.2.0-beta.15"
   },

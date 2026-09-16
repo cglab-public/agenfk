@@ -383,3 +383,47 @@ describe('it refuses to build outside the worktree root', () => {
     }
   });
 });
+
+/**
+ * The escape the lexical checks could not see (CodeQL js/path-injection).
+ *
+ * `path.resolve(x).startsWith(base)` is a STRING comparison. It collapses `..`
+ * and stops - it does not follow symlinks, so a path made of innocent-looking
+ * segments under the worktree area, where one segment is a link pointing out,
+ * passes it. Then `git worktree add` checks out a whole repository at the
+ * link's target.
+ *
+ * The prerequisite is not exotic in a workspace monorepo: `npm install` inside
+ * a worktree creates `node_modules/@scope/pkg` links that leave it, and the
+ * route that accepts this value has no token gate.
+ *
+ * The guard that was supposed to catch it asserted nothing: it canonicalised
+ * the CALLER'S root and asked whether a path derived from that root sat inside
+ * it - true by construction. Measured afterwards, it refused 0 of 40
+ * attacker-chosen pairs, `root=/etc` among them.
+ */
+describe('a symlink pointing out of the root', () => {
+  it('does not let the built path land outside the root it was given', () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-wt-outside-'));
+    // A link sitting where the repo segment would go, which is what an
+    // install inside a worktree produces.
+    fs.mkdirSync(root, { recursive: true });
+    fs.symlinkSync(outside, path.join(root, repoNameFor(repo)), 'dir');
+
+    try {
+      expect(() => createWorktree({ repoRoot: repo, root, branchName: 'feat/escapes' }))
+        .toThrow(/outside|symlink/i);
+      // And nothing was created out there on the way to refusing.
+      expect(fs.readdirSync(outside), 'it wrote outside the root before refusing').toEqual([]);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('still builds an ordinary worktree, so the guard is not refusing everything', () => {
+    // A check that refused the normal case would pass the test above for the
+    // wrong reason, which is the cheapest way to ship a broken guard.
+    const wt = createWorktree({ repoRoot: repo, root, branchName: 'feat/ordinary-2' });
+    expect(fs.existsSync(wt.path)).toBe(true);
+  });
+});
