@@ -70,8 +70,9 @@ around it were examined and the measurement matters more than the summary:
   `scripts.setup`. Tracked here as card `cada336b`.
 
 `pnpm` does not rescue anyone: its store links stay inside `node_modules`, but a
-`workspace:*` link escapes exactly as npm's does. Orca declares one such link;
-this repo declares eight.
+`workspace:*` link escapes exactly as npm's does. Orca declares five such links;
+this repo is an npm workspace pinning exact versions, and its eight
+`node_modules/@agenfk/*` entries are symlinks into `packages/` all the same.
 
 ---
 
@@ -84,7 +85,8 @@ only thing standing between two agents and one file.
 | --- | --- | --- |
 | Overlap logic | `packages/core/src/claims.ts` | Can these two paths collide? Pure. |
 | The gate | `packages/core/src/claimGate.ts` | Turns an overlap into a refusal. Pure. |
-| Pre-edit check | `packages/core/src/gatekeeper.ts` | Refuses an edit that runs into another card's paths. CLI and server inherit one verdict. |
+| Pre-edit check | `packages/core/src/gatekeeper.ts` | Refuses to AUTHORIZE a card whose declared claims run into another card's. CLI and server inherit one verdict. It does not see the file being written. |
+| Mechanical block | `bin/agenfk-gatekeeper.mjs` | The PreToolUse hook. Refuses an edit to a file held by a PARKED card (TODO/PAUSED/BLOCKED). **Cannot** refuse when the holder is active: it receives a tool call, not an agent identity. |
 | Declaration | `PUT /items/:id` (`packages/server/src/server.ts`) | Validates, refuses a glob, refuses a claim another card holds (409). |
 | Close | `packages/server/src/closeCommit.ts` | Commits only the closing card's files out of the shared index. |
 
@@ -118,7 +120,7 @@ protects nothing while looking like it protects everything.
 That set answers "is this card working", which includes `PAUSED`. This one
 answers "are its files finished with" — and a paused card's are the opposite of
 finished: half-edited, lying in the shared tree, with the agent finding out on
-resume. Only terminal statuses release.
+resume. Terminal statuses release, and so does IDEAS - an idea has never been worked, so it holds nothing. Note this list is a fixed set of NAMES, and a flow authored by `agenfk flow create` rarely calls its final step DONE; on such a flow a finished card holds its claims forever. Tracked as a defect.
 
 ---
 
