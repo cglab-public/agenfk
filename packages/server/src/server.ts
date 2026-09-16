@@ -4,7 +4,7 @@ import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
 import { commitStagedForCard, resolveCommitRoot } from './closeCommit';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims } from "@agenfk/core";
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, type DispatchState } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -2118,10 +2118,17 @@ const RUN_EVENT_KINDS = new Set(['dispatch', 'think', 'tool', 'result', 'diff', 
 // session↔card link that heuristic attribution cannot).
 app.post("/agent-runs", asyncHandler(async (req: any, res: any) => {
   const { itemId, projectId, step, actor, harness, model, sessionId, sourcePath } = req.body || {};
-  if (!itemId) return res.status(400).json({ error: "itemId is required" });
-  if (!step) return res.status(400).json({ error: "step is required" });
+  if (typeof itemId !== 'string' || !itemId) return res.status(400).json({ error: "itemId is required" });
+  if (typeof step !== 'string' || !step) return res.status(400).json({ error: "step is required" });
   if (actor && !RUN_ACTORS.has(actor)) {
     return res.status(400).json({ error: `Invalid actor '${actor}'. Must be one of: ${[...RUN_ACTORS].join(', ')}` });
+  }
+  // Same 500 the PATCH route below just closed: a non-string reaches
+  // better-sqlite3's bind and throws there instead of naming the bad field.
+  for (const [field, value] of Object.entries({ projectId, harness, model, sessionId, sourcePath })) {
+    if (value !== undefined && typeof value !== 'string') {
+      return res.status(400).json({ error: `${field} must be a string` });
+    }
   }
   const run = await storage.createAgentRun({
     id: uuidv4(),
@@ -2145,16 +2152,55 @@ app.patch("/agent-runs/:id", asyncHandler(async (req: any, res: any) => {
   const existing = await storage.getAgentRun(req.params.id);
   if (!existing) return res.status(404).json({ error: "Agent run not found" });
   const { status, verdict, endedAt, sourcePath } = req.body || {};
-  if (status && !RUN_STATUSES.has(status)) {
+  if (status !== undefined && !RUN_STATUSES.has(status)) {
     return res.status(400).json({ error: `Invalid status '${status}'. Must be one of: ${[...RUN_STATUSES].join(', ')}` });
   }
+  // Non-strings reach better-sqlite3's bind and throw there, which surfaces as
+  // a 500 instead of telling the caller what was wrong.
+  if (verdict !== undefined && typeof verdict !== 'string') {
+    return res.status(400).json({ error: 'verdict must be a string' });
+  }
+  if (sourcePath !== undefined && typeof sourcePath !== 'string') {
+    return res.status(400).json({ error: 'sourcePath must be a string' });
+  }
+  /*
+   * `endedAt` IS THE SERVER'S. It records when the server saw the run end, so
+   * a client cannot set it. Letting it through produced both halves of the
+   * incoherence: a finished run whose end time was rewritten, and a running
+   * run stamped as already ended - "running, finished at 14:02" (BUG
+   * 43ac6afe). A null is the same body serialised by another client.
+   *
+   * Ahead of the transition guard so shape errors (400) beat state errors
+   * (409), the way the other field checks above do.
+   */
+  if (endedAt !== undefined) {
+    return res.status(400).json({ error: 'endedAt is stamped by the server when a terminal status arrives; it cannot be set by the client.' });
+  }
+  /*
+   * A FINISHED RUN DOES NOT REOPEN (BUG 43ac6afe). RUN_STATUSES above limits
+   * the vocabulary - which words may be stored; `canTransition` limits the
+   * moves, and until now nothing asked it. So `done -> running` was accepted
+   * and the row went back to saying "running" with an endedAt still stamped.
+   *
+   * Skipped when the status is unchanged: a resend is a no-op, not an illegal
+   * move, and the hook retries after a dropped response.
+   */
+  if (status !== undefined && status !== existing.status) {
+    const move = canTransition(existing.status as DispatchState, status as DispatchState);
+    if (!move.allowed) return res.status(409).json({ error: move.reason });
+  }
+  // ponytail: check-then-write, not a transaction. Two PATCHes interleaving
+  // at the awaits below can both pass the guard above; every real caller sends
+  // a terminal status once, for a distinct run, so the ceiling is cosmetic.
+  // Make it a conditional UPDATE ... WHERE status = ? if a second writer appears.
   const updated = await storage.updateAgentRun(req.params.id, {
     ...(status !== undefined ? { status } : {}),
     ...(verdict !== undefined ? { verdict } : {}),
     ...(sourcePath !== undefined ? { sourcePath } : {}),
-    // stamp endedAt when a terminal status arrives without an explicit one
-    ...(endedAt !== undefined ? { endedAt }
-        : (status && status !== 'running' && !existing.endedAt ? { endedAt: new Date().toISOString() } : {})),
+    // stamp endedAt on the transition INTO a terminal status, and only then.
+    // Asked via isTerminal rather than `!== 'running'` so adding a non-terminal
+    // word to RUN_STATUSES (blocked, say) cannot silently stamp the record.
+    ...(status !== undefined && isTerminal(status as DispatchState) && !existing.endedAt ? { endedAt: new Date().toISOString() } : {}),
   });
   io.emit('run:updated', { itemId: updated.itemId, runId: updated.id });
   res.json(updated);
