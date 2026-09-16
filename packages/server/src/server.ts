@@ -3,7 +3,7 @@ import cors from "cors";
 import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
 import { commitStagedForCard, resolveCommitRoot } from './closeCommit';
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims } from "@agenfk/core";
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, spendRequestBudget, budgetIsStale, EXPENSIVE_ROUTE_LIMIT, type BudgetState, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -547,8 +547,34 @@ const syncParentStatus = async (parentId: string) => {
 
 export const findProjectRoot = (startDir: string): string => {
   const home = os.homedir();
-  let currentDir = startDir;
-  while (currentDir !== path.parse(currentDir).root) {
+  /*
+   * RESOLVED FIRST, and this is not tidiness - it is what makes the loop below
+   * terminate.
+   *
+   * `path.parse('.').root` is '' and `path.dirname('.')` is '.', so the walk
+   * never moved and never ended. Node is single threaded, so ONE relative path
+   * stopped the whole server answering anything, for ever, with no error and no
+   * crash to point at. Every relative path reaches it, not only '.':
+   * 'relative/dir' walks to 'relative', then to '.', and sticks.
+   *
+   * It arrives from POST /items/:id/validate, which takes `cwd` off the request
+   * body - behind the internal token, so a local client can wedge the server,
+   * which is exactly the population this product runs agents from.
+   *
+   * Resolving also fixes the ANSWER: callers use the return value as a cwd for
+   * git, and handing back the caller's relative string would resolve it against
+   * the server's own working directory, which is the defect this whole area
+   * keeps producing.
+   */
+  let currentDir = path.resolve(startDir);
+  const stopAt = path.parse(currentDir).root;
+  /*
+   * A belt as well as braces. The walk is bounded by the path's own depth now,
+   * but a bound that does not depend on `path` behaving as expected is what
+   * turns "should terminate" into "does terminate" - and the cost of being
+   * wrong here is the whole process, not one request.
+   */
+  for (let guard = 0; guard < 256 && currentDir !== stopAt; guard++) {
     // $HOME always contains ~/.agenfk, so without this guard any walk that
     // reaches it "finds" a project there. The consequence is not cosmetic:
     // projectRoot becomes the home directory, and `git add -A && git commit`
@@ -556,9 +582,14 @@ export const findProjectRoot = (startDir: string): string => {
     if (currentDir !== home && fs.existsSync(path.join(currentDir, ".agenfk"))) {
       return currentDir;
     }
-    currentDir = path.dirname(currentDir);
+    const parent = path.dirname(currentDir);
+    // `dirname` of a root returns the root, so this is the other way the walk
+    // stops: it has stopped moving.
+    if (parent === currentDir) break;
+    currentDir = parent;
   }
-  return startDir;
+  // The RESOLVED start, never the caller's string. See above.
+  return path.resolve(startDir);
 };
 
 /**
@@ -1115,7 +1146,65 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * changes between versions, and because a filename may contain a newline —
  * with newline-separated output one file reads as two.
  */
-app.get("/items/:id/git-status", asyncHandler(async (req: any, res: any) => {
+/**
+ * A ceiling on the routes that do real work per request (CodeQL js/missing-rate-limiting).
+ *
+ * Applied to the five that spawn a process, walk a directory, or reach the
+ * network: git-status, the file listing, worktree creation, the project-root
+ * setter and the PR import.
+ *
+ * THE NUMBER COMES FROM WHAT THIS APP DOES, not from the alert. The UI polls
+ * git-status every four seconds, so fifteen requests a minute is ordinary; a
+ * ceiling near that would break the product to satisfy a static check, which is
+ * an easy trade to make without looking. Sixty leaves normal use four times
+ * under the line and still stops a runaway loop.
+ *
+ * Keyed by CALLER AND ROUTE, so one client looping on git-status cannot lock
+ * another out of the PR import. Swept on write, because a map keyed by caller
+ * that is never evicted is a denial of service inside the fix for one.
+ */
+const requestBudgets = new Map<string, BudgetState>();
+
+const limitExpensive = (req: any, res: any, next: any): void => {
+  const now = Date.now();
+  // Sweep before deciding, so the map cannot outlive the windows in it. Cheap:
+  // the entries are bounded by (local callers x five routes).
+  for (const [k, v] of requestBudgets) {
+    if (budgetIsStale(v, now)) requestBudgets.delete(k);
+  }
+  /*
+   * Keyed by caller, route AND the id in the path.
+   *
+   * The route PATTERN alone was the first version and it is too coarse: every
+   * card shares one `/items/:id/git-status` budget, so two split panes polling
+   * two different worktrees spend each other's allowance and the app throttles
+   * itself. A test caught it - the second case in this file inherited an
+   * exhausted window from the first - which is what a route-pattern key does to
+   * real users with several terminals open.
+   *
+   * Per id, one card looping cannot lock another out, and the limit means what
+   * the docblock above says it means: four times a single poller's load.
+   */
+  const key = `${req.ip ?? 'local'}\u0000${req.route?.path ?? req.path}\u0000${req.params?.id ?? ''}`;
+  const decision = spendRequestBudget(requestBudgets.get(key), now);
+  requestBudgets.set(key, decision.next);
+  if (!decision.allowed) {
+    res.setHeader('Retry-After', String(decision.retryAfterSeconds));
+    /*
+     * The message names the ceiling and the likely cause. A bare 429 on a
+     * local-only server reads as a bug in the server, and the caller is almost
+     * always a loop in something the same person is writing.
+     */
+    return res.status(429).json({
+      error: `Too many requests to ${req.path}. This route does real work per call - a process, `
+        + `a directory walk, or a network fetch - and is capped at ${EXPENSIVE_ROUTE_LIMIT} a minute. `
+        + `Retry in ${decision.retryAfterSeconds}s. If this was not a loop, say so on the card.`,
+    });
+  }
+  next();
+};
+
+app.get("/items/:id/git-status", limitExpensive, asyncHandler(async (req: any, res: any) => {
   const item: any = await storage.getItem(req.params.id);
   if (!item) return res.status(404).json({ error: "Item not found" });
 
@@ -1163,7 +1252,7 @@ app.get("/items/:id/git-status", asyncHandler(async (req: any, res: any) => {
  * worktree can itself sit behind a symlink (/tmp is one on macOS) and
  * comparing a resolved path against an unresolved root refuses everything.
  */
-app.get("/items/:id/files", asyncHandler(async (req: any, res: any) => {
+app.get("/items/:id/files", limitExpensive, asyncHandler(async (req: any, res: any) => {
   const item: any = await storage.getItem(req.params.id);
   if (!item) return res.status(404).json({ error: "Item not found" });
   if (!item.worktreePath || !fs.existsSync(item.worktreePath)) {
@@ -1184,12 +1273,20 @@ app.get("/items/:id/files", asyncHandler(async (req: any, res: any) => {
     return res.status(403).json({ error: "Not a readable path inside this worktree." });
   }
 
-  if (!isInsideRoot(root, target)) {
+  /*
+   * The CHECKED value is the one used from here on. `safe` and `target` hold
+   * the same string today; the point is that there is no longer a way to read
+   * the unchecked one by accident - a second `fs` call added below cannot
+   * silently skip the guard, because the only path in scope that is not `null`
+   * is the one that passed.
+   */
+  const safe = containedPath(root, target);
+  if (safe === null) {
     return res.status(403).json({ error: "Refusing to read outside the worktree." });
   }
 
   try {
-    const entries = fs.readdirSync(target, { withFileTypes: true })
+    const entries = fs.readdirSync(safe, { withFileTypes: true })
       // .git is machinery, not the user's work, and listing it invites
       // walking into it.
       .filter(e => e.name !== '.git')
@@ -1201,7 +1298,7 @@ app.get("/items/:id/files", asyncHandler(async (req: any, res: any) => {
         kind: e.isDirectory() ? 'directory' : e.isSymbolicLink() ? 'symlink' : 'file',
       }))
       .sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'directory' ? -1 : 1));
-    res.json({ path: path.relative(root, target), entries });
+    res.json({ path: path.relative(root, safe), entries });
   } catch (e: any) {
     res.status(409).json({ error: `Could not read that directory: ${e?.message ?? 'failed'}` });
   }
@@ -1516,7 +1613,7 @@ app.put("/projects/:id/setup-command", asyncHandler(async (req: any, res: any) =
  * saying that it was written for exactly this class of mistake and had no
  * caller that could FIX one.
  */
-app.put("/projects/:id/project-root", asyncHandler(async (req: any, res: any) => {
+app.put("/projects/:id/project-root", limitExpensive, asyncHandler(async (req: any, res: any) => {
   if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
     return res.status(401).json({ error: "Unauthorized" });
   }
@@ -2109,7 +2206,7 @@ async function repoRootForItem(item: any): Promise<string> {
   return repoRoot;
 }
 
-app.post("/items/:id/worktree", asyncHandler(async (req: any, res: any) => {
+app.post("/items/:id/worktree", limitExpensive, asyncHandler(async (req: any, res: any) => {
   const item: any = await storage.getItem(req.params.id);
   if (!item) return res.status(404).json({ error: "Item not found" });
 
@@ -2990,7 +3087,10 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
       if (updated.status === Status.DONE && currentItem.status !== Status.DONE) {
         if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
           const proj = await storage.getProject(updated.projectId);
-          const projectRoot = (proj as any)?.projectRoot || findProjectRoot(process.cwd());
+          // No `|| findProjectRoot(process.cwd())`: that made a long-lived daemon
+          // commit into whatever repository it was launched from. autoGitCommit
+          // declines and says why.
+          const projectRoot = (proj as any)?.projectRoot;
           await autoGitCommit(updated, projectRoot);
         }
       }
@@ -3239,7 +3339,10 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
         });
         if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
           const proj = await storage.getProject(updated.projectId);
-          const projectRoot = (proj as any)?.projectRoot || findProjectRoot(process.cwd());
+          // No `|| findProjectRoot(process.cwd())`: that made a long-lived daemon
+          // commit into whatever repository it was launched from. autoGitCommit
+          // declines and says why.
+          const projectRoot = (proj as any)?.projectRoot;
           await autoGitCommit(updated, projectRoot);
         } else {
           console.log(`[TEST_MODE] Skipping auto-git commit for item ${updated.id}`);
@@ -3509,7 +3612,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}` });
   }
 
-  const projectRoot = (project as any)?.projectRoot || findProjectRoot(process.cwd());
+  // See above: declining beats committing somewhere plausible.
+  const projectRoot = (project as any)?.projectRoot;
 
   // Runs the command and applies the pass/fail side effects, reporting through
   // `res2` — the real HTTP response on the sync path, or a recorder that
@@ -4749,7 +4853,7 @@ app.post("/github/import", async (req: any, res: any) => {
  * GitHub credential. What is left here is the part that genuinely needs the
  * outside world: asking `gh`, fetching the ref, making the worktree.
  */
-app.post("/projects/:id/tasks-from-pr", asyncHandler(async (req: any, res: any) => {
+app.post("/projects/:id/tasks-from-pr", limitExpensive, asyncHandler(async (req: any, res: any) => {
   const project: any = await storage.getProject(req.params.id);
   if (!project) return res.status(404).json({ error: "Project not found" });
 

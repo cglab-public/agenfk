@@ -14,7 +14,7 @@
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import { buildWorktreePath } from '@agenfk/core';
+import { buildWorktreePath, containedPath } from '@agenfk/core';
 import { planWorktreeSetup, type SetupDecision } from './worktreeSetup.js';
 
 /**
@@ -221,7 +221,28 @@ export function createWorktree(opts: CreateWorktreeOptions): CreatedWorktree {
   const { repoRoot, root, branchName, startPoint, setupCommand } = opts;
   assertGitRepo(repoRoot);
 
-  const target = canonical(buildWorktreePath(root, repoNameFor(repoRoot), branchName));
+  /*
+   * CONTAINMENT ASSERTED AT THE POINT OF USE, after `canonical`.
+   *
+   * `buildWorktreePath` already collapses a hostile branch name into one
+   * segment - `../../.ssh` becomes `ssh-2650503b` - so the arithmetic is safe.
+   * What it cannot speak for is `canonical`, which resolves SYMLINKS: if the
+   * worktree root, or the repo segment under it, is a link pointing elsewhere,
+   * the resolved target lands outside `root` while every string operation
+   * before it looked correct.
+   *
+   * So the check is here rather than trusted from upstream, and it uses the
+   * returned value: everything below operates on a path that was verified
+   * AFTER every transformation, not before them.
+   */
+  const target = containedPath(canonical(root), canonical(buildWorktreePath(root, repoNameFor(repoRoot), branchName)));
+  if (target === null) {
+    throw new Error(
+      `Refusing to make a worktree outside ${root}. The branch name is sanitised before it `
+      + 'becomes a directory, so this means the worktree root or a directory under it is a '
+      + 'symlink pointing somewhere else.',
+    );
+  }
 
   const existing = listWorktrees(repoRoot).find(w => canonical(w.path) === target);
   if (existing && fs.existsSync(target)) {

@@ -15,3 +15,5 @@ export * from './claimGate';
 export * from './fanOut';
 export * from './circuitBreaker';
 export * from './dispatch';
+
+export * from './requestBudget.js';

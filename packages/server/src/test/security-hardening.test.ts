@@ -8,7 +8,8 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
-import { app, initStorage, isAllowedOrigin, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl, VERIFY_TOKEN } from '../server';
+import { app, initStorage, isAllowedOrigin, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl, VERIFY_TOKEN, findProjectRoot } from '../server';
+import { EXPENSIVE_ROUTE_LIMIT } from '@agenfk/core';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -218,3 +219,104 @@ describe('bug fe03d054: POST /prs decides newness from the upsert', () => {
 // defenses that ARE exercisable in-process (CORS origin allowlist, PUT /projects
 // mass-assignment, /releases/update gating, POST /prs idempotency) remain tested
 // behaviourally above.
+
+// ── CodeQL js/missing-rate-limiting: the expensive routes have a ceiling ──────
+describe('the routes that do real work per request are capped', () => {
+  it('refuses a loop, and says how long to wait', async () => {
+    /*
+     * THE test at this layer. The pure function is covered on its own; what
+     * this asserts is that the middleware is actually ON the route - a limiter
+     * written and not wired is the defect shape this branch keeps finding, and
+     * it would leave the alert correct.
+     */
+    const project = (await agent().post('/projects').send({ name: 'RateLimited' })).body;
+    const item = (await agent().post('/items')
+      .send({ title: 'Busy', type: 'TASK', projectId: project.id })).body;
+
+    let refused: request.Response | null = null;
+    // One past the ceiling. The route answers 404/409 for a card with no
+    // worktree, which is fine: the limiter runs before the handler, so the
+    // status we are looking for arrives whatever the handler would have said.
+    for (let i = 0; i < EXPENSIVE_ROUTE_LIMIT + 1; i++) {
+      const r = await agent().get(`/items/${item.id}/git-status`);
+      if (r.status === 429) { refused = r; break; }
+    }
+
+    expect(refused, 'the loop was never refused: the limiter is not on this route').toBeTruthy();
+    expect(refused!.headers['retry-after'], 'no Retry-After to act on').toBeTruthy();
+    expect(refused!.body.error).toMatch(/a minute/i);
+  });
+
+  it('lets ordinary polling through untouched', async () => {
+    /*
+     * The half that matters more. The UI polls git-status every four seconds,
+     * so fifteen a minute is normal use - a ceiling that caught it would have
+     * broken the product to satisfy a static-analysis alert, and nothing in the
+     * alert tells you that number.
+     */
+    const project = (await agent().post('/projects').send({ name: 'PollingOk' })).body;
+    const item = (await agent().post('/items')
+      .send({ title: 'Polled', type: 'TASK', projectId: project.id })).body;
+
+    for (let i = 0; i < 15; i++) {
+      const r = await agent().get(`/items/${item.id}/git-status`);
+      expect(r.status, `ordinary polling was refused at request ${i + 1}`).not.toBe(429);
+    }
+  });
+});
+
+// ── findProjectRoot: a relative path used to wedge the process ────────────────
+describe('findProjectRoot terminates', () => {
+  it('does not hang on a relative path', () => {
+    /*
+     * THE test, and it is a process-wide wedge rather than a slow request.
+     * `path.parse('.').root` is '' and `path.dirname('.')` is '.', so the walk
+     * `while (currentDir !== root) currentDir = path.dirname(currentDir)` never
+     * moves and never ends. Node is single threaded: one relative cwd and the
+     * whole server stops answering anything, for ever, with no error and no
+     * crash to point at.
+     *
+     * Every relative path reaches it, not just '.': 'relative/dir' walks to
+     * 'relative', then to '.', and stops moving there.
+     *
+     * Reachable from POST /items/:id/validate, which takes `cwd` from the
+     * request body. That route is behind the internal token, so this is a wedge
+     * a local client can cause rather than a remote one - which is exactly the
+     * population this product runs agents from.
+     */
+    for (const relative of ['.', 'relative/dir', 'a', './x/../y']) {
+      const start = Date.now();
+      const out = findProjectRoot(relative);
+      expect(Date.now() - start, `findProjectRoot(${JSON.stringify(relative)}) hung`).toBeLessThan(2000);
+      // And it answers with something absolute: a relative "project root" would
+      // be resolved against the SERVER's cwd later, which is the defect this
+      // whole area keeps producing.
+      expect(path.isAbsolute(out), `returned a relative root: ${out}`).toBe(true);
+    }
+  });
+
+  it('still finds a real project root when given an absolute path', () => {
+    // The guard must not be a refusal of the normal case.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-fpr-'));
+    fs.mkdirSync(path.join(dir, '.agenfk'), { recursive: true });
+    const deep = path.join(dir, 'a', 'b');
+    fs.mkdirSync(deep, { recursive: true });
+    try {
+      expect(fs.realpathSync(findProjectRoot(deep))).toBe(fs.realpathSync(dir));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('gives back an absolute path when it finds nothing', () => {
+    // The no-match answer is used as a cwd by callers, so returning the
+    // caller's own relative string would hand git a path resolved against the
+    // server's working directory.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-fpr-none-'));
+    try {
+      expect(path.isAbsolute(findProjectRoot(dir))).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

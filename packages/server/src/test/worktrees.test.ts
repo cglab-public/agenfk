@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { createWorktree, listWorktrees, removeWorktree, repoNameFor } from '../worktrees.js';
+import { buildWorktreePath } from '@agenfk/core';
 
 let repo: string;
 let root: string;
@@ -314,5 +315,71 @@ describe('createWorktree reports what the worktree still needs', () => {
     expect(second.created, 'fixture did not exercise the reuse path').toBe(false);
     expect(second.setup.ready).toBe(false);
     expect(second.setup.notice).toBe(first.setup.notice);
+  });
+});
+
+/**
+ * Where the worktree may be made (CodeQL js/path-injection).
+ *
+ * `buildWorktreePath` collapses a hostile branch name into one segment -
+ * `../../.ssh` becomes `ssh-2650503b` - so the string arithmetic is already
+ * safe, and the five alerts on this file are the tool being unable to see
+ * through it.
+ *
+ * What the sanitiser cannot speak for is `canonical`, which resolves SYMLINKS
+ * after the arithmetic is done. That is the gap worth closing, and it is the
+ * reason the check lives at the point of use rather than being trusted from
+ * upstream.
+ */
+describe('it refuses to build outside the worktree root', () => {
+  it('catches a repo directory INSIDE the root that links somewhere else', () => {
+    /*
+     * THE test, and it took two wrong guesses to find. No branch name can
+     * produce this: the escape arrives from the FILESYSTEM, after every string
+     * transformation has already been done correctly.
+     *
+     * Not a symlinked ROOT - that was the first guess and it is wrong. Both
+     * sides are canonicalised, so a root the user deliberately placed behind a
+     * link resolves consistently and the worktree still lands under it. Which
+     * is the right answer, and the reason the check compares resolved against
+     * resolved rather than resolved against raw.
+     *
+     * The real escape is one level in: `<root>/<repo>` linking elsewhere, so
+     * the target resolves out from under a root that did not move.
+     */
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-wt-elsewhere-'));
+    fs.mkdirSync(root, { recursive: true });
+    fs.symlinkSync(elsewhere, path.join(root, repoNameFor(repo)), 'dir');
+
+    try {
+      expect(() => createWorktree({ repoRoot: repo, root, branchName: 'feat/linked-out' }))
+        .toThrow(/outside|symlink/i);
+    } finally {
+      fs.rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('still makes an ordinary worktree, so the guard is not refusing everything', () => {
+    // A check that refuses the normal case would be caught by the other tests,
+    // but stating it here keeps the two halves of the guard side by side.
+    const wt = createWorktree({ repoRoot: repo, root, branchName: 'feat/ordinary' });
+    expect(fs.existsSync(wt.path)).toBe(true);
+  });
+
+  it('never lets a branch name reach the filesystem as traversal', () => {
+    /*
+     * Measured on the PATH rather than by making a worktree, because git
+     * refuses `../../.ssh` as a ref name before the directory is ever built -
+     * which is its own layer of defence and worth knowing, but it means a
+     * createWorktree call proves nothing about the path arithmetic.
+     *
+     * So this asserts the thing the alert is actually about: where the
+     * directory would END UP.
+     */
+    for (const hostile of ['../../.ssh', '/etc/passwd', '....//....//etc']) {
+      const built = buildWorktreePath(root, repoNameFor(repo), hostile);
+      expect(built.startsWith(`${root}/`), `${hostile} escaped to ${built}`).toBe(true);
+      expect(built).not.toMatch(/\.\./);
+    }
   });
 });

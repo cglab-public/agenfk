@@ -36,3 +36,33 @@ export function isInsideRoot(root: string, candidate: string | null | undefined)
   // passes as inside `/tmp/wt/repo`, which is a different directory.
   return target.startsWith(base === '/' ? '/' : `${base}/`);
 }
+
+/**
+ * The contained path, or null.
+ *
+ * THE VALUE, NOT A VERDICT, and that is the whole difference from
+ * `isInsideRoot`. A boolean leaves the caller holding the UNCHECKED variable:
+ *
+ *     if (!isInsideRoot(root, target)) return res.status(403)...
+ *     fs.readdirSync(target)            // <- the one that was never checked
+ *
+ * Correct as written, and the shape that rots. The check and the use are two
+ * separate mentions of one name, so nothing stops an edit landing between them
+ * or a second `fs` call being added below without the guard. Returning the path
+ * removes the second variable: what reaches the filesystem is what passed.
+ *
+ * It also happens to be what makes the containment legible to static analysis,
+ * which is how these came to light - but that is a consequence. Silencing the
+ * tool with an inline suppression would have left the defect shape untouched
+ * and the next sink just as unguarded.
+ *
+ * Returns null rather than a "sanitised" fallback on purpose. Null is not a
+ * path, so a caller who ignores it fails loudly on the first `fs` call; a
+ * plausible-looking string would be used in silence.
+ */
+export function containedPath(
+  root: string,
+  candidate: string | null | undefined,
+): string | null {
+  return isInsideRoot(root, candidate) ? (candidate as string) : null;
+}
