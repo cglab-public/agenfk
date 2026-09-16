@@ -228,7 +228,7 @@ working: for a week it was complete, reachable, and invisible.
 | `owns N paths` / `held` on a sidebar card | `packages/ui/src/claimState.ts` | **shipped** |
 | A state dot per session on the tab strip, failed and blocked coloured | `packages/ui/src/tabState.ts` | **shipped** |
 | `N need you`, jumping to the first stuck card | `AppShell.tsx` | **shipped** |
-| Two terminals side by side, with Split *disabled and giving its reason* | — | not built (`68117161`) |
+| Two terminals side by side, with Split *disabled and giving its reason* | `packages/ui/src/splitAvailability.ts` | **shipped** |
 
 Three rules the figures settle, which matter more than the pixels:
 
@@ -265,10 +265,9 @@ later; it does not fit, and the split is what closes.
    finished card holds its claims forever and the mechanism switches itself off.
 3. `0c3211ab` — fan-out in one tree, with claims checked before dispatch.
 4. `cada336b` — install dependencies per worktree via a setup script.
-5. `68117161` — two terminals side by side, and Split disabled with its reason.
-6. `11a08ee9` — an MCP-only agent cannot declare a claim at all: the update
+5. `11a08ee9` — an MCP-only agent cannot declare a claim at all: the update
    schema strips the field.
-7. The twelve children of `998fa96c` — the Orca reuse list above.
+6. The twelve children of `998fa96c` — the Orca reuse list above.
 
 ## The shape to watch for
 
