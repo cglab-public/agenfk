@@ -2,6 +2,57 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.19] — 2026-09-16
+
+Stable, cumulative over `1.1.19-beta.1`–`.5`.
+
+### Hub-of-hubs federation (EPIC CGLAB-180)
+
+A hub can enrol with another hub and report upstream, so an organisation running
+several hubs sees one rollup without merging their databases: enrolment with
+single-use HMAC invites, parent-granted leaving, flow dispatch, group upgrades
+with per-hub progress, a child-hub facet on every rollup query, and the
+guarantee that a child hub outlives its parent.
+
+### Federation is configured from one place, and a join token is all you paste
+
+`Admin → Organization` now carries the org identity, the parent hub and the
+child-hub roster on one page; `/admin/child-hubs` and `/admin/parent-hub`
+redirect to the matching section. A parent signs its own URL into the invites it
+mints, so it emits ONE join code and the child pastes only a token, seeing the
+host it will actually contact before it commits. The decoded URL is normalised
+before it is shown or dialled, because `https://parent.example.com@evil.example.com`
+reads as one host and connects to another.
+
+**Upgrade ordering:** tokens minted before this change carry no address and are
+refused. An upgraded child cannot join a parent still on an older version —
+upgrade the parent hub first, then issue a fresh token.
+
+### Cards can be linked to JIRA items outside of import (CGLAB-163)
+
+### PR Overview searches by PR number (CGLAB-151)
+
+### Tests no longer make real network connections
+
+`TelemetryClient` built a live PostHog client with no test guard, so a single
+`npm test` fired 24 real HTTPS requests to `app.posthog.com`. Telemetry is inert
+under a test runner, the hub's federation worker no longer builds a real HTTP
+transport there, and a suite-wide guard fails any socket to a non-loopback host.
+
+### `agenfk pr create` reports the model that actually ran
+
+Detection reads the harness session log (pi and Claude Code) and takes the last
+model actually selected, instead of a session-independent default — a pi run on
+DeepSeek was being attributed to the `qwen3.8:27b` in `settings.json`. The
+guidance that caused it is corrected in all four rule bundles.
+
+### Twelve bugs closed alongside the epic
+
+Async `/v1` routes no longer hang the client on a DB error; `verifyCommand`
+output is streamed rather than buffered; `AGENFK_HUB_ALLOW_PRIVATE_PARENT=1`
+works; a hidden person's machine is not named to the parent; the DONE close
+commit reports what it did and did not commit.
+
 ## [1.1.19-beta.5] — 2026-09-16
 
 Cut from `feat/CGLAB-181_federation-enrollment` (PR #187). Cumulative: it carries
