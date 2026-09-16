@@ -3,7 +3,7 @@ import cors from "cors";
 import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
 import { commitStagedForCard, resolveCommitRoot } from './closeCommit';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
@@ -1234,7 +1234,20 @@ const limitExpensive = rateLimit({
   // Per route AND per id, not per route alone. Keyed by pattern only, every
   // card shares one git-status budget, so two split panes polling two worktrees
   // spend each other's allowance and the app throttles itself.
-  keyGenerator: (req: any) => `${req.ip ?? 'local'}\u0000${req.route?.path ?? req.path}\u0000${req.params?.id ?? ''}`,
+  /*
+   * `ipKeyGenerator`, not `req.ip` raw.
+   *
+   * express-rate-limit REFUSES a custom key built from a bare `req.ip`, and it
+   * is right to: an IPv6 client takes a fresh address out of its /64 whenever
+   * it likes, so keying on the exact address hands every one of them a private
+   * budget and the limit stops limiting. The helper normalises to the prefix.
+   *
+   * It threw ERR_ERL_KEY_GEN_IPV6 at module load, which is before anything
+   * listens - so the desktop app waited sixty times for a server that was never
+   * going to answer. Every test was green, because the suite imports `app`
+   * rather than booting the process. serverBoots.test.ts now covers that gap.
+   */
+  keyGenerator: (req: any) => `${ipKeyGenerator(req.ip ?? '127.0.0.1')}\u0000${req.route?.path ?? req.path}\u0000${req.params?.id ?? ''}`,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   handler: (req: any, res: any) => {
