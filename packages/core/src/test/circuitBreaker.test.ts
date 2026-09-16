@@ -81,9 +81,37 @@ describe('the escape route', () => {
   });
 
   it('gives the same answer however the card is reached', () => {
-    // Depth of question, not route: asking three times returns one answer.
-    const answers = [1, 1, 1].map(() => mayDispatch({ failureCount: 3 }).allowed);
-    expect(new Set(answers).size).toBe(1);
+    /*
+     * This used to call mayDispatch three times with the same argument and
+     * check the answers agreed, never looking at the VALUE. `() => ({allowed:
+     * true})` left it green - it asserted that a pure function is pure, under
+     * the name of the rule the module exists for.
+     *
+     * The rule is that the count belongs to the CARD, so a second route to it
+     * answers the same. Stated as the absolute verdict at and around the
+     * threshold, since there is no route argument to vary: that missing
+     * parameter IS the guarantee.
+     */
+    expect(mayDispatch({ failureCount: 3 }).allowed, 'a broken card was dispatched').toBe(false);
+    expect(mayDispatch({ failureCount: 9 }).allowed, 'more failures made it dispatchable again').toBe(false);
+    expect(mayDispatch({ failureCount: 2 }).allowed, 'refused below the threshold').toBe(true);
+  });
+
+  it('treats a missing count as no failures, not as a disabled breaker', () => {
+    /*
+     * NaN is what a missing count looks like once this reads from storage -
+     * `Number(row.failure_count)` on a NULL - and NaN is the quiet catastrophe
+     * here: every comparison against it is false, so the breaker allows the
+     * card forever while reporting "Attempt NaN of 3 failed". A breaker that
+     * cannot open is a decoration.
+     */
+    expect(mayDispatch({ failureCount: NaN }).allowed).toBe(true);
+    const d = recordFailure({ failureCount: NaN });
+    expect(d.failureCount, 'NaN leaked into the stored count').toBe(1);
+    expect(d.message, 'the operator was shown NaN').not.toMatch(/NaN/);
+
+    // Negative is the same class of nonsense and must not buy extra attempts.
+    expect(recordFailure({ failureCount: -5 }).failureCount).toBe(1);
   });
 });
 

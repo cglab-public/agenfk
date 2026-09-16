@@ -25,12 +25,33 @@ import { planWorktreeSetup, type SetupDecision } from './worktreeSetup.js';
  * is built.
  */
 const MANIFESTS = [
-  'package.json', 'Cargo.toml', 'go.mod', 'requirements.txt', 'pyproject.toml',
-  'Gemfile', 'composer.json', 'build.gradle', 'pom.xml',
+  'package.json', 'Cargo.toml', 'go.mod', 'go.work', 'requirements.txt',
+  'pyproject.toml', 'Pipfile', 'Gemfile', 'composer.json',
+  // Gradle's Kotlin DSL is the current default, so `build.gradle` alone catches
+  // only the Groovy form - and the miss is silent: the worktree reports itself
+  // READY, which is a confident wrong answer rather than an absent one.
+  'build.gradle', 'build.gradle.kts', 'settings.gradle', 'settings.gradle.kts',
+  'pom.xml', 'mix.exs', 'Package.swift',
 ];
 
+/** Extensions that are a manifest whatever the file is called. */
+const MANIFEST_EXTENSIONS = ['.csproj', '.fsproj', '.sln'];
+
 function hasManifest(dir: string): boolean {
-  return MANIFESTS.some(m => fs.existsSync(path.join(dir, m)));
+  if (MANIFESTS.some(m => fs.existsSync(path.join(dir, m)))) return true;
+  /*
+   * .NET names its project file after the project, so there is no fixed name
+   * to look for. Directory read rather than a guessed filename, and it is the
+   * reason this is not a plain list.
+   */
+  try {
+    return fs.readdirSync(dir).some(f => MANIFEST_EXTENSIONS.some(e => f.endsWith(e)));
+  } catch {
+    // An unreadable directory is not evidence of anything. Reporting "no
+    // manifest" would hand back a confident READY for a worktree we could not
+    // even list.
+    return false;
+  }
 }
 
 export interface WorktreeInfo {

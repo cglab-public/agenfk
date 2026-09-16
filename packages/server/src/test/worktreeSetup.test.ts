@@ -17,10 +17,28 @@ import { describe, it, expect } from 'vitest';
 import { planWorktreeSetup } from '../worktreeSetup';
 
 describe('when the project says what to run', () => {
-  it('runs exactly that, and says so', () => {
+  it('returns exactly that, and puts it in the notice', () => {
     const d = planWorktreeSetup({ declared: 'pnpm install --frozen-lockfile', hasManifest: true });
     expect(d.command).toBe('pnpm install --frozen-lockfile');
     expect(d.notice).toContain('pnpm install --frozen-lockfile');
+  });
+
+  it('does not claim the command is being run, because nothing runs it', () => {
+    /*
+     * THE test of this branch. The notice used to read "Running the project's
+     * setup command in the new worktree: npm ci" while no code anywhere
+     * executed it - the decision is returned to a caller that posts it as a
+     * comment on the card.
+     *
+     * An agent reading that starts work believing an install is under way,
+     * fails on an import, and investigates its own change. That is worse than
+     * saying nothing: the undeclared case at least reports the dependencies as
+     * missing.
+     */
+    const d = planWorktreeSetup({ declared: 'npm ci', hasManifest: true });
+    expect(d.notice, 'the notice claims an install is in progress').not.toMatch(/^Running\b/);
+    expect(d.notice).toMatch(/does NOT run it|run it here/i);
+    expect(d.notice, 'it did not say the dependencies are missing').toMatch(/no dependencies installed/i);
   });
 
   it('is not "ready", because the work has not happened yet', () => {

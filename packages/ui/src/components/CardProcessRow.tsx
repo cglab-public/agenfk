@@ -99,13 +99,6 @@ export function CardProcessRow({ row, onOpen }: CardProcessRowProps): React.Reac
         <span className="shrink-0 font-medium">{row.agentLabel}</span>
         <span className="shrink-0 text-ink-tertiary">·</span>
         <span className="shrink-0 text-ink-tertiary">{label}</span>
-        {/* What it is DOING beats what it is called, so this takes whatever
-            width is left and is the first thing to be truncated. */}
-        {row.state === 'running' && row.lastAction && (
-          <span className="min-w-0 truncate font-mono text-[10px] text-ink-tertiary">
-            {row.lastAction}
-          </span>
-        )}
         {(() => {
           /*
            * Long silence, SAID and never acted on (CGLAB-201).
@@ -115,13 +108,20 @@ export function CardProcessRow({ row, onOpen }: CardProcessRowProps): React.Reac
            * separate badge would read as a fourth thing to learn and invite
            * somebody to act on it.
            */
-          const stall = stallWarning({ state: row.state, /*
-             * startedAt, because that is the only time SessionRow carries.
-             * It is the honest floor: an agent silent since it began is the
-             * clearest case, and a row that tracked its own last output would
-             * be a second liveness source competing with the one that exists.
-             */
-            lastSeenAt: row.startedAt });
+          /*
+           * `lastSeenAt`, never `startedAt`. It was startedAt, and the comment
+           * there called it "the honest floor" - it was not a floor, it was a
+           * different measurement: session AGE. Every session older than ten
+           * minutes was labelled quiet, including one emitting output the
+           * whole time, in the one feature whose entire point is not
+           * overstating what it can see.
+           *
+           * Absent when the card has never been heard from, and stallWarning
+           * reads that as no evidence rather than as silence. Warning less
+           * often is the correct trade: a warning that fires on ordinary
+           * duration is one people learn to skip.
+           */
+          const stall = stallWarning({ state: row.state, lastSeenAt: row.lastSeenAt });
           if (!stall.warn) return null;
           return (
             <span

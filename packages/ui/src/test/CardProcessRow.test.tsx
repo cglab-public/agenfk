@@ -74,12 +74,18 @@ describe('what the row says', () => {
     expect(screen.getByText('Failed')).toBeInTheDocument();
   });
 
-  it('keeps what the agent last did, when it is running', () => {
-    // The one thing worth the width freed by the title: what it is doing now
-    // beats what it is called.
-    render(<CardProcessRow row={row({ state: 'running', lastAction: 'Editing cardState.ts' })} />);
-    expect(screen.getByText(/Editing cardState.ts/)).toBeInTheDocument();
-  });
+  /*
+   * The `lastAction` test that stood here is gone with the field.
+   *
+   * It rendered `row({ state: 'running', lastAction: 'Editing cardState.ts' })`
+   * and asserted the text appeared - injecting a prop the real component never
+   * receives. Nothing in the app ever set `lastAction`: both places that build
+   * SessionRows omitted it, so the span could not draw and the docblock
+   * promising "Bash - npx vitest run" described nothing.
+   *
+   * Removed rather than pretended, on the same reasoning that removed the
+   * `waiting` state. Giving it a producer is carded.
+   */
 });
 
 describe('the state is not carried by colour alone', () => {
@@ -188,15 +194,40 @@ describe('the command the row suggests', () => {
  */
 describe('the quiet warning', () => {
   const longAgo = new Date(Date.now() - 45 * 60_000).toISOString();
-  const row = (state: SessionRow['state'], startedAt: string): SessionRow => ({
+  const row = (state: SessionRow['state'], lastSeenAt?: string, startedAt = longAgo): SessionRow => ({
     runId: 'r1', itemId: 'abcdef12-0000', title: 'A card',
     agentId: 'claude-code', agentLabel: 'Claude Code', state,
-    startedAt, hasTerminal: true,
+    startedAt, lastSeenAt, hasTerminal: true,
   });
 
   it('says how long a running agent has been quiet', () => {
     render(<CardProcessRow row={row('running', longAgo)} />);
     expect(screen.getByTestId('stall-warning').textContent).toMatch(/quiet 4\dm/);
+  });
+
+  it('measures SILENCE, not how long the session has been open', () => {
+    /*
+     * THE test, and the one the old fixture could not be: the row was built
+     * with `startedAt` alone and the component passed it in as `lastSeenAt`,
+     * so age and silence were the same number and every assertion here held
+     * either way.
+     *
+     * A session open for 45 minutes whose agent spoke a moment ago is WORKING.
+     * Calling it quiet for 45 minutes is the overstatement this whole feature
+     * exists to avoid, and it fired on every long session.
+     */
+    render(<CardProcessRow row={row('running', new Date().toISOString(), longAgo)} />);
+    expect(
+      screen.queryByTestId('stall-warning'),
+      'an agent that spoke a second ago was reported quiet',
+    ).toBeNull();
+  });
+
+  it('says nothing when it has never heard from the card at all', () => {
+    // Absent is not silent. Without a last-seen time there is no evidence of
+    // silence, and inventing one is how the old version went wrong.
+    render(<CardProcessRow row={row('running', undefined, longAgo)} />);
+    expect(screen.queryByTestId('stall-warning')).toBeNull();
   });
 
   it('never tells anybody to kill or retry it', () => {
@@ -209,7 +240,7 @@ describe('the quiet warning', () => {
   });
 
   it('stays quiet for an agent that has just started', () => {
-    render(<CardProcessRow row={row('running', new Date().toISOString())} />);
+    render(<CardProcessRow row={row('running', new Date().toISOString(), new Date().toISOString())} />);
     expect(screen.queryByTestId('stall-warning')).toBeNull();
   });
 

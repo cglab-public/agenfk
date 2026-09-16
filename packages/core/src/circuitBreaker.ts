@@ -52,7 +52,7 @@ export interface BreakerDecision {
  * a database and cannot disagree with itself across two callers.
  */
 export function recordFailure(state: BreakerState): BreakerDecision {
-  const failureCount = state.failureCount + 1;
+  const failureCount = countOf(state) + 1;
   if (failureCount >= CIRCUIT_BREAK_AFTER) {
     return {
       verdict: 'broken',
@@ -80,14 +80,31 @@ export function recordFailure(state: BreakerState): BreakerDecision {
  * rather than after.
  */
 export function mayDispatch(state: BreakerState): { allowed: boolean; reason: string | null } {
-  if (state.failureCount >= CIRCUIT_BREAK_AFTER) {
+  const count = countOf(state);
+  if (count >= CIRCUIT_BREAK_AFTER) {
     return {
       allowed: false,
-      reason: `Stopped after ${state.failureCount} consecutive failures. `
+      reason: `Stopped after ${count} consecutive failures. `
         + 'Somebody has to look at this one before it runs again.',
     };
   }
   return { allowed: true, reason: null };
+}
+
+/**
+ * The count, or zero when there isn't one.
+ *
+ * NaN is the realistic shape of a missing count the moment this is wired to
+ * storage - `Number(row.failure_count)` on a NULL - and NaN silently DISABLES
+ * the breaker: every comparison against it is false, so the card is allowed
+ * forever while being told "Attempt NaN of 3 failed". A guard that reads as
+ * defensive paranoia in a pure module is the difference between a breaker and
+ * a decoration once there is a database behind it.
+ *
+ * Zero is the right floor: an unknown history is not a history of failure.
+ */
+function countOf(state: BreakerState): number {
+  return Number.isFinite(state.failureCount) && state.failureCount > 0 ? state.failureCount : 0;
 }
 
 /**

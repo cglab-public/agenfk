@@ -4888,8 +4888,12 @@ app.post("/projects/:id/tasks-from-pr", asyncHandler(async (req: any, res: any) 
       // an agent then works in and pushes. Found in review, reproduced against
       // the test's own fixture.
       startPoint: `refs/remotes/origin/${plan.branchName}`,
+      // Without this an imported PR whose project HAS a setup command was told
+      // to go and set one - naming a value the user had already set.
+      setupCommand: project.setupCommand,
     });
     const withWorktree = await storage.updateItem(created.id, { worktreePath: result.path } as any);
+    if (!result.setup.ready) await noteOnCard(result.setup.notice);
     io.emit('items_updated');
     res.status(201).json({ item: withWorktree, worktree: result });
   } catch (e: any) {

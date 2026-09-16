@@ -52,7 +52,19 @@ import { SettingsPanel } from './SettingsPanel';
  * still the shared vocabulary for a session row, which is why the module
  * stays imported at all.
  */
-import { runState } from '../sessionRow';
+import { runState, nextStateChangeAt } from '../sessionRow';
+
+/**
+ * A timestamp as ISO, or undefined when there isn't one.
+ *
+ * The distinction matters downstream: `stallWarning` reads a missing
+ * `lastSeenAt` as "no evidence of silence" and says nothing, which is the
+ * honest answer for a card nobody has ever heard from. Defaulting to `now`
+ * here would manufacture evidence; defaulting to the start time is the bug
+ * this replaced.
+ */
+const isoOrUndefined = (ms: number | undefined): string | undefined =>
+  ms === undefined ? undefined : new Date(ms).toISOString();
 import type { SessionRow, SessionState } from '../sessionRow';
 import { LiveAgents } from '../liveAgents';
 import { EmptyState } from './EmptyState';
@@ -396,6 +408,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const shellQueryClient = useQueryClient();
   const live = React.useRef(new LiveAgents()).current;
   const [liveTick, setLiveTick] = React.useState(0);
+  /** Bumped when a silent run crosses the contact grace. See the effect below. */
+  const [graceTick, setGraceTick] = React.useState(0);
   React.useEffect(() => {
     const off = live.subscribe(() => setLiveTick(t => t + 1));
     return () => { off(); live.dispose(); };
@@ -510,6 +524,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
          */
         state: runState(run, live.isLive(run.itemId)),
         startedAt: run.startedAt,
+        // When we last HEARD from it, which is a different fact from when it
+        // started. The stall warning needs this one; given startedAt it
+        // reported session age as silence.
+        lastSeenAt: isoOrUndefined(live.lastSeenAt(run.itemId)),
         // A run from the hook has a transcript but no terminal this app owns,
         // so clicking must not pretend to attach to one.
         hasTerminal: false,
@@ -586,6 +604,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         // here reset every terminal's elapsed time to "0s" on an unrelated
         // card's event. `openedAt` is the terminal's own truth.
         startedAt: byAgent.get(key(open.itemId, open.agentId))?.startedAt ?? open.openedAt,
+        lastSeenAt: isoOrUndefined(live.lastSeenAt(open.itemId)),
         hasTerminal: true,
         // Carried so the rail can drop it once the process is gone. The row
         // stays while the terminal is merely idle — the tab is still there.
@@ -619,7 +638,32 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       isLive: id => liveItems.has(id),
       appStartedAt: APP_STARTED_AT,
     });
-  }, [runs, sessions, live, liveItems, liveTick]);
+  }, [runs, sessions, live, liveItems, liveTick, graceTick]);
+
+  /*
+   * THE CLOCK THAT MAKES `unverifiable` REACHABLE (CGLAB-195).
+   *
+   * The memo above reads the wall clock through `runState`, and every other
+   * dependency is event-driven: `liveTick` comes from the live-agent sweep,
+   * which STOPS ITSELF once the last card goes dark, and ['runs'] is
+   * invalidated by a socket event a silent agent by definition does not send.
+   * So a run that went quiet was drawn `Idle` and stayed `Idle` for ever - the
+   * exact sentence this card exists to stop the app saying, arrived at through
+   * the render rather than through the rule.
+   *
+   * One timeout at the moment the answer actually changes, not a poll: waking
+   * an idle board on a fixed interval would trade this bug for the one the
+   * sweep's self-shutdown was avoiding. When no row can change on its own,
+   * nothing is scheduled at all.
+   */
+  React.useEffect(() => {
+    const at = nextStateChangeAt(runs as any[], (id: string) => liveItems.has(id));
+    if (at === null) return;
+    // +1s so the timer lands strictly PAST the boundary rather than on it,
+    // which is where `runState` still answers idle.
+    const timer = setTimeout(() => setGraceTick(t => t + 1), Math.max(0, at - Date.now()) + 1000);
+    return () => clearTimeout(timer);
+  }, [runs, liveItems, graceTick]);
   /*
    * How each OPEN TERMINAL is doing, keyed by session id (CGLAB-191).
    *

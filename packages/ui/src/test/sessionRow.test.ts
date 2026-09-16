@@ -17,7 +17,7 @@
  * the screen-text reader gave it a producer, not when somebody wanted it.
  */
 import { describe, it, expect } from 'vitest';
-import { PRODUCIBLE_STATES, runState, CONTACT_GRACE_MS, type SessionState } from '../sessionRow';
+import { PRODUCIBLE_STATES, runState, nextStateChangeAt, CONTACT_GRACE_MS, type SessionState } from '../sessionRow';
 import { itemsNeedingAPerson } from '../cardState';
 import { DOT, STATE_LABEL, ORDER } from '../components/sessionPresentation';
 
@@ -146,5 +146,100 @@ describe('what the three states do downstream', () => {
     // on knowledge, and at 6px the shape is the channel that survives.
     expect(DOT.unverifiable).not.toBe(DOT.blocked);
     expect(DOT.unverifiable).toContain('dashed');
+  });
+});
+
+describe('the clock it reads when nobody passes one', () => {
+  it('uses the real now by default', () => {
+    /*
+     * Every other test in this file passes `now` explicitly, so the DEFAULT -
+     * the only form the app actually calls - was never exercised. Mutating it
+     * to `now: number = 0` left the whole suite green while making
+     * `unverifiable` permanently unreachable in the app, because `0 - started`
+     * is always negative.
+     *
+     * A wrong default is invisible to tests that never use it, which is the
+     * shape this file exists to catch.
+     */
+    const longAgo = new Date(Date.now() - (CONTACT_GRACE_MS + 60_000)).toISOString();
+    expect(runState({ status: 'running', startedAt: longAgo }, false)).toBe('unverifiable');
+
+    const justNow = new Date().toISOString();
+    expect(runState({ status: 'running', startedAt: justNow }, false)).toBe('idle');
+  });
+
+  it('says nothing new exactly AT the boundary', () => {
+    // The window is "longer than", not "at least". Unpinned, a later `>=` or a
+    // Math.abs drifts silently - and stallWarning's twin already has this test,
+    // so the pattern was known and not applied here.
+    const now = 1_000_000_000_000;
+    const at = new Date(now - CONTACT_GRACE_MS).toISOString();
+    expect(runState({ status: 'running', startedAt: at }, false, now)).toBe('idle');
+
+    const past = new Date(now - CONTACT_GRACE_MS - 1).toISOString();
+    expect(runState({ status: 'running', startedAt: past }, false, now)).toBe('unverifiable');
+  });
+});
+
+describe('when the screen has to look again', () => {
+  const now = 1_000_000_000_000;
+  const never = () => false;
+  const run = (over: Record<string, unknown> = {}) =>
+    ({ itemId: 'a', status: 'running', startedAt: new Date(now - 60_000).toISOString(), ...over });
+
+  it('names the moment a silent run stops being idle', () => {
+    /*
+     * THE test. `runState` reads the clock, and every dependency that could
+     * re-render is event-driven - the live sweep stops itself when the board
+     * goes dark, and a silent agent sends no socket event. Without a scheduled
+     * moment the row reads `Idle` for ever, which is the sentence CGLAB-195
+     * exists to prevent, reached through the render instead of through the
+     * rule.
+     */
+    const started = now - 60_000;
+    expect(nextStateChangeAt([run()], never, now)).toBe(started + CONTACT_GRACE_MS);
+  });
+
+  it('schedules nothing for a run we can currently see', () => {
+    // A live run is already `running`; time passing cannot change that.
+    expect(nextStateChangeAt([run()], () => true, now)).toBeNull();
+  });
+
+  it('schedules nothing for a run that has already ended', () => {
+    for (const status of ['done', 'failed', undefined]) {
+      expect(nextStateChangeAt([run({ status })], never, now), String(status)).toBeNull();
+    }
+  });
+
+  it('schedules nothing once the moment has passed', () => {
+    // It is unverifiable NOW. Waking up to say so again is the fixed-interval
+    // poll this function exists to avoid.
+    const old = run({ startedAt: new Date(now - CONTACT_GRACE_MS - 5_000).toISOString() });
+    expect(nextStateChangeAt([old], never, now)).toBeNull();
+  });
+
+  it('takes the SOONEST across several runs, not the first or the last', () => {
+    /*
+     * One timeout serves every row, so it has to be the earliest - scheduling
+     * for a later one leaves the earlier row stale for the difference, which
+     * is the bug in miniature.
+     */
+    const runs = [
+      run({ itemId: 'late', startedAt: new Date(now - 10_000).toISOString() }),
+      run({ itemId: 'soon', startedAt: new Date(now - 300_000).toISOString() }),
+      run({ itemId: 'mid', startedAt: new Date(now - 100_000).toISOString() }),
+    ];
+    expect(nextStateChangeAt(runs, never, now)).toBe(now - 300_000 + CONTACT_GRACE_MS);
+  });
+
+  it('ignores a run with no usable start time instead of scheduling on NaN', () => {
+    // NaN would compare false against everything and quietly drop the run, or
+    // land a timeout at NaN ms. Skipping it is the same answer runState gives.
+    expect(nextStateChangeAt([run({ startedAt: undefined })], never, now)).toBeNull();
+    expect(nextStateChangeAt([run({ startedAt: 'not a date' })], never, now)).toBeNull();
+  });
+
+  it('returns null for an empty board, so nothing is scheduled at all', () => {
+    expect(nextStateChangeAt([], never, now)).toBeNull();
   });
 });

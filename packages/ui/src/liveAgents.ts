@@ -54,6 +54,20 @@ export class LiveAgents {
     if (!wasLive) this.emit();
   }
 
+  /**
+   * When this card was last heard from, in ms, or undefined if never.
+   *
+   * Separate from `isLive` because they answer different questions: `isLive`
+   * asks "within the 90s window", this asks "how long ago", and the stall
+   * warning needs the second. It used to be handed `startedAt` instead - the
+   * only time a SessionRow carried - so "quiet for N minutes" really meant
+   * "started N minutes ago", and an agent emitting output continuously for 45
+   * minutes was labelled quiet for 45 minutes.
+   */
+  lastSeenAt(itemId: string): number | undefined {
+    return this.lastSeen.get(itemId);
+  }
+
   isLive(itemId: string): boolean {
     const at = this.lastSeen.get(itemId);
     return at !== undefined && Date.now() - at < LIVE_TTL_MS;

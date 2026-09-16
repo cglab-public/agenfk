@@ -84,6 +84,17 @@ export interface TransitionResult {
 
 /** May this attempt move there? */
 export function canTransition(from: DispatchState, to: DispatchState): TransitionResult {
+  /*
+   * An unrecognised `from` used to throw a TypeError out of `ALLOWED[from]`.
+   * The types say it cannot happen and storage disagrees: three of these six
+   * words are also AgentRun statuses, so a legacy or typo'd value reaching
+   * here would take the caller down INSTEAD OF refusing the move - a gate that
+   * crashes is not a gate. Refusing is the answer a state we do not recognise
+   * deserves.
+   */
+  if (!(from in ALLOWED)) {
+    return { allowed: false, reason: `Unknown state '${from}'. This attempt cannot be moved until it is one of: ${Object.keys(ALLOWED).join(', ')}.` };
+  }
   if (from === to) {
     // Not an error and not a move. Reporting it as allowed would let a caller
     // rewrite `startedAt` on a no-op.
@@ -101,7 +112,10 @@ export function canTransition(from: DispatchState, to: DispatchState): Transitio
 
 /** States from which nothing more happens. */
 export function isTerminal(state: DispatchState): boolean {
-  return ALLOWED[state].length === 0;
+  // Same hole as canTransition: an unknown state threw rather than answering.
+  // Not terminal, because "nothing more happens" is a claim about a state we
+  // understand, and this is not one.
+  return state in ALLOWED && ALLOWED[state].length === 0;
 }
 
 /**
@@ -189,10 +203,35 @@ export interface GateResolution {
  * in the loop, so the second party is what is checked.
  */
 export function resolveGate({ gateId, resolvedBy, raisedBy }: GateResolution): TransitionResult {
-  if (!resolvedBy.trim()) {
+  /*
+   * COMPARED THE SAME WAY THE NAMES ARE WRITTEN, not byte for byte. A raw
+   * comparison let `coord-1 ` and `Coord-1` resolve gates raised by `coord-1`:
+   * the guarantee this function exists for, walked past by a trailing space.
+   * Both tests passed byte-identical strings, so neither could see it.
+   *
+   * Case-folded because these are agent and terminal ids, not paths - the
+   * argument that stops `claimsCollide` folding case (Linux really does have
+   * two files there) has no counterpart here.
+   */
+  const resolver = resolvedBy.trim().toLowerCase();
+  const raiser = raisedBy.trim().toLowerCase();
+  if (!resolver) {
     return { allowed: false, reason: `Gate ${gateId} needs a named resolver. An anonymous approval is not one.` };
   }
-  if (resolvedBy === raisedBy) {
+  if (!raiser) {
+    /*
+     * An unnamed RAISER passed the check that exists to name a second party:
+     * nothing equals '', so every resolver looked like somebody else. A gate
+     * whose origin is unknown cannot establish that anybody was put in the
+     * loop, which is the whole product.
+     */
+    return {
+      allowed: false,
+      reason: `Gate ${gateId} does not record who raised it, so there is no way to tell whether `
+        + 'resolving it puts a second party in the loop. Record the raiser.',
+    };
+  }
+  if (resolver === raiser) {
     return {
       allowed: false,
       reason: `Gate ${gateId} was raised by ${raisedBy}, so ${raisedBy} cannot resolve it. `

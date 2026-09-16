@@ -116,11 +116,43 @@ describe('the escape route', () => {
     /*
      * THE test. "Start a fresh run and dispatch from there" is how anybody
      * walks around a depth limit, and it works whenever depth is a property of
-     * the REQUEST. Here it is a property of the tree, so asking again from
-     * anywhere returns the same number.
+     * the REQUEST. Here it is a property of the tree, so every route to the
+     * same card answers the same.
+     *
+     * This assertion used to call the function three times with identical
+     * arguments and check the answers agreed. That is referential transparency
+     * - true of `() => 0` and of `() => depth * 10` alike - and no mutation of
+     * fanOut.ts could redden it. It read as the file's headline test while
+     * pinning nothing.
+     *
+     * What actually pins the claim: the ABSOLUTE number, and the same card
+     * reached through a differently-ordered slice. Order is the only route
+     * variation available, since the signature has no request parameter to
+     * vary - which is itself the property, and worth stating rather than
+     * assuming.
      */
-    const asked = ['task', 'task', 'task'].map(id => mayFanOut(id, tree).depth);
-    expect(new Set(asked).size, 'depth changed between identical questions').toBe(1);
+    expect(mayFanOut('task', tree).depth, 'task sits under epic -> story').toBe(2);
+
+    // Same tree, arrived at from the other end. A depth accumulated while
+    // walking the list rather than read off the ancestry answers differently
+    // here.
+    expect(mayFanOut('task', [...tree].reverse()).depth).toBe(2);
+
+    // And in a slice that names the card before its ancestors exist in the
+    // array, which is the order a partial fetch tends to produce.
+    const shuffled = [tree[2], tree[4], tree[0], tree[3], tree[1]];
+    expect(mayFanOut('task', shuffled).depth).toBe(2);
+  });
+
+  it('gives a fresh dispatch no way to ask for a smaller depth', () => {
+    /*
+     * The escape route stated as an absence: there is no argument that makes
+     * the answer smaller. A "fresh run" can only re-ask about the same card in
+     * the same tree, and the ceiling is the only knob - which moves the limit
+     * UP for everybody rather than exempting one dispatch.
+     */
+    expect(mayFanOut('deep', tree).depth).toBe(3);
+    expect(mayFanOut('deep', tree, 99).depth, 'the ceiling changed the measured depth').toBe(3);
   });
 
   it('does not forget the ancestry when the parent is missing from the slice', () => {

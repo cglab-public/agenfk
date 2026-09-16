@@ -126,8 +126,19 @@ export interface SessionRow {
   readonly agentId: string;
   readonly agentLabel: string;
   readonly state: SessionState;
-  /** The last run event, rendered as "Bash · npx vitest run". */
-  readonly lastAction?: string;
+  /**
+   * When we last heard anything from this card, as an ISO string.
+   *
+   * Absent when nothing has ever been heard, which is NOT silence and must not
+   * be read as it - stallWarning treats a missing timestamp as "no evidence",
+   * which is the only honest answer.
+   *
+   * This slot used to hold `lastAction`, a string documented as rendering
+   * "Bash - npx vitest run". Nothing in the app ever set it: the two places
+   * that build SessionRows both omitted it, so the span was dead and its only
+   * test passed the value in as a prop the real component never receives.
+   */
+  readonly lastSeenAt?: string;
   readonly startedAt: string;
   /**
    * Whether this app owns a PTY for it.
@@ -155,4 +166,48 @@ export interface SessionRow {
    * been quiet. Absent on older records, which is not the same as ended.
    */
   readonly runStatus?: string;
+}
+
+/**
+ * When some row's state could next change on its own, or null when none can
+ * (CGLAB-195).
+ *
+ * THE STATE WAS COMPUTED AND THE SCREEN NEVER ASKED AGAIN. `runState` reads
+ * the clock, so `idle -> unverifiable` happens only if something re-renders
+ * after the grace window passes - and nothing did. The live-agent sweep is the
+ * app's only clock, and it stops itself the moment the last card goes dark
+ * ("an idle board must not keep waking up"), which is precisely when a silent
+ * run is waiting to be called unverifiable. Ten minutes later the row still
+ * read `Idle`: the one answer this whole card exists to stop the app giving.
+ *
+ * That is the `waiting` failure one indirection further out. There, the state
+ * had no producer. Here it has a producer, the producer is wired, and the
+ * render never calls it a second time - which looks identical from the outside
+ * and is invisible to every test, because a test that hands `unverifiable`
+ * straight to a component never needs the clock to turn.
+ *
+ * Returns a MOMENT rather than an interval so the caller can schedule one
+ * timeout instead of polling. Waking the board on a fixed tick would trade
+ * this bug for the thing the sweep's shutdown was protecting.
+ */
+export function nextStateChangeAt(
+  runs: readonly { readonly status?: string; readonly startedAt?: string; readonly itemId: string }[],
+  isLive: (itemId: string) => boolean,
+  now: number = Date.now(),
+): number | null {
+  let soonest: number | null = null;
+  for (const run of runs) {
+    // Only a run the server still calls `running`, that we cannot currently
+    // see, can change state by the mere passage of time. A live one is already
+    // `running`; a finished one is settled.
+    if (run.status !== 'running' || isLive(run.itemId)) continue;
+    const started = run.startedAt ? Date.parse(run.startedAt) : NaN;
+    if (!Number.isFinite(started)) continue;
+    const at = started + CONTACT_GRACE_MS;
+    // Already past it: the row is unverifiable now, so there is nothing left
+    // to wait for on this run.
+    if (at <= now) continue;
+    if (soonest === null || at < soonest) soonest = at;
+  }
+  return soonest;
 }

@@ -58,10 +58,27 @@ export function planWorktreeSetup({ declared, hasManifest }: SetupInputs): Setup
   const command = declared?.trim() ? declared.trim() : null;
 
   if (command) {
+    /*
+     * THE NOTICE SAYS WHAT TO DO, NOT WHAT IS HAPPENING. It read "Running the
+     * project's setup command in the new worktree: npm ci" and NOTHING RAN IT -
+     * the decision is returned to a caller that posts it as a comment. An agent
+     * reading that starts work believing an install is under way, fails on an
+     * import, and goes looking at its own change: the exact wrong afternoon
+     * this module exists to prevent, now with a reassurance in front of it.
+     * That is strictly worse than the undeclared case, which at least says the
+     * dependencies are missing.
+     *
+     * Whether AgEnFK should run it is a separate decision with its own weight -
+     * an arbitrary shell string, executed inside a status-change handler,
+     * blocking for minutes - and is carded rather than assumed here. Until then
+     * the honest thing is to say plainly that it is not run.
+     */
     return {
       command,
       ready: false,
-      notice: `Running the project's setup command in the new worktree: ${command}`,
+      notice:
+        `This worktree has no dependencies installed yet. The project declares a setup command, `
+        + `and AgEnFK does NOT run it for you - run it here before starting work:\n\n    ${command}`,
     };
   }
 

@@ -81,6 +81,33 @@ describe('the moves it refuses', () => {
   });
 });
 
+describe('a state it does not recognise', () => {
+  it('refuses the move instead of throwing', () => {
+    /*
+     * `ALLOWED[from]` on an unknown key threw a TypeError. The types say this
+     * cannot happen; storage disagrees - three of these six words are also
+     * AgentRun statuses, so a legacy or typo'd value arriving here took the
+     * caller down INSTEAD OF refusing the move. A gate that crashes is not a
+     * gate, and the crash happens at exactly the moment the gate was needed.
+     */
+    const r = canTransition('SHIPPED' as DispatchState, 'running');
+    expect(r.allowed).toBe(false);
+    expect(r.reason).toMatch(/unknown state/i);
+    // It lists what it does understand, so the mismatch is diagnosable.
+    expect(r.reason).toMatch(/queued/);
+  });
+
+  it('does not call an unrecognised state terminal', () => {
+    // "Nothing more happens" is a claim about a state we understand. Answering
+    // true here would strand a run nobody could move.
+    expect(isTerminal('SHIPPED' as DispatchState)).toBe(false);
+  });
+
+  it('ignores a message aimed at one', () => {
+    expect(stateAfterMessage('SHIPPED' as DispatchState, 'done')).toBeNull();
+  });
+});
+
 describe('which states are the end', () => {
   it('is done and failed, and nothing else', () => {
     expect(isTerminal('done')).toBe(true);
@@ -207,6 +234,39 @@ describe('a gate needs somebody on the other side', () => {
 
   it('accepts a different party', () => {
     expect(resolveGate({ gateId: 'g1', resolvedBy: 'leonardo', raisedBy: 'coordinator-1' }).allowed).toBe(true);
+  });
+
+  it('is not fooled by a trailing space or a capital letter', () => {
+    /*
+     * THE hole, and it sat under the test above: that one passed
+     * byte-identical strings, so a raw === comparison looked like a guarantee.
+     * `coord-1 ` resolving a gate raised by `coord-1` is self-resolution with
+     * a keystroke of camouflage, and nothing about it is visible afterwards -
+     * the audit trail shows two different names.
+     */
+    for (const [resolver, raiser] of [
+      ['coord-1 ', 'coord-1'],
+      ['coord-1', ' coord-1'],
+      ['Coord-1', 'coord-1'],
+      ['COORD-1', 'coord-1 '],
+    ]) {
+      const r = resolveGate({ gateId: 'g1', resolvedBy: resolver, raisedBy: raiser });
+      expect(r.allowed, `'${resolver}' resolved a gate raised by '${raiser}'`).toBe(false);
+    }
+  });
+
+  it('refuses when nobody is recorded as having RAISED it', () => {
+    /*
+     * The mirror of the anonymous resolver, and it passed: nothing equals '',
+     * so an unnamed raiser made every resolver look like a second party. A
+     * gate whose origin is unknown cannot establish that anybody was put in
+     * the loop, which is the entire product.
+     */
+    for (const raiser of ['', '   ']) {
+      const r = resolveGate({ gateId: 'g1', resolvedBy: 'leonardo', raisedBy: raiser });
+      expect(r.allowed, 'a gate with no recorded raiser was resolved').toBe(false);
+      expect(r.reason).toMatch(/who raised it/i);
+    }
   });
 
   it('refuses an anonymous approval', () => {
