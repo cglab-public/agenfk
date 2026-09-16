@@ -14,11 +14,12 @@
 import React from 'react';
 import { clsx } from 'clsx';
 import { tabIndicator, tabDotClass } from '../tabState';
+import { splitAvailability } from '../splitAvailability';
 import type { SessionState } from '../sessionRow';
 import { agentLabel } from '../agentLabels';
 import { WorktreePanel } from './WorktreePanel';
 import { useGitStatus, type WorktreeView } from '../gitStatus';
-import { X, Plus, GitBranch, FileDiff, Activity } from 'lucide-react';
+import { Columns2, X, Plus, GitBranch, FileDiff, Activity } from 'lucide-react';
 import { TerminalPane } from './TerminalPane';
 import { EmptyState } from './EmptyState';
 import { AgentIcon } from './AgentIcon';
@@ -120,6 +121,25 @@ export interface TerminalTabProps {
    * something.
    */
   readonly sessionStates?: ReadonlyMap<string, SessionState>;
+  /**
+   * The second session on screen, or null for one pane (CGLAB-192).
+   *
+   * Owned by the shell rather than here: which pair belongs side by side is a
+   * decision a person makes, and the shell is the only thing that knows what
+   * else is open. Never set automatically on fan-out - three agents running
+   * does not mean two panes open, and guessing the pair is wrong most of the
+   * time and costs a pane to undo.
+   */
+  readonly splitId?: string | null;
+  /** Ask the shell to split with, or unsplit from, this session. */
+  readonly onToggleSplit?: (sessionId: string) => void;
+  /**
+   * Why Split cannot be used, or null when it can.
+   *
+   * Present rather than absent when unavailable: a control that vanishes
+   * teaches nothing and invites the same attempt tomorrow.
+   */
+  readonly splitDisabledReason?: string | null;
   readonly activeId: string | null;
   readonly onSelect: (id: string) => void;
   readonly onClose: (id: string) => void;
@@ -214,6 +234,9 @@ function readWorktreeOpen(): boolean {
 export function TerminalTab({
   sessions,
   sessionStates,
+  splitId,
+  onToggleSplit,
+  splitDisabledReason,
   activeId,
   onSelect,
   onClose,
@@ -232,6 +255,38 @@ export function TerminalTab({
   // Seeded from storage in the initializer, so there is no first paint with
   // the panel open for someone who closed it.
   const [panelOpen, setPanelOpen] = React.useState<boolean>(() => readWorktreeOpen());
+
+  /*
+   * Whether two terminals fit right now (CGLAB-192).
+   *
+   * Decided HERE rather than in the shell because the git panel's open state
+   * lives here, and the panel is 288 px of the same row the panes share - so
+   * the shell cannot answer the question without being told the one thing it
+   * does not know.
+   */
+  const [rowWidth, setRowWidth] = React.useState<number>(() =>
+    typeof window === 'undefined' ? 1440 : window.innerWidth);
+  React.useEffect(() => {
+    const onResize = (): void => setRowWidth(window.innerWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  const splitState = splitAvailability({
+    sessionCount: sessions.length,
+    // Minus the sidebar, which is 224 px open and a 40 px rail closed. The
+    // shell owns that width; this is the only thing it is assumed here.
+    rowWidthPx: rowWidth - 224,
+    worktreePanelOpen: panelOpen,
+  });
+  const splitBlocked = splitState.enabled ? null : splitState.reason;
+  /*
+   * The panel wins and the SPLIT closes, rather than both panes shrinking
+   * below the floor. A terminal under its floor is not a smaller terminal - it
+   * is one that wraps every line, which is worse than not being on screen.
+   */
+  React.useEffect(() => {
+    if (splitId && !splitState.enabled) onToggleSplit?.(splitId);
+  }, [splitId, splitState.enabled, onToggleSplit]);
   const current = sessions.find(s => s.id === activeId);
   /*
    * Asked even with the panel CLOSED, which is what makes moving the counts
@@ -441,6 +496,40 @@ export function TerminalTab({
                   <span title="Permissions skipped" className="shrink-0 text-[10px] text-red-400">●</span>
                 )}
               </button>
+              {onToggleSplit && (() => {
+                /*
+                 * DISABLED WITH ITS REASON, never absent (CGLAB-192). A
+                 * control that vanishes teaches nothing and invites the same
+                 * attempt tomorrow; a greyed one that says why teaches once.
+                 *
+                 * Not offered on the pane already on screen: splitting a
+                 * session with itself is not a thing, and a disabled control
+                 * there would be noise rather than instruction.
+                 */
+                if (session.id === activeId) return null;
+                const isSplit = session.id === splitId;
+                const blocked = !isSplit && (splitDisabledReason ?? splitBlocked);
+                return (
+                  <button
+                    type="button"
+                    data-testid="tab-split"
+                    disabled={Boolean(blocked)}
+                    title={blocked || (isSplit ? 'Close this pane' : `Show beside ${sessions.find(x => x.id === activeId)?.title ?? 'the current terminal'}`)}
+                    aria-label={blocked ? `Split unavailable: ${blocked}` : isSplit ? `Unsplit ${session.title}` : `Split with ${session.title}`}
+                    onClick={() => onToggleSplit(session.id)}
+                    className={clsx(
+                      'shrink-0 rounded p-0.5 transition-opacity',
+                      blocked
+                        ? 'cursor-not-allowed text-ink-tertiary opacity-40'
+                        : isSplit
+                          ? 'text-brand opacity-100'
+                          : 'text-ink-tertiary opacity-0 hover:text-ink focus:opacity-100 group-hover:opacity-100',
+                    )}
+                  >
+                    <Columns2 size={11} />
+                  </button>
+                );
+              })()}
               <button
                 onClick={() => onClose(session.id)}
                 aria-label={`Close terminal on ${session.title}`}
@@ -466,12 +555,17 @@ export function TerminalTab({
           it a long line of terminal output refuses to shrink and pushes the
           panel off screen. */}
       <div className="flex min-h-0 flex-1">
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className={clsx('flex min-w-0 flex-1', splitId ? 'flex-row gap-px bg-border-soft' : 'flex-col')}>
       {sessions.map(session => (
         <div
           key={session.id}
-          hidden={session.id !== activeId}
-          className="min-h-0 flex-1"
+          /*
+           * Hidden, never unmounted: unmounting kills the process. The split
+           * shows a SECOND pane rather than replacing the first, so both
+           * conditions are ors.
+           */
+          hidden={session.id !== activeId && session.id !== splitId}
+          className={clsx('min-h-0 flex-1', splitId && 'min-w-0 bg-canvas')}
         >
           <TerminalPane
             itemId={session.itemId}

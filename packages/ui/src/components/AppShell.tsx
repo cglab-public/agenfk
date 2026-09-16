@@ -304,6 +304,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
      */
     return focusedItemId ? focusedItemId.split('#')[0] : null;
   }, [sessions, activeSession, focusedItemId]);
+  /** The second terminal on screen, or null. See TerminalTab for the fit rules. */
+  const [splitSession, setSplitSession] = React.useState<string | null>(null);
+
   const sessionSeq = React.useRef(0);
 
   const requestTerminal = React.useCallback((item: AgEnFKItem): void => {
@@ -1108,6 +1111,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <TerminalTab
                 sessions={sessions}
                 sessionStates={sessionStates}
+                /*
+                 * The second pane is ASKED FOR, never automatic (CGLAB-192).
+                 * Three agents running does not mean two panes open: only a
+                 * person knows which pair belongs side by side, and guessing
+                 * is wrong most of the time and costs a pane to undo.
+                 */
+                splitId={splitSession}
+                onToggleSplit={id => setSplitSession(cur => (cur === id ? null : id))}
                 activeId={activeSession}
                 onSelect={setActiveSession}
                 onClose={closeSession}

@@ -270,3 +270,74 @@ describe('what the tab strip says about each session', () => {
     expect(screen.queryAllByTestId('tab-state')).toHaveLength(0);
   });
 });
+
+/**
+ * Two terminals, or a reason why not (CGLAB-192).
+ *
+ * splitAvailability.test.ts proves the decision. This proves the control
+ * exists, is DISABLED RATHER THAN ABSENT, and carries its reason where a
+ * person will read it.
+ */
+describe('splitting the view', () => {
+  /*
+   * jsdom's window is 1024 px wide, which is BELOW the two-pane floor - so
+   * without this every split here would be disabled for the right reason and
+   * the tests would pass while proving nothing about the enabled path.
+   */
+  beforeEach(() => { Object.defineProperty(window, 'innerWidth', { value: 1600, configurable: true }); });
+
+  const two = () => ({
+    ...baseProps(),
+    sessions: [
+      { id: 's1', itemId: 'i1', title: 'A card', agentId: 'claude-code', autoApprove: false, persist: false, openedAt: new Date().toISOString() },
+      { id: 's2', itemId: 'i2', title: 'Another card', agentId: 'codex', autoApprove: false, persist: false, openedAt: new Date().toISOString() },
+    ],
+    activeId: 's1',
+  });
+
+  it('offers a split on the tab that is not on screen', () => {
+    renderTab(<TerminalTab {...two()} onToggleSplit={vi.fn()} />);
+    const controls = screen.getAllByTestId('tab-split');
+    // Not on the active tab: splitting a session with itself is not a thing,
+    // and a disabled control there is noise rather than instruction.
+    expect(controls).toHaveLength(1);
+    expect(controls[0]).toBeEnabled();
+  });
+
+  it('asks the shell, and never splits itself', () => {
+    // "Split is asked for, never automatic." The component reports the intent
+    // and the shell decides, so nothing here can open a second pane on its own.
+    const onToggleSplit = vi.fn();
+    renderTab(<TerminalTab {...two()} onToggleSplit={onToggleSplit} />);
+    fireEvent.click(screen.getByTestId('tab-split'));
+    expect(onToggleSplit).toHaveBeenCalledWith('s2');
+  });
+
+  it('is DISABLED WITH ITS REASON rather than absent', () => {
+    /*
+     * THE test. A control that vanishes teaches nothing and invites the same
+     * attempt tomorrow; a greyed one that says why teaches once.
+     */
+    renderTab(<TerminalTab {...two()} onToggleSplit={vi.fn()} splitDisabledReason="Close the git panel to fit two terminals." />);
+    const control = screen.getByTestId('tab-split');
+    expect(control, 'the control was removed instead of disabled').toBeInTheDocument();
+    expect(control).toBeDisabled();
+    expect(control.getAttribute('title')).toMatch(/close the git panel/i);
+    expect(control.getAttribute('aria-label'), 'a screen reader was told nothing').toMatch(/unavailable/i);
+  });
+
+  it('does not offer a split at all when the shell cannot take one', () => {
+    // No handler means the feature is not wired here; rendering a dead button
+    // would be worse than rendering none.
+    renderTab(<TerminalTab {...two()} />);
+    expect(screen.queryAllByTestId('tab-split')).toHaveLength(0);
+  });
+
+  it('shows the second pane beside the first, without unmounting either', () => {
+    // Hidden, never unmounted: unmounting kills the process. Both panes are
+    // visible, and the rest stay mounted and hidden.
+    const { container } = renderTab(<TerminalTab {...two()} splitId="s2" onToggleSplit={vi.fn()} />);
+    const panes = [...container.querySelectorAll('[hidden]')];
+    expect(panes, 'a pane was left on screen that should be hidden').toHaveLength(0);
+  });
+});
