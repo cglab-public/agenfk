@@ -119,4 +119,26 @@ describe('when the worktree cannot be made', () => {
     expect(text).toMatch(/worktree/i);
     expect(text).toMatch(/not a git repository/);
   });
+
+  it('puts the warning in the field that is actually rendered', async () => {
+    /*
+     * THE test, and the one the assertion above could not be: stringifying the
+     * whole comment array matches wherever the text landed. It landed in
+     * `text`, with a `createdAt` beside it, while CommentRecord declares
+     * `content`/`timestamp` and CardDetailModal renders `comment.content`.
+     *
+     * So the comment existed, the write succeeded, nothing logged an error, and
+     * the card showed an empty bubble - the one channel telling an agent it has
+     * no worktree and is about to collide with whatever else is using the tree.
+     */
+    const item = await agent().post('/items')
+      .send({ title: 'Blank comment', type: 'TASK', projectId });
+    await noteWorktreeFailure(item.body.id, new Error('not a git repository'));
+
+    const after = await agent().get(`/items/${item.body.id}`);
+    const comment = (after.body.comments ?? [])[0];
+    expect(comment, 'no comment was written at all').toBeTruthy();
+    expect(comment.content, 'the comment body is empty on screen').toMatch(/not a git repository/);
+    expect(comment.timestamp, 'no timestamp in the declared field').toBeTruthy();
+  });
 });

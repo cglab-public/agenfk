@@ -16,16 +16,22 @@
  * thing and a reasonable one; a budget on the WORK is a guess dressed as a
  * policy.
  */
-import type { SessionState } from './sessionRow';
+import { HEARTBEAT_CADENCE_MS, type SessionState } from './sessionRow';
 
 /**
  * How long silence has to last before it is worth mentioning.
  *
- * Derived, not chosen: the documented heartbeat cadence of five minutes
- * doubled, so one missed heartbeat is the earliest a run can honestly look
- * stalled. A number picked by taste does not survive its first argument.
+ * One missed heartbeat, which is the earliest a run can honestly look stalled.
+ * Derived from the shared cadence rather than written as its own ten minutes:
+ * the number was identical to CONTACT_GRACE_MS and justified with the same
+ * sentence, which reads as agreement while actually being two numbers that
+ * happen to match.
+ *
+ * Still its OWN constant. This answers "is it worth saying out loud" and the
+ * other answers "can we still see it" - different questions, and either may be
+ * tuned without the other.
  */
-export const STALL_WARN_AFTER_MS = 10 * 60 * 1000;
+export const STALL_WARN_AFTER_MS = 2 * HEARTBEAT_CADENCE_MS;
 
 export interface StallWarning {
   /** True when this is worth saying out loud. */

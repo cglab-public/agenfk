@@ -299,6 +299,20 @@ export interface Project {
   name: string;
   description?: string;
   verifyCommand?: string; // Project-level verification command (e.g. "npm run build && npm test")
+  /**
+   * What makes a freshly cut worktree usable (CGLAB-203).
+   *
+   * A new worktree has no `node_modules`, and nothing is ever INFERRED to fill
+   * it: `npm ci` is the obvious guess from a lockfile, runs for minutes, and is
+   * wrong for any repo needing a build step or another package manager first.
+   * Absent means the worktree is handed over with its dependencies missing and
+   * SAYS so, which is the honest outcome.
+   *
+   * Privileged exactly like `verifyCommand`, and for the same reason: it is a
+   * shell string this machine later runs, so it is refused by `PUT /projects/:id`
+   * and set only through the internal-token endpoint.
+   */
+  setupCommand?: string;
   flowId?: string;        // ID of the active Flow for this project (falls back to DEFAULT_FLOW)
   projectRoot?: string;   // Absolute path to the project's root directory (set automatically by MCP on validate)
   /** Give each item its own git worktree when it enters a working step (CGLAB-166). */

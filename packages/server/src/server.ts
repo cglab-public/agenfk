@@ -1259,6 +1259,7 @@ app.post("/projects/:id/tasks-from-branch", asyncHandler(async (req: any, res: a
       repoRoot: project.projectRoot,
       root: defaultWorktreeRoot(),
       branchName: branch,
+      setupCommand: project.setupCommand,
     });
     const withWorktree = await storage.updateItem(created.id, {
       worktreePath: result.path,
@@ -1452,6 +1453,32 @@ app.put("/projects/:id/verify-command", asyncHandler(async (req: any, res: any) 
   }
   try {
     const updated = await storage.updateProject(req.params.id, { verifyCommand } as any);
+    io.emit('items_updated');
+    res.json(updated);
+  } catch (error) {
+    res.status(404).json({ error: "Project not found" });
+  }
+}));
+
+/**
+ * What to run in a newly cut worktree (CGLAB-203).
+ *
+ * Behind the internal token for exactly the reason `verify-command` is, and it
+ * would be easy to put on `PUT /projects/:id` instead because it FEELS like a
+ * preference: it is a shell string this machine later runs in a directory it
+ * just created. That is the same mass-assignment-to-RCE shape as bug e60e20aa,
+ * arriving under a friendlier name.
+ */
+app.put("/projects/:id/setup-command", asyncHandler(async (req: any, res: any) => {
+  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const { setupCommand } = req.body ?? {};
+  if (typeof setupCommand !== 'string') {
+    return res.status(400).json({ error: "setupCommand (string) required" });
+  }
+  try {
+    const updated = await storage.updateProject(req.params.id, { setupCommand } as any);
     io.emit('items_updated');
     res.json(updated);
   } catch (error) {
@@ -2098,7 +2125,8 @@ app.post("/items/:id/worktree", asyncHandler(async (req: any, res: any) => {
 
   let result;
   try {
-    result = createWorktree({ repoRoot, root, branchName });
+    const proj: any = await storage.getProject(item.projectId);
+    result = createWorktree({ repoRoot, root, branchName, setupCommand: proj?.setupCommand });
   } catch (e: any) {
     return res.status(400).json({ error: e.message });
   }
@@ -3691,28 +3719,48 @@ export function shouldAutoWorktree(item: any): boolean {
  * feature exists to prevent. A console warning is somewhere the agent never
  * looks; a comment on the item is somewhere it already reads.
  */
-export async function noteWorktreeFailure(itemId: string, error: unknown): Promise<void> {
-  const message = error instanceof Error ? error.message : String(error);
-  console.warn(`[WORKTREE] auto-create failed for ${itemId}:`, message);
+export async function noteOnItem(itemId: string, content: string): Promise<void> {
   try {
     const item: any = await storage.getItem(itemId);
     if (!item) return;
+    /*
+     * `content` and `timestamp`, which is what CommentRecord declares and what
+     * CardDetailModal renders.
+     *
+     * This function exists because the worktree-failure note did NOT use them:
+     * it wrote `text` and `createdAt`, so the comment arrived with an empty
+     * body and the modal drew a blank. The docblock above says "somewhere it
+     * already reads" and that was true - the comment was there, saying nothing.
+     * Nothing failed: the write succeeded, the record was stored, and the one
+     * channel warning an agent that it has no worktree and is about to collide
+     * with whatever else is using the tree was silent.
+     *
+     * One writer now, so the next note cannot pick the wrong pair of names.
+     */
     const comment = {
       id: crypto.randomUUID(),
       author: 'agenfk',
-      text:
-        `Worktree could not be created automatically: ${message}\n\n` +
-        `This item has NO worktree of its own, so work on it happens in the main ` +
-        `checkout. Create one with \`agenfk branch create ${itemId}\` before editing, ` +
-        `or expect to collide with whatever else is using that tree.`,
-      createdAt: new Date().toISOString(),
+      content,
+      timestamp: new Date(),
     };
     await storage.updateItem(itemId, { comments: [...(item.comments || []), comment] } as any);
   } catch (e: any) {
     // The comment is the signal; failing to write it must not also take down
     // the request that was only trying to be helpful.
-    console.warn(`[WORKTREE] could not record the failure on ${itemId}:`, e?.message);
+    console.warn(`[WORKTREE] could not record a note on ${itemId}:`, e?.message);
   }
+}
+
+export async function noteWorktreeFailure(itemId: string, error: unknown): Promise<void> {
+  const message = error instanceof Error ? error.message : String(error);
+  console.warn(`[WORKTREE] auto-create failed for ${itemId}:`, message);
+  await noteOnItem(
+    itemId,
+    `Worktree could not be created automatically: ${message}\n\n` +
+    `This item has NO worktree of its own, so work on it happens in the main ` +
+    `checkout. Create one with \`agenfk branch create ${itemId}\` before editing, ` +
+    `or expect to collide with whatever else is using that tree.`,
+  );
 }
 
 /**
@@ -3753,8 +3801,24 @@ async function ensureWorktreeForItem(item: any): Promise<void> {
        * the remote already knows means the remote's commits.
        */
       startPoint: remoteRefFor(project.projectRoot, branchName),
+      setupCommand: project.setupCommand,
     });
     await storage.updateItem(item.id, { worktreePath: result.path, branchName } as any);
+    /*
+     * The setup notice goes on the CARD, next to the failure notice, and for
+     * the same reason (CGLAB-203): this path runs with nobody watching, so a
+     * decision returned to a caller that is a status-change handler is a
+     * decision nobody reads. An agent starting work in a worktree with no
+     * dependencies fails on an import and goes looking at its own change,
+     * which is the wrong afternoon.
+     *
+     * Only when it is NOT ready. A worktree that needs nothing is the common
+     * case, and a comment saying so on every transition is noise that teaches
+     * people to skim the comments where the real warnings live.
+     */
+    if (!result.setup.ready) {
+      await noteOnItem(item.id, result.setup.notice);
+    }
   } catch (e: any) {
     // Recorded where the agent will see it, not swallowed into the log.
     await noteWorktreeFailure(item.id, e);

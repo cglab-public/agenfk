@@ -15,6 +15,23 @@ import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { buildWorktreePath } from '@agenfk/core';
+import { planWorktreeSetup, type SetupDecision } from './worktreeSetup.js';
+
+/**
+ * Files that mean "this repository has dependencies to install".
+ *
+ * Presence only. What to DO about them is never inferred from this list - see
+ * worktreeSetup - because a manifest says a repo has dependencies, not how it
+ * is built.
+ */
+const MANIFESTS = [
+  'package.json', 'Cargo.toml', 'go.mod', 'requirements.txt', 'pyproject.toml',
+  'Gemfile', 'composer.json', 'build.gradle', 'pom.xml',
+];
+
+function hasManifest(dir: string): boolean {
+  return MANIFESTS.some(m => fs.existsSync(path.join(dir, m)));
+}
 
 export interface WorktreeInfo {
   /** Absolute path of the worktree directory. */
@@ -44,12 +61,30 @@ export interface CreateWorktreeOptions {
    * agent then works in it and pushes.
    */
   startPoint?: string;
+  /**
+   * The project's declared setup command, when it has one (CGLAB-203).
+   *
+   * Passed in rather than read here: this module knows about git, not about
+   * projects, and a worktree module that reached for storage would be two
+   * concerns in one place.
+   */
+  setupCommand?: string | null;
 }
 
 export interface CreatedWorktree extends WorktreeInfo {
   branchName: string;
   /** False when an equivalent worktree was already there and was reused. */
   created: boolean;
+  /**
+   * What still has to happen before anybody can work in here (CGLAB-203).
+   *
+   * Always present, including on a reused worktree: whether its dependencies
+   * are installed is a fact about the DIRECTORY, not about whether this call
+   * made it, and reporting it only on creation would leave the common case -
+   * adopting an existing worktree - silent about the thing most likely to be
+   * wrong with it.
+   */
+  setup: SetupDecision;
 }
 
 /**
@@ -162,7 +197,7 @@ export function listWorktrees(repoRoot: string): WorktreeInfo[] {
  * existing branch is checked out rather than re-created.
  */
 export function createWorktree(opts: CreateWorktreeOptions): CreatedWorktree {
-  const { repoRoot, root, branchName, startPoint } = opts;
+  const { repoRoot, root, branchName, startPoint, setupCommand } = opts;
   assertGitRepo(repoRoot);
 
   const target = canonical(buildWorktreePath(root, repoNameFor(repoRoot), branchName));
@@ -180,7 +215,12 @@ export function createWorktree(opts: CreateWorktreeOptions): CreatedWorktree {
         `Two items are competing for the same directory — give one of them a distinct branch name.`,
       );
     }
-    return { path: target, branchName, created: false };
+    /*
+     * The setup decision is made against the EXISTING directory, not skipped.
+     * A reused worktree is the common case, and whether its node_modules are
+     * there is a fact about the directory rather than about this call.
+     */
+    return { path: target, branchName, created: false, setup: planWorktreeSetup({ declared: setupCommand, hasManifest: hasManifest(target) }) };
   }
   if (existing) {
     // Registered but gone from disk — someone deleted the directory by hand.
@@ -207,7 +247,18 @@ export function createWorktree(opts: CreateWorktreeOptions): CreatedWorktree {
     throw new Error(`git worktree add failed for branch '${branchName}': ${detail}`);
   }
 
-  return { path: target, branchName, created: true };
+  /*
+   * Measured on the NEW worktree rather than on repoRoot. They are usually the
+   * same repository, but a branch that adds or removes a manifest makes them
+   * differ - and the directory somebody is about to work in is the one whose
+   * answer matters.
+   */
+  return {
+    path: target,
+    branchName,
+    created: true,
+    setup: planWorktreeSetup({ declared: setupCommand, hasManifest: hasManifest(target) }),
+  };
 }
 
 /**

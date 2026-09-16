@@ -1693,6 +1693,7 @@ program
   .option('--name <name>', 'New project name')
   .option('--description <text>', 'New project description')
   .option('--verify-command <cmd>', 'Project-level verification command')
+  .option('--setup-command <cmd>', 'What to run in a newly cut worktree to make it usable (e.g. "npm ci")')
   .option('--project-root <path>', 'Absolute path to the repository this project lives in')
   .action(async (id, options) => {
     try {
@@ -1700,8 +1701,9 @@ program
       if (options.name !== undefined) updates.name = options.name;
       if (options.description !== undefined) updates.description = options.description;
       if (options.verifyCommand === undefined && options.projectRoot === undefined
+          && options.setupCommand === undefined
           && Object.keys(updates).length === 0) {
-        console.error(chalk.yellow('Nothing to update. Pass at least one of --name, --description, --verify-command, --project-root.'));
+        console.error(chalk.yellow('Nothing to update. Pass at least one of --name, --description, --verify-command, --setup-command, --project-root.'));
         process.exit(1);
         return;
       }
@@ -1722,6 +1724,26 @@ program
         ({ data } = await axios.put(
           `${API_URL}/projects/${id}/verify-command`,
           { verifyCommand: options.verifyCommand },
+          { headers: { 'x-agenfk-internal': token } },
+        ));
+      }
+      /*
+       * setupCommand is privileged for the same reason, and it is the one most
+       * likely to be mistaken for a harmless preference: it is a shell string
+       * run in a directory this machine just created. Same endpoint shape, same
+       * token.
+       */
+      if (options.setupCommand !== undefined) {
+        const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
+        if (!fs.existsSync(tokenPath)) {
+          console.error(chalk.red('Error: ~/.agenfk/verify-token not found. Run npm run install:framework first.'));
+          process.exit(1);
+          return;
+        }
+        const token = fs.readFileSync(tokenPath, 'utf8').trim();
+        ({ data } = await axios.put(
+          `${API_URL}/projects/${id}/setup-command`,
+          { setupCommand: options.setupCommand },
           { headers: { 'x-agenfk-internal': token } },
         ));
       }

@@ -29,33 +29,31 @@
 export type SessionState = 'running' | 'blocked' | 'failed' | 'unverifiable' | 'idle';
 
 /**
- * The states something upstream can actually produce.
+ * How often a healthy run is expected to say something.
  *
- * A 'waiting' state used to live here too, sorted to the top, and the docblock
- * called it load-bearing. Nothing could ever build one: the shell emitted only
- * running or idle, and the rail's own tests handed the state directly to the
- * component — so they passed while the app could not reach it. A docblock
- * describing behaviour nobody can trigger is a lie that reads like
- * documentation, so it is gone rather than pretended.
+ * The ONE number the silence windows below are derived from. Both used to be
+ * written as a literal ten minutes with the same derivation copy-pasted into
+ * each docblock, which reads as agreement but is really two independent
+ * numbers that happen to match - and the next person to tune one would have no
+ * way to see that the other was supposed to move with it.
  *
- * That day arrived, and it is called 'blocked' (CGLAB-193). The app can now
- * read a permission prompt off the rendered screen for the agents that draw
- * one, so the state has a producer and is back. It is still NOT guessed from
- * silence — an agent nobody can read stays unknown upstream and lands here as
- * idle, which is the old wrong answer rather than a new one.
+ * Deriving them does not merge them: they answer different questions and may
+ * legitimately diverge. It just names what they have in common.
  */
+export const HEARTBEAT_CADENCE_MS = 5 * 60 * 1000;
+
 /**
  * How long silence is normal before it becomes loss of contact (CGLAB-195).
  *
- * Ten minutes, and the number is derived rather than chosen: it is the
- * documented heartbeat cadence of five minutes doubled, so one missed
- * heartbeat is the earliest a run can honestly look unreachable.
+ * One missed heartbeat, which is the earliest a run can honestly look
+ * unreachable. Derived rather than chosen: a number picked by taste does not
+ * survive its first argument.
  *
- * Without it, a run that had just started - recorded running, no output yet -
- * read as lost, which turns the state into a permanent alarm and teaches
- * people to ignore it. That is worse than not having the state at all.
+ * Without the grace at all, a run that had just started - recorded running, no
+ * output yet - read as lost, which turns the state into a permanent alarm and
+ * teaches people to ignore it. That is worse than not having the state.
  */
-export const CONTACT_GRACE_MS = 10 * 60 * 1000;
+export const CONTACT_GRACE_MS = 2 * HEARTBEAT_CADENCE_MS;
 
 /**
  * What we can honestly say about a recorded run.
@@ -89,6 +87,27 @@ export function runState(
   return now - started > CONTACT_GRACE_MS ? 'unverifiable' : 'idle';
 }
 
+/**
+ * The states something upstream can actually produce.
+ *
+ * This docblock had drifted away from the constant it describes and was sitting
+ * above CONTACT_GRACE_MS, documenting a number it has nothing to do with. Left
+ * there it is the exact failure it warns about: text that reads as
+ * documentation while describing something else.
+ *
+ * A 'waiting' state used to be in the set, sorted to the top, and its docblock
+ * called it load-bearing. Nothing could ever build one: the shell emitted only
+ * running or idle, and the rail's own tests handed the state directly to the
+ * component - so they passed while the app could not reach it.
+ *
+ * That day arrived and it is called 'blocked' (CGLAB-193): the app reads a
+ * permission prompt off the rendered screen for the agents that draw one. It is
+ * still NOT guessed from silence.
+ *
+ * 'unverifiable' earns its place the same way (CGLAB-195): `runState` below is
+ * its producer. It was added to this set once before the producer existed, and
+ * the test that guards this set is what caught it.
+ */
 export const PRODUCIBLE_STATES: ReadonlySet<SessionState> = new Set(['running', 'blocked', 'failed', 'unverifiable', 'idle']);
 
 export interface SessionRow {

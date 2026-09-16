@@ -229,3 +229,90 @@ describe('removeWorktree — bounded destruction', () => {
     expect(fs.existsSync(path.join(notAWorktree, 'keep.txt'))).toBe(true);
   });
 });
+
+/**
+ * The setup decision, made against the worktree that was just cut (CGLAB-203).
+ *
+ * The module that decides this had NO caller: it was complete, tested, and
+ * wired to nothing, so the answer it computed reached nobody. These tests exist
+ * against `createWorktree` rather than against the planner because the planner
+ * was already green while the feature did not work.
+ */
+describe('createWorktree reports what the worktree still needs', () => {
+  it('says the dependencies are missing when the repo has a manifest and no command', () => {
+    fs.writeFileSync(path.join(repo, 'package.json'), '{"name":"fixture"}\n');
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-m', 'add manifest');
+
+    const wt = createWorktree({ repoRoot: repo, root, branchName: 'feature/needs-install' });
+
+    expect(wt.setup.ready, 'a worktree with no node_modules reported itself usable').toBe(false);
+    expect(wt.setup.notice).toMatch(/no dependencies installed/i);
+  });
+
+  it('never infers a command from the manifest', () => {
+    // The expensive guess: minutes of running, wrong for any repo that needs a
+    // build step or another package manager first.
+    fs.writeFileSync(path.join(repo, 'package.json'), '{"name":"fixture"}\n');
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-m', 'add manifest');
+
+    const wt = createWorktree({ repoRoot: repo, root, branchName: 'feature/no-guess' });
+    expect(wt.setup.command, 'it invented an install command').toBeNull();
+  });
+
+  it('passes the project\'s declared command through', () => {
+    fs.writeFileSync(path.join(repo, 'package.json'), '{"name":"fixture"}\n');
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-m', 'add manifest');
+
+    const wt = createWorktree({
+      repoRoot: repo, root, branchName: 'feature/declared', setupCommand: 'npm ci',
+    });
+    expect(wt.setup.command).toBe('npm ci');
+  });
+
+  it('reports a repo with no manifest as ready, not as missing a script', () => {
+    // The fixture repo has only a README. Nothing to install is not a gap, and
+    // saying "no setup declared" would send somebody to write one.
+    const wt = createWorktree({ repoRoot: repo, root, branchName: 'feature/nothing' });
+    expect(wt.setup.ready).toBe(true);
+  });
+
+  it('decides against the WORKTREE, not the repository it was cut from', () => {
+    /*
+     * They are usually the same, and a branch that adds a manifest makes them
+     * differ. Measuring repoRoot would report the wrong answer for exactly the
+     * directory somebody is about to work in.
+     */
+    git(repo, 'checkout', '-b', 'feature/adds-manifest');
+    fs.writeFileSync(path.join(repo, 'package.json'), '{"name":"fixture"}\n');
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-m', 'manifest on the branch only');
+    git(repo, 'checkout', 'main');
+
+    expect(fs.existsSync(path.join(repo, 'package.json')), 'fixture is wrong').toBe(false);
+
+    const wt = createWorktree({ repoRoot: repo, root, branchName: 'feature/adds-manifest' });
+    expect(wt.setup.ready, 'it measured the primary checkout instead of the worktree').toBe(false);
+  });
+
+  it('answers for a REUSED worktree too, not only a freshly created one', () => {
+    /*
+     * Adopting an existing worktree is the common case - this runs on every
+     * transition into a working step. Whether its dependencies are there is a
+     * fact about the directory, so a decision made only on creation would be
+     * absent exactly when it is asked for most.
+     */
+    fs.writeFileSync(path.join(repo, 'package.json'), '{"name":"fixture"}\n');
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-m', 'add manifest');
+
+    const first = createWorktree({ repoRoot: repo, root, branchName: 'feature/reused' });
+    const second = createWorktree({ repoRoot: repo, root, branchName: 'feature/reused' });
+
+    expect(second.created, 'fixture did not exercise the reuse path').toBe(false);
+    expect(second.setup.ready).toBe(false);
+    expect(second.setup.notice).toBe(first.setup.notice);
+  });
+});
