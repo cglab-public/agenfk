@@ -254,3 +254,66 @@ describe('where the app is not the desktop shell', () => {
     await expect(report('blocked')).resolves.toBeUndefined();
   });
 });
+
+/**
+ * Launching the app in front of work that already went wrong.
+ *
+ * `failed` never ages out of the sessions list - a failure that ages into idle
+ * is a failure nobody sees - so every run that died last week is in
+ * `sessionRows` the moment the app opens. Alerting on what is merely PRESENT
+ * would greet the user with a burst of banners about work they finished days
+ * ago, which is the fastest way to teach somebody to switch notifications off.
+ *
+ * The priming pass exists for that. What these tests are really about is WHEN
+ * it is allowed to happen: the settings query and the runs query both start at
+ * mount and there is no order between them, so priming the moment the SETTINGS
+ * arrive leaves the runs to land afterwards and read as news.
+ */
+describe('what was already there when the app opened', () => {
+  const failedRun = {
+    id: 'run-old', itemId: 'i1', projectId: 'p1', harness: 'claude-code',
+    status: 'failed', startedAt: new Date(Date.now() - 7 * 864e5).toISOString(),
+  };
+
+  it('says nothing about a run that failed before this launch', async () => {
+    vi.mocked(api.listRuns).mockResolvedValue([failedRun] as never);
+    renderShell();
+    // Long enough for both queries to settle and the effect to run for each.
+    await waitFor(() => expect(api.listRuns).toHaveBeenCalled());
+    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
+    expect(played, 'a week-old failure made a noise at startup').not.toHaveBeenCalled();
+    expect(noticeCalls, 'a week-old failure raised a banner at startup').toHaveLength(0);
+  });
+
+  it('still says nothing when the runs land AFTER the settings', async () => {
+    /*
+     * THE test. Both queries start at mount and neither is ordered against the
+     * other; /settings is a local table and /agent-runs is a wider read, so
+     * this is the ordinary case rather than the exotic one. Priming on the
+     * settings alone leaves the run list empty at the moment we decide we have
+     * seen everything - and the failed run then arrives as a brand new row.
+     */
+    let releaseRuns: (rows: unknown[]) => void = () => {};
+    vi.mocked(api.listRuns).mockImplementation(
+      () => new Promise(resolve => { releaseRuns = resolve as never; }) as never,
+    );
+    renderShell();
+    // Let the settings resolve on their own first.
+    await act(async () => { await new Promise(r => setTimeout(r, 50)); });
+    await act(async () => {
+      releaseRuns([failedRun]);
+      await new Promise(r => setTimeout(r, 50));
+    });
+    expect(played).not.toHaveBeenCalled();
+    expect(noticeCalls).toHaveLength(0);
+  });
+
+  it('but does alert for a run that fails while you are watching', async () => {
+    // The priming must not swallow everything that comes after it, which is
+    // the obvious way to "fix" the above and would leave the feature dead.
+    vi.mocked(api.listRuns).mockResolvedValue([] as never);
+    await openTerminal();
+    await report('blocked');
+    await waitFor(() => expect(played).toHaveBeenCalled());
+  });
+});

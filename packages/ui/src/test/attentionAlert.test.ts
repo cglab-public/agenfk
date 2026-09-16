@@ -122,14 +122,62 @@ describe('the first look records rather than announces', () => {
     expect(c.alerts).toHaveLength(1);
   });
 
-  it('forgets a row that disappeared rather than holding its last state', () => {
-    // A card that comes back has genuinely changed since we last knew anything
-    // about it, and a stale memory would swallow the alert.
+  it('remembers a row that disappeared, rather than treating its return as news', () => {
+    /*
+     * THIS TEST USED TO ASSERT THE OPPOSITE, and the reasoning behind it was
+     * wrong: "a card that comes back has genuinely changed since we last knew
+     * anything about it". An adversarial review found what that cost.
+     *
+     * `api.listRuns` swallows its errors and answers `[]`, which react-query
+     * records as a SUCCESS. One flaky request therefore empties the run half of
+     * the list and drops every remembered state with it - and the next refetch,
+     * which the `run:updated` socket event triggers routinely, brings the same
+     * blocked and failed rows back as unseen and announces all of them again.
+     * Mid-session, repeatedly, on a machine that did nothing wrong.
+     *
+     * From here a vanished row and a blinking list are indistinguishable, so
+     * the safe reading is the one that does not shout.
+     */
     const a = newlyBlocked(rows('blocked'), new Map(), false);
     const b = newlyBlocked([], a.seen, true);
-    expect(b.seen.size).toBe(0);
+    expect(b.seen.get('row-0'), 'the memory was dropped on a blink').toBe('blocked');
     const c = newlyBlocked(rows('blocked'), b.seen, true);
-    expect(c.alerts).toHaveLength(1);
+    expect(c.alerts, 'a returning row was announced twice').toHaveLength(0);
+  });
+
+  it('announces it again once it has been seen doing something else', () => {
+    // The re-arm, and the reason the rule above is not a permanent mute. A
+    // reopened terminal is observed running or idle before it can block, so
+    // this is the path a genuinely new episode takes.
+    const a = newlyBlocked(rows('blocked'), new Map(), false);
+    const b = newlyBlocked([], a.seen, true);
+    const c = newlyBlocked(rows('running'), b.seen, true);
+    const d = newlyBlocked(rows('blocked'), c.seen, true);
+    expect(d.alerts).toHaveLength(1);
+  });
+
+  it('does not grow without bound as sessions come and go', () => {
+    // The memory outlives the rows now, so it needs a ceiling: an app left open
+    // for a week must not accumulate a map entry per session it ever saw.
+    let seen = new Map<string, SessionState>();
+    for (let batch = 0; batch < 40; batch++) {
+      const batchRows = Array.from({ length: 50 }, (_, n) => ({
+        key: `batch-${batch}-row-${n}`, state: 'idle' as SessionState,
+      }));
+      seen = newlyBlocked(batchRows, seen, true).seen;
+    }
+    expect(seen.size).toBeLessThanOrEqual(600);
+  });
+
+  it('never evicts a row that is actually on screen', () => {
+    // The ceiling must drop MEMORIES of vanished rows, never the live ones -
+    // evicting a present row would make its next observation read as new.
+    const live = Array.from({ length: 700 }, (_, n) => ({
+      key: `live-${n}`, state: 'idle' as SessionState,
+    }));
+    const { seen } = newlyBlocked(live, new Map(), true);
+    expect(seen.size).toBe(700);
+    for (const row of live) expect(seen.has(row.key), row.key).toBe(true);
   });
 });
 

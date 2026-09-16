@@ -32,6 +32,39 @@ const NOTES: ReadonlyArray<{ hz: number; at: number; for: number }> = [
   { hz: 990, at: 0.13, for: 0.18 },
 ];
 
+/**
+ * The one context, made on first use and kept.
+ *
+ * A fresh `new AudioContext()` per alert leaks one every time, and Chromium
+ * caps how many a document may hold - so after a handful of presses on the
+ * preview button the constructor throws, `playAttentionSound` catches it, and
+ * the button goes silently dead until a reload. Silent failure is exactly what
+ * this module's header says it exists to avoid, so the failure mode was the
+ * feature's own stated enemy.
+ *
+ * Kept rather than closed after each tone because closing is asynchronous and
+ * the next alert may arrive before it finishes; one idle context costs nothing.
+ * It is suspended by the browser when the page is hidden and resumed below.
+ */
+let shared: AudioContext | null = null;
+
+function contextFor(deps: SoundDeps): AudioContext {
+  // Recreated if it was closed out from under us - a closed context accepts no
+  // new nodes, and reusing one would fail every alert from then on.
+  if (!shared || shared.state === 'closed') shared = deps.AudioContext();
+  // Autoplay policy parks a context created before the first user gesture.
+  // `resume` is a promise we deliberately do not await: the notes are scheduled
+  // against `currentTime` either way, and a rejected resume must not become an
+  // unhandled rejection inside a terminal callback.
+  if (shared.state === 'suspended') void shared.resume().catch(() => {});
+  return shared;
+}
+
+/** Test seam. Nothing in the app calls this; a suite with two cases does. */
+export function __resetAudioContext(): void {
+  shared = null;
+}
+
 function playTone(ctx: AudioContext): void {
   const now = ctx.currentTime;
   for (const note of NOTES) {
@@ -99,7 +132,7 @@ export async function playAttentionSound(deps: SoundDeps): Promise<boolean> {
     }
   }
   try {
-    playTone(deps.AudioContext());
+    playTone(contextFor(deps));
     return true;
   } catch {
     // No Web Audio at all: jsdom, or a browser that has locked it down.

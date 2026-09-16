@@ -107,6 +107,26 @@ describe('what the banner says', () => {
     expect(String(shown[0].body)).not.toMatch(new RegExp(String.raw`[\u0000-\u001f]`));
   });
 
+  it('strips the characters that are not control codes but act like them', () => {
+    /*
+     * Line separators render as newlines on several notification backends - the
+     * same "looks like a second message" problem the control codes have - and
+     * the bidi overrides reorder what is DISPLAYED without changing the string,
+     * so a title can be made to read as something other than what it is. This
+     * text comes from an agent's own terminal title.
+     */
+    const { shown, deps: d } = deps();
+    const separators = '\u2028\u2029';
+    const bidi = '\u202e\u2066\u2069';
+    showAttentionNotice({ agentLabel: 'Codex', cardTitle: `real${separators}${bidi}tail` }, d);
+    const body = String(shown[0].body);
+    for (const ch of [...separators, ...bidi]) {
+      expect(body.includes(ch), `U+${ch.codePointAt(0)!.toString(16)} survived`).toBe(false);
+    }
+    expect(body).toMatch(/real/);
+    expect(body).toMatch(/tail/);
+  });
+
   it('never puts renderer-supplied markup where an OS would render it', () => {
     const { shown, deps: d } = deps();
     showAttentionNotice({ agentLabel: '<b>Codex</b>', cardTitle: 'x' }, d);

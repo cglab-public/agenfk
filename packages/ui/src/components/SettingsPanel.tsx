@@ -36,12 +36,14 @@
  */
 import React from 'react';
 import { clsx } from 'clsx';
+import { UserRound, AppWindow, Bell, Bot, type LucideIcon } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Switch } from './ui/switch';
 import {
-  sessionPersistenceFromBridge, listAgentsFromBridge,
+  listAgentsFromBridge,
   readPrefsFromBridge, setAutoApproveOnBridge,
-  canChooseSound, currentSoundFromBridge, chooseSoundOnBridge, clearSoundOnBridge,
+  canChooseSound, canNotifyAttention,
+  currentSoundFromBridge, chooseSoundOnBridge, clearSoundOnBridge,
 } from './agentBridge';
 import { playAttentionSound, browserSoundDeps } from '../attentionSound';
 import { isNewerVersion } from '../versionCompare';
@@ -203,6 +205,20 @@ function Command({ children }: { children: React.ReactNode }): React.ReactElemen
 interface SettingsSection {
   readonly id: string;
   readonly label: string;
+  /**
+   * The nav glyph. REQUIRED, not optional.
+   *
+   * Optional is how a list like this ends up half-iconed: somebody adds a
+   * section, forgets the icon, and the row silently renders two pixels narrower
+   * than its neighbours. Required means the compiler asks the question at the
+   * moment the section is written, which is the only moment anybody is thinking
+   * about it.
+   *
+   * lucide-react because the app already draws every other icon with it. A
+   * second icon library would mean two stroke weights and two grids in one
+   * window, which reads as two applications.
+   */
+  readonly icon: LucideIcon;
   readonly rows: React.ReactNode;
 }
 
@@ -244,25 +260,15 @@ export function SettingsPanel(): React.ReactElement {
   const saving = (key: keyof AppSettingsDto): boolean =>
     save.isPending && save.variables !== undefined && key in save.variables;
 
-  /**
-   * Whether this machine can actually honour the tmux setting.
+  /*
+   * Deliberately NOT asking whether tmux is available any more.
    *
-   * Asked here because the switch stores a PREFERENCE while tmux being
-   * installed is a FACT about one machine. Storing a wish that silently does
-   * nothing is how the user finds out by quitting the app and losing an agent
-   * mid-run — the one failure this whole feature exists to prevent.
-   *
-   * The switch is still enabled either way: the choice is theirs and travels to
-   * a machine that can honour it. Only the warning is conditional.
+   * That query existed to caption one row, and the row went with the General
+   * section. Keeping it alive for a caption nothing renders is how a screen
+   * accumulates work nobody can see — and it is not free: `sessionPersistence`
+   * crosses the preload IPC to run a PATH lookup on the main process. The
+   * bridge helper stays where it is; the terminal dialog still asks.
    */
-  const { data: persistence } = useQuery({
-    queryKey: ['session-persistence'],
-    queryFn: sessionPersistenceFromBridge,
-    // A minute, not Infinity. This panel is never unmounted, so Infinity meant
-    // a user who read the warning, ran `brew install tmux` and came back was
-    // still told it was unavailable for the rest of the app's lifetime.
-    staleTime: 60_000,
-  });
 
   /**
    * Which installed agents have no flag for skipping their own prompts.
@@ -290,7 +296,14 @@ export function SettingsPanel(): React.ReactElement {
     .filter(a => a.installed && !a.supportsAutoApprove && a.id !== 'shell')
     .map(a => a.label);
 
-  const tmuxByDefault = settings?.tmuxByDefault ?? false;
+  /*
+   * `tmuxByDefault` is deliberately NOT read here any more.
+   *
+   * The setting is still stored, still sent with every PUT /settings, and still
+   * consulted when a terminal is spawned — only its switch is gone. Reading it
+   * into a variable no row renders would leave the next person looking for the
+   * control that goes with it.
+   */
   /**
    * Auto-approve comes from the DESKTOP, not from the server.
    *
@@ -406,6 +419,14 @@ export function SettingsPanel(): React.ReactElement {
    * repeating.
    */
   const soundsAvailable = canChooseSound();
+  /**
+   * Whether this build can raise an OS banner.
+   *
+   * A separate probe from `soundsAvailable`, because they are separate bridges
+   * and a preload can expose one without the other — the version skew
+   * agentBridge.ts's own header is written around.
+   */
+  const canRaiseBanners = canNotifyAttention();
   const customSound = useQuery({
     queryKey: ['custom-sound'],
     queryFn: currentSoundFromBridge,
@@ -431,6 +452,7 @@ export function SettingsPanel(): React.ReactElement {
     {
       id: 'account',
       label: 'Account',
+      icon: UserRound,
       rows: <>
         {account.data?.connected ? (
           <SettingRow
@@ -506,6 +528,7 @@ export function SettingsPanel(): React.ReactElement {
     {
       id: 'app',
       label: 'App',
+      icon: AppWindow,
       rows: <>
         <SettingRow
           testId="update-row"
@@ -548,10 +571,24 @@ export function SettingsPanel(): React.ReactElement {
           control={
             <Switch
               aria-label="Privacy and telemetry"
-              /* `?? false` would draw OFF over an unread store, which asserts a
-                 privacy property nobody verified. The row reads the stored
-                 value or nothing. */
-              checked={telemetry.data?.telemetryEnabled ?? true}
+              /*
+               * OFF until something answers, and disabled while it does not know.
+               *
+               * A switch has no third position, so "the stored value or nothing"
+               * - which an earlier comment here claimed - is not available: it
+               * draws one of two states whatever we do. Given that, OFF is the
+               * honest default. It matches what the route answers when it
+               * cannot read the flag, and the two failure paths agreeing
+               * matters more than either choice on its own: a server-side
+               * failure showing OFF while a network failure showed ON is a
+               * screen contradicting itself about a privacy setting.
+               *
+               * It also fails in the direction that cannot cost the user
+               * anything. Drawing ON over an unread store invites somebody who
+               * has already opted out to look at this row and believe they are
+               * opted in.
+               */
+              checked={telemetry.data?.telemetryEnabled ?? false}
               disabled={saveTelemetry.isPending || telemetry.isLoading}
               onCheckedChange={next => saveTelemetry.mutate(next)}
             />
@@ -562,6 +599,7 @@ export function SettingsPanel(): React.ReactElement {
     {
       id: 'notifications',
       label: 'Notifications',
+      icon: Bell,
       rows: <>
         <SettingRow
           testId="attention-row"
@@ -672,51 +710,35 @@ export function SettingsPanel(): React.ReactElement {
               onCheckedChange={next => save.mutate({ osNotifications: next })}
             />
           }
-          note={soundsAvailable ? undefined
+          /* Probed against the NOTIFICATIONS bridge, not the sounds one.
+             `canChooseSound` was the first version of this and it answers a
+             different question: on a desktop build whose preload predates this
+             feature, it would tell a desktop user that banners need "the
+             desktop app" they are already running. agentBridge.ts's header is
+             written around exactly that skew. */
+          note={canRaiseBanners ? undefined
             /* A browser tab has no OS banner to raise. Said rather than hidden,
                because the preference is real and travels to the desktop app. */
-            : <>Banners need the AgEnFK desktop app; this setting is stored but does nothing in a browser.</>}
+            : <>Banners need the AgEnFK desktop app; this setting is stored but does nothing here.</>}
         />
       </>,
     },
-    {
-      id: 'general',
-      label: 'General',
-      rows: (
-        <SettingRow
-          testId="tmux-row"
-          title="Enable tmux"
-          /* Names the consequence first. Someone who does not know what tmux
-             is still learns exactly what changes for them. */
-          description="Run agent sessions and terminals inside tmux, so they keep running when you quit the app. Requires tmux to be installed."
-          control={
-            <Switch
-              aria-label="Enable tmux"
-              checked={tmuxByDefault}
-              disabled={saving('tmuxByDefault')}
-              onCheckedChange={next => save.mutate({ tmuxByDefault: next })}
-            />
-          }
-          note={persistence && !persistence.available ? (
-            persistence.warning === 'tmux_unsupported_on_windows' ? (
-              // The platform reason, never an install command. Telling a
-              // Windows user to `brew install tmux` is worse than saying
-              // nothing: it sends them after a fix that cannot exist there.
-              <>tmux is not available on Windows, so agent PROCESSES will not survive quitting. Your terminals are reopened, and agents that support it resume their conversation.</>
-            ) : (
-              <>
-                tmux is not available here, so agent PROCESSES will not survive quitting.
-                Your terminals are reopened, and agents that support it resume their conversation.
-                {persistence.hint && <> <Command>{persistence.hint}</Command></>}
-              </>
-            )
-          ) : undefined}
-        />
-      ),
-    },
+    /*
+     * The General section is not here on purpose.
+     *
+     * It held exactly one row - the tmux toggle - and that is pulled for now at
+     * the user's request: the persistence story is being reworked (which agents
+     * resume, what survives a quit), and a switch whose consequences are in
+     * flux is a switch people flip and then distrust.
+     *
+     * Removed rather than hidden behind a flag. A section filtered out of this
+     * list is a section nothing can reach, which is the same absence with more
+     * code to read; git has the rows when they come back.
+     */
     {
       id: 'agents',
       label: 'Agents',
+      icon: Bot,
       rows: (
         <SettingRow
           testId="auto-approve-row"
@@ -774,6 +796,9 @@ export function SettingsPanel(): React.ReactElement {
                 : 'text-ink-secondary hover:bg-canvas hover:text-ink',
             )}
           >
+            {/* Decorative: the button's text already names the section, and a
+                second label here would make a screen reader say it twice. */}
+            <section.icon size={15} aria-hidden="true" className="mr-2.5 shrink-0 opacity-80" />
             {section.label}
           </button>
         ))}
@@ -812,7 +837,11 @@ export function SettingsPanel(): React.ReactElement {
               generic "could not save" above would be wrong — the request
               succeeded — and silence would read as the button being dead. */}
           {(signOut.isError || signOutRefused) && (
-            <Alert>Could not sign out. {signOutRefused}</Alert>
+            /* The reason, when there is one. `gh` gives a specific and useful
+               message when it refuses; a network failure gives none, and
+               "Could not sign out. " with a dangling space reads as a sentence
+               that got cut off. */
+            <Alert>Could not sign out.{signOutRefused ? ` ${signOutRefused}` : ''}</Alert>
           )}
 
           {(chooseSound.isError || clearSound.isError || soundRefused) && (

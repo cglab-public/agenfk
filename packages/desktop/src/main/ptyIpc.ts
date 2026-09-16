@@ -296,10 +296,19 @@ export function registerPtyIpc(
 
     const stored = storeCustomSound({ userData: prefsDir(), sourcePath: picked[0] });
     if (!stored) {
-      // Nothing written. A path recorded to a file this app cannot play is a
-      // preference that reads as set and behaves as absent.
+      /*
+       * Nothing was written, so answer with what is STILL in use — the same
+       * rule the cancel branch above follows, for the same reason.
+       *
+       * Returning `name: null` here was a real bug: nothing had changed on
+       * disk, the previous sound still played, and the screen wrote that null
+       * into its cache and drew "Playing the built-in cue." It also hid the
+       * "Use the built-in" button, which is gated on there being a name — so
+       * the user could no longer clear a sound that was demonstrably still
+       * playing. A refusal must not rewrite the state it refused to touch.
+       */
       return {
-        name: null,
+        name: currentSoundName(),
         error: `Choose a ${SOUND_EXTENSIONS.join(', ')} file under 5 MB.`,
       };
     }

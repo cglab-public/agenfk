@@ -64,7 +64,11 @@ function safeAvatar(raw: unknown): string | null {
   if (typeof raw !== 'string' || raw === '') return null;
   try {
     const url = new URL(raw);
-    return url.protocol === 'https:' || url.protocol === 'http:' ? raw : null;
+    // https only. In practice this is always avatars.githubusercontent.com, so
+    // allowing http costs nothing to refuse and buys the guarantee that a value
+    // from a remote API cannot turn into a cleartext beacon to an arbitrary
+    // host the moment somebody stands between us and GitHub.
+    return url.protocol === 'https:' ? raw : null;
   } catch {
     return null;
   }

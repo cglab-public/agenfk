@@ -44,7 +44,7 @@ describe('GET /github/account', () => {
     // assertion is the SHAPE — and the shape is what proves the route exists,
     // is mounted, and does not throw its way into a 500 on the machine where
     // gh is missing, which is every machine in CI.
-    const res = await agent().get('/github/account');
+    const res = await agent().get('/github/account').set('x-agenfk-ui', '1');
     expect(res.status).toBe(200);
     expect(typeof res.body.connected).toBe('boolean');
   });
@@ -53,7 +53,7 @@ describe('GET /github/account', () => {
     // "Not connected" with no reason leaves the screen unable to choose between
     // "install the GitHub CLI" and "run gh auth login", which are different
     // instructions and only one of them is useful.
-    const res = await agent().get('/github/account');
+    const res = await agent().get('/github/account').set('x-agenfk-ui', '1');
     if (res.body.connected === false) {
       expect(res.body.reason).toMatch(/gh_missing|not_authenticated|unreadable/);
     } else {
@@ -61,11 +61,22 @@ describe('GET /github/account', () => {
     }
   });
 
+  it('refuses a request that did not come from the app', async () => {
+    /*
+     * Unusual for a GET, and the reason is that a simple GET is not gated by
+     * CORS: a foreign origin cannot READ the response, but the request is still
+     * issued and the `gh` process still runs. Without this, any page the user
+     * visits can drive an eight-second synchronous exec in a loop on a
+     * single-threaded server - and read back a login, a name and an email.
+     */
+    expect((await agent().get('/github/account')).status).toBe(403);
+  });
+
   it('takes no projectId, because an account is not project-scoped', async () => {
     // GET /github/status is per project — it answers which repo a card maps to.
     // Conflating the two is how the screen ends up saying "not connected"
     // because no project has a repo configured.
-    expect((await agent().get('/github/account')).status).toBe(200);
+    expect((await agent().get('/github/account').set('x-agenfk-ui', '1')).status).toBe(200);
   });
 });
 

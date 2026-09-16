@@ -14,8 +14,8 @@
  * back to the tone rather than going silent. Silence is indistinguishable from
  * the feature being off, which is the state the user was trying to leave.
  */
-import { describe, it, expect, vi } from 'vitest';
-import { playAttentionSound } from '../attentionSound';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { playAttentionSound, __resetAudioContext } from '../attentionSound';
 
 /** The bits of Web Audio this uses, and nothing else. */
 const fakeAudioContext = () => {
@@ -46,6 +46,9 @@ const fakeAudioContext = () => {
   };
   return { ctx, started };
 };
+
+// The context is module state now, so each case starts without one.
+beforeEach(() => { __resetAudioContext(); });
 
 describe('the built-in tone', () => {
   it('plays without fetching anything', async () => {
@@ -122,5 +125,70 @@ describe('a sound the user chose', () => {
     });
     expect(played).toBe(true);
     expect(started.length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * One context, however many times the sound plays.
+ *
+ * An adversarial review found a fresh `new AudioContext()` per call. Chromium
+ * caps how many a document may hold, so after a handful of presses on the
+ * preview button the constructor throws, this module catches it and answers
+ * false, and the button goes silently dead until a reload.
+ *
+ * Silent failure is precisely what this file's header says the synthesised tone
+ * exists to avoid - so the leak turned the feature into its own stated enemy,
+ * and only after the sixth or seventh press, which is exactly the kind of thing
+ * nobody reproduces by hand.
+ */
+describe('playing it more than once', () => {
+  it('makes one context and reuses it', async () => {
+    const { ctx } = fakeAudioContext();
+    const make = vi.fn(() => ctx as unknown as AudioContext);
+    const deps = { readCustomSound: async () => null, AudioContext: make, playDataUrl: vi.fn() };
+    for (let i = 0; i < 12; i++) await playAttentionSound(deps);
+    expect(make, 'a context was created per call').toHaveBeenCalledTimes(1);
+  });
+
+  it('still plays every time, rather than only the first', async () => {
+    // The obvious wrong fix: keep the context and stop scheduling notes on it.
+    const { ctx, started } = fakeAudioContext();
+    const deps = {
+      readCustomSound: async () => null,
+      AudioContext: () => ctx as unknown as AudioContext,
+      playDataUrl: vi.fn(),
+    };
+    await playAttentionSound(deps);
+    const afterFirst = started.length;
+    await playAttentionSound(deps);
+    expect(started.length).toBeGreaterThan(afterFirst);
+  });
+
+  it('replaces a context that has been closed', async () => {
+    // A closed context accepts no new nodes, so reusing one would kill every
+    // alert from that point on - a worse failure than the leak it replaces.
+    const first = fakeAudioContext();
+    const second = fakeAudioContext();
+    const make = vi.fn()
+      .mockReturnValueOnce(first.ctx as unknown as AudioContext)
+      .mockReturnValueOnce(second.ctx as unknown as AudioContext);
+    const deps = { readCustomSound: async () => null, AudioContext: make, playDataUrl: vi.fn() };
+    await playAttentionSound(deps);
+    first.ctx.state = 'closed';
+    expect(await playAttentionSound(deps)).toBe(true);
+    expect(second.started.length).toBeGreaterThan(0);
+  });
+
+  it('resumes a context the browser parked', async () => {
+    // Created before any user gesture, the autoplay policy suspends it and the
+    // notes are scheduled into silence.
+    const { ctx } = fakeAudioContext();
+    ctx.state = 'suspended';
+    await playAttentionSound({
+      readCustomSound: async () => null,
+      AudioContext: () => ctx as unknown as AudioContext,
+      playDataUrl: vi.fn(),
+    });
+    expect(ctx.resume).toHaveBeenCalled();
   });
 });

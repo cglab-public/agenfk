@@ -356,7 +356,14 @@ export const api = {
     | { connected: false; reason: 'gh_missing' | 'not_authenticated' | 'unreadable' }
   > => {
     try {
-      const { data } = await axios.get(`${API_URL}/github/account`);
+      // The same preflight-forcing header the write routes use. This one is a
+      // GET, and a simple GET is not gated by CORS at all - the request is
+      // issued and executed even when the response cannot be read - so without
+      // it any page the user visits could drive an 8-second `gh` call in a loop
+      // and read back an email address. (bug 968259c4.)
+      const { data } = await axios.get(`${API_URL}/github/account`, {
+        headers: { 'x-agenfk-ui': '1' },
+      });
       return data;
     } catch {
       // A server that is not running is not an account that is signed out, but

@@ -4818,10 +4818,32 @@ const runGh = (args: readonly string[]): string =>
  * them is how a settings screen reports "not connected" because no project
  * happens to have a repo configured yet.
  */
-app.get("/github/account", (_req: any, res: any) => {
-  // Always 200. "gh is not installed" is an answer about the machine, not a
-  // server error, and the screen needs to read the reason to say anything
-  // useful about it.
+app.get("/github/account", limitExpensive, (req: any, res: any) => {
+  /*
+   * Guarded like the WRITES below, which is unusual for a GET and deliberate.
+   *
+   * A simple GET is not gated by CORS: a foreign origin cannot READ the
+   * response, but the request is still issued and still executed. Without a
+   * header requirement, any page the user visits can drive this in a loop, and
+   * each call spawns a `gh` process that blocks Node's single thread for up to
+   * eight seconds on a round trip to GitHub - which wedges the board, the
+   * terminals and the sockets along with it.
+   *
+   * The payload is the second reason: this answers with a login, a display name
+   * and an EMAIL. The same sentence that justifies the guard on sign-out - "any
+   * page open on the machine" - applies at least as strongly to reading the
+   * user's identity out of the machine.
+   *
+   * The rate limit is belt and braces: the header stops a cross-origin caller,
+   * and the limiter stops a same-origin one (another dev server, a preview, a
+   * package that starts a localhost listener) doing the same thing.
+   */
+  if (!req.headers['x-agenfk-ui']) {
+    return res.status(403).json({ error: "Forbidden: this route requires the x-agenfk-ui header." });
+  }
+  // Always 200 past the guard. "gh is not installed" is an answer about the
+  // machine, not a server error, and the screen needs to read the reason to say
+  // anything useful about it.
   res.json(readGitHubAccount(runGh));
 });
 
@@ -4837,7 +4859,10 @@ app.get("/github/account", (_req: any, res: any) => {
  * machine that uses `gh` — the UI says so rather than calling this "sign out of
  * AgEnFK", because it is not.
  */
-app.post("/github/signout", (req: any, res: any) => {
+app.post("/github/signout", limitExpensive, (req: any, res: any) => {
+  // Rate-limited as well as header-guarded: this runs `gh` TWICE in sequence
+  // (the account read, then the logout), so it can hold the event loop for
+  // twice the single-call ceiling.
   if (!req.headers['x-agenfk-ui']) {
     return res.status(403).json({ error: "Forbidden: this route requires the x-agenfk-ui header." });
   }

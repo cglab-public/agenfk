@@ -89,8 +89,15 @@ export class TelemetryClient {
     }
   }
 
+  /**
+   * Whether anything would actually be sent right now.
+   *
+   * Asks the file rather than the boolean captured at construction, for the
+   * same reason `capture` does: a caller that checks this before doing work
+   * must not be told "on" over a switch the user turned off a minute ago.
+   */
   get isEnabled(): boolean {
-    return this.enabled && this.client !== null;
+    return this.enabled && this.client !== null && isTelemetryEnabled();
   }
 
   get id(): string {
@@ -99,6 +106,21 @@ export class TelemetryClient {
 
   capture(event: string, properties?: Record<string, unknown>): void {
     if (!this.client) return;
+    /*
+     * The flag is re-read HERE, not only in the constructor.
+     *
+     * The constructor's copy was safe for as long as the only writer was
+     * `agenfk config set telemetry`, because that is a fresh process every
+     * time. The settings screen is the first IN-PROCESS opt-out: the route
+     * writes config.json and answers "off", and the long-lived server holds a
+     * client built from what the flag said at boot. Events keep going out until
+     * the next restart, over a switch the user has just watched turn off.
+     *
+     * A file read per captured event is affordable - these are user-scale
+     * events (a card created, a step advanced), not a hot loop - and the
+     * alternative is a setter that every future writer has to remember to call.
+     */
+    if (!isTelemetryEnabled()) return;
     try {
       this.client.capture({
         distinctId: this.installationId,

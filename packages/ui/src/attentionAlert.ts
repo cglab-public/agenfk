@@ -73,6 +73,15 @@ export function becameBlocked(
  * testable without a component and without a clock. `primed` false means this
  * is the first look: record everything, announce nothing.
  */
+/**
+ * How many vanished rows to keep a memory of. See `newlyBlocked`.
+ *
+ * Generous enough that a real session never falls out of it, small enough that
+ * an app left open for a week cannot grow the map without bound. Eviction is
+ * oldest-first, which for this map means least-recently-observed.
+ */
+const REMEMBERED_ABSENT = 500;
+
 export function newlyBlocked<T extends { key: string; state: SessionState }>(
   rows: readonly T[],
   seen: ReadonlyMap<string, SessionState>,
@@ -85,9 +94,34 @@ export function newlyBlocked<T extends { key: string; state: SessionState }>(
     if (!primed) continue;
     if (becameBlocked(seen.get(row.key), row.state)) alerts.push(row);
   }
-  // Rows that went away are dropped rather than remembered: a card that comes
-  // back later has genuinely changed since we last knew anything about it, and
-  // holding a stale state would swallow the alert.
+
+  /*
+   * ROWS THAT VANISHED KEEP THEIR LAST STATE. This used to drop them, and an
+   * adversarial review found what that cost.
+   *
+   * `api.listRuns` swallows its errors and answers `[]`, which react-query
+   * records as a SUCCESS. So one flaky request empties the run half of the
+   * list, dropping every remembered state with it - and the next refetch, which
+   * the `run:updated` socket event triggers routinely, brings the same blocked
+   * and failed rows back as `previous === undefined` and announces all of them
+   * again. Mid-session, on a machine that did nothing wrong.
+   *
+   * The old reasoning was that a card coming back "has genuinely changed since
+   * we last knew anything about it". That is true when the session really
+   * ended and false when the list merely blinked, and from here the two are
+   * indistinguishable - so the safe reading is the one that does not shout.
+   *
+   * The cost is a row that disappears while blocked and comes back still
+   * blocked, which produces no second alert. In practice a reopened terminal is
+   * observed as running or idle first (a fresh session has no activity yet, so
+   * its state falls through to output recency), which re-arms it - and a missed
+   * repeat is a far cheaper mistake than a burst of repeats nobody asked for.
+   */
+  for (const [key, state] of seen) {
+    if (next.has(key)) continue;
+    if (next.size >= REMEMBERED_ABSENT) break;
+    next.set(key, state);
+  }
   return { alerts, seen: next };
 }
 

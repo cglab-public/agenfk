@@ -35,6 +35,7 @@ import {
   storeCustomSound,
   readCustomSound,
   clearCustomSound,
+  __forgetEncodedSound,
 } from '../main/customSound';
 
 let userData: string;
@@ -49,6 +50,8 @@ const sourceFile = (name: string, bytes = 'RIFF....WAVEfmt '): string => {
 
 beforeEach(() => {
   userData = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-userdata-'));
+  // Module state: one test's encoding must not answer another test's read.
+  __forgetEncodedSound();
 });
 afterEach(() => {
   fs.rmSync(userData, { recursive: true, force: true });
@@ -194,5 +197,144 @@ describe('clearing it', () => {
 
   it('is safe to call when there is nothing to clear', () => {
     expect(() => clearCustomSound({ userData })).not.toThrow();
+  });
+});
+
+/**
+ * Not re-encoding the same file on every alert.
+ *
+ * `readCustomSound` runs on the MAIN process, which is also what drives every
+ * pty data callback, and it does a read of up to 5 MB plus a base64 encode.
+ * Paying that per alert for a file that has not changed is the wrong kind of
+ * quiet: nothing looks broken, the app just gets heavier the more an agent
+ * needs you.
+ *
+ * The cache is the kind that goes wrong invisibly, so what these check is the
+ * invalidation rather than the hit.
+ */
+describe('reading the same sound twice', () => {
+  beforeEach(() => { __forgetEncodedSound(); });
+
+  it('does not read the file again when nothing has changed', () => {
+    /*
+     * Probed by making the file UNREADABLE after the first call, rather than by
+     * spying on `fs.readFileSync` - the ESM namespace object refuses to be
+     * redefined, so the spy throws. This is the better test anyway: it asks
+     * whether the second call touched the disk, which is the actual claim,
+     * instead of whether a particular function was invoked.
+     *
+     * `statSync` still succeeds on a mode-000 file, because the permission that
+     * matters for stat is on the DIRECTORY - so the cache key is still checked
+     * and this does not accidentally pass by taking an error path.
+     */
+    const stored = storeCustomSound({ userData, sourcePath: sourceFile('ping.wav') })!;
+    const first = readCustomSound({ userData, storedPath: stored.path })!;
+    fs.chmodSync(stored.path, 0o000);
+    try {
+      // Root ignores the mode bits, so confirm the block is real before
+      // asserting on it. Otherwise this passes on CI while checking nothing.
+      let readable = true;
+      try { fs.readFileSync(stored.path); } catch { readable = false; }
+      if (readable) return;
+
+      const second = readCustomSound({ userData, storedPath: stored.path });
+      expect(second, 'the second call went to disk instead of using what it had').not.toBeNull();
+      expect(second!.dataUrl).toBe(first.dataUrl);
+    } finally {
+      fs.chmodSync(stored.path, 0o600);
+    }
+  });
+
+  it('notices the file changing under it, without being told', () => {
+    /*
+     * THE test for the cache KEY, as opposed to the cache being dropped.
+     *
+     * `storeCustomSound` forgets the encoding itself, so replacing a sound
+     * through the app invalidates it whatever the key says - which means the
+     * next test below passes even with the key removed. This one writes into
+     * the same path directly, the way a second AgEnFK window sharing one
+     * userData directory would, and that is the case only the mtime/size key
+     * can catch.
+     */
+    const stored = storeCustomSound({ userData, sourcePath: sourceFile('ping.wav', 'FIRST') })!;
+    const first = readCustomSound({ userData, storedPath: stored.path })!;
+    expect(Buffer.from(first.dataUrl.split(',')[1], 'base64').toString('utf8')).toBe('FIRST');
+
+    // Different length AND a moved mtime, which is what a real rewrite looks
+    // like. Asserting on both means neither half of the key is decorative.
+    fs.writeFileSync(stored.path, 'SECOND-AND-LONGER');
+    const later = new Date(Date.now() + 5000);
+    fs.utimesSync(stored.path, later, later);
+
+    const second = readCustomSound({ userData, storedPath: stored.path })!;
+    expect(
+      Buffer.from(second.dataUrl.split(',')[1], 'base64').toString('utf8'),
+      'a cached encoding was served for a file that had changed',
+    ).toBe('SECOND-AND-LONGER');
+  });
+
+  it('notices a rewrite that did not move the timestamp', () => {
+    /*
+     * The SIZE half of the key, which the test above cannot reach because it
+     * moves the mtime too.
+     *
+     * Not hypothetical: a filesystem with coarse timestamps, or simply two
+     * writes inside one granularity tick, leaves mtime identical across a real
+     * change. A key on mtime alone then serves the old sound forever, and the
+     * user has no way to tell that from the app ignoring their choice.
+     */
+    const stored = storeCustomSound({ userData, sourcePath: sourceFile('ping.wav', 'FIRST') })!;
+    /*
+     * A WHOLE SECOND, set on both writes.
+     *
+     * Reading the real mtime and restoring it does not work: `utimesSync`
+     * round-trips through a float and comes back a fraction of a millisecond
+     * off (…348.999 for …349), so the mtime half of the key fires and the size
+     * half — the only thing this test is about — is never reached. A whole
+     * second survives the conversion exactly, which is what pins the two stats
+     * to the same timestamp and leaves size as the only difference.
+     */
+    const frozen = new Date(Math.floor(Date.now() / 1000) * 1000);
+    fs.utimesSync(stored.path, frozen, frozen);
+    readCustomSound({ userData, storedPath: stored.path });
+
+    fs.writeFileSync(stored.path, 'A DIFFERENT LENGTH ENTIRELY');
+    fs.utimesSync(stored.path, frozen, frozen);
+    expect(fs.statSync(stored.path).mtimeMs, 'the timestamps were not equal, so this proves nothing about size')
+      .toBe(frozen.getTime());
+
+    const after = readCustomSound({ userData, storedPath: stored.path })!;
+    expect(
+      Buffer.from(after.dataUrl.split(',')[1], 'base64').toString('utf8'),
+      'a rewrite with an unchanged timestamp was served from the cache',
+    ).toBe('A DIFFERENT LENGTH ENTIRELY');
+  });
+
+  it('serves the new bytes after the sound is replaced', () => {
+    // THE invalidation that matters: the replacement reuses the name
+    // `custom.wav`, so a cache keyed on the path alone would keep serving the
+    // old sound forever and the user would think Choose file did nothing.
+    storeCustomSound({ userData, sourcePath: sourceFile('one.wav', 'FIRST') });
+    const first = readCustomSound({ userData, storedPath: path.join(soundsDir(userData), 'custom.wav') })!;
+    storeCustomSound({ userData, sourcePath: sourceFile('two.wav', 'SECOND') });
+    const second = readCustomSound({ userData, storedPath: path.join(soundsDir(userData), 'custom.wav') })!;
+    expect(Buffer.from(second.dataUrl.split(',')[1], 'base64').toString('utf8')).toBe('SECOND');
+    expect(second.dataUrl).not.toBe(first.dataUrl);
+  });
+
+  it('answers null once the file is gone, rather than serving what it remembers', () => {
+    // A cache that outlives its file is how "I deleted that sound" becomes "it
+    // still plays".
+    const stored = storeCustomSound({ userData, sourcePath: sourceFile('ping.wav') })!;
+    expect(readCustomSound({ userData, storedPath: stored.path })).not.toBeNull();
+    fs.unlinkSync(stored.path);
+    expect(readCustomSound({ userData, storedPath: stored.path })).toBeNull();
+  });
+
+  it('answers null after the sound is cleared', () => {
+    const stored = storeCustomSound({ userData, sourcePath: sourceFile('ping.wav') })!;
+    readCustomSound({ userData, storedPath: stored.path });
+    clearCustomSound({ userData });
+    expect(readCustomSound({ userData, storedPath: stored.path })).toBeNull();
   });
 });

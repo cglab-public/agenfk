@@ -153,6 +153,17 @@ const notificationsBridge = (): NotificationsBridgeApi | null =>
 /** Whether this build can offer a custom sound at all. Drives whether the row exists. */
 export const canChooseSound = (): boolean => typeof soundsBridge()?.choose === 'function';
 
+/**
+ * Whether this build can raise an OS banner.
+ *
+ * Separate from `canChooseSound` on purpose. They are different bridges, and a
+ * preload older than one of them exposes the other - so asking about sounds to
+ * decide what to say about banners tells a desktop user they need the desktop
+ * app, which is the version-skew failure this file's helpers exist to avoid.
+ */
+export const canNotifyAttention = (): boolean =>
+  typeof notificationsBridge()?.attention === 'function';
+
 export const currentSoundFromBridge = (): Promise<{ name: string | null }> => {
   const sounds = soundsBridge();
   if (typeof sounds?.current !== 'function') return Promise.resolve({ name: null });

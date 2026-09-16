@@ -102,8 +102,28 @@ describe('choosing a custom sound', () => {
     chosen = [sourceFile('script.sh')];
     const result = await handlers['sounds:choose'](fakeEvent) as { name: string | null; error?: string };
     expect(result.name).toBeNull();
-    expect(result.error).toMatch(/audio|format|wav/i);
+    expect(result.error).toMatch(/audio|format|wav|\.mp3/i);
     expect(readPrefs(userData).customSoundPath).toBe('');
+  });
+
+  it('keeps naming the sound that is still playing when a file is refused', async () => {
+    /*
+     * The cancel rule, applied to the other way of not changing anything.
+     *
+     * Nothing is written when storeCustomSound refuses, so the previous sound
+     * is still stored and still plays. Answering `null` made the screen cache
+     * that null and draw "Playing the built-in cue." over a file that was
+     * demonstrably still in use - and it hid the "Use the built-in" button,
+     * which is gated on there being a name, so the user could no longer clear
+     * a sound the app had just told them was not there.
+     */
+    chosen = [sourceFile('chime.wav')];
+    await handlers['sounds:choose'](fakeEvent);
+    chosen = [sourceFile('too-big.sh')];
+    const result = await handlers['sounds:choose'](fakeEvent) as { name: string | null; error?: string };
+    expect(result.error).toBeTruthy();
+    expect(result.name, 'a refusal rewrote the state it refused to touch').toBe('chime.wav');
+    expect(readPrefs(userData).customSoundName).toBe('chime.wav');
   });
 
   it('refuses when this build has no picker at all', async () => {

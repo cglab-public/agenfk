@@ -104,6 +104,11 @@ export function storeCustomSound(
   }
 
   const dest = path.join(dir, `custom${ext}`);
+  // The new file reuses the name `custom.<ext>`, so the cached encoding of the
+  // old one is about to describe a path that holds different bytes. The stat
+  // key catches that on its own; dropping it here means not relying on a
+  // filesystem timestamp having moved.
+  __forgetEncodedSound();
   try {
     fs.copyFileSync(sourcePath, dest);
   } catch {
@@ -122,6 +127,25 @@ export function storeCustomSound(
  * gets. The check and the use are one expression rather than two mentions of a
  * name, so no edit can land between them.
  */
+/**
+ * The last file we encoded, keyed by path and by what the file looked like.
+ *
+ * `readCustomSound` runs on the MAIN process, on every alert, and does a read
+ * of up to 5 MB plus a base64 encode of it - main is also what drives every
+ * pty data callback, so paying that repeatedly for a file that has not changed
+ * is the wrong kind of quiet.
+ *
+ * Keyed on mtime and size as well as the path, so replacing the sound (which
+ * reuses the name `custom.wav`) invalidates it. One entry, because there is
+ * only ever one custom sound.
+ */
+let encoded: { path: string; mtimeMs: number; size: number; dataUrl: string } | null = null;
+
+/** Forget the cached encoding. Exported for the tests and for `clearCustomSound`. */
+export function __forgetEncodedSound(): void {
+  encoded = null;
+}
+
 export function readCustomSound(
   { userData, storedPath }: { userData: string; storedPath: string },
 ): { dataUrl: string; name: string } | null {
@@ -130,11 +154,19 @@ export function readCustomSound(
   const ext = soundExtension(safe);
   if (!ext) return null;
   try {
+    // stat FIRST, so a deleted file answers null rather than serving a cached
+    // encoding of something that is no longer there.
+    const stat = fs.statSync(safe);
+    if (
+      encoded && encoded.path === safe
+      && encoded.mtimeMs === stat.mtimeMs && encoded.size === stat.size
+    ) {
+      return { dataUrl: encoded.dataUrl, name: path.basename(safe) };
+    }
     const bytes = fs.readFileSync(safe);
-    return {
-      dataUrl: `data:${MEDIA_TYPES[ext]};base64,${bytes.toString('base64')}`,
-      name: path.basename(safe),
-    };
+    const dataUrl = `data:${MEDIA_TYPES[ext]};base64,${bytes.toString('base64')}`;
+    encoded = { path: safe, mtimeMs: stat.mtimeMs, size: stat.size, dataUrl };
+    return { dataUrl, name: path.basename(safe) };
   } catch {
     // The user deleted it, or it was never written. The caller falls back to
     // the built-in tone, which it can only do if this returns rather than
@@ -145,6 +177,10 @@ export function readCustomSound(
 
 /** Put it back to the built-in sound, on disk as well as in the preference. */
 export function clearCustomSound({ userData }: { userData: string }): void {
+  // Before the unlink, not after: the cache is keyed on a stat that is about to
+  // stop existing, and a reader racing the delete must not be served bytes for
+  // a file the user has just removed.
+  __forgetEncodedSound();
   const dir = soundsDir(userData);
   let entries: string[];
   try {

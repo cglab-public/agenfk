@@ -21,6 +21,21 @@ vi.mock('os', async (importOriginal) => {
   return { ...actual, homedir: vi.fn(() => actual.homedir()) };
 });
 
+/**
+ * The analytics client, so a test can see what would actually leave the machine.
+ *
+ * Asserting that `capture()` does not throw proves nothing: it is wrapped in a
+ * try/catch precisely so it never throws. The only honest question is whether
+ * anything was SENT, and that needs a spy on the thing that sends.
+ */
+const sent = vi.hoisted(() => vi.fn());
+vi.mock('posthog-node', () => ({
+  PostHog: vi.fn(function (this: Record<string, unknown>) {
+    this.capture = sent;
+    this.shutdown = vi.fn(async () => {});
+  }),
+}));
+
 import { isTelemetryEnabled, setTelemetryEnabled } from '../index';
 
 let sandbox: string;
@@ -96,5 +111,61 @@ describe('writing the telemetry choice', () => {
     } finally {
       fs.rmSync(second, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * A running process has to notice.
+ *
+ * The write side above is only half the guarantee, and an adversarial review
+ * found the other half missing. `TelemetryClient` read the flag ONCE in its
+ * constructor and cached it along with a live PostHog client; the server builds
+ * exactly one at module load and captures through it for its whole life.
+ *
+ * So the settings screen's switch turned off, the route answered "off", the
+ * file said "off" — and the long-lived process kept sending. That was invisible
+ * to the route's own test, which asserts the file round-trip, because the file
+ * round-trip was never the broken part.
+ *
+ * The CLI was safe here only by accident: every `agenfk config set telemetry`
+ * is a fresh process. The settings screen is the first in-process opt-out.
+ */
+describe('a client that is already running', () => {
+  it('stops capturing once telemetry is turned off underneath it', async () => {
+    const { TelemetryClient } = await import('../index');
+    // Constructed while telemetry is ON, which is the state that used to be
+    // cached for the life of the process.
+    setTelemetryEnabled(true);
+    const client = new TelemetryClient();
+
+    setTelemetryEnabled(false);
+
+    expect(client.isEnabled, 'the client still reports itself enabled').toBe(false);
+    /*
+     * THE assertion: nothing reached the analytics client.
+     *
+     * `expect(...).not.toThrow()` was the first version of this line and it was
+     * worthless - capture is wrapped in a try/catch so that it can never throw,
+     * which means that assertion passed just as happily while the bug was
+     * present. Verified by mutation: reverting the re-read leaves this red.
+     */
+    sent.mockClear();
+    client.capture('item_created', { a: 1 });
+    expect(sent, 'an event was sent after the user opted out').not.toHaveBeenCalled();
+  });
+
+  it('starts capturing again when it is turned back on', async () => {
+    // The mirror. A client that latched OFF would be just as wrong, and would
+    // be the obvious way to "fix" the above.
+    const { TelemetryClient } = await import('../index');
+    setTelemetryEnabled(true);
+    const client = new TelemetryClient();
+    setTelemetryEnabled(false);
+    expect(client.isEnabled).toBe(false);
+    setTelemetryEnabled(true);
+    expect(client.isEnabled).toBe(true);
+    sent.mockClear();
+    client.capture('item_created', { a: 1 });
+    expect(sent, 'opting back in did not resume capture').toHaveBeenCalled();
   });
 });

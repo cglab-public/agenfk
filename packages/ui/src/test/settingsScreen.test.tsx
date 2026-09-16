@@ -3,10 +3,16 @@
  *
  * A place to change a preference without starting a task.
  *
- * Until now the only way to turn tmux on was the dialog that opens a terminal,
- * which means changing a PREFERENCE required beginning an ACTION. Those are
- * different things and putting them in the same place makes the preference
- * hard to find and the action heavier than it should be.
+ * Until now the only way to turn a preference on was the dialog that opens a
+ * terminal, which means changing a PREFERENCE required beginning an ACTION.
+ * Those are different things, and putting them in the same place makes the
+ * preference hard to find and the action heavier than it should be.
+ *
+ * The tmux coverage that used to live here went with the General section, which
+ * held that one toggle and is pulled while the persistence story is reworked.
+ * The SETTING is untouched — still stored, still sent, still read when a
+ * terminal is spawned — and packages/server/src/test/app-settings.test.ts still
+ * covers it end to end. Only the screen lost its switch.
  *
  * Two things this file insists on, both learned the hard way in this epic:
  *
@@ -183,12 +189,12 @@ const openSettingsRaw = async (): Promise<void> => {
 /**
  * Open the screen AT a section.
  *
- * Defaulting to General rather than to whatever is first, because that is what
- * the tests written before this screen had five sections are about — and
- * silently re-pointing them at a different pane would turn a suite about tmux
- * into a suite that finds nothing and says so in a confusing way.
+ * Defaulting to Agents rather than to whatever is first, because that is where
+ * the preferences these tests are about now live. It was General, and General
+ * is gone: it held only the tmux toggle, which is pulled while the persistence
+ * story is reworked.
  */
-const openSettings = async (section = 'General'): Promise<void> => {
+const openSettings = async (section = 'Agents'): Promise<void> => {
   await openSettingsRaw();
   const rail = await screen.findByRole('navigation', { name: /settings sections/i });
   fireEvent.click(within(rail).getByRole('button', { name: new RegExp(`^${section}$`, 'i') }));
@@ -221,33 +227,8 @@ describe('getting to it', () => {
 });
 
 describe('what it offers', () => {
-  it('offers the tmux setting, naming the consequence rather than the tool', async () => {
-    renderShell();
-    await openSettings();
-    const row = (await screen.findByText(/enable tmux/i)).closest<HTMLElement>('[data-testid="setting-row"]')!;
-    expect(within(row).getByRole('switch')).toBeInTheDocument();
-    // The description has to say what it DOES. "Enable tmux" alone tells a
-    // user who has never heard of tmux precisely nothing.
-    expect(row).toHaveTextContent(/session|terminal/i);
-  });
 
-  it('shows the stored value, not a fresh default', async () => {
-    vi.mocked(api.getSettings).mockResolvedValue({ tmuxByDefault: true } as never);
-    renderShell();
-    await openSettings();
-    const row = (await screen.findByText(/enable tmux/i)).closest<HTMLElement>('[data-testid="setting-row"]')!;
-    await waitFor(() =>
-      expect(within(row).getByRole('switch')).toHaveAttribute('aria-checked', 'true'));
-  });
 
-  it('stores a change where every client can read it', async () => {
-    renderShell();
-    await openSettings();
-    const row = (await screen.findByText(/enable tmux/i)).closest<HTMLElement>('[data-testid="setting-row"]')!;
-    fireEvent.click(within(row).getByRole('switch'));
-    await waitFor(() =>
-      expect(api.updateSettings).toHaveBeenCalledWith({ tmuxByDefault: true }));
-  });
 
   it('offers auto-approve, and says what it lets happen', async () => {
     // It lived in the terminal dialog as a per-run decision until the user
@@ -280,20 +261,6 @@ describe('what it offers', () => {
   });
 });
 
-describe('when the setting cannot be saved', () => {
-  it('goes back to what is actually stored instead of showing a lie', async () => {
-    // An optimistic switch that stays on after the write failed tells the user
-    // their terminals are protected when they are not. Reverting is the honest
-    // failure, and it is the one that costs them nothing.
-    vi.mocked(api.updateSettings).mockRejectedValue(new Error('server down'));
-    renderShell();
-    await openSettings();
-    const row = (await screen.findByText(/enable tmux/i)).closest<HTMLElement>('[data-testid="setting-row"]')!;
-    const toggle = within(row).getByRole('switch');
-    fireEvent.click(toggle);
-    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'));
-  });
-});
 
 /**
  * The shape of the screen.
@@ -333,8 +300,11 @@ describe('the shape of it', () => {
     renderShell();
     await openSettingsRaw();
     const rail = await screen.findByRole('navigation', { name: /settings sections/i });
+    // Asserted as the EXACT list rather than a contains, so a section
+    // appearing or vanishing is a decision somebody has to come here and make.
+    // General is absent on purpose: it held only the tmux toggle.
     expect(within(rail).getAllByRole('button').map(b => b.textContent))
-      .toEqual(['Account', 'App', 'Notifications', 'General', 'Agents']);
+      .toEqual(['Account', 'App', 'Notifications', 'Agents']);
   });
 
   it('lists only sections that have something in them', async () => {
@@ -369,79 +339,7 @@ describe('the shape of it', () => {
   });
 });
 
-/**
- * Saying when a setting cannot actually take effect here.
- *
- * The switch stores a preference; whether tmux exists is a fact about this
- * machine. Turning the setting on where tmux is not installed stores awish
- * that silently does nothing — and the user finds out by quitting the app and
- * losing an agent. That is the exact failure the warning exists to prevent, and
- * it is worth more than the switch itself.
- */
-describe('when tmux is not installed', () => {
-  const withPersistence = (p: { available: boolean; hint?: string; warning?: string }) => {
-    (window as unknown as Record<string, unknown>).agenfkDesktop = {
-      isDesktop: true, platform: 'darwin',
-      versions: { electron: '40', chrome: '1', node: '24' },
-      terminal: { listAgents: async () => [], sessionPersistence: async () => p },
-    };
-  };
 
-  it('says so on the row, with the command that fixes it', async () => {
-    withPersistence({ available: false, hint: 'brew install tmux' });
-    renderShell();
-    await openSettings();
-    const row = (await screen.findByText(/enable tmux/i))
-      .closest<HTMLElement>('[data-testid="setting-row"]')!;
-    await waitFor(() => expect(row).toHaveTextContent(/brew install tmux/));
-  });
-
-  it('still lets the preference be stored, because it is a preference', async () => {
-    // Not disabled. The machine cannot honour it today; the choice is still the
-    // user's and still travels to a machine that can.
-    withPersistence({ available: false, hint: 'brew install tmux' });
-    renderShell();
-    await openSettings();
-    const row = (await screen.findByText(/enable tmux/i))
-      .closest<HTMLElement>('[data-testid="setting-row"]')!;
-    const toggle = within(row).getByRole('switch');
-    await waitFor(() => expect(toggle).not.toBeDisabled());
-    fireEvent.click(toggle);
-    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ tmuxByDefault: true }));
-  });
-
-  it('says nothing extra when tmux IS available', async () => {
-    // A warning that is always on screen stops being read.
-    withPersistence({ available: true });
-    renderShell();
-    await openSettings();
-    const row = (await screen.findByText(/enable tmux/i))
-      .closest<HTMLElement>('[data-testid="setting-row"]')!;
-    expect(row).not.toHaveTextContent(/brew|not installed/i);
-  });
-});
-
-describe('on Windows, where tmux cannot exist at all', () => {
-  it('gives the platform reason instead of an install command that would not work', async () => {
-    // Restored after nearly being lost with the terminal dialog. Telling a
-    // Windows user to `brew install tmux` is worse than saying nothing: it
-    // sends them after a fix that does not exist on their machine.
-    (window as unknown as Record<string, unknown>).agenfkDesktop = {
-      isDesktop: true, platform: 'win32',
-      versions: { electron: '40', chrome: '1', node: '24' },
-      terminal: {
-        listAgents: async () => [],
-        sessionPersistence: async () => ({ available: false, warning: 'tmux_unsupported_on_windows' }),
-      },
-    };
-    renderShell();
-    await openSettings();
-    const row = (await screen.findByText(/enable tmux/i))
-      .closest<HTMLElement>('[data-testid="setting-row"]')!;
-    await waitFor(() => expect(row).toHaveTextContent(/windows/i));
-    expect(row).not.toHaveTextContent(/brew|apt/i);
-  });
-});
 
 /**
  * Saying which agents will ignore auto-approve.
@@ -515,38 +413,6 @@ describe('auto-approve is not honoured by every agent', () => {
   });
 });
 
-describe('when the machine cannot be asked', () => {
-  it('claims nothing while the probe is still in flight', async () => {
-    // An enabled-looking warning that appears and then corrects itself reads as
-    // a glitch; claiming availability before checking is worse.
-    (window as unknown as Record<string, unknown>).agenfkDesktop = {
-      isDesktop: true, platform: 'darwin',
-      versions: { electron: '40', chrome: '1', node: '24' },
-      terminal: { listAgents: async () => [], sessionPersistence: () => new Promise(() => {}) },
-    };
-    renderShell();
-    await openSettings();
-    const row = (await screen.findByText(/enable tmux/i))
-      .closest<HTMLElement>('[data-testid="setting-row"]')!;
-    expect(row).not.toHaveTextContent(/not available/i);
-  });
-
-  it('claims nothing when the probe fails outright', async () => {
-    (window as unknown as Record<string, unknown>).agenfkDesktop = {
-      isDesktop: true, platform: 'darwin',
-      versions: { electron: '40', chrome: '1', node: '24' },
-      terminal: {
-        listAgents: async () => [],
-        sessionPersistence: async () => { throw new Error('ipc down'); },
-      },
-    };
-    renderShell();
-    await openSettings();
-    const row = (await screen.findByText(/enable tmux/i))
-      .closest<HTMLElement>('[data-testid="setting-row"]')!;
-    expect(row).not.toHaveTextContent(/not available/i);
-  });
-});
 
 /**
  * Reachability, which is the difference between a settings screen and none.
@@ -554,8 +420,8 @@ describe('when the machine cannot be asked', () => {
  * An adversarial review found the entry rendered INSIDE the sidebar's
  * `open` guard, so collapsing the sidebar removed the only route to Settings —
  * and the sidebar state is persisted, so that was permanent across launches.
- * With both dialog toggles gone, that left a user with no way to change tmux or
- * auto-approve at all, ever.
+ * With both dialog toggles gone, that left a user with no way to reach any
+ * preference at all, ever.
  *
  * Worse than the bug was the shape of it: the button carried an icon-only
  * collapsed variant, written for a state it could never be rendered in. The
@@ -572,60 +438,13 @@ describe('reachability', () => {
     renderShell();
     expect(await screen.findByRole('button', { name: /^settings$/i })).toBeInTheDocument();
   });
-
-  it('opens from the collapsed sidebar too, not just renders', async () => {
-    // 'collapsed' is the stored value; anything else reads as open. Writing
-    // 'false' here left the sidebar OPEN and the test passed without ever
-    // exercising the case it is named for.
-    localStorage.setItem('agenfk_shell_sidebar', 'collapsed');
-    renderShell();
-    await openSettings();
-    expect(await screen.findByText(/enable tmux/i)).toBeInTheDocument();
-  });
-});
-
-describe('the warning has to be readable in both themes', () => {
-  it('pairs the light and dark colour, like every other warning in this app', async () => {
-    // text-amber-400 alone is ~1.6:1 on the light theme's near-white card. The
-    // one message that says "sessions will not survive quitting" was the least
-    // affordable thing on the screen to render illegible. Every other
-    // amber text in this codebase is written as a light/dark pair.
-    (window as unknown as Record<string, unknown>).agenfkDesktop = {
-      isDesktop: true, platform: 'darwin',
-      versions: { electron: '40', chrome: '1', node: '24' },
-      terminal: {
-        listAgents: async () => [],
-        sessionPersistence: async () => ({ available: false, hint: 'brew install tmux' }),
-      },
-    };
-    renderShell();
-    await openSettings();
-    const note = await screen.findByTestId('setting-note');
-    expect(note.className).toMatch(/text-amber-600/);
-    expect(note.className).toMatch(/dark:text-amber-400/);
-  });
 });
 
 describe('a save that fails has to say so', () => {
-  it('shows a message rather than a switch that quietly did not move', async () => {
-    // Nothing is written optimistically, so a failed save does not "revert" —
-    // it does nothing at all, which is indistinguishable from missing the hit
-    // target. The old test asserted aria-checked stayed false, which is also
-    // what a missed click produces, so it could not tell the two apart.
-    vi.mocked(api.updateSettings).mockRejectedValue(new Error('server down'));
-    renderShell();
-    await openSettings();
-    const row = (await screen.findByText(/enable tmux/i))
-      .closest<HTMLElement>('[data-testid="setting-row"]')!;
-    fireEvent.click(within(row).getByRole('switch'));
-    expect(await screen.findByRole('alert')).toHaveTextContent(/could not|failed|not saved/i);
-  });
-
   it('does not claim a setting is off when it could not be read', async () => {
-    // `settings?.x ?? false` renders both switches OFF on a failed read. For
-    // tmux that means the app spawns non-persistent terminals for someone whose
-    // stored preference is on; for auto-approve it means the screen asserts a
-    // safety property it never verified.
+    // `settings?.x ?? false` renders every switch OFF on a failed read, which
+    // for auto-approve means the screen asserts a safety property it never
+    // verified — so the read failure has to be said out loud instead.
     vi.mocked(api.getSettings).mockRejectedValue(new Error('offline'));
     renderShell();
     await openSettings();
@@ -663,50 +482,6 @@ describe('the shell is not an agent that "ignores" auto-approve', () => {
   });
 });
 
-describe('what the tmux note actually promises', () => {
-  const withTmuxMissing = async (): Promise<string> => {
-    (window as unknown as Record<string, unknown>).agenfkDesktop = {
-      isDesktop: true, platform: 'darwin',
-      versions: { electron: '40', chrome: '1', node: '24' },
-      terminal: {
-        listAgents: async () => [],
-        sessionPersistence: async () => ({ available: false, hint: 'brew install tmux' }),
-      },
-    };
-    renderShell();
-    await openSettings();
-    return (await screen.findByTestId('setting-note')).textContent ?? '';
-  };
-
-  it('does not say sessions are lost, because they are not', async () => {
-    /*
-     * THE test. The card that filed this said the warning claims too much -
-     * the PROCESS does not survive quitting, the SESSION does - and the fix
-     * corrected the console line, which almost nobody reads, while Settings
-     * went on saying "sessions will not survive quitting". That is the screen
-     * a person lands on when they wonder about tmux.
-     *
-     * Wrong in the harmful direction: it tells somebody their work is lost
-     * when the session is recorded server-side and put back, which pushes them
-     * into copying scrollback out by hand before quitting - the exact
-     * behaviour the card was written to stop.
-     */
-    const note = await withTmuxMissing();
-    expect(note, 'Settings still claims the session is lost').not.toMatch(/sessions will not survive/i);
-  });
-
-  it('says the terminals come back', async () => {
-    const note = await withTmuxMissing();
-    expect(note).toMatch(/reopened/i);
-  });
-
-  it('does not promise every agent resumes its conversation', async () => {
-    // Only the agents that can be handed a session id do. Saying it flatly
-    // would be the same overstatement one layer over.
-    const note = await withTmuxMissing();
-    expect(note).toMatch(/agents that support it/i);
-  });
-});
 
 /**
  * The account block.
@@ -1131,5 +906,56 @@ describe('the custom sound', () => {
     // The sibling rows ARE there, so this is not passing on an unrendered pane.
     await settingRow('sound-row');
     expect(document.querySelector('[data-row="custom-sound-row"]')).toBeNull();
+  });
+});
+
+/**
+ * An icon per section, and a name that is still just the label.
+ *
+ * The icon is the easy half. The half worth a test is that adding one did not
+ * change what the rail SAYS: an `<svg>` dropped inside the button without
+ * `aria-hidden` contributes to the accessible name, and the rail stops
+ * answering to "Account" — so `getByRole('button', { name: 'Account' })`, which
+ * is how a person and every test in this file navigate, finds nothing.
+ *
+ * `icon` is a required field on `SettingsSection` rather than an optional one,
+ * so a section cannot be added without deciding on its mark. That is the same
+ * reason the rail is generated from the section list at all.
+ */
+describe('the section menu carries an icon', () => {
+  it('draws one on every entry', async () => {
+    renderShell();
+    await openSettingsRaw();
+    const rail = await screen.findByRole('navigation', { name: /settings sections/i });
+    const entries = within(rail).getAllByRole('button');
+    expect(entries.length).toBeGreaterThan(0);
+    for (const entry of entries) {
+      expect(entry.querySelector('svg'), `${entry.textContent} has no icon`).not.toBeNull();
+    }
+  });
+
+  it('leaves the accessible name as the label alone', async () => {
+    // The regression an icon introduces. Asserted by NAME lookup rather than by
+    // reading `aria-hidden` off the svg, because the name is what actually
+    // breaks and the attribute is only one way of getting it wrong.
+    renderShell();
+    await openSettingsRaw();
+    const rail = await screen.findByRole('navigation', { name: /settings sections/i });
+    for (const label of ['Account', 'App', 'Notifications', 'Agents']) {
+      expect(
+        within(rail).getByRole('button', { name: label }),
+        `the rail no longer answers to "${label}"`,
+      ).toBeInTheDocument();
+    }
+  });
+
+  it('keeps the icon out of the row text', async () => {
+    // A mark that leaks into textContent would also break the exact-list
+    // assertion further up, and that failure reads as a section list problem.
+    renderShell();
+    await openSettingsRaw();
+    const rail = await screen.findByRole('navigation', { name: /settings sections/i });
+    expect(within(rail).getAllByRole('button').map(b => b.textContent))
+      .toEqual(['Account', 'App', 'Notifications', 'Agents']);
   });
 });

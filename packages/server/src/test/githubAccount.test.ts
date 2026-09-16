@@ -76,12 +76,30 @@ describe('reading the connected account', () => {
     });
   });
 
-  it('refuses an avatar URL that is not http(s)', () => {
+  it('refuses an avatar URL that is not https', () => {
     // It goes straight into an <img src>. The value comes from a remote API, so
     // treating it as trusted because "it is our own gh" is how a javascript:
     // or data: URL reaches the DOM.
-    const run = () => JSON.stringify({ login: 'x', name: null, email: null, avatar_url: 'javascript:alert(1)' });
-    expect(readGitHubAccount(run)).toMatchObject({ connected: true, avatarUrl: null });
+    //
+    // http: is refused too, and that is not pedantry: in practice this is
+    // always avatars.githubusercontent.com, so refusing cleartext costs nothing
+    // and removes the possibility of a value from a remote API becoming a
+    // cleartext beacon to an arbitrary host.
+    for (const bad of ['javascript:alert(1)', 'data:text/html,x', 'http://tracker.example/a.png', 'not a url']) {
+      const run = () => JSON.stringify({ login: 'x', name: null, email: null, avatar_url: bad });
+      expect(readGitHubAccount(run), bad).toMatchObject({ connected: true, avatarUrl: null });
+    }
+  });
+
+  it('keeps the https avatar GitHub actually sends', () => {
+    // The mirror, so "refuse everything" cannot pass as a fix.
+    const run = () => JSON.stringify({
+      login: 'x', name: null, email: null,
+      avatar_url: 'https://avatars.githubusercontent.com/u/1?v=4',
+    });
+    expect(readGitHubAccount(run)).toMatchObject({
+      avatarUrl: 'https://avatars.githubusercontent.com/u/1?v=4',
+    });
   });
 
   it('distinguishes gh missing from gh logged out', () => {

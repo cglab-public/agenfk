@@ -56,6 +56,21 @@ const MAX_TITLE = 80;
 const CONTROL_CHARS = new RegExp(String.raw`[\u0000-\u001f\u007f]`, 'g');
 
 /**
+ * The characters that are not control codes but behave like them.
+ *
+ * `U+2028`/`U+2029` are line separators and several notification backends
+ * render them as newlines, which is the same "looks like a second, separate
+ * message" problem one line up. `U+202A-202E` and `U+2066-2069` are the bidi
+ * overrides: they reorder what is DISPLAYED without changing the string, so a
+ * title can be made to read as something other than what it is.
+ *
+ * Both matter here for the same reason the control codes do - this text travels
+ * from an agent's own terminal title, and a banner is a good place to put a
+ * convincing sentence in front of somebody.
+ */
+const DECEPTIVE_CHARS = new RegExp(String.raw`[\u2028\u2029\u202a-\u202e\u2066-\u2069]`, 'g');
+
+/**
  * Strip what does not belong in a notification, then clip.
  *
  * Control characters first: newlines and escape sequences in a body render as
@@ -66,6 +81,7 @@ const CONTROL_CHARS = new RegExp(String.raw`[\u0000-\u001f\u007f]`, 'g');
 function plain(raw: string, limit: number): string {
   const stripped = raw
     .replace(CONTROL_CHARS, ' ')
+    .replace(DECEPTIVE_CHARS, '')
     .replace(/[<>]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
