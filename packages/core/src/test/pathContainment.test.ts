@@ -13,7 +13,7 @@
  * which contains no `..` at all.
  */
 import { describe, it, expect } from 'vitest';
-import { isInsideRoot, containedPath } from '../pathContainment';
+import { isInsideRoot, containedPath, resolveThroughLinks } from '../pathContainment';
 
 const ROOT = '/tmp/wt/repo';
 
@@ -142,5 +142,76 @@ describe('containedPath', () => {
       expect(containedPath(root, bad as never)).toBeNull();
     }
     expect(containedPath('', `${root}/a`)).toBeNull();
+  });
+});
+
+/**
+ * Resolving a path that may not exist yet.
+ *
+ * This walk lived TWICE - `canonical` in worktrees.ts and `realBase` in
+ * server.ts, identical line for line - and neither copy had a test of its own.
+ * Both were exercised only through whatever called them, which is how two
+ * copies of a security primitive drift without anybody noticing.
+ */
+describe('resolveThroughLinks', () => {
+  /** A fake filesystem: which paths exist, and where the links point. */
+  const fsOf = (exists: string[], links: Record<string, string> = {}) => ({
+    resolve: (x: string) => x,
+    dirname: (x: string) => x.split('/').slice(0, -1).join('/') || '/',
+    basename: (x: string) => x.split('/').pop() ?? '',
+    join: (...xs: string[]) => xs.join('/').replace(/\/+/g, '/'),
+    exists: (x: string) => exists.includes(x),
+    realpath: (x: string) => links[x] ?? x,
+  });
+
+  it('follows a link in an ancestor of a path that does not exist yet', () => {
+    /*
+     * THE case, and the one the whole containment rests on: the target of a
+     * worktree has not been created, so `realpath` on it would throw - but its
+     * PARENT exists and may be a link pointing somewhere else entirely.
+     */
+    const deps = fsOf(['/base/wt'], { '/base/wt': '/elsewhere' });
+    expect(resolveThroughLinks('/base/wt/new/repo', deps)).toBe('/elsewhere/new/repo');
+  });
+
+  it('returns the path unchanged when nothing on the way is a link', () => {
+    const deps = fsOf(['/base', '/base/wt']);
+    expect(resolveThroughLinks('/base/wt/new', deps)).toBe('/base/wt/new');
+  });
+
+  it('stops at the filesystem root instead of walking for ever', () => {
+    /*
+     * `dirname('/')` is `/`, so without the parent-equals-self check the walk
+     * never moves and never ends. That exact shape wedged this server once
+     * already, in findProjectRoot - on a single-threaded runtime it is the
+     * whole process, not one request.
+     */
+    const deps = fsOf([]);   // nothing exists at all
+    const start = Date.now();
+    expect(resolveThroughLinks('/a/b/c', deps)).toBe('/a/b/c');
+    expect(Date.now() - start, 'it looped').toBeLessThan(1000);
+  });
+
+  it('gives back the absolute path when realpath throws', () => {
+    // An unreadable ancestor is not evidence of anything, and the containment
+    // check that follows still has to pass - so failing closed here would
+    // refuse legitimate paths for a permissions problem somewhere above.
+    const deps = {
+      ...fsOf(['/base']),
+      realpath: () => { throw new Error('EACCES'); },
+    };
+    expect(resolveThroughLinks('/base/x', deps)).toBe('/base/x');
+  });
+
+  it('is NOT a sanitiser: what comes out can still be outside a root', () => {
+    /*
+     * Stated as a test because the next person to read the name may assume
+     * otherwise. It RESOLVES; it does not decide. The output is the input to a
+     * containment check, and anything treating it as safe has skipped the check.
+     */
+    const deps = fsOf(['/base/link'], { '/base/link': '/etc' });
+    const out = resolveThroughLinks('/base/link/passwd', deps);
+    expect(out).toBe('/etc/passwd');
+    expect(containedPath('/base', out), 'the containment check is what refuses').toBeNull();
   });
 });

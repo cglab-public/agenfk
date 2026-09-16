@@ -14,7 +14,7 @@
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import { buildWorktreePath, containedPath } from '@agenfk/core';
+import { buildWorktreePath, containedPath, resolveThroughLinks } from '@agenfk/core';
 import { planWorktreeSetup, type SetupDecision } from './worktreeSetup.js';
 
 /**
@@ -137,20 +137,13 @@ const git = (cwd: string, args: string[]): string =>
  * ancestor that does and re-attach the rest.
  */
 function canonical(p: string): string {
-  const abs = path.resolve(p);
-  const tail: string[] = [];
-  let head = abs;
-  while (!fs.existsSync(head)) {
-    const parent = path.dirname(head);
-    if (parent === head) return abs;   // hit the filesystem root; nothing to resolve
-    tail.unshift(path.basename(head));
-    head = parent;
-  }
-  try {
-    return path.join(fs.realpathSync(head), ...tail);
-  } catch {
-    return abs;
-  }
+  // One implementation, in core. This was a line-for-line copy of the same walk
+  // in server.ts - two copies of a security primitive is two places for it to
+  // drift, and the drift would be silent.
+  return resolveThroughLinks(p, {
+    resolve: path.resolve, dirname: path.dirname, basename: path.basename,
+    join: path.join, exists: fs.existsSync, realpath: fs.realpathSync,
+  });
 }
 
 /** The namespace a repo's worktrees live under — just its directory name. */

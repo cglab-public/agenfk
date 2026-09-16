@@ -4,7 +4,7 @@ import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
 import { commitStagedForCard, resolveCommitRoot } from './closeCommit';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims } from "@agenfk/core";
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -556,19 +556,13 @@ const syncParentStatus = async (parentId: string) => {
  * the rest.
  */
 function realBase(p: string): string {
-  let head = path.resolve(p);
-  const tail: string[] = [];
-  while (!fs.existsSync(head)) {
-    const parent = path.dirname(head);
-    if (parent === head) return path.resolve(p);
-    tail.unshift(path.basename(head));
-    head = parent;
-  }
-  try {
-    return path.join(fs.realpathSync(head), ...tail);
-  } catch {
-    return path.resolve(p);
-  }
+  // Same implementation as worktrees.canonical, because it IS the same
+  // question. It used to be a second copy with a comment explaining why the
+  // copy was justified; the explanation was a rationalisation.
+  return resolveThroughLinks(p, {
+    resolve: path.resolve, dirname: path.dirname, basename: path.basename,
+    join: path.join, exists: fs.existsSync, realpath: fs.realpathSync,
+  });
 }
 
 export const findProjectRoot = (startDir: string): string => {

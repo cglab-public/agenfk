@@ -66,3 +66,58 @@ export function containedPath(
 ): string | null {
   return isInsideRoot(root, candidate) ? (candidate as string) : null;
 }
+
+/**
+ * A path with its symlinks resolved, including one that does not exist yet.
+ *
+ * `path.resolve` collapses `..` and stops there, which is why a containment
+ * check built on it is defeated by a single link. `fs.realpathSync` follows
+ * links but throws on a path that is not there - and the interesting case is
+ * exactly a target about to be CREATED. So this resolves the deepest ancestor
+ * that does exist and re-attaches the rest.
+ *
+ * ONE COPY. This lived twice: `canonical` in worktrees.ts and `realBase` in
+ * server.ts, identical line for line, with a comment on the second claiming
+ * they were separate because they "answer for different trust boundaries".
+ * That was a rationalisation of a copy-paste - both answer the same question,
+ * and two copies of a security primitive is two places for it to drift.
+ *
+ * NOT A SANITISER, and deliberately not modelled as one. It resolves; it does
+ * not decide. What comes out is where the caller's path LANDS, which is the
+ * input to a containment check rather than the result of one. Anything that
+ * treats this return value as safe has skipped the actual check.
+ *
+ * `deps` is injected so this stays testable without a filesystem, and so the
+ * two callers cannot quietly diverge on which fs they mean.
+ */
+export function resolveThroughLinks(
+  p: string,
+  deps: {
+    readonly resolve: (x: string) => string;
+    readonly dirname: (x: string) => string;
+    readonly basename: (x: string) => string;
+    readonly join: (...xs: string[]) => string;
+    readonly exists: (x: string) => boolean;
+    readonly realpath: (x: string) => string;
+  },
+): string {
+  const abs = deps.resolve(p);
+  const tail: string[] = [];
+  let head = abs;
+  while (!deps.exists(head)) {
+    const parent = deps.dirname(head);
+    // The filesystem root: nothing above it to resolve, and without this the
+    // walk never moves and never ends.
+    if (parent === head) return abs;
+    tail.unshift(deps.basename(head));
+    head = parent;
+  }
+  try {
+    return deps.join(deps.realpath(head), ...tail);
+  } catch {
+    // An unreadable ancestor is not evidence of anything. The unresolved
+    // absolute path is the honest answer, and the containment check that
+    // follows still has to pass.
+    return abs;
+  }
+}
