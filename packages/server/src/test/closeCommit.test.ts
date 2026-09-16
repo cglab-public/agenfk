@@ -19,7 +19,7 @@
  * the original defect wearing a condition.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { commitStagedForCard } from '../closeCommit';
+import { commitStagedForCard, resolveCommitRoot } from '../closeCommit';
 
 /** Records every git invocation, so the ARGUMENTS can be asserted. */
 const spyGit = (staged: string[] = ['packages/ui/src/thing.ts']) => {
@@ -213,5 +213,69 @@ describe('a shared index (review of d997368d)', () => {
     commitStagedForCard(card, '/repo', { run: git.run }, ['a.ts', '../../etc/passwd']);
     const commit = git.calls.find(c => c.includes('commit'))!;
     expect(commit.join(' ')).not.toContain('..');
+  });
+});
+
+/**
+ * Which directory the close commit runs in.
+ *
+ * A GIT WORKTREE HAS ITS OWN INDEX - verified by hand, not assumed: stage a
+ * file inside a linked worktree and the primary checkout's
+ * `diff --cached --name-only` comes back EMPTY. The close commit resolved
+ * `project.projectRoot` and never looked at the item's worktree, so for every
+ * card that has one it read the wrong index and told the agent "Nothing was
+ * staged, so nothing was committed. Stage the files this card changed, then
+ * close it again." It had.
+ *
+ * No test could see it: autoGitCommit is skipped under test by construction
+ * (NODE_ENV/VITEST at every call site) and every test calls it with an explicit
+ * root, so the CALLER's choice of directory was unobservable. That is why this
+ * survived a branch that spent its length on exactly this defect class.
+ */
+describe('the directory the commit runs in', () => {
+  it('uses the item\'s own worktree, not the project root', () => {
+    /*
+     * THE test. They are different checkouts with different indexes, so this
+     * is not a preference between two spellings of the same place.
+     */
+    const r = resolveCommitRoot(
+      { id: 'card-1', worktreePath: '/wt/feat-x' },
+      '/repo/primary',
+    );
+    expect(r.root, 'it committed from the primary checkout').toBe('/wt/feat-x');
+  });
+
+  it('falls back to the project root only when there is no worktree', () => {
+    expect(resolveCommitRoot({ id: 'card-1' }, '/repo/primary').root).toBe('/repo/primary');
+    expect(resolveCommitRoot({ id: 'card-1', worktreePath: null }, '/repo/primary').root)
+      .toBe('/repo/primary');
+    // Whitespace is not a path. A blank worktreePath reaching git as a cwd is
+    // an ENOENT whose message explains nothing.
+    expect(resolveCommitRoot({ id: 'card-1', worktreePath: '   ' }, '/repo/primary').root)
+      .toBe('/repo/primary');
+  });
+
+  it('DECLINES rather than falling back to wherever the process is standing', () => {
+    /*
+     * The old expression ended in `|| findProjectRoot(process.cwd())`, and
+     * findProjectRoot returns its start directory when it finds nothing - so a
+     * long-lived `agenfk up` daemon would commit into whatever repository it
+     * was launched from, under a card's message. branchHint refuses this same
+     * fallback by name: "no worktree, so use the process cwd" is the original
+     * defect restated as a default.
+     */
+    for (const root of [undefined, null, '', '   ']) {
+      const r = resolveCommitRoot({ id: 'card-1' }, root);
+      expect(r.root, `it invented a directory for ${JSON.stringify(root)}`).toBeNull();
+    }
+  });
+
+  it('says what to do about it, naming both ways out', () => {
+    // A refusal that only states the problem is one people read twice and act
+    // on never - and this one fires at the moment a card is being closed.
+    const r = resolveCommitRoot({ id: 'card-1' }, null);
+    expect(r.reason).toMatch(/--project-root/);
+    expect(r.reason).toMatch(/branch create/);
+    expect(r.reason, 'it did not say the commit was skipped').toMatch(/[Nn]othing was committed/);
   });
 });

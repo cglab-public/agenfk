@@ -79,21 +79,28 @@ export const CARD_STATE_LABEL: Record<Exclude<CardState, 'quiet'>, string> = {
  * blocked rows already use, because what a person does about a crashed agent
  * and about a blocked one is the same thing: look at it.
  */
+/**
+ * The states that will not move without a person.
+ *
+ * Exported because the sidebar's "N need you" jump was written as its own
+ * inline list and LEFT `unverifiable` OUT - so the card dot counted an
+ * unreachable agent and the header count did not, about the same row. Two
+ * spellings of one rule, disagreeing.
+ *
+ * `unverifiable` belongs for a reason worth stating: we do not know it is
+ * stuck, we know we cannot tell. That is precisely a thing a person has to
+ * look at, and folding it into quiet would say the opposite of what we know.
+ */
+export const NEEDS_A_PERSON: ReadonlySet<SessionState> = new Set([
+  'blocked', 'failed', 'unverifiable',
+]);
+
 export function itemsNeedingAPerson(
   rows: ReadonlyArray<{ itemId: string; state: SessionState }>,
 ): ReadonlySet<string> {
   const blocked = new Set<string>();
   for (const row of rows) {
-    /*
-     * All three mean "this one is not going to move on its own", and
-     * `unverifiable` belongs here for a reason worth stating: we do not know
-     * that it is stuck - we know we cannot tell. That is precisely a thing a
-     * person has to look at, and folding it into quiet would say the opposite
-     * of what we know.
-     */
-    if (row.state === 'blocked' || row.state === 'failed' || row.state === 'unverifiable') {
-      blocked.add(row.itemId);
-    }
+    if (NEEDS_A_PERSON.has(row.state)) blocked.add(row.itemId);
   }
   return blocked;
 }

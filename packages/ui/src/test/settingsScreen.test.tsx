@@ -555,3 +555,48 @@ describe('the shell is not an agent that "ignores" auto-approve', () => {
     expect(row).not.toHaveTextContent(/Shell/);
   });
 });
+
+describe('what the tmux note actually promises', () => {
+  const withTmuxMissing = async (): Promise<string> => {
+    (window as unknown as Record<string, unknown>).agenfkDesktop = {
+      isDesktop: true, platform: 'darwin',
+      versions: { electron: '40', chrome: '1', node: '24' },
+      terminal: {
+        listAgents: async () => [],
+        sessionPersistence: async () => ({ available: false, hint: 'brew install tmux' }),
+      },
+    };
+    renderShell();
+    await openSettings();
+    return (await screen.findByTestId('setting-note')).textContent ?? '';
+  };
+
+  it('does not say sessions are lost, because they are not', async () => {
+    /*
+     * THE test. The card that filed this said the warning claims too much -
+     * the PROCESS does not survive quitting, the SESSION does - and the fix
+     * corrected the console line, which almost nobody reads, while Settings
+     * went on saying "sessions will not survive quitting". That is the screen
+     * a person lands on when they wonder about tmux.
+     *
+     * Wrong in the harmful direction: it tells somebody their work is lost
+     * when the session is recorded server-side and put back, which pushes them
+     * into copying scrollback out by hand before quitting - the exact
+     * behaviour the card was written to stop.
+     */
+    const note = await withTmuxMissing();
+    expect(note, 'Settings still claims the session is lost').not.toMatch(/sessions will not survive/i);
+  });
+
+  it('says the terminals come back', async () => {
+    const note = await withTmuxMissing();
+    expect(note).toMatch(/reopened/i);
+  });
+
+  it('does not promise every agent resumes its conversation', async () => {
+    // Only the agents that can be handed a session id do. Saying it flatly
+    // would be the same overstatement one layer over.
+    const note = await withTmuxMissing();
+    expect(note).toMatch(/agents that support it/i);
+  });
+});

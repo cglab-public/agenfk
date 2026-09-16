@@ -11,7 +11,7 @@
  * be confused for a second copy of the rail's colour coding.
  */
 import { describe, it, expect } from 'vitest';
-import { cardState, itemsNeedingAPerson, CARD_STATE_LABEL } from '../cardState';
+import { cardState, itemsNeedingAPerson, CARD_STATE_LABEL, NEEDS_A_PERSON } from '../cardState';
 import type { SessionState } from '../sessionRow';
 
 describe('cardState', () => {
@@ -311,5 +311,42 @@ describe('the mark never claims more than the rows show', () => {
     expect(cardState('i1', new Set(['i1']), new Set(['i1']), [
       { itemId: 'i1', state: 'running' },
     ])).toBe('needs-person');
+  });
+});
+
+describe('the one rule, spelled once', () => {
+  it('counts an unreachable agent as needing a person', () => {
+    /*
+     * THE gap. The card dot folded blocked, failed AND unverifiable into
+     * needs-person, while the sidebar's "N need you" jump had its own inline
+     * list that left unverifiable out - two spellings of one rule, disagreeing
+     * about the same row.
+     *
+     * It fails in the worst place: every project starts COLLAPSED on a fresh
+     * install, so an agent that goes unreachable has its dot inside an `inert`
+     * subtree, and that header count was the only remaining signal. With
+     * nothing else failed or blocked, the row rendered nothing and the agent
+     * was invisible with no route to it.
+     */
+    expect(NEEDS_A_PERSON.has('unverifiable'), 'an unreachable agent was counted as quiet').toBe(true);
+    expect(NEEDS_A_PERSON.has('blocked')).toBe(true);
+    expect(NEEDS_A_PERSON.has('failed')).toBe(true);
+  });
+
+  it('does not drag the quiet states in with them', () => {
+    // A count that included running and idle would be every row, which is the
+    // same as no count at all.
+    expect(NEEDS_A_PERSON.has('running')).toBe(false);
+    expect(NEEDS_A_PERSON.has('idle')).toBe(false);
+  });
+
+  it('is the same set itemsNeedingAPerson uses, not a copy of it', () => {
+    /*
+     * The point of exporting it. If the dot and the header count are derived
+     * from one set they cannot drift; if they are two lists that agree today,
+     * they are the bug waiting to happen again.
+     */
+    const rows = ([...NEEDS_A_PERSON] as const).map((state, n) => ({ itemId: `card-${n}`, state }));
+    expect(itemsNeedingAPerson(rows).size).toBe(NEEDS_A_PERSON.size);
   });
 });

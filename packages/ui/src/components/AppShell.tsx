@@ -77,7 +77,7 @@ import { CardStateDot } from './CardStateDot';
 import { CardProcessRow } from './CardProcessRow';
 import { RunsPanel } from './RunsPanel';
 import { ORDER } from './sessionPresentation';
-import { cardState, itemsNeedingAPerson } from '../cardState';
+import { cardState, itemsNeedingAPerson, NEEDS_A_PERSON } from '../cardState';
 
 /**
  * A view the main column can show.
@@ -279,9 +279,51 @@ export function AppShell({ children }: { children: React.ReactNode }) {
    */
   const [pickingCard, setPickingCard] = React.useState(false);
   /** The card a terminal is being opened FOR, while the dialog is up. */
-  const [pending, setPending] = React.useState<
-    { itemId: string; title: string; agentId?: string; branchName?: string | null } | null
-  >(null);
+  /**
+   * Cards waiting for their agent to be picked - A QUEUE, not one.
+   *
+   * It was a single slot, and that turned the fleet sheet's headline promise
+   * into a lie. "Launch 3" ran a loop calling requestTerminal three times in
+   * one handler; each call did setPending({...}) on the same slot, so the last
+   * write won and exactly ONE dialog appeared, for the last child in the list.
+   * The other two were dropped with no row, no message and no error, while the
+   * person watched the sheet close believing a three-way fan-out had started.
+   *
+   * The count was never the problem - the sheet counts honestly. The dispatch
+   * end could only ever deliver one, which is the same interface lie relocated
+   * one layer down, and no test saw it because none of them render the shell
+   * and press the button.
+   *
+   * The head is the dialog on screen; answering or dismissing it shifts to the
+   * next. One question at a time, and every card gets asked.
+   */
+  const [pendingQueue, setPendingQueue] = React.useState<
+    { itemId: string; title: string; agentId?: string; branchName?: string | null }[]
+  >([]);
+  const pending = pendingQueue[0] ?? null;
+  /**
+   * Ask about one more card. Appends; never replaces.
+   *
+   * `allowSecond` exists because the two ways in mean different things. A card
+   * CLICK means "take me to my work", so asking twice about the same card is a
+   * duplicate question. The tab bar's + means "give me another terminal on this
+   * card", which is a supported thing to want - agent names are numbered
+   * precisely so two on one card are distinguishable. Deduplicating both would
+   * quietly delete that feature, so the caller says which it is.
+   */
+  const enqueuePending = React.useCallback(
+    (
+      entry: { itemId: string; title: string; agentId?: string; branchName?: string | null },
+      allowSecond = false,
+    ): void => {
+      setPendingQueue(prev => (
+        !allowSecond && prev.some(p => p.itemId === entry.itemId) ? prev : [...prev, entry]
+      ));
+    },
+    [],
+  );
+  /** Done with the head, whether it was answered or dismissed. */
+  const shiftPending = React.useCallback((): void => setPendingQueue(prev => prev.slice(1)), []);
   /**
    * The card a terminal is currently open ON, with the choices made for it.
    *
@@ -368,13 +410,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
     // agentId comes off the ITEM, which is where it lives — the server keeps it
     // in the item's own record, so it follows the card rather than the machine.
-    setPending({
+    enqueuePending({
       itemId: item.id,
       title: item.title,
       agentId: item.agentId,
       branchName: (item as { branchName?: string | null }).branchName ?? null,
     });
-  }, [setActiveProjectId, sessions]);
+  }, [setActiveProjectId, sessions, enqueuePending]);
 
   /**
    * The board asked for a terminal on a card.
@@ -718,7 +760,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // from a previous launch. Offer to open one ON THAT CARD rather than
     // silently doing nothing; the dialog names the card so it is clear this
     // starts a session rather than resuming the one that is running.
-    setPending({ itemId: row.itemId, title: row.title, agentId: row.agentId });
+    enqueuePending({ itemId: row.itemId, title: row.title, agentId: row.agentId });
   }, [sessions]);
 
   /**
@@ -734,15 +776,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setActive('kanban');
   }, [focusItem]);
 
-  const stopSession = React.useCallback((runId: string): void => {
-    // By session id ONLY. The `|| s.itemId === runId` fallback could stop a
-    // terminal whose itemId happened to equal another row's runId, and it did
-    // nothing at all for a hook-recorded run — whose runId is an AgentRun uuid
-    // that matches no session. Rows we cannot stop no longer offer STOP; see
-    // the process row.
-    const open = sessions.find(s => s.id === runId);
-    if (open) closeSessionRef.current(open.id);
-  }, [sessions]);
+  /*
+   * `stopSession` used to live here and is GONE, not merely uncalled.
+   *
+   * Card 63bd3b13 removed the STOP control because it closed the terminal
+   * rather than stopping the agent - killing the pane and its scrollback under
+   * a label promising to interrupt. The commit deleted the two `onStop` props
+   * and edited this function's comment, leaving the handler compiled with no
+   * caller. Its own card says that state "must not stay", and the reason is
+   * specific: the next person wiring a stop control onto a process row finds a
+   * ready-made handler with exactly the right name and ships the bug back.
+   *
+   * Removing it means the next attempt has to write the behaviour, and writing
+   * it is where somebody notices what it actually does.
+   */
 
   /**
    * Remember a terminal, once the agent has told us which conversation it got.
@@ -823,7 +870,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const sessionsRef = React.useRef(sessions);
   sessionsRef.current = sessions;
 
-  const closeSessionRef = React.useRef<(id: string) => void>(() => {});
   const closeSession = React.useCallback((id: string): void => {
     // Read from the ref and act BEFORE the updater, for the same reason as
     // rememberSession: an updater must be pure, and React invokes it twice in
@@ -870,9 +916,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setActiveSession(sessions.at(-1)?.id ?? null);
   }, [sessions, activeSession]);
 
-  // stopSession is declared above closeSession and needs to reach it; a ref
-  // avoids reordering two callbacks that each read state the other does not.
-  closeSessionRef.current = closeSession;
 
   /**
    * Terminals from last time, put back with their conversations.
@@ -1478,12 +1521,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
              */
             setActiveProjectId(item.projectId);
             markProjectWorked(item.projectId);
-            setPending({
+            // allowSecond: this is the + , which exists to give one card a
+            // second terminal. Deduping here would make the button do nothing
+            // whenever the card already had one queued.
+            enqueuePending({
               itemId: item.id,
               title: item.title,
               agentId: item.agentId,
               branchName: (item as { branchName?: string | null }).branchName ?? null,
-            });
+            }, true);
           }}
         />
       )}
@@ -1493,7 +1539,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           cardTitle={pending.title}
           defaultAgentId={pending.agentId}
           listAgents={listAgentsFromBridge}
-          onClose={() => setPending(null)}
+          // Shift, never clear: dismissing ONE question must not throw away the
+          // rest of the wave. Clearing here was the single-slot habit surviving
+          // the queue - and it fails in the direction that loses work silently.
+          onClose={shiftPending}
           onCreate={async ({ agentId }) => {
             // Both read from Settings rather than asked here. They are
             // preferences, answered the same way every time, and a dialog in
@@ -1523,7 +1572,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             setActiveSession(id);
             setTerminalOpened(true);
             setActive('terminal');
-            setPending(null);
+            shiftPending();
 
             // Remember the choice ON THE CARD, where it belongs: the server
             // keeps it in the item's own record, so it follows the card across
@@ -1864,7 +1913,22 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
           trains the eye to skip the one place meant to catch it. */}
       {(() => {
         const running = sessionRows.filter(r => r.state === 'running').length;
-        const stuck = sessionRows.filter(r => r.state === 'failed' || r.state === 'blocked');
+        /*
+         * `unverifiable` belongs here, and leaving it out was the one gap in
+         * the route to a stuck agent.
+         *
+         * The card dot already counts it as needing a person (cardState folds
+         * blocked, failed and unverifiable into `needs-person`), so the dot and
+         * this count disagreed about the same fact. And it fails in the worst
+         * place: every project starts COLLAPSED on a fresh install, so an agent
+         * that went unreachable inside one has its dot hidden in an `inert`
+         * subtree - this header row was the only remaining signal, and it
+         * rendered nothing at all when no other row was failed or blocked.
+         *
+         * Derived from the same predicate the dot uses rather than restated, so
+         * the two cannot drift apart again.
+         */
+        const stuck = sessionRows.filter(r => NEEDS_A_PERSON.has(r.state));
         if (running === 0 && stuck.length === 0) return null;
         return (
           <div className="flex shrink-0 items-center gap-1.5 px-1 pb-1 font-mono text-[10px]">

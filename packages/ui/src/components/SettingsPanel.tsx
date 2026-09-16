@@ -222,10 +222,11 @@ export function SettingsPanel(): React.ReactElement {
               // The platform reason, never an install command. Telling a
               // Windows user to `brew install tmux` is worse than saying
               // nothing: it sends them after a fix that cannot exist there.
-              <>tmux is not available on Windows, so sessions will not survive quitting.</>
+              <>tmux is not available on Windows, so agent PROCESSES will not survive quitting. Your terminals are reopened, and agents that support it resume their conversation.</>
             ) : (
               <>
-                tmux is not available here, so sessions will not survive quitting.
+                tmux is not available here, so agent PROCESSES will not survive quitting.
+                Your terminals are reopened, and agents that support it resume their conversation.
                 {persistence.hint && (
                   <>
                     {' '}

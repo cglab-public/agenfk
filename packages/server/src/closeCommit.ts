@@ -231,3 +231,57 @@ export function commitStagedForCard(
     return { committed: false, reason: gitSaid(e) };
   }
 }
+
+export interface CommitRootItem {
+  readonly id: string;
+  /** The item's own checkout, when it has one. */
+  readonly worktreePath?: string | null;
+}
+
+export type CommitRoot =
+  | { readonly root: string; readonly reason?: undefined }
+  | { readonly root: null; readonly reason: string };
+
+/**
+ * WHICH DIRECTORY THE CLOSE COMMIT RUNS IN.
+ *
+ * A GIT WORKTREE HAS ITS OWN INDEX, and that is the whole of this. Verified by
+ * hand rather than assumed: stage a file inside a linked worktree and
+ * `git -C <worktree> diff --cached --name-only` lists it while
+ * `git -C <primary> diff --cached --name-only` is EMPTY.
+ *
+ * The close commit was resolving `project.projectRoot` and never looking at the
+ * item's worktree, so for every card that has one - which is every card under
+ * `autoWorktree`, `agenfk branch create`, and the PR import - it read the wrong
+ * index. The agent stages its files, verifies onto the final step, and is told
+ * "Nothing was staged, so nothing was committed. Stage the files this card
+ * changed, then close it again." It had. And in the worse direction: whatever
+ * the HUMAN happened to have staged in the primary checkout gets committed
+ * under the card's message.
+ *
+ * IT DECLINES RATHER THAN FALLING BACK TO THE PROCESS CWD. The old expression
+ * ended in `|| findProjectRoot(process.cwd())`, and `findProjectRoot` returns
+ * its start directory when it finds nothing - so a long-lived `agenfk up`
+ * daemon would commit into whatever repository it happened to be launched
+ * from. branchHint refuses the same fallback by name, and it is refused here
+ * for the same reason: "no worktree, so use the process cwd" is the original
+ * defect restated as a default.
+ */
+export function resolveCommitRoot(
+  item: CommitRootItem,
+  projectRoot: string | null | undefined,
+): CommitRoot {
+  const worktree = item.worktreePath?.trim();
+  // The item's own checkout wins whenever it has one. Not a preference: the
+  // other directory holds a different index.
+  if (worktree) return { root: worktree };
+  const root = projectRoot?.trim();
+  if (root) return { root };
+  return {
+    root: null,
+    reason: `Card ${item.id} has no worktree and its project has no projectRoot, so there is no `
+      + 'directory this commit could safely run in. Nothing was committed. Set one with '
+      + '`agenfk update-project <id> --project-root <path>`, or give the card a worktree with '
+      + '`agenfk branch create <itemId>`.',
+  };
+}

@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
-import { commitStagedForCard } from './closeCommit';
+import { commitStagedForCard, resolveCommitRoot } from './closeCommit';
 import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
@@ -575,7 +575,7 @@ export const findProjectRoot = (startDir: string): string => {
  */
 export const autoGitCommit = async (
   item: AgEnFKItem,
-  projectRoot: string,
+  projectRoot: string | null | undefined,
 ): Promise<{
   success: boolean;
   output: string;
@@ -583,7 +583,17 @@ export const autoGitCommit = async (
   /** Staged files the card never claimed. Reported, never blocking. */
   outsideClaims?: readonly string[];
 }> => {
-  const result = commitStagedForCard(item, projectRoot, {
+  /*
+   * THE ITEM'S WORKTREE, not the project root - a linked worktree has its OWN
+   * index, so committing from the primary checkout reads a different one. See
+   * resolveCommitRoot for what that did to every card with a worktree.
+   */
+  const resolved = resolveCommitRoot(item as any, projectRoot);
+  if (resolved.root === null) {
+    console.log(`[${new Date().toISOString()}] [AUTO_GIT] ${resolved.reason}`);
+    return { success: false, output: resolved.reason, error: resolved.reason };
+  }
+  const result = commitStagedForCard(item, resolved.root, {
     // execFileSync with an argument array, not a shell: the card's TITLE is in
     // the message and arrives from a user.
     run: args => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }),
@@ -3462,7 +3472,10 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         const updated = await storage.updateItem(itemId, updates);
         io.emit('items_updated');
         if (updated.parentId) await syncParentStatus(updated.parentId);
-        if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) autoGitCommit(updated, (project as any)?.projectRoot || findProjectRoot(process.cwd()));
+        // No `|| findProjectRoot(process.cwd())`. That fallback made a
+        // long-lived daemon commit into whatever repo it was launched from;
+        // autoGitCommit now declines instead, and says why on the card's log.
+        if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) autoGitCommit(updated, (project as any)?.projectRoot);
         return res.json({ status: Status.DONE, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to DONE.${pushInstruction}`, output: 'Sibling propagation' });
       }
     } else {
