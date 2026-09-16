@@ -22,7 +22,7 @@
  */
 import { claimStateOf, type ClaimCard } from './claimState';
 
-export type HoldReason = 'claimed-by-sibling' | 'claimed-elsewhere' | 'unreadable-claim' | 'too-deep';
+export type HoldReason = 'claimed-by-sibling' | 'claimed-elsewhere' | 'unreadable-claim' | 'too-deep' | 'circuit-broken';
 
 export interface FleetChild {
   readonly id: string;
@@ -58,6 +58,14 @@ const NOT_DISPATCHABLE = new Set(['DONE', 'TRASHED', 'ARCHIVED', 'IDEAS']);
 
 export interface FleetInputs {
   readonly parentId: string;
+  /**
+   * Consecutive failures per card (CGLAB-202), when known.
+   *
+   * Asked BEFORE spending. A card that has failed three times in a row is
+   * refused here rather than after it costs a fourth agent, which is the whole
+   * point of having the count at all.
+   */
+  readonly failures?: ReadonlyMap<string, number>;
   /** Every item in the project. Needed whole: holders can be anywhere. */
   readonly all: readonly (ClaimCard & { title: string; parentId?: string | null })[];
   /** Whether the parent may fan out at all, and why not. */
@@ -73,7 +81,7 @@ export interface FleetInputs {
  * would return either both-launch, which is the race this prevents, or
  * both-held, which is a deadlock nobody asked for.
  */
-export function planFleet({ parentId, all, depth }: FleetInputs): FleetPlan {
+export function planFleet({ parentId, all, depth, failures }: FleetInputs): FleetPlan {
   const kids = all.filter(i => i.parentId === parentId && !NOT_DISPATCHABLE.has(i.status.toUpperCase()));
 
   if (!depth.allowed) {
@@ -109,6 +117,22 @@ export function planFleet({ parentId, all, depth }: FleetInputs): FleetPlan {
   const takenBySiblings: ClaimCard[] = [];
 
   for (const kid of kids) {
+    /*
+     * The breaker first, because it is the cheapest refusal and the one that
+     * says most: a card stopped after three failures is not waiting on a path,
+     * it is waiting on a person, and reporting a claim conflict for it would
+     * send somebody to renegotiate files when the problem is elsewhere.
+     */
+    const breaker = dispatchAllowed(failures?.get(kid.id) ?? 0);
+    if (!breaker.allowed) {
+      children.push({
+        id: kid.id, title: kid.title, status: kid.status, claims: kid.claims,
+        launch: false, hold: 'circuit-broken', heldBy: [],
+        holdText: breaker.reason,
+      });
+      continue;
+    }
+
     const state = claimStateOf(kid.id, [kid, ...outsiders, ...takenBySiblings]);
 
     if (state.rejected.length) {
@@ -202,6 +226,26 @@ export function mayFanOutLocal(
       reason: `This card is ${depth} level${depth === 1 ? '' : 's'} deep and the fan-out ceiling is ${maxDepth}. `
         + 'Work its children yourself, or raise the ceiling deliberately. '
         + 'Starting a fresh dispatch does not reset this: depth is where a card sits, not how it was reached.',
+    };
+  }
+  return { allowed: true, reason: null };
+}
+
+/**
+ * Mirrors `mayDispatch` in packages/core/src/circuitBreaker.ts (CGLAB-202).
+ *
+ * Duplicated for the reason this file already carries twice: core compiles to
+ * CommonJS and importing it into the browser bundle shipped a black window.
+ * A parity test holds the copy against the original.
+ */
+export const CIRCUIT_BREAK_AFTER_LOCAL = 3;
+
+export function dispatchAllowed(failureCount: number): { allowed: boolean; reason: string | null } {
+  if (failureCount >= CIRCUIT_BREAK_AFTER_LOCAL) {
+    return {
+      allowed: false,
+      reason: `Stopped after ${failureCount} consecutive failures. `
+        + 'Somebody has to look at this one before it runs again.',
     };
   }
   return { allowed: true, reason: null };

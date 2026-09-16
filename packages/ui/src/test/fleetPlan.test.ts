@@ -15,7 +15,7 @@
  * nobody asked for. Exactly one goes.
  */
 import { describe, it, expect } from 'vitest';
-import { planFleet, launchLabel, fanOutDepthLocal, mayFanOutLocal, type FleetInputs } from '../fleetPlan';
+import { planFleet, launchLabel, fanOutDepthLocal, mayFanOutLocal, dispatchAllowed, CIRCUIT_BREAK_AFTER_LOCAL, type FleetInputs } from '../fleetPlan';
 
 const OK: FleetInputs['depth'] = { allowed: true, reason: null };
 
@@ -231,5 +231,62 @@ describe('the duplicated depth rule agrees with core', () => {
     // The reason is what an agent reads. A copy that kept the verdict and lost
     // the sentence would let somebody go looking for the way around.
     expect(mayFanOutLocal('story', tree).reason).toMatch(/does not reset/i);
+  });
+});
+
+/**
+ * A card that keeps failing is refused before it costs another agent
+ * (CGLAB-202).
+ *
+ * The sheet is the moment where the breaker is worth the most: refusing after
+ * the launch costs an agent to learn what the count already knew.
+ */
+describe('a card the breaker has stopped', () => {
+  const broken = new Map([['b', 3]]);
+
+  it('is held, and the reason points at a person rather than a path', () => {
+    /*
+     * Reported BEFORE the claim check, deliberately. A stopped card is not
+     * waiting on a file, and calling it a claim conflict would send somebody
+     * to renegotiate paths when the problem is somewhere else entirely.
+     */
+    const p = planFleet({ parentId: 'epic', all: [epic, kid('a'), kid('b')], depth: OK, failures: broken });
+    const held = p.children.find(c => c.id === 'b')!;
+    expect(held.launch).toBe(false);
+    expect(held.hold).toBe('circuit-broken');
+    expect(held.holdText).toMatch(/somebody has to look/i);
+  });
+
+  it('does not stop the rest of the fleet', () => {
+    // One card stopped is one card stopped. The others have nothing to do
+    // with its failures.
+    const p = planFleet({ parentId: 'epic', all: [epic, kid('a'), kid('b')], depth: OK, failures: broken });
+    expect(p.launchCount).toBe(1);
+    expect(launchLabel(p)).toBe('Launch 1');
+  });
+
+  it('launches normally below the threshold', () => {
+    const p = planFleet({
+      parentId: 'epic', all: [epic, kid('a'), kid('b')], depth: OK,
+      failures: new Map([['b', 2]]),
+    });
+    expect(p.launchCount).toBe(2);
+  });
+
+  it('launches everything when no count is supplied at all', () => {
+    // Most callers have no failure history, and a missing map must not read as
+    // "everything has failed" - absence authorises, as everywhere else here.
+    const p = planFleet({ parentId: 'epic', all: [epic, kid('a'), kid('b')], depth: OK });
+    expect(p.launchCount).toBe(2);
+  });
+
+  it('agrees with core about when to stop', async () => {
+    // The copy exists because core is CommonJS and the bundle cannot have it.
+    // A copy that drifts would offer a launch the server refuses.
+    const { mayDispatch, CIRCUIT_BREAK_AFTER } = await import('@agenfk/core');
+    for (const n of [0, 1, 2, 3, 4, 10]) {
+      expect(dispatchAllowed(n).allowed, `disagrees at ${n}`).toBe(mayDispatch({ failureCount: n }).allowed);
+    }
+    expect(CIRCUIT_BREAK_AFTER_LOCAL).toBe(CIRCUIT_BREAK_AFTER);
   });
 });

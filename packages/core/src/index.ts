@@ -13,3 +13,4 @@ export * from "./prImport.js";
 export * from './claims';
 export * from './claimGate';
 export * from './fanOut';
+export * from './circuitBreaker';
