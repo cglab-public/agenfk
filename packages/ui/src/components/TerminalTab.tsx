@@ -13,6 +13,8 @@
  */
 import React from 'react';
 import { clsx } from 'clsx';
+import { tabIndicator, tabDotClass } from '../tabState';
+import type { SessionState } from '../sessionRow';
 import { agentLabel } from '../agentLabels';
 import { WorktreePanel } from './WorktreePanel';
 import { useGitStatus, type WorktreeView } from '../gitStatus';
@@ -104,6 +106,20 @@ export interface TerminalSession {
 
 export interface TerminalTabProps {
   readonly sessions: readonly TerminalSession[];
+  /**
+   * How each session is doing, keyed by session id (CGLAB-191).
+   *
+   * Passed in rather than computed here: `SessionRow.state` already holds this
+   * and the rail already renders from it. A second opinion about whether an
+   * agent is well is how the rail and the terminal came to disagree earlier in
+   * this epic, and a disagreement is worse than either answer alone because
+   * nothing on screen says which to believe.
+   *
+   * Optional, and absence is quiet rather than alarming: a tab exists from the
+   * moment it is opened and its row appears when the agent first produces
+   * something.
+   */
+  readonly sessionStates?: ReadonlyMap<string, SessionState>;
   readonly activeId: string | null;
   readonly onSelect: (id: string) => void;
   readonly onClose: (id: string) => void;
@@ -197,6 +213,7 @@ function readWorktreeOpen(): boolean {
 
 export function TerminalTab({
   sessions,
+  sessionStates,
   activeId,
   onSelect,
   onClose,
@@ -391,6 +408,27 @@ export function TerminalTab({
                 title={session.title}
                 className="flex min-w-0 flex-1 items-center gap-2 text-left"
               >
+                {(() => {
+                  /*
+                   * The state of the pane you are NOT looking at. Without it,
+                   * an agent that failed behind another tab is invisible until
+                   * you click it - so failures are found by going looking, one
+                   * tab at a time.
+                   */
+                  const ind = tabIndicator(sessionStates?.get(session.id));
+                  if (!ind.state) return null;
+                  return (
+                    <span
+                      data-testid="tab-state"
+                      data-state={ind.state}
+                      title={ind.label ?? undefined}
+                      className={clsx('shrink-0 rounded-full', tabDotClass(ind.state),
+                        // Urgent states are bigger as well as louder: colour
+                        // alone is not a signal everybody receives.
+                        ind.urgent ? 'h-2 w-2' : 'h-1.5 w-1.5')}
+                    />
+                  );
+                })()}
                 <AgentIcon agentId={session.agentId} size={13} />
                 <span className={clsx('truncate text-xs', selected ? 'text-ink' : 'text-ink-secondary')}>
                   {tabLabel}

@@ -213,3 +213,60 @@ describe('the worktree button in the terminal bar', () => {
     expect((await worktreeButton()).getAttribute('aria-pressed')).toBe('false');
   });
 });
+
+/**
+ * The tab for the pane you are NOT looking at (CGLAB-191).
+ *
+ * tabState.test.ts proves the decision is right. This proves it is REACHED:
+ * the dot was wired into the strip and the whole UI suite stayed green, which
+ * says nothing about a branch no test renders.
+ *
+ * It also pins the wiring mistake that actually happened. The state map was
+ * first built with a `useMemo` INSIDE the JSX, which sits behind whatever
+ * conditions wrap that branch while React counts hooks by order. It took 54
+ * tests red at once - the good outcome, since the same mistake in a
+ * rarely-rendered branch would have shipped.
+ */
+describe('what the tab strip says about each session', () => {
+  const two = () => ({
+    ...baseProps(),
+    sessions: [
+      { id: 's1', itemId: 'i1', title: 'A card', agentId: 'claude-code', autoApprove: false, persist: false, openedAt: new Date().toISOString() },
+      { id: 's2', itemId: 'i2', title: 'Another card', agentId: 'codex', autoApprove: false, persist: false, openedAt: new Date().toISOString() },
+    ],
+  });
+
+  it('marks a failed session on its tab, while you are looking at the other one', async () => {
+    /*
+     * THE test. Five sessions, one visible - an agent that failed behind
+     * another tab is otherwise invisible until you click it, so failures get
+     * found by going looking, one tab at a time.
+     */
+    renderTab(<TerminalTab {...two()} activeId="s1" sessionStates={new Map([['s2', 'failed' as const]])} />);
+    const dots = await screen.findAllByTestId('tab-state');
+    expect(dots, 'the unselected tab said nothing about its agent').toHaveLength(1);
+    expect(dots[0].getAttribute('data-state')).toBe('failed');
+    expect(dots[0].className).toContain('red');
+  });
+
+  it('says nothing on a quiet tab, so the strip does not become noise', () => {
+    renderTab(<TerminalTab {...two()} sessionStates={new Map([['s1', 'idle' as const], ['s2', 'idle' as const]])} />);
+    expect(screen.queryAllByTestId('tab-state')).toHaveLength(0);
+  });
+
+  it('still says a running agent is alive', () => {
+    // "the tab for the pane you are not looking at still tells you it is
+    // alive" - the good case is visible, just not loud.
+    renderTab(<TerminalTab {...two()} sessionStates={new Map([['s2', 'running' as const]])} />);
+    const dot = screen.getByTestId('tab-state');
+    expect(dot.getAttribute('data-state')).toBe('running');
+    expect(dot.className, 'a healthy agent was painted in an alarm colour').not.toContain('red');
+  });
+
+  it('renders nothing when the shell passes no states at all', () => {
+    // Every existing caller in the tests omits the prop; it must not throw or
+    // paint a dot on everything.
+    renderTab(<TerminalTab {...two()} />);
+    expect(screen.queryAllByTestId('tab-state')).toHaveLength(0);
+  });
+});

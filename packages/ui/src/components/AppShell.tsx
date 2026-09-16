@@ -587,6 +587,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       appStartedAt: APP_STARTED_AT,
     });
   }, [runs, sessions, live, liveItems, liveTick]);
+  /*
+   * How each OPEN TERMINAL is doing, keyed by session id (CGLAB-191).
+   *
+   * In the component body, not in the JSX: a hook called inside a render
+   * expression sits behind whatever conditions wrap that branch, and React
+   * counts hooks by order. Written inline first, it took 54 tests red at once
+   * - which is the good outcome, since the same mistake in a rarely-rendered
+   * branch would have shipped.
+   *
+   * Built from the SAME rows the rail renders, so the strip and the rail
+   * cannot disagree about whether an agent is well.
+   */
+  const sessionStates = React.useMemo(() => {
+    const m = new Map<string, SessionState>();
+    for (const row of sessionRows) {
+      const owned = sessions.find(s => s.itemId === row.itemId);
+      if (owned) m.set(owned.id, row.state);
+    }
+    return m;
+  }, [sessionRows, sessions]);
 
   const openSession = React.useCallback((row: SessionRow): void => {
     // Always the terminal. The rail lists AGENTS, and clicking an agent means
@@ -1087,6 +1107,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {terminalOpened && (
               <TerminalTab
                 sessions={sessions}
+                sessionStates={sessionStates}
                 activeId={activeSession}
                 onSelect={setActiveSession}
                 onClose={closeSession}
