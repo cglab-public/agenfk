@@ -75,9 +75,24 @@ describe('choosing a sound', () => {
   });
 
   it('names the copy from the extension, never from the user filename', () => {
-    // The destination is built from an allowlisted extension, so a filename
-    // like `../../../.ssh/authorized_keys` has nothing to contribute to it.
-    const stored = storeCustomSound({ userData, sourcePath: sourceFile('../../evil.wav') });
+    /*
+     * The destination is built from an allowlisted extension, so a filename
+     * like `../../../.ssh/authorized_keys` has nothing to contribute to it.
+     *
+     * THE TRAVERSAL IS IN THE PATH HANDED IN, NOT IN WHERE THE FIXTURE WRITES.
+     * It used to be `sourceFile('../../evil.wav')`, which made the helper write
+     * two levels above the temp directory - on macOS that is deep inside
+     * /var/folders and lands somewhere writable, on Linux os.tmpdir() is /tmp
+     * and two levels up is `/`. So the fixture failed to create the file on CI
+     * and the test failed for a reason that had nothing to do with the rule it
+     * is about.
+     *
+     * The file is real now and the path given to the subject still contains
+     * `..`, which is what the subject is actually being asked about.
+     */
+    const real = sourceFile('evil.wav');
+    const traversing = path.join(path.dirname(real), 'nested', '..', 'evil.wav');
+    const stored = storeCustomSound({ userData, sourcePath: traversing });
     expect(path.basename(stored!.path)).toBe('custom.wav');
     expect(path.dirname(stored!.path)).toBe(soundsDir(userData));
   });
