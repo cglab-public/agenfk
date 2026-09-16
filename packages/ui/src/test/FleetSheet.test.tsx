@@ -18,8 +18,18 @@ const epic: FleetSheetItem = { id: 'epic', title: 'The epic', status: 'IN_PROGRE
 const kid = (id: string, claims?: string[]): FleetSheetItem =>
   ({ id, title: `Card ${id}`, status: 'TODO', parentId: 'epic', claims });
 
-const show = (all: FleetSheetItem[], depth: FleetSheetProps['depth'] = OK, onLaunch = vi.fn()) => {
-  render(<FleetSheet parent={epic} all={[epic, ...all]} depth={depth} onLaunch={onLaunch} onClose={vi.fn()} />);
+const show = (
+  all: FleetSheetItem[],
+  depth: FleetSheetProps['depth'] = OK,
+  onLaunch = vi.fn(),
+  running: ReadonlySet<string> = new Set(),
+) => {
+  render(
+    <FleetSheet
+      parent={epic} all={[epic, ...all]} depth={depth}
+      running={running} onLaunch={onLaunch} onClose={vi.fn()}
+    />,
+  );
   return onLaunch;
 };
 
@@ -113,5 +123,39 @@ describe('an epic with nothing under it', () => {
     expect(screen.getByText(/no children to dispatch/i)).toBeInTheDocument();
     expect(screen.queryByTestId('fleet-blocked')).toBeNull();
     expect(screen.getByTestId('fleet-launch')).toBeDisabled();
+  });
+});
+
+describe('a child that already has a terminal', () => {
+  it('is NOT counted, because launching would not start an agent for it', () => {
+    /*
+     * THE test for the promise this sheet rests on: the button counts what
+     * will run.
+     *
+     * The dispatcher takes you to an existing terminal rather than starting a
+     * second agent in the same worktree - correct behaviour, and a rule this
+     * plan did not know. So "Launch 3" counted a card it was never going to
+     * launch, and the person pressing it got two agents and no explanation for
+     * the third. The count and the dispatch have to share every predicate, not
+     * most of them.
+     */
+    show([kid('a'), kid('b'), kid('c')], OK, vi.fn(), new Set(['b']));
+    expect(
+      screen.getByRole('button', { name: /launch/i }).textContent,
+      'it counted a card the dispatcher would not launch',
+    ).toMatch(/2/);
+  });
+
+  it('is shown with the reason, not quietly dropped from the list', () => {
+    // A child that vanishes is a count somebody has to reconcile by hand, and
+    // the whole design here is that waiting is visible.
+    show([kid('a'), kid('b')], OK, vi.fn(), new Set(['b']));
+    expect(screen.getByText(/already has a terminal open/i)).toBeInTheDocument();
+  });
+
+  it('is not launched even if something else clears it', () => {
+    const onLaunch = show([kid('a'), kid('b')], OK, vi.fn(), new Set(['b']));
+    fireEvent.click(screen.getByRole('button', { name: /launch/i }));
+    expect(onLaunch).toHaveBeenCalledWith(['a']);
   });
 });

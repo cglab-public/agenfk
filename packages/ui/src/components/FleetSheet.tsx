@@ -33,6 +33,15 @@ export interface FleetSheetProps {
   readonly all: readonly FleetSheetItem[];
   /** Whether the parent may fan out at all, and why not. From `mayFanOut`. */
   readonly depth: { readonly allowed: boolean; readonly reason: string | null };
+  /**
+   * Cards that already have a terminal open.
+   *
+   * Required rather than optional, on purpose: optional is how the breaker's
+   * `failures` ended up never being passed, leaving a whole hold reason dead in
+   * the shipped app while its tests constructed the input by hand. A promise
+   * about the count cannot depend on a caller remembering.
+   */
+  readonly running: ReadonlySet<string>;
   /** Launch these, in this order. Only ever the ones the plan cleared. */
   readonly onLaunch: (ids: readonly string[]) => void;
   readonly onClose: () => void;
@@ -89,10 +98,13 @@ function LaunchRow({ child }: { readonly child: FleetChild }): React.ReactElemen
   );
 }
 
-export function FleetSheet({ parent, all, depth, onLaunch, onClose }: FleetSheetProps): React.ReactElement {
+export function FleetSheet({ parent, all, depth, running, onLaunch, onClose }: FleetSheetProps): React.ReactElement {
   const plan = React.useMemo(
-    () => planFleet({ parentId: parent.id, all, depth }),
-    [parent.id, all, depth],
+    // `running` in the deps, not only in the call. A memo that reads a prop it
+    // does not depend on keeps answering with the set it was built with, which
+    // is the count going stale the moment a terminal opens.
+    () => planFleet({ parentId: parent.id, all, depth, running }),
+    [parent.id, all, depth, running],
   );
   const launchable = plan.children.filter(c => c.launch).map(c => c.id);
 

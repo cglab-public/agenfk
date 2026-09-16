@@ -387,6 +387,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     () => allItemsForFleet.find(i => i.id === fleetParentId) ?? null,
     [allItemsForFleet, fleetParentId],
   );
+  /**
+   * Cards that already have a terminal, for the fleet sheet's count.
+   *
+   * IN THE COMPONENT BODY, not in the JSX. `<FleetSheet>` renders inside
+   * `{fleetParent ? ... : null}`, so a hook written inline there sits behind
+   * that condition - and React counts hooks by order. It took 54 tests red at
+   * once the last time, which was the good outcome; the same mistake in a
+   * rarely-rendered branch ships.
+   */
+  const itemsWithATerminal = React.useMemo(
+    () => new Set(sessions.map(s => s.itemId)),
+    [sessions],
+  );
 
   const sessionSeq = React.useRef(0);
 
@@ -1471,6 +1484,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               parent={fleetParent}
               all={allItemsForFleet as never}
               depth={mayFanOutLocal(fleetParent.id, allItemsForFleet as never)}
+              /*
+               * What the DISPATCHER will refuse, told to the thing that counts.
+               * requestTerminal takes you to an existing terminal rather than
+               * starting a second agent in the same worktree - correct, and a
+               * rule the plan did not know, so the button counted a card it was
+               * never going to launch.
+               */
+              running={itemsWithATerminal}
               onClose={() => setFleetParentId(null)}
               onLaunch={(ids: readonly string[]) => {
                 setFleetParentId(null);

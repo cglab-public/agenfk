@@ -22,7 +22,7 @@
  */
 import { claimStateOf, type ClaimCard } from './claimState';
 
-export type HoldReason = 'claimed-by-sibling' | 'claimed-elsewhere' | 'unreadable-claim' | 'too-deep' | 'circuit-broken';
+export type HoldReason = 'claimed-by-sibling' | 'claimed-elsewhere' | 'unreadable-claim' | 'too-deep' | 'circuit-broken' | 'already-running';
 
 export interface FleetChild {
   readonly id: string;
@@ -66,6 +66,20 @@ export interface FleetInputs {
    * point of having the count at all.
    */
   readonly failures?: ReadonlyMap<string, number>;
+  /**
+   * Cards that already have a terminal open.
+   *
+   * THE COUNT HAS TO KNOW. The sheet's one promise is that the button counts
+   * what will run, and the dispatcher applied a second predicate this plan knew
+   * nothing about: a child with an open session was silently turned into
+   * "switch to that tab" and no agent started for it. So "Launch 3" counted a
+   * card it was never going to launch - the promise broken by a rule living in
+   * the wrong place.
+   *
+   * Held rather than filtered out, so the sheet SAYS why. A child that
+   * disappears from the list is a count somebody has to reconcile by hand.
+   */
+  readonly running?: ReadonlySet<string>;
   /** Every item in the project. Needed whole: holders can be anywhere. */
   readonly all: readonly (ClaimCard & { title: string; parentId?: string | null })[];
   /** Whether the parent may fan out at all, and why not. */
@@ -81,7 +95,7 @@ export interface FleetInputs {
  * would return either both-launch, which is the race this prevents, or
  * both-held, which is a deadlock nobody asked for.
  */
-export function planFleet({ parentId, all, depth, failures }: FleetInputs): FleetPlan {
+export function planFleet({ parentId, all, depth, failures, running }: FleetInputs): FleetPlan {
   const kids = all.filter(i => i.parentId === parentId && !NOT_DISPATCHABLE.has(i.status.toUpperCase()));
 
   if (!depth.allowed) {
@@ -123,6 +137,21 @@ export function planFleet({ parentId, all, depth, failures }: FleetInputs): Flee
      * it is waiting on a person, and reporting a claim conflict for it would
      * send somebody to renegotiate files when the problem is elsewhere.
      */
+    /*
+     * Already has a terminal: the dispatcher will take you to that tab rather
+     * than start a second agent in the same worktree, which is the right
+     * behaviour and the wrong thing to count.
+     */
+    if (running?.has(kid.id)) {
+      children.push({
+        id: kid.id, title: kid.title, status: kid.status, claims: kid.claims,
+        launch: false, hold: 'already-running', heldBy: [],
+        holdText: 'It already has a terminal open. Launching would not start a second agent, '
+          + 'it would take you to the one that is running.',
+      });
+      continue;
+    }
+
     const breaker = dispatchAllowed(failures?.get(kid.id) ?? 0);
     if (!breaker.allowed) {
       children.push({
