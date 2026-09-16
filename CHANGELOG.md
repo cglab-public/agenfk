@@ -7,6 +7,28 @@ All notable changes to AgEnFK are documented here.
 Lands on the `feat/CGLAB-181_federation-enrollment` tip, so the next beta cut
 from it carries everything in `v1.1.19-beta.4` plus the changes below.
 
+### Tests no longer make real network connections
+
+`TelemetryClient` built a live PostHog client with `flushAt: 1` and no test
+guard, so a single `npm test` fired 24 real HTTPS requests to `app.posthog.com`
+— one per `packages/server` test file. Every developer's and every CI run was
+shipping analytics to a third party, and the resulting sockets were the
+intermittent `read ECONNRESET` that wandered between unrelated files.
+
+- Telemetry is inert under a test runner (`AGENFK_TEST_ENABLE_TELEMETRY=1` to
+  opt in). Production behaviour is unchanged.
+- The hub's federation sync worker no longer lazily builds a real HTTP
+  transport under a test runner — it started unconditionally and 70 of 71 hub
+  test files inject none, so any test holding a parent binding had a timer
+  dialling the host that binding named. An injected (fake) transport still
+  ticks (`AGENFK_TEST_ENABLE_FEDERATION=1`).
+- A suite-wide guard now fails any socket to a non-loopback host immediately,
+  naming the host, so this class cannot regress silently. Loopback stays
+  allowed — supertest opens an ephemeral `127.0.0.1` socket per request.
+
+A separate, loopback-only `ECONNRESET` remains under investigation; it is
+socket-lifecycle churn inside the suite, not an external dependency.
+
 ### Federation is configured from one place (CGLAB-181)
 
 `Admin → Organization` held only the org-id rename, while "who reports to us"

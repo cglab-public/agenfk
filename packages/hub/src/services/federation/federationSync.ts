@@ -673,7 +673,20 @@ export function startFederationSync(args: {
     inflight = true;
     (async () => {
       try {
-        if (!transport) transport = httpTransport();
+        // Build the real transport only outside a test runner. createHubApp
+        // starts this worker unconditionally and 70 of 71 hub test files inject
+        // no transport, so without this guard every test holding a parent
+        // binding had a timer dialling whatever host that binding named — and
+        // those are real resolvable domains (parent.example.com). An INJECTED
+        // transport is a fake and still runs, which is what the federation
+        // suites rely on.
+        if (!transport) {
+          if ((process.env.NODE_ENV === 'test' || !!process.env.VITEST)
+            && !process.env.AGENFK_TEST_ENABLE_FEDERATION) {
+            return;
+          }
+          transport = httpTransport();
+        }
         const out = await federationTick({
           db: args.db, secretKey: args.secretKey, transport, hubVersion: args.hubVersion,
           orgId: args.orgId,

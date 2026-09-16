@@ -76,6 +76,21 @@ export class TelemetryClient {
     this.enabled = config.telemetry !== false;
     this.installationId = getOrCreateInstallationId();
 
+    // Never under a test runner.
+    //
+    // The client below is built with flushAt:1 / flushInterval:0 — send
+    // immediately — and every packages/server test file imports the server,
+    // constructs one and captures events. That was 24 real HTTPS requests to
+    // app.posthog.com per `npm test`: a third party receiving analytics from
+    // every developer's and every CI test run, and a pile of live sockets whose
+    // resets showed up as the intermittent `read ECONNRESET` that wandered
+    // between unrelated files. Set AGENFK_TEST_ENABLE_TELEMETRY=1 in the rare
+    // test that actually wants the client.
+    if ((process.env.NODE_ENV === 'test' || !!process.env.VITEST)
+      && !process.env.AGENFK_TEST_ENABLE_TELEMETRY) {
+      this.enabled = false;
+    }
+
     const apiKey = 'phc_QSEOhekLjn1ZAmwa2Gd43qr6WwaAK8dEhzgoS9XpuXW';
     if (this.enabled) {
       this.client = new PostHog(apiKey, {

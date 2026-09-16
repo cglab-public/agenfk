@@ -82,9 +82,15 @@ describe('TelemetryClient', () => {
   });
 
   describe('when telemetry is enabled (default)', () => {
+    // These specs mock posthog-node outright, so they never opened a socket —
+    // but the client is inert under a test runner now, and the enabled path is
+    // exactly what they exist to cover. Opting out explicitly is what the escape
+    // hatch is for, and it keeps the assertions unchanged.
     beforeEach(() => {
+      process.env.AGENFK_TEST_ENABLE_TELEMETRY = '1';
       setupFs({}, 'install-abc-123');
     });
+    afterEach(() => { delete process.env.AGENFK_TEST_ENABLE_TELEMETRY; });
 
     it('isEnabled is true', () => {
       const client = new TelemetryClient();
