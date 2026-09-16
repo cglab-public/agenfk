@@ -109,6 +109,33 @@ agenfk update <id> --claims "packages/ui/,packages/server/src/server.ts"
 - A **paused** card keeps its claims. Its files are half-edited in the shared
   tree, and handing them to somebody else is exactly the race this prevents.
 
+### When you have no news — MANDATORY
+
+Two rules about the moment a supervising agent has to decide with nothing in
+front of it. They are the same failure twice: deciding anyway.
+
+**Absence never authorises stop, abandon, retry, or release.** Not hearing from
+an agent is not news that it died. A silent terminal, a run with no recent
+output, a session you cannot reach — every one of those is a *checkpoint*, not
+a verdict. Keep waiting, or go and look. Only positive proof that something
+exited authorises acting as though it did.
+
+The two tempting moves are both wrong for the same reason. **Releasing** its
+claims hands its files to another agent while it may still be writing them.
+**Relaunching** duplicates work that may still be running, and the second run
+usually fails on the state the first one left. Neither is recoverable by
+noticing later.
+
+**If a launch exits non-zero, do not relaunch it.** Read what the failure
+reported first. A partial launch leaves resources behind — a worktree, a
+branch, a half-written record — and launching again on top of that is how one
+failure becomes three and trips a circuit breaker nobody can explain
+afterwards.
+
+When you genuinely cannot tell, say so in those words rather than picking the
+optimistic reading. `unverifiable` is a real answer and a useful one; a
+confident wrong answer is neither.
+
 Token usage is captured automatically by the server-side ingestion worker — agents do not need to (and cannot) self-report tokens.
 
 ### PR sizing — MANDATORY

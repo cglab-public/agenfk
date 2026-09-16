@@ -53,6 +53,15 @@ const RULES = [
     name: 'declare the files this card owns',
     needles: [/\bclaims?\b/i, /agenfk\s+update[^\n]*--claims|claims\s*\[|"claims"/i],
   },
+  {
+    /*
+     * The two rules about a supervisor GUESSING (CGLAB-204), and they are
+     * checked as one because they fail together: both are what an agent does
+     * when it has no news and decides anyway.
+     */
+    name: 'absence authorises nothing, and a failed launch is not relaunched',
+    needles: [/absence/i, /authoris|authoriz/i, /relaunch|launch again/i],
+  },
 ] as const;
 
 const carries = (text: string, needles: readonly RegExp[]): boolean =>
