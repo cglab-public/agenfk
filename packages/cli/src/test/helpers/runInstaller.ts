@@ -33,7 +33,16 @@ function run(script: string, args: string[], home: string, opts: { cwd?: string;
     encoding: 'utf8',
     timeout: 120_000,
     cwd: opts.cwd,
-    env: { HOME: home, USERPROFILE: home, PATH: '', NODE_ENV: 'production', ...(opts.extraEnv || {}) },
+    // VITEST is carried in deliberately. This env is built from scratch rather
+    // than inherited, so without it the child runs with every test-runner guard
+    // OFF — no telemetry guard, no federation guard, and no net guard — which is
+    // the one path where an unmocked client could quietly start talking to the
+    // internet again. NODE_ENV stays 'production' because the installer's own
+    // behaviour under test depends on it.
+    env: {
+      HOME: home, USERPROFILE: home, PATH: '', NODE_ENV: 'production', VITEST: '1',
+      ...(opts.extraEnv || {}),
+    },
   });
   return {
     home,

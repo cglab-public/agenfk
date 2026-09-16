@@ -87,7 +87,7 @@ export class TelemetryClient {
     // between unrelated files. Set AGENFK_TEST_ENABLE_TELEMETRY=1 in the rare
     // test that actually wants the client.
     if ((process.env.NODE_ENV === 'test' || !!process.env.VITEST)
-      && !process.env.AGENFK_TEST_ENABLE_TELEMETRY) {
+      && process.env.AGENFK_TEST_ENABLE_TELEMETRY !== '1') {
       this.enabled = false;
     }
 

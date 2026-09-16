@@ -101,7 +101,7 @@ describe('the hub app owns its workers', () => {
     const leaky = await createHubApp({
       dbPath: ':memory:', secretKey: SECRET, sessionSecret: 'sess', defaultOrgId: 'org',
       federationTransport: idleTransport(),
-    } as any);
+    });
     await writeParentBinding(leaky.ctx.db, SECRET, binding);
     await leaky.ctx.db.close();
     await vi.advanceTimersByTimeAsync(FEDERATION_TICK_MS * 2);
@@ -117,7 +117,7 @@ describe('the hub app owns its workers', () => {
     const clean = await createHubApp({
       dbPath: ':memory:', secretKey: SECRET, sessionSecret: 'sess', defaultOrgId: 'org',
       federationTransport: idleTransport(),
-    } as any);
+    });
     expect(typeof clean.ctx.stopWorkers).toBe('function');
     await writeParentBinding(clean.ctx.db, SECRET, binding);
     clean.ctx.stopWorkers!();

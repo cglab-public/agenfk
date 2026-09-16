@@ -8,7 +8,7 @@
  */
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error — plain .mjs helper, shared with vitest.setup.ts
-import { isLocalHost, connectTarget } from '../../../../scripts/vitest-net-guard.mjs';
+import { isLocalHost, connectTarget, installNetGuard } from '../../../../scripts/vitest-net-guard.mjs';
 
 describe('isLocalHost', () => {
   it('allows every loopback spelling a test might use', () => {
@@ -26,6 +26,21 @@ describe('isLocalHost', () => {
       '::ffff:8.8.8.8', '192.168.0.5', '10.0.0.1', '[2606:4700::1111]',
     ]) {
       expect(isLocalHost(h), h).toBe(false);
+    }
+  });
+
+  it('does not mistake a HOSTNAME that merely starts with 127. for loopback', () => {
+    // The check was a string prefix test, not an address test, so any domain
+    // beginning "127." — including wildcard-DNS hosts like nip.io that resolve
+    // wherever their owner says — was waved straight through. A false negative
+    // here is the dangerous direction: the guard reports all-clear while the
+    // suite talks to the internet.
+    for (const h of ['127.evil.com', '127.0.0.1.nip.io', '127.', '127.0.0.1.example.com']) {
+      expect(isLocalHost(h), h).toBe(false);
+    }
+    // and the real thing still passes, so the fix is not just "block 127"
+    for (const h of ['127.0.0.1', '127.1.2.3', '127.255.255.254']) {
+      expect(isLocalHost(h), h).toBe(true);
     }
   });
 
@@ -69,5 +84,21 @@ describe('the guard as it is actually installed', () => {
     expect(() => s.connect(1, '127.0.0.1')).not.toThrow();
     s.on('error', () => {});
     s.destroy();
+  });
+});
+
+describe('installNetGuard is idempotent', () => {
+  // The repo's normal run is forks+isolate, one process per file, so a second
+  // install never happens there. `npm run test:stryker` forces the threads pool
+  // (scripts/vitest-shared-config.mjs), where the setup module re-evaluates per
+  // file in the SAME worker — each call would wrap the previous wrapper, giving
+  // hundreds of nested frames on every supertest connect.
+  it('does not stack a second wrapper on top of the first', async () => {
+    const { Socket } = await import('net');
+    const before = Socket.prototype.connect;
+    const uninstall = installNetGuard();
+    expect(Socket.prototype.connect).toBe(before);
+    uninstall();
+    expect(Socket.prototype.connect).toBe(before);
   });
 });

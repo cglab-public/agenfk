@@ -11,7 +11,7 @@
  * This test points a binding at a loopback listener instead of the internet, so
  * it proves the socket is really opened without sending anything anywhere.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createServer, type Server } from 'http';
 import { openDb } from '../db';
 import type { HubDb } from '../db/types';
@@ -32,8 +32,13 @@ beforeEach(async () => {
   server = createServer((req, res) => { hits.push(req.url ?? ''); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{}'); });
   await new Promise<void>(r => server.listen(0, '127.0.0.1', r));
   port = (server.address() as any).port;
+  // Stubbed rather than set in the test body: a throw before the cleanup line
+  // would leak this into every later file in the serial worker, quietly
+  // weakening the private-parent SSRF guard for all of them.
+  vi.stubEnv('AGENFK_HUB_ALLOW_PRIVATE_PARENT', '1');
 });
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await new Promise<void>(r => { server.close(() => r()); });
   await db.close();
 });
@@ -44,14 +49,12 @@ describe('federation sync under a test runner', () => {
   it('does not dial the parent when no transport was injected', async () => {
     // Loopback stands in for parent.example.com: if the worker builds a real
     // transport, this listener records the ping.
-    process.env.AGENFK_HUB_ALLOW_PRIVATE_PARENT = '1';
     await writeParentBinding(db, SECRET, {
       parentUrl: `http://127.0.0.1:${port}`, token: TOKEN, childHubId: 'ch-1',
     });
     const stop = startFederationSync({ db, secretKey: SECRET, intervalMs: 10 });
     await settle();
     stop();
-    delete process.env.AGENFK_HUB_ALLOW_PRIVATE_PARENT;
     expect(hits).toEqual([]);
   });
 

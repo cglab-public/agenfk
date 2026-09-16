@@ -29,9 +29,35 @@ describe('TelemetryClient under a test runner', () => {
     expect(new TelemetryClient().isEnabled).toBe(false);
   });
 
-  it('swallows capture() without opening a socket', () => {
-    const c = new TelemetryClient();
-    expect(() => c.capture('test.event', { a: 1 })).not.toThrow();
+  it('opens no socket when capture() is called', async () => {
+    // The previous version of this spec only asserted capture() did not throw —
+    // which it never could, being wrapped in try/catch since long before this
+    // guard existed. It passed against unfixed code. Count connects instead.
+    const { Socket } = await import('net');
+    const real = Socket.prototype.connect;
+    let connects = 0;
+    (Socket.prototype as any).connect = function (...args: any[]) {
+      connects++;
+      return (real as any).apply(this, args);
+    };
+    try {
+      new TelemetryClient().capture('test.event', { a: 1 });
+      await new Promise(r => setTimeout(r, 50));
+    } finally {
+      Socket.prototype.connect = real;
+    }
+    expect(connects).toBe(0);
+  });
+
+  it('treats an explicit 0 or false as OFF, not as "enabled"', () => {
+    // `!process.env.X` made AGENFK_TEST_ENABLE_TELEMETRY=0 turn telemetry ON —
+    // the opposite of what anyone typing that means, silently restoring the
+    // 24-requests-per-run behaviour this guard exists to stop.
+    remember('VITEST');
+    for (const v of ['0', 'false', '']) {
+      process.env.AGENFK_TEST_ENABLE_TELEMETRY = v;
+      expect(new TelemetryClient().isEnabled, v).toBe(false);
+    }
   });
 
   it('can still be turned on deliberately, for the rare test that wants it', () => {

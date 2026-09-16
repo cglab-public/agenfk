@@ -656,6 +656,9 @@ export function httpTransport(axiosLike?: any): FederationTransport {
  * become the child's. Ticks cannot overlap — a slow parent would otherwise
  * stack them until something gives.
  */
+/** Module-scope so the warning is once per process, not once per tick. */
+let warnedTestRunner = false;
+
 export function startFederationSync(args: {
   db: DB;
   secretKey: string;
@@ -682,7 +685,17 @@ export function startFederationSync(args: {
         // suites rely on.
         if (!transport) {
           if ((process.env.NODE_ENV === 'test' || !!process.env.VITEST)
-            && !process.env.AGENFK_TEST_ENABLE_FEDERATION) {
+            && process.env.AGENFK_TEST_ENABLE_FEDERATION !== '1') {
+            // Say so once. A hub really running with NODE_ENV=test would
+            // otherwise stop federating with no log line at all, which is a
+            // worse failure than the one this guard prevents.
+            if (!warnedTestRunner) {
+              warnedTestRunner = true;
+              console.warn(
+                '[FEDERATION] sync disabled: a test runner was detected (NODE_ENV=test or VITEST) '
+                + 'and no transport was injected. Set AGENFK_TEST_ENABLE_FEDERATION=1 to override.',
+              );
+            }
             return;
           }
           transport = httpTransport();
