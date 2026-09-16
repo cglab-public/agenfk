@@ -216,13 +216,59 @@ terminal, and no human gate UI exists in their renderer.
 
 ---
 
+## What the interface has to show
+
+Four figures of *The Fleet That Cannot Run* specify the screen, and they are
+recorded here because that artifact is a page and this file is the thing that
+survives. The mechanism above is worthless if nothing on screen says it is
+working: for a week it was complete, reachable, and invisible.
+
+| What | Where | State |
+| --- | --- | --- |
+| `owns N paths` / `held` on a sidebar card | `packages/ui/src/claimState.ts` | **shipped** |
+| A state dot per session on the tab strip, failed and blocked coloured | `packages/ui/src/tabState.ts` | **shipped** |
+| `N need you`, jumping to the first stuck card | `AppShell.tsx` | **shipped** |
+| Two terminals side by side, with Split *disabled and giving its reason* | — | not built (`68117161`) |
+
+Three rules the figures settle, which matter more than the pixels:
+
+**A control that cannot be used is disabled with its reason on it, never
+absent.** A missing control teaches nothing and invites the same attempt
+tomorrow; a disabled one that says why teaches once.
+
+**Nothing is automatic on fan-out.** Three agents running does not mean two
+panes open: the person asks for the pair that belongs side by side, because
+only they know which diff is about to be reviewed against which.
+
+**The good case stays quiet.** A running agent is visible but never competes
+with a failed or blocked one, and a card that claims nothing renders no chip at
+all. Every card in the database claims nothing, so a chip on all of them is
+thirty rows announcing an absence — the same reason an idle tab shows no dot.
+
+The layout was measured rather than guessed, and the measurement constrains the
+design: `WorktreePanel` is a fixed `w-72`, so on a 1440 window opening the git
+panel costs the split. The floor is 592 px — 576 px of glyph plus the viewport
+scrollbar — and collapsing the sidebar to its 40 px rail buys 184 px and does
+not make three panes fit even at 1920. So a third pane is not a thing to add
+later; it does not fit, and the split is what closes.
+
+---
+
 ## Open, and in order
 
-1. `90fd9d32` — the installed rules never mention claims, so nobody declares
-   one. Small, and it is what takes the mechanism out of dormancy.
-2. `0c3211ab` — fan-out in one tree, with claims checked before dispatch.
-3. `cada336b` — install dependencies per worktree via a setup script.
-4. The twelve children of `998fa96c` — the Orca reuse list above.
+1. `a539e75a` — claims fail OPEN on a case-insensitive filesystem. `SKILL.md`
+   and `skill.md` are the same file on APFS and NTFS and do not collide, so two
+   cards both believe they own it. Found by adversarial review; the highest
+   severity open item, because it loses work silently.
+2. `5d2a6df5` — `RELEASED_STATUSES` is a fixed set of NAMES, and a flow authored
+   by `agenfk flow create` rarely calls its final step DONE. On such a flow a
+   finished card holds its claims forever and the mechanism switches itself off.
+3. `0c3211ab` — fan-out in one tree, with claims checked before dispatch.
+4. `cada336b` — install dependencies per worktree via a setup script.
+5. `68117161` — two terminals side by side, and Split disabled with its reason.
+6. `11a08ee9` — an MCP-only agent cannot declare a claim at all: the update
+   schema strips the field.
+7. The twelve children of `998fa96c` — the Orca reuse list above.
 
 ## The shape to watch for
 
