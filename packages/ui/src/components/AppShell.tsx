@@ -78,6 +78,8 @@ import { CardProcessRow } from './CardProcessRow';
 import { RunsPanel } from './RunsPanel';
 import { ORDER } from './sessionPresentation';
 import { cardState, itemsNeedingAPerson, NEEDS_A_PERSON } from '../cardState';
+import { AttentionAlerts } from './AttentionAlerts';
+import { clampSidebarWidth, sidebarIsResizable, SIDEBAR_MIN_PX, SIDEBAR_MAX_PX, SIDEBAR_COLLAPSED_PX } from '../sidebarWidth';
 
 /**
  * A view the main column can show.
@@ -132,6 +134,8 @@ const WORK_ROWS: WorkRow[] = [
 type Connection = 'connecting' | 'connected' | 'offline';
 
 const SIDEBAR_KEY = 'agenfk_shell_sidebar';
+/** Separate from SIDEBAR_KEY: collapsing must not forget the width you chose. */
+const SIDEBAR_WIDTH_KEY = 'agenfk_shell_sidebar_width';
 const RUNS_DOCK_KEY = 'agenfk_runs_dock';
 
 /**
@@ -1031,6 +1035,31 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // preference.
     try { return localStorage.getItem(SIDEBAR_KEY) !== 'collapsed'; } catch { return true; }
   });
+  /**
+   * How wide the open sidebar is, in pixels.
+   *
+   * Stored next to the open/collapsed flag rather than inside it: they are two
+   * preferences and collapsing must not forget the width you chose.
+   *
+   * Read through `clampSidebarWidth` on the way IN as well as on the way out,
+   * because a width dragged on a big monitor and reopened on a 960px window is
+   * the same question as a drag - and a stored value that skipped the clamp is
+   * how a preference becomes a layout bug that survives restarts.
+   */
+  const [sidebarWidth, setSidebarWidth] = React.useState(() => {
+    try {
+      return clampSidebarWidth(Number(localStorage.getItem(SIDEBAR_WIDTH_KEY)), window.innerWidth);
+    } catch {
+      // `getItem` throws outright where storage is blocked, and an exception
+      // here happens during render: a white screen, not a lost preference.
+      return SIDEBAR_MIN_PX;
+    }
+  });
+  /** True only while the pointer is down on the handle. See the effect below. */
+  const [draggingSidebar, setDraggingSidebar] = React.useState(false);
+  const [windowWidth, setWindowWidth] = React.useState(() => {
+    try { return window.innerWidth; } catch { return 1440; }
+  });
   const [readmeOpen, setReadmeOpen] = React.useState(false);
   const [whatsNewOpen, setWhatsNewOpen] = React.useState(false);
   const [flowsOpen, setFlowsOpen] = React.useState(false);
@@ -1103,6 +1132,66 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // is narrower than they are, so the main column has to make room instead.
   const reservesWindowControls = isMac && !sidebarOpen;
 
+  /**
+   * Keep the width legal when the WINDOW changes, not only when the handle does.
+   *
+   * Without this, a sidebar dragged wide on a large window survives the window
+   * being made narrow and squeezes the terminal under its floor - the failure
+   * the ceiling exists to prevent, arriving from the other direction.
+   */
+  React.useEffect(() => {
+    const onResize = (): void => {
+      setWindowWidth(window.innerWidth);
+      setSidebarWidth(prev => clampSidebarWidth(prev, window.innerWidth));
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  /**
+   * The drag itself, on the WINDOW rather than on the handle.
+   *
+   * Listening on the handle loses the pointer the moment it moves faster than
+   * React re-renders, which on a drag is immediately - the sidebar sticks and
+   * the user lets go somewhere they did not mean. The window keeps receiving
+   * moves however far the cursor has run ahead.
+   */
+  React.useEffect(() => {
+    if (!draggingSidebar) return;
+    const onMove = (e: PointerEvent): void => {
+      // The pointer's x IS the width: the sidebar starts at the left edge, so
+      // there is no offset to track and nothing to drift.
+      setSidebarWidth(clampSidebarWidth(e.clientX, window.innerWidth));
+    };
+    const onUp = (): void => {
+      setDraggingSidebar(false);
+      setSidebarWidth(prev => {
+        try { localStorage.setItem(SIDEBAR_WIDTH_KEY, String(prev)); } catch { /* non-fatal */ }
+        return prev;
+      });
+    };
+    window.addEventListener('pointermove', onMove);
+    // `pointerup` alone leaks a drag that ends outside the window - the button
+    // is released where we never hear it and the sidebar follows the cursor for
+    // ever after.
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+  }, [draggingSidebar]);
+
+  /** Arrow keys on the focused handle. A drag-only feature is a mouse-only feature. */
+  const nudgeSidebar = React.useCallback((deltaPx: number) => {
+    setSidebarWidth(prev => {
+      const next = clampSidebarWidth(prev + deltaPx, window.innerWidth);
+      try { localStorage.setItem(SIDEBAR_WIDTH_KEY, String(next)); } catch { /* non-fatal */ }
+      return next;
+    });
+  }, []);
+
   const toggleSidebar = React.useCallback(() => {
     setSidebarOpen(prev => {
       const next = !prev;
@@ -1117,11 +1206,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex h-screen flex-col bg-canvas text-ink">
+      {/* Renders nothing. It watches `sessionRows` for a row arriving at a
+          state in NEEDS_A_PERSON and makes the sound or raises the banner the
+          settings screen's Notifications block switches on. Mounted HERE
+          because this is the only place both halves of that list exist: a run
+          recorded by the Claude Code hook has no terminal of ours, and a
+          terminal just opened has no run, so anything watching one of them
+          would be silent for exactly half the cases. */}
+      <AttentionAlerts sessionRows={sessionRows} />
       {/* No full-width title bar. The sidebar runs the whole height and owns
           the traffic-light strip, so the window reads as two columns rather
           than a banner stacked on a split — and the board gets that row back. */}
       <div className="flex min-h-0 flex-1">
         <Sidebar
+          widthPx={sidebarWidth}
+          resizable={sidebarIsResizable(windowWidth)}
+          dragging={draggingSidebar}
+          onResizeStart={() => setDraggingSidebar(true)}
+          onNudge={nudgeSidebar}
           open={sidebarOpen}
           onToggle={toggleSidebar}
           isMac={isMac}
@@ -1264,7 +1366,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                  */
                 splitId={splitSession}
                 onToggleSplit={id => setSplitSession(cur => (cur === id ? null : id))}
-                sidebarWidthPx={sidebarOpen ? 224 : 40}
+                /*
+                 * The REAL width, not the old fixed 224. TerminalTab computes
+                 * how many COLUMNS fit from this, so a resizable sidebar feeding
+                 * it a constant would size the terminal for a sidebar that is no
+                 * longer there - and the symptom is not visual, it is the
+                 * agent's own output wrapping at the wrong column.
+                 */
+                sidebarWidthPx={sidebarOpen ? sidebarWidth : SIDEBAR_COLLAPSED_PX}
                 activeId={activeSession}
                 onSelect={setActiveSession}
                 onClose={closeSession}
@@ -1638,6 +1747,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 }
 
 interface SidebarProps {
+  /** The open width in px. Ignored while collapsed, which is a fixed rail. */
+  readonly widthPx: number;
+  /** False when the window leaves no room to grow: the handle is then hidden. */
+  readonly resizable: boolean;
+  /** True only while a drag is in flight, so the width transition can be dropped. */
+  readonly dragging: boolean;
+  readonly onResizeStart: () => void;
+  readonly onNudge: (deltaPx: number) => void;
   /**
    * Open the fan-out sheet for a card that has children (CGLAB-207).
    *
@@ -1681,7 +1798,7 @@ interface SidebarProps {
   onOpenFlows: () => void;
 }
 
-function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItems, openSession, openSettings, revealOnBoard, activeView, onSelectView, onOpenFlows, onOpenFleet }: SidebarProps) {
+function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResizeStart, onNudge, requestTerminal, sessionRows, liveItems, openSession, openSettings, revealOnBoard, activeView, onSelectView, onOpenFlows, onOpenFleet }: SidebarProps) {
   /*
    * EVERY item, only for the claim chips (CGLAB-190).
    *
@@ -1795,15 +1912,53 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
   return (
     <aside
       className={clsx(
-        'flex shrink-0 flex-col border-r border-border-soft bg-nav-surface',
+        'relative flex shrink-0 flex-col border-r border-border-soft bg-nav-surface',
         // 160ms: long enough for the eye to follow the edge, short enough not
         // to feel slow on something toggled dozens of times a day. Width, not
         // transform — the sidebar has to make ROOM, and a transform would
         // slide it over the board instead of pushing it.
-        'transition-[width] duration-150 ease-out motion-reduce:transition-none',
-        open ? 'w-56' : 'w-10 items-center',
+        // Dropped WHILE DRAGGING. Animating toward a width that changes on
+        // every pointermove makes the edge chase the cursor a beat behind, and
+        // a control that lags reads as a broken one.
+        !dragging && 'transition-[width] duration-150 ease-out motion-reduce:transition-none',
+        !open && 'items-center',
       )}
+      // Inline, because the width is a number now rather than one of two
+      // classes, and Tailwind cannot generate a class per pixel.
+      style={{ width: open ? widthPx : SIDEBAR_COLLAPSED_PX }}
     >
+      {/*
+        The drag handle.
+
+        HIDDEN, not disabled, when the window leaves no room: a control that
+        moves nothing when you pull it reads as a broken app, while an absent
+        one reads as a narrow window, which is what it is.
+
+        5px of hit area over a 1px border. A one-pixel target is a target only
+        in theory, and this one sits on the edge people flick past on their way
+        to the board.
+      */}
+      {open && resizable && (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize the sidebar"
+          aria-valuenow={widthPx}
+          aria-valuemin={SIDEBAR_MIN_PX}
+          aria-valuemax={SIDEBAR_MAX_PX}
+          tabIndex={0}
+          data-testid="sidebar-resize"
+          onPointerDown={e => { e.preventDefault(); onResizeStart(); }}
+          onKeyDown={e => {
+            // Arrow keys, because a drag-only feature is a mouse-only feature.
+            // 16px a press: fine enough to land where you meant, coarse enough
+            // to cross the range without holding the key down.
+            if (e.key === 'ArrowLeft') { e.preventDefault(); onNudge(-16); }
+            if (e.key === 'ArrowRight') { e.preventDefault(); onNudge(16); }
+          }}
+          className="absolute inset-y-0 right-0 z-10 w-[5px] translate-x-[2px] cursor-col-resize hover:bg-brand/30 focus-visible:bg-brand/40 focus-visible:outline-none"
+        />
+      )}
       {/* Traffic-light strip, macOS only: Electron hides the native title bar
           with titleBarStyle 'hiddenInset' there and nowhere else, so rendering
           this on Windows or Linux would add dead space under a real title bar.
