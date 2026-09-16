@@ -23,7 +23,7 @@ const card = (id: string, status: string, claims?: string[]): ClaimCard => ({ id
 describe('what a card owns', () => {
   it('says nothing at all when it declares nothing, which is every card today', () => {
     const state = claimStateOf('a', [card('a', 'IN_PROGRESS')]);
-    expect(state).toEqual({ owns: [], heldBy: [] });
+    expect(state).toEqual({ owns: [], heldBy: [], rejected: [] });
     expect(claimChipLabel(state), 'a chip rendered on a card with no claims').toBeNull();
     expect(claimChipTitle(state)).toBeNull();
   });
@@ -106,7 +106,7 @@ describe('when somebody else owns it too', () => {
 
 describe('input the sidebar can actually hand it', () => {
   it('survives a card id that is not in the list', () => {
-    expect(claimStateOf('ghost', [card('a', 'IN_PROGRESS', ['x/'])])).toEqual({ owns: [], heldBy: [] });
+    expect(claimStateOf('ghost', [card('a', 'IN_PROGRESS', ['x/'])])).toEqual({ owns: [], heldBy: [], rejected: [] });
   });
 
   it('survives holders with no claims field, which is most of them', () => {
@@ -163,6 +163,56 @@ describe('the duplicated overlap check agrees with core', () => {
         [mine, theirs].map(c => ({ id: c.id, status: c.status, claims: c.claims })),
       ).authorized;
       expect(uiSaysHeld, `sidebar and gate disagree for a ${status} holder`).toBe(gateRefuses);
+    }
+  });
+});
+
+/**
+ * A claim it cannot read is not one it has cleared (review of 9058005c).
+ *
+ * The first version of the local copy dropped `isWellFormedClaim`, so a card
+ * claiming `packages/**` was shown a neutral grey "owns 1 path" while the
+ * gatekeeper refused it outright. FAIL-OPEN, in the file whose own header says
+ * a copy that drifts is worse than not sharing - written minutes earlier to fix
+ * a different defect, and caught by adversarial review rather than by the
+ * parity test, which used eight well-formed pairs and could not see this class
+ * at all.
+ */
+describe('claims it cannot read', () => {
+  it('says unreadable rather than owns, for a glob', () => {
+    const state = claimStateOf('a', [card('a', 'IN_PROGRESS', ['packages/**'])]);
+    expect(claimChipLabel(state), 'a glob was reported as owned').toBe('unreadable');
+    expect(state.rejected).toContain('packages/**');
+  });
+
+  it('says unreadable rather than held, since the card holds nothing', () => {
+    // Unreadable outranks a conflict: a card told it "owns" paths it does not
+    // hold goes looking for the bug in the wrong place when it is refused.
+    const state = claimStateOf('mine', [
+      card('mine', 'IN_PROGRESS', ['packages/**']),
+      card('theirs', 'REVIEW', ['packages/ui/']),
+    ]);
+    expect(claimChipLabel(state)).toBe('unreadable');
+  });
+
+  it('reports a malformed claim held by SOMEBODY ELSE, which is the worse half', () => {
+    // A malformed held claim protects nothing and the card that wrote it is
+    // never told, so treating it as absent authorizes an overwrite.
+    const state = claimStateOf('mine', [
+      card('mine', 'IN_PROGRESS', ['packages/ui/a.ts']),
+      card('theirs', 'REVIEW', ['packages/ui ']),
+    ]);
+    expect(state.rejected).toContain('packages/ui ');
+    expect(claimChipLabel(state)).toBe('unreadable');
+  });
+
+  it('agrees with the gate on every malformed shape', async () => {
+    const { gateOnClaims } = await import('@agenfk/core');
+    for (const bad of ['packages/**', 'src/*.ts', '../secrets', '/etc/passwd', 'a/../b', ' src/a.ts']) {
+      const mine = { id: 'mine', status: 'IN_PROGRESS', claims: [bad] };
+      const uiRefuses = claimStateOf('mine', [mine]).rejected.length > 0;
+      const gateRefuses = !gateOnClaims({ id: 'mine', claims: [bad] }, [mine]).authorized;
+      expect(uiRefuses, `sidebar and gate disagree on ${bad}`).toBe(gateRefuses);
     }
   });
 });

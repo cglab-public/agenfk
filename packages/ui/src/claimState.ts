@@ -47,6 +47,26 @@ function normalise(claim: string): string {
   return claim.replace(/\\/g, '/').split('/').filter(Boolean).join('/');
 }
 
+/**
+ * Mirrors `isWellFormedClaim` in packages/core/src/claims.ts.
+ *
+ * Without it this file FAILED OPEN, in the file whose own header says a copy
+ * that drifts is worse than not sharing. A card claiming `packages/**` was
+ * shown a neutral grey "owns 1 path" while the gatekeeper refused it outright:
+ * core puts a malformed claim in `rejected` and turns `authorized` false, and
+ * the copy had no notion of rejected at all. Found by adversarial review,
+ * minutes after the copy was written to fix a different defect.
+ */
+export function wellFormed(claim: unknown): claim is string {
+  if (typeof claim !== 'string') return false;
+  const t = claim.trim();
+  if (!t || t !== claim) return false;
+  if (t.startsWith('/') || t.startsWith('\\') || /^[A-Za-z]:/.test(t)) return false;
+  if (t.split(/[/\\]/).some(seg => seg === '..' || seg === '.')) return false;
+  if (/[*?[\]{}]/.test(t)) return false;
+  return true;
+}
+
 /** Mirrors `claimsCollide` in packages/core/src/claims.ts. */
 export function collide(a: string, b: string): boolean {
   const x = normalise(a), y = normalise(b);
@@ -67,9 +87,18 @@ export interface CardClaimState {
   readonly owns: readonly string[];
   /** Cards whose claims this one runs into. Empty when it is free to work. */
   readonly heldBy: readonly string[];
+  /**
+   * Claims that cannot be checked, and are therefore NOT cleared.
+   *
+   * Separate from a conflict because they are a different fact: the card wrote
+   * something this cannot reason about, holds nothing, and the gatekeeper will
+   * refuse it. Reporting that as a clean `owns` is the failure this whole
+   * mechanism exists to avoid, one layer up.
+   */
+  readonly rejected: readonly string[];
 }
 
-const EMPTY: CardClaimState = { owns: [], heldBy: [] };
+const EMPTY: CardClaimState = { owns: [], heldBy: [], rejected: [] };
 
 /**
  * The claim state of one card, given every card in the project.
@@ -88,13 +117,25 @@ export function claimStateOf(cardId: string, all: readonly ClaimCard[]): CardCla
    * beneath it, and a row reading "held by a, a, a" is noise where "held by a"
    * is the fact.
    */
+  /*
+   * Anything unreadable - this card's or a holder's - and the answer is not
+   * "clear". A malformed claim held by SOMEBODY ELSE is the worse half: it
+   * protects nothing, the card that wrote it is never told, and treating it as
+   * absent authorizes an overwrite.
+   */
+  const rejected = [...new Set([
+    ...owns.filter(c => !wellFormed(c)),
+    ...all.filter(c => !RELEASED.has(c.status.toUpperCase()))
+         .flatMap(c => (c.claims ?? []).filter(x => !wellFormed(x))),
+  ])];
+
   const heldBy = [...new Set(
     all
       .filter(c => c.id !== cardId && !RELEASED.has(c.status.toUpperCase()))
       .filter(c => (c.claims ?? []).some(theirs => owns.some(mine => collide(mine, theirs))))
       .map(c => c.id),
   )];
-  return { owns: [...owns], heldBy };
+  return { owns: [...owns], heldBy, rejected };
 }
 
 /**
@@ -105,6 +146,9 @@ export function claimStateOf(cardId: string, all: readonly ClaimCard[]): CardCla
  * be thirty rows of noise announcing an absence.
  */
 export function claimChipLabel(state: CardClaimState): string | null {
+  // Unreadable outranks a conflict: a card told it "owns" paths it does not
+  // hold will go looking for the bug in the wrong place when it is refused.
+  if (state.rejected.length) return 'unreadable';
   if (state.heldBy.length) return 'held';
   if (!state.owns.length) return null;
   return state.owns.length === 1 ? 'owns 1 path' : `owns ${state.owns.length} paths`;
@@ -118,6 +162,10 @@ export function claimChipLabel(state: CardClaimState): string | null {
  * conversation instead of two transcripts.
  */
 export function claimChipTitle(state: CardClaimState): string | null {
+  if (state.rejected.length) {
+    return `These claims cannot be checked and protect nothing: ${state.rejected.join(', ')}. `
+      + 'A claim is a directory or an exact file. The gatekeeper refuses this card.';
+  }
   if (state.heldBy.length) {
     return `Held: ${state.owns.join(', ')} — also claimed by ${state.heldBy.map(id => id.slice(0, 8)).join(', ')}`;
   }

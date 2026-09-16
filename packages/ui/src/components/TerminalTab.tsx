@@ -140,6 +140,17 @@ export interface TerminalTabProps {
    * teaches nothing and invites the same attempt tomorrow.
    */
   readonly splitDisabledReason?: string | null;
+  /**
+   * How wide the sidebar is right now, in px.
+   *
+   * Passed in because it COLLAPSES - 224 px open, a 40 px rail closed - and
+   * hardcoding 224 here refused the split on any window between 1224 and 1407
+   * px with the sidebar collapsed, with 184 px going unused and a message that
+   * was false: it said the window needs 1184 px while the row already had more
+   * than that. Collapsing the sidebar fires no `resize`, so the wrong answer
+   * did not even re-evaluate when the user tried the obvious remedy.
+   */
+  readonly sidebarWidthPx?: number;
   readonly activeId: string | null;
   readonly onSelect: (id: string) => void;
   readonly onClose: (id: string) => void;
@@ -237,6 +248,7 @@ export function TerminalTab({
   splitId,
   onToggleSplit,
   splitDisabledReason,
+  sidebarWidthPx = 224,
   activeId,
   onSelect,
   onClose,
@@ -273,9 +285,7 @@ export function TerminalTab({
   }, []);
   const splitState = splitAvailability({
     sessionCount: sessions.length,
-    // Minus the sidebar, which is 224 px open and a 40 px rail closed. The
-    // shell owns that width; this is the only thing it is assumed here.
-    rowWidthPx: rowWidth - 224,
+    rowWidthPx: rowWidth - sidebarWidthPx,
     worktreePanelOpen: panelOpen,
   });
   const splitBlocked = splitState.enabled ? null : splitState.reason;
@@ -461,6 +471,18 @@ export function TerminalTab({
                 // The card stays in the tooltip: the strip says which agent,
                 // hovering says which card.
                 title={session.title}
+                /*
+                 * The state belongs in the NAME, not only in a coloured dot.
+                 * The dot is a span with no role carrying a title, which is a
+                 * description at best and is not reliably announced - so an
+                 * agent that failed reached nobody using assistive tech. Size
+                 * was the answer to "colour alone is not a signal everybody
+                 * receives", and size helps nobody here either.
+                 */
+                aria-label={(() => {
+                  const ind = tabIndicator(sessionStates?.get(session.id));
+                  return ind.label ? `${tabLabel}, ${ind.label}` : undefined;
+                })()}
                 className="flex min-w-0 flex-1 items-center gap-2 text-left"
               >
                 {(() => {

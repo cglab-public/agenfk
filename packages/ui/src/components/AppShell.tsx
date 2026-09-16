@@ -604,9 +604,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
    */
   const sessionStates = React.useMemo(() => {
     const m = new Map<string, SessionState>();
+    /*
+     * Matched on itemId AND agentId, which is the pair sessionRows is keyed by.
+     *
+     * Matching on itemId alone was worse than showing nothing: a card can run
+     * a lead and a sub-agent, both rows carry that itemId, and both resolved to
+     * the FIRST session. So a failed sub-agent painted its red dot on the
+     * lead's tab while its own tab stayed silent - a signal pointing at the
+     * wrong agent, which is the one outcome worse than no signal. Found by
+     * adversarial review; my own docblock in tabState.ts said this is counted
+     * by session precisely because one agent failing says nothing about the
+     * other, and the wiring did the opposite.
+     */
+    const taken = new Set<string>();
     for (const row of sessionRows) {
-      const owned = sessions.find(s => s.itemId === row.itemId);
-      if (owned) m.set(owned.id, row.state);
+      const owned = sessions.find(s =>
+        !taken.has(s.id) && s.itemId === row.itemId && s.agentId === row.agentId);
+      if (owned) { taken.add(owned.id); m.set(owned.id, row.state); }
     }
     return m;
   }, [sessionRows, sessions]);
@@ -1119,6 +1133,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                  */
                 splitId={splitSession}
                 onToggleSplit={id => setSplitSession(cur => (cur === id ? null : id))}
+                sidebarWidthPx={sidebarOpen ? 224 : 40}
                 activeId={activeSession}
                 onSelect={setActiveSession}
                 onClose={closeSession}
@@ -1490,8 +1505,27 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
    * chip.
    */
   const { data: allItemsForClaims = [] } = useQuery<AgEnFKItem[]>({
-    queryKey: ['items'],
+    queryKey: ['items-claims'],
     queryFn: () => api.listItems(),
+    /*
+     * Measured after review: `GET /items` returns FULL records - description,
+     * comments, history - and on this machine that is 582 items and 8.1 MB,
+     * for a field 0 of them carry. With the default staleTime of 0 and
+     * refetch-on-focus, every alt-tab back into the window re-fetched and
+     * re-parsed all of it, in a renderer that is also driving xterm.
+     *
+     * Freshness comes from the socket instead, which is also strictly BETTER
+     * than focus: the chip appeared only after an alt-tab before, i.e. it was
+     * stale at exactly the moment a claim was declared.
+     *
+     * The key is its own rather than ['items'], because invalidateQueries
+     * matches by PREFIX and eight board and import mutations already
+     * invalidate ['items', projectId] - each of which would otherwise have
+     * started pulling 8 MB as a side effect.
+     */
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+    gcTime: 5 * 60_000,
   });
   const queryClient = useQueryClient();
   const { activeProjectId, setActiveProjectId, requestNewItem } = useActiveProject();
@@ -1516,7 +1550,13 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
     queryKey: ['active-items'],
     queryFn: api.listActiveItems,
   });
-  useSocketEvent('items_updated', () => queryClient.invalidateQueries({ queryKey: ['active-items'] }));
+  useSocketEvent('items_updated', () => {
+    queryClient.invalidateQueries({ queryKey: ['active-items'] });
+    // The claim chips too: declaring a claim IS an item update, and without
+    // this the chip waited for a window focus - stale at exactly the moment
+    // the feature is for.
+    queryClient.invalidateQueries({ queryKey: ['items-claims'] });
+  });
   // Anything that changed while the socket was down produced no event, so the
   // counts stay wrong until the next unrelated item change. The board already
   // refetches its own queries on connect; this one is keyed differently and
@@ -2037,8 +2077,17 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                                 title={claimChipTitle(state) ?? undefined}
                                 className={clsx(
                                   'shrink-0 rounded-sm px-1 font-mono text-[8px] uppercase leading-[14px] tracking-wide',
-                                  state.heldBy.length
-                                    ? 'bg-amber-500/15 text-amber-500'
+                                  /*
+                                   * Two-tone, the way every other amber TEXT
+                                   * in this repo is (WorktreePanel, Settings).
+                                   * Flat amber-500 as text is ~2:1 on the
+                                   * light canvas at 8px - near invisible - and
+                                   * tokens.css says so in as many words: the
+                                   * muted tint is for decorative chips, not
+                                   * for words somebody has to read.
+                                   */
+                                  state.rejected.length || state.heldBy.length
+                                    ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
                                     : 'text-ink-tertiary opacity-70',
                                 )}
                               >

@@ -341,3 +341,56 @@ describe('splitting the view', () => {
     expect(panes, 'a pane was left on screen that should be hidden').toHaveLength(0);
   });
 });
+
+/**
+ * The split path that actually SHIPS (review of eda62114).
+ *
+ * The test above named "is DISABLED WITH ITS REASON" injects
+ * `splitDisabledReason` - a prop AppShell never passes. So it exercised a prop
+ * that is dead in production and never touched the code that ships: mutating
+ * `splitBlocked` to a constant null left 21 of 21 green. These drive the real
+ * path, through the component's own width arithmetic.
+ */
+describe('the split reason the shell actually produces', () => {
+  const two = () => ({
+    ...baseProps(),
+    sessions: [
+      { id: 's1', itemId: 'i1', title: 'A card', agentId: 'claude-code', autoApprove: false, persist: false, openedAt: new Date().toISOString() },
+      { id: 's2', itemId: 'i2', title: 'Another card', agentId: 'codex', autoApprove: false, persist: false, openedAt: new Date().toISOString() },
+    ],
+    activeId: 's1',
+  });
+  const width = (px: number) => Object.defineProperty(window, 'innerWidth', { value: px, configurable: true });
+
+  it('refuses on a narrow window, computing the reason itself', () => {
+    width(1000);
+    renderTab(<TerminalTab {...two()} onToggleSplit={vi.fn()} />);
+    const control = screen.getByTestId('tab-split');
+    expect(control, 'the shipping path never computed a reason').toBeDisabled();
+    expect(control.getAttribute('title')).toMatch(/too narrow/i);
+  });
+
+  it('allows it once the window is wide enough', () => {
+    width(1600);
+    renderTab(<TerminalTab {...two()} onToggleSplit={vi.fn()} />);
+    expect(screen.getByTestId('tab-split')).toBeEnabled();
+  });
+
+  it('counts the COLLAPSED sidebar, which is 184 px it used to throw away', () => {
+    /*
+     * THE arithmetic bug. 224 was hardcoded, so a 1300 px window with the
+     * sidebar collapsed was refused - "needs 1184 px" - while the row actually
+     * had 1260. Collapsing the sidebar fires no resize, so the user's obvious
+     * remedy did not even re-evaluate.
+     */
+    width(1300);
+    renderTab(<TerminalTab {...two()} onToggleSplit={vi.fn()} sidebarWidthPx={40} />);
+    expect(screen.getByTestId('tab-split'), 'the collapsed rail was still charged as 224 px').toBeEnabled();
+  });
+
+  it('still refuses that window when the sidebar is open, since then it really is too narrow', () => {
+    width(1300);
+    renderTab(<TerminalTab {...two()} onToggleSplit={vi.fn()} sidebarWidthPx={224} />);
+    expect(screen.getByTestId('tab-split')).toBeDisabled();
+  });
+});
