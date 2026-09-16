@@ -12,3 +12,4 @@ export * from "./worktreePrune.js";
 export * from "./prImport.js";
 export * from './claims';
 export * from './claimGate';
+export * from './fanOut';
