@@ -2,10 +2,33 @@
 
 All notable changes to AgEnFK are documented here.
 
-## [Unreleased]
+## [1.1.19-beta.5] — 2026-09-16
 
-Lands on the `feat/CGLAB-181_federation-enrollment` tip, so the next beta cut
-from it carries everything in `v1.1.19-beta.4` plus the changes below.
+Cut from `feat/CGLAB-181_federation-enrollment` (PR #187). Cumulative: it carries
+everything in `v1.1.19-beta.4` plus the changes below.
+
+### `agenfk pr create` reports the model that actually ran
+
+A pi session running DeepSeek v4.1 Flash had its PR attributed to Qwen 3.8 27b.
+pi writes a `model_change` record per model selection — the first is the launch
+default from `settings.json`, and a session that switches writes more. Nothing in
+the CLI detected anything; the mechanism was prose, and the prose told agents to
+read *"the harness's default/selected-model setting"*, which is exactly the
+session-independent default that produced the wrong answer.
+
+- `agenfk` now reads the harness's own session log (pi and Claude Code) and takes
+  the **last** model actually selected. `pr create`, `pr-register` and
+  `pr-resize` report that value, warning when it overrides a disagreeing
+  `--model`. `--no-detect-model` keeps the declared value verbatim.
+- An override is refused when the log comes from a different harness than the one
+  declared, so a stale pi log cannot relabel a Codex run.
+- Sentinel models (`<synthetic>`, written on cancelled turns) and subagent turns
+  are ignored — a subagent runs a different model from the session that spawned
+  it.
+- When no session log matches, the command says the attribution is unverified
+  rather than silently reporting the unchecked claim.
+- The guidance is corrected in all four rule bundles and `agenfk-pr`: read the
+  session log's last selection, never a default.
 
 ### Tests no longer make real network connections
 
