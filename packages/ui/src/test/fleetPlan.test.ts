@@ -15,7 +15,7 @@
  * nobody asked for. Exactly one goes.
  */
 import { describe, it, expect } from 'vitest';
-import { planFleet, launchLabel, type FleetInputs } from '../fleetPlan';
+import { planFleet, launchLabel, fanOutDepthLocal, mayFanOutLocal, type FleetInputs } from '../fleetPlan';
 
 const OK: FleetInputs['depth'] = { allowed: true, reason: null };
 
@@ -176,5 +176,60 @@ describe('an epic with nothing under it', () => {
     expect(p.children).toEqual([]);
     expect(p.launchCount).toBe(0);
     expect(p.blocked).toBeNull();
+  });
+});
+
+/**
+ * The local copy of the depth rule agrees with core (CGLAB-199).
+ *
+ * `mayFanOutLocal` duplicates `mayFanOut` because core compiles to CommonJS
+ * and importing it into the browser bundle shipped a black window earlier
+ * today, with every test and the build reporting success. A copy that drifts
+ * would let the sheet offer a fan-out the server refuses - so the agreement is
+ * pinned rather than trusted. This test can import core; the bundle cannot.
+ */
+describe('the duplicated depth rule agrees with core', () => {
+  const tree = [
+    { id: 'epic' },
+    { id: 'story', parentId: 'epic' },
+    { id: 'task', parentId: 'story' },
+    { id: 'deep', parentId: 'task' },
+  ];
+
+  it('gives the same depth for every node', async () => {
+    const { fanOutDepth } = await import('@agenfk/core');
+    for (const node of tree) {
+      expect(fanOutDepthLocal(node.id, tree), `depth disagrees for ${node.id}`)
+        .toBe(fanOutDepth(node.id, tree));
+    }
+  });
+
+  it('gives the same verdict at every ceiling', async () => {
+    const { mayFanOut } = await import('@agenfk/core');
+    for (const node of tree) {
+      for (const max of [0, 1, 2, 3]) {
+        expect(mayFanOutLocal(node.id, tree, max).allowed, `verdict disagrees for ${node.id} at ${max}`)
+          .toBe(mayFanOut(node.id, tree, max).allowed);
+      }
+    }
+  });
+
+  it('shares the DEFAULT ceiling, not just the explicit ones', async () => {
+    /*
+     * The parity tests above all pass a ceiling, so a drift in the DEFAULT
+     * slipped past every one of them - caught by mutation rather than by
+     * design. The default is the value almost every caller actually uses.
+     */
+    const { mayFanOut, DEFAULT_MAX_FAN_OUT_DEPTH } = await import('@agenfk/core');
+    for (const node of tree) {
+      expect(mayFanOutLocal(node.id, tree).allowed, `default verdict disagrees for ${node.id}`)
+        .toBe(mayFanOut(node.id, tree, DEFAULT_MAX_FAN_OUT_DEPTH).allowed);
+    }
+  });
+
+  it('closes the escape route in its own words too', () => {
+    // The reason is what an agent reads. A copy that kept the verdict and lost
+    // the sentence would let somebody go looking for the way around.
+    expect(mayFanOutLocal('story', tree).reason).toMatch(/does not reset/i);
   });
 });

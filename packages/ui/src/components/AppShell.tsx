@@ -27,6 +27,8 @@ import { useSocketEvent, useSocket } from '../SocketContext';
 import { AgenfkWordmark } from './AgenfkWordmark';
 import { desktopInfo } from '../desktop';
 import { claimStateOf, claimChipLabel, claimChipTitle } from '../claimState';
+import { FleetSheet } from './FleetSheet';
+import { mayFanOutLocal } from '../fleetPlan';
 import { useActiveProject } from '../ActiveProject';
 import {
   readPinned, togglePinned, sortProjectsByPin,
@@ -306,6 +308,30 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [sessions, activeSession, focusedItemId]);
   /** The second terminal on screen, or null. See TerminalTab for the fit rules. */
   const [splitSession, setSplitSession] = React.useState<string | null>(null);
+
+  /*
+   * The card whose fan-out is being planned, or null (CGLAB-207).
+   *
+   * Opened by a gesture, never by dispatching: the sheet exists so a person
+   * sees the collisions BEFORE spending, and popping it up on its own would
+   * turn a deliberate review into an interruption.
+   */
+  const [fleetParentId, setFleetParentId] = React.useState<string | null>(null);
+  /*
+   * Every item, for the sheet. Cached and socket-refreshed for the same reason
+   * the claim chips are: GET /items returns full records, and re-pulling them
+   * on every window focus costs megabytes to read one field.
+   */
+  const { data: allItemsForFleet = [] } = useQuery<AgEnFKItem[]>({
+    queryKey: ['items-claims'],
+    queryFn: () => api.listItems(),
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const fleetParent = React.useMemo(
+    () => allItemsForFleet.find(i => i.id === fleetParentId) ?? null,
+    [allItemsForFleet, fleetParentId],
+  );
 
   const sessionSeq = React.useRef(0);
 
@@ -1004,6 +1030,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           activeView={active}
           onSelectView={setActive}
           onOpenFlows={() => setFlowsOpen(true)}
+        onOpenFleet={setFleetParentId}
         />
 
         <main className="flex min-w-0 flex-1 flex-col">
@@ -1337,6 +1364,41 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         {info && <span className="ml-auto font-mono">Electron {info.versions.electron}</span>}
       </footer>
 
+      {/*
+        The fan-out sheet (CGLAB-207).
+        Opened by a gesture and never by dispatching: it exists so a person
+        sees the collisions BEFORE spending, and popping it up on its own turns
+        a deliberate review into an interruption.
+      */}
+      {fleetParent ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+          onClick={() => setFleetParentId(null)}
+        >
+          <div onClick={e => e.stopPropagation()}>
+            <FleetSheet
+              parent={fleetParent}
+              all={allItemsForFleet as never}
+              depth={mayFanOutLocal(fleetParent.id, allItemsForFleet as never)}
+              onClose={() => setFleetParentId(null)}
+              onLaunch={(ids: readonly string[]) => {
+                setFleetParentId(null);
+                /*
+                 * One terminal per cleared child, and ONLY the cleared ones -
+                 * the sheet already refused the rest, and re-deciding here
+                 * would be a second opinion with nothing to say which is
+                 * right.
+                 */
+                for (const id of ids) {
+                  const child = allItemsForFleet.find(i => i.id === id);
+                  if (child) requestTerminal(child as never);
+                }
+              }}
+            />
+          </div>
+        </div>
+      ) : null}
+
       {pickingCard && (
         <CardPicker
           items={activeWork}
@@ -1458,6 +1520,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 }
 
 interface SidebarProps {
+  /**
+   * Open the fan-out sheet for a card that has children (CGLAB-207).
+   *
+   * A gesture, never automatic: the sheet exists so a person sees the
+   * collisions before spending, and opening it by itself turns a deliberate
+   * review into an interruption.
+   */
+  readonly onOpenFleet: (itemId: string) => void;
   open: boolean;
   onToggle: () => void;
   isMac: boolean;
@@ -1493,7 +1563,7 @@ interface SidebarProps {
   onOpenFlows: () => void;
 }
 
-function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItems, openSession, openSettings, revealOnBoard, activeView, onSelectView, onOpenFlows }: SidebarProps) {
+function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItems, openSession, openSettings, revealOnBoard, activeView, onSelectView, onOpenFlows, onOpenFleet }: SidebarProps) {
   /*
    * EVERY item, only for the claim chips (CGLAB-190).
    *
@@ -2056,6 +2126,30 @@ function Sidebar({ open, onToggle, isMac, requestTerminal, sessionRows, liveItem
                           >
                             {item.status}
                           </span>
+                          {(() => {
+                            /*
+                             * Fan out this card's children (CGLAB-207).
+                             *
+                             * Only on cards that HAVE children: a launch
+                             * control on a leaf is a button that can only
+                             * disappoint, and there are more leaves than
+                             * parents in any board.
+                             */
+                            const hasKids = allItemsForClaims.some(i => i.parentId === item.id);
+                            if (!hasKids) return null;
+                            return (
+                              <button
+                                type="button"
+                                data-testid="card-fleet"
+                                title="Plan a fan-out of this card's children"
+                                aria-label={`Plan a fan-out of ${item.title}`}
+                                onClick={e => { e.stopPropagation(); onOpenFleet(item.id); }}
+                                className="shrink-0 rounded px-1 font-mono text-[8px] uppercase leading-[14px] tracking-wide text-ink-tertiary opacity-70 hover:text-brand hover:opacity-100"
+                              >
+                                fleet
+                              </button>
+                            );
+                          })()}
                           {(() => {
                             /*
                              * What this card owns, and whether somebody else

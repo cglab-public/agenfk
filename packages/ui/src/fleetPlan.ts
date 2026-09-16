@@ -163,6 +163,50 @@ export function planFleet({ parentId, all, depth }: FleetInputs): FleetPlan {
   };
 }
 
+/**
+ * How deep a card sits, and whether it may fan out (CGLAB-199).
+ *
+ * DUPLICATED from packages/core/src/fanOut.ts, and for the reason this file
+ * already carries once: core compiles to CommonJS, and importing it into the
+ * browser bundle shipped a black window with every test and the build green.
+ * A parity test pins the two together - it can import core, because it runs
+ * where core resolves to source, which is what the bundle cannot do.
+ */
+export function fanOutDepthLocal(
+  itemId: string,
+  items: readonly { id: string; parentId?: string | null }[],
+): number {
+  const byId = new Map(items.map(i => [i.id, i]));
+  const seen = new Set<string>([itemId]);
+  let depth = 0;
+  let current = byId.get(itemId)?.parentId ?? null;
+  while (current) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    depth += 1;
+    current = byId.get(current)?.parentId ?? null;
+  }
+  return depth;
+}
+
+/** Mirrors `mayFanOut`. Asks about the CHILDREN, not the card. */
+export function mayFanOutLocal(
+  itemId: string,
+  items: readonly { id: string; parentId?: string | null }[],
+  maxDepth = 1,
+): { allowed: boolean; reason: string | null } {
+  const depth = fanOutDepthLocal(itemId, items);
+  if (depth + 1 > maxDepth) {
+    return {
+      allowed: false,
+      reason: `This card is ${depth} level${depth === 1 ? '' : 's'} deep and the fan-out ceiling is ${maxDepth}. `
+        + 'Work its children yourself, or raise the ceiling deliberately. '
+        + 'Starting a fresh dispatch does not reset this: depth is where a card sits, not how it was reached.',
+    };
+  }
+  return { allowed: true, reason: null };
+}
+
 /** The button's label. Counts what will run, never what exists. */
 export function launchLabel(plan: FleetPlan): string {
   if (plan.launchCount === 0) return 'Nothing to launch';
