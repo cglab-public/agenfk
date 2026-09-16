@@ -102,3 +102,6 @@ mutation-testing/
 # The directory, not only the *.log rule above - which stops covering it the
 # moment anything lands there without that extension.
 logs/
+
+# Playwright MCP scratch output (screenshots, console logs, snapshots)
+.playwright-mcp/

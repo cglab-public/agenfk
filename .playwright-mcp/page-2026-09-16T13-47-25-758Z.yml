@@ -1,9 +1,0 @@
-- main [ref=e4]:
-  - generic [ref=e6]:
-    - img "AgEnFK" [ref=e8]
-    - list [ref=e14]:
-      - listitem [ref=e15]:
-        - button "New project Start from a directory on this machine." [ref=e16]:
-          - generic [ref=e19]:
-            - generic [ref=e20]: New project
-            - generic [ref=e21]: Start from a directory on this machine.
