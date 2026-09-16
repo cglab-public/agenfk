@@ -2307,7 +2307,7 @@ app.post("/items/:id/worktree", limitExpensive, asyncHandler(async (req: any, re
   res.status(result.created ? 201 : 200).json(result);
 }));
 
-app.get("/items/:id/worktree", asyncHandler(async (req: any, res: any) => {
+app.get("/items/:id/worktree", limitExpensive, asyncHandler(async (req: any, res: any) => {
   const item: any = await storage.getItem(req.params.id);
   if (!item) return res.status(404).json({ error: "Item not found" });
   const worktreePath = item.worktreePath ?? null;
@@ -2320,7 +2320,7 @@ app.get("/items/:id/worktree", asyncHandler(async (req: any, res: any) => {
   });
 }));
 
-app.delete("/items/:id/worktree", asyncHandler(async (req: any, res: any) => {
+app.delete("/items/:id/worktree", limitExpensive, asyncHandler(async (req: any, res: any) => {
   // Gated like every other destructive endpoint here: removal is --force, so
   // it discards uncommitted work. Any local process could otherwise walk the
   // item ids and wipe every running agent's in-flight changes.
