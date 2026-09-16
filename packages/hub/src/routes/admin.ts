@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { HubServerContext } from '../server.js';
+import { HubServerContext, HUB_VERSION } from '../server.js';
 import { requireAdmin } from '../auth/session.js';
 import { issueApiKey } from '../auth/apiKey.js';
 import { encryptSecret } from '../crypto.js';
@@ -8,13 +8,28 @@ import { randomUUID } from 'crypto';
 import { DEFAULT_FLOW } from '@agenfk/core';
 import { getAgenfkReleases, resetAgenfkReleaseCache } from '../services/githubReleases.js';
 import { compareSemver } from '../util/semver.js';
+import { eligibleInstallations } from '../services/fleetUpgrade.js';
+import { invalidFlowDefinition } from '../services/flowDefinition.js';
 import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
 import { recomputeRollups } from '../rollup.js';
 import { loadModelMeta, isLicenseClass, isHarnessName } from '../util/modelMeta.js';
 import { liveIdentityBlockers, blockersFor } from '../util/mergeLiveness.js';
 import { loadAliasMap, resolveAliasKey, canonicaliseSourceKey } from '../util/userKeyAlias.js';
 import { rateLimit } from '../util/rateLimit.js';
+import { mintChildHubInvite } from './federation.js';
+import { parentUrlFromInviteToken, inviteExpiryFromToken } from '../auth/inviteToken.js';
+import { toChildHubDto, validChildHubName, isoOrNull, MAX_CHILD_HUB_NAME_LEN } from '../util/childHubRow.js';
+import {
+  readParentBinding, writeParentBinding, clearParentBinding, assertHttpUrl,
+  releaseRequestedFlag, setReleaseRequestedFlag, readBindingStateUnverified, asIdentityPolicy,
+} from '../services/federation/parentBinding.js';
+import { outboxDepth } from '../services/federation/federationSync.js';
+import { releaseParentFlows } from '../services/federation/parentFlows.js';
+import { effectiveIdentityPolicy } from '../services/federation/forwarding.js';
+import { httpFederationClient, type FederationClient } from '../services/federation/federationClient.js';
+import { publicHubUrl } from '../util/publicUrl.js';
 import { loadModelMappings } from '../util/modelMapping.js';
+import { asyncRoute } from '../util/asyncRoute.js';
 import {
   PUBLIC_REGISTRY_REPO,
   getRegistryConfig,
@@ -91,13 +106,13 @@ export function adminRouter(ctx: HubServerContext): Router {
   const guard = requireAdmin(ctx.config.sessionSecret);
 
   // ── Auth config ──────────────────────────────────────────────────────────
-  router.get('/auth-config', guard, async (req: Request, res: Response) => {
+  router.get('/auth-config', guard, asyncRoute(async (req: Request, res: Response) => {
     const row = await ctx.db.get<AuthConfigRow>('SELECT * FROM auth_config WHERE org_id = ?', [req.session!.orgId]);
     if (!row) return res.status(404).json({ error: 'auth_config row missing for org' });
     res.json(publicAuthConfig(row));
-  });
+  }));
 
-  router.put('/auth-config', guard, async (req: Request, res: Response) => {
+  router.put('/auth-config', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const b = req.body ?? {};
     const updates: string[] = [];
@@ -124,10 +139,10 @@ export function adminRouter(ctx: HubServerContext): Router {
     const row = await ctx.db.get<AuthConfigRow>('SELECT * FROM auth_config WHERE org_id = ?', [orgId]);
     if (!row) return res.status(404).json({ error: 'auth_config row missing for org' });
     res.json(publicAuthConfig(row));
-  });
+  }));
 
   // ── API keys (installation tokens) ───────────────────────────────────────
-  router.get('/api-keys', guard, async (req: Request, res: Response) => {
+  router.get('/api-keys', guard, asyncRoute(async (req: Request, res: Response) => {
     const rows = await ctx.db.all<any>(
       'SELECT token_hash, label, created_at, revoked_at, installation_id, os_user, git_name, git_email FROM api_keys WHERE org_id = ? ORDER BY created_at DESC',
       [req.session!.orgId],
@@ -142,15 +157,15 @@ export function adminRouter(ctx: HubServerContext): Router {
       gitName: r.git_name ?? null,
       gitEmail: r.git_email ?? null,
     })));
-  });
+  }));
 
-  router.post('/api-keys', guard, async (req: Request, res: Response) => {
+  router.post('/api-keys', guard, asyncRoute(async (req: Request, res: Response) => {
     const label = typeof req.body?.label === 'string' ? req.body.label : null;
     const token = await issueApiKey(ctx.db, req.session!.orgId, label ?? undefined);
     res.status(201).json({ token, label });
-  });
+  }));
 
-  router.delete('/api-keys/:tokenHashPreview', guard, async (req: Request, res: Response) => {
+  router.delete('/api-keys/:tokenHashPreview', guard, asyncRoute(async (req: Request, res: Response) => {
     const preview = req.params.tokenHashPreview;
     // The segment fed straight into LIKE, so DELETE /api-keys/% revoked every
     // key in the org in one unconfirmed call — a fleet-wide kill switch nobody
@@ -182,13 +197,13 @@ export function adminRouter(ctx: HubServerContext): Router {
       [req.session!.orgId, `${preview}%`],
     );
     res.json({ revoked: result.changes });
-  });
+  }));
 
   // ── Hidden people (CGLAB-31) ─────────────────────────────────────────────
   // Person-level hide keyed on events.user_key (lowercased git email).
   // Selection surfaces only — historical data (events, rollups, dashboards)
   // is deliberately untouched. Fully reversible via DELETE.
-  router.get('/hidden-users', guard, async (req: Request, res: Response) => {
+  router.get('/hidden-users', guard, asyncRoute(async (req: Request, res: Response) => {
     const rows = await ctx.db.all<Record<string, unknown>>(
       `SELECT user_key, hidden_by_user_id, hidden_by_email, created_at
          FROM hidden_users
@@ -202,9 +217,9 @@ export function adminRouter(ctx: HubServerContext): Router {
       hiddenByEmail: r.hidden_by_email ?? null,
       createdAt: r.created_at,
     })));
-  });
+  }));
 
-  router.post('/hidden-users', guard, async (req: Request, res: Response) => {
+  router.post('/hidden-users', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const raw = req.body?.userKey;
     const userKey = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
@@ -243,9 +258,9 @@ export function adminRouter(ctx: HubServerContext): Router {
     });
 
     res.status(201).json({ userKey, revokedApiKeys });
-  });
+  }));
 
-  router.delete('/hidden-users/:userKey', guard, async (req: Request, res: Response) => {
+  router.delete('/hidden-users/:userKey', guard, asyncRoute(async (req: Request, res: Response) => {
     const userKey = decodeURIComponent(req.params.userKey).trim().toLowerCase();
     const r = await ctx.db.run(
       'DELETE FROM hidden_users WHERE org_id = ? AND user_key = ?',
@@ -254,7 +269,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     // Note: api_key revocation is permanent — unhiding does NOT restore
     // revoked tokens (the person must re-register their installation).
     res.json({ userKey, unhidden: r.changes > 0 });
-  });
+  }));
 
   // ── Model mappings ───────────────────────────────────────────────────────
   // Admin-curated model identity: an alias reported by an installation folds
@@ -286,7 +301,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   // event volume rather than by the window — acceptable at current scale, and
   // the reason this is an admin page rather than something on every dashboard
   // load. A materialized model column would replace it if that ever bites.
-  router.get('/models', guard, async (req: Request, res: Response) => {
+  router.get('/models', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const [mappings, seen, metaRows] = await Promise.all([
       ctx.db.all<Record<string, unknown>>(
@@ -336,7 +351,7 @@ export function adminRouter(ctx: HubServerContext): Router {
         source: m.source,
       })),
     });
-  });
+  }));
 
   // ── Model provider / license metadata (CGLAB-133 follow-up) ──────────────
   // The table is seeded from util/modelMetaSeed.ts on first read and is the
@@ -344,7 +359,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   // classification. Nothing here is inferred: an admin either sets a row or the
   // model stays whatever the seed said.
 
-  router.put('/models/meta', guard, async (req: Request, res: Response) => {
+  router.put('/models/meta', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const model = validModelId(req.body?.model);
     const provider = typeof req.body?.provider === 'string' ? req.body.provider.trim() : '';
@@ -397,9 +412,9 @@ export function adminRouter(ctx: HubServerContext): Router {
       [orgId, model, provider, licenseClass, license, req.session!.userId ?? null, updatedByEmail],
     );
     res.status(201).json({ model, provider, licenseClass, license, source: 'admin' });
-  });
+  }));
 
-  router.delete('/models/meta/:model', guard, async (req: Request, res: Response) => {
+  router.delete('/models/meta/:model', guard, asyncRoute(async (req: Request, res: Response) => {
     const model = validModelId(decodeURIComponent(req.params.model));
     if (!model) return res.status(400).json({ error: 'Invalid model id.' });
     const r = await ctx.db.run(
@@ -410,9 +425,9 @@ export function adminRouter(ctx: HubServerContext): Router {
     // (the seed only inserts when the org has NO rows at all), which is the
     // honest outcome: the admin said "I don't know", and we do not guess.
     res.json({ model, removed: r.changes > 0 });
-  });
+  }));
 
-  router.post('/models/mappings', guard, async (req: Request, res: Response) => {
+  router.post('/models/mappings', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const aliasModel = validModelId(req.body?.aliasModel);
     const canonicalModel = validModelId(req.body?.canonicalModel);
@@ -467,9 +482,9 @@ export function adminRouter(ctx: HubServerContext): Router {
       [orgId, aliasModel, canonicalModel, req.session!.userId, createdByEmail],
     );
     res.status(201).json({ aliasModel, canonicalModel });
-  });
+  }));
 
-  router.delete('/models/mappings/:aliasModel', guard, async (req: Request, res: Response) => {
+  router.delete('/models/mappings/:aliasModel', guard, asyncRoute(async (req: Request, res: Response) => {
     const aliasModel = validModelId(decodeURIComponent(req.params.aliasModel));
     if (!aliasModel) return res.status(400).json({ error: 'Invalid alias model id.' });
     const r = await ctx.db.run(
@@ -477,10 +492,10 @@ export function adminRouter(ctx: HubServerContext): Router {
       [req.session!.orgId, aliasModel],
     );
     res.json({ aliasModel, removed: r.changes > 0 });
-  });
+  }));
 
   // ── Users ────────────────────────────────────────────────────────────────
-  router.get('/installations', guard, async (req: Request, res: Response) => {
+  router.get('/installations', guard, asyncRoute(async (req: Request, res: Response) => {
     // CGLAB-31: installations belonging to hidden people are excluded by
     // default (this endpoint feeds the Admin installations list, the upgrade
     // picker and the flow-assignment installation picker). ?includeHidden=1
@@ -522,7 +537,7 @@ export function adminRouter(ctx: HubServerContext): Router {
           retiredByEmail: r.retired_by_email ?? null,
         })),
     );
-  });
+  }));
 
   /**
    * Manual rollup repair. The merge recomputes after its transaction commits
@@ -530,7 +545,7 @@ export function adminRouter(ctx: HubServerContext): Router {
    * historical rollups_daily permanently wrong — the periodic timer is
    * forward-only by design and will never notice. This is the way back.
    */
-  router.post('/rollups/recompute', guard, async (req: Request, res: Response) => {
+  router.post('/rollups/recompute', guard, asyncRoute(async (req: Request, res: Response) => {
     const since = req.body?.since;
     const full = req.body?.full === true;
     if (!full && (typeof since !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(since))) {
@@ -542,7 +557,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       orgId: req.session!.orgId,
     });
     res.json({ days: out.days, since: full ? null : since, full });
-  });
+  }));
 
   // ── Identity hygiene (task 2b7a391b) ──────────────────────────────────────
   //
@@ -558,7 +573,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   // breakdown and are never offered as a single action. Merges are revertible
   // now, but a revert an admin never realises they need is no protection.
 
-  router.get('/identity-suggestions', guard, async (req: Request, res: Response) => {
+  router.get('/identity-suggestions', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const rows = await ctx.db.all<{
       from_key: string; to_key: string; installation_id: string;
@@ -642,7 +657,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     // Most history first: the biggest attribution errors are worth fixing first.
     out.sort((a, b) => b.events - a.events);
     res.json(out);
-  });
+  }));
 
   /**
    * Undo one merge. Restores exactly the rows that merge moved, using the
@@ -653,7 +668,7 @@ export function adminRouter(ctx: HubServerContext): Router {
    * older merge after a newer one claimed the same rows finds nothing. That is
    * reported as zero-restored with a note, never as a silent success.
    */
-  router.post('/user-keys/merges/:id/revert', guard, async (req: Request, res: Response) => {
+  router.post('/user-keys/merges/:id/revert', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const id = req.params.id;
     const record = await ctx.db.get<{
@@ -786,9 +801,9 @@ export function adminRouter(ctx: HubServerContext): Router {
           + 'Revert the newer merge first.'
         : null,
     });
-  });
+  }));
 
-  router.get('/user-keys/merges', guard, async (req: Request, res: Response) => {
+  router.get('/user-keys/merges', guard, asyncRoute(async (req: Request, res: Response) => {
     const rows = await ctx.db.all<Record<string, unknown>>(
       `SELECT id, from_user_key, to_user_key, events_moved, merged_by_email, reverted_at, created_at
          FROM user_key_merges WHERE org_id = ? ORDER BY created_at DESC`,
@@ -803,7 +818,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       revertedAt: r.reverted_at ?? null,
       createdAt: r.created_at ?? null,
     })));
-  });
+  }));
 
   // ── Repoint campaigns (CGLAB-66) ──────────────────────────────────────────
   //
@@ -825,7 +840,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     );
   }
 
-  router.post('/repoint', guard, async (req: Request, res: Response) => {
+  router.post('/repoint', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const raw = String(req.body?.targetUrl ?? '').trim().replace(/\/$/, '');
     let parsed: URL;
@@ -887,9 +902,9 @@ export function adminRouter(ctx: HubServerContext): Router {
       }
     });
     res.status(201).json({ id, targetUrl: raw, allowedHost: parsed.hostname.toLowerCase(), targeted: targets.length });
-  });
+  }));
 
-  router.get('/repoint', guard, async (req: Request, res: Response) => {
+  router.get('/repoint', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const campaign = await openCampaign(orgId);
     if (!campaign) { res.json({ campaign: null, counts: {}, targets: [], drained: false }); return; }
@@ -937,16 +952,16 @@ export function adminRouter(ctx: HubServerContext): Router {
         lastSeen: r.last_seen ?? null,
       })),
     });
-  });
+  }));
 
-  router.post('/repoint/:id/close', guard, async (req: Request, res: Response) => {
+  router.post('/repoint/:id/close', guard, asyncRoute(async (req: Request, res: Response) => {
     const r = await ctx.db.run(
       "UPDATE repoint_campaigns SET closed_at = datetime('now') WHERE id = ? AND org_id = ? AND closed_at IS NULL",
       [req.params.id, req.session!.orgId],
     );
     if (r.changes === 0) { res.status(404).json({ error: 'Unknown or already-closed campaign' }); return; }
     res.json({ id: req.params.id, closed: true });
-  });
+  }));
 
   // ── Identity merge (CGLAB-65) ─────────────────────────────────────────────
   //
@@ -958,7 +973,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   // or an install with no git config created a phantom osUser identity sitting
   // beside the real person.
 
-  router.post('/user-keys/merge', guard, async (req: Request, res: Response) => {
+  router.post('/user-keys/merge', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     // Preserve case: userKeyFor lowercases gitEmail only, so an osUser-derived
     // key ('Daniel', 'DPolistchuck' on Windows) is stored as-is. Lowercasing the
@@ -1132,7 +1147,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       // Only differs when the requested target had itself been merged away.
       requestedTo: requestedTo === to ? undefined : requestedTo,
     });
-  });
+  }));
 
   // ── Installation retirement (CGLAB-64) ────────────────────────────────────
   //
@@ -1152,7 +1167,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     );
   }
 
-  router.post('/installations/:id/retire', guard, async (req: Request, res: Response) => {
+  router.post('/installations/:id/retire', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const id = req.params.id;
     const existing = await findInstallation(orgId, id);
@@ -1204,9 +1219,9 @@ export function adminRouter(ctx: HubServerContext): Router {
       retiredAt = fresh?.retired_at ?? null;
     }
     res.json({ id, retired: true, retiredAt, revokedApiKeys, cancelledDirectiveTargets });
-  });
+  }));
 
-  router.delete('/installations/:id/retire', guard, async (req: Request, res: Response) => {
+  router.delete('/installations/:id/retire', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const id = req.params.id;
     if (!(await findInstallation(orgId, id))) {
@@ -1221,17 +1236,17 @@ export function adminRouter(ctx: HubServerContext): Router {
     // Deliberately asymmetric, matching hidden-users: revocation is permanent,
     // so the machine re-joins rather than silently regaining a live token.
     res.json({ id, retired: false });
-  });
+  }));
 
-  router.get('/users', guard, async (req: Request, res: Response) => {
+  router.get('/users', guard, asyncRoute(async (req: Request, res: Response) => {
     const rows = await ctx.db.all(
       'SELECT id, email, provider, role, active, created_at, last_login_at FROM users WHERE org_id = ? ORDER BY created_at DESC',
       [req.session!.orgId],
     );
     res.json(rows);
-  });
+  }));
 
-  router.post('/users/invite', guard, async (req: Request, res: Response) => {
+  router.post('/users/invite', guard, asyncRoute(async (req: Request, res: Response) => {
     const { email, password, role } = req.body ?? {};
     if (typeof email !== 'string' || !email.trim()) {
       return res.status(400).json({ error: 'email required' });
@@ -1261,9 +1276,9 @@ export function adminRouter(ctx: HubServerContext): Router {
     } catch (e: any) {
       res.status(409).json({ error: 'A user with that email already exists' });
     }
-  });
+  }));
 
-  router.put('/users/:id', guard, async (req: Request, res: Response) => {
+  router.put('/users/:id', guard, asyncRoute(async (req: Request, res: Response) => {
     const { role, active, password } = req.body ?? {};
     const sets: string[] = [];
     const params: any[] = [];
@@ -1275,14 +1290,14 @@ export function adminRouter(ctx: HubServerContext): Router {
     const result = await ctx.db.run(`UPDATE users SET ${sets.join(', ')} WHERE id = ? AND org_id = ?`, params);
     if (result.changes === 0) return res.status(404).json({ error: 'User not found' });
     res.json({ ok: true });
-  });
+  }));
 
-  router.delete('/users/:id', guard, async (req: Request, res: Response) => {
+  router.delete('/users/:id', guard, asyncRoute(async (req: Request, res: Response) => {
     if (req.session!.userId === req.params.id) return res.status(400).json({ error: 'Cannot delete the signed-in user' });
     const result = await ctx.db.run('DELETE FROM users WHERE id = ? AND org_id = ?', [req.params.id, req.session!.orgId]);
     if (result.changes === 0) return res.status(404).json({ error: 'User not found' });
     res.json({ ok: true });
-  });
+  }));
 
   // ── Flows ────────────────────────────────────────────────────────────────
   interface FlowRow {
@@ -1291,7 +1306,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     name: string;
     description: string | null;
     definition_json: string;
-    source: 'hub' | 'community';
+    source: 'hub' | 'community' | 'parent';
     version: number;
     created_at: string;
     updated_at: string;
@@ -1313,23 +1328,33 @@ export function adminRouter(ctx: HubServerContext): Router {
 
   // Validate that a flow definition body has the minimal shape we expect.
   // Mirrors core's `Flow` type contract (name + non-empty steps[] with id/name/order).
-  const validateDefinition = (def: any): string | null => {
-    if (!def || typeof def !== 'object') return 'definition must be an object';
-    if (typeof def.name !== 'string' || !def.name.trim()) return 'definition.name is required';
-    if (!Array.isArray(def.steps) || def.steps.length === 0) return 'definition.steps must be a non-empty array';
-    for (const s of def.steps) {
-      if (!s || typeof s !== 'object') return 'each step must be an object';
-      if (typeof s.id !== 'string' || !s.id) return 'each step requires an id';
-      if (typeof s.name !== 'string' || !s.name) return 'each step requires a name';
-      if (typeof s.order !== 'number') return 'each step requires a numeric order';
-    }
-    return null;
-  };
+  const validateDefinition = (def: any): string | null => invalidFlowDefinition(def);
+
+  /**
+   * A flow this hub received from its parent hub is not this hub's to change
+   * (CGLAB-182). The parent owns the definition and re-dispatches it; letting a
+   * child edit it would produce a flow that silently reverts on the next
+   * dispatch, and letting a child delete it would produce one that silently
+   * comes back.
+   *
+   * SERVER-side on purpose. hub-ui disables the controls and says why, but that
+   * is the explanation — this is the control, and it holds for the CLI, a
+   * script, or any other client talking to the API.
+   *
+   * Deliberately NOT applied to org-availability: the definition is the
+   * parent's, but which flows this hub offers its own teams is the child's own
+   * choice. And it is keyed on the ORIGIN, never the name — a flow the child
+   * authored that happens to share a dispatched flow's name is an ordinary
+   * local flow, which is exactly what the install-alongside rule produces.
+   */
+  const PARENT_FLOW_LOCKED =
+    'This flow was sent by the parent hub and is managed there. It stays if this hub leaves the group, and becomes editable then.';
+  const parentOwned = (row: { source?: string | null }) => row.source === 'parent';
 
   // ── Project discovery (for assignment UI pickers) ───────────────────────
   // Returns the distinct project ids ever ingested for this org, with the
   // most-recent occurrence timestamp. Used by the hub-ui Assignments panel.
-  router.get('/projects', guard, async (req: Request, res: Response) => {
+  router.get('/projects', guard, asyncRoute(async (req: Request, res: Response) => {
     // Repo discovery for the assignment UI. The globally-shared identity is the
     // git repo (remote URL), NOT the local per-installation projectId — two
     // clones of the same repo have different projectIds. We therefore surface
@@ -1349,7 +1374,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       remoteUrl: r.remote_url,
       lastSeen: r.last_seen,
     })));
-  });
+  }));
 
   // Built-in default flow — declared BEFORE /flows/:id so the literal ":id"
   // doesn't swallow `/flows/default`.
@@ -1357,15 +1382,15 @@ export function adminRouter(ctx: HubServerContext): Router {
     res.json(DEFAULT_FLOW);
   });
 
-  router.get('/flows', guard, async (req: Request, res: Response) => {
+  router.get('/flows', guard, asyncRoute(async (req: Request, res: Response) => {
     const rows = await ctx.db.all<FlowRow>(
       'SELECT * FROM flows WHERE org_id = ? ORDER BY updated_at DESC',
       [req.session!.orgId],
     );
     res.json(rows.map(presentFlow));
-  });
+  }));
 
-  router.post('/flows', guard, async (req: Request, res: Response) => {
+  router.post('/flows', guard, asyncRoute(async (req: Request, res: Response) => {
     const definition = req.body?.definition;
     const sourceIn = req.body?.source;
     const source: 'hub' | 'community' = sourceIn === 'community' ? 'community' : 'hub';
@@ -1387,23 +1412,24 @@ export function adminRouter(ctx: HubServerContext): Router {
     );
     const row = await ctx.db.get<FlowRow>('SELECT * FROM flows WHERE id = ?', [id]);
     res.status(201).json(presentFlow(row!));
-  });
+  }));
 
-  router.get('/flows/:id', guard, async (req: Request, res: Response) => {
+  router.get('/flows/:id', guard, asyncRoute(async (req: Request, res: Response) => {
     const row = await ctx.db.get<FlowRow>(
       'SELECT * FROM flows WHERE id = ? AND org_id = ?',
       [req.params.id, req.session!.orgId],
     );
     if (!row) return res.status(404).json({ error: 'Flow not found' });
     res.json(presentFlow(row));
-  });
+  }));
 
-  router.put('/flows/:id', guard, async (req: Request, res: Response) => {
+  router.put('/flows/:id', guard, asyncRoute(async (req: Request, res: Response) => {
     const existing = await ctx.db.get<FlowRow>(
       'SELECT * FROM flows WHERE id = ? AND org_id = ?',
       [req.params.id, req.session!.orgId],
     );
     if (!existing) return res.status(404).json({ error: 'Flow not found' });
+    if (parentOwned(existing)) return res.status(409).json({ error: PARENT_FLOW_LOCKED });
     const definition = req.body?.definition;
     const err = validateDefinition(definition);
     if (err) return res.status(400).json({ error: err });
@@ -1421,9 +1447,9 @@ export function adminRouter(ctx: HubServerContext): Router {
     );
     const row = await ctx.db.get<FlowRow>('SELECT * FROM flows WHERE id = ?', [req.params.id]);
     res.json(presentFlow(row!));
-  });
+  }));
 
-  router.put('/flows/:id/availability', guard, async (req: Request, res: Response) => {
+  router.put('/flows/:id/availability', guard, asyncRoute(async (req: Request, res: Response) => {
     const existing = await ctx.db.get<FlowRow>(
       'SELECT id FROM flows WHERE id = ? AND org_id = ?',
       [req.params.id, req.session!.orgId],
@@ -1435,9 +1461,14 @@ export function adminRouter(ctx: HubServerContext): Router {
       [available ? 1 : 0, req.params.id, req.session!.orgId],
     );
     res.json({ id: req.params.id, orgAvailable: available });
-  });
+  }));
 
-  router.delete('/flows/:id', guard, async (req: Request, res: Response) => {
+  router.delete('/flows/:id', guard, asyncRoute(async (req: Request, res: Response) => {
+    const owned = await ctx.db.get<{ source: string }>(
+      'SELECT source FROM flows WHERE id = ? AND org_id = ?',
+      [req.params.id, req.session!.orgId],
+    );
+    if (owned && parentOwned(owned)) return res.status(409).json({ error: PARENT_FLOW_LOCKED });
     // Refuse to delete a flow that is currently assigned at any scope.
     const assignments = await ctx.db.all<{ scope: string; target_id: string }>(
       'SELECT scope, target_id FROM flow_assignments WHERE org_id = ? AND flow_id = ?',
@@ -1457,12 +1488,12 @@ export function adminRouter(ctx: HubServerContext): Router {
     );
     if (result.changes === 0) return res.status(404).json({ error: 'Flow not found' });
     res.json({ ok: true });
-  });
+  }));
 
   // ── Flow assignments (multi-scope) ───────────────────────────────────────
   // List shape: array of { scope, targetId, flowId, updatedAt } so hub-ui can
   // render org/project/installation overrides in one pass.
-  router.get('/flow-assignments', guard, async (req: Request, res: Response) => {
+  router.get('/flow-assignments', guard, asyncRoute(async (req: Request, res: Response) => {
     const rows = await ctx.db.all<{ scope: string; target_id: string; flow_id: string; updated_at: string }>(
       'SELECT scope, target_id, flow_id, updated_at FROM flow_assignments WHERE org_id = ? ORDER BY scope, target_id',
       [req.session!.orgId],
@@ -1523,7 +1554,7 @@ export function adminRouter(ctx: HubServerContext): Router {
         ? r.target_id
         : r.scope === 'project' ? (remoteByProjectId.get(r.target_id) ?? null) : null,
     })));
-  });
+  }));
 
   // ── Community registry proxy ────────────────────────────────────────────
   // Mirrors the local server's /registry/flows surface so the FlowEditorModal
@@ -1549,11 +1580,11 @@ export function adminRouter(ctx: HubServerContext): Router {
   // The admin of a hub-connected company points the org's flow registry at an
   // EXISTING repo of their own. GET never returns the token — only that one
   // exists — because the UI has no legitimate reason to render a secret.
-  router.get('/registry-config', guard, async (req: Request, res: Response) => {
+  router.get('/registry-config', guard, asyncRoute(async (req: Request, res: Response) => {
     res.json(await getRegistryConfig(ctx.db, req.session!.orgId));
-  });
+  }));
 
-  router.put('/registry-config', guard, async (req: Request, res: Response) => {
+  router.put('/registry-config', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const b = req.body ?? {};
 
@@ -1620,11 +1651,11 @@ export function adminRouter(ctx: HubServerContext): Router {
       ...(await getRegistryConfig(ctx.db, orgId)),
       copied: copy.copied, skipped: copy.skipped, failed: copy.failed, truncated: copy.truncated,
     });
-  });
+  }));
 
   // Re-run the copy after a partial or failed one. Tops up the repo the org
   // already points at; does not re-probe-and-switch.
-  router.post('/registry-config/sync', guard, async (req: Request, res: Response) => {
+  router.post('/registry-config/sync', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const cfg = await getRegistryConfig(ctx.db, orgId);
     if (cfg.isPublic) {
@@ -1641,9 +1672,9 @@ export function adminRouter(ctx: HubServerContext): Router {
       copiedAt: new Date().toISOString(),
     });
     res.json({ copied: copy.copied, skipped: copy.skipped, failed: copy.failed, truncated: copy.truncated });
-  });
+  }));
 
-  router.get('/registry/flows', guard, async (req: Request, res: Response) => {
+  router.get('/registry/flows', guard, asyncRoute(async (req: Request, res: Response) => {
     const resolved = await resolveRegistrySource(
       ctx.db, req.session!.orgId, ctx.config.secretKey, req.query?.source,
     );
@@ -1683,10 +1714,10 @@ export function adminRouter(ctx: HubServerContext): Router {
     } catch (e: any) {
       res.status(502).json({ error: 'Failed to fetch registry', detail: e?.message });
     }
-  });
+  }));
 
   // ── Install from registry into the org's flows table (source='community') ──
-  router.post('/flows/install', guard, async (req: Request, res: Response) => {
+  router.post('/flows/install', guard, asyncRoute(async (req: Request, res: Response) => {
     const filename = typeof req.body?.filename === 'string' ? req.body.filename : null;
     if (!filename) return res.status(400).json({ error: 'filename is required' });
     const resolved = await resolveRegistrySource(
@@ -1738,9 +1769,9 @@ export function adminRouter(ctx: HubServerContext): Router {
     } catch (e: any) {
       res.status(502).json({ error: 'Failed to install flow', detail: e?.message });
     }
-  });
+  }));
 
-  router.put('/flow-assignments', guard, async (req: Request, res: Response) => {
+  router.put('/flow-assignments', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const body = req.body ?? {};
     // Default scope to 'org' for legacy callers that send only `{ flowId }`.
@@ -1804,7 +1835,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       }
     });
     res.json({ scope, targetId: targetId || null, flowId });
-  });
+  }));
 
   // ── Fleet upgrade directives (Story 2 of EPIC 541c12b3) ────────────────
   // Strict semver allowlist mirrors the CLI's SEMVER_TAG_RE — a directive's
@@ -1816,7 +1847,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   // sourced from the public agenfk GitHub release list and filtered to
   // releases >= the org's fleet floor (the oldest agenfk_version any
   // installation in this org has reported). Sorted newest → oldest.
-  router.get('/upgrade/available-versions', guard, async (req: Request, res: Response) => {
+  router.get('/upgrade/available-versions', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     // Admin-triggered cache invalidation: ?refresh=1 lets an admin force a
     // fresh fetch right after a new release is cut, instead of waiting for
@@ -1847,9 +1878,9 @@ export function adminRouter(ctx: HubServerContext): Router {
     filtered.sort((a, b) => compareSemver(b, a)); // newest → oldest
 
     res.json({ versions: filtered, fleetFloor });
-  });
+  }));
 
-  router.post('/upgrade', guard, async (req: Request, res: Response) => {
+  router.post('/upgrade', guard, asyncRoute(async (req: Request, res: Response) => {
     const { targetVersion, scope, confirmDowngrade } = req.body ?? {};
     if (typeof targetVersion !== 'string' || !SEMVER_TAG_RE.test(targetVersion)) {
       return res.status(400).json({ error: 'targetVersion must be a semver string (e.g. 0.3.1 or 0.3.0-beta.22)' });
@@ -1877,22 +1908,13 @@ export function adminRouter(ctx: HubServerContext): Router {
     type Inst = { id: string; agenfk_version: string | null };
     let installations: Inst[];
     if (scope.type === 'all') {
-      // CGLAB-31: fleet-wide directives skip hidden people's installations —
-      // a departed user's machine must not receive upgrade pushes.
-      // CGLAB-64: and retired installations. Their keys were revoked when they
-      // were retired, so they can never poll or report — targeting them hangs
-      // the upgrade board on machines that are never coming back, which is the
-      // exact failure retirement exists to prevent.
-      installations = await ctx.db.all<Inst>(
-        `SELECT i.id, i.agenfk_version FROM installations i
-          WHERE i.org_id = ?
-            AND i.retired_at IS NULL
-            AND NOT EXISTS (
-              SELECT 1 FROM hidden_users h
-               WHERE h.org_id = i.org_id AND h.user_key = lower(i.git_email)
-            )`,
-        [orgId],
-      );
+      // The rules (skip hidden people's machines, CGLAB-31; skip retired ones,
+      // CGLAB-64) now live in services/fleetUpgrade so the child-hub fan-out
+      // for a group upgrade uses the SAME definition of "which machines count"
+      // rather than a second copy that can drift from this one. The policy
+      // stays here: an admin naming a machine explicitly still gets a 409
+      // below, where a child hub skips and reports instead.
+      installations = await eligibleInstallations(ctx.db, orgId);
     } else if (scope.type === 'installation') {
       const inst = await ctx.db.get<Inst>(
         'SELECT id, agenfk_version FROM installations WHERE id = ? AND org_id = ?',
@@ -1964,6 +1986,10 @@ export function adminRouter(ctx: HubServerContext): Router {
            AND t.state IN ('pending', 'in_progress')`,
         [orgId, ...ids],
       );
+      // NB: the child-hub fan-out asks the same question through
+      // inFlightInstallationIds in services/fleetUpgrade. This one also needs
+      // WHICH directive conflicts, to name it in the 409, so it keeps its own
+      // projection over the identical predicate.
       if (conflicts.length > 0) {
         return res.status(409).json({
           error: 'One or more installations already have an upgrade in progress',
@@ -2034,9 +2060,9 @@ export function adminRouter(ctx: HubServerContext): Router {
     });
 
     res.status(201).json({ directiveId, targetVersion, targetCount: installations.length });
-  });
+  }));
 
-  router.get('/upgrade', guard, async (req: Request, res: Response) => {
+  router.get('/upgrade', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const directives = await ctx.db.all<{
       id: string; target_version: string; scope_type: string; scope_id: string | null;
@@ -2098,7 +2124,103 @@ export function adminRouter(ctx: HubServerContext): Router {
       });
     }
     res.json({ directives: out });
-  });
+  }));
+
+  /**
+   * The most hubs one dispatch may name.
+   *
+   * childHubIds is caller-supplied and was unbounded, so a 50k-element array
+   * became a 50k-row IN list on one authenticated admin request. Well above any
+   * real group, and below SQLite's 999-variable statement limit once the org id
+   * is added.
+   */
+  const MAX_DISPATCH_TARGETS = 500;
+
+  /**
+   * The ids a dispatch body names, or the reason it is not usable.
+   *
+   * A non-string or empty element is REFUSED rather than filtered out. Quietly
+   * dropping it is the same defect as quietly dropping an unknown hub — the
+   * admin names two hubs, one is `null` from a client bug, and a dispatch to one
+   * hub comes back 200 as though both had been targeted.
+   */
+  function readDispatchTargetIds(raw: unknown): { ids: string[] } | { error: string } {
+    if (!Array.isArray(raw)) return { ids: [] };
+    if (raw.some(v => typeof v !== 'string' || !v)) {
+      return { error: 'childHubIds must contain only non-empty strings' };
+    }
+    if (raw.length > MAX_DISPATCH_TARGETS) {
+      return { error: `childHubIds may name at most ${MAX_DISPATCH_TARGETS} hubs` };
+    }
+    // De-duplicated: a repeated id from a multi-select is an ordinary client
+    // bug, and without this the second target insert violates PRIMARY KEY
+    // (dispatch_id, child_hub_id), rolls the transaction back and turns it
+    // into a 500.
+    return { ids: Array.from(new Set(raw as string[])) };
+  }
+
+  /**
+   * The ids a 'selected' dispatch cannot target, in the order they were named.
+   *
+   * Both dispatch kinds — flows and group upgrades — name hubs the same way and
+   * must refuse the same way. An id from another org, a typo, or a hub that
+   * detached since the picker loaded belongs here. Skipping those silently
+   * creates a dispatch with no target rows, which the directive feed can never
+   * serve to anyone and which reads in the admin listing exactly like an 'all'
+   * dispatch nobody has polled yet.
+   *
+   * One query, not one per id — the shape POST /upgrade already uses for the
+   * same question.
+   */
+  async function untargetableChildHubs(orgId: string, ids: string[]): Promise<string[]> {
+    if (!ids.length) return [];
+    const rows = await ctx.db.all<{ id: string }>(
+      `SELECT id FROM child_hubs
+        WHERE org_id = ? AND detached_at IS NULL AND id IN (${ids.map(() => '?').join(',')})`,
+      [orgId, ...ids],
+    );
+    const found = new Set(rows.map(r => r.id));
+    return ids.filter(id => !found.has(id));
+  }
+
+  /**
+   * Write one target row, but only for a hub that is STILL targetable.
+   *
+   * The validation above runs before the transaction, so a hub that detaches in
+   * between would otherwise get a target row anyway: there is no foreign key on
+   * flow_dispatch_targets.child_hub_id, the insert cannot fail, and the feed's
+   * predicate matches that row forever — the dispatch sits half-pending on the
+   * board with no hub able to answer it. Putting the condition in the STATEMENT
+   * is the same rule the detach route insists on for itself.
+   *
+   * Returns false when the race was lost, so the caller can abandon the batch.
+   */
+  async function insertDispatchTarget(
+    table: 'flow_dispatch_targets' | 'upgrade_dispatch_targets',
+    dispatchId: string, childHubId: string, orgId: string, now: string,
+  ): Promise<boolean> {
+    const r = await ctx.db.run(
+      // The CASTs are load-bearing on Postgres: in an INSERT ... SELECT the
+       // parameter types are resolved from the SELECT list, not from the target
+       // columns, so an un-cast placeholder arrives as text and the insert is
+       // refused ("column updated_at is of type timestamp with time zone but
+       // expression is of type text"). SQLite gives TIMESTAMPTZ numeric
+       // affinity, which leaves an ISO string untouched, so the same statement
+       // works on both. The pg parity test for a 'selected' dispatch exists
+       // because this broke the moment it was written.
+      `INSERT INTO ${table} (dispatch_id, child_hub_id, state, updated_at)
+       SELECT CAST(? AS TEXT), id, 'pending', CAST(? AS TIMESTAMPTZ) FROM child_hubs
+        WHERE id = ? AND org_id = ? AND detached_at IS NULL`,
+      [dispatchId, now, childHubId, orgId],
+    );
+    return r.changes > 0;
+  }
+
+  const CHILD_HUBS_NOT_TARGETABLE = 'One or more child hubs are not in this group, or have detached';
+  /** Thrown inside the dispatch transaction to roll it back; see insertDispatchTarget. */
+  class TargetVanished extends Error {
+    constructor(readonly childHubId: string) { super(`child hub ${childHubId} detached mid-dispatch`); }
+  }
 
   // POST /v1/admin/upgrade/:directiveId/cancel — admin-driven cancel for a
   // pending directive. Flips every target still in 'pending' to 'cancelled';
@@ -2112,7 +2234,293 @@ export function adminRouter(ctx: HubServerContext): Router {
   // treats in_progress as active. Force-cancelled rows get finished_at and
   // an error_message so the admin view shows when and why they were closed.
   // succeeded/failed targets are never touched, with or without force.
-  router.post('/upgrade/:directiveId/cancel', guard, async (req: Request, res: Response) => {
+  /**
+   * Flow dispatch (CGLAB-182): send one of this org's flows to its child hubs.
+   *
+   * `scope: 'all'` is stored as intent, NOT expanded into a target list, because
+   * it means every current AND FUTURE child hub — a hub enrolling next month
+   * must receive it on its first poll. `scope: 'selected'` names hubs up front,
+   * so its targets are written here.
+   */
+  router.post('/flow-dispatches', guard, async (req: Request, res: Response, next) => {
+    try {
+      const orgId = req.session!.orgId;
+      const flowId = typeof req.body?.flowId === 'string' ? req.body.flowId : '';
+      const scope = req.body?.scope === 'selected' ? 'selected' : req.body?.scope === 'all' ? 'all' : null;
+      if (!scope) return res.status(400).json({ error: "scope must be 'all' or 'selected'" });
+
+      // The flow must be one this org owns — dispatching by id alone would let
+      // an admin push another tenant's flow into their own group.
+      const flow = await ctx.db.get<{ id: string; version: number; definition_json: string }>(
+        'SELECT id, version, definition_json FROM flows WHERE id = ? AND org_id = ?', [flowId, orgId],
+      );
+      if (!flow) return res.status(404).json({ error: 'Flow not found' });
+
+      const parsed = readDispatchTargetIds(req.body?.childHubIds);
+      if ('error' in parsed) return res.status(400).json({ error: parsed.error });
+      const ids = parsed.ids;
+      if (scope === 'selected' && !ids.length) {
+        return res.status(400).json({ error: 'childHubIds is required when scope is selected' });
+      }
+      if (scope === 'selected') {
+        const missing = await untargetableChildHubs(orgId, ids);
+        if (missing.length) {
+          return res.status(404).json({ error: CHILD_HUBS_NOT_TARGETABLE, missing });
+        }
+      }
+
+      const dispatchId = randomUUID();
+      const now = new Date().toISOString();
+      // Denormalised for the audit trail, the same way model mappings and
+      // upgrade directives do it — the user row may be gone by the time anyone
+      // reads back who sent this flow to the group.
+      const actor = await ctx.db.get<{ email: string }>(
+        'SELECT email FROM users WHERE id = ?', [req.session!.userId],
+      );
+      await ctx.db.transaction(async () => {
+        await ctx.db.run(
+          `INSERT INTO flow_dispatches (id, org_id, flow_id, flow_version, definition_json, scope_type,
+                                        created_by_user_id, created_by_email, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [dispatchId, orgId, flow.id, Number(flow.version), flow.definition_json, scope,
+           req.session!.userId ?? null, actor?.email ?? null, now],
+        );
+        if (scope === 'selected') {
+          for (const id of ids) {
+            if (!await insertDispatchTarget('flow_dispatch_targets', dispatchId, id, orgId, now)) {
+              throw new TargetVanished(id);
+            }
+          }
+        }
+      });
+      res.json({ id: dispatchId, flowId: flow.id, flowVersion: Number(flow.version), scope });
+    } catch (err) {
+      if (err instanceof TargetVanished) {
+        return res.status(409).json({ error: CHILD_HUBS_NOT_TARGETABLE, missing: [err.childHubId] });
+      }
+      next(err);
+    }
+  });
+
+  router.get('/flow-dispatches', guard, async (req: Request, res: Response, next) => {
+    try {
+      const orgId = req.session!.orgId;
+      const rows = await ctx.db.all<any>(
+        `SELECT id, flow_id, flow_version, scope_type, created_by_email, created_at, cancelled_at
+         FROM flow_dispatches WHERE org_id = ? ORDER BY created_at DESC`, [orgId],
+      );
+      const targets = await ctx.db.all<any>(
+        `SELECT t.dispatch_id, t.child_hub_id, t.state, t.detail, t.updated_at, c.name
+         FROM flow_dispatch_targets t
+         JOIN flow_dispatches d ON d.id = t.dispatch_id
+         LEFT JOIN child_hubs c ON c.id = t.child_hub_id
+         WHERE d.org_id = ?`, [orgId],
+      );
+      const byDispatch = new Map<string, any[]>();
+      for (const t of targets) {
+        const list = byDispatch.get(t.dispatch_id) ?? [];
+        list.push({
+          childHubId: t.child_hub_id,
+          name: t.name ?? t.child_hub_id,
+          state: t.state,
+          detail: t.detail ?? null,
+          updatedAt: isoOrNull(t.updated_at),
+        });
+        byDispatch.set(t.dispatch_id, list);
+      }
+      res.json({
+        dispatches: rows.map(r => ({
+          id: r.id,
+          flowId: r.flow_id,
+          flowVersion: Number(r.flow_version),
+          scope: r.scope_type,
+          createdByEmail: r.created_by_email ?? null,
+          createdAt: isoOrNull(r.created_at),
+          cancelledAt: isoOrNull(r.cancelled_at),
+          // Under scope 'all' a target appears only once a hub has been served,
+          // so an empty list means "nobody has polled yet", not "nobody is targeted".
+          targets: byDispatch.get(r.id) ?? [],
+        })),
+      });
+    } catch (err) { next(err); }
+  });
+
+  /**
+   * A child's report detail is a JSON blob of counts and skip reasons. It is
+   * read back as an object where possible, and as a bare string when it is
+   * not — an older child, or a plain message, must not break the board.
+   */
+  const parseTargetDetail = (raw: unknown): unknown => {
+    if (typeof raw !== 'string' || !raw) return null;
+    try { return JSON.parse(raw); } catch { return raw; }
+  };
+
+  // ── Group upgrades (CGLAB-183) ───────────────────────────────────────────
+  //
+  // The parent names a target version; each child hub fans it out over its OWN
+  // installations. Deliberately the same shape as flow dispatch, including the
+  // rule that serving a directive is not the upgrade landing.
+
+  router.post('/upgrade-dispatches', guard, async (req: Request, res: Response, next) => {
+    try {
+      const orgId = req.session!.orgId;
+      const targetVersion = typeof req.body?.targetVersion === 'string' ? req.body.targetVersion : '';
+      if (!SEMVER_TAG_RE.test(targetVersion)) {
+        return res.status(400).json({ error: 'targetVersion must be a semver string (e.g. 0.3.1 or 0.3.0-beta.22)' });
+      }
+      const scope = req.body?.scope === 'selected' ? 'selected' : req.body?.scope === 'all' ? 'all' : null;
+      if (!scope) return res.status(400).json({ error: "scope must be 'all' or 'selected'" });
+
+      const parsed = readDispatchTargetIds(req.body?.childHubIds);
+      if ('error' in parsed) return res.status(400).json({ error: parsed.error });
+      const ids = parsed.ids;
+      if (scope === 'selected' && !ids.length) {
+        return res.status(400).json({ error: 'childHubIds is required when scope is selected' });
+      }
+      if (scope === 'selected') {
+        const missing = await untargetableChildHubs(orgId, ids);
+        if (missing.length) {
+          return res.status(404).json({ error: CHILD_HUBS_NOT_TARGETABLE, missing });
+        }
+      }
+
+      // The same allowlist gate POST /upgrade applies, and applied HERE rather
+      // than on each child: a version that does not exist should be refused
+      // where the admin who typed it can read the error, not discovered by a
+      // child hub in the middle of the night.
+      const releaseExists = ctx.config.releaseExists ?? defaultReleaseExists;
+      if (!(await releaseExists(targetVersion))) {
+        return res.status(422).json({ error: `Release ${targetVersion} not found` });
+      }
+
+      const dispatchId = randomUUID();
+      const now = new Date().toISOString();
+      const actor = await ctx.db.get<{ email: string }>(
+        'SELECT email FROM users WHERE id = ?', [req.session!.userId],
+      );
+      const confirmDowngrade = req.body?.confirmDowngrade === true;
+      await ctx.db.transaction(async () => {
+        await ctx.db.run(
+          `INSERT INTO upgrade_dispatches (id, org_id, target_version, scope_type, confirm_downgrade,
+                                           created_by_user_id, created_by_email, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [dispatchId, orgId, targetVersion, scope, confirmDowngrade ? 1 : 0,
+           req.session!.userId ?? null, actor?.email ?? null, now],
+        );
+        if (scope === 'selected') {
+          for (const id of ids) {
+            if (!await insertDispatchTarget('upgrade_dispatch_targets', dispatchId, id, orgId, now)) {
+              throw new TargetVanished(id);
+            }
+          }
+        }
+      });
+      res.json({ id: dispatchId, targetVersion, scope, confirmDowngrade });
+    } catch (err) {
+      if (err instanceof TargetVanished) {
+        return res.status(409).json({ error: CHILD_HUBS_NOT_TARGETABLE, missing: [err.childHubId] });
+      }
+      next(err);
+    }
+  });
+
+  router.get('/upgrade-dispatches', guard, async (req: Request, res: Response, next) => {
+    try {
+      const orgId = req.session!.orgId;
+      const rows = await ctx.db.all<any>(
+        `SELECT id, target_version, scope_type, confirm_downgrade, created_by_email, created_at, cancelled_at
+         FROM upgrade_dispatches WHERE org_id = ? ORDER BY created_at DESC`, [orgId],
+      );
+      const targets = await ctx.db.all<any>(
+        `SELECT t.dispatch_id, t.child_hub_id, t.state, t.detail, t.updated_at, c.name
+         FROM upgrade_dispatch_targets t
+         JOIN upgrade_dispatches d ON d.id = t.dispatch_id
+         LEFT JOIN child_hubs c ON c.id = t.child_hub_id
+         WHERE d.org_id = ?`, [orgId],
+      );
+      const byDispatch = new Map<string, any[]>();
+      for (const t of targets) {
+        const list = byDispatch.get(t.dispatch_id) ?? [];
+        list.push({
+          childHubId: t.child_hub_id,
+          name: t.name ?? t.child_hub_id,
+          state: t.state,
+          // The child's aggregate counts and skip reasons, as it reported them.
+          detail: parseTargetDetail(t.detail),
+          updatedAt: isoOrNull(t.updated_at),
+        });
+        byDispatch.set(t.dispatch_id, list);
+      }
+      res.json({
+        dispatches: rows.map(r => ({
+          id: r.id,
+          targetVersion: r.target_version,
+          scope: r.scope_type,
+          confirmDowngrade: !!r.confirm_downgrade,
+          createdByEmail: r.created_by_email ?? null,
+          createdAt: isoOrNull(r.created_at),
+          cancelledAt: isoOrNull(r.cancelled_at),
+          // Under scope 'all' a target appears only once a hub has been served,
+          // so an empty list means "nobody has polled yet", not "nobody is targeted".
+          targets: byDispatch.get(r.id) ?? [],
+        })),
+      });
+    } catch (err) { next(err); }
+  });
+
+  router.post('/upgrade-dispatches/:id/cancel', guard, async (req: Request, res: Response, next) => {
+    try {
+      const orgId = req.session!.orgId;
+      const now = new Date().toISOString();
+      const result = await ctx.db.run(
+        `UPDATE upgrade_dispatches SET cancelled_at = ?
+          WHERE id = ? AND org_id = ? AND cancelled_at IS NULL`,
+        [now, req.params.id, orgId],
+      );
+      // Hubs that already took the directive have to be TOLD. Moving them to
+      // `cancel-pending` is what puts the cancel on the feed for them, and it
+      // is deliberately not `cancelled`: the parent never assumes, so a hub
+      // that never polls keeps showing as still being asked rather than being
+      // claimed as stopped. Terminal states are untouched — a cancel cannot
+      // un-upgrade a fleet that already finished.
+      await ctx.db.run(
+        `UPDATE upgrade_dispatch_targets
+            SET state = 'cancel-pending', updated_at = ?
+          WHERE dispatch_id = ? AND state IN ('pending', 'running')
+            AND dispatch_id IN (SELECT id FROM upgrade_dispatches WHERE org_id = ?)`,
+        [now, req.params.id, orgId],
+      );
+      if (Number(result.changes ?? 0) === 0) {
+        const exists = await ctx.db.get<{ id: string }>(
+          'SELECT id FROM upgrade_dispatches WHERE id = ? AND org_id = ?', [req.params.id, orgId],
+        );
+        if (!exists) return res.status(404).json({ error: 'Dispatch not found' });
+      }
+      res.json({ ok: true, id: req.params.id });
+    } catch (err) { next(err); }
+  });
+
+  router.post('/flow-dispatches/:id/cancel', guard, async (req: Request, res: Response, next) => {
+    try {
+      const orgId = req.session!.orgId;
+      // `cancelled_at IS NULL` in the statement, not a prior read, so two
+      // admins cancelling at once cannot both claim to have done it.
+      const r = await ctx.db.run(
+        `UPDATE flow_dispatches SET cancelled_at = ?
+         WHERE id = ? AND org_id = ? AND cancelled_at IS NULL`,
+        [new Date().toISOString(), req.params.id, orgId],
+      );
+      if (!r.changes) {
+        const exists = await ctx.db.get<{ id: string }>(
+          'SELECT id FROM flow_dispatches WHERE id = ? AND org_id = ?', [req.params.id, orgId],
+        );
+        if (!exists) return res.status(404).json({ error: 'Dispatch not found' });
+      }
+      res.json({ ok: true, cancelled: true });
+    } catch (err) { next(err); }
+  });
+
+  router.post('/upgrade/:directiveId/cancel', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const directiveId = req.params.directiveId;
     const force = req.body?.force === true;
@@ -2155,6 +2563,416 @@ export function adminRouter(ctx: HubServerContext): Router {
     });
 
     res.json({ directiveId, cancelledCount, forcedCount, leftAlone });
+  }));
+
+
+  // ── Child hubs (CGLAB-181) ────────────────────────────────────────────────
+  //
+  // Task 1 shipped the enforcement — every federation route refuses a detached
+  // hub — but no way to reach it. These are the routes that make a child hub's
+  // credential revocable through the product rather than through psql.
+
+  async function findChildHub(orgId: string, id: string) {
+    return ctx.db.get<{ id: string; name: string; detached_at: string | Date | null; detached_by_email: string | null }>(
+      'SELECT id, name, detached_at, detached_by_email FROM child_hubs WHERE id = ? AND org_id = ?',
+      [id, orgId],
+    );
+  }
+
+  router.get('/child-hubs', guard, async (req: Request, res: Response, next) => {
+    try {
+      // Detached hubs are dead endpoints, hidden by the same reasoning as
+      // retired installations: left in the list they would sit in every future
+      // dispatch picker and inflate denominators forever.
+      const includeDetached = req.query.includeDetached === '1' || req.query.includeDetached === 'true';
+      const rows = await ctx.db.all<Record<string, unknown>>(
+        `SELECT id, name, hub_version, first_seen, last_seen, detached_at, detached_by_email,
+                release_requested_at, release_reason
+           FROM child_hubs
+          WHERE org_id = ?
+          ORDER BY last_seen DESC`,
+        [req.session!.orgId],
+      );
+      const childHubs = rows
+        .filter((r: any) => includeDetached || !r.detached_at)
+        .map((r: any) => toChildHubDto(r));
+      // Whether this hub is a parent at all — a standalone hub should say so
+      // rather than render an empty table. Counted over ALL rows, so detaching
+      // the last child does not make the tab claim the hub was never a parent.
+      res.json({ isParent: rows.length > 0, childHubs });
+    } catch (err) { next(err); }
+  });
+
+  router.put('/child-hubs/:id', guard, async (req: Request, res: Response, next) => {
+    try {
+      const orgId = req.session!.orgId;
+      const raw = req.body?.name;
+      const name = validChildHubName(raw);
+      if (!name) {
+        const tooLong = typeof raw === 'string' && raw.trim().length > MAX_CHILD_HUB_NAME_LEN;
+        res.status(400).json({
+          error: tooLong ? `name exceeds ${MAX_CHILD_HUB_NAME_LEN} characters` : 'name required',
+        });
+        return;
+      }
+      if (!(await findChildHub(orgId, req.params.id))) {
+        res.status(404).json({ error: 'Unknown child hub' });
+        return;
+      }
+      const upd = await ctx.db.run('UPDATE child_hubs SET name = ? WHERE id = ? AND org_id = ?', [name, req.params.id, orgId]);
+      // The row can be deleted between the lookup and the write; reporting a
+      // rename that did not happen would have the tab show the old name back
+      // on the next refresh with no explanation.
+      if (upd.changes === 0) { res.status(404).json({ error: 'Unknown child hub' }); return; }
+      res.json({ id: req.params.id, name });
+    } catch (err) { next(err); }
+  });
+
+  router.post('/child-hubs/:id/detach', guard, async (req: Request, res: Response, next) => {
+    try {
+      const orgId = req.session!.orgId;
+      if (!(await findChildHub(orgId, req.params.id))) {
+        res.status(404).json({ error: 'Unknown child hub' });
+        return;
+      }
+
+      let actorEmail: string | null = null;
+      if (req.session?.userId) {
+        const u = await ctx.db.get<{ email: string }>('SELECT email FROM users WHERE id = ?', [req.session.userId]);
+        actorEmail = u?.email ?? null;
+      }
+
+      let revokedKeys = 0;
+      // One transaction: marking the hub detached but failing to revoke its
+      // keys would leave a credential alive that the board says is gone.
+      await ctx.db.transaction(async () => {
+        // `detached_at IS NULL` in the statement itself, not a prior read —
+        // two admins clicking Detach at the same moment would both observe a
+        // null and both write, and the later write would move the recorded
+        // time. The predicate makes the database the arbiter.
+        await ctx.db.run(
+          `UPDATE child_hubs
+              SET detached_at = ?, detached_by_user_id = ?, detached_by_email = ?
+            WHERE id = ? AND org_id = ? AND detached_at IS NULL`,
+          [new Date().toISOString(), req.session!.userId ?? null, actorEmail, req.params.id, orgId],
+        );
+        const revoked = await ctx.db.run(
+          `UPDATE federation_keys SET revoked_at = ?
+            WHERE org_id = ? AND child_hub_id = ? AND revoked_at IS NULL`,
+          [new Date().toISOString(), orgId, req.params.id],
+        );
+        revokedKeys = revoked.changes;
+      });
+
+      const fresh = await findChildHub(orgId, req.params.id);
+      res.json({
+        id: req.params.id,
+        detached: true,
+        detachedAt: isoOrNull(fresh?.detached_at ?? null),
+        detachedByEmail: fresh?.detached_by_email ?? null,
+        revokedKeys,
+      });
+    } catch (err) { next(err); }
+  });
+
+  // The same invite as /hub/federation/invite/create, reachable from the tab
+  // that manages child hubs so an admin never has to leave it.
+  router.post('/child-hubs/invite', guard, (req: Request, res: Response) => {
+    res.json(mintChildHubInvite(req.session!.orgId, ctx.config.secretKey, publicHubUrl(req)));
+  });
+
+
+  // ── This hub's own parent (CGLAB-181) ─────────────────────────────────────
+  //
+  // Joining is the child's to do; LEAVING IS NOT. A child hub cannot let
+  // itself out of a group: DELETE succeeds only once the parent has detached
+  // it, which is what flips the binding to 'revoked'. That keeps the roster at
+  // the parent authoritative — a child cannot quietly vanish from a dispatch
+  // target list — and it is why there is a release REQUEST rather than a
+  // release action.
+
+  const federationClient = (): FederationClient =>
+    (ctx.config.federationClient as FederationClient | undefined) ?? httpFederationClient();
+
+  /**
+   * Surface the parent's own sentence rather than a bare 500 — "invite token
+   * already used" is the message worth reading. Bounded and shape-checked,
+   * because the admin chooses the URL: reflecting an arbitrary upstream body
+   * would turn this route into a readout for whatever it was pointed at.
+   */
+  const parentError = (err: unknown): { status: number; error: string } => {
+    const status = (err as any)?.response?.status;
+    const fromParent = (err as any)?.response?.data?.error;
+    const looksLikeHub = typeof fromParent === 'string' && fromParent.length > 0 && fromParent.length <= 200
+      && !/[<>]/.test(fromParent);
+    if (looksLikeHub && status >= 400 && status < 500) return { status, error: fromParent };
+    return { status: 502, error: 'the parent hub refused the request or could not be reached' };
+  };
+
+  router.post('/federation/join', guard, async (req: Request, res: Response, next) => {
+    try {
+      const inviteToken = typeof req.body?.inviteToken === 'string' ? req.body.inviteToken.trim() : '';
+      if (!inviteToken) { res.status(400).json({ error: 'inviteToken required' }); return; }
+
+      // The destination comes out of the token, never off the request. An
+      // admin who pastes a join token has said everything they need to; a
+      // parentUrl sent alongside it is ignored, so neither a stale form field
+      // nor a doctored request can point an enrolment at a different hub than
+      // the one that issued the invite.
+      const claimed = parentUrlFromInviteToken(inviteToken);
+      if (!claimed) {
+        res.status(400).json({
+          error: 'this is not a usable join token. If it came from a hub running an older version, '
+            + 'that hub must be upgraded before it can issue one — its tokens do not carry its address.',
+        });
+        return;
+      }
+      // The parent would refuse a stale invite anyway, but only after this hub
+      // has sent a stranger's server a request and relayed back a 4xx the admin
+      // cannot act on. The expiry is unverified like the URL; it costs nothing
+      // to believe it when it says "too late".
+      const claimedExpiry = inviteExpiryFromToken(inviteToken);
+      if (claimedExpiry !== null && claimedExpiry < Date.now()) {
+        res.status(400).json({ error: 'this join token has expired — ask the parent hub for a new one' });
+        return;
+      }
+      let parentUrl: string;
+      try {
+        parentUrl = assertHttpUrl(claimed, {
+          allowPrivate: process.env.AGENFK_HUB_ALLOW_PRIVATE_PARENT === '1',
+        });
+      } catch (err) {
+        res.status(400).json({ error: (err as Error).message });
+        return;
+      }
+      // A footgun guard, not a control: publicHubUrl comes from proxy headers,
+      // so an admin typing a loopback address or a different scheme walks past
+      // it. It catches the obvious paste, which is what it is for.
+      try {
+        if (parentUrl === assertHttpUrl(publicHubUrl(req), { allowPrivate: true })) {
+          res.status(400).json({ error: 'a hub cannot enrol with itself as its own parent' });
+          return;
+        }
+      } catch { /* a malformed Host header is not the admin's problem */ }
+
+      if (await readParentBinding(ctx.db, ctx.config.secretKey)) {
+        res.status(409).json({ error: 'this hub already has a parent; it must be released before joining another' });
+        return;
+      }
+
+      // What this hub will be CALLED on the parent's roster. Defaulting to the
+      // org id put every unconfigured child on the board as "default", which is
+      // an internal tenant key and indistinguishable between siblings.
+      const requested = typeof req.body?.name === 'string' ? req.body.name : '';
+      const name = validChildHubName(requested)
+        ?? validChildHubName(new URL(publicHubUrl(req)).host)
+        ?? ctx.config.defaultOrgId;
+
+      let enrolled;
+      try {
+        enrolled = await federationClient().enroll({
+          parentUrl,
+          inviteToken,
+          name,
+          hubVersion: HUB_VERSION,
+        });
+      } catch (err) {
+        const { status, error } = parentError(err);
+        res.status(status).json({ error });
+        return;
+      }
+      if (!enrolled?.token || !enrolled?.childHubId) {
+        res.status(502).json({ error: 'the parent hub returned an unusable enrolment response' });
+        return;
+      }
+
+      try {
+        await writeParentBinding(ctx.db, ctx.config.secretKey, {
+          parentUrl, token: enrolled.token, childHubId: enrolled.childHubId,
+          identityPolicy: enrolled.identityPolicy,
+        });
+      } catch (err) {
+        // The parent has already created the row and burnt the invite, so a
+        // bare 500 would leave an orphan on its roster that nobody can name.
+        console.error(`[FEDERATION] enrolled as ${enrolled.childHubId} at ${parentUrl} but could not store the binding:`, (err as Error).message);
+        res.status(500).json({
+          error: `enrolled with the parent as ${enrolled.childHubId}, but this hub could not store the credential. Ask the parent hub to detach ${enrolled.childHubId}, then try again.`,
+        });
+        return;
+      }
+      // Deliberately no token in the response: it is a credential the browser
+      // has no use for.
+      res.json({ parentUrl, childHubId: enrolled.childHubId, state: 'active' });
+    } catch (err) { next(err); }
+  });
+
+  router.get('/federation', guard, async (_req: Request, res: Response, next) => {
+    try {
+      const depth = await outboxDepth(ctx.db);
+      let binding;
+      try {
+        binding = await readParentBinding(ctx.db, ctx.config.secretKey);
+      } catch (err) {
+        // A binding encrypted under a rotated key: say so rather than claiming
+        // the hub has no parent.
+        res.json({ bound: true, unreadable: true, error: (err as Error).message, outboxDepth: depth });
+        return;
+      }
+      if (!binding) { res.json({ bound: false, outboxDepth: depth }); return; }
+      const releaseRequested = await releaseRequestedFlag(ctx.db);
+      res.json({
+        bound: true,
+        parentUrl: binding.parentUrl,
+        childHubId: binding.childHubId,
+        state: binding.state,
+        enrolledAt: binding.enrolledAt,
+        outboxDepth: depth,
+        // What this hub is forwarding under right now. Without it a child
+        // admin cannot audit a control their own people are subject to.
+        identityPolicy: binding.identityPolicy,
+        releaseRequested,
+        // The UI disables Leave on this, and the route enforces it too.
+        canLeave: binding.state === 'revoked',
+      });
+    } catch (err) { next(err); }
+  });
+
+  router.post('/federation/release-request', guard, async (req: Request, res: Response, next) => {
+    try {
+      const binding = await readParentBinding(ctx.db, ctx.config.secretKey);
+      if (!binding) { res.status(409).json({ error: 'this hub has no parent to be released from' }); return; }
+      if (binding.state === 'revoked') { res.status(409).json({ error: 'this hub has already been released' }); return; }
+      const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 500) : null;
+      try {
+        await federationClient().requestRelease({ parentUrl: binding.parentUrl, token: binding.token, reason });
+      } catch (err) {
+        const { status, error } = parentError(err);
+        res.status(status).json({ error });
+        return;
+      }
+      // Only after the parent accepted. Setting it first meant a refused
+      // request still hid the reason field behind "waiting for the parent",
+      // stranding the admin with no way to ask again.
+      await setReleaseRequestedFlag(ctx.db, true);
+      res.json({ ok: true, releaseRequested: true });
+    } catch (err) { next(err); }
+  });
+
+  router.delete('/federation', guard, async (_req: Request, res: Response, next) => {
+    try {
+      // Read the state WITHOUT the key. Treating "cannot decrypt" as "no
+      // parent" and clearing the row made rotating AGENFK_HUB_SECRET_KEY a
+      // product-surface way out of the group: restart under a new key, and
+      // two clicks later the hub was standalone and free to join elsewhere.
+      // Whether the parent has released this hub is not a secret, so it is
+      // stored in clear and gates this route on its own.
+      const { present, state } = await readBindingStateUnverified(ctx.db);
+      if (!present) {
+        // Nothing usable to leave: an absent or unparseable row. Release the
+        // flows anyway — a hub with no readable binding is a hub with no
+        // parent, and leaving them locked would strand them permanently. This
+        // is also the repair path for a crash in the ordered pair below.
+        await releaseParentFlows(ctx.db);
+        await clearParentBinding(ctx.db);
+        await setReleaseRequestedFlag(ctx.db, false);
+        res.json({ bound: false });
+        return;
+      }
+      if (state !== 'revoked') {
+        res.status(409).json({
+          error: 'this hub cannot leave on its own — ask the parent hub to release it, then leave once it has',
+        });
+        return;
+      }
+      // The outbox is deliberately left in place: it is this hub's own record
+      // of what it never managed to send, and discarding it here would destroy
+      // data as a side effect of tidying up a relationship.
+      // The flows the parent sent STAY, and become this hub's own — detaching
+      // must not take away what a team is working under.
+      //
+      // ORDER MATTERS, and there is deliberately no transaction: release
+      // first, forget the parent second. These two writes are not atomic, and
+      // the other order is unrecoverable — a crash between them would leave a
+      // hub reading as unbound with its flows still locked to a parent it can
+      // no longer name, and hub-ui renders the JOIN form the moment a hub
+      // reads unbound, so the Leave button that would retry is gone. This way
+      // a crash leaves the hub still bound and still revoked, so the admin's
+      // retry finishes the job. Releasing a fraction early is harmless.
+      await releaseParentFlows(ctx.db);
+      await clearParentBinding(ctx.db);
+      await setReleaseRequestedFlag(ctx.db, false);
+      res.json({ bound: false });
+    } catch (err) { next(err); }
+  });
+
+
+  /**
+   * The group's identity policy (CGLAB-184). Set it here or per child hub;
+   * the per-child value wins in either direction. `null` on a child means
+   * "follow the group". Without these routes the opt-out could only be
+   * enabled with a psql session, which is not a control anyone can operate.
+   */
+  router.get('/federation/identity-policy', guard, async (req: Request, res: Response, next) => {
+    try {
+      const orgId = req.session!.orgId;
+      const group = await ctx.db.get<{ identity_policy: string | null }>(
+        'SELECT identity_policy FROM org_settings WHERE org_id = ?', [orgId],
+      );
+      const children = await ctx.db.all<{ id: string; name: string; identity_policy: string | null }>(
+        'SELECT id, name, identity_policy FROM child_hubs WHERE org_id = ? AND detached_at IS NULL ORDER BY name ASC',
+        [orgId],
+      );
+      const groupPolicy = asIdentityPolicy(group?.identity_policy ?? null);
+      res.json({
+        groupPolicy,
+        childHubs: children.map(c => ({
+          id: c.id,
+          name: c.name,
+          policy: c.identity_policy === 'keep' || c.identity_policy === 'pseudonymize' ? c.identity_policy : null,
+          effective: effectiveIdentityPolicy(group?.identity_policy as any ?? null, c.identity_policy as any ?? null),
+        })),
+      });
+    } catch (err) { next(err); }
+  });
+
+  router.put('/federation/identity-policy', guard, async (req: Request, res: Response, next) => {
+    try {
+      const orgId = req.session!.orgId;
+      const raw = req.body?.policy;
+      if (raw !== 'keep' && raw !== 'pseudonymize') {
+        res.status(400).json({ error: "policy must be 'keep' or 'pseudonymize'" });
+        return;
+      }
+      await ctx.db.run(
+        `INSERT INTO org_settings (org_id, identity_policy) VALUES (?, ?)
+         ON CONFLICT(org_id) DO UPDATE SET identity_policy = excluded.identity_policy`,
+        [orgId, raw],
+      );
+      console.log(`[FEDERATION] group identity policy for ${orgId} set to ${raw}`);
+      res.json({ groupPolicy: raw });
+    } catch (err) { next(err); }
+  });
+
+  router.put('/child-hubs/:id/identity-policy', guard, async (req: Request, res: Response, next) => {
+    try {
+      const orgId = req.session!.orgId;
+      const raw = req.body?.policy;
+      // null clears the override and lets the group default apply again.
+      if (raw !== 'keep' && raw !== 'pseudonymize' && raw !== null) {
+        res.status(400).json({ error: "policy must be 'keep', 'pseudonymize' or null" });
+        return;
+      }
+      if (!(await findChildHub(orgId, req.params.id))) {
+        res.status(404).json({ error: 'Unknown child hub' });
+        return;
+      }
+      await ctx.db.run(
+        'UPDATE child_hubs SET identity_policy = ? WHERE id = ? AND org_id = ?',
+        [raw, req.params.id, orgId],
+      );
+      console.log(`[FEDERATION] identity policy for child hub ${req.params.id} set to ${raw ?? 'inherit'}`);
+      res.json({ id: req.params.id, policy: raw });
+    } catch (err) { next(err); }
   });
 
   return router;

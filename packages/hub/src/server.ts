@@ -14,7 +14,9 @@ import { entraRouter } from './auth/entra.js';
 import { ensureBootstrapToken } from './auth/bootstrapToken.js';
 import { queriesRouter } from './routes/queries.js';
 import { connectRouter } from './routes/connect.js';
+import { federationRouter, federationInviteRouter } from './routes/federation.js';
 import { startRollupTimer } from './rollup.js';
+import { startFederationSync } from './services/federation/federationSync.js';
 import { migrateOsUserKeys } from './services/migrateOsUserKeys.js';
 import { backfillUserKeyAliases } from './services/backfillUserKeyAliases.js';
 import * as fs from 'fs';
@@ -23,7 +25,7 @@ import * as pathMod from 'path';
 // Read the package version once at module load. Resolved from this file's dir
 // so it works under both ts source (../package.json) and the built dist
 // (./package.json colocated with dist/server.js after `npm pack`).
-const HUB_VERSION: string = (() => {
+export const HUB_VERSION: string = (() => {
   const candidates = [
     pathMod.resolve(__dirname, '../package.json'),
     pathMod.resolve(__dirname, '../../package.json'),
@@ -40,6 +42,13 @@ const HUB_VERSION: string = (() => {
 export interface HubServerContext {
   db: DB;
   config: HubServerConfig;
+  /**
+   * Stop the background workers this app started. Present on a fully booted
+   * hub; absent on the maintenance app, which starts none. Tests and any
+   * graceful shutdown must call it before closing the DB — a timer left
+   * running ticks on against a closed handle.
+   */
+  stopWorkers?: () => void;
 }
 
 /**
@@ -197,6 +206,8 @@ export async function createHubApp(
   app.use('/v1/admin', orgRenameRouter(ctx));
   app.use('/v1', queriesRouter(ctx));
   app.use('/hub', connectRouter(ctx));
+  app.use('/hub/federation', federationInviteRouter(ctx));
+  app.use('/v1/federation', federationRouter(ctx));
   // One-time rewrite of historical bare-osUser identity keys. Reported rather
   // than silent: it can SPLIT a key that two machines shared, which changes what
   // the dashboards show — deliberately, since those were never one person.
@@ -236,7 +247,20 @@ export async function createHubApp(
     })
     .catch((e) => console.error('[MIGRATION] alias backfill failed:', (e as Error).message));
 
-  startRollupTimer(db);
+  const rollupTimer = startRollupTimer(db);
+  // Child-side federation (CGLAB-181). Starting it unconditionally is safe and
+  // deliberate: with no parent binding every tick is a no-op, so a standalone
+  // hub pays one cheap query a minute and needs no configuration to opt out.
+  const stopFederation = startFederationSync({
+    db, secretKey: config.secretKey, hubVersion: HUB_VERSION,
+    // Which org a flow dispatched by the parent lands in: this hub's own.
+    orgId: config.defaultOrgId,
+    // Both undefined in production, where the worker builds its own HTTP
+    // transport and ticks once a minute.
+    transport: config.federationTransport as any,
+    intervalMs: config.federationIntervalMs,
+  });
+  ctx.stopWorkers = () => { clearInterval(rollupTimer); stopFederation(); };
 
   // Serve the built hub-ui SPA. The build emits to packages/hub-ui/dist; in
   // the released tarball that lives next to the hub package. We probe a few
@@ -292,13 +316,28 @@ export async function createHubApp(
   (app as any).hubCtx = ctx;
 
   // Default error handler — never leak stack traces.
-  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-    if (res.headersSent) return;
-    console.error('[HUB_ERROR]', err?.message ?? err);
-    res.status(500).json({ error: err?.message ?? 'internal error' });
-  });
+  app.use(hubErrorHandler);
 
   return { app, ctx };
+}
+
+/**
+ * The hub's last word on a request.
+ *
+ * Two deliberate orderings. The log line comes BEFORE the headersSent guard: a
+ * handler that throws after answering is the one case the client can never see,
+ * so returning early swallowed exactly the errors that most needed recording.
+ * And the response body is the message only outside production — every
+ * unauthenticated route reaches here too, and a driver error names tables and
+ * columns ('relation "x" does not exist') to whoever asked.
+ */
+export function hubErrorHandler(err: any, _req: Request, res: Response, _next: NextFunction): void {
+  console.error('[HUB_ERROR]', err?.message ?? err);
+  if (res.headersSent) return;
+  const body = process.env.NODE_ENV === 'production'
+    ? 'internal error'
+    : (err?.message ?? 'internal error');
+  res.status(500).json({ error: body });
 }
 
 export function configFromEnv(): HubServerConfig & { backend?: HubBackend; pgUrl?: string } {

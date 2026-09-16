@@ -196,6 +196,13 @@ defines none, so this is the common case — empty criteria never mean "no work"
    4. Retry `agenfk verify <itemId> --evidence "<evidence>"`.
    5. Only if no config files exist and the stack cannot be detected, ask the developer.
 
+**Stage this item's work before that final verify.** The DONE transition makes a
+`close(<type>)` commit of whatever is in the git index, and the server stages nothing for
+you — `git add` the files belonging to THIS item (new files included; they are the ones
+most often forgotten) and leave anything else alone. The DONE response tells you what it
+committed, names anything it left unstaged, and says so plainly if the commit FAILED or
+was declined because a merge is in progress. Do not push on a failure.
+
 Once the item is DONE, **push your branch** so the work is available for PR/review:
 
 ```

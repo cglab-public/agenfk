@@ -1,4 +1,5 @@
 import { prSizePoints, prSizeBucket, SIZE_BUCKETS, SizeBucket } from '@agenfk/core';
+import { LOCAL_HUB } from './childHub.js';
 import { resolveModelId, ModelMapping, EMPTY_MODEL_MAPPING } from '../util/modelMapping';
 import type { ModelMeta } from '../util/modelMeta';
 import { prUrlFor } from '../util/remoteUrl.js';
@@ -24,6 +25,13 @@ export interface PrEventRow {
   // CGLAB-131: the event's canonical git remote (written at ingest). The
   // drill-down link is derived from the OPENER's row, not the latest one.
   remote_url: string | null;
+  /**
+   * CGLAB-184: which hub in the federation group reported this event — NULL or
+   * '' for the hub's own, a child hub's id for a forwarded one. Optional
+   * because every caller outside the federated path leaves it unset, which
+   * normalises to LOCAL and reproduces the pre-federation behaviour exactly.
+   */
+  child_hub_id?: string | null;
 }
 
 // Normalised, backend-agnostic event used internally.
@@ -41,6 +49,7 @@ interface NormRow {
   rawModel: string | null;
   harness: string | null;
   remoteUrl: string | null;
+  childHubId: string;
 }
 
 const toIso = (v: unknown): string =>
@@ -71,6 +80,7 @@ function normaliseRow(r: PrEventRow, mapping: ModelMapping): NormRow {
     rawModel: r.model ?? null,
     harness: r.harness,
     remoteUrl: r.remote_url ?? null,
+    childHubId: r.child_hub_id || LOCAL_HUB,
   };
 }
 
@@ -152,6 +162,8 @@ export interface PrOverviewResult {
   prs: Array<{
     repo: string;
     prNumber: number;
+    /** Which hub reported it: a child hub's id, or 'local' for this hub's own. */
+    childHubId: string;
     url: string | null;
     user_key: string;
     model: string;
@@ -236,6 +248,7 @@ interface ResolvedPr {
   repo: string;
   prNumber: number;
   url: string | null;   // GitHub link or null (non-GitHub host / unparseable)
+  childHubId: string;
 }
 
 // Collapse the raw event stream into one record per PR. A pr.updated never adds a
@@ -246,7 +259,12 @@ function resolvePrs(rows: ReadonlyArray<PrEventRow>, mapping: ModelMapping): Res
   for (const raw of rows) {
     const r = normaliseRow(raw, mapping);
     if (!r.repo || r.pr_number == null) continue; // not a sizeable PR event
-    const key = `${r.repo}#${r.pr_number}`;
+    // Keyed by hub as well as repo and number. A PR number is unique within a
+    // repo on ONE forge, and a parent hub accumulates groups that do not share
+    // one: two children each reporting acme/web#57 are two different PRs, and
+    // merging them produced a single row whose opener and size fell out of
+    // arrival order. The separator is a NUL so it cannot occur in either part.
+    const key = `${r.childHubId}\u0000${r.repo}#${r.pr_number}`;
     const g = groups.get(key);
     if (g) g.push(r); else groups.set(key, [r]);
   }
@@ -274,6 +292,7 @@ function resolvePrs(rows: ReadonlyArray<PrEventRow>, mapping: ModelMapping): Res
       repo: opener.repo!,
       prNumber: Number(opener.pr_number),
       url: prUrlFor(opener.remoteUrl, opener.repo, Number(opener.pr_number)),
+      childHubId: opener.childHubId,
     });
   }
   return resolved;
@@ -409,10 +428,14 @@ export function aggregatePrOverview(rows: ReadonlyArray<PrEventRow>, window?: Pr
   const prsDetail = [...prs]
     .sort((a, b) =>
       a.openerAt.localeCompare(b.openerAt)
-      || `${a.repo}#${a.prNumber}`.localeCompare(`${b.repo}#${b.prNumber}`))
+      || `${a.repo}#${a.prNumber}`.localeCompare(`${b.repo}#${b.prNumber}`)
+      // Two hubs' same-numbered PRs opened at the same instant would otherwise
+      // order arbitrarily, which is the same non-determinism the key fixed.
+      || a.childHubId.localeCompare(b.childHubId))
     .map(p => ({
       repo: p.repo,
       prNumber: p.prNumber,
+      childHubId: p.childHubId,
       url: p.url,
       user_key: p.user_key,
       model: p.model,

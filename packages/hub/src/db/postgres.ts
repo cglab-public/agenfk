@@ -57,7 +57,8 @@ const SCHEMA_PG = `
     item_title TEXT,
     external_id TEXT,
     reporting_version TEXT,
-    payload TEXT NOT NULL
+    payload TEXT NOT NULL,
+    child_hub_id TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_events_org_time ON events(org_id, occurred_at);
   CREATE INDEX IF NOT EXISTS idx_events_user_time ON events(org_id, user_key, occurred_at);
@@ -74,7 +75,8 @@ const SCHEMA_PG = `
     validate_passes INTEGER NOT NULL DEFAULT 0,
     validate_fails INTEGER NOT NULL DEFAULT 0,
     prs_opened INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (org_id, user_key, day)
+    child_hub_id TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (org_id, child_hub_id, user_key, day)
   );
   CREATE INDEX IF NOT EXISTS idx_rollups_org_day_user ON rollups_daily(org_id, day, user_key);
 
@@ -116,6 +118,165 @@ const SCHEMA_PG = `
     used_at TIMESTAMPTZ NOT NULL DEFAULT now()
   );
 
+  -- Hub federation (CGLAB-181): child hubs enrolled with this (parent) hub,
+  -- and the federation keys they authenticate with. A federation key is a
+  -- principal of its own — never an api_keys row — so the two credential
+  -- kinds cannot reach each other's routes. detached_at is the parent-side
+  -- "leave the group" marker: every federation route refuses a detached hub
+  -- even if its key row was not revoked.
+  CREATE TABLE IF NOT EXISTS child_hubs (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    hub_version TEXT,
+    first_seen TIMESTAMPTZ NOT NULL,
+    last_seen TIMESTAMPTZ NOT NULL,
+    detached_at TIMESTAMPTZ,
+    detached_by_user_id TEXT,
+    detached_by_email TEXT,
+    release_requested_at TIMESTAMPTZ,
+    release_reason TEXT,
+    identity_policy TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_child_hubs_org ON child_hubs(org_id);
+
+  -- Flow dispatch (CGLAB-182): a parent hub sends one of its flows to its
+  -- child hubs. The dispatch is the intent; the targets are what actually
+  -- happened, one row per hub.
+  --
+  -- scope_type 'all' deliberately does NOT expand into target rows when the
+  -- dispatch is created: 'all' means every current AND FUTURE child hub, so a
+  -- hub enrolling next month has to receive it on its first poll. Targets for
+  -- 'all' therefore appear lazily, the first time a hub is served.
+  CREATE TABLE IF NOT EXISTS flow_dispatches (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    flow_id TEXT NOT NULL,
+    flow_version INTEGER NOT NULL,
+    -- The definition AS DISPATCHED. A dispatch is a decision about specific
+    -- content, so it carries that content rather than a pointer: reading the
+    -- flow live at poll time meant an edit made after the dispatch reached
+    -- whichever children had not polled yet, stored under the OLD version
+    -- number — two hubs running different flows that both report the same
+    -- version, and a monotonic guard that can never converge them.
+    definition_json TEXT,
+    scope_type TEXT NOT NULL CHECK (scope_type IN ('all','selected')),
+    created_by_user_id TEXT,
+    created_by_email TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    cancelled_at TIMESTAMPTZ
+  );
+  CREATE INDEX IF NOT EXISTS idx_flow_dispatches_org_time ON flow_dispatches(org_id, created_at);
+
+  -- state: pending | installed | failed | conflict. Only a report from the
+  -- child moves it off pending — serving a directive is not the flow landing.
+  CREATE TABLE IF NOT EXISTS flow_dispatch_targets (
+    dispatch_id TEXT NOT NULL,
+    child_hub_id TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',
+    detail TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (dispatch_id, child_hub_id)
+  );
+
+
+  -- Group upgrades (CGLAB-183). The parent names a target version; each child
+  -- fans it out over its OWN installations. Same shape as flow_dispatches, and
+  -- for the same reasons: scope 'all' means every current AND FUTURE hub, so
+  -- it is stored as intent and resolved per poll rather than expanded into
+  -- target rows here.
+  --
+  -- confirm_downgrade travels with the dispatch: the parent admin confirms a
+  -- backwards move once, in the blind, and the child carries the flag through
+  -- its local fan-out instead of asking again.
+  CREATE TABLE IF NOT EXISTS upgrade_dispatches (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    target_version TEXT NOT NULL,
+    scope_type TEXT NOT NULL CHECK (scope_type IN ('all','selected')),
+    confirm_downgrade BOOLEAN NOT NULL DEFAULT FALSE,
+    created_by_user_id TEXT,
+    created_by_email TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    cancelled_at TIMESTAMPTZ
+  );
+  CREATE INDEX IF NOT EXISTS idx_upgrade_dispatches_org_time ON upgrade_dispatches(org_id, created_at);
+
+  -- state: pending | running | cancel-pending | completed | cancelled.
+  --
+  -- Only a report from the child moves it off pending — serving a directive is
+  -- not the upgrade landing. 'cancel-pending' means the parent has ASKED this
+  -- hub to stop and has not been told it did; it is deliberately distinct from
+  -- 'cancelled', which the child confirmed. detail carries the child's
+  -- aggregate counts and skip reasons.
+  --
+  -- cancel_attempts bounds how often a cancel is re-offered, so a hub that
+  -- never answers one cannot starve every other directive behind it.
+  CREATE TABLE IF NOT EXISTS upgrade_dispatch_targets (
+    dispatch_id TEXT NOT NULL,
+    child_hub_id TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',
+    detail TEXT,
+    -- The sequence of the last progress report accepted for this hub. Progress
+    -- reports supersede one another and can arrive out of order, so the guard
+    -- is monotonic in this rather than "latest write wins".
+    seq INTEGER NOT NULL DEFAULT 0,
+    cancel_attempts INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (dispatch_id, child_hub_id)
+  );
+
+
+  -- What a child hub's fan-out of a group upgrade actually did (CGLAB-183).
+  --
+  -- Recorded rather than recomputed, because the tick that REPORTS is almost
+  -- never the tick that computed: the parent keeps re-serving a dispatch until
+  -- the child reports, and by the next tick the machines this upgraded are in
+  -- flight and would read as skipped. Re-deriving would hand the parent a
+  -- fleet with no skips in it, which is the one thing the skip reasons exist
+  -- to prevent.
+  CREATE TABLE IF NOT EXISTS upgrade_dispatch_fanout (
+    dispatch_id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    upgraded INTEGER NOT NULL DEFAULT 0,
+    skipped_json TEXT NOT NULL DEFAULT '[]',
+    directive_id TEXT,
+    -- Reporting bookkeeping (CGLAB-183 task 3). reported_seq is the sequence of
+    -- the last report sent upstream and reported_json the snapshot it carried,
+    -- so the next tick can tell whether anything actually MOVED — the cadence
+    -- is on change plus a final completion, not one event per child per minute
+    -- for the length of a rollout.
+    reported_seq INTEGER NOT NULL DEFAULT 0,
+    reported_json TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+
+  CREATE TABLE IF NOT EXISTS federation_keys (
+    token_hash TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    child_hub_id TEXT NOT NULL,
+    label TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    revoked_at TIMESTAMPTZ
+  );
+  CREATE INDEX IF NOT EXISTS idx_federation_keys_child ON federation_keys(child_hub_id);
+
+  -- Child-side federation outbox (CGLAB-181). Rows queued for the parent hub
+  -- while this hub is a child. Durable on purpose: a parent outage must cost
+  -- delivery latency, never data, and the child keeps serving throughout.
+  CREATE TABLE IF NOT EXISTS federation_outbox (
+    seq BIGSERIAL PRIMARY KEY,
+    id TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    rejections INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMPTZ NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_federation_outbox_due ON federation_outbox(next_attempt_at, seq);
+
   CREATE TABLE IF NOT EXISTS auth_config (
     org_id TEXT PRIMARY KEY,
     password_enabled INTEGER NOT NULL DEFAULT 1,
@@ -138,6 +299,7 @@ const SCHEMA_PG = `
     registry_branch TEXT NOT NULL DEFAULT 'main',
     registry_token_enc TEXT,
     registry_copied_at TIMESTAMPTZ,
+    identity_policy TEXT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
   );
 
@@ -147,7 +309,7 @@ const SCHEMA_PG = `
     name TEXT NOT NULL,
     description TEXT,
     definition_json TEXT NOT NULL,
-    source TEXT NOT NULL DEFAULT 'hub' CHECK (source IN ('hub','community')),
+    source TEXT NOT NULL DEFAULT 'hub' CHECK (source IN ('hub','community','parent')),
     version INTEGER NOT NULL DEFAULT 1,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -392,6 +554,16 @@ class PgAdapter implements HubDb {
       throw err;
     } finally {
       // Nothing to unset: the client's visibility ended with the async scope.
+      //
+      // The one way to defeat that: async work STARTED inside the callback and
+      // left unawaited — a floating promise, a setTimeout, an event handler
+      // registered here — inherits this context and would route to a client
+      // that has since gone back to the pool, landing a statement inside some
+      // other request's transaction. AsyncLocalStorage only leaks outward like
+      // this; a statement issued outside can never join us, because there is no
+      // context to inherit. No call site does it today (checked across every
+      // db.transaction caller), so this is a rule to keep, not a bug to fix:
+      // await everything you start in here.
       client.release();
     }
   }
@@ -442,6 +614,82 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   // process drift (recent events still tagged with old version after upgrade).
   if (!have.has('reporting_version')) await adapter.exec("ALTER TABLE events ADD COLUMN reporting_version TEXT");
   // rollups_daily.prs_opened — added with the PR metrics initiative.
+  // events.child_hub_id + rollups_daily.child_hub_id — CGLAB-184. Postgres can
+  // swap the primary key in place, so no table rebuild is needed here.
+  const evCols2 = await adapter.all<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_name = 'events'"
+  );
+  if (evCols2.length > 0 && !new Set(evCols2.map(c => c.column_name)).has('child_hub_id')) {
+    await adapter.exec("ALTER TABLE events ADD COLUMN child_hub_id TEXT");
+  }
+  // CGLAB-183 task 3 added reporting bookkeeping to tables task 1 and task 2
+  // created. CREATE TABLE IF NOT EXISTS never adds a column to a table that
+  // already exists, so a hub whose database was made by an earlier commit
+  // throws on every progress path — and on the parent that happens inside the
+  // /deliver transaction, taking the child's whole delivery batch with it.
+  for (const [table, column, ddl] of [
+    ['flow_dispatches', 'definition_json', 'definition_json TEXT'],
+    ['upgrade_dispatch_targets', 'seq', 'seq INTEGER NOT NULL DEFAULT 0'],
+    ['upgrade_dispatch_targets', 'cancel_attempts', 'cancel_attempts INTEGER NOT NULL DEFAULT 0'],
+    ['upgrade_dispatch_fanout', 'reported_seq', 'reported_seq INTEGER NOT NULL DEFAULT 0'],
+    ['upgrade_dispatch_fanout', 'reported_json', 'reported_json TEXT'],
+  ] as const) {
+    const cols = await adapter.all<{ column_name: string }>(
+      'SELECT column_name FROM information_schema.columns WHERE table_name = $1', [table],
+    );
+    if (cols.length > 0 && !new Set(cols.map(c => c.column_name)).has(column)) {
+      await adapter.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+    }
+  }
+
+  const rdCols0 = await adapter.all<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_name = 'rollups_daily'"
+  );
+  if (rdCols0.length > 0 && !new Set(rdCols0.map(c => c.column_name)).has('child_hub_id')) {
+    await adapter.exec("ALTER TABLE rollups_daily ADD COLUMN child_hub_id TEXT NOT NULL DEFAULT ''");
+    await adapter.exec("ALTER TABLE rollups_daily DROP CONSTRAINT IF EXISTS rollups_daily_pkey");
+    await adapter.exec("ALTER TABLE rollups_daily ADD PRIMARY KEY (org_id, child_hub_id, user_key, day)");
+  }
+  await adapter.exec("CREATE INDEX IF NOT EXISTS idx_rollups_child ON rollups_daily(org_id, child_hub_id, day)");
+  // flows.source gains 'parent' (CGLAB-182). An inline single-column CHECK gets
+  // a deterministic name from Postgres — <table>_<column>_check — so it can be
+  // dropped and re-added by name without inspecting the catalog.
+  //
+  // Wrapped because this must not be able to stop a boot: on a fresh database
+  // the schema block above already created the three-value constraint, so this
+  // is a no-op, and pg-mem (used by the parity tests) does not implement ALTER
+  // TABLE ... DROP CONSTRAINT at all. A real upgraded Postgres is the only case
+  // where it does work, which is exactly the case that needs it.
+  try {
+    await adapter.exec('ALTER TABLE flows DROP CONSTRAINT IF EXISTS flows_source_check');
+    await adapter.exec(
+      "ALTER TABLE flows ADD CONSTRAINT flows_source_check CHECK (source IN ('hub','community','parent'))",
+    );
+  } catch {
+    // Backend cannot alter constraints (pg-mem). The schema block's definition
+    // stands, which on any database this applies to is already correct.
+  }
+
+  // Filtering the event stream by originating hub (CGLAB-184).
+  await adapter.exec("DROP INDEX IF EXISTS idx_events_org_child_time");
+  await adapter.exec("CREATE INDEX IF NOT EXISTS idx_events_org_childnorm_time ON events(org_id, COALESCE(child_hub_id, ''), occurred_at)");
+
+  // child_hubs.identity_policy + org_settings.identity_policy — CGLAB-184.
+  // See the SQLite block: deployed hubs already have both tables, so the
+  // column only ever arrives through an ALTER.
+  const chCols = await adapter.all<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_name = 'child_hubs'"
+  );
+  if (chCols.length > 0 && !new Set(chCols.map(c => c.column_name)).has('identity_policy')) {
+    await adapter.exec("ALTER TABLE child_hubs ADD COLUMN identity_policy TEXT");
+  }
+  const osCols = await adapter.all<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_name = 'org_settings'"
+  );
+  if (osCols.length > 0 && !new Set(osCols.map(c => c.column_name)).has('identity_policy')) {
+    await adapter.exec("ALTER TABLE org_settings ADD COLUMN identity_policy TEXT");
+  }
+
   const rdCols = await adapter.all<{ column_name: string }>(
     `SELECT column_name FROM information_schema.columns WHERE table_name = 'rollups_daily'`
   );

@@ -16,6 +16,7 @@ import {
   signSession,
 } from '../auth/session.js';
 import { rateLimit, FailedAttemptTracker } from '../util/rateLimit.js';
+import { asyncRoute } from '../util/asyncRoute.js';
 
 // Brute-force defences for password login (Security: bug 210b3d34):
 //  - per-IP rate limit so one source can't fire unlimited attempts
@@ -35,7 +36,7 @@ export function authRouter(ctx: HubServerContext): Router {
   const loginRateLimit = rateLimit({ windowMs: LOGIN_WINDOW_MS, max: 20, message: 'Too many login attempts, try again later.' });
   const loginFailures = new FailedAttemptTracker(/* maxFailures */ 5, LOGIN_WINDOW_MS, /* lockMs */ LOGIN_WINDOW_MS);
 
-  router.get('/providers', async (_req: Request, res: Response) => {
+  router.get('/providers', asyncRoute(async (_req: Request, res: Response) => {
     const cfg = await ctx.db.get<AuthConfigRow>(
       'SELECT password_enabled, google_enabled, entra_enabled FROM auth_config WHERE org_id = ?',
       [ctx.config.defaultOrgId],
@@ -46,9 +47,9 @@ export function authRouter(ctx: HubServerContext): Router {
       entra: !!cfg?.entra_enabled,
       requiresSetup: (await countUsers(ctx.db)) === 0,
     });
-  });
+  }));
 
-  router.post('/login', loginRateLimit, async (req: Request, res: Response) => {
+  router.post('/login', loginRateLimit, asyncRoute(async (req: Request, res: Response) => {
     const { email, password } = req.body ?? {};
     if (typeof email !== 'string' || typeof password !== 'string') {
       return res.status(400).json({ error: 'email and password required' });
@@ -79,7 +80,7 @@ export function authRouter(ctx: HubServerContext): Router {
     const token = signSession({ userId: user.id, orgId: user.org_id, role: user.role }, ctx.config.sessionSecret);
     setSessionCookie(res, token);
     res.json({ id: user.id, email: user.email, role: user.role, orgId: user.org_id });
-  });
+  }));
 
   router.post('/logout', (_req: Request, res: Response) => {
     clearSessionCookie(res);
@@ -96,7 +97,7 @@ export function authRouter(ctx: HubServerContext): Router {
 export function setupRouter(ctx: HubServerContext): Router {
   const router = Router();
 
-  router.post('/initial-admin', async (req: Request, res: Response) => {
+  router.post('/initial-admin', asyncRoute(async (req: Request, res: Response) => {
     if ((await countUsers(ctx.db)) > 0) {
       return res.status(409).json({ error: 'Setup is closed: an admin already exists.' });
     }
@@ -130,7 +131,7 @@ export function setupRouter(ctx: HubServerContext): Router {
       await ctx.db.run('DELETE FROM bootstrap_tokens', []);
     });
     res.status(201).json({ ok: true });
-  });
+  }));
 
   return router;
 }

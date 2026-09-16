@@ -101,6 +101,24 @@ describe('hub plug-and-play onboarding', () => {
   });
 
   describe('magic-link invite', () => {
+    it('burns the invite nonce before minting the api key', async () => {
+      // The nonce used to be burned AFTER the key was minted, so two racing
+      // redeems of one invite could both be handed a token, with the loser's
+      // constraint error arriving too late to take it back. Failing the burn
+      // shows deterministically which side of the mint it runs on.
+      const inv = await supertest(app).post('/hub/invite/create').set('Cookie', cookie).send({});
+      const realRun = ctx.db.run.bind(ctx.db);
+      ctx.db.run = async (sql: string, params?: unknown[]) => {
+        if (/INSERT INTO used_invites/i.test(sql)) throw new Error('disk I/O error');
+        return realRun(sql, params);
+      };
+      const r = await supertest(app).post('/hub/invite/redeem').send({ inviteToken: inv.body.inviteToken });
+      ctx.db.run = realRun;
+      expect(r.status).toBe(500);
+      const keys = await ctx.db.get('SELECT COUNT(*) AS n FROM api_keys');
+      expect(Number(keys.n)).toBe(0);
+    });
+
     it('create requires admin session', async () => {
       const r = await supertest(app).post('/hub/invite/create').send({});
       expect(r.status).toBe(401);

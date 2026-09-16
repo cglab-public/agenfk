@@ -1,9 +1,12 @@
-import { Router, Request, Response } from 'express';
-import { randomBytes, createHmac, timingSafeEqual } from 'crypto';
+import { Router, Request, Response, NextFunction } from 'express';
+import { randomBytes } from 'crypto';
+import { signInviteToken, verifyInviteToken, burnInviteNonce, INVITE_TTL_MS } from '../auth/inviteToken.js';
+import { publicHubUrl } from '../util/publicUrl.js';
 import { HubServerContext } from '../server.js';
 import { requireSession, requireAdmin } from '../auth/session.js';
 import { issueApiKey } from '../auth/apiKey.js';
 import { rateLimit } from '../util/rateLimit.js';
+import { asyncRoute } from '../util/asyncRoute.js';
 
 // Plug-and-play hub onboarding endpoints — see the STORY for context.
 //
@@ -14,7 +17,6 @@ import { rateLimit } from '../util/rateLimit.js';
 
 const DEVICE_CODE_TTL_S = 600;        // 10 minutes
 const DEVICE_POLL_INTERVAL_S = 2;
-const INVITE_TTL_MS = 14 * 86400_000; // 14 days
 
 // /device/start is unauthenticated; without limits anyone can inflate the
 // device_codes table unbounded (and expired rows were never pruned). Cap the
@@ -45,15 +47,6 @@ function isoPlus(seconds: number): string {
   return new Date(Date.now() + seconds * 1000).toISOString();
 }
 
-function publicHubUrl(req: Request): string {
-  const proto = (req.headers['x-forwarded-proto'] as string)?.split(',')[0]?.trim()
-    || (req.secure ? 'https' : 'http');
-  const host = (req.headers['x-forwarded-host'] as string)?.split(',')[0]?.trim()
-    || req.headers.host
-    || 'localhost';
-  return `${proto}://${host}`;
-}
-
 /**
  * Sanitise the identity payload a CLI sends about itself. Each field is a
  * string-or-null; anything else is dropped rather than stored, since it lands in
@@ -80,49 +73,32 @@ function identityLabel(prefix: string, id: { gitEmail: string | null; osUser: st
   return `${prefix}:${id.gitEmail ?? id.osUser ?? fallback}`;
 }
 
-function signInviteToken(payload: { orgId: string; nonce: string; exp: number }, secret: string): string {
-  const body = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
-  const sig = createHmac('sha256', secret).update(body).digest('base64url');
-  return `${body}.${sig}`;
-}
-
-function verifyInviteToken(token: string, secret: string): { orgId: string; nonce: string; exp: number } | null {
-  const dot = token.lastIndexOf('.');
-  if (dot <= 0) return null;
-  const body = token.slice(0, dot);
-  const sigStr = token.slice(dot + 1);
-  let expected: Buffer;
-  let actual: Buffer;
-  try {
-    expected = Buffer.from(createHmac('sha256', secret).update(body).digest('base64url'));
-    actual = Buffer.from(sigStr);
-  } catch {
-    return null;
-  }
-  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) return null;
-  try {
-    const parsed = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
-    if (typeof parsed.orgId !== 'string' || typeof parsed.nonce !== 'string' || typeof parsed.exp !== 'number') return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
 export function connectRouter(ctx: HubServerContext): Router {
   const router = Router();
   // Per-instance rate limiter (not module-level) — see auth.ts rationale.
   const deviceStartRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 60, message: 'Too many device-code requests, slow down.' });
-  const guard = requireSession(ctx.config.sessionSecret);
+  // No requireSession guard here on purpose. Every authenticated route in this
+  // file mints or reveals a live bearer token, so admin is the only correct
+  // gate — and CGLAB-75 was precisely the wrong one being picked from the two
+  // sitting side by side. Leaving the unused one here invites the repeat.
   const adminGuard = requireAdmin(ctx.config.sessionSecret);
 
   // ── Device-code flow ──────────────────────────────────────────────────────
 
-  router.post('/device/start', deviceStartRateLimit, async (req: Request, res: Response) => {
+  router.post('/device/start', deviceStartRateLimit, asyncRoute(async (req: Request, res: Response) => {
     const nowIso = new Date().toISOString();
     // Prune expired rows so the table self-cleans, then refuse if the pending
     // backlog is already saturated (cheap DoS guard). (bug 72f8da10.)
+    const expired = await ctx.db.all<{ device_code: string }>(
+      'SELECT device_code FROM device_codes WHERE expires_at < ?', [nowIso],
+    );
     await ctx.db.run('DELETE FROM device_codes WHERE expires_at < ?', [nowIso]);
+    // The plaintext bearer is held in memory until /device/poll collects it, and
+    // was deleted ONLY on a successful collection — so an approved code nobody
+    // polled left a live token in the process for the lifetime of the server,
+    // long after its row had been pruned. The map follows the rows.
+    const held: Map<string, string> | undefined = (ctx as any)._deviceTokens;
+    if (held) for (const row of expired) held.delete(row.device_code);
     const pending = await ctx.db.get<{ n: number }>(
       'SELECT COUNT(*) AS n FROM device_codes WHERE approved_at IS NULL AND expires_at > ?',
       [nowIso],
@@ -156,9 +132,9 @@ export function connectRouter(ctx: HubServerContext): Router {
       expiresIn: DEVICE_CODE_TTL_S,
       interval: DEVICE_POLL_INTERVAL_S,
     });
-  });
+  }));
 
-  router.post('/device/poll', async (req: Request, res: Response) => {
+  router.post('/device/poll', asyncRoute(async (req: Request, res: Response) => {
     const { deviceCode } = req.body ?? {};
     if (typeof deviceCode !== 'string' || !deviceCode) { res.status(400).json({ error: 'deviceCode required' }); return; }
     const row = await ctx.db.get<{ org_id: string | null; token_hash: string | null; approved_at: string | null; expires_at: string }>(
@@ -185,13 +161,13 @@ export function connectRouter(ctx: HubServerContext): Router {
       orgId: row.org_id,
       hubUrl: publicHubUrl(req),
     });
-  });
+  }));
 
   // adminGuard, not guard: approving mints a live bearer token via issueApiKey
   // below, exactly like /invite/create. /device/start needs no auth at all, so a
   // merely-signed-in viewer could otherwise start a code, approve it, redeem it,
   // and escalate read-only access to ingest-and-fleet-write. (Security: CGLAB-75.)
-  router.post('/device/approve', adminGuard, async (req: Request, res: Response) => {
+  router.post('/device/approve', adminGuard, asyncRoute(async (req: Request, res: Response) => {
     const userCodeIn = String(req.body?.userCode ?? '').trim().toUpperCase();
     if (!userCodeIn) { res.status(400).json({ error: 'userCode required' }); return; }
     const row = await ctx.db.get<{
@@ -240,7 +216,7 @@ export function connectRouter(ctx: HubServerContext): Router {
         gitEmail: bind.gitEmail,
       },
     });
-  });
+  }));
 
   // ── Magic-link invite ─────────────────────────────────────────────────────
 
@@ -248,7 +224,7 @@ export function connectRouter(ctx: HubServerContext): Router {
     const orgId = req.session!.orgId;
     const nonce = randomBytes(18).toString('base64url');
     const exp = Date.now() + INVITE_TTL_MS;
-    const inviteToken = signInviteToken({ orgId, nonce, exp }, ctx.config.secretKey);
+    const inviteToken = signInviteToken({ orgId, nonce, exp, kind: 'installation' }, ctx.config.secretKey);
     const hubUrl = publicHubUrl(req);
     res.json({
       inviteToken,
@@ -259,15 +235,13 @@ export function connectRouter(ctx: HubServerContext): Router {
     });
   });
 
-  router.post('/invite/redeem', async (req: Request, res: Response) => {
+  router.post('/invite/redeem', async (req: Request, res: Response, next: NextFunction) => {
+    try {
     const inviteToken = String(req.body?.inviteToken ?? '');
     if (!inviteToken) { res.status(400).json({ error: 'inviteToken required' }); return; }
-    const parsed = verifyInviteToken(inviteToken, ctx.config.secretKey);
+    const parsed = verifyInviteToken(inviteToken, ctx.config.secretKey, 'installation');
     if (!parsed) { res.status(400).json({ error: 'invalid invite token' }); return; }
     if (parsed.exp < Date.now()) { res.status(400).json({ error: 'invite token expired' }); return; }
-    const seen = await ctx.db.get('SELECT 1 AS x FROM used_invites WHERE nonce = ?', [parsed.nonce]);
-    if (seen) { res.status(400).json({ error: 'invite token already used' }); return; }
-
     // Bind the issued token to the redeeming installation when the CLI
     // supplied one, so admins can see who's behind the key and revoke it
     // surgically. Each field is sanitised to a string-or-null.
@@ -279,9 +253,21 @@ export function connectRouter(ctx: HubServerContext): Router {
       ? identityLabel('invite', bind, bind.installationId ?? '')
       : 'invite';
 
-    const token = await issueApiKey(ctx.db, parsed.orgId, label, bind);
-    await ctx.db.run('INSERT INTO used_invites (nonce, org_id) VALUES (?, ?)', [parsed.nonce, parsed.orgId]);
+    // Burn the nonce inside the same transaction that mints the key, and burn
+    // it FIRST: minting before the insert let two concurrent redeems of one
+    // invite hand out two api_keys, with the loser's constraint error landing
+    // after the key had already been returned.
+    const token = await ctx.db.transaction(async () => {
+      if (!await burnInviteNonce(ctx.db, parsed.nonce, parsed.orgId)) return null;
+      return issueApiKey(ctx.db, parsed.orgId, label, bind);
+    });
+    if (!token) { res.status(400).json({ error: 'invite token already used' }); return; }
     res.json({ token, orgId: parsed.orgId, hubUrl: publicHubUrl(req) });
+    } catch (err) {
+      // express 4 does not forward a rejected promise, so without this a DB
+      // failure here leaves the caller waiting for a timeout with no response.
+      next(err);
+    }
   });
 
   return router;

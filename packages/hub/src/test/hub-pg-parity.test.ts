@@ -29,7 +29,9 @@ async function bootHubOnPg(): Promise<Fixture> {
     sessionSecret: 'sess-secret',
     defaultOrgId: 'org',
     db,
-  });
+    // Otherwise every upgrade post 422s against the real GitHub release list.
+    releaseExists: async (v: string) => v === '0.3.1',
+  } as any);
   await createPasswordUser(db, 'org', 'admin@x', 'longenough1', 'admin');
   const login = await supertest(out.app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
   const cookie = login.headers['set-cookie']?.[0] ?? '';
@@ -199,7 +201,7 @@ describe('PG parity: admin endpoints', () => {
     expect(await fx.db.get('SELECT id FROM installations WHERE id = ?', ['inst-2'])).toBeTruthy();
   });
 
-  it('fleet exclusions: installations list hides + scope=all skips hidden on PG (CGLAB-31)', async () => {
+  it('fleet exclusions: the installations list hides a hidden person on PG (CGLAB-31)', async () => {
     for (const [id, email] of [['inst-vis', 'active@acme.com'], ['inst-hid', 'departed@acme.com']] as const) {
       await fx.db.run(
         `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_email, agenfk_version)
@@ -214,6 +216,39 @@ describe('PG parity: admin endpoints', () => {
     const incl = await supertest(fx.app).get('/v1/admin/installations?includeHidden=1').set('Cookie', fx.cookie);
     expect(incl.body).toHaveLength(2);
     expect(incl.body.find((i: any) => i.id === 'inst-hid').hidden).toBe(true);
+  });
+
+  it('a fleet-wide upgrade skips hidden and retired machines on PG (CGLAB-31, CGLAB-64)', async () => {
+    // The test above was named as though it covered this, but only ever called
+    // GET /v1/admin/installations — so the eligibility query itself had NO
+    // Postgres coverage. That query is now the single shared definition behind
+    // two callers (this route and the child-hub fan-out, which runs unattended
+    // on a timer against production Postgres), and its NOT EXISTS correlation
+    // on lower(git_email) is exactly the shape this repo has been bitten by
+    // before.
+    for (const [id, email, retired] of [
+      ['up-vis', 'active@acme.com', false],
+      ['up-hid', 'departed@acme.com', false],
+      ['up-ret', 'retiree@acme.com', true],
+    ] as const) {
+      await fx.db.run(
+        `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_email, agenfk_version, retired_at)
+         VALUES (?, ?, now(), now(), 'u', ?, '0.3.0', ${retired ? 'now()' : 'NULL'})`,
+        [id, 'org', email],
+      );
+    }
+    await fx.db.run('INSERT INTO hidden_users (org_id, user_key) VALUES (?, ?)', ['org', 'departed@acme.com']);
+
+    const r = await supertest(fx.app).post('/v1/admin/upgrade').set('Cookie', fx.cookie)
+      .send({ targetVersion: '0.3.1', scope: { type: 'all' } });
+    expect(r.status).toBe(201);
+
+    const targets = await fx.db.all<any>(
+      `SELECT t.installation_id FROM upgrade_directive_targets t
+        WHERE t.directive_id = ? ORDER BY t.installation_id`,
+      [r.body.directiveId],
+    );
+    expect(targets.map(t => t.installation_id)).toEqual(['up-vis']);
   });
 });
 

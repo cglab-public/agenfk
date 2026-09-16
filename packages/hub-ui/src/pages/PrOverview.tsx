@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { GitPullRequest, RefreshCw, Search, TrendingUp, TrendingDown, X } from 'lucide-react';
 import { api } from '../api';
@@ -8,6 +8,8 @@ import { FilterAccordion, parseFiltersOpen } from '../components/FilterAccordion
 import { ModelMetaFilter } from '../components/ModelMetaFilter';
 import { shortRemote } from '../components/facetSearch';
 import { useToggleSet } from '../hooks/useToggleSet';
+import { useChildHubs } from '../hooks/useChildHubs';
+import { csvParam } from '../urlParams';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useSettledKey } from '../hooks/useSettledKey';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
@@ -63,6 +65,13 @@ interface PrOverviewResponse {
   prs: Array<{
     repo: string;
     prNumber: number;
+    /**
+     * CGLAB-184: which hub reported it — a child hub's id, or 'local' for this
+     * hub's own. On a parent hub (repo, prNumber) is NOT unique: two children
+     * can each size acme/web#57, and they are different PRs on different
+     * forges. Optional so a response from an older hub still types.
+     */
+    childHubId?: string;
     url: string | null;
     user_key: string;
     model: string;
@@ -75,6 +84,17 @@ interface PrOverviewResponse {
   previous: { prs: number; sizePoints: number } | null;
 }
 interface ProjectsResponse { projects: string[] }
+
+/**
+ * A stable identity for one PR row.
+ *
+ * Deliberately NOT `repo#number`: on a parent hub that pair collides across
+ * child hubs, and a duplicate React key makes reconciliation reuse one node for
+ * two rows — so a filter change can leave the wrong opener and size on screen.
+ * Falls back to 'local' for a response from a hub that predates the field.
+ */
+const prKey = (p: { repo: string; prNumber: number; childHubId?: string }) =>
+  `${p.childHubId ?? 'local'}\u0000${p.repo}#${p.prNumber}`;
 
 // XL→XS so the stacked bar renders largest at the bottom. Hoisted out of render.
 const SIZE_META_DESC = [...SIZE_META].reverse();
@@ -255,7 +275,7 @@ function PrDrilldownModal({ dev, day, prs, onClose }: {
             // row container, so repo / model / badge / time all open the PR.
             // Rows without a derived link stay inert.
             return p.url ? (
-              <li key={`${p.repo}#${p.prNumber}`}>
+              <li key={prKey(p)}>
                 <a
                   href={p.url}
                   target="_blank"
@@ -267,7 +287,7 @@ function PrDrilldownModal({ dev, day, prs, onClose }: {
                 </a>
               </li>
             ) : (
-              <li key={`${p.repo}#${p.prNumber}`} className="flex items-center gap-3 px-5 py-2.5">
+              <li key={prKey(p)} className="flex items-center gap-3 px-5 py-2.5">
                 {rowBody}
               </li>
             );
@@ -282,18 +302,30 @@ export function PrOverviewPage() {
   // The URL query string is the source of truth for every filter, so a refresh
   // or a shared link restores the exact same view. State is seeded from the URL
   // on first render and written back (replace) whenever a filter changes.
-  const [searchParams, setSearchParams] = useSearchParams();
-  const csv = (k: string) => (searchParams.get(k) ?? '').split(',').map(s => s.trim()).filter(Boolean);
-  const urlRange = searchParams.get('range');
-  const initRange = (RANGES.some(r => r.key === urlRange) ? urlRange : '30d') as RangeKey;
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const csv = (k: string) => csvParam(searchParams, k);
+  const readRange = (sp: URLSearchParams): RangeKey => {
+    const v = sp.get('range');
+    return (RANGES.some(r => r.key === v) ? v : '30d') as RangeKey;
+  };
+  const readGran = (sp: URLSearchParams): Granularity => {
+    const v = sp.get('gran');
+    return v === 'weekly' || v === 'monthly' ? v : 'daily';
+  };
+  // Repeated ?pr= params seed from the first entry that PARSES, mirroring the
+  // server's parsePrNumberFilter — see the prQuery state below for why.
+  const readPrQuery = (sp: URLSearchParams): string =>
+    [...sp.getAll('pr')].find(v => parsePrQuery(v) !== null) ?? '';
+  const initRange = readRange(searchParams);
 
   const projectSel = useToggleSet(csv('projects'));
   const devSel = useToggleSet(csv('developers'));
   const modelSel = useToggleSet(csv('model'));
+  const childHubSel = useToggleSet(csv('childHubId'));
+  const childHubs = useChildHubs(childHubSel.set);
   const [range, setRange] = useState<RangeKey>(initRange);
-  const urlGran = searchParams.get('gran');
-  const initGran: Granularity = urlGran === 'weekly' || urlGran === 'monthly' ? urlGran : 'daily';
-  const [gran, setGran] = useState<Granularity>(initGran);
+  const [gran, setGran] = useState<Granularity>(() => readGran(searchParams));
   // Explicit date range (YYYY-MM-DD); when set it overrides the preset range.
   const [customFrom, setCustomFrom] = useState<string>(searchParams.get('from') ?? '');
   const [customTo, setCustomTo] = useState<string>(searchParams.get('to') ?? '');
@@ -310,9 +342,7 @@ export function PrOverviewPage() {
   // whatever it holds, so `?pr=&pr=57` would open the windowed overview and then
   // the URL effect below would rewrite the address bar without `pr` at all —
   // deleting the link's own evidence that it asked for PR #57.
-  const [prQuery, setPrQuery] = useState<string>(
-    () => [...searchParams.getAll('pr')].find(v => parsePrQuery(v) !== null) ?? '',
-  );
+  const [prQuery, setPrQuery] = useState<string>(() => readPrQuery(searchParams));
   const prNumber = parsePrQuery(prQuery);
   // A PR search supersedes the date window, the model filter and the developer
   // filter. Project (git remote) is the one filter it respects — a PR number is
@@ -324,13 +354,55 @@ export function PrOverviewPage() {
   // with no time bound (see routes/queries.ts), so four keystrokes is four full
   // scans to answer one question. Cold load is unaffected: the hook starts
   // settled, so a shared ?pr=57 link is not one tick slower.
-  const queryPrNumber = useDebouncedValue(prNumber, 350);
+  //
+  // A navigation is not typing. `navPr` is the PR number most recently
+  // delivered BY a navigation; while the box still holds it the debounce is
+  // bypassed, so a Back onto ?pr=57 does not spend 350ms with the box saying 57
+  // and the URL write-back publishing an address bar with no `pr` in it — which
+  // became permanent if the reader navigated again inside that window.
+  const [navPr, setNavPr] = useState<number | null>(() => parsePrQuery(readPrQuery(searchParams)));
+  const queryPrNumber = useDebouncedValue(prNumber, 350, navPr);
+
+  // Follow the URL, the way the chip facets already do (BUG 8e40e463).
+  //
+  // These six controls are plain state mirrored INTO the query string, so they
+  // were not merely stale on a navigation: react-router hands back a fresh
+  // setSearchParams on every location change, which re-runs the write-back
+  // effect below and rewrites the whole query string from mount-time state.
+  // The incoming values were deleted, not ignored.
+  //
+  // The discriminator is "did WE write this?", not the navigation type. A
+  // value-keyed follow cannot work, because the write-back omits a control at
+  // its default (no `range` when it is 30d, no `range` at all while an explicit
+  // from/to is set) — so "absent from the URL" does not mean "default", and a
+  // naive follow would reset the range every time a custom date range is used.
+  // And keying on POP alone left every PUSH broken: clicking the sidebar's own
+  // "PR overview" link while already on a filtered /prs cleared the chips,
+  // kept the range, and rewrote the bare /prs you asked for.
+  const location = useLocation();
+  const lastWritten = useRef<string | null>(null);
+  useEffect(() => {
+    const incoming = location.search.replace(/^\?/, '');
+    if (lastWritten.current === incoming) return; // our own write-back
+    const sp = new URLSearchParams(incoming);
+    setRange(readRange(sp));
+    setGran(readGran(sp));
+    setCustomFrom(sp.get('from') ?? '');
+    setCustomTo(sp.get('to') ?? '');
+    setFiltersOpen(parseFiltersOpen(sp.get('filters')));
+    const pr = readPrQuery(sp);
+    setPrQuery(pr);
+    setNavPr(parsePrQuery(pr));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.key, location.search]);
 
   useEffect(() => {
     const p = new URLSearchParams();
     if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
     if (devSel.set.size) p.set('developers', [...devSel.set].join(','));
     if (modelSel.set.size) p.set('model', [...modelSel.set].join(','));
+    // Same spelling the server reads, so a shared link needs no translation.
+    if (childHubSel.set.size) p.set('childHubId', [...childHubSel.set].join(','));
     if (customFrom || customTo) {
       // Explicit range takes precedence over the preset in the URL too.
       if (customFrom) p.set('from', customFrom);
@@ -349,8 +421,13 @@ export function PrOverviewPage() {
     if (queryPrNumber !== null) p.set('pr', String(queryPrNumber));
     // Only the non-default (collapsed) state is written, so the common URL stays clean.
     if (!filtersOpen) p.set('filters', '0');
-    setSearchParams(p, { replace: true });
-  }, [projectSel.set, devSel.set, modelSel.set, range, gran, customFrom, customTo, filtersOpen, queryPrNumber, setSearchParams]);
+    // Remembered so the follow-the-URL effect above can tell our own write from
+    // somebody else's navigation.
+    lastWritten.current = p.toString();
+    // navigate rather than setSearchParams: the latter resolves to a bare
+    // "?query", which drops any fragment the URL arrived with.
+    navigate({ search: p.toString() ? `?${p}` : '', hash: location.hash }, { replace: true });
+  }, [projectSel.set, devSel.set, modelSel.set, childHubSel.set, range, gran, customFrom, customTo, filtersOpen, queryPrNumber, navigate, location.hash]);
 
   const from = useMemo(
     () => (customFrom ? `${customFrom}T00:00:00.000Z` : fromIsoForRange(new Date(), range)),
@@ -365,10 +442,15 @@ export function PrOverviewPage() {
   const baseQs = useMemo(() => {
     const p = new URLSearchParams();
     if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
+    // Sits with `projects`, not with model/developer: the hub partitions the
+    // data rather than narrowing a view of it, so the options query must be
+    // partitioned too — otherwise the model and developer lists offer names
+    // from hubs the board is not showing.
+    if (childHubSel.set.size) p.set('childHubId', [...childHubSel.set].join(','));
     p.set('from', from);
     if (toParam) p.set('to', toParam);
     return p;
-  }, [projectSel.set, from, toParam]);
+  }, [projectSel.set, childHubSel.set, from, toParam]);
 
   const dataQs = useMemo(() => {
     // Search mode: projects + the number, and nothing else. The superseded
@@ -382,6 +464,10 @@ export function PrOverviewPage() {
     if (queryPrNumber !== null) {
       const p = new URLSearchParams();
       if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
+      // Kept through a PR search, like `projects` and for the same reason: #57
+      // exists in every repo AND on every hub, so dropping this would make one
+      // search return two unrelated PRs that merely share a number.
+      if (childHubSel.set.size) p.set('childHubId', [...childHubSel.set].join(','));
       p.set('pr', String(queryPrNumber));
       return p.toString();
     }
@@ -389,7 +475,7 @@ export function PrOverviewPage() {
     if (modelSel.set.size) p.set('model', [...modelSel.set].join(','));
     if (devSel.set.size) p.set('users', [...devSel.set].join(','));
     return p.toString();
-  }, [baseQs, modelSel.set, devSel.set, projectSel.set, queryPrNumber]);
+  }, [baseQs, modelSel.set, devSel.set, projectSel.set, childHubSel.set, queryPrNumber]);
 
   const overview = useQuery<PrOverviewResponse>({
     queryKey: ['pr-overview', dataQs],
@@ -461,7 +547,15 @@ export function PrOverviewPage() {
   const universe = optionsQuery.data ?? (mainIsUniverse ? overview.data : undefined);
   const modelOptions = universe?.byModel.map(m => m.model) ?? [];
   const devOptions = universe?.byDeveloper.map(x => x.user_key) ?? [];
-  const projects = useQuery<ProjectsResponse>({ queryKey: ['projects'], queryFn: async () => (await api.get('/v1/projects')).data });
+  // Partitioned by hub, like the model and developer lists: a repo chip from a
+  // hub the board is not showing is a dead end.
+  const hubQs = childHubSel.set.size
+    ? `?${new URLSearchParams({ childHubId: [...childHubSel.set].join(',') })}`
+    : '';
+  const projects = useQuery<ProjectsResponse>({
+    queryKey: ['projects', hubQs],
+    queryFn: async () => (await api.get(`/v1/projects${hubQs}`)).data,
+  });
 
   // Picking a preset clears any explicit date range so the two don't fight.
   const pickRange = (r: RangeKey) => { setRange(r); setCustomFrom(''); setCustomTo(''); };
@@ -547,6 +641,11 @@ export function PrOverviewPage() {
   const activeFilters = useMemo(() => {
     const out: string[] = [];
     if (searchActive) out.push(`PR #${prNumber}`);
+    // Listed even during a PR search, like projects: the hub is not superseded
+    // by the search — it still scopes which hub's #57 is being asked about.
+    if (childHubSel.set.size) {
+      out.push(`${childHubSel.set.size} child hub${childHubSel.set.size === 1 ? '' : 's'}`);
+    }
     if (projectSel.set.size) {
       out.push(`${projectSel.set.size} project${projectSel.set.size === 1 ? '' : 's'}`);
     }
@@ -557,7 +656,7 @@ export function PrOverviewPage() {
       out.push(`${modelSel.set.size} model${modelSel.set.size === 1 ? '' : 's'}`);
     }
     return out;
-  }, [searchActive, prNumber, projectSel.set, devSel.set, modelSel.set]);
+  }, [searchActive, prNumber, childHubSel.set, projectSel.set, devSel.set, modelSel.set]);
 
   return (
     <div className="max-w-[1200px] mx-auto space-y-6">
@@ -695,6 +794,19 @@ export function PrOverviewPage() {
           )}
         </p>
       </div>
+
+      {childHubs.show && (
+        <FacetMultiselect
+          label="Child hub"
+          options={childHubs.options}
+          selected={childHubSel.set}
+          onToggle={childHubSel.toggle}
+          onClear={childHubSel.clear}
+          optionLabel={childHubs.label}
+          inlineThreshold={6}
+          placeholder="Search hubs…"
+        />
+      )}
 
       <FacetMultiselect
         label="Project (git remote)"

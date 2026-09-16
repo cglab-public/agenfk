@@ -17,6 +17,10 @@ export default defineWorkspace([
       include: ['packages/*/src/test/**/*.{test,spec}.{ts,tsx}'],
       exclude: ['**/dist/**', '**/node_modules/**'],
       environment: 'jsdom',
+      // This entry point hand-rolls its config instead of calling sharedTest(),
+      // so it silently ran without the setup file — meaning no net guard and no
+      // localStorage repair. Wiring it explicitly until the drift is resolved.
+      setupFiles: ['./vitest.setup.ts'],
     }
   }
 ]);

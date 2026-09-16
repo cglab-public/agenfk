@@ -57,10 +57,19 @@ export async function recomputeRollups(db: DB, opts: RecomputeOptions = {}): Pro
     );
   if (days.length === 0) return { days: 0 };
 
+  // child_hub_id: '' for this hub's own events, a child hub's id for anything
+  // forwarded to it. COALESCE because the column is nullable on events, where
+  // NULL and '' both mean "ours".
+  //
+  // NOTE: no inline `--` comments inside this SQL. The dialect translator
+  // rewrites ? placeholders positionally and a line comment swallows the rest
+  // of the statement on Postgres — which is how this same trap has bitten
+  // before, and pg-mem is the only place it surfaces.
   const upsertSql = `
-    INSERT INTO rollups_daily (org_id, user_key, day, events_count, items_closed, tokens_in, tokens_out, validate_passes, validate_fails, prs_opened)
+    INSERT INTO rollups_daily (org_id, child_hub_id, user_key, day, events_count, items_closed, tokens_in, tokens_out, validate_passes, validate_fails, prs_opened)
     SELECT
       org_id,
+      COALESCE(child_hub_id, '') AS child_hub_id,
       user_key,
       date(occurred_at) AS day,
       COUNT(*) AS events_count,
@@ -76,8 +85,8 @@ export async function recomputeRollups(db: DB, opts: RecomputeOptions = {}): Pro
       SUM(CASE WHEN type = 'pr.opened' THEN 1 ELSE 0 END) AS prs_opened
     FROM events
     WHERE date(occurred_at) = ?${orgFilter}
-    GROUP BY org_id, user_key, date(occurred_at)
-    ON CONFLICT(org_id, user_key, day) DO UPDATE SET
+    GROUP BY org_id, COALESCE(child_hub_id, ''), user_key, date(occurred_at)
+    ON CONFLICT(org_id, child_hub_id, user_key, day) DO UPDATE SET
       events_count = excluded.events_count,
       items_closed = excluded.items_closed,
       tokens_in = excluded.tokens_in,

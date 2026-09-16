@@ -72,6 +72,153 @@ AgenFK supports six AI coding assistants. Each integrates with the same MCP serv
 
 Codex's hook system reliably fires for the shell tool but not for `apply_patch` or most MCP tool calls (open issues `openai/codex#14882`, `#16732`, May 2026). The PR sizing hook is unaffected because `gh pr create` and `git push` always run via the shell tool. If pre-edit gatekeeping is added to Codex later, this caveat will need to be revisited.
 
+## Hub Federation (hub of hubs)
+
+A hub can enrol with another hub, making it a **child** and the other a **parent**.
+The parent gets a view across the group; the child keeps running its own show.
+Every claim below names the file it is true in, so it can be checked rather than
+trusted.
+
+### Principals
+
+A **federation key** is its own kind of credential, never an `api_keys` row
+(`packages/hub/src/auth/federationKey.ts`, table `federation_keys`). That
+separation is the point: an installation key can never reach a `/v1/federation/*`
+route, and a federation key can never post a developer's telemetry. A key is
+refused the moment its hub is revoked or detached, so a detached child cannot
+poll with a credential nobody got round to deleting.
+
+Enrolment is invite-based: the parent mints a single-use invite, the child
+presents it once, and the parent issues the key
+(`routes/federation.ts`, `POST /v1/federation/enroll`).
+
+### What a parent can see and do
+
+- **See the events its children forward**, shaped by the identity policy below.
+- **Read aggregate metrics per child hub**, kept apart by `child_hub_id` on
+  `events` and `rollups_daily` rather than in a separate table.
+- **Dispatch one of its flows** to some or all children, which install it as an
+  `org_available` flow of origin `parent` (`services/federation/federationSync.ts`).
+- **Dispatch a target agenfk version**, which each child fans out over its own
+  installations (`services/federation/upgradeFanout.ts`), and **cancel** it.
+- **Set the identity policy** for the group, or per child.
+- **Detach a child**, which is the only way a child is released.
+
+### What a parent cannot do — the part that matters
+
+- **It cannot reach into a child's database.** There is no query path from
+  parent to child at all: every federation route is child-initiated, and a
+  directive tells the child what to do rather than asking it anything. Beyond
+  forwarded events the parent learns only what the relationship itself requires
+  — the child's chosen name, its hub version, its liveness, and the progress
+  reports it sends about work the parent asked for.
+- **Hiding someone stops their activity reaching the parent from that moment.**
+  The exclusion happens at ingest, before anything is queued (`routes/events.ts`,
+  CGLAB-31), and a group upgrade does not name their machines upstream either —
+  the count travels, the identity does not
+  (`services/federation/upgradeProgress.ts`). It is **go-forward only**: events
+  already delivered stay at the parent, and rows already in the outbox are still
+  sent. Hiding is not a retraction.
+- **It cannot stop a child working.** No network call to the parent happens on
+  the ingest path: forwarding only writes to a local outbox, and a failure to do
+  even that is caught outside the ingest transaction. A parent that is down,
+  slow, hostile or gone is invisible to the child's own developers. Pinned by
+  `test/federation-standalone.test.ts`, which ingests while a tick is stuck
+  mid-call against a parent that never answers.
+- **It cannot silently take a fleet backwards.** A downgrade needs the parent
+  admin to confirm it explicitly. The child re-validates the version's SHAPE
+  against the same strict tag regex it applies to its own admin — note it does
+  *not* re-check that the release exists, so a parent can dispatch a plausible
+  version that is real nowhere, and each machine then refuses it individually.
+- **It cannot overwrite a flow the child authored.** A dispatched flow is keyed
+  by id, and every locally-authored flow has a random one, so a clash by NAME
+  installs alongside rather than replacing. The one exception is a flow the
+  parent previously dispatched and the child kept on leaving: re-joining and
+  re-dispatching reclaims it, deliberately, or a re-join could never restore the
+  group's standard.
+- **It cannot claim work landed.** Serving a directive is not the same as it
+  landing: a target stays `pending` until the child reports, and "asked to stop"
+  (`cancel-pending`) is deliberately distinct from "stopped" (`cancelled`).
+
+### Identity policy
+
+The policy belongs to the parent — `keep` or `pseudonymize` — set for the group
+or overridden per child, and the override wins in both directions because it is
+an override, not an escalation (`services/federation/forwarding.ts`).
+
+**The default is `keep`, and `keep` forwards the event whole**: the actor's git
+email, the item title, the entire free-form payload. A fresh group has no policy
+row, and no policy row means `keep`. If that is not what you want, it is one
+setting and it is not the one you get by doing nothing — this is the single most
+decision-relevant fact about federating, so it is stated before the nuance
+rather than after it.
+
+Two properties make it auditable rather than merely configurable. The child can
+read the policy it is currently forwarding under (`GET /v1/admin/federation`), so
+people are not subject to a control their own admin cannot see. And the policy
+travels **with** each queued row rather than being read at delivery time, so
+switching it can never retroactively change the meaning of rows already queued.
+
+Under `pseudonymize` the payload is reduced to a known list of forwardable keys
+rather than filtered for known-bad ones: a deny-list on a free-form blob is a
+promise nobody can keep. The pseudonym is derived per child hub from that hub's
+own secret, so the same person appears as two different people to a parent
+watching two sibling hubs, and rotating `AGENFK_HUB_SECRET_KEY` re-pseudonymises
+everyone from that point on. Both are deliberate; neither is reversible.
+
+### Leaving a group
+
+**Leaving is parent-granted.** A child cannot let itself out: `DELETE
+/v1/admin/federation` succeeds only once the parent has detached it, which flips
+the binding to `revoked` (`routes/admin.ts`). That keeps the parent's roster
+authoritative — a child cannot quietly vanish from a dispatch target list — and
+it is why there is a release *request* rather than a release action.
+
+The binding's state is stored in clear beside the encrypted token on purpose.
+Gating the leave on decryptability turned rotating `AGENFK_HUB_SECRET_KEY` into a
+product-surface way out of the group.
+
+What a child keeps when it leaves:
+
+- **Flows the parent dispatched stay, and become editable.** Their origin flips
+  from `parent` to `hub`, so nothing a team is mid-project under disappears
+  (`services/federation/parentFlows.ts`). This fires on both exits — the parent
+  detaching, discovered as a 401, and the child's own leave — because a hub whose
+  parent detached it would otherwise hold flows nobody on earth can edit.
+- **Its outbox**, deliberately: it is this hub's own record of what it never
+  managed to send, and discarding it would destroy data as a side effect of
+  tidying up a relationship.
+- **Everything else**, because none of it was ever the parent's.
+
+Sync stops rather than retrying, and a revoked binding stops queueing instead of
+growing a table forever for a parent that is never coming back.
+
+Two limits worth knowing before you join, because neither is obvious and both
+are the kind of thing people discover at a bad moment:
+
+- **A parent that simply goes dark cannot be left.** Leaving requires the
+  binding to be `revoked`, and only the parent answering 401 produces that. A
+  parent that stops responding without detaching leaves the child bound and
+  ticking, with no exit through the product.
+- **The outbox is capped** (`MAX_OUTBOX_ROWS`, 50,000) and trims the OLDEST rows
+  first. A long enough outage silently loses the front of the queue rather than
+  refusing new work.
+
+And what leaving does not do: **nothing is deleted at the parent.** The child
+keeps its own things, but every event it already forwarded stays upstream. Detach
+ends the relationship going forward; it is not a recall.
+
+### Deployment
+
+A hub needs no configuration to be standalone: the federation worker starts
+unconditionally and every tick is a no-op without a binding, so a hub that never
+joins a group pays one cheap query a minute (`FEDERATION_TICK_MS`, 60s).
+
+Neither role needs much more than that. `HUB_ARCHITECTURE.md` §2.7 covers what an
+operator actually sets — which is almost nothing, plus one flag for a parent on a
+private network — and why enrolment is deliberately a decision made in the UI
+rather than a variable in the environment.
+
 ## Tech Stack
 - **Language**: TypeScript (Strong typing across the stack)
 - **Backend**: Node.js, Express, Socket.io

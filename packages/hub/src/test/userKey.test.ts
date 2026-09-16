@@ -7,7 +7,7 @@
 // exactly one machine.
 
 import { describe, it, expect } from 'vitest';
-import { userKeyFor, isEmailShapedKey, isNamespacedOsUserKey, namespacedOsUserKey } from '../util/userKey';
+import { userKeyFor, isEmailShapedKey, matchesEmailShape, isNamespacedOsUserKey, namespacedOsUserKey } from '../util/userKey';
 
 const actor = (over: Partial<{ osUser: string; gitName: string | null; gitEmail: string | null }> = {}) => ({
   osUser: 'dev',
@@ -109,16 +109,21 @@ describe('isNamespacedOsUserKey', () => {
 describe('isEmailShapedKey is not a DoS vector (CGLAB-85)', () => {
   const adversarial = (reps: number) => '!@' + '!.'.repeat(reps) + ' ';
 
-  it('rejects a 400KB adversarial key in well under a second', () => {
+  // Pointed at the PATTERN, not at isEmailShapedKey. Through the public
+  // function the length bound answers first, so these inputs never reach the
+  // regex at all — an earlier version of these two tests did exactly that and
+  // passed unchanged against the old quadratic pattern. They claimed a
+  // guarantee they did not prove.
+  it('the pattern itself rejects a 400KB adversarial key in well under a second', () => {
     const started = Date.now();
-    expect(isEmailShapedKey(adversarial(200_000))).toBe(false);
+    expect(matchesEmailShape(adversarial(200_000))).toBe(false);
     expect(Date.now() - started).toBeLessThan(500);
   });
 
-  it('stays fast as the adversarial input grows — no super-linear blowup', () => {
+  it('the pattern stays linear as the adversarial input grows', () => {
     const time = (reps: number) => {
       const t = Date.now();
-      isEmailShapedKey(adversarial(reps));
+      matchesEmailShape(adversarial(reps));
       return Date.now() - t;
     };
     time(10_000); // warm
@@ -127,6 +132,14 @@ describe('isEmailShapedKey is not a DoS vector (CGLAB-85)', () => {
     // Quadratic would be ~100x. Allow generous headroom for a noisy CI box
     // while still failing loudly on a return to polynomial behaviour.
     expect(large).toBeLessThan(Math.max(small * 12, 250));
+  });
+
+  it('and the length bound answers first, so the pattern is never even reached', () => {
+    // The two defences are independent: this one holds even if a future edit
+    // reintroduces the ambiguity the tests above rule out.
+    const started = Date.now();
+    expect(isEmailShapedKey(adversarial(200_000))).toBe(false);
+    expect(Date.now() - started).toBeLessThan(50);
   });
 
   it('rejects an over-long key outright rather than scanning it', () => {

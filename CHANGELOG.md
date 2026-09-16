@@ -2,6 +2,154 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.19-beta.5] — 2026-09-16
+
+Cut from `feat/CGLAB-181_federation-enrollment` (PR #187). Cumulative: it carries
+everything in `v1.1.19-beta.4` plus the changes below.
+
+### `agenfk pr create` reports the model that actually ran
+
+A pi session running DeepSeek v4.1 Flash had its PR attributed to Qwen 3.8 27b.
+pi writes a `model_change` record per model selection — the first is the launch
+default from `settings.json`, and a session that switches writes more. Nothing in
+the CLI detected anything; the mechanism was prose, and the prose told agents to
+read *"the harness's default/selected-model setting"*, which is exactly the
+session-independent default that produced the wrong answer.
+
+- `agenfk` now reads the harness's own session log (pi and Claude Code) and takes
+  the **last** model actually selected. `pr create`, `pr-register` and
+  `pr-resize` report that value, warning when it overrides a disagreeing
+  `--model`. `--no-detect-model` keeps the declared value verbatim.
+- An override is refused when the log comes from a different harness than the one
+  declared, so a stale pi log cannot relabel a Codex run.
+- Sentinel models (`<synthetic>`, written on cancelled turns) and subagent turns
+  are ignored — a subagent runs a different model from the session that spawned
+  it.
+- When no session log matches, the command says the attribution is unverified
+  rather than silently reporting the unchecked claim.
+- The guidance is corrected in all four rule bundles and `agenfk-pr`: read the
+  session log's last selection, never a default.
+
+### Tests no longer make real network connections
+
+`TelemetryClient` built a live PostHog client with `flushAt: 1` and no test
+guard, so a single `npm test` fired 24 real HTTPS requests to `app.posthog.com`
+— one per `packages/server` test file. Every developer's and every CI run was
+shipping analytics to a third party, and the resulting sockets were the
+intermittent `read ECONNRESET` that wandered between unrelated files.
+
+- Telemetry is inert under a test runner (`AGENFK_TEST_ENABLE_TELEMETRY=1` to
+  opt in). Production behaviour is unchanged.
+- The hub's federation sync worker no longer lazily builds a real HTTP
+  transport under a test runner — it started unconditionally and 70 of 71 hub
+  test files inject none, so any test holding a parent binding had a timer
+  dialling the host that binding named. An injected (fake) transport still
+  ticks (`AGENFK_TEST_ENABLE_FEDERATION=1`).
+- A suite-wide guard now fails any socket to a non-loopback host immediately,
+  naming the host, so this class cannot regress silently. Loopback stays
+  allowed — supertest opens an ephemeral `127.0.0.1` socket per request.
+
+A separate, loopback-only `ECONNRESET` remains under investigation; it is
+socket-lifecycle churn inside the suite, not an external dependency.
+
+### Federation is configured from one place (CGLAB-181)
+
+`Admin → Organization` held only the org-id rename, while "who reports to us"
+and "who we report to" sat in two other tabs — three places for one subject.
+Organization now carries all three. The two nav tabs are gone, and
+`/admin/child-hubs` and `/admin/parent-hub` redirect to the matching section
+rather than dead-ending.
+
+### A join token is the only thing you paste (CGLAB-181)
+
+A parent hub now signs its own URL into the child-hub invites it mints, so
+"Generate join token" produces ONE code instead of a URL to pair with a token.
+The child's join form is a single field: it decodes the token, shows the host it
+will actually contact, and refuses to submit one that carries no address.
+
+- The server takes the destination from the token and **ignores** any
+  `parentUrl` sent alongside it, so neither a stale form field nor a doctored
+  request can point an enrolment at a hub other than the one that issued the
+  invite.
+- The decoded URL is **normalised** before it is shown or dialled.
+  `https://parent.example.com@evil.example.com` reads as one host and connects
+  to another; the confirmation line is the only control a child hub has here, so
+  it must be the string that gets requested.
+- The child refuses an expired token, an installation invite, and a
+  non-`child-hub` token locally, instead of relaying a confusing 4xx from
+  whatever the token named.
+- `isPrivateHost` now catches the IPv6 spellings of the addresses it already
+  blocked — `[::ffff:127.0.0.1]`, unique-local and link-local — because this
+  hostname now arrives in a token a stranger minted rather than typed by an
+  admin. Mapped *public* addresses (`::ffff:8.8.8.8`) are still allowed.
+- The parent's invite panel names the address baked into the token, so a
+  misconfigured `X-Forwarded-Host` is caught where it can be fixed rather than
+  on the receiving hub after the token has been sent.
+
+**Upgrade ordering:** tokens minted before this change carry no address and are
+refused, by deliberate choice — there is no URL field to fall back to. An
+upgraded child therefore cannot join a parent still running an older version:
+**upgrade the parent hub first**, then issue a fresh token. The on-screen
+message says so.
+
+## [1.1.19-beta.4] — 2026-09-16
+
+Cut from `feat/CGLAB-181_federation-enrollment`, which branches off the
+`feat/CGLAB-163_jira-item-linking` tip. Cumulative: it carries everything in
+`v1.1.19-beta.3` — the CGLAB-151 PR-number search, the verifyCommand
+diagnostics and the CGLAB-163 JIRA linking — plus the changes below.
+
+### Hub-of-hubs federation (EPIC CGLAB-180)
+
+A hub can now enrol with another hub and report upstream, so an organisation
+running several hubs sees one rollup without merging their databases.
+
+- **Enrolment (CGLAB-181).** A parent mints a single-use, 14-day HMAC invite of
+  its own kind; a child redeems it for a federation key, which is a distinct
+  principal from an installation api key — neither can act as the other. The
+  parent gets a Child hubs roster (rename, detach, staleness); the child gets a
+  Parent hub screen.
+- **Leaving is parent-granted (CGLAB-181).** A child hub cannot let itself out
+  of a group. It asks; the parent detaches it; only then does Leave work. The
+  screen says so rather than offering a button the API refuses.
+- **Flow dispatch (CGLAB-182).** A parent pushes flows to its children.
+  Parent-origin flows are read-only on the child and unlock on detach, and a
+  child reports each dispatch outcome upstream instead of the parent assuming.
+- **Group upgrades (CGLAB-183).** An upgrade dispatched at the parent fans out
+  through each child over its own installations, reports progress upstream, and
+  can be cancelled mid-flight, with per-hub progress on the board.
+- **Child-hub facet (CGLAB-184).** Every org-rollup query can be scoped to one
+  or more child hubs. The facet persists to the URL rather than localStorage,
+  because "here is what your hub contributes" is a thing one person sends
+  another.
+- **Standalone stays standalone (CGLAB-185).** A child hub outlives its parent:
+  nothing about federation is load-bearing for a hub that never joined a group.
+  Identity policy is adopted at enrolment, not on the first heartbeat, so a hub
+  joining an opted-out group never forwards real identities.
+
+### Twelve bugs closed alongside it
+
+Every one found by review or by the epic's own work, each with a failing test
+first:
+
+- No `/v1` route can hang the client on a DB error any more — express 4 does
+  not forward a rejected promise, so an async handler that threw sent no
+  response at all.
+- `verifyCommand` output is streamed rather than buffered, so a chatty command
+  can no longer exhaust memory.
+- The `types` filter works on `/v1/metrics`, and a date window means the same
+  thing on both of its branches.
+- `AGENFK_HUB_ALLOW_PRIVATE_PARENT=1` actually works — it used to get the join
+  past the route's own check and then fail inside the binding write, spending
+  the invite on every retry.
+- A hidden person's machine is no longer named to the parent.
+- Flow dispatch refuses untargetable hubs instead of silently dropping them.
+- Back reaches the PR Overview's scalar controls, not just its facets.
+- The device bearer no longer outlives its code.
+- The PR hook reports the branch you pushed, not the redirection target.
+- The DONE close commit carries what you staged rather than the whole working
+  tree, and says what it left unstaged.
+
 ## [1.1.19-beta.3] — 2026-09-12
 
 Cut from `feat/CGLAB-163_jira-item-linking`, which branches off the

@@ -5,9 +5,17 @@
  * timeouts, aliases, the HOME/bcrypt env pin, and the coverage gate can never
  * drift between a plain `vitest run` and a workspace/`--project` run.
  *
- * `parallel: true` opts a project into file-concurrent execution — see
- * PARALLEL_INCLUDE in vitest.config.ts for which packages qualify and why the
- * rest must stay serial.
+ * `fileParallelism: true` opts a project into running its FILES in separate
+ * workers — see PARALLEL_INCLUDE in vitest.config.ts for which packages qualify
+ * and why the rest must stay serial.
+ *
+ * There is deliberately no option for `sequence.concurrent`, which is a
+ * different thing: concurrency of tests WITHIN one file. The two used to share
+ * a single `parallel` flag, and that was a latent trap — the jsdom packages in
+ * PARALLEL_INCLUDE are React component specs sharing one document, so running
+ * their tests concurrently collides renders and fails 95 of them. File-level
+ * parallelism is the win; within-file concurrency is the hazard. Keeping them
+ * fused meant the safe half could not be turned on without the unsafe half.
  */
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -21,7 +29,7 @@ export const ALIAS = {
 };
 
 /**
- * @param {{ include: string[], environment?: string, parallel?: boolean }} [opts]
+ * @param {{ include: string[], environment?: string, fileParallelism?: boolean }} [opts]
  */
 export function sharedTest(
   opts = {
@@ -42,11 +50,14 @@ export function sharedTest(
     env: testEnv(),
     globals: true,
     environment: opts.environment ?? 'node', // Use node for server/storage
-    // Files that share filesystem state (sqlite DBs, install dirs) must run
-    // one at a time; `parallel: true` is only for the fs-free packages listed
-    // in vitest.config.ts. Tests within a file always stay serial.
-    fileParallelism: !!opts.parallel,
-    sequence: { concurrent: !!opts.parallel },
+    // Files that share filesystem state (sqlite DBs, install dirs) must run one
+    // at a time; `fileParallelism: true` is only for the fs-free packages listed
+    // in vitest.config.ts.
+    fileParallelism: !!opts.fileParallelism,
+    // Never concurrent within a file. Every package here has specs that mutate
+    // shared per-file state — a jsdom document, a module mock, a temp dir — and
+    // ordering between them is assumed. This is not a knob; it is a constraint.
+    sequence: { concurrent: false },
     // Bumped above defaults (5s/10s) to absorb CPU contention when ~1100 tests
     // run serially: under load, bcrypt/AES-GCM in hub setup hooks and mocked
     // axios calls in upgrade-tier specs would otherwise trip the lower ceiling

@@ -9,6 +9,7 @@ import type { RecordEventInput } from "./hub/index.js";
 import { startFlowSync, type FlowSyncHandle } from "./hub/flowSync.js";
 import { refreshProjectFlowFromHub } from "./hub/flowRefresh.js";
 import { startRunTailer } from "./agent-runs/tailer.js";
+import { createOutputCapture, formatBytes, type CapturedOutput } from "./verifyCapture.js";
 import { startUpgradeSync, replayPendingUpgradeOutcome, type UpgradeSyncHandle } from "./hub/upgradeSync.js";
 import { startRepointSync, type RepointSyncHandle } from "./hub/repointSync.js";
 import { spawnSync } from 'child_process';
@@ -348,32 +349,43 @@ function ensureVerifyLogRoot(): string | null {
 const getItemLogDir = (itemId: string): string =>
   path.join(getVerifyLogRoot(), assertSafeItemId(itemId));
 
-/** Returns the log path, or null when no log could be written safely. */
-const writeValidationLog = (itemId: string, testId: string, output: string): string | null => {
+/**
+ * Open the log BEFORE the command runs, so its output can be streamed straight
+ * to disk instead of accumulated in memory (BUG 24c679df). Returns the fd and
+ * the path, or null when no log can be written safely — which must cost the
+ * diagnostics, never the run.
+ *
+ * Same guarantees the whole-string writer it replaced had: 'wx' so the 0600 mode is real (writeFileSync applies `mode` only when
+ * it CREATES the file, and follows symlinks, so without the exclusive flag a
+ * pre-planted name would be overwritten with someone else's permissions), and
+ * assertSafeItemId so nothing but a server-minted id reaches a path segment.
+ */
+const openValidationLog = (itemId: string, testId: string): { fd: number; logPath: string } | null => {
   const root = ensureVerifyLogRoot();
   if (!root) return null;
-  let logPath = '';
   try {
-    // Inside the try: assertSafeItemId throws for a malformed id (legacy
-    // migration ids are inserted verbatim from migration.json). Thrown out here
-    // it escapes into runCommandAndFinalize, where the async path records
-    // "Internal error during background validation" and marks a run whose
-    // command exited 0 as FAILED — a log-path complaint must never cost an item
-    // its transition.
     const dir = path.join(root, assertSafeItemId(itemId));
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    logPath = path.join(dir, `${testId}.log`);
-    // 'wx' makes the 0600 real. writeFileSync applies `mode` only when it CREATES
-    // the file and follows symlinks, so without the exclusive flag a pre-planted
-    // name would be overwritten with someone else's permissions. The uuid name is
-    // unpredictable today; this stops the safety of the mode depending on that.
-    fs.writeFileSync(logPath, output, { mode: 0o600, flag: 'wx' });
-    pruneItemLogDir(dir, path.basename(logPath));
-    return logPath;
+    const logPath = path.join(dir, `${testId}.log`);
+    const fd = fs.openSync(logPath, 'wx', 0o600);
+    return { fd, logPath };
   } catch {
-    // A failed prune must not report a successful write as "no log".
-    return logPath && fs.existsSync(logPath) ? logPath : null;
+    return null;
   }
+};
+
+/**
+ * Post-run housekeeping for the streamed log. The fd is NOT closed here — the
+ * capture owns it and closes it in end(), so that write-eligibility and fd
+ * ownership cannot drift apart while an orphaned grandchild is still printing.
+ *
+ * Returns null when the file is gone, which on this path means the item was
+ * deleted mid-run and purgeItemLogs took the directory with it.
+ */
+const closeValidationLog = (handle: { fd: number; logPath: string } | null): string | null => {
+  if (!handle) return null;
+  try { pruneItemLogDir(path.dirname(handle.logPath), path.basename(handle.logPath)); } catch { /* advisory */ }
+  return fs.existsSync(handle.logPath) ? handle.logPath : null;
 };
 
 /**
@@ -419,18 +431,46 @@ const logUnavailable = (): string =>
     ? `Full log: unavailable — log root refused: ${logRootRefusal}`
     : 'Full log: unavailable — the temp directory could not be written';
 
-const buildOutputPreview = (output: string, logPath: string | null): string => {
+/**
+ * What became of the full log, in one clause — named once so the preview and
+ * the failure message cannot disagree. A ceiling, a failed write and a deleted
+ * item are three different problems with three different fixes, and reporting
+ * them all as the ceiling sends the operator to tune an env var that is not it.
+ */
+const describeLog = (captured: CapturedOutput, logPath: string | null, vanished = false): string => {
+  // A log that was written and then disappeared is not a log that could not be
+  // written. On this path it means the item was deleted mid-run and
+  // purgeItemLogs took the directory with it — telling the operator the temp
+  // directory is unwritable would send them hunting a problem they do not have.
+  if (vanished) return 'Full log: gone — the item was deleted while the command ran';
+  if (!logPath) return logUnavailable();
+  if (captured.logWriteError) return `Full log: ${logPath} (INCOMPLETE — writing it failed: ${captured.logWriteError})`;
+  if (captured.logTruncated) return `Full log: ${logPath} (truncated at the AGENFK_VERIFY_MAX_LOG_BYTES ceiling)`;
+  return `Full log: ${logPath}`;
+};
+
+/**
+ * Head + tail of the output, from the BOUNDED buffers the capture kept — never
+ * from the whole stream, which is no longer held anywhere (BUG 24c679df).
+ * `totalBytes` is the true size, so "the last 1KB of 900MB" cannot read the
+ * same as "all of it".
+ */
+const buildOutputPreview = (captured: CapturedOutput, logPath: string | null, vanished = false): string => {
   const headTailBudget = PREVIEW_HEAD_BYTES + PREVIEW_TAIL_BYTES;
   let body: string;
-  if (output.length <= headTailBudget) {
-    body = output;
+  // headIsComplete, not a byte count: the budgets are enforced in UTF-16 code
+  // units while totalBytes counts bytes, so for multi-byte output the head can
+  // already hold everything while totalBytes says otherwise — and the stitched
+  // form then duplicates the whole output and claims it truncated something.
+  if (captured.headIsComplete && captured.head.length <= headTailBudget) {
+    body = captured.head;
   } else {
-    const head = output.substring(0, PREVIEW_HEAD_BYTES);
-    const tail = output.substring(output.length - PREVIEW_TAIL_BYTES);
-    const omitted = output.length - headTailBudget;
-    body = `${head}\n... (${omitted} bytes truncated) ...\n${tail}`;
+    const head = captured.head.substring(0, PREVIEW_HEAD_BYTES);
+    const tail = captured.tail.substring(Math.max(0, captured.tail.length - PREVIEW_TAIL_BYTES));
+    const omitted = Math.max(0, captured.totalBytes - Buffer.byteLength(head) - Buffer.byteLength(tail));
+    body = `${head}\n... (${omitted} bytes truncated of ${formatBytes(captured.totalBytes)} total) ...\n${tail}`;
   }
-  return `${body}\n[${logPath ? `Full log: ${logPath}` : logUnavailable()}]`;
+  return `${body}\n[${describeLog(captured, logPath, vanished)}]`;
 };
 
 /** ANSI escape sequences, stripped so the repeated tail is readable text. */
@@ -752,23 +792,122 @@ const findProjectRoot = (startDir: string): string => {
   return startDir;
 };
 
-const autoGitCommit = async (item: AgEnFKItem, projectRoot: string): Promise<{ success: boolean; output: string; error?: string }> => {
+/**
+ * The commit the server makes when an item reaches its final flow step.
+ *
+ * It commits the INDEX and stages nothing itself (BUG 315edc11 / CGLAB-22).
+ *
+ * It used to run `git add -A`, which staged every untracked file in the
+ * repository — so closing one item swept in whatever happened to be lying
+ * around, including work in progress belonging to a DIFFERENT task or branch.
+ * Observed: a close(bug) commit carrying another item's WIP test, which had no
+ * implementation on that branch and would have failed CI under someone else's
+ * name.
+ *
+ * `git add -u` was tried and rejected: it narrows to TRACKED files, which is an
+ * orthogonal axis to "whose work is this". It leaves the same leak open for
+ * tracked modifications (and since git 2.0 it stages the whole repository, not
+ * the directory it runs in), while turning a rename into a commit that deletes
+ * the old path and never adds the new one — a commit that does not build,
+ * pushed under the item's name.
+ *
+ * The index is the only thing here that actually carries provenance: it is the
+ * author's explicit statement of what belongs to this change, renames and new
+ * files included. So nothing is staged automatically, and anything left
+ * unstaged is REPORTED rather than guessed at — silently dropping a file the
+ * author expected to land is the same defect as silently adding one they did
+ * not.
+ *
+ * Exported for the test; nothing else outside this module should call it.
+ */
+/** What the close commit actually did. Every state the agent must be told apart. */
+export type AutoGitCommitOutcome = 'committed' | 'nothing-staged' | 'declined' | 'failed';
+
+export interface AutoGitCommitResult {
+  outcome: AutoGitCommitOutcome;
+  /** Nothing went wrong that the operator needs to act on. */
+  success: boolean;
+  committed: boolean;
+  output: string;
+  /** Paths git can see changes in that the author did not stage. */
+  unstaged: string[];
+  /** Why, for every outcome but 'committed'. */
+  detail?: string;
+}
+
+const git = (cmd: string, cwd: string): Promise<{ ok: boolean; out: string; err: string }> =>
+  new Promise((resolve) => exec(cmd, { cwd }, (e, stdout, stderr) =>
+    resolve({ ok: !e, out: stdout ?? '', err: (stderr || (e as any)?.message || '').trim() })));
+
+/** A merge, rebase, cherry-pick or revert the author has not finished. */
+const IN_PROGRESS_HEADS = ['MERGE_HEAD', 'REBASE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD'] as const;
+
+export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string): Promise<AutoGitCommitResult> => {
   const message = `close(${item.type.toLowerCase()}): ${item.title} [${item.id}]`;
-  const cmd = `git add -A && git commit -m ${JSON.stringify(message)}`;
-  
-  return new Promise((resolve) => {
-    exec(cmd, { cwd: projectRoot }, (err, stdout, stderr) => {
-      const timestamp = new Date().toISOString();
-      if (err) {
-        const errMsg = err.message.trim();
-        console.log(`[${timestamp}] [AUTO_GIT] Commit failed: ${errMsg}`);
-        resolve({ success: false, output: stderr || stdout, error: errMsg });
-      } else {
-        console.log(`[${timestamp}] [AUTO_GIT] Committed: "${message}"\n${stdout.trim()}`);
-        resolve({ success: true, output: stdout.trim() });
-      }
-    });
-  });
+  const stamp = () => new Date().toISOString();
+  const done = (r: AutoGitCommitResult): AutoGitCommitResult => {
+    const line = r.outcome === 'committed' ? `Committed: "${message}"` : `${r.outcome}: ${r.detail ?? ''}`;
+    console.log(`[${stamp()}] [AUTO_GIT] ${line}`);
+    return r;
+  };
+  const no = (outcome: AutoGitCommitOutcome, detail: string, unstaged: string[] = []): AutoGitCommitResult =>
+    done({ outcome, success: outcome !== 'failed', committed: false, output: '', unstaged, detail });
+
+  // A server started outside a repository, or pointed at one by a stale
+  // projectRoot, used to report every close as "nothing staged" forever.
+  // Swallowing git's own refusal is how that stayed invisible.
+  const repo = await git('git rev-parse --git-dir', projectRoot);
+  if (!repo.ok) return no('failed', `not a git repository: ${projectRoot}`);
+
+  // An unfinished merge leaves MERGE_HEAD set and the index full of somebody
+  // else's resolution. Committing it produces a two-parent merge commit titled
+  // after this item — the same provenance theft this whole fix is about, in a
+  // shape no staging rule can catch.
+  for (const head of IN_PROGRESS_HEADS) {
+    if ((await git(`git rev-parse -q --verify ${head}`, projectRoot)).ok) {
+      return no('declined', `a ${head.replace('_HEAD', '').toLowerCase().replace('_', ' ')} is in progress`);
+    }
+  }
+
+  // Porcelain v1 with -z: `XY PATH\0`, and for a rename or copy a second
+  // `\0OLDPATH` that must be consumed with it. X is the index status, Y the
+  // working-tree status; anything with a non-space Y, and every '??', is a
+  // change the author has not staged — not ours to commit, but ours to mention.
+  //
+  // -z is not a detail: without it git QUOTES any path containing a space or a
+  // non-ASCII byte, so `with space.txt` comes back wrapped in quotes and an
+  // accented filename as "uni-caf\303\251.txt" — an escape sequence presented
+  // to the reader as the name of their own file. It also collapses a rename to
+  // the single pseudo-path `old -> new`, which nobody can `git add`.
+  const unstaged: string[] = [];
+  const status = await git('git status --porcelain -z', projectRoot);
+  const entries = status.out.split('\0');
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    if (entry.length < 4) continue;
+    const [x, y] = [entry[0], entry[1]];
+    const path = entry.slice(3);
+    if (x === 'R' || x === 'C') i++; // consume the source path
+    if (entry.startsWith('??') || y !== ' ') unstaged.push(path);
+  }
+
+  const cached = await git('git diff --cached --name-only', projectRoot);
+  if (!cached.ok) return no('failed', cached.err || 'could not read the index', unstaged);
+  if (!cached.out.split('\n').some(l => l.trim())) {
+    // Not a failure, and it must not be logged as one: an author who committed
+    // their own work first is the well-behaved case, and crying wolf on every
+    // clean close teaches everyone to ignore the line that matters.
+    return no('nothing-staged', 'the index was empty', unstaged);
+  }
+
+  const commit = await git(`git commit -m ${JSON.stringify(message)}`, projectRoot);
+  if (!commit.ok) {
+    // Conflicted files, a rejecting pre-commit hook, an unset user.email, a
+    // failing gpg sign. Reporting these as "nothing was staged" told the agent
+    // its work was never there and sent it off to push an empty branch.
+    return no('failed', commit.err || 'git commit refused', unstaged);
+  }
+  return done({ outcome: 'committed', success: true, committed: true, output: commit.out.trim(), unstaged });
 };
 
 // ── Storage initialisation ───────────────────────────────────────────────────
@@ -2865,7 +3004,12 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
         if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
           const proj = await storage.getProject(updated.projectId);
           const projectRoot = (proj as any)?.projectRoot || findProjectRoot(process.cwd());
-          await autoGitCommit(updated, projectRoot);
+          // These routes have no message field to carry it, so the outcome is
+          // at least surfaced to the log rather than dropped on the floor.
+          const r = await autoGitCommit(updated, projectRoot);
+          if (r.outcome !== 'committed') {
+            console.warn(`[AUTO_GIT] ${updated.id}: no close commit (${r.outcome}) — ${r.detail ?? ''}`);
+          }
         }
       }
     } catch (e) {
@@ -3065,7 +3209,12 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
         if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
           const proj = await storage.getProject(updated.projectId);
           const projectRoot = (proj as any)?.projectRoot || findProjectRoot(process.cwd());
-          await autoGitCommit(updated, projectRoot);
+          // These routes have no message field to carry it, so the outcome is
+          // at least surfaced to the log rather than dropped on the floor.
+          const r = await autoGitCommit(updated, projectRoot);
+          if (r.outcome !== 'committed') {
+            console.warn(`[AUTO_GIT] ${updated.id}: no close commit (${r.outcome}) — ${r.detail ?? ''}`);
+          }
         } else {
           console.log(`[TEST_MODE] Skipping auto-git commit for item ${updated.id}`);
         }
@@ -3243,9 +3392,36 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     ? `\n\n⚠️ MANDATORY EXIT CRITERIA — you MUST satisfy ALL of the following before calling validate_progress again:\n\n${nextStepCriteria}`
     : '';
   const branchRef = (item as any).branchName || 'HEAD';
-  const pushInstruction = nextStatus === Status.DONE
-    ? `\n\n🚀 **Push your branch**: The server has auto-committed the changes. Run:\n\`\`\`\ngit push -u origin ${branchRef}\n\`\`\``
-    : '';
+  /**
+   * What to tell the agent after DONE.
+   *
+   * It used to say flatly that "the server has auto-committed the changes",
+   * which stopped being true the moment the close commit stopped staging for
+   * you (BUG 315edc11): a file the author never staged does not land, and an
+   * agent told otherwise pushes and leaves it behind. Built from what the
+   * commit ACTUALLY did — including, load-bearingly, the case where it FAILED,
+   * which an earlier version reported as "nothing was staged" and thereby sent
+   * the agent to push a branch with none of its work on it.
+   */
+  const UNSTAGED_SHOWN = 20;
+  const describePush = (result?: AutoGitCommitResult): string => {
+    if (nextStatus !== Status.DONE) return '';
+    const paths = result?.unstaged ?? [];
+    const shown = paths.slice(0, UNSTAGED_SHOWN);
+    const left = paths.length
+      ? `\n\n⚠️ **Not committed** — these were not staged, so the close commit did not carry them:\n`
+        + shown.map(f => `- \`${f}\``).join('\n')
+        + (paths.length > shown.length ? `\n- …and ${paths.length - shown.length} more` : '')
+        + `\nStage and commit them yourself if they belong to this item.`
+      : '';
+    const made = !result
+      ? 'The server commits whatever you have staged.'
+      : result.outcome === 'committed' ? 'The server committed what you had staged.'
+      : result.outcome === 'nothing-staged' ? 'Nothing was staged, so the server made no close commit.'
+      : result.outcome === 'declined' ? `The server made NO close commit: ${result.detail}. Commit your work yourself.`
+      : `❌ The close commit FAILED: ${result.detail}. Nothing was committed — fix this before pushing.`;
+    return `${left}\n\n🚀 **Push your branch**: ${made} Run:\n\`\`\`\ngit push -u origin ${branchRef}\n\`\`\``;
+  };
 
   // A command is only required for the final step (→ DONE). For intermediate
   // steps the command is optional — omitting it advances without running anything.
@@ -3275,8 +3451,12 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         const updated = await storage.updateItem(itemId, updates);
         io.emit('items_updated');
         if (updated.parentId) await syncParentStatus(updated.parentId);
-        if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) autoGitCommit(updated, (project as any)?.projectRoot || findProjectRoot(process.cwd()));
-        return res.json({ status: Status.DONE, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to DONE.${pushInstruction}`, output: 'Sibling propagation' });
+        // Awaited, unlike before: the response describes what the commit did,
+        // so it cannot be written before the commit has been attempted.
+        const gitResult = (process.env.NODE_ENV !== 'test' && !process.env.VITEST)
+          ? await autoGitCommit(updated, (project as any)?.projectRoot || findProjectRoot(process.cwd()))
+          : undefined;
+        return res.json({ status: Status.DONE, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to DONE.${describePush(gitResult)}`, output: 'Sibling propagation' });
       }
     } else {
       const passedSibling = siblings.find(s => {
@@ -3314,11 +3494,29 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // Read once, so the cap reported in the failure message is the cap that was
   // actually enforced even if the environment moves underneath us.
   const maxMs = verifyMaxMs();
-  const { output, code, timedOut, signal, spawnError } = await new Promise<{
-    output: string; code: number | null; timedOut?: boolean; signal?: NodeJS.Signals | null; spawnError?: string;
-  }>((resolve) => {
+  // Opened BEFORE the spawn, so the command's output can be streamed straight to
+  // disk. The whole stream is never held in memory (BUG 24c679df); the id has to
+  // be minted here rather than after the run for the same reason. Keyed by the
+  // id AS STORED, so the value reaching mkdir / open / unlink is one the server
+  // minted and an id that does not exist cannot create a directory at all.
+  const testId = uuidv4();
+  const storedItem = await storage.getItem(itemId);
+  const logHandle = storedItem ? openValidationLog(storedItem.id, testId) : null;
+  const capture = createOutputCapture({ fd: logHandle?.fd ?? null });
+
+  // try/finally around the spawn, not just the awaited result: spawn() throws
+  // SYNCHRONOUSLY on a bad argument (a NUL byte in the command, a non-string
+  // cwd from a hand-edited project record). Without this the promise rejects
+  // with the log fd still open, and that is one leaked descriptor per
+  // occurrence with no recovery short of a restart. capture.end() is idempotent
+  // and owns the close.
+  let settledCapture: CapturedOutput | null = null;
+  const { captured, code, timedOut, signal, spawnError } = await (async () => {
+   try {
+    return await new Promise<{
+      captured: CapturedOutput; code: number | null; timedOut?: boolean; signal?: NodeJS.Signals | null; spawnError?: string;
+    }>((resolve) => {
     const child = spawn(resolvedCommand, { shell: true, cwd: projectRoot, env: { ...process.env, FORCE_COLOR: '1' } });
-    let out = '';
     let killed = false;
     let settled = false;
     let grace: ReturnType<typeof setTimeout> | undefined;
@@ -3328,14 +3526,15 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       settled = true;
       clearTimeout(killer);
       if (grace) clearTimeout(grace);
-      resolve({ output: out, code: killed ? 124 : c, timedOut: killed, signal: sig, spawnError: spawnErr });
+      settledCapture = capture.end();
+      resolve({ captured: settledCapture, code: killed ? 124 : c, timedOut: killed, signal: sig, spawnError: spawnErr });
     };
     // Hard runtime cap: without it a hung verifyCommand (e.g. a test suite
     // waiting on stdin) would leave an async run 'running' forever, and the
     // 409 guard would lock the item's verify verb until a server restart.
     const killer = setTimeout(() => {
       killed = true;
-      out += `\n[agenfk] verifyCommand exceeded the ${Math.round(maxMs / 60000)}min cap (AGENFK_VERIFY_MAX_MS) and was killed.\n`;
+      capture.note(`\n[agenfk] verifyCommand exceeded the ${Math.round(maxMs / 60000)}min cap (AGENFK_VERIFY_MAX_MS) and was killed.\n`);
       try { child.kill('SIGKILL'); } catch { /* already gone */ }
       // SIGKILL reaches the SHELL only. Grandchildren — vitest workers, npm
       // lifecycle scripts — survive it and hold the inherited stdio pipes open,
@@ -3350,10 +3549,10 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       if (typeof grace.unref === 'function') grace.unref();
     }, maxMs);
     if (typeof killer.unref === 'function') killer.unref();
-    // Live output for run followers, capped so a verbose command can't pin
-    // hundreds of MB in the run map; the full output still goes to the log file.
-    const LIVE_CAP = 1024 * 1024;
-    const onData = (d: Buffer) => { out += d.toString(); if (run && out.length <= LIVE_CAP) run.output = out; };
+    // Live output for run followers is the capture's bounded head, so a verbose
+    // command can't pin hundreds of MB in the run map — and now cannot pin them
+    // anywhere else either. The full output is on disk, not in this process.
+    const onData = (d: Buffer) => { capture.write(d); if (run) run.output = capture.live(); };
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
     child.on('exit', (c, sig) => { if (killed) finish(124, sig); });
@@ -3361,16 +3560,15 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     // Keep whatever the command already printed — discarding it loses the only
     // evidence of why the spawn failed.
     child.on('error', (err) => finish(1, null, err.message));
-  });
+    });
+   } finally {
+     if (!settledCapture) capture.end();
+   }
+  })();
 
-  const testId = uuidv4();
-  // Key the log by the id AS STORED rather than the URL segment. The regex guard
-  // already makes traversal impossible; this removes the class instead of the
-  // instance, so the value reaching mkdir / write / unlink is one the server
-  // minted and an id that does not exist cannot create a directory at all.
-  const storedItem = await storage.getItem(itemId);
-  const logPath = storedItem ? writeValidationLog(storedItem.id, testId, output) : null;
-  const preview = buildOutputPreview(output, logPath);
+  const logPath = closeValidationLog(logHandle);
+  const logVanished = !!logHandle && logPath === null;
+  const preview = buildOutputPreview(captured, logPath, logVanished);
   const passed = code === 0 && !timedOut;
   const exitNote = exitCriteria ? `\n**Exit criteria**: ${exitCriteria}` : '';
 
@@ -3405,10 +3603,15 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       const updated = await storage.updateItem(itemId, updates);
       io.emit('items_updated');
       if (updated.parentId) await syncParentStatus(updated.parentId);
+      let gitResult: AutoGitCommitResult | undefined;
       if (nextStatus === Status.DONE && process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
         // Advisory: a git-commit failure must not report a PASSED validation
-        // (whose transition already landed) as failed to the run follower.
-        try { await autoGitCommit(updated, projectRoot); }
+        // (whose transition already landed) as failed to the run follower. The
+        // catch is belt-and-braces — autoGitCommit resolves rather than throws,
+        // reporting a refusal as outcome 'failed' — but exec's callback is not
+        // the only way this can go wrong, and the transition must survive all
+        // of them.
+        try { gitResult = await autoGitCommit(updated, projectRoot); }
         catch (e: any) { console.error(`[validate] autoGitCommit failed after DONE: ${e?.message || e}`); }
       }
       recordHubEvent({
@@ -3439,7 +3642,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       itemId,
       payload: { command: resolvedCommand, status: 'PASSED', testId },
     });
-    return res2.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${pushInstruction}`, output: preview });
+    return res2.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${describePush(gitResult)}`, output: preview });
   } else {
     const updates: any = { status: failureStatus, comments };
     if (nextStatus === Status.DONE) {
@@ -3465,7 +3668,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       // exit code used to be computed and thrown away, so a red suite, a
       // cap-kill and a command that never started were indistinguishable
       // (BUG b233143b).
-      message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${projectRoot}\`\nResult: ${describeExit({ code, timedOut, signal, spawnError }, maxMs)}\n\nLast ${FAILURE_TAIL_LINES} lines of output:\n${tailLines(output, FAILURE_TAIL_LINES)}\n\n${logPath ? `Full log: ${logPath}` : logUnavailable()}`,
+      message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${projectRoot}\`\nResult: ${describeExit({ code, timedOut, signal, spawnError }, maxMs)}\n\nOutput: ${formatBytes(captured.totalBytes)}\n\nLast ${FAILURE_TAIL_LINES} lines of output:\n${tailLines(captured.tail, FAILURE_TAIL_LINES)}\n\n${describeLog(captured, logPath, logVanished)}`,
       output: preview,
     });
   }

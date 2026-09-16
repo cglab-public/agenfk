@@ -13,14 +13,24 @@ import { useEffect, useState } from 'react';
  * otherwise commit four query keys and fire four searches, and a PR search reads
  * the org's entire PR event stream with no time bound — so four keystrokes is
  * four full scans to answer one question.
+ *
+ * `immediateFor` names a value that must NOT wait. A navigation is not typing:
+ * when Back lands on ?pr=57 the whole point is that the page already knows the
+ * answer, and 350ms of "not yet" is long enough for the page's own URL
+ * write-back to publish an address bar with no `pr` in it — and to make that
+ * permanent if the reader navigates again inside the window.
  */
-export function useDebouncedValue<T>(value: T, ms: number): T {
+export function useDebouncedValue<T>(value: T, ms: number, immediateFor?: T): T {
   const [debounced, setDebounced] = useState(value);
 
   useEffect(() => {
+    if (immediateFor !== undefined && Object.is(value, immediateFor)) {
+      setDebounced(value);
+      return;
+    }
     const t = setTimeout(() => setDebounced(value), ms);
     return () => clearTimeout(t);
-  }, [value, ms]);
+  }, [value, ms, immediateFor]);
 
   return debounced;
 }

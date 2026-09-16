@@ -1,5 +1,5 @@
-import { Link } from 'react-router-dom';
-import { useMemo, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronRight, GitBranch } from 'lucide-react';
 import { api } from '../api';
@@ -10,6 +10,8 @@ import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
 import { fmtRelative } from '../dates';
 import { useToggleSet } from '../hooks/useToggleSet';
+import { useChildHubs } from '../hooks/useChildHubs';
+import { csvParam } from '../urlParams';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
 
 const RANGES: Array<{ key: RangeKey; label: string }> = [
@@ -78,14 +80,33 @@ export function OrgPage() {
   const itemTypeSel = useToggleSet([], { storageKey: 'agenfk-hub:org:itemTypes' });
   const [range, setRange] = useState<RangeKey>('30d');
 
+  // The child hub facet persists to the URL, NOT to localStorage like every
+  // other facet on this page. Deliberate: "here is what your hub contributes"
+  // is a thing one person sends another, and localStorage cannot be shared.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const childHubSel = useToggleSet(csvParam(searchParams, 'childHubId'));
+  const childHubs = useChildHubs(childHubSel.set);
+
+  useEffect(() => {
+    const p = new URLSearchParams(searchParams);
+    if (childHubSel.set.size) p.set('childHubId', [...childHubSel.set].join(','));
+    else p.delete('childHubId');
+    if (p.toString() !== searchParams.toString()) setSearchParams(p, { replace: true });
+    // searchParams is read through a ref-like comparison above rather than
+    // listed here: including it re-runs this on every URL change and fights
+    // any other writer of the query string.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [childHubSel.set, setSearchParams]);
+
   // Build the query string once for everything that needs the same filters.
   const qs = useMemo(() => {
     const p = new URLSearchParams();
     if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
     if (itemTypeSel.set.size) p.set('itemTypes', [...itemTypeSel.set].join(','));
+    if (childHubSel.set.size) p.set('childHubId', [...childHubSel.set].join(','));
     p.set('from', fromIsoForRange(new Date(), range));
     return p.toString();
-  }, [projectSel.set, itemTypeSel.set, range]);
+  }, [projectSel.set, itemTypeSel.set, childHubSel.set, range]);
 
   // For per-itemType counts we honour project + event-type selections but
   // intentionally drop the itemTypes filter — the chip count answers
@@ -95,8 +116,9 @@ export function OrgPage() {
     const p = new URLSearchParams();
     if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
     if (eventTypeSel.set.size) p.set('types', [...eventTypeSel.set].join(','));
+    if (childHubSel.set.size) p.set('childHubId', [...childHubSel.set].join(','));
     return p.toString();
-  }, [projectSel.set, eventTypeSel.set]);
+  }, [projectSel.set, eventTypeSel.set, childHubSel.set]);
 
   const metrics = useQuery<MetricsResponse>({
     queryKey: ['metrics', qs],
@@ -106,8 +128,19 @@ export function OrgPage() {
     queryKey: ['users', qs],
     queryFn: async () => (await api.get(`/v1/users${qs ? `?${qs}` : ''}`)).data,
   });
-  const eventTypes = useQuery<EventTypesResponse>({ queryKey: ['event-types'], queryFn: async () => (await api.get('/v1/event-types')).data });
-  const projects = useQuery<ProjectsResponse>({ queryKey: ['projects'], queryFn: async () => (await api.get('/v1/projects')).data });
+  // Both chip lists are partitioned by hub — offering a repo or an event type
+  // from a hub the board is not showing is a dead end.
+  const hubQs = childHubSel.set.size
+    ? `?${new URLSearchParams({ childHubId: [...childHubSel.set].join(',') })}`
+    : '';
+  const eventTypes = useQuery<EventTypesResponse>({
+    queryKey: ['event-types', hubQs],
+    queryFn: async () => (await api.get(`/v1/event-types${hubQs}`)).data,
+  });
+  const projects = useQuery<ProjectsResponse>({
+    queryKey: ['projects', hubQs],
+    queryFn: async () => (await api.get(`/v1/projects${hubQs}`)).data,
+  });
   const itemTypes = useQuery<ItemTypesResponse>({
     queryKey: ['item-types', itemTypesQs],
     queryFn: async () => (await api.get(`/v1/item-types${itemTypesQs ? `?${itemTypesQs}` : ''}`)).data,
@@ -148,6 +181,18 @@ export function OrgPage() {
           <h2 className="text-sm font-semibold text-ink">Filters</h2>
           <span className="text-[11px] text-ink-tertiary">all queries below honor these</span>
         </div>
+        {childHubs.show && (
+          <FacetMultiselect
+            label="Child hub"
+            options={childHubs.options}
+            selected={childHubSel.set}
+            onToggle={childHubSel.toggle}
+            onClear={childHubSel.clear}
+            optionLabel={childHubs.label}
+            inlineThreshold={6}
+            placeholder="Search hubs…"
+          />
+        )}
         <FacetMultiselect
           label="Project (git remote)"
           options={projectOptions}
@@ -192,6 +237,7 @@ export function OrgPage() {
         types={[...eventTypeSel.set]}
         projects={[...projectSel.set]}
         itemTypes={[...itemTypeSel.set]}
+        childHubs={[...childHubSel.set]}
         title="Activity timeline"
         range={range}
         onRangeChange={setRange}
@@ -206,7 +252,10 @@ export function OrgPage() {
           {(users.data ?? []).map(u => (
             <Link
               key={u.user_key}
-              to={`/users/${encodeURIComponent(u.user_key)}`}
+              // Carry the hub scope through the click-through: landing on a
+              // person aggregated across every hub would contradict the board
+              // just left, with nothing saying the scope had been dropped.
+              to={`/users/${encodeURIComponent(u.user_key)}${hubQs}`}
               className="group flex items-center justify-between gap-3 px-5 py-3 hover:bg-chip/50 transition-colors"
             >
               <div className="flex items-center gap-3 min-w-0">

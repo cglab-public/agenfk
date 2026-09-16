@@ -48,3 +48,11 @@ if (typeof window !== 'undefined' && typeof (window as Window & { localStorage?:
   // Specs and components reach it either way; keep the two views identical.
   Object.defineProperty(globalThis, 'localStorage', { value: storage, configurable: true, writable: false });
 }
+
+/**
+ * Fail loudly on any socket to a non-loopback host. The rationale, and the
+ * history that made it necessary, live with the guard itself.
+ */
+// @ts-expect-error — plain .mjs helper, shared with the guard's own unit test
+import { installNetGuard } from './scripts/vitest-net-guard.mjs';
+installNetGuard();
