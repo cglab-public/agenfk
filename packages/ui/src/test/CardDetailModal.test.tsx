@@ -89,6 +89,48 @@ describe('CardDetailModal', () => {
     cleanup();
   });
 
+  // The detail modal's tracker badge was gated on externalUrl, so a card linked
+  // while JIRA was disconnected — which stores the key with no URL by design —
+  // showed no reference at all here.
+  const renderModal = (item: Record<string, unknown>) => {
+    (api.getItem as any).mockResolvedValue(item);
+    return render(
+      <CardDetailModal
+        item={item as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper }
+    );
+  };
+
+  it('shows a JIRA reference that has no browse URL', async () => {
+    renderModal({ ...mockItem, externalId: 'CGLAB-163' });
+    expect(screen.getByText('CGLAB-163')).toBeDefined();
+  });
+
+  it('does not render the url-less reference as a link', async () => {
+    renderModal({ ...mockItem, externalId: 'CGLAB-163' });
+    expect(screen.getByText('CGLAB-163').closest('a')).toBeNull();
+  });
+
+  it('still renders a clickable badge when the URL is present', async () => {
+    renderModal({
+      ...mockItem,
+      externalId: 'CGLAB-163',
+      externalUrl: 'https://cg-lab.atlassian.net/browse/CGLAB-163',
+    });
+    expect(screen.getByText('CGLAB-163').closest('a')).not.toBeNull();
+  });
+
+  it('renders no reference badge when externalId is null', async () => {
+    renderModal({ ...mockItem, externalId: null, externalUrl: null });
+    expect(screen.queryByText('CGLAB-163')).toBeNull();
+  });
+
   it('should render item details and switch tabs', async () => {
     (api.getItem as any).mockResolvedValue(mockItem);
     

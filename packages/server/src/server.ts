@@ -2362,6 +2362,305 @@ function sanitizeCreateStatus(status: any, flow: { steps: Array<{ name: string; 
   return match ? (match.name as Status) : Status.TODO;
 }
 
+// ── External tracker references (JIRA keys, and raw refs for other trackers) ──
+//
+// externalId/externalUrl have lived on AgEnFKItem since the JIRA importer, and
+// the UI renders them as a clickable badge, but until now ONLY the JIRA and
+// GitHub imports could write them — the item routes destructured a fixed field
+// list that omitted both. These helpers are what let a plain create/update
+// attach a reference, and they are the only validation standing in front of it.
+
+/** Passed as `jiraItem` to clear an existing link. Safe as a sentinel because a
+ *  bare word with no `-<number>` suffix can never be a valid issue key, so no
+ *  real project can collide with it — see parseJiraKey. */
+export const JIRA_UNLINK_SENTINEL = 'none';
+
+/**
+ * Strict JIRA issue-key parser, returning the canonical uppercase form or null.
+ *
+ * Anchored deliberately: an embedded key (a browse URL, or prose mentioning an
+ * issue) is REJECTED rather than extracted, because silently pulling a key out
+ * of arbitrary text turns a paste mistake into a wrong-but-plausible link. On
+ * the disconnected path this format check is the only gate there is.
+ */
+export const parseJiraKey = (raw: unknown): string | null => {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  // Bounded FIRST. The grammar below is anchored but not finite — a 5000-char
+  // project key or a 400-digit issue number matches it — and this value becomes
+  // the item's externalId, part of the derived browse URL, and part of an
+  // outbound api.atlassian.com path. The raw-field branches cap their inputs;
+  // without this, `jiraItem` was the way around both caps.
+  if (trimmed.length > MAX_JIRA_KEY_LENGTH) return null;
+  // Matched BEFORE upper-casing and against explicit ASCII classes, because
+  // toUpperCase() folds non-ASCII into ASCII — 'ﬀ-1' would otherwise become the
+  // accepted 'FF-1'. The project key must start AND end alphanumeric, so the
+  // underscore can only appear between them: 'A_-1' is not a key JIRA issues.
+  // The issue number is a positive integer with no leading zeros: JIRA numbers
+  // issues from 1, and 'AB-007' would be a second spelling of 'AB-7', so two
+  // cards could carry different externalIds for one issue.
+  if (!/^[A-Za-z][A-Za-z0-9_]*[A-Za-z0-9]-[1-9]\d*$/.test(trimmed)) return null;
+  return trimmed.toUpperCase();
+};
+
+/** Upper bounds on a stored reference. Items persist as a whole-object JSON blob
+ *  (storage-sqlite), so an unbounded string here bloats every read of the item. */
+export const MAX_EXTERNAL_ID_LENGTH = 200;
+export const MAX_EXTERNAL_URL_LENGTH = 2048;
+/** Real JIRA keys are short (project key <= 10 chars by Atlassian's own limit).
+ *  This is deliberately generous while still finite. */
+export const MAX_JIRA_KEY_LENGTH = 64;
+
+/**
+ * externalUrl is rendered as `href={item.externalUrl}` by both KanbanBoard.tsx
+ * and CardDetailModal.tsx with no sanitising, so an attacker-supplied
+ * `javascript:` or `data:` URL stored here is a stored-XSS trigger on click.
+ * The server is the only place that can refuse it. http(s) only.
+ *
+ * Length is bounded separately, by the caller that accepts user-supplied URLs,
+ * so an over-long URL is reported as over-long rather than as an unsafe scheme.
+ * The internally derived browse URL is bounded at its source instead: the key
+ * is capped by MAX_JIRA_KEY_LENGTH and cloudUrl comes from the OAuth token.
+ */
+export const isSafeExternalUrl = (value: string): boolean => {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    // `http://user:pass@evil.com` is a well-formed http URL, and as a board
+    // badge it is a credential-embedding phishing href. Nothing legitimate
+    // needs userinfo in a tracker link.
+    if (parsed.username || parsed.password) return false;
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** Does this URL look like a JIRA browse link for exactly this key? Used to
+ *  decide whether a URL already on the card still describes the key being
+ *  linked. It is a shape check, not a provenance check — it cannot tell a
+ *  server-derived URL from a caller-supplied one. */
+export const isJiraBrowseUrlFor = (value: string, key: string): boolean => {
+  if (!isSafeExternalUrl(value)) return false;
+  try {
+    const parsed = new URL(value);
+    // Path only — the HOST is deliberately not checked, because this runs on
+    // the disconnected path where there is no token and therefore no known
+    // JIRA host to compare against. Stated plainly so nobody reads this as a
+    // host guarantee: it does NOT verify the URL points at a real JIRA site.
+    //
+    // What bounds the risk is that this branch only ever RETAINS a URL already
+    // stored on the card; it cannot introduce one. A caller able to plant
+    // https://evil.example/browse/KEY can already do so directly via the raw
+    // externalUrl field, which is an intentional capability for non-JIRA
+    // trackers, and the server binds loopback only.
+    //
+    // Matched on SEGMENTS, decoded one at a time — not on the decoded whole
+    // path. Decoding first and then comparing lets '%2F' smuggle a separator in,
+    // so '/x%2Fbrowse%2FKEY' (a single real segment) would read as a browse
+    // path. Per-segment decoding keeps '%2D' working as a spelling of '-' while
+    // '%2F' stays inside one segment and simply fails to match.
+    //
+    // The last two segments must be 'browse' and the key, which tolerates a
+    // context path ('/jira/browse/KEY' on JIRA Server/DC).
+    const segments = parsed.pathname.split('/').map(decodeURIComponent);
+    // A trailing slash leaves an empty final segment ('/browse/KEY/'), which
+    // would otherwise fail to match and silently drop a usable stored URL.
+    while (segments.length && segments[segments.length - 1] === '') segments.pop();
+    if (segments.length < 2) return false;
+    const last = segments[segments.length - 1].toUpperCase();
+    const penultimate = segments[segments.length - 2].toUpperCase();
+    return penultimate === 'BROWSE' && last === key.toUpperCase();
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Echo a rejected value back safely.
+ *
+ * `String(raw)` looks harmless but THROWS on an object with null toString and
+ * valueOf, which turned the clean-rejection path into a 500. And the echo is
+ * caller-controlled: unbounded it returns megabytes in the error body (and,
+ * through bulk, once per entry), and raw control bytes reach the operator's
+ * terminal, so it is truncated and stripped.
+ */
+export const describeRejectedInput = (raw: unknown): string => {
+  let text: string;
+  if (typeof raw === 'string') text = raw;
+  else {
+    try {
+      text = JSON.stringify(raw) ?? Object.prototype.toString.call(raw);
+    } catch {
+      text = Object.prototype.toString.call(raw);
+    }
+  }
+  // eslint-disable-next-line no-control-regex
+  const printable = text.replace(/[\u0000-\u001f\u007f]/g, '');
+  // Array.from, not slice: slice cuts UTF-16 code units and would emit a lone
+  // surrogate into the JSON error body for input ending in astral characters.
+  const chars = Array.from(printable);
+  return chars.length > 80 ? `${chars.slice(0, 80).join('')}…` : printable;
+};
+
+type JiraResolution =
+  | { kind: 'unlink' }
+  | { kind: 'link'; externalId: string; externalUrl: string | null; warning?: string }
+  | { kind: 'error'; error: string };
+
+// No JIRA call may hang a create/update behind an unresponsive Atlassian, so
+// every outbound call on the linking path is bounded — the API request helper
+// set no timeout of its own, and neither did the token refresh it falls back to
+// on a 401, which is the path that could stall unbounded.
+export const JIRA_HTTP_TIMEOUT_MS = 8000;
+
+/**
+ * Resolve a `jiraItem` value into the reference pair to store.
+ *
+ * Validate-if-connected: with an OAuth token present the key is confirmed
+ * against JIRA and the browse URL is derived from the token's cloudUrl; a key
+ * JIRA refuses (404/403) is rejected outright. Without a token — the offline
+ * and CI case — the format-checked key is stored bare, with no URL to invent.
+ * If JIRA is merely unreachable the link still goes through, but it comes back
+ * with a warning: an unverified link is a fact the caller must be told, not a
+ * failure to swallow.
+ */
+export const resolveJiraReference = async (
+  raw: unknown,
+  current?: { externalId?: string | null; externalUrl?: string | null },
+): Promise<JiraResolution> => {
+  if (typeof raw === 'string' && raw.trim().toLowerCase() === JIRA_UNLINK_SENTINEL) {
+    return { kind: 'unlink' };
+  }
+
+  const key = parseJiraKey(raw);
+  if (!key) {
+    return {
+      kind: 'error',
+      error: `Invalid JIRA item '${describeRejectedInput(raw)}'. Expected an issue key like 'CGLAB-163', or '${JIRA_UNLINK_SENTINEL}' to unlink.`,
+    };
+  }
+
+  const tokenData = loadJiraToken();
+  if (!tokenData) {
+    // Disconnected: the key is all we can honestly assert. But re-linking the
+    // SAME key while offline must not destroy the URL already on the card —
+    // that would silently strip the badge's href.
+    //
+    // Compared case-insensitively because `key` is normalised to upper case
+    // while a raw externalId is stored verbatim, so 'cglab-163' on the card
+    // would otherwise not match 'CGLAB-163' and the URL would be dropped.
+    //
+    // NOTE on provenance: the item carries no record of whether its stored URL
+    // was derived from a JIRA token or supplied raw by a caller, so this cannot
+    // claim the URL was ever "verified" — only that it is the URL already on
+    // the card and that it is shaped like a browse link for this exact key.
+    // That shape check is why a leftover URL for a DIFFERENT issue is dropped.
+    const sameKey = (current?.externalId ?? '').trim().toUpperCase() === key;
+    const keepUrl =
+      sameKey && current?.externalUrl && isJiraBrowseUrlFor(current.externalUrl, key)
+        ? current.externalUrl
+        : null;
+    return { kind: 'link', externalId: key, externalUrl: keepUrl };
+  }
+
+  const rawBrowseUrl = `${tokenData.cloudUrl}/browse/${key}`;
+  // The derived URL is stored and rendered as an href like any other, so it
+  // goes through the same guard. cloudUrl comes from the OAuth resource list
+  // unchecked, so a resource without a url yields the literal
+  // 'undefined/browse/KEY' — which is not a URL at all, and must not be stored.
+  const browseUrl = isSafeExternalUrl(rawBrowseUrl) ? rawBrowseUrl : null;
+  try {
+    await jiraApiRequest(
+      tokenData,
+      'get',
+      `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/issue/${encodeURIComponent(key)}?fields=summary`,
+      undefined,
+      JIRA_HTTP_TIMEOUT_MS,
+    );
+    return { kind: 'link', externalId: key, externalUrl: browseUrl };
+  } catch (err: any) {
+    const status = err?.response?.status;
+    if (status === 404 || status === 403 || status === 400) {
+      return {
+        kind: 'error',
+        error: `JIRA item '${key}' could not be found or is not readable with the connected account (HTTP ${status}).`,
+      };
+    }
+    // Transport failure, 5xx, expired refresh: the key is well-formed and JIRA
+    // simply could not answer. Link, but say so.
+    return {
+      kind: 'link',
+      externalId: key,
+      externalUrl: browseUrl,
+      warning: `Linked '${key}' without verifying it — JIRA could not be reached (${err?.code || err?.message || 'unknown error'}).`,
+    };
+  }
+};
+
+/** Attach an unverified-link warning to a response body, when there is one.
+ *  Both item write paths need this, and the shape must stay identical between
+ *  them so a client can read `jiraWarning` without caring which route ran. */
+export const withJiraWarning = <T extends object>(payload: T, warning?: string): T =>
+  warning ? { ...payload, jiraWarning: warning } : payload;
+
+/**
+ * Shared create/update handling for the reference fields. Returns the updates to
+ * apply (possibly nulls, to clear), or an error string for a 400.
+ */
+export const buildExternalRefUpdates = async (
+  body: any,
+  current?: { externalId?: string | null; externalUrl?: string | null },
+): Promise<{ error: string } | { updates: Record<string, any>; warning?: string }> => {
+  const updates: Record<string, any> = {};
+  let warning: string | undefined;
+
+  if (body.jiraItem !== undefined) {
+    const resolved = await resolveJiraReference(body.jiraItem, current);
+    if (resolved.kind === 'error') return { error: resolved.error };
+    if (resolved.kind === 'unlink') {
+      updates.externalId = null;
+      updates.externalUrl = null;
+    } else {
+      updates.externalId = resolved.externalId;
+      updates.externalUrl = resolved.externalUrl;
+      warning = resolved.warning;
+    }
+    // A validated key is authoritative: a conflicting raw externalId in the same
+    // payload must not be able to overwrite it below.
+    return { updates, warning };
+  }
+
+  if (body.externalId !== undefined) {
+    if (body.externalId === null || body.externalId === '') {
+      updates.externalId = null;
+    } else if (typeof body.externalId !== 'string') {
+      // String() would have turned an object into the literal '[object Object]'
+      // and stored it as the card's tracker id.
+      return { error: `Invalid externalId. Expected a string.` };
+    } else if (body.externalId.length > MAX_EXTERNAL_ID_LENGTH) {
+      return { error: `Invalid externalId. Maximum length is ${MAX_EXTERNAL_ID_LENGTH} characters.` };
+    } else {
+      updates.externalId = body.externalId;
+    }
+  }
+  if (body.externalUrl !== undefined) {
+    if (body.externalUrl === null || body.externalUrl === '') {
+      updates.externalUrl = null;
+    } else if (typeof body.externalUrl !== 'string') {
+      return { error: `Invalid externalUrl. Expected a string.` };
+    } else if (body.externalUrl.length > MAX_EXTERNAL_URL_LENGTH) {
+      return { error: `Invalid externalUrl. Maximum length is ${MAX_EXTERNAL_URL_LENGTH} characters.` };
+    } else if (!isSafeExternalUrl(body.externalUrl)) {
+      return { error: `Invalid externalUrl. Only http(s) URLs without embedded credentials are allowed.` };
+    } else {
+      updates.externalUrl = body.externalUrl;
+    }
+  }
+
+  return { updates, warning };
+};
+
 app.post("/items", asyncHandler(async (req: any, res: any) => {
   console.log(`[API_DEBUG] POST /items body keys: ${Object.keys(req.body).join(', ')}`);
   const { type, title, description, parentId, status, implementationPlan, projectId } = req.body;
@@ -2384,6 +2683,11 @@ app.post("/items", asyncHandler(async (req: any, res: any) => {
 
   const createParentError = await validateParentAssignment(null, projectId, parentId);
   if (createParentError) return res.status(400).json({ error: createParentError });
+
+  // Resolve the tracker reference BEFORE minting the item: a bad key must leave
+  // nothing behind, not create a card and then fail.
+  const externalRef = await buildExternalRefUpdates(req.body);
+  if ('error' in externalRef) return res.status(400).json({ error: externalRef.error });
 
   const newItem: AgEnFKItem = {
     id: uuidv4(),
@@ -2410,6 +2714,12 @@ app.post("/items", asyncHandler(async (req: any, res: any) => {
     (newItem as any).severity = "LOW";
   }
 
+  // On a brand-new item an unlink is a no-op — there is no prior reference to
+  // clear — so only real values are carried over, leaving the fields absent
+  // rather than explicitly null.
+  if (externalRef.updates.externalId) (newItem as any).externalId = externalRef.updates.externalId;
+  if (externalRef.updates.externalUrl) (newItem as any).externalUrl = externalRef.updates.externalUrl;
+
   const created = await storage.createItem(newItem);
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}] [API_CREATE] Item created: ${created.id} (${created.title}). Broadcasting refresh...`);
@@ -2430,7 +2740,7 @@ app.post("/items", asyncHandler(async (req: any, res: any) => {
     await syncParentStatus(created.parentId);
   }
 
-  res.status(201).json(created);
+  res.status(201).json(withJiraWarning(created, externalRef.warning));
 }));
 
 app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
@@ -2445,6 +2755,8 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
   // Rejected entries are reported back rather than silently dropped — the route
   // already `continue`s past unknown ids, which hides mistakes.
   const skipped: Array<{ id: string; error: string }> = [];
+  // Separate from `skipped`: these entries DID apply, with a caveat.
+  const warnings: Array<{ id: string; warning: string }> = [];
   const parentIdsToSync = new Set<string>();
   const projectIds = new Set<string>();
 
@@ -2475,15 +2787,40 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
       }
     }
 
+    // Resolved ABOVE the archive/unarchive `continue`s below. Those branches
+    // skip the rest of the loop, so a reference resolved after them was dropped
+    // on exactly those entries — a 200 with no link written and nothing in
+    // `skipped`, and a MALFORMED key accepted in silence. This is the same
+    // mistake PUT /items/:id had, so it gets the same fix.
+    const bulkRef = await buildExternalRefUpdates(bodyUpdates, currentItem as any);
+    if ('error' in bulkRef) {
+      skipped.push({ id, error: bulkRef.error });
+      continue;
+    }
+    const bulkRefUpdates = bulkRef.updates as any;
+    const hasBulkRef = Object.keys(bulkRefUpdates).length > 0;
+    // A bulk link made while JIRA was unreachable is written UNVERIFIED, and the
+    // caller has to be told. Reported through its OWN channel rather than
+    // through `skipped`: an entry in `skipped` means "this did not happen", and
+    // an unverified link DID happen. Emitted by noteUnverifiedLink() only after
+    // the write commits — pushing it here would claim a link on the entries that
+    // are later abandoned by the parent guard or by a failed write.
+    const noteUnverifiedLink = () => {
+      if (bulkRef.warning) warnings.push({ id, warning: bulkRef.warning });
+    };
+
     if (status === Status.ARCHIVED && currentItem.status !== Status.ARCHIVED) {
       await archiveRecursively(id);
+      if (hasBulkRef) await storage.updateItem(id, bulkRefUpdates);
+      noteUnverifiedLink();
       if (currentItem.parentId) parentIdsToSync.add(currentItem.parentId);
       continue;
     }
 
     if (status !== undefined && status !== Status.ARCHIVED && currentItem.status === Status.ARCHIVED) {
       await unarchiveRecursively(id);
-      await storage.updateItem(id, { status: status as Status });
+      await storage.updateItem(id, { status: status as Status, ...bulkRefUpdates });
+      noteUnverifiedLink();
       continue;
     }
 
@@ -2506,9 +2843,12 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
     if (comments !== undefined) updates.comments = comments;
     if (sortOrder !== undefined) updates.sortOrder = sortOrder;
 
+    Object.assign(updates, bulkRef.updates);
+
     try {
       const updated = await storage.updateItem(id, updates);
       results.push(updated);
+      noteUnverifiedLink();
       projectIds.add(updated.projectId);
 
       if (updated.parentId) {
@@ -2529,7 +2869,10 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
         }
       }
     } catch (e) {
+      // Previously swallowed entirely, so a failed write looked like a success
+      // to the caller. Reported now that there is a channel for it.
       console.error(`[API_BULK] Error updating ${id}:`, e);
+      skipped.push({ id, error: `Update failed: ${(e as any)?.message ?? 'unknown error'}` });
     }
   }
 
@@ -2542,8 +2885,14 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
     await syncParentStatus(parentId);
   }
 
-  // `skipped` is additive — existing callers read `results` only.
-  res.json(skipped.length > 0 ? { results, skipped } : { results });
+  // `skipped` and `warnings` are both additive — existing callers read `results`
+  // only. They mean different things: `skipped` did not apply, `warnings` did
+  // apply but with a caveat (an unverified JIRA link).
+  res.json({
+    results,
+    ...(skipped.length > 0 ? { skipped } : {}),
+    ...(warnings.length > 0 ? { warnings } : {}),
+  });
 }));
 
 app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
@@ -2579,20 +2928,6 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
     }
   }
 
-  if (status === Status.ARCHIVED && currentItem.status !== Status.ARCHIVED) {
-    await archiveRecursively(req.params.id);
-    io.emit('items_updated');
-    if (currentItem.parentId) await syncParentStatus(currentItem.parentId);
-    return res.json(await storage.getItem(req.params.id));
-  }
-
-  if (status !== undefined && status !== Status.ARCHIVED && currentItem.status === Status.ARCHIVED) {
-    await unarchiveRecursively(req.params.id);
-    await storage.updateItem(req.params.id, { status: status as Status });
-    io.emit('items_updated');
-    return res.json(await storage.getItem(req.params.id));
-  }
-
   // Validate type change
   if (type !== undefined) {
     const validTypes = Object.values(ItemType);
@@ -2616,6 +2951,42 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   const parentError = await validateParentAssignment(req.params.id, currentItem.projectId, parentId);
   if (parentError) return res.status(400).json({ error: parentError });
 
+  // Resolved AFTER the cheap local guards above, so a request already doomed by
+  // a bad type or parent never spends a live JIRA round-trip, and ABOVE the
+  // archive/unarchive early returns, because those returns used to skip the
+  // reference entirely: `--status ARCHIVED --jira-item X`
+  // answered 200 having written no link, and a MALFORMED key answered 200 instead
+  // of 400. Validation has to happen on every path that can answer success.
+  const externalRef = await buildExternalRefUpdates(req.body, currentItem as any);
+  if ('error' in externalRef) return res.status(400).json({ error: externalRef.error });
+  const hasExternalRefUpdate = Object.keys(externalRef.updates).length > 0;
+
+  // Both archive branches answer with the freshly-read item plus any
+  // unverified-link warning. Written once so the two cannot drift — the warning
+  // was originally dropped on exactly these paths.
+  const respondWithStoredItem = async () => {
+    const stored = await storage.getItem(req.params.id);
+    // Deleted between the archive write and this read: answer 404 rather than
+    // spreading null into an object and returning a 200 carrying only a warning.
+    if (!stored) return res.status(404).json({ error: "Item not found" });
+    return res.json(withJiraWarning(stored as any, externalRef.warning));
+  };
+
+  if (status === Status.ARCHIVED && currentItem.status !== Status.ARCHIVED) {
+    await archiveRecursively(req.params.id);
+    if (hasExternalRefUpdate) await storage.updateItem(req.params.id, externalRef.updates as any);
+    io.emit('items_updated');
+    if (currentItem.parentId) await syncParentStatus(currentItem.parentId);
+    return respondWithStoredItem();
+  }
+
+  if (status !== undefined && status !== Status.ARCHIVED && currentItem.status === Status.ARCHIVED) {
+    await unarchiveRecursively(req.params.id);
+    await storage.updateItem(req.params.id, { status: status as Status, ...(externalRef.updates as any) });
+    io.emit('items_updated');
+    return respondWithStoredItem();
+  }
+
   const updates: any = {};
   if (title !== undefined) updates.title = title;
   if (description !== undefined) updates.description = description;
@@ -2633,6 +3004,7 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   if (prUrl !== undefined) updates.prUrl = prUrl;
   if (prNumber !== undefined) updates.prNumber = prNumber;
   if (prStatus !== undefined) updates.prStatus = prStatus;
+  Object.assign(updates, externalRef.updates);
 
   try {
     const updated = await storage.updateItem(req.params.id, updates);
@@ -2699,7 +3071,7 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
         }
       }
 
-    res.json(updated);
+    res.json(withJiraWarning(updated, externalRef.warning));
   } catch (error) {
     res.status(404).json({ error: "Item not found" });
   }
@@ -3526,7 +3898,7 @@ const refreshJiraToken = async (tokenData: JiraTokenData): Promise<JiraTokenData
         client_id: clientId,
         client_secret: clientSecret,
         refresh_token: tokenData.refresh_token,
-      });
+      }, { timeout: JIRA_HTTP_TIMEOUT_MS });
       const updated: JiraTokenData = {
         ...tokenData,
         access_token: data.access_token,
@@ -3550,10 +3922,17 @@ const jiraApiRequest = async (
   tokenData: JiraTokenData,
   method: string,
   url: string,
-  body?: any
+  body?: any,
+  timeoutMs?: number
 ): Promise<{ data: any; tokenData: JiraTokenData }> => {
   const makeRequest = (token: string) =>
-    axios({ method, url, data: body, headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
+    axios({
+      method,
+      url,
+      data: body,
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
+    });
 
   try {
     const res = await makeRequest(tokenData.access_token);

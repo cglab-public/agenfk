@@ -400,6 +400,19 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
               )}
             </a>
           )}
+          {/* A reference with no URL is a real, documented state: linking while
+              JIRA is disconnected stores the key and no browse URL. Gating the
+              badge on externalUrl alone made those links invisible on the
+              board. Rendered as plain text, not a link, because there is
+              nowhere to go. */}
+          {!item.externalUrl && item.externalId && (
+            <span
+              className="text-slate-400 dark:text-slate-500 flex items-center gap-0.5"
+              title={`JIRA ${item.externalId} (no link — JIRA was not connected when this was set)`}
+            >
+              <span className="font-bold">{item.externalId}</span>
+            </span>
+          )}
           <div 
             className="flex items-center gap-1 group/id cursor-pointer" 
             onClick={(e) => { e.stopPropagation(); onCopyId(item.id); }}

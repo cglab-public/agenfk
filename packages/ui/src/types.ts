@@ -131,8 +131,13 @@ export interface AgEnFKItem {
   previousStatus?: Status;
   implementationPlan?: string;
   sortOrder?: number;
-  externalId?: string;
-  externalUrl?: string;
+  // Nullable, because the API clears a tracker link by writing null rather than
+  // by removing the field, and the UI keeps its own copy of this type rather
+  // than importing @agenfk/core — so it was quietly describing a shape the API
+  // no longer returns. No current call site dereferences these without a guard;
+  // the point is that the type should not invite one.
+  externalId?: string | null;
+  externalUrl?: string | null;
   branchName?: string;
   prUrl?: string;
   prNumber?: number;

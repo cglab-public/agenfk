@@ -2,6 +2,77 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.19-beta.3] — 2026-09-12
+
+Cut from `feat/CGLAB-163_jira-item-linking`, which branches off the
+`feat/CGLAB-151_pr-overview-pr-number-search` tip. Cumulative: it carries
+everything in `v1.1.19-beta.2` — the CGLAB-151 PR-number search and the
+verifyCommand diagnostics — plus the change below.
+
+### Cards can be linked to JIRA items outside of import (CGLAB-163)
+
+`externalId`/`externalUrl` have been on items since the JIRA importer landed,
+and the board has always rendered them as a clickable badge. But only the JIRA
+and GitHub imports ever wrote them: `POST /items` and `PUT /items/:id`
+destructured a fixed field list that omitted both, so a card created any other
+way could never point at an issue.
+
+Now any card can:
+
+```bash
+agenfk create TASK "Fix the picker dismiss" --project <id> --jira-item CGLAB-163
+agenfk update <id> --jira-item CGLAB-163     # link a card that already exists
+agenfk update <id> --jira-item none          # unlink
+```
+
+The same `jiraItem` field works on `POST /items`, `PUT /items/:id`,
+`POST /items/bulk`, and the `create_item` / `update_item` MCP tools.
+
+**The link is a reference, not an import.** The card keeps its own title and
+description; nothing is copied from JIRA and nothing is overwritten. Use the
+importer when you want the issue's content.
+
+**Validation depends on the connection.** With JIRA connected the key is checked
+against the real issue and the browse URL is derived from the token's cloud URL;
+a key that does not resolve is refused. Without a connection the key is
+format-checked and stored bare — which is what makes this usable offline and in
+CI. If JIRA is connected but unreachable the link still goes through and the
+command says it could not be verified, rather than reporting a plain success.
+
+Leaving the flag off never changes an existing link, so an ordinary
+`agenfk update <id> --title "..."` cannot silently drop a card's reference.
+
+The capability is documented in every shipped client bundle — `CLAUDE.md`,
+`AGENTS.md`, `GEMINI.md`, `agenfk.mdc` — plus `SKILL.md` and the `/agenfk` and
+`/agenfk-plan` commands.
+
+### Fixed along the way
+
+- **A JIRA reference with no browse URL now renders.** Both the board and the
+  card detail modal gated their badge on `externalUrl`, so a card linked while
+  disconnected — the documented offline mode — showed no reference at all.
+- **`agenfk list --active` is documented for every client.** It was in the
+  Claude bundle only, while all four bundles instruct the agent to use it, so
+  Codex, Gemini and Cursor agents were told to use a flag their own command
+  reference did not list.
+- **`POST /items/bulk` reports failed writes.** A `storage.updateItem` throw was
+  caught, logged and reported as nothing, so a failed entry looked like a
+  success. It now appears in `skipped`, alongside a new `warnings` array for
+  entries that applied with a caveat. Both fields are additive.
+- **Outbound JIRA calls are bounded.** Neither the API request helper nor the
+  token refresh it falls back to on a 401 set a timeout, so a stalled Atlassian
+  endpoint could hang a request indefinitely. Both now carry one.
+- **`externalUrl` is validated.** The board renders it straight into an `href`,
+  so the server refuses anything that is not `http(s)`, and refuses embedded
+  credentials.
+
+### Behaviour change
+
+`PUT /items/:id` now validates a requested type change and parent assignment
+*before* handling an archive transition. Previously an archiving request skipped
+both guards, so `{ status: "ARCHIVED", type: "BOGUS" }` archived the item; it now
+returns 400. Archiving without those fields is unaffected.
+
 ## [1.1.19-beta.2] — 2026-09-10
 
 Also cut from `feat/CGLAB-151_pr-overview-pr-number-search`, piling on

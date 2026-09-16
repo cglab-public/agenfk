@@ -103,8 +103,9 @@ This is the full workflow surface. Each row notes the equivalent MCP tool (avail
 | Update a project | `agenfk update-project <id> [--name <name>][--description <text>][--verify-command <cmd>]` | `update_project` |
 | List items | `agenfk list [--project <id>] [-t/--type <type>] [-s/--status <status>] [--active] [--all] [--json]` (`--active` = only items in an active working step: excludes TODO/DONE anchors + PAUSED/BLOCKED/terminal; flow-aware — use it for the init resume-check to keep context small) | `list_items` |
 | Get an item | `agenfk get <id> --json` | `get_item` |
-| Create an item | `agenfk create <TYPE> "<title>" --project <id> [-d/--description <desc>] [-p/--parent <id>]` | `create_item` |
+| Create an item | `agenfk create <TYPE> "<title>" --project <id> [-d/--description <desc>] [-p/--parent <id>] [--jira-item <KEY>]` | `create_item` |
 | Update / roll back status | `agenfk update <id> [--status <name>][--title <t>][--description <d>][--type <T>]` (status is backward/rollback only) | `update_item` |
+| Link a card to a JIRA item | `agenfk update <id> --jira-item <KEY>` — attach a JIRA reference to an EXISTING card (e.g. `CGLAB-163`); `--jira-item none` unlinks. Also available at creation time as `agenfk create ... --jira-item <KEY>`. | `update_item` (`jiraItem`) |
 | Re-parent an item | `agenfk update <id> --parent <parentId>` — move it under another item; `--parent none` detaches it to top level. The parent must be in the same project, and cannot be the item itself or one of its descendants. | `update_item` (`parentId`) |
 | Advance a step (forward) | `agenfk verify <id> --evidence "<text>" ["<command>"]` | `validate_progress` |
 | Add a comment | `agenfk comment <id> "<text>" [--author <name>]` | `add_comment` |
@@ -179,6 +180,39 @@ This is the full workflow surface. Each row notes the equivalent MCP tool (avail
 | Set the community flow registry (local only — a Hub-connected org follows its admin's setting) | `agenfk config set flowRegistry <owner/repo>` |
 | Configure JIRA OAuth | `agenfk jira setup` · `agenfk jira status` · `agenfk jira disconnect` |
 | Configure GitHub Issues import | `agenfk github setup [--owner <owner>][--repo <repo>]` · `agenfk github status` · `agenfk github disconnect` |
+
+### Linking a card to a JIRA item
+
+Items imported from JIRA already carry their issue key. Any other card can be
+linked to one too — at creation time or long afterwards:
+
+```bash
+agenfk create TASK "Fix the picker dismiss" --project <id> --jira-item CGLAB-163
+agenfk update <id> --jira-item CGLAB-163     # link an existing card
+agenfk update <id> --jira-item none          # unlink
+```
+
+The key is stored as the item's external reference, and the board renders it as
+a badge linking straight to the issue.
+
+- **The link is a reference, not an import.** The card keeps its own title and
+  description; nothing is copied from JIRA and nothing is overwritten. Use the
+  JIRA import when you want the issue's content, and `--jira-item` when you
+  want a card you already have to point at an issue.
+- **Validation depends on the connection.** With JIRA connected
+  (`agenfk jira status`), the key is checked against the real issue and the
+  browse URL is filled in; a key that does not exist is refused. Without a
+  connection the key is format-checked and stored bare — which is what makes
+  this usable offline and in CI. If JIRA is connected but unreachable the link
+  still goes through and the command prints a warning that it could not be
+  verified; treat that as unconfirmed, not as success.
+- **Leaving the flag off never changes an existing link**, so an ordinary
+  `agenfk update <id> --title "..."` cannot silently drop a card's JIRA
+  reference.
+
+This pairs with the branch-naming convention: a card carrying `CGLAB-163` and a
+branch named `feat/CGLAB-163_<description>` are the two halves of the same
+trace, one on the board and one in git.
 
 ### Reading state — `--json`
 
