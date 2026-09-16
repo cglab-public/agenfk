@@ -12,7 +12,21 @@
  * sessionPresentation imports from here.
  */
 
-export type SessionState = 'running' | 'blocked' | 'failed' | 'idle';
+/**
+ * What an agent is doing, or what we can honestly say about it (CGLAB-195).
+ *
+ * `unverifiable` is the state that was missing, and its absence had a cost: an
+ * agent we cannot REACH fell into `idle`, which is the wrong reading and the
+ * one that leads somebody to relaunch work that is still running.
+ *
+ * The rule the three words carry, and it is not negotiable: LOSS OF CONTACT IS
+ * NOT EVIDENCE OF EXIT. Report `unverifiable`, never `idle` and never `failed`.
+ * Do not introduce synonyms, and never collapse `unverifiable` into either
+ * neighbour - the whole value of the distinction is that it survives every
+ * layer down to the screen. Absence never authorises stop, abandon, retry or
+ * release; it authorises waiting, or looking.
+ */
+export type SessionState = 'running' | 'blocked' | 'failed' | 'unverifiable' | 'idle';
 
 /**
  * The states something upstream can actually produce.
@@ -30,7 +44,52 @@ export type SessionState = 'running' | 'blocked' | 'failed' | 'idle';
  * silence — an agent nobody can read stays unknown upstream and lands here as
  * idle, which is the old wrong answer rather than a new one.
  */
-export const PRODUCIBLE_STATES: ReadonlySet<SessionState> = new Set(['running', 'blocked', 'failed', 'idle']);
+/**
+ * How long silence is normal before it becomes loss of contact (CGLAB-195).
+ *
+ * Ten minutes, and the number is derived rather than chosen: it is the
+ * documented heartbeat cadence of five minutes doubled, so one missed
+ * heartbeat is the earliest a run can honestly look unreachable.
+ *
+ * Without it, a run that had just started - recorded running, no output yet -
+ * read as lost, which turns the state into a permanent alarm and teaches
+ * people to ignore it. That is worse than not having the state at all.
+ */
+export const CONTACT_GRACE_MS = 10 * 60 * 1000;
+
+/**
+ * What we can honestly say about a recorded run.
+ *
+ * The rule, stated once and applied here: LOSS OF CONTACT IS NOT EVIDENCE OF
+ * EXIT. A run the server still records as running, silent past the grace
+ * window, is `unverifiable` - not `idle`, because idle asserts that it ended
+ * and we have no evidence of that.
+ */
+export function runState(
+  run: { readonly status?: string; readonly startedAt?: string },
+  isLive: boolean,
+  now: number = Date.now(),
+): SessionState {
+  // A failure stays failed however long ago it was: one that ages into idle
+  // is one nobody sees.
+  if (run.status === 'failed') return 'failed';
+  if (isLive) return 'running';
+  if (run.status !== 'running') return 'idle';
+  const started = run.startedAt ? Date.parse(run.startedAt) : NaN;
+  // An unparseable or missing timestamp is not evidence either: without it we
+  // cannot say the silence is long, so the generous reading is the honest one.
+  if (!Number.isFinite(started)) return 'idle';
+  /*
+   * INSIDE the window the old answer stands. Silence that is minutes old is
+   * ordinary - a run that has just started has produced nothing yet - and
+   * calling it running there would assert it IS working, which is the same
+   * presumption in the other direction. The new state is EARNED by the
+   * silence lasting, not granted on the first quiet second.
+   */
+  return now - started > CONTACT_GRACE_MS ? 'unverifiable' : 'idle';
+}
+
+export const PRODUCIBLE_STATES: ReadonlySet<SessionState> = new Set(['running', 'blocked', 'failed', 'unverifiable', 'idle']);
 
 export interface SessionRow {
   readonly runId: string;

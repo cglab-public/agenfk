@@ -41,10 +41,13 @@ const WORDS: Partial<Record<SessionState, string>> = {
   running: 'running',
   blocked: 'blocked',
   failed: 'failed',
+  // Not "maybe running" and not "lost": we cannot reach it, and saying either
+  // of the others would assert something we do not know.
+  unverifiable: 'unverifiable',
 };
 
 /** States that must be legible at a glance rather than found by looking. */
-const URGENT: ReadonlySet<SessionState> = new Set<SessionState>(['failed', 'blocked']);
+const URGENT: ReadonlySet<SessionState> = new Set<SessionState>(['failed', 'blocked', 'unverifiable']);
 
 /**
  * The indicator for one tab.
@@ -73,6 +76,9 @@ export function tabDotClass(state: SessionState): string {
   switch (state) {
     case 'failed':  return 'bg-red-500';
     case 'blocked': return 'bg-amber-500';
+    // Hollow rather than filled: the dot says "we cannot see in", and a solid
+    // colour would claim knowledge the state exists to deny.
+    case 'unverifiable': return 'border border-amber-500 bg-transparent';
     case 'running': return 'bg-emerald-500';
     default:        return 'bg-ink-tertiary';
   }

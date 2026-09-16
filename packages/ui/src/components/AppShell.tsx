@@ -52,6 +52,7 @@ import { SettingsPanel } from './SettingsPanel';
  * still the shared vocabulary for a session row, which is why the module
  * stays imported at all.
  */
+import { runState } from '../sessionRow';
 import type { SessionRow, SessionState } from '../sessionRow';
 import { LiveAgents } from '../liveAgents';
 import { EmptyState } from './EmptyState';
@@ -502,9 +503,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         // A run that ENDED badly stays failed however long ago it was: a
         // failure that ages into 'idle' is a failure nobody sees. Recency only
         // decides between running and idle.
-        state: run.status === 'failed'
-          ? 'failed'
-          : live.isLive(run.itemId) ? 'running' : 'idle',
+        /*
+         * Three answers, not two (CGLAB-195). The rule and the grace window
+         * live in runState, so the rail, the tabs and this all say the same
+         * thing about the same run.
+         */
+        state: runState(run, live.isLive(run.itemId)),
         startedAt: run.startedAt,
         // A run from the hook has a transcript but no terminal this app owns,
         // so clicking must not pretend to attach to one.

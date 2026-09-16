@@ -26,7 +26,12 @@ import type { SessionState } from '../sessionRow';
  * show what needs you and does not is a list you stop trusting. Blocked sorts
  * second for the same reason: it cannot move until a person arrives.
  */
-export const ORDER: Record<SessionState, number> = { failed: 0, blocked: 1, running: 2, idle: 3 };
+/*
+ * `unverifiable` sorts just under blocked: it needs a person as much as a
+ * blocked row does, but a blocked one has a known cause and a known move,
+ * while this one begins with somebody having to go and find out.
+ */
+export const ORDER: Record<SessionState, number> = { failed: 0, blocked: 1, unverifiable: 2, running: 3, idle: 4 };
 
 export const DOT: Record<SessionState, string> = {
   running: 'bg-emerald-400',
@@ -36,6 +41,10 @@ export const DOT: Record<SessionState, string> = {
   // with a colour vision deficiency.
   blocked: 'border-2 border-amber-400',
   failed: 'bg-rose-400',
+  // Hollow amber, like blocked, because both are waiting - but a DASHED ring,
+  // because this one is waiting on knowledge rather than on a person. The
+  // shape carries it at 6px, where hue is the weakest channel.
+  unverifiable: 'border-2 border-dashed border-amber-400',
   idle: 'border border-ink-tertiary',
 };
 
@@ -45,6 +54,15 @@ export const STATE_LABEL: Record<SessionState, string> = {
   // something FROM THE READER, and a one-word status does not say that.
   blocked: 'Waiting for you',
   failed: 'Failed',
+  /*
+   * "Cannot reach it", not "Unknown" and not "Maybe running".
+   *
+   * The rule this state exists for: loss of contact is not evidence of exit.
+   * A label that guessed either way would assert the thing we do not know, and
+   * "Unknown" tells the reader nothing about what to do. This one says the
+   * fact and implies the move - go and look.
+   */
+  unverifiable: 'Cannot reach it',
   idle: 'Idle',
 };
 

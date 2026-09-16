@@ -84,8 +84,16 @@ export function itemsNeedingAPerson(
 ): ReadonlySet<string> {
   const blocked = new Set<string>();
   for (const row of rows) {
-    // Both mean "this one is not going to move on its own".
-    if (row.state === 'blocked' || row.state === 'failed') blocked.add(row.itemId);
+    /*
+     * All three mean "this one is not going to move on its own", and
+     * `unverifiable` belongs here for a reason worth stating: we do not know
+     * that it is stuck - we know we cannot tell. That is precisely a thing a
+     * person has to look at, and folding it into quiet would say the opposite
+     * of what we know.
+     */
+    if (row.state === 'blocked' || row.state === 'failed' || row.state === 'unverifiable') {
+      blocked.add(row.itemId);
+    }
   }
   return blocked;
 }
