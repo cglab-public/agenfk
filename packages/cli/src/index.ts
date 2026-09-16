@@ -1504,6 +1504,8 @@ program
   .option('--type <type>', 'New type (EPIC, STORY, TASK, BUG)')
   .option('--parent <parentId>', "Re-parent under another item; pass 'none' to detach to top level")
   .option('--claims <paths>', 'Comma-separated paths this card owns; pass an empty string to release them')
+  .option('--external-id <key>', 'Issue key in another tracker, e.g. a JIRA key')
+  .option('--external-url <url>', 'Link to that issue')
   .action(async (id, options) => {
     try {
       // Handle short ID
@@ -1540,6 +1542,8 @@ program
        * it closes. `undefined` means "not mentioned" and leaves them alone,
        * which is what every other `agenfk update` call in the world is doing.
        */
+      if (options.externalId !== undefined) updates.externalId = options.externalId;
+      if (options.externalUrl !== undefined) updates.externalUrl = options.externalUrl;
       if (options.claims !== undefined) {
         updates.claims = String(options.claims)
           .split(',')

@@ -583,3 +583,40 @@ describe('the close never takes unstaged content', () => {
     expect(git(repo, 'log', '-1', '--name-only', '--format=')).toContain('pkg/deep.ts');
   });
 });
+
+/**
+ * Pairing a card with an issue in another tracker (af47b248).
+ *
+ * `externalId` has been declared in types.ts since before this route existed
+ * and dropped by its destructure ever since, so not one item in the database
+ * carried one - measured at 0 of 160 on the day twelve issues were created in
+ * JIRA for this very work. The same shape as `claims`: a field complete at
+ * both ends with nothing joining them.
+ */
+describe('PUT /items/:id and the external issue key', () => {
+  it('stores the key and the link', async () => {
+    const item = await makeItem('Paired with an issue');
+    const res = await agent().put(`/items/${item.id}`)
+      .send({ externalId: 'CGLAB-195', externalUrl: 'https://cg-lab.atlassian.net/browse/CGLAB-195' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.externalId).toBe('CGLAB-195');
+    const fetched = (await agent().get(`/items/${item.id}`)).body;
+    expect(fetched.externalId, 'the key did not survive a round trip').toBe('CGLAB-195');
+    expect(fetched.externalUrl).toContain('CGLAB-195');
+  });
+
+  it('leaves the pairing alone when the request does not mention it', async () => {
+    /*
+     * THE test. Every other PUT in the app omits these fields, so clearing
+     * them on an unrelated edit would unpair a card the moment somebody
+     * renamed it - and nothing would say so.
+     */
+    const item = await makeItem('Keeps its pairing');
+    await agent().put(`/items/${item.id}`).send({ externalId: 'CGLAB-200' });
+    await agent().put(`/items/${item.id}`).send({ title: 'Renamed' });
+
+    const fetched = (await agent().get(`/items/${item.id}`)).body;
+    expect(fetched.externalId, 'renaming a card unpaired it').toBe('CGLAB-200');
+  });
+});

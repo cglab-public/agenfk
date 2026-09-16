@@ -2961,7 +2961,7 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
 
 app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   console.log(`[API_DEBUG] PUT /items/${req.params.id} body keys: ${Object.keys(req.body).join(', ')}`);
-  const { title, description, status, type, parentId, context, implementationPlan, reviews, tests, comments, sortOrder, branchName, prUrl, prNumber, prStatus, claims } = req.body;
+  const { title, description, status, type, parentId, context, implementationPlan, reviews, tests, comments, sortOrder, branchName, prUrl, prNumber, prStatus, claims, externalId, externalUrl } = req.body;
 
   const currentItem = await storage.getItem(req.params.id);
   if (!currentItem) {
@@ -3096,6 +3096,17 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   if (prNumber !== undefined) updates.prNumber = prNumber;
   if (prStatus !== undefined) updates.prStatus = prStatus;
   if (claims !== undefined) updates.claims = claims;
+  /*
+   * The link to an issue in another tracker (af47b248).
+   *
+   * Declared in types.ts since before this route existed and dropped by the
+   * destructure ever since, so not one item in the database carried one - the
+   * same shape as `claims`: a field complete at both ends with nothing joining
+   * them. Absence of a mention leaves it alone, because renaming a card must
+   * not unpair it.
+   */
+  if (externalId !== undefined) updates.externalId = externalId;
+  if (externalUrl !== undefined) updates.externalUrl = externalUrl;
 
   try {
     const updated = await storage.updateItem(req.params.id, updates);
