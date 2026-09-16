@@ -55,8 +55,33 @@ export function compareSemver(a: string, b: string): number {
   return 0;
 }
 
+/**
+ * Hub-only releases (`hub-v*`, CGLAB-8) ship a Docker image and a hub tarball —
+ * never the framework. They must never be treated as a framework version.
+ *
+ * Lives here, next to the comparison they defeat, because the failure is a
+ * version-comparison failure: `parseSemver` returns null for a hub tag, and
+ * `compareSemver`'s string fallback ranks 'h' above '1', so a hub tag compares
+ * GREATER than every real version. Observed in production when `hub-image.yml`
+ * created `hub-v1.1.19-beta.1` without `--prerelease`, making it GitHub's
+ * "latest stable". Shared by the CLI and server so the rule cannot exist in one
+ * consumer and be missing from the next — which is how it first got through.
+ */
+export function isHubRelease(tag: string | null | undefined): boolean {
+  return !!tag && /^hub-v/i.test(tag);
+}
+
 /** True only when `candidate` is strictly newer than `current`. */
 export function isUpgrade(candidate: string, current: string): boolean {
   if (!candidate || !current) return false;
+  // An unparseable version is not an upgrade, it is an unknown. compareSemver
+  // falls back to localeCompare so that sorting still works, but that fallback
+  // ranks letters above digits — which made a hub tag look like a newer release
+  // and let its upgrade tier through. This answer gates enforcement, and a
+  // `mandatory` tier calls process.exit(1) on every CLI invocation, so the
+  // conservative reading is the only safe one. Hub tags are named explicitly
+  // rather than left to fall through: they are a known release line, not noise.
+  if (isHubRelease(candidate) || isHubRelease(current)) return false;
+  if (!parseSemver(candidate) || !parseSemver(current)) return false;
   return compareSemver(candidate, current) > 0;
 }

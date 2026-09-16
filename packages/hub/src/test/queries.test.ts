@@ -643,4 +643,9 @@ describe('GET /v1/prs/overview', () => {
     expect(r.body.prs[0].prNumber).toBe(3);
     expect(r.body.prs[0].url).toBe('https://github.com/acme/api/pull/3');
   });
+  // The ?pr= PR-search suite lives in pr-overview-pr-search-route.test.ts, which
+  // boots the app on an in-memory sqlite database. Same engine, same SQL — it
+  // just does not share a DB file across worker threads, which is what lets it
+  // drive a mutation sweep over routes/queries.ts. See that file for the detail.
+
 });
