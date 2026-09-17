@@ -39,6 +39,7 @@ import { NewProjectButton } from './NewProjectButton';
 import { api } from '../api';
 import type { AgEnFKItem, Project } from '../types';
 import { TerminalTab, type TerminalSession } from './TerminalTab';
+import type { SplitDirection } from '../splitTree';
 import { withItemBranches } from '../sessionBranch';
 import { NewTerminalDialog } from './NewTerminalDialog';
 import {
@@ -368,6 +369,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [sessions, activeSession, focusedItemId]);
   /** The second terminal on screen, or null. See TerminalTab for the fit rules. */
   const [splitSession, setSplitSession] = React.useState<string | null>(null);
+  /**
+   * Which way that pair is split. Kept beside the id because the id cannot say
+   * it, and dropping a tab on the BOTTOM edge has to stack (7a717cb8).
+   */
+  const [splitDirection, setSplitDirection] = React.useState<SplitDirection>('horizontal');
 
   /*
    * The card whose fan-out is being planned, or null (CGLAB-207).
@@ -1399,7 +1405,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                  * is wrong most of the time and costs a pane to undo.
                  */
                 splitId={splitSession}
-                onToggleSplit={id => setSplitSession(cur => (cur === id ? null : id))}
+                splitDirection={splitDirection}
+                onToggleSplit={(id, direction) => {
+                  setSplitSession(cur => (cur === id ? null : id));
+                  setSplitDirection(direction);
+                }}
                 /*
                  * The REAL width, not the old fixed 224. TerminalTab computes
                  * how many COLUMNS fit from this, so a resizable sidebar feeding

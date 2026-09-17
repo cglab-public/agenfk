@@ -17,7 +17,7 @@ import { tabIndicator, tabDotClass } from '../tabState';
 import { WORKTREE_PANEL_PX } from '../splitAvailability';
 import { splitRatioAt, clampSplitRatio, splitRatioBounds, DEFAULT_SPLIT_RATIO } from '../splitRatio';
 import { layoutPanes } from '../splitGeometry';
-import { dropZone, type DropZone, type PaneTree } from '../splitTree';
+import { dropZone, type DropZone, type PaneTree, type SplitDirection } from '../splitTree';
 
 /** The drag payload: which session a tab is carrying. */
 export const SESSION_DRAG_MIME = 'application/x-agenfk-session';
@@ -145,7 +145,16 @@ export interface TerminalTabProps {
    */
   readonly splitId?: string | null;
   /** Ask the shell to split with, or unsplit from, this session. */
-  readonly onToggleSplit?: (sessionId: string) => void;
+  /**
+   * Ask the shell to split with this session, ON THIS EDGE.
+   *
+   * The direction is not decoration: dropping a tab on the BOTTOM edge has to
+   * stack, and this used to carry only the id - so every drop produced a
+   * side-by-side pair and the bottom edge simply did not obey.
+   */
+  readonly onToggleSplit?: (sessionId: string, direction: SplitDirection) => void;
+  /** Which way the pair is split right now. Horizontal by default. */
+  readonly splitDirection?: SplitDirection;
   /**
    * Why Split cannot be used, or null when it can.
    *
@@ -279,6 +288,7 @@ export function TerminalTab({
   sessionStates,
   splitId,
   onToggleSplit,
+  splitDirection = 'horizontal',
   splitDisabledReason,
   sidebarWidthPx = 224,
   activeId,
@@ -367,22 +377,28 @@ export function TerminalTab({
     return () => ro.disconnect();
   }, [sessions.length]);
 
-  const moveSplitTo = React.useCallback((clientX: number): void => {
+  /** The extent a ratio is measured against: the WIDTH or the HEIGHT. */
+  const splitExtent = splitDirection === 'vertical'
+    ? (rowSize.height || (typeof window !== 'undefined' ? window.innerHeight : 0))
+    : paneRowPx;
+  const moveSplitTo = React.useCallback((pointer: number, vertical: boolean): void => {
     const rect = splitRowRef.current?.getBoundingClientRect();
     if (!rect) return;
     // No write here: a drag emits hundreds of moves and only the last matters.
     // The preference is persisted when the drag ends.
-    setSplitRatio(splitRatioAt(clientX, rect.left, rect.width));
+    setSplitRatio(vertical
+      ? splitRatioAt(pointer, rect.top, rect.height)
+      : splitRatioAt(pointer, rect.left, rect.width));
   }, []);
   const nudgeSplit = React.useCallback((delta: number): void => {
     // From the SHOWN ratio, not the stored one: a ratio saved on a wider row is
     // already clamped for this one, and nudging the raw value would make the
     // first keypress a no-op that silently overwrites the preference.
     // Clamped against the DERIVED width, not a rect that may be zero-sized.
-    const next = clampSplitRatio(shownRatio + delta, paneRowPx);
+    const next = clampSplitRatio(shownRatio + delta, splitExtent);
     setSplitRatio(next);
     writeSplitRatio(next);
-  }, [shownRatio, paneRowPx]);
+  }, [shownRatio, splitExtent]);
   const persistSplit = React.useCallback((): void => {
     draggingDivider.current = false;
     setSplitRatio(current => { writeSplitRatio(current); return current; });
@@ -418,7 +434,7 @@ export function TerminalTab({
    */
   const paneTree: PaneTree = splitId && activeId && splitId !== activeId
     ? {
-        type: 'split', direction: 'horizontal',
+        type: 'split', direction: splitDirection,
         first: { type: 'leaf', sessionId: activeId },
         second: { type: 'leaf', sessionId: splitId },
         ratio: shownRatio,
@@ -683,7 +699,7 @@ export function TerminalTab({
                     disabled={Boolean(blocked)}
                     title={blocked || (isSplit ? 'Close this pane' : `Show beside ${sessions.find(x => x.id === activeId)?.title ?? 'the current terminal'}`)}
                     aria-label={blocked ? `Split unavailable: ${blocked}` : isSplit ? `Unsplit ${session.title}` : `Split with ${session.title}`}
-                    onClick={() => onToggleSplit(session.id)}
+                    onClick={() => onToggleSplit(session.id, 'horizontal')}
                     className={clsx(
                       'shrink-0 rounded p-0.5 transition-opacity',
                       blocked
@@ -782,7 +798,7 @@ export function TerminalTab({
             if (!dropped || dropped === session.id) return;
             const box = e.currentTarget.getBoundingClientRect();
             const zone = dropZone(box.width, box.height, e.clientX - box.left, e.clientY - box.top);
-            if (zone) onToggleSplit?.(dropped);
+            if (zone) onToggleSplit?.(dropped, zone.direction);
           }}
           className={clsx('min-h-0', rect ? 'absolute overflow-hidden bg-canvas' : 'flex-1')}
           /* Inline style only, never a DOM move: re-parenting a pane would
@@ -825,18 +841,26 @@ export function TerminalTab({
           than a flex child, because inserting an element between two mapped
           panes would change their parent and unmount them. Pointer events, so
           mouse and touch share one path; the arrows move it without a drag. */}
-      {showDivider && (
+      {showDivider && (() => {
+        // The axis follows the SPLIT, not a constant: a stacked pair has a
+        // horizontal boundary and a row-resize cursor, and the drag reads the
+        // pointer on the other coordinate.
+        const vertical = splitDirection === 'vertical';
+        return (
         <div
           role="separator"
-          aria-orientation="vertical"
+          aria-orientation={vertical ? 'horizontal' : 'vertical'}
           aria-label="Resize the two terminals"
           aria-valuenow={Math.round(shownRatio * 100)}
           aria-valuemin={Math.round(ratioBounds.min * 100)}
           aria-valuemax={Math.round(ratioBounds.max * 100)}
           tabIndex={0}
           data-testid="terminal-split-divider"
-          className="absolute inset-y-0 z-10 -ml-1 w-2 cursor-col-resize touch-none bg-transparent transition-colors hover:bg-brand/40 focus-visible:bg-brand/40 focus-visible:outline-none"
-          style={{ left: `${shownRatio * 100}%` }}
+          className={clsx(
+            'absolute z-10 touch-none bg-transparent transition-colors hover:bg-brand/40 focus-visible:bg-brand/40 focus-visible:outline-none',
+            vertical ? 'inset-x-0 -mt-1 h-2 cursor-row-resize' : 'inset-y-0 -ml-1 w-2 cursor-col-resize',
+          )}
+          style={vertical ? { top: `${shownRatio * 100}%` } : { left: `${shownRatio * 100}%` }}
           onPointerDown={e => {
             // Primary button only: a right-click should open its menu, not arm
             // a drag that the next move would then run with.
@@ -851,7 +875,7 @@ export function TerminalTab({
             // pointerup (cancelled, released off-window), and following an
             // unpressed cursor is the stuck-drag bug.
             if (e.buttons === 0) { persistSplit(); return; }
-            moveSplitTo(e.clientX);
+            moveSplitTo(vertical ? e.clientY : e.clientX, vertical);
           }}
           onPointerUp={e => {
             e.currentTarget.releasePointerCapture?.(e.pointerId);
@@ -862,11 +886,14 @@ export function TerminalTab({
           onLostPointerCapture={persistSplit}
           onKeyDown={e => {
             const step = e.shiftKey ? 0.1 : 0.02;
-            if (e.key === 'ArrowLeft') { e.preventDefault(); nudgeSplit(-step); }
-            if (e.key === 'ArrowRight') { e.preventDefault(); nudgeSplit(step); }
+            const back = vertical ? 'ArrowUp' : 'ArrowLeft';
+            const on = vertical ? 'ArrowDown' : 'ArrowRight';
+            if (e.key === back) { e.preventDefault(); nudgeSplit(-step); }
+            if (e.key === on) { e.preventDefault(); nudgeSplit(step); }
           }}
         />
-      )}
+        );
+      })()}
       </div>
 
       {/* Asks about the session you are LOOKING at, not all of them: the panel

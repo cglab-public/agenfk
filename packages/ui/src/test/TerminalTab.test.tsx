@@ -311,7 +311,7 @@ describe('splitting the view', () => {
     const onToggleSplit = vi.fn();
     renderTab(<TerminalTab {...two()} onToggleSplit={onToggleSplit} />);
     fireEvent.click(screen.getByTestId('tab-split'));
-    expect(onToggleSplit).toHaveBeenCalledWith('s2');
+    expect(onToggleSplit).toHaveBeenCalledWith('s2', 'horizontal');
   });
 
   it('is DISABLED WITH ITS REASON rather than absent', () => {
@@ -498,7 +498,19 @@ describe('the split divider', () => {
     const onToggleSplit = vi.fn();
     renderTab(<TerminalTab {...withSplit(null)} onToggleSplit={onToggleSplit} sidebarWidthPx={224} />);
     dropOn(screen.getAllByTestId('terminal-pane')[0], 's2', 595, 200);
-    expect(onToggleSplit, 'the right edge did not split').toHaveBeenCalledWith('s2');
+    expect(onToggleSplit, 'the right edge did not split').toHaveBeenCalledWith('s2', 'horizontal');
+  });
+
+  it('stacks when the drop is on the BOTTOM edge', () => {
+    /*
+     * THE BUG: the direction was computed and thrown away - `onToggleSplit`
+     * carried only the session id - so every drop produced a side-by-side pair
+     * and the bottom edge simply did not obey.
+     */
+    const onToggleSplit = vi.fn();
+    renderTab(<TerminalTab {...withSplit(null)} onToggleSplit={onToggleSplit} sidebarWidthPx={224} />);
+    dropOn(screen.getAllByTestId('terminal-pane')[0], 's2', 300, 395);
+    expect(onToggleSplit, 'the bottom edge did not stack').toHaveBeenCalledWith('s2', 'vertical');
   });
 
   it('does not split on a drop in the MIDDLE - that is a move', () => {
