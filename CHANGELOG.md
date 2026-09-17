@@ -2,6 +2,29 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.20-beta.1] — 2026-09-17
+
+Cut from `fix/prune-system-dir-on-upgrade` (PR #189).
+
+### `~/.agenfk-system` is pruned on upgrade (BUG 957c6c44)
+
+Upgrades overlaid the install dir with a copy that deletes nothing, so any file removed
+upstream survived there forever — and `scripts/install.mjs` then re-installed it into every
+client's global config. That is how the repo-private `/agenfk-release` commands kept coming
+back, and how one leaked into an unrelated project.
+
+- The install dir is now pruned of files the new version no longer ships, against either the
+  source tree or the release-archive listing, while keeping `dist/` and local state.
+- Repo-private release commands are filtered at every copy site, which closes the second half
+  of the bug: step 8f deleted them and step 10 immediately re-copied them undoing it.
+- Both downgrade guards now read the **installed** version before the overlay overwrites
+  `package.json` — previously each compared the npx ref with itself, so neither could see a
+  beta install newer than `main`.
+- `--dist-tarball` travels via `AGENFK_DIST_TARBALL` instead of being shell-interpolated; on
+  Windows the interpolated path arrived mangled and the prune was silently skipped.
+- Uninstall and install now clear the leaked command in all three on-disk shapes: flat
+  (`~/.gemini/commands/agenfk-release.toml`), nested and AppleDouble (`._agenfk-release.toml`).
+
 ## [1.1.19] — 2026-09-16
 
 Stable, cumulative over `1.1.19-beta.1`–`.5`.
