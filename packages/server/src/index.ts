@@ -19,7 +19,7 @@ import { createApiClient } from "./apiClient.js";
 import { execSync, execFileSync, spawnSync, spawn } from "child_process";
 import { getActiveStepItems, resolveStepContract, renderStepContract } from "./gatekeeper-utils";
 import { resolveBranchHint } from './branchHint';
-import { dispatchDriftNotice, driftTargets } from './baseDrift';
+import { dispatchDriftNotice, driftTargets } from '@agenfk/core';
 import { buildUpgradeNotice } from "./mcpUpgradeNotice";
 
 // Load the install-time secret token — must match what the API server loaded.

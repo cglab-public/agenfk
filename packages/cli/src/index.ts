@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import { resolveFromOptions } from './harnessModel.js';
 import figlet from 'figlet';
 import axios from 'axios';
-import { ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, isHubRelease, isUpgrade, prunableWorktrees } from '@agenfk/core';
+import { ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, isHubRelease, isUpgrade, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
 import { writeActiveWork } from './activeWork.js';
 import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT, setTelemetryEnabled } from '@agenfk/telemetry';
 import { checkClaudeCodeEnforcement, checkPiEnforcement } from './enforcement.js';
@@ -3610,6 +3610,30 @@ program
         role: options.role,
       });
 
+      /*
+       * THE BASE MOVED UNDER THE AGENT (44163aa2), and the CLI is where most
+       * agents actually are - the MCP tool is opt-in. Same notice the MCP
+       * gatekeeper appends, from the same core helper, so the two cannot say
+       * different things about the same tree.
+       *
+       * Advisory only: `shouldWait` (the 20-commit threshold) belongs to the
+       * DISPATCHER, not to a gate that runs before every edit.
+       */
+      let driftNotice = '';
+      if (decision.authorized && decision.task) {
+        const project = await axios
+          .get(`${API_URL}/projects/${(decision.task as any).projectId}`)
+          .then(r => r.data)
+          .catch(() => null);
+        const target = driftTargets(decision.task as any, projectItems, project?.projectRoot);
+        if (target) {
+          driftNotice = dispatchDriftNotice({
+            ...target,
+            deps: { run: args => execFileSync('git', args as string[], { encoding: 'utf8' }) },
+          });
+        }
+      }
+
       // Record which card this session is working on (CGLAB-177). This is the
       // one place the workflow resolves that unambiguously — the run recorder
       // reads it instead of guessing, because `?active=true` can return dozens
@@ -3624,6 +3648,7 @@ program
           authorized: decision.authorized,
           message: decision.message,
           task: decision.task ? { id: decision.task.id, title: decision.task.title, status: decision.task.status } : null,
+          baseDrift: driftNotice || null,
           exitCriteria: decision.exitCriteria ?? null,
           // criteriaState keeps "absent" and "unknown" distinguishable for JSON
           // consumers; exitCriteria is null for both.
@@ -3634,7 +3659,7 @@ program
           flowFetchFailed,
         }));
       } else {
-        console.log(decision.authorized ? chalk.green(decision.message) : chalk.red(decision.message));
+        console.log(decision.authorized ? chalk.green(decision.message + driftNotice) : chalk.red(decision.message));
         if (flowFetchFailed) {
           console.error(chalk.yellow(`⚠️  Could not load the project's flow from ${API_URL}. Exit criteria are unknown, not absent — retry or run \`agenfk flow show\` before advancing.`));
         }
