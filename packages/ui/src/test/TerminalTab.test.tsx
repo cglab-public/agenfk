@@ -352,7 +352,7 @@ describe('splitting the view', () => {
  * `splitBlocked` to a constant null left 21 of 21 green. These drive the real
  * path, through the component's own width arithmetic.
  */
-describe('the split reason the shell actually produces', () => {
+describe('a narrow window fits and ADVISES, it does not refuse', () => {
   const two = () => ({
     ...baseProps(),
     sessions: [
@@ -363,46 +363,31 @@ describe('the split reason the shell actually produces', () => {
   });
   const width = (px: number) => Object.defineProperty(window, 'innerWidth', { value: px, configurable: true });
 
-  it('refuses on a narrow window, computing the reason itself', () => {
+  it('does NOT refuse the split on a narrow window', () => {
+    /*
+     * The gate was 1184px - two 592px panes - and it let the product refuse an
+     * arrangement the person could see and wanted. The arithmetic behind it is
+     * ADVICE (a narrow pane wraps its lines), not a rule; the reader is looking
+     * at the terminal and can judge.
+     */
     width(1000);
     renderTab(<TerminalTab {...two()} onToggleSplit={vi.fn()} />);
-    const control = screen.getByTestId('tab-split');
-    expect(control, 'the shipping path never computed a reason').toBeDisabled();
-    expect(control.getAttribute('title')).toMatch(/too narrow/i);
+    expect(screen.getByTestId('tab-split'), 'the width gate refused it again').toBeEnabled();
   });
 
-  it('allows it once the window is wide enough', () => {
-    width(1600);
-    renderTab(<TerminalTab {...two()} onToggleSplit={vi.fn()} />);
+  it('is still enabled with the sidebar open, on a window it used to refuse', () => {
+    width(1300);
+    renderTab(<TerminalTab {...two()} onToggleSplit={vi.fn()} sidebarWidthPx={224} />);
     expect(screen.getByTestId('tab-split')).toBeEnabled();
   });
 
-  it('counts the COLLAPSED sidebar, which is 184 px it used to throw away', () => {
-    /*
-     * THE arithmetic bug. 224 was hardcoded, so a 1300 px window with the
-     * sidebar collapsed was refused - "needs 1184 px" - while the row actually
-     * had 1260. Collapsing the sidebar fires no resize, so the user's obvious
-     * remedy did not even re-evaluate.
-     */
-    width(1300);
-    renderTab(<TerminalTab {...two()} onToggleSplit={vi.fn()} sidebarWidthPx={40} />);
-    expect(screen.getByTestId('tab-split'), 'the collapsed rail was still charged as 224 px').toBeEnabled();
-  });
-
-  it('still refuses that window when the sidebar is open, since then it really is too narrow', () => {
-    width(1300);
-    renderTab(<TerminalTab {...two()} onToggleSplit={vi.fn()} sidebarWidthPx={224} />);
-    expect(screen.getByTestId('tab-split')).toBeDisabled();
+  it('SAYS a pane got narrow once the split is on, instead of blocking it', () => {
+    width(900);
+    renderTab(<TerminalTab {...two()} splitId="s2" onToggleSplit={vi.fn()} sidebarWidthPx={224} />);
+    expect(screen.getByTestId('split-narrow-reason'), 'nothing told the reader the pane was tight').toBeInTheDocument();
   });
 });
 
-/**
- * The draggable divider between the two panes (b014cc86).
- *
- * The arithmetic is pinned in splitRatio.test.ts; this pins the WIRE - that the
- * handle is on screen exactly when two panes are, and is a separator, so the
- * floor is reachable without a drag.
- */
 describe('the split divider', () => {
   beforeEach(() => { Object.defineProperty(window, 'innerWidth', { value: 1600, configurable: true }); });
 

@@ -14,7 +14,7 @@
 import React from 'react';
 import { clsx } from 'clsx';
 import { tabIndicator, tabDotClass } from '../tabState';
-import { splitAvailability, WORKTREE_PANEL_PX } from '../splitAvailability';
+import { WORKTREE_PANEL_PX } from '../splitAvailability';
 import { splitRatioAt, clampSplitRatio, splitRatioBounds, DEFAULT_SPLIT_RATIO } from '../splitRatio';
 import { layoutPanes } from '../splitGeometry';
 import { dropZone, type DropZone, type PaneTree } from '../splitTree';
@@ -315,12 +315,16 @@ export function TerminalTab({
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
   }, []);
-  const splitState = splitAvailability({
-    sessionCount: sessions.length,
-    rowWidthPx: rowWidth - sidebarWidthPx,
-    worktreePanelOpen: panelOpen,
-  });
-  const splitBlocked = splitState.enabled ? null : splitState.reason;
+  /*
+   * THE WIDTH GATE IS GONE. It was 1184px - two 592px panes - and it let the
+   * product REFUSE an arrangement the person could see and wanted. The
+   * arithmetic behind it (80 columns per pane) is ADVICE, not a rule: a pane
+   * that gets narrow wraps its lines, and the reader is looking straight at it
+   * and can judge what that costs. So panes are fitted and MARKED instead
+   * (`layoutPanes().narrow`), and the only thing that can still block the Split
+   * control is an explicit reason from the shell.
+   */
+  const splitBlocked = splitDisabledReason ?? null;
 
   /*
    * The divider position, clamped by the floor wherever it moves. The width is
@@ -384,14 +388,6 @@ export function TerminalTab({
     setSplitRatio(current => { writeSplitRatio(current); return current; });
   }, []);
   /*
-   * The panel wins and the SPLIT closes, rather than both panes shrinking
-   * below the floor. A terminal under its floor is not a smaller terminal - it
-   * is one that wraps every line, which is worse than not being on screen.
-   */
-  React.useEffect(() => {
-    if (splitId && !splitState.enabled) onToggleSplit?.(splitId);
-  }, [splitId, splitState.enabled, onToggleSplit]);
-  /*
    * The two panes on screen, in tab order. The LEADING one takes the ratio and
    * the trailing one takes what is left, so the divider is the boundary
    * between them rather than a thing that has to be positioned separately.
@@ -435,6 +431,8 @@ export function TerminalTab({
     rowSize.width || paneRowPx,
     rowSize.height || (typeof window !== 'undefined' ? window.innerHeight : 0),
   );
+  /** Fitted and narrow: said, never refused. */
+  const anyNarrow = layout.panes.some(p => p.narrow);
   const rectFor = new Map(layout.panes.map(p => [p.sessionId, p]));
   const current = sessions.find(s => s.id === activeId);
   /*
@@ -718,12 +716,13 @@ export function TerminalTab({
          * Shown only when there IS a second terminal: with one, "open a second
          * terminal" is advice the plus button beside it already gives.
          */}
-        {splitBlocked && sessions.length > 1 && (
+        {anyNarrow && (
           <span
-            data-testid="split-blocked-reason"
+            data-testid="split-narrow-reason"
             className="ml-auto flex shrink-0 items-center px-2 text-[11px] text-amber-600 dark:text-amber-400"
+            title="A pane this narrow wraps every line of a terminal. It is a warning, not a limit."
           >
-            Split unavailable: {splitBlocked}
+            Narrow pane
           </span>
         )}
         <button
@@ -731,7 +730,7 @@ export function TerminalTab({
           aria-label="New terminal"
           className={clsx(
             'flex shrink-0 items-center px-3 text-ink-tertiary transition-colors hover:text-ink',
-            !(splitBlocked && sessions.length > 1) && 'ml-auto',
+            !anyNarrow && 'ml-auto',
           )}
         >
           <Plus size={14} />
