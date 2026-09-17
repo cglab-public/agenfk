@@ -4000,7 +4000,9 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
     } catch (e) {
       // Previously swallowed entirely, so a failed write looked like a success
       // to the caller. Reported now that there is a channel for it.
-      console.error(`[API_BULK] Error updating ${id}:`, e);
+      // The id is user data; a format string built from it lets a caller plant
+      // console directives (`%s`, `%o`). Passed as an argument instead.
+      console.error('[API_BULK] Error updating %s:', id, e);
       skipped.push({ id, error: `Update failed: ${(e as any)?.message ?? 'unknown error'}` });
     }
   }
@@ -5818,11 +5820,21 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
   const errors: any[] = [];
 
   for (const { issueKey, type: requestedType } of items) {
+    /*
+     * The key goes into a PATH segment of a request this server makes, so it
+     * is validated as a JIRA key and then encoded. A fixed host does not make
+     * an unvalidated path safe: `../../` or a `?`/`#` in the value changes
+     * which resource is fetched, and CodeQL flags the URL as user-built.
+     */
+    if (typeof issueKey !== 'string' || !/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(issueKey)) {
+      errors.push({ issueKey, error: 'Invalid JIRA issue key.' });
+      continue;
+    }
     try {
       const { data: issue } = await jiraApiRequest(
         tokenData,
         'get',
-        `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/issue/${issueKey}?fields=summary,description,issuetype`
+        `https://api.atlassian.com/ex/jira/${encodeURIComponent(tokenData.cloudId)}/rest/api/3/issue/${encodeURIComponent(issueKey)}?fields=summary,description,issuetype`
       );
       const type = requestedType || mapJiraTypeToAgEnFK(issue.fields.issuetype?.name || 'Task');
       const description = adfToText(issue.fields.description);
