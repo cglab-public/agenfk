@@ -643,10 +643,30 @@ export function TerminalTab({
             </div>
           );
         })}
+        {/*
+         * THE REASON, ON SCREEN. The Split control is disabled with its reason
+         * only in a tooltip, and a tooltip is not reachable for everybody - the
+         * module's own rule is "disabled with its reason, never absent", and a
+         * hover-only reason is the absent case wearing a title attribute.
+         *
+         * Shown only when there IS a second terminal: with one, "open a second
+         * terminal" is advice the plus button beside it already gives.
+         */}
+        {splitBlocked && sessions.length > 1 && (
+          <span
+            data-testid="split-blocked-reason"
+            className="ml-auto flex shrink-0 items-center px-2 text-[11px] text-amber-600 dark:text-amber-400"
+          >
+            Split unavailable: {splitBlocked}
+          </span>
+        )}
         <button
           onClick={onNew}
           aria-label="New terminal"
-          className="flex shrink-0 items-center px-3 text-ink-tertiary transition-colors hover:text-ink"
+          className={clsx(
+            'flex shrink-0 items-center px-3 text-ink-tertiary transition-colors hover:text-ink',
+            !(splitBlocked && sessions.length > 1) && 'ml-auto',
+          )}
         >
           <Plus size={14} />
         </button>
