@@ -461,6 +461,13 @@ async function boot(): Promise<void> {
               if (!posted || posted.status >= 300) {
                 console.warn('[DESKTOP] could not register the run:',
                   posted ? `${posted.status} ${posted.body}` : 'no response from the server');
+              } else {
+                // Logged on SUCCESS too, and that is not noise: with only the
+                // failure line, "the terminal opened and nothing was recorded"
+                // is indistinguishable from "this hook was never called",
+                // which is a different bug with a different fix.
+                console.log('[DESKTOP] registered run', JSON.parse(posted.body)?.id,
+                  `(${agentId} on ${itemId})`);
               }
             } catch (e) {
               console.warn('[DESKTOP] could not register the run:', (e as Error)?.message);
