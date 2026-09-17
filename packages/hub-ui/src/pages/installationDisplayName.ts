@@ -1,4 +1,4 @@
-interface ApiKeyLike {
+export interface ApiKeyLike {
   installationId: string | null;
   label: string | null;
   gitName: string | null;
