@@ -6,6 +6,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { TerminalTab } from '../components/TerminalTab';
+import { clampSplitRatio } from '../splitRatio';
 import { api } from '../api';
 
 vi.mock('../api', () => ({ api: { getGitStatus: vi.fn() } }));
@@ -392,5 +393,92 @@ describe('the split reason the shell actually produces', () => {
     width(1300);
     renderTab(<TerminalTab {...two()} onToggleSplit={vi.fn()} sidebarWidthPx={224} />);
     expect(screen.getByTestId('tab-split')).toBeDisabled();
+  });
+});
+
+/**
+ * The draggable divider between the two panes (b014cc86).
+ *
+ * The arithmetic is pinned in splitRatio.test.ts; this pins the WIRE - that the
+ * handle is on screen exactly when two panes are, and is a separator, so the
+ * floor is reachable without a drag.
+ */
+describe('the split divider', () => {
+  beforeEach(() => { Object.defineProperty(window, 'innerWidth', { value: 1600, configurable: true }); });
+
+  const withSplit = (splitId: string | null) => ({
+    ...baseProps(),
+    sessions: [
+      { id: 's1', itemId: 'i1', title: 'A card', agentId: 'claude-code', autoApprove: false, persist: false, openedAt: new Date().toISOString() },
+      { id: 's2', itemId: 'i2', title: 'Another card', agentId: 'codex', autoApprove: false, persist: false, openedAt: new Date().toISOString() },
+    ],
+    activeId: 's1',
+    splitId,
+  });
+
+  it('is on screen when two panes are', () => {
+    renderTab(<TerminalTab {...withSplit('s2')} onToggleSplit={vi.fn()} />);
+    const divider = screen.getByTestId('terminal-split-divider');
+    expect(divider).toBeInTheDocument();
+    expect(divider).toHaveAttribute('role', 'separator');
+    expect(divider).toHaveAttribute('aria-orientation', 'vertical');
+    // Reachable without a pointer, which jsdom cannot provide.
+    expect(divider).toHaveAttribute('tabindex', '0');
+  });
+
+  it('is absent with a single pane, split or not', () => {
+    renderTab(<TerminalTab {...baseProps()} onToggleSplit={vi.fn()} />);
+    expect(screen.queryByTestId('terminal-split-divider')).toBeNull();
+
+    // splitId naming the ACTIVE pane is still one pane, not two.
+    renderTab(<TerminalTab {...withSplit('s1')} onToggleSplit={vi.fn()} />);
+    expect(screen.queryByTestId('terminal-split-divider')).toBeNull();
+  });
+
+  it('does NOT give a lone pane a split width when the splitId dangles', () => {
+    /*
+     * The regression review caught: splitId is not cleared when its tab is
+     * closed or when it becomes the active pane. Before the ratio style
+     * existed that was a harmless no-op; giving the only pane a 50% basis
+     * would collapse the terminal to half the row with no divider to drag it
+     * back. `leadingPaneId` is gated on showDivider, not on splitId.
+     */
+    renderTab(<TerminalTab {...withSplit('s1')} onToggleSplit={vi.fn()} sidebarWidthPx={224} />);
+    const panes = screen.getAllByTestId('terminal-pane');
+    expect(panes[0].style.flex, 'the lone pane was given a split basis').toBe('');
+  });
+
+  it('does not arm a drag on a right-click', () => {
+    localStorage.setItem('agenfk_split_ratio', '0.3');
+    renderTab(<TerminalTab {...withSplit('s2')} onToggleSplit={vi.fn()} sidebarWidthPx={224} />);
+    const panes = screen.getAllByTestId('terminal-pane');
+    const before = panes[0].style.flex;
+    const divider = screen.getByTestId('terminal-split-divider');
+    fireEvent.pointerDown(divider, { button: 2, pointerId: 1 });
+    // A move WITH a button held, which only acts if the right-click armed it.
+    fireEvent.pointerMove(divider, { clientX: 999, buttons: 1, pointerId: 1 });
+    expect(panes[0].style.flex, 'a right-click armed a drag').toBe(before);
+  });
+
+  it('persists the position when the drag ends, not on every move', () => {
+    localStorage.removeItem('agenfk_split_ratio');
+    renderTab(<TerminalTab {...withSplit('s2')} onToggleSplit={vi.fn()} sidebarWidthPx={224} />);
+    const divider = screen.getByTestId('terminal-split-divider');
+    fireEvent.pointerDown(divider, { button: 0, pointerId: 1 });
+    expect(localStorage.getItem('agenfk_split_ratio'), 'a mid-drag move wrote the preference').toBeNull();
+    fireEvent.pointerUp(divider, { pointerId: 1 });
+    expect(localStorage.getItem('agenfk_split_ratio')).not.toBeNull();
+  });
+
+  it('clamps a STORED ratio to this window, not the one it was saved in', () => {
+    // A ratio saved on a wide row puts a pane under the 592 floor on a narrow
+    // one. The clamp has to happen at render, or the preference overrides the
+    // floor the whole feature exists to respect.
+    localStorage.setItem('agenfk_split_ratio', '0.75');
+    renderTab(<TerminalTab {...withSplit('s2')} onToggleSplit={vi.fn()} sidebarWidthPx={224} />);
+    const panes = screen.getAllByTestId('terminal-pane');
+    const expected = `0 0 ${(clampSplitRatio(0.75, 1600 - 224) * 100).toFixed(2)}%`;
+    expect(panes[0].style.flex).toBe(expected);
+    expect(panes[0].style.flex, 'the raw stored ratio was applied').not.toContain('75.00%');
   });
 });

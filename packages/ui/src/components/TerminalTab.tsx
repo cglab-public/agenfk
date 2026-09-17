@@ -14,7 +14,8 @@
 import React from 'react';
 import { clsx } from 'clsx';
 import { tabIndicator, tabDotClass } from '../tabState';
-import { splitAvailability } from '../splitAvailability';
+import { splitAvailability, WORKTREE_PANEL_PX } from '../splitAvailability';
+import { splitRatioAt, clampSplitRatio, splitRatioBounds, DEFAULT_SPLIT_RATIO } from '../splitRatio';
 import type { SessionState } from '../sessionRow';
 import { agentLabel } from '../agentLabels';
 import { WorktreePanel } from './WorktreePanel';
@@ -242,6 +243,25 @@ function readWorktreeOpen(): boolean {
   catch { return false; }
 }
 
+/**
+ * Where the split divider sits, as a ratio of the row (b014cc86).
+ *
+ * Remembered so a person who widened the pane they are reading does not have
+ * to do it again on the next launch. A ratio, not pixels, so it survives a
+ * window resize with no second value to reconcile. Anything that is not a
+ * ratio between 0 and 1 is ignored - a stored `0` would collapse a pane.
+ */
+const SPLIT_RATIO_KEY = 'agenfk_split_ratio';
+function readSplitRatio(): number {
+  try {
+    const stored = Number(localStorage.getItem(SPLIT_RATIO_KEY));
+    return Number.isFinite(stored) && stored > 0 && stored < 1 ? stored : DEFAULT_SPLIT_RATIO;
+  } catch { return DEFAULT_SPLIT_RATIO; }
+}
+function writeSplitRatio(ratio: number): void {
+  try { localStorage.setItem(SPLIT_RATIO_KEY, String(ratio)); } catch { /* private mode */ }
+}
+
 export function TerminalTab({
   sessions,
   sessionStates,
@@ -289,6 +309,44 @@ export function TerminalTab({
     worktreePanelOpen: panelOpen,
   });
   const splitBlocked = splitState.enabled ? null : splitState.reason;
+
+  /*
+   * The divider position, clamped by the floor wherever it moves. The width is
+   * MEASURED from the row, not derived from the window, because the worktree
+   * panel shares the row and would otherwise be counted twice.
+   */
+  const [splitRatio, setSplitRatio] = React.useState<number>(() => readSplitRatio());
+  const splitRowRef = React.useRef<HTMLDivElement | null>(null);
+  const draggingDivider = React.useRef(false);
+  /*
+   * The width the panes actually get: window, minus the sidebar, minus the
+   * worktree panel when it shares the row. Derived rather than measured so the
+   * floor holds BEFORE the first paint and after a window resize - a stored
+   * ratio clamped against a wider window is not a ratio the floor allows here.
+   */
+  const paneRowPx = rowWidth - sidebarWidthPx - (panelOpen ? WORKTREE_PANEL_PX : 0);
+  const shownRatio = clampSplitRatio(splitRatio, paneRowPx);
+  const ratioBounds = splitRatioBounds(paneRowPx);
+  const moveSplitTo = React.useCallback((clientX: number): void => {
+    const rect = splitRowRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    // No write here: a drag emits hundreds of moves and only the last matters.
+    // The preference is persisted when the drag ends.
+    setSplitRatio(splitRatioAt(clientX, rect.left, rect.width));
+  }, []);
+  const nudgeSplit = React.useCallback((delta: number): void => {
+    // From the SHOWN ratio, not the stored one: a ratio saved on a wider row is
+    // already clamped for this one, and nudging the raw value would make the
+    // first keypress a no-op that silently overwrites the preference.
+    // Clamped against the DERIVED width, not a rect that may be zero-sized.
+    const next = clampSplitRatio(shownRatio + delta, paneRowPx);
+    setSplitRatio(next);
+    writeSplitRatio(next);
+  }, [shownRatio, paneRowPx]);
+  const persistSplit = React.useCallback((): void => {
+    draggingDivider.current = false;
+    setSplitRatio(current => { writeSplitRatio(current); return current; });
+  }, []);
   /*
    * The panel wins and the SPLIT closes, rather than both panes shrinking
    * below the floor. A terminal under its floor is not a smaller terminal - it
@@ -297,6 +355,29 @@ export function TerminalTab({
   React.useEffect(() => {
     if (splitId && !splitState.enabled) onToggleSplit?.(splitId);
   }, [splitId, splitState.enabled, onToggleSplit]);
+  /*
+   * The two panes on screen, in tab order. The LEADING one takes the ratio and
+   * the trailing one takes what is left, so the divider is the boundary
+   * between them rather than a thing that has to be positioned separately.
+   */
+  const visiblePaneIds = splitId
+    ? sessions.filter(s => s.id === activeId || s.id === splitId).map(s => s.id)
+    : [];
+  const showDivider = splitId != null && visiblePaneIds.length === 2;
+  /*
+   * Gated on `showDivider`, NOT on `splitId`. A splitId can dangle (the split
+   * pane's tab was closed, or it IS the active pane), and giving the lone pane
+   * a 50% basis then would collapse the terminal to half the row with no
+   * divider on screen to drag it back. Before this style existed the dangling
+   * id was a harmless no-op, so the gate is what keeps it one.
+   */
+  const leadingPaneId = showDivider ? visiblePaneIds[0] : null;
+  // A session exiting mid-drag removes the divider, and a detached node never
+  // delivers lostpointercapture to React. Clearing here keeps a remount from
+  // inheriting an armed drag.
+  React.useEffect(() => {
+    if (!showDivider) draggingDivider.current = false;
+  }, [showDivider]);
   const current = sessions.find(s => s.id === activeId);
   /*
    * Asked even with the panel CLOSED, which is what makes moving the counts
@@ -577,7 +658,10 @@ export function TerminalTab({
           it a long line of terminal output refuses to shrink and pushes the
           panel off screen. */}
       <div className="flex min-h-0 flex-1">
-      <div className={clsx('flex min-w-0 flex-1', splitId ? 'flex-row gap-px bg-border-soft' : 'flex-col')}>
+      <div
+        ref={splitRowRef}
+        className={clsx('flex min-w-0 flex-1', splitId ? 'relative flex-row gap-px bg-border-soft' : 'flex-col')}
+      >
       {sessions.map(session => (
         <div
           key={session.id}
@@ -587,7 +671,12 @@ export function TerminalTab({
            * conditions are ors.
            */
           hidden={session.id !== activeId && session.id !== splitId}
+          data-testid="terminal-pane"
           className={clsx('min-h-0 flex-1', splitId && 'min-w-0 bg-canvas')}
+          /* The leading pane's width is the divider position; the trailing one
+             grows into whatever is left. Only inline style, never a DOM move:
+             re-parenting a pane would unmount it and kill the agent. */
+          style={session.id === leadingPaneId ? { flex: `0 0 ${(shownRatio * 100).toFixed(2)}%` } : undefined}
         >
           <TerminalPane
             itemId={session.itemId}
@@ -604,6 +693,53 @@ export function TerminalTab({
           />
         </div>
       ))}
+
+      {/* The divider itself (b014cc86). An ABSOLUTE overlay on the seam rather
+          than a flex child, because inserting an element between two mapped
+          panes would change their parent and unmount them. Pointer events, so
+          mouse and touch share one path; the arrows move it without a drag. */}
+      {showDivider && (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize the two terminals"
+          aria-valuenow={Math.round(shownRatio * 100)}
+          aria-valuemin={Math.round(ratioBounds.min * 100)}
+          aria-valuemax={Math.round(ratioBounds.max * 100)}
+          tabIndex={0}
+          data-testid="terminal-split-divider"
+          className="absolute inset-y-0 z-10 -ml-1 w-2 cursor-col-resize touch-none bg-transparent transition-colors hover:bg-brand/40 focus-visible:bg-brand/40 focus-visible:outline-none"
+          style={{ left: `${shownRatio * 100}%` }}
+          onPointerDown={e => {
+            // Primary button only: a right-click should open its menu, not arm
+            // a drag that the next move would then run with.
+            if (e.button !== 0) return;
+            draggingDivider.current = true;
+            e.currentTarget.setPointerCapture?.(e.pointerId);
+            e.preventDefault();
+          }}
+          onPointerMove={e => {
+            if (!draggingDivider.current) return;
+            // `buttons === 0` means no button is down: the drag ended without a
+            // pointerup (cancelled, released off-window), and following an
+            // unpressed cursor is the stuck-drag bug.
+            if (e.buttons === 0) { persistSplit(); return; }
+            moveSplitTo(e.clientX);
+          }}
+          onPointerUp={e => {
+            e.currentTarget.releasePointerCapture?.(e.pointerId);
+            persistSplit();
+          }}
+          // Covers up, cancel and removal in one: whatever ended the drag, the
+          // flag is cleared.
+          onLostPointerCapture={persistSplit}
+          onKeyDown={e => {
+            const step = e.shiftKey ? 0.1 : 0.02;
+            if (e.key === 'ArrowLeft') { e.preventDefault(); nudgeSplit(-step); }
+            if (e.key === 'ArrowRight') { e.preventDefault(); nudgeSplit(step); }
+          }}
+        />
+      )}
       </div>
 
       {/* Asks about the session you are LOOKING at, not all of them: the panel
