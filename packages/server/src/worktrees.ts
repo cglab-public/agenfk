@@ -260,10 +260,10 @@ export function createWorktree(opts: CreateWorktreeOptions): CreatedWorktree {
     }
     /*
      * The setup decision is made against the EXISTING directory, not skipped.
-     * A reused worktree is the common case, and whether its node_modules are
+     * A reused worktree is the common case, and whether its dependencies are
      * there is a fact about the directory rather than about this call.
      */
-    return { path: target, branchName, created: false, setup: planWorktreeSetup({ declared: setupCommand, hasManifest: hasManifest(target) }) };
+    return { path: target, branchName, created: false, setup: planWorktreeSetup({ declared: setupCommand, hasManifest: hasManifest(target), reused: true }) };
   }
   if (existing) {
     // Registered but gone from disk — someone deleted the directory by hand.
@@ -295,6 +295,13 @@ export function createWorktree(opts: CreateWorktreeOptions): CreatedWorktree {
    * same repository, but a branch that adds or removes a manifest makes them
    * differ - and the directory somebody is about to work in is the one whose
    * answer matters.
+   */
+  /*
+   * PLANNED, not executed. A fresh worktree certainly needs its dependencies,
+   * but running the install HERE would run it inside the status transition that
+   * created the worktree, and a dependency install takes minutes - the same
+   * reason `verify` runs in the background rather than in its request. The CALLER starts the
+   * command and posts the outcome (712a4752); this stays a pure decision.
    */
   return {
     path: target,

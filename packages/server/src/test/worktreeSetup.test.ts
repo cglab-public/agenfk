@@ -14,9 +14,56 @@
  * running for minutes is worse than none at all.
  */
 import { describe, it, expect } from 'vitest';
-import { planWorktreeSetup } from '../worktreeSetup';
+import { planWorktreeSetup, applySetupResult } from '../worktreeSetup';
+
+/**
+ * Folding a run's outcome back in (712a4752).
+ *
+ * Deciding is not running: the caller owns the shell, and it is the caller
+ * that must not block the event loop. What a success or failure MEANS, and
+ * what the card is told, is this pure function. The examples use several
+ * ecosystems on purpose - the command is whatever the project declares.
+ */
+describe('folding in what the setup run did', () => {
+  const declared = { command: 'dotnet restore', ready: false, notice: 'run it yourself' };
+
+  it('marks the worktree ready and says what ran', () => {
+    const d = applySetupResult(declared, { ok: true, output: 'Restored 42 projects', timedOut: false });
+    expect(d.ready).toBe(true);
+    expect(d.notice).toContain('dotnet restore');
+  });
+
+  it('keeps it NOT ready, with the output, when setup fails', () => {
+    const d = applySetupResult(declared, { ok: false, output: 'NU1101: unable to find package', timedOut: false });
+    expect(d.ready).toBe(false);
+    expect(d.notice).toMatch(/failed/);
+    expect(d.notice).toContain('NU1101');
+  });
+
+  it('names a timeout as a timeout, not a failure', () => {
+    // A hung restore and a broken one are different afternoons.
+    const d = applySetupResult(declared, { ok: false, output: '', timedOut: true }, 120_000);
+    expect(d.ready).toBe(false);
+    expect(d.notice).toMatch(/did not finish within 2 minutes/);
+  });
+
+  it('leaves a decision with no command alone', () => {
+    const none = { command: null, ready: true, notice: 'nothing to install' };
+    expect(applySetupResult(none, { ok: false, output: 'x', timedOut: false })).toEqual(none);
+  });
+});
 
 describe('when the project says what to run', () => {
+  it('does not promise an install on an ADOPTED worktree', () => {
+    // The adopted worktree is never re-installed, and whether its dependencies
+    // are present is a fact this cannot see. Saying "AgEnFK does NOT run it"
+    // after a previous run installed them is a confident wrong answer.
+    const d = planWorktreeSetup({ declared: 'npm ci', hasManifest: true, reused: true });
+    expect(d.ready).toBe(false);
+    expect(d.notice).toMatch(/not re-installed/i);
+    expect(d.notice, 'claimed a fresh install on adoption').not.toMatch(/runs in the background/i);
+  });
+
   it('returns exactly that, and puts it in the notice', () => {
     const d = planWorktreeSetup({ declared: 'pnpm install --frozen-lockfile', hasManifest: true });
     expect(d.command).toBe('pnpm install --frozen-lockfile');
@@ -37,7 +84,12 @@ describe('when the project says what to run', () => {
      */
     const d = planWorktreeSetup({ declared: 'npm ci', hasManifest: true });
     expect(d.notice, 'the notice claims an install is in progress').not.toMatch(/^Running\b/);
-    expect(d.notice).toMatch(/does NOT run it|run it here/i);
+    // NEUTRAL about WHO runs it. The caller may be the token-gated path that
+    // starts the install, or one of the several (pr import, `worktree create`,
+    // the desktop) that only record the worktree. Promising a background
+    // install here made those paths lie - round 1's defect, in new words.
+    expect(d.notice).toMatch(/has to run here/i);
+    expect(d.notice, 'promised an install the caller may never start').not.toMatch(/runs in the background/i);
     expect(d.notice, 'it did not say the dependencies are missing').toMatch(/no dependencies installed/i);
   });
 

@@ -13,6 +13,7 @@ import { startFlowSync, type FlowSyncHandle } from "./hub/flowSync.js";
 import { refreshProjectFlowFromHub } from "./hub/flowRefresh.js";
 import { startRunTailer } from "./agent-runs/tailer.js";
 import { createWorktree, removeWorktree } from "./worktrees.js";
+import { applySetupResult, SETUP_TIMEOUT_MS, type SetupDecision, type SetupRun } from "./worktreeSetup.js";
 import { readGitHubAccount, signOutGitHub } from "./githubAccount.js";
 import { startUpgradeSync, replayPendingUpgradeOutcome, type UpgradeSyncHandle } from "./hub/upgradeSync.js";
 import { startRepointSync, type RepointSyncHandle } from "./hub/repointSync.js";
@@ -1451,6 +1452,11 @@ app.post("/projects/:id/tasks-from-branch", asyncHandler(async (req: any, res: a
       worktreePath: result.path,
       branchName: branch,
     } as any);
+    if (req.headers['x-agenfk-internal'] === VERIFY_TOKEN && result.created) {
+      startWorktreeSetup(withWorktree, result.setup, result.path);
+    } else if (!result.setup.ready) {
+      await noteOnItem(withWorktree.id, result.setup.notice);
+    }
     io.emit('items_updated');
     res.status(201).json({ item: withWorktree, worktree: result });
   } catch (e: any) {
@@ -2441,6 +2447,18 @@ app.post("/items/:id/worktree", limitExpensive, asyncHandler(async (req: any, re
   }
 
   await storage.updateItem(item.id, { worktreePath: result.path, branchName } as any);
+  /*
+   * Execution, not creation, is token-gated. Running an arbitrary project shell
+   * string is at least as privileged as `verifyCommand`, and this route has no
+   * token (by design - creating a directory is cheap). Without the token the
+   * caller gets the decision and the notice; with it, the install starts in the
+   * background and reports on the card.
+   */
+  if (req.headers['x-agenfk-internal'] === VERIFY_TOKEN && result.created) {
+    startWorktreeSetup(item, result.setup, result.path);
+  } else if (!result.setup.ready) {
+    await noteOnItem(item.id, result.setup.notice);
+  }
   io.emit('items_updated');
   res.status(result.created ? 201 : 200).json(result);
 }));
@@ -3482,7 +3500,7 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
      * are everywhere else.
      */
     if (status !== undefined && updated.status !== currentItem.status && updated.status !== Status.TODO) {
-      await ensureWorktreeForItem(updated);
+      await ensureWorktreeForItem(updated, isInternalVerify);
     }
 
     const timestamp = new Date().toISOString();
@@ -3709,7 +3727,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED\n\n**Step**: ${item.status} → ${codingStep.name}${exitNote}`, timestamp: new Date() };
     const movedToCoding = await storage.updateItem(itemId, { status: codingStep.name as Status, comments: [...(item.comments || []), comment] });
     // Entering the first working step is where a worktree earns its keep.
-    await ensureWorktreeForItem(movedToCoding);
+    await ensureWorktreeForItem(movedToCoding, true);
     io.emit('items_updated');
     const codingStepCriteria = (codingStep as any).exitCriteria as string | undefined;
     const mandatoryNote = codingStepCriteria ? `\n\n⚠️ MANDATORY EXIT CRITERIA — you MUST satisfy ALL of the following before calling validate_progress again:\n\n${codingStepCriteria}` : '';
@@ -3856,7 +3874,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         const updated = await storage.updateItem(itemId, { status: nextStatus, comments: [...(item.comments || []), sibComment], ...(isExitStep ? { failureCount: 0 } : {}) });
         // Sibling propagation moves the item into a working step exactly like
         // a verify does. It is the same transition; only the reason differs.
-        await ensureWorktreeForItem(updated);
+        await ensureWorktreeForItem(updated, true);
         io.emit('items_updated');
         if (updated.parentId) await syncParentStatus(updated.parentId);
         return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}`, output: 'Sibling propagation' });
@@ -3869,7 +3887,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const exitNote = exitCriteria ? `\n**Exit criteria acknowledged**: ${exitCriteria}` : '';
     const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED\n\n**Step**: ${item.status} → ${nextStatus}${exitNote}`, timestamp: new Date() };
     const updated = await storage.updateItem(itemId, { status: nextStatus, comments: [...(item.comments || []), comment] });
-    await ensureWorktreeForItem(updated);
+    await ensureWorktreeForItem(updated, true);
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId);
     return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}` });
@@ -4212,7 +4230,67 @@ function remoteRefFor(repoRoot: string, branchName: string): string | undefined 
   }
 }
 
-async function ensureWorktreeForItem(item: any): Promise<void> {
+/**
+ * Start a worktree's dependency install in the BACKGROUND (712a4752).
+ *
+ * Orca runs `scripts.setup` in every new worktree and pays the install, and we
+ * do the same - but NOT inside the status transition that created the worktree.
+ * A dependency install takes minutes, and blocking the event loop for it would
+ * make the server serve nothing else: the same rule that runs `verify` behind a
+ * 202. So it is fire-and-forget, and the outcome is posted on the card when it
+ * lands, which is where an agent already looks.
+ *
+ * DETACHED, so the command is its own process-group leader: the shell is the
+ * direct child, and a compound setup (a bootstrap script plus the package
+ * manager, exactly what Orca's `scripts.setup` is) would otherwise survive the
+ * timeout in its children while the card says the install failed. The kill
+ * targets the group.
+ */
+function startWorktreeSetup(item: any, decision: SetupDecision, worktreePath: string): void {
+  if (!decision.command) {
+    if (!decision.ready) void noteOnItem(item.id, decision.notice);
+    return;
+  }
+  const child = spawn(decision.command, {
+    shell: true,
+    cwd: worktreePath,
+    detached: true,
+    env: { ...process.env, FORCE_COLOR: '0' },
+  });
+  let output = '';
+  let timedOut = false;
+  // A ROLLING TAIL, not a head. The diagnosis is at the END of an install log,
+  // and the notice quotes the tail - a head buffer would throw away exactly
+  // the part it shows. Bounded, so a verbose install cannot pin memory.
+  const collect = (d: Buffer): void => {
+    output += d.toString();
+    if (output.length > 16_000) output = output.slice(-16_000);
+  };
+  child.stdout?.on('data', collect);
+  child.stderr?.on('data', collect);
+  // A stream error with no listener is an uncaught exception in a long-lived
+  // server; the close handler still reports the outcome.
+  child.stdout?.on('error', () => { /* reported by the run's close */ });
+  child.stderr?.on('error', () => { /* reported by the run's close */ });
+  const killer = setTimeout(() => {
+    timedOut = true;
+    try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); else child.kill('SIGKILL'); }
+    catch { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
+  }, SETUP_TIMEOUT_MS);
+  if (typeof killer.unref === 'function') killer.unref();
+  let settled = false;
+  const settle = (result: SetupRun): void => {
+    // `error` and `close` both fire on a failed spawn; one note per attempt.
+    if (settled) return;
+    settled = true;
+    clearTimeout(killer);
+    void noteOnItem(item.id, applySetupResult(decision, result).notice);
+  };
+  child.on('error', err => settle({ ok: false, output: `${output}${err.message}`, timedOut: false }));
+  child.on('close', code => settle({ ok: code === 0 && !timedOut, output, timedOut }));
+}
+
+async function ensureWorktreeForItem(item: any, allowSetup = false): Promise<void> {
   if (!shouldAutoWorktree(item)) return;
   const project: any = await storage.getProject(item.projectId);
   if (!project?.autoWorktree || !project.projectRoot) return;
@@ -4248,7 +4326,14 @@ async function ensureWorktreeForItem(item: any): Promise<void> {
      * case, and a comment saying so on every transition is noise that teaches
      * people to skim the comments where the real warnings live.
      */
-    if (!result.setup.ready) {
+    if (allowSetup && result.created) {
+      // The CALLER started this worktree on a token-gated path; running an
+      // arbitrary project shell string is at least as privileged as
+      // `verifyCommand`, which refuses without one. `created` because an
+      // ADOPTED worktree is never re-installed - the plan says so, and this
+      // must agree with it.
+      startWorktreeSetup(item, result.setup, result.path);
+    } else if (!result.setup.ready) {
       await noteOnItem(item.id, result.setup.notice);
     }
   } catch (e: any) {
