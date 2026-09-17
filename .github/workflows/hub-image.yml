@@ -76,12 +76,26 @@ jobs:
           PREV=$(git tag -l 'hub-v*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)
           NOTES_ARGS=(--generate-notes)
           if [ -n "$PREV" ]; then NOTES_ARGS+=(--notes-start-tag "$PREV"); fi
+          # A hub build must never become GitHub's "latest release", or the CLI
+          # upgrade check (which reads /releases/latest) tells users to upgrade
+          # to a Docker image tag. That happened with hub-v1.1.19-beta.1: it was
+          # created without --prerelease, so GitHub counted it as the latest
+          # STABLE and every `agenfk` invocation printed
+          # "vhub-v1.1.19-beta.1 is available". The CLI now ignores hub-v* too;
+          # this stops the bad state being created at all.
+          if [[ "$TAG" == *-* ]]; then
+            VISIBILITY=(--prerelease)      # hub beta / rc
+          else
+            VISIBILITY=(--latest=false)    # stable hub build: not "the latest"
+          fi
           if gh release view "$TAG" > /dev/null 2>&1; then
-            # Re-run (e.g. dispatch from the tag): refresh the asset only.
+            # Re-run (e.g. dispatch from the tag): refresh the asset, and fix the
+            # visibility flag if an earlier run set it wrong.
             gh release upload "$TAG" agenfk-hub-dist.tar.gz --clobber
+            gh release edit "$TAG" "${VISIBILITY[@]}"
           else
             gh release create "$TAG" agenfk-hub-dist.tar.gz \
-              --title "$TAG" "${NOTES_ARGS[@]}"
+              --title "$TAG" "${NOTES_ARGS[@]}" "${VISIBILITY[@]}"
           fi
         env:
           TAG: ${{ github.ref_name }}

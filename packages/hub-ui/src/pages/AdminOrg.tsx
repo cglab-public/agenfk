@@ -3,6 +3,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Building2, Copy, Check, AlertTriangle } from 'lucide-react';
 import { api, MeResponse } from '../api';
 import { validateOrgIdInput, spokeRepointCommand } from './adminOrgRename';
+import { AdminFederation } from './AdminFederation';
+import { AdminChildHubs } from './AdminChildHubs';
 
 const inputCls = 'w-full px-3 py-2 rounded-lg border border-border-soft bg-chip text-ink dark:text-white text-sm placeholder:text-ink-tertiary focus:outline-none focus:ring-2 focus:ring-brand';
 const cardCls = 'bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5';
@@ -16,7 +18,30 @@ interface RenameResponse {
   envVar: string;
 }
 
+/**
+ * Admin → Organization: everything about this hub's place in the world.
+ *
+ * Three questions that used to live in three tabs — what this org is called,
+ * who this hub reports to, and who reports to it — are one page, because they
+ * are one subject and an admin arriving with any of them had to guess which
+ * tab held it.
+ */
 export function AdminOrg() {
+  return (
+    <div className="space-y-5">
+      <OrgIdentity />
+      {/*
+        Anchors, not decoration: /admin/child-hubs and /admin/parent-hub used to
+        be addresses, and the child-hub roster in particular is an operational
+        list people link to. The redirects target these.
+      */}
+      <div id="parent-hub"><AdminFederation /></div>
+      <div id="child-hubs"><AdminChildHubs /></div>
+    </div>
+  );
+}
+
+function OrgIdentity() {
   const qc = useQueryClient();
   const me = useQuery<MeResponse>({ queryKey: ['me'], queryFn: async () => (await api.get('/auth/me')).data });
   const currentOrgId = me.data?.orgId ?? '';
@@ -53,7 +78,7 @@ export function AdminOrg() {
         <header>
           <div className="flex items-center gap-2">
             <Building2 className="w-4 h-4 text-accent-text" />
-            <h3 className="text-sm font-semibold text-ink">Organization</h3>
+            <h2 className="text-sm font-semibold text-ink">Organization</h2>
           </div>
           <p className="mt-1 text-xs text-ink-tertiary">
             Rename the org id this hub serves. The id is referenced from spoke installations and embedded in queued events; renaming repoints them all in a single transaction.
@@ -124,7 +149,7 @@ export function AdminOrg() {
               className="inline-flex items-center gap-1.5 text-xs font-semibold text-accent-text hover:underline"
             >
               {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-              {copied ? 'Copied' : 'Copy command'}
+              {copied ? 'Copied command' : 'Copy command'}
             </button>
             <button onClick={() => setSuccess(null)} className="text-xs font-medium text-ink-tertiary hover:text-ink">Dismiss</button>
           </div>

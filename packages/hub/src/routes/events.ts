@@ -1,4 +1,6 @@
 import { Router, Request, Response } from 'express';
+import { SEMVER_TAG_RE } from '../util/semver.js';
+import { forwardEvents } from '../services/federation/forwarding.js';
 import { HubServerContext } from '../server.js';
 import { requireApiKey } from '../auth/apiKey.js';
 import { HubEvent } from '@agenfk/core';
@@ -28,6 +30,7 @@ function requestHost(req: Request): string | null {
 
 export { sanitizeRemoteUrl } from '../util/remoteUrl.js';
 import { sanitizeRemoteUrl, remoteUrlFromRepo } from '../util/remoteUrl.js';
+import { asyncRoute } from '../util/asyncRoute.js';
 
 
 /**
@@ -88,7 +91,7 @@ export function eventsRouter(ctx: HubServerContext): Router {
   // the calling installation, or 204 if none. The caller (Story 3 client)
   // decides whether to act on it; the hub does NOT transition state here —
   // it waits for the corresponding `fleet:upgrade:*` event in /v1/events.
-  router.get('/upgrade-directive', requireKey, async (req: Request, res: Response) => {
+  router.get('/upgrade-directive', requireKey, asyncRoute(async (req: Request, res: Response) => {
     const installationId = req.hubApiKey!.installationId;
     if (!installationId) {
       return res.status(204).end();
@@ -111,13 +114,13 @@ export function eventsRouter(ctx: HubServerContext): Router {
       targetVersion: row.target_version,
       issuedAt: row.created_at,
     });
-  });
+  }));
 
   // Repoint directive (CGLAB-66). Same shape as /upgrade-directive: keyed off
   // the api_key's installation binding, so a legacy org-wide key gets nothing —
   // it cannot be attributed to a machine and therefore cannot be tracked to a
   // confirmed move.
-  router.get('/repoint-directive', requireKey, async (req: Request, res: Response) => {
+  router.get('/repoint-directive', requireKey, asyncRoute(async (req: Request, res: Response) => {
     const installationId = req.hubApiKey!.installationId;
     if (!installationId) return res.status(204).end();
     // A hidden person's events are dropped at ingest, so such an install would
@@ -149,18 +152,12 @@ export function eventsRouter(ctx: HubServerContext): Router {
       allowedHost: row.allowed_host,
       issuedAt: row.created_at,
     });
-  });
-
-  // Strict semver allowlist for the X-Agenfk-Version batch header. Same shape
-  // as the CLI/admin-route allowlist — the value will eventually be displayed
-  // in the admin UI and used to drive downgrade-detection logic, so we never
-  // accept anything malformed.
-  const SEMVER_TAG_RE = /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+  }));
 
   // Hard ceiling on events processed in a single /v1/events transaction.
   const MAX_EVENTS_PER_BATCH = 500;
 
-  router.post('/events', requireKey, async (req: Request, res: Response) => {
+  router.post('/events', requireKey, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.hubApiKey!.orgId;
     // An installation-bound key may only post events for its OWN installation.
     // Without this, any org key could stamp fleet:upgrade:* state or running
@@ -188,6 +185,10 @@ export function eventsRouter(ctx: HubServerContext): Router {
     let rejected = 0;
     let hiddenDropped = 0;
     const seenInstallations = new Set<string>();
+    // Events kept locally, queued for the parent after the transaction. This
+    // hub is a child only when it has a parent binding; on a standalone hub
+    // forwardEvents is a no-op and nothing is queued.
+    const forwardable: Array<Record<string, unknown>> = [];
     const rejections: EventRejection[] = [];
     // Best-effort eventId for events that fail isValidEvent: they may lack it
     // entirely, which is often the very reason they are invalid.
@@ -343,6 +344,9 @@ export function eventsRouter(ctx: HubServerContext): Router {
           JSON.stringify(e),
         ]);
         if (result.changes === 0) { skipped++; continue; }
+        // Only events this hub actually KEPT are forwarded: a duplicate the
+        // local insert ignored is not news for the parent either.
+        forwardable.push({ ...e, userKey });
         ingested++;
         await ctx.db.run(UPSERT_INSTALLATION_SQL, [
           e.installationId, e.orgId, now, now,
@@ -496,8 +500,24 @@ export function eventsRouter(ctx: HubServerContext): Router {
         + `${keyInstallation ? ` (installation ${keyInstallation})` : ' (org-wide key)'}.`,
       );
     }
+    // Federation (CGLAB-184). Deliberately AFTER the ingest transaction and
+    // outside it: queueing for the parent is a side effect of having stored an
+    // event, never a condition of storing it.
+    //
+    // forwardEvents is total by construction — it catches per event and
+    // reports failure as a value — so this catch is unreachable today and no
+    // test can reach it either. It stays because the property it protects is
+    // the load-bearing one: if someone later makes that function throw, a
+    // developer's `agenfk` should still not start failing because of a parent
+    // hub they have never heard of.
+    try {
+      await forwardEvents(ctx.db, ctx.config.secretKey, forwardable);
+    } catch (err) {
+      console.warn('[FEDERATION] could not queue events for the parent:', (err as Error).message);
+    }
+
     res.json({ ingested, skipped, rejected, hiddenDropped, installationId: installationFromHeader, rejections });
-  });
+  }));
 
   return router;
 }

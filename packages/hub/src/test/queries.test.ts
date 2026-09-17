@@ -379,6 +379,74 @@ describe('hub query endpoints', () => {
     expect(row.tokens_out).toBe(0);
   });
 
+  it('GET /v1/metrics with types= filters instead of failing on a column that is not there', async () => {
+    // BUG 61bdbd45: applyEventFilters emits `type IN (...)`, but with neither
+    // projects nor itemTypes set this endpoint read rollups_daily, which has no
+    // `type` column — org_id, user_key, day, the counters and child_hub_id. So
+    // the types filter has never worked here. The card reported it as a HANG,
+    // which it was when filed — the sibling async-rejection bug 5d98dd55 is
+    // fixed earlier on this branch, so by the time this test was written the
+    // unfixed behaviour was a 500.
+    const r = await supertest(app).get('/v1/metrics?types=pr.opened').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(Array.isArray(r.body.series)).toBe(true);
+  });
+
+  it('GET /v1/metrics?types= actually narrows the numbers', async () => {
+    // A 200 alone would pass against a filter that is silently ignored.
+    const all = await supertest(app).get('/v1/metrics').set('Cookie', cookie);
+    const filtered = await supertest(app).get('/v1/metrics?types=pr.opened').set('Cookie', cookie);
+    expect(filtered.status).toBe(200);
+    const total = (b: any) => b.series.reduce((n: number, s: any) => n + Number(s.events_count), 0);
+    expect(total(all.body)).toBeGreaterThan(0);
+    expect(total(filtered.body)).toBeGreaterThan(0);
+    expect(total(filtered.body)).toBeLessThan(total(all.body));
+  });
+
+  it('GET /v1/metrics with types= AND users= narrows on BOTH, not just one', async () => {
+    // The fixture's only pr.opened belongs to bob, so asking for alice's
+    // pr.opened returned [] and `[].every(...)` was true — the assertion was
+    // satisfied by emptiness and passed with the types predicate dropped
+    // entirely. Give alice one of her own and assert the count.
+    const token = await issueApiKey(ctx.db, 'org', 'types-both');
+    await supertest(app).post('/v1/events')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ events: [
+        sample({ eventId: 'both1', occurredAt: '2026-05-07T09:00:00Z', type: 'pr.opened',
+          payload: { prNumber: 41, repo: 'acme/web' } }),
+      ]});
+    const r = await supertest(app).get('/v1/metrics?types=pr.opened&users=alice@acme.com').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    // Exactly alice's one pr.opened: bob's is excluded by users, and alice's
+    // other events are excluded by types. Dropping EITHER predicate changes it.
+    expect(r.body.series.map((x: any) => x.user_key)).toEqual(['alice@acme.com']);
+    expect(Number(r.body.series[0].events_count)).toBe(1);
+  });
+
+  it('a from= bound means the same day on both branches of /v1/metrics', async () => {
+    // rollups_daily.day is 'YYYY-MM-DD' and the bound is compared as a STRING,
+    // so '2026-05-03' >= '2026-05-03T00:00:00.000Z' is false and the rollups
+    // branch dropped the first day of the window. The UI sends exactly that
+    // instant for its "Today" range. Adding ?types= crosses to the events
+    // branch, so the SAME window answered differently depending on the filter.
+    const from = '2026-05-03T00:00:00.000Z';
+    const rollup = await supertest(app).get(`/v1/metrics?from=${from}`).set('Cookie', cookie);
+    const events = await supertest(app).get(`/v1/metrics?from=${from}&types=item.created,item.closed,pr.opened,validate.passed,validate.failed,step.transitioned`).set('Cookie', cookie);
+    expect(rollup.status).toBe(200);
+    expect(events.status).toBe(200);
+    const days = (b: any) => [...new Set(b.series.map((x: any) => x.day))].sort();
+    expect(days(rollup.body)).toContain('2026-05-03');
+    expect(days(rollup.body)).toEqual(days(events.body));
+  });
+
+  it('GET /v1/metrics?types= honours the child hub filter on the branch it now takes', async () => {
+    // The events branch and the rollups branch read DIFFERENT hub columns, and
+    // ?types= is what newly routes a metrics request to the events one.
+    const r = await supertest(app).get('/v1/metrics?types=pr.opened&childHubId=local').set('Cookie', cookie);
+    expect(r.status).toBe(200);
+    expect(Array.isArray(r.body.series)).toBe(true);
+  });
+
   it('rollup ignores tokens.logged events', async () => {
     const token = await issueApiKey(ctx.db, 'org', 'cached-test');
     const ingest = await supertest(__server).post('/v1/events')
@@ -658,4 +726,9 @@ describe('GET /v1/prs/overview', () => {
     expect(r.body.prs[0].prNumber).toBe(3);
     expect(r.body.prs[0].url).toBe('https://github.com/acme/api/pull/3');
   });
+  // The ?pr= PR-search suite lives in pr-overview-pr-search-route.test.ts, which
+  // boots the app on an in-memory sqlite database. Same engine, same SQL — it
+  // just does not share a DB file across worker threads, which is what lets it
+  // drive a mutation sweep over routes/queries.ts. See that file for the detail.
+
 });

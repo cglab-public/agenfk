@@ -62,6 +62,10 @@ function UrlProbe() {
 const renderPage = (entry = '/prs') => {
   get.mockImplementation(async (url: string) => {
     if (url.startsWith('/v1/projects')) return { data: { projects: ['acme/api'] } };
+    // The page asks which hubs it is showing (CGLAB-184). Answer it explicitly:
+    // these fixtures otherwise treat every non-projects URL as an overview call,
+    // and a standalone hub is the right default for a suite about PR filters.
+    if (url.startsWith('/v1/child-hubs')) return { data: { childHubs: [], hasLocal: true } };
     return { data: makeOverview(MODELS) };
   });
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -93,8 +97,20 @@ const dataQueryModel = () => {
   return null;
 };
 
-beforeEach(() => get.mockReset());
-afterEach(() => { cleanup(); get.mockReset(); });
+
+// Same fixed-date fixture as the drill-down suite, so the same clock coupling
+// applies: the page's axis is a window measured from the real `now`, and from
+// 2026-09-22 this fixture's period falls entirely outside a 30d window. These
+// assertions are data-driven today and so survive, but the fuse is identical —
+// pin the clock rather than wait for the next assertion to arm it. (CGLAB-186.)
+const FIXTURE_NOW = new Date('2026-08-14T12:00:00.000Z');
+
+beforeEach(() => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.setSystemTime(FIXTURE_NOW);
+  get.mockReset();
+});
+afterEach(() => { cleanup(); vi.useRealTimers(); get.mockReset(); });
 
 describe('parseFiltersOpen', () => {
   it('is open by default — hiding filters on first visit would be a regression', () => {
@@ -245,6 +261,10 @@ describe('PR Overview model meta-filter', () => {
   it('is hidden when there is nothing to meta-filter', async () => {
     get.mockImplementation(async (url: string) => {
       if (url.startsWith('/v1/projects')) return { data: { projects: ['acme/api'] } };
+      // The page asks which hubs it is showing (CGLAB-184). Answer it explicitly:
+      // these fixtures otherwise treat every non-projects URL as an overview call,
+      // and a standalone hub is the right default for a suite about PR filters.
+      if (url.startsWith('/v1/child-hubs')) return { data: { childHubs: [], hasLocal: true } };
       return { data: makeOverview(['solo-model']) };
     });
     render(

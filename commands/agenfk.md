@@ -60,6 +60,14 @@ Before creating any item, evaluate the request against these signals:
 
 **If EPIC**: create it with `agenfk create <TYPE> "<title>" --project <id>`, then immediately invoke `/agenfk-plan <id>` and **STOP** — do not write any code until the user approves the decomposition. An EPIC is never worked directly: all of its child stories must exist and be approved before any of them starts.
 
+> **Linking to a tracker.** Any card can carry a JIRA reference, not just ones
+> imported from JIRA. Pass `--jira-item <KEY>` when creating it, or attach one
+> later with `agenfk update <id> --jira-item <KEY>` (`--jira-item none` unlinks).
+> The link is a reference only — the card keeps its own title and description —
+> and it is validated against JIRA when connected, format-checked when not. If
+> the flow requires a JIRA key for branch naming, this is how the card records
+> the same key the branch carries.
+
 **If STORY**: create it with `agenfk create <TYPE> "<title>" --project <id>`. Decomposing a story into tasks is **not** mandatory: do it only when the story is large — multiple distinct deliverables, several packages, or more than one focused implementation pass — and that is the agent's judgement, stated with reasons. When you do decompose, invoke `/agenfk-plan <id>`, create every task before starting work, and **STOP** for the user's approval as with an EPIC. A small story goes straight to its first working step.
 
 ---
@@ -187,6 +195,13 @@ defines none, so this is the common case — empty criteria never mean "no work"
    3. Persist it: `agenfk update-project <id> --verify-command "<detected>"`.
    4. Retry `agenfk verify <itemId> --evidence "<evidence>"`.
    5. Only if no config files exist and the stack cannot be detected, ask the developer.
+
+**Stage this item's work before that final verify.** The DONE transition makes a
+`close(<type>)` commit of whatever is in the git index, and the server stages nothing for
+you — `git add` the files belonging to THIS item (new files included; they are the ones
+most often forgotten) and leave anything else alone. The DONE response tells you what it
+committed, names anything it left unstaged, and says so plainly if the commit FAILED or
+was declined because a merge is in progress. Do not push on a failure.
 
 Once the item is DONE, **push your branch** so the work is available for PR/review:
 

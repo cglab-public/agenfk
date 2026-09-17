@@ -40,7 +40,9 @@ You are executing the `/agenfk-close <id>` command as a **Closing Agent**. Follo
 **Step 6 — Move to DONE**
 - Run `agenfk comment <id> "Closing complete: final summary prepared."` to log the step completion.
 - For EPIC/STORY parents: when all children reach DONE, the parent propagates to DONE automatically — no manual transition needed.
+- **Stage this item's work FIRST.** Reaching DONE makes a `close(<type>)` commit of whatever is in the git index, and the server stages nothing for you. Run `git add` (or `git add -A -- <paths>`) over the files that belong to THIS item — including new files, which are the ones most often forgotten — and leave everything else alone. Anything unstaged is reported back in the DONE response and is yours to deal with.
 - For leaf items (TASK/BUG) in an intermediate step: run `agenfk verify <id> --evidence "<how exit criteria were met>"` to advance to DONE.
+- **Read what the close commit actually did.** The DONE response says whether it committed, found nothing staged, declined (a merge in progress), or FAILED. Do not push on a failure.
 - **Push your branch**: After the item reaches DONE, push the branch to remote:
   ```
   git push -u origin <branchName>

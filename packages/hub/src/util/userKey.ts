@@ -38,6 +38,20 @@ const MAX_EMAIL_SHAPED_KEY_LENGTH = 320;
  */
 const EMAIL_SHAPED = /^[^@\s.]+(?:\.[^@\s.]+)*@[^@\s.]+(?:\.[^@\s.]+)+$/;
 
+/**
+ * The pattern on its own, with NO length bound — exported so the bound and the
+ * pattern can be tested as the two independent defences they are.
+ *
+ * This is the one to point adversarial input at: through isEmailShapedKey the
+ * length check answers first, so a timing test there proves only that the bound
+ * exists and would pass unchanged against the old quadratic pattern.
+ *
+ * Callers want isEmailShapedKey. This is the belt without the braces.
+ */
+export function matchesEmailShape(key: string): boolean {
+  return EMAIL_SHAPED.test(key);
+}
+
 /** Is this key a real email address (rather than a username-derived one)? */
 export function isEmailShapedKey(key: string): boolean {
   if (key.startsWith(OS_USER_KEY_PREFIX)) return false;
@@ -45,7 +59,7 @@ export function isEmailShapedKey(key: string): boolean {
   // pattern's braces: even a future edit that reintroduces ambiguity cannot be
   // driven past a few hundred characters of input.
   if (key.length > MAX_EMAIL_SHAPED_KEY_LENGTH) return false;
-  return EMAIL_SHAPED.test(key);
+  return matchesEmailShape(key);
 }
 
 /**

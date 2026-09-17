@@ -59,7 +59,13 @@ Working the flow:
 - `agenfk flow show --project <id> --json` — load the full flow with all steps and exit criteria at session start. Your working contract for the session.
 - `agenfk verify <id> --evidence "<evidence>" ["<command>"]` — step-completion gate. `--evidence` is **required**: describe how you satisfied the current step's exit criteria (logged as a tagged comment). **Use this for ALL forward step transitions** (including TODO → first working step). The command is optional: if omitted, uses `project.verifyCommand` on the final step. If verify reports `NO_VERIFY_COMMAND`, auto-detect the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), set the command via `agenfk update-project <id> --verify-command "<cmd>"`, and retry. Only ask the developer as a last resort.
 
-### Staging before a card closes — MANDATORY
+**Staging is yours, on the final step.** Landing DONE makes a `close(<type>)` commit of the
+git INDEX and stages nothing for you, so `git add` the files belonging to THIS item before
+that last `agenfk verify` — new files especially, since they are the ones most often left
+behind. Deliberately narrow: the server cannot tell your work from a colleague's, and it
+used to sweep the whole working tree, committing other tasks' work under your item's name.
+The DONE response says what it committed, names anything left unstaged, and says so plainly
+if the commit FAILED or was declined because a merge is in progress — do not push on a failure.
 
 Before the `agenfk verify` that moves a card to its final step, `git add` the files **that card changed**.
 
@@ -124,12 +130,13 @@ afterwards.
 When you genuinely cannot tell, say so in those words rather than picking the
 optimistic reading. `unverifiable` is a real answer and a useful one; a
 confident wrong answer is neither.
+||||||| beb237f6
 
 Token usage is captured automatically by the server-side ingestion worker — agents do not need to (and cannot) self-report tokens.
 
 ### PR sizing — MANDATORY
 
-After running `gh pr create`, you MUST run `agenfk pr-register --item <id> --number <n> --repo <owner/repo> --epic <n> --story <n> --task <n> --bug <n>`, where the counts cover the items included in this PR. After `git push` to a branch that already has a registered PR and you've added more items, run `agenfk pr-resize --number <n> --repo <owner/repo> --epic <n> --story <n> --task <n> --bug <n>` with the new counts. The server records a shadow sizing computed from the item tree as a sanity check — only your declared count is authoritative. You MUST also pass `--model <your model id> --harness <your client>` (**both REQUIRED** — `pr-register`/`pr-resize` reject omission) on both commands so the `pr.opened`/`pr.updated` hub event records which agent runtime opened the PR. Report **your actual model** (e.g. for Claude Code, `claude-opus-4-8`) — never copy an example that isn't yours. If you cannot state your own model id directly, **determine your model** from your harness configuration or the current session log before reporting — never omit or guess it (e.g. read the harness's default/selected-model setting, or the session transcript which records the model per turn). A PostToolUse hook prompts you to do this on each `gh pr create` / `git push`.
+After running `gh pr create`, you MUST run `agenfk pr-register --item <id> --number <n> --repo <owner/repo> --epic <n> --story <n> --task <n> --bug <n>`, where the counts cover the items included in this PR. After `git push` to a branch that already has a registered PR and you've added more items, run `agenfk pr-resize --number <n> --repo <owner/repo> --epic <n> --story <n> --task <n> --bug <n>` with the new counts. The server records a shadow sizing computed from the item tree as a sanity check — only your declared count is authoritative. You MUST also pass `--model <your model id> --harness <your client>` (**both REQUIRED** — `pr-register`/`pr-resize` reject omission) on both commands so the `pr.opened`/`pr.updated` hub event records which agent runtime opened the PR. Report **your actual model** (e.g. for Claude Code, `claude-opus-4-8`) — never copy an example that isn't yours. If you cannot state your own model id directly, **determine your model** from the current session log — never from a default/selected-model setting, and never by guessing. A default is session-independent: a pi run launched on DeepSeek reported itself as the `qwen3.8:27b` in `settings.json` and the PR was credited to the wrong model. Read the session transcript and take the **last** model selection in it (pi writes a `model_change` record per selection; the first is only the launch default). `agenfk` now reads that log itself and will correct — with a warning — a `--model` that disagrees with it; pass `--no-detect-model` to keep yours verbatim. A PostToolUse hook prompts you to do this on each `gh pr create` / `git push`.
 
 **Use `agenfk verify` (not `agenfk update --status`) for all FORWARD step transitions** — it enforces the exit-criteria gate and is the only way to reach the final step. `agenfk update <id> --status <name>` is for backward/rollback transitions only.
 
@@ -169,9 +176,11 @@ This is the full workflow surface. Each row notes the equivalent MCP tool (avail
 | Update a project | `agenfk update-project <id> [--name <name>][--description <text>][--verify-command <cmd>]` | `update_project` |
 | List items | `agenfk list [--project <id>] [-t/--type <type>] [-s/--status <status>] [--active] [--all] [--json]` (`--active` = only items in an active working step: excludes TODO/DONE anchors + PAUSED/BLOCKED/terminal; flow-aware — use it for the init resume-check to keep context small) | `list_items` |
 | Get an item | `agenfk get <id> --json` | `get_item` |
-| Create an item | `agenfk create <TYPE> "<title>" --project <id> [-d/--description <desc>] [-p/--parent <id>]` | `create_item` |
+| Create an item | `agenfk create <TYPE> "<title>" --project <id> [-d/--description <desc>] [-p/--parent <id>] [--jira-item <KEY>]` | `create_item` |
 | Update / roll back status | `agenfk update <id> [--status <name>][--title <t>][--description <d>][--type <T>]` (status is backward/rollback only) | `update_item` |
+| Link a card to a JIRA item | `agenfk update <id> --jira-item <KEY>` — attach a JIRA reference to an EXISTING card (e.g. `CGLAB-163`); `--jira-item none` unlinks. Also available at creation time as `agenfk create ... --jira-item <KEY>`. | `update_item` (`jiraItem`) |
 | Re-parent an item | `agenfk update <id> --parent <parentId>` — move it under another item; `--parent none` detaches it to top level. The parent must be in the same project, and cannot be the item itself or one of its descendants. | `update_item` (`parentId`) |
+| Declare owned paths / link an external issue | `agenfk update <id> --claims "<path>,<path>"` — declare the paths this card owns before editing (a directory or an exact file; a glob is refused, and a path another card holds is refused naming the holder); `agenfk update <id> --external-id <key> [--external-url <url>]` — pair the card with an issue in another tracker. | `update_item` |
 | Advance a step (forward) | `agenfk verify <id> --evidence "<text>" ["<command>"]` | `validate_progress` |
 | Add a comment | `agenfk comment <id> "<text>" [--author <name>]` | `add_comment` |
 | Attach context | `agenfk add-context <id> --path <path> [--description <text>][--content <text>]` | `add_context` |
@@ -245,6 +254,39 @@ This is the full workflow surface. Each row notes the equivalent MCP tool (avail
 | Set the community flow registry (local only — a Hub-connected org follows its admin's setting) | `agenfk config set flowRegistry <owner/repo>` |
 | Configure JIRA OAuth | `agenfk jira setup` · `agenfk jira status` · `agenfk jira disconnect` |
 | Configure GitHub Issues import | `agenfk github setup [--owner <owner>][--repo <repo>]` · `agenfk github status` · `agenfk github disconnect` |
+
+### Linking a card to a JIRA item
+
+Items imported from JIRA already carry their issue key. Any other card can be
+linked to one too — at creation time or long afterwards:
+
+```bash
+agenfk create TASK "Fix the picker dismiss" --project <id> --jira-item CGLAB-163
+agenfk update <id> --jira-item CGLAB-163     # link an existing card
+agenfk update <id> --jira-item none          # unlink
+```
+
+The key is stored as the item's external reference, and the board renders it as
+a badge linking straight to the issue.
+
+- **The link is a reference, not an import.** The card keeps its own title and
+  description; nothing is copied from JIRA and nothing is overwritten. Use the
+  JIRA import when you want the issue's content, and `--jira-item` when you
+  want a card you already have to point at an issue.
+- **Validation depends on the connection.** With JIRA connected
+  (`agenfk jira status`), the key is checked against the real issue and the
+  browse URL is filled in; a key that does not exist is refused. Without a
+  connection the key is format-checked and stored bare — which is what makes
+  this usable offline and in CI. If JIRA is connected but unreachable the link
+  still goes through and the command prints a warning that it could not be
+  verified; treat that as unconfirmed, not as success.
+- **Leaving the flag off never changes an existing link**, so an ordinary
+  `agenfk update <id> --title "..."` cannot silently drop a card's JIRA
+  reference.
+
+This pairs with the branch-naming convention: a card carrying `CGLAB-163` and a
+branch named `feat/CGLAB-163_<description>` are the two halves of the same
+trace, one on the board and one in git.
 
 ### Reading state — `--json`
 

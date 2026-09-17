@@ -23,6 +23,8 @@ Check for local changes using `git status`. If there are unstaged or uncommitted
 
   **Preferred — one step (`agenfk pr create`):** Run `agenfk pr create <itemId> --title "<item.title>" --body "<summary>" --model <YOUR-ACTUAL-MODEL-ID> --harness <YOUR-HARNESS>`. This opens the PR via `gh`, stores the URL/number on the item, and **auto-registers the PR sizing** (derived from the item tree) so the `pr.opened` hub event fires with your model + harness — no separate `pr-register` call needed. `--model` and `--harness` are **required**.
 
+  Take `--model` from the **current session log**, never from a default/selected-model setting: a default is session-independent, and a pi run launched on DeepSeek once reported itself as the `qwen3.8:27b` sitting in `settings.json`. pi writes a `model_change` record per selection — the **last** one is what ran; the first is only the launch default. `agenfk` reads that log itself and will correct a disagreeing `--model`, printing what it overrode; `--no-detect-model` keeps yours verbatim.
+
   **Manual alternative (`gh` + `pr-register`):** If you ran `gh pr create` yourself, capture the PR URL/number, then register explicitly: `agenfk pr-register --item <itemId> --number <number> --repo <owner/repo> --epic <n> --story <n> --task <n> --bug <n> --model <YOUR-ACTUAL-MODEL-ID> --harness <YOUR-HARNESS>` (MCP: `register_pr`). **All flags are required**, and they're recorded on the `pr.opened` hub event.
 
 **Step 3 — Confirm and wait**

@@ -1,15 +1,17 @@
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, ChevronDown, GitBranch } from 'lucide-react';
+import { ArrowLeft, ChevronDown, GitBranch, Server } from 'lucide-react';
 import { api } from '../api';
 import { TimelineBar } from '../components/TimelineBar';
+import { csvParam } from '../urlParams';
 import { FacetMultiselect } from '../components/FacetMultiselect';
 import { MetricsTilesRow, MetricsTotals } from '../components/MetricsTilesRow';
 import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
 import { fmtDateTime, browserTimezone } from '../dates';
 import { useToggleSet } from '../hooks/useToggleSet';
+import { useChildHubs } from '../hooks/useChildHubs';
 import { scrollPageToTop } from '../scroll';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
 
@@ -114,6 +116,23 @@ export function UserDetailPage() {
   const eventTypeSel = useToggleSet(['item.closed'], { storageKey: 'agenfk-hub:user:eventTypes' });
   const projectSel = useToggleSet([], { storageKey: 'agenfk-hub:user:projects' });
   const itemTypeSel = useToggleSet([], { storageKey: 'agenfk-hub:user:itemTypes' });
+  // The child hub arrives in the link, not from a picker on this page: you got
+  // here by clicking a person out of a board that was already scoped, and a
+  // person page aggregating them across the whole federation would quietly
+  // contradict the board you came from (BUG b0167566). Read-only here — the
+  // scope is the caller's, and there is nothing on this page to change it with.
+  const [searchParams] = useSearchParams();
+  const childHubs = csvParam(searchParams, 'childHubId');
+  const hubCsv = childHubs.length ? childHubs.join(',') : null;
+  // Named on the page, not merely applied to it. The scope arrives in a link
+  // and there is no control here to clear it, so without a label this is the
+  // one page in the app that filters invisibly — which is exactly what
+  // useChildHubs says must never happen. An id the server does not know still
+  // shows, as the raw id: a detached or mistyped hub matches no rows, so every
+  // tile reads zero and the event list blames "the current filters" while the
+  // Filters panel shows no filter that would explain it.
+  const hubLabels = useChildHubs(new Set(childHubs));
+
   const [range, setRange] = useState<RangeKey>('30d');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
@@ -121,11 +140,17 @@ export function UserDetailPage() {
   const customFromIso = useMemo(() => customStart ? startOfDateInput(customStart) : '', [customStart]);
   const customToIso = useMemo(() => customEnd ? endOfDateInput(customEnd) : '', [customEnd]);
 
+  // Partitioned by hub, exactly as Org does it: offering a repo or an event
+  // type that belongs to a hub this page is not showing is a dead end.
+  const hubQs = hubCsv ? `?${new URLSearchParams({ childHubId: hubCsv })}` : '';
   const eventTypes = useQuery<EventTypesResponse>({
-    queryKey: ['event-types'],
-    queryFn: async () => (await api.get('/v1/event-types')).data,
+    queryKey: ['event-types', hubQs],
+    queryFn: async () => (await api.get(`/v1/event-types${hubQs}`)).data,
   });
-  const projects = useQuery<ProjectsResponse>({ queryKey: ['projects'], queryFn: async () => (await api.get('/v1/projects')).data });
+  const projects = useQuery<ProjectsResponse>({
+    queryKey: ['projects', hubQs],
+    queryFn: async () => (await api.get(`/v1/projects${hubQs}`)).data,
+  });
 
   // Per-itemType counts honour the user, project, and event-type filters but
   // ignore the itemTypes filter (the chip answers "what would I see if I
@@ -135,8 +160,9 @@ export function UserDetailPage() {
     p.set('users', decoded);
     if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
     if (eventTypeSel.set.size) p.set('types', [...eventTypeSel.set].join(','));
+    if (hubCsv) p.set('childHubId', hubCsv);
     return p.toString();
-  }, [decoded, projectSel.set, eventTypeSel.set]);
+  }, [decoded, projectSel.set, eventTypeSel.set, hubCsv]);
   const itemTypes = useQuery<ItemTypesResponse>({
     queryKey: ['item-types', itemTypesQs],
     queryFn: async () => (await api.get(`/v1/item-types?${itemTypesQs}`)).data,
@@ -148,23 +174,25 @@ export function UserDetailPage() {
     if (eventTypeSel.set.size) p.set('types', [...eventTypeSel.set].join(','));
     if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
     if (itemTypeSel.set.size) p.set('itemTypes', [...itemTypeSel.set].join(','));
+    if (hubCsv) p.set('childHubId', hubCsv);
     if (customFromIso) p.set('from', customFromIso);
     else p.set('from', fromIsoForRange(new Date(), range));
     if (customToIso) p.set('to', customToIso);
     p.set('limit', '200');
     return p;
-  }, [decoded, eventTypeSel.set, projectSel.set, itemTypeSel.set, range, customFromIso, customToIso]);
+  }, [decoded, eventTypeSel.set, projectSel.set, itemTypeSel.set, range, customFromIso, customToIso, hubCsv]);
 
   const metricsQs = useMemo(() => {
     const p = new URLSearchParams();
     p.set('users', decoded);
     if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
     if (itemTypeSel.set.size) p.set('itemTypes', [...itemTypeSel.set].join(','));
+    if (hubCsv) p.set('childHubId', hubCsv);
     if (customFromIso) p.set('from', customFromIso);
     else p.set('from', fromIsoForRange(new Date(), range));
     if (customToIso) p.set('to', customToIso);
     return p.toString();
-  }, [decoded, projectSel.set, itemTypeSel.set, range, customFromIso, customToIso]);
+  }, [decoded, projectSel.set, itemTypeSel.set, range, customFromIso, customToIso, hubCsv]);
 
   const metrics = useQuery<MetricsResponse>({
     queryKey: ['metrics', metricsQs],
@@ -183,7 +211,10 @@ export function UserDetailPage() {
   );
 
   const tl = useQuery<{ events: TimelineRow[] }>({
-    queryKey: ['timeline', userKey, [...eventTypeSel.set].sort().join(','), [...projectSel.set].sort().join(','), [...itemTypeSel.set].sort().join(','), range, customFromIso, customToIso],
+    // hubCsv belongs in the KEY, not just the request: without it two hubs
+    // share one cache entry and this page paints the other hub's events until a
+    // background refetch lands — or forever, if that refetch errors.
+    queryKey: ['timeline', userKey, [...eventTypeSel.set].sort().join(','), [...projectSel.set].sort().join(','), [...itemTypeSel.set].sort().join(','), range, customFromIso, customToIso, hubCsv ?? ''],
     queryFn: async () => (await api.get(`/v1/timeline?${params}`)).data,
   });
 
@@ -197,7 +228,11 @@ export function UserDetailPage() {
 
   return (
     <div className="max-w-[1200px] mx-auto space-y-6">
-      <Link to="/" className="inline-flex items-center gap-1.5 text-[12px] text-ink-tertiary hover:text-accent-text">
+      {/* Carries the scope back. Org's hub facet is URL-persisted and
+          deliberately not stored, so without this the trip out and back
+          silently widens to every hub — the same drop, in the other direction. */}
+      <Link to={`/${hubCsv ? `?${new URLSearchParams({ childHubId: hubCsv })}` : ''}`}
+        className="inline-flex items-center gap-1.5 text-[12px] text-ink-tertiary hover:text-accent-text">
         <ArrowLeft className="w-3.5 h-3.5" /> Back to org
       </Link>
 
@@ -208,6 +243,18 @@ export function UserDetailPage() {
         <div className="min-w-0">
           <p className="text-[11px] uppercase tracking-[0.18em] text-accent-text font-semibold">User</p>
           <h1 className="mt-0.5 text-xl font-bold tracking-tight font-mono text-ink truncate">{decoded}</h1>
+          {childHubs.length > 0 && (
+            <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-ink-tertiary">
+              <Server className="w-3 h-3" />
+              <span>Scoped to</span>
+              {childHubs.map(id => (
+                <span key={id}
+                  className="inline-flex items-center rounded-full bg-surface-raised px-2 py-0.5 font-medium text-ink-secondary">
+                  {hubLabels.label(id)}
+                </span>
+              ))}
+            </p>
+          )}
         </div>
       </header>
 
@@ -287,6 +334,7 @@ export function UserDetailPage() {
         types={[...eventTypeSel.set]}
         projects={[...projectSel.set]}
         itemTypes={[...itemTypeSel.set]}
+        childHubs={childHubs}
         title="Activity timeline"
         range={range}
         onRangeChange={setRange}

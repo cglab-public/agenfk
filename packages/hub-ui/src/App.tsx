@@ -64,6 +64,10 @@ export function App() {
         <Route path="flows" element={<AdminFlows />} />
         <Route path="upgrades" element={<AdminUpgrades />} />
         <Route path="installations" element={<AdminInstallations />} />
+        {/* Both now live inside Organization; the old URLs are kept so
+            bookmarks and links in older docs do not dead-end. */}
+        <Route path="child-hubs" element={<Navigate to="/admin/org#child-hubs" replace />} />
+        <Route path="parent-hub" element={<Navigate to="/admin/org#parent-hub" replace />} />
         <Route path="repoint" element={<AdminRepoint />} />
         <Route path="identities" element={<AdminIdentities />} />
         <Route path="models" element={<AdminModels />} />

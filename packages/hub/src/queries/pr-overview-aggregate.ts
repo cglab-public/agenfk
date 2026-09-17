@@ -1,4 +1,5 @@
 import { prSizePoints, prSizeBucket, SIZE_BUCKETS, SizeBucket } from '@agenfk/core';
+import { LOCAL_HUB } from './childHub.js';
 import { resolveModelId, ModelMapping, EMPTY_MODEL_MAPPING } from '../util/modelMapping';
 import type { ModelMeta } from '../util/modelMeta';
 import { prUrlFor } from '../util/remoteUrl.js';
@@ -24,6 +25,13 @@ export interface PrEventRow {
   // CGLAB-131: the event's canonical git remote (written at ingest). The
   // drill-down link is derived from the OPENER's row, not the latest one.
   remote_url: string | null;
+  /**
+   * CGLAB-184: which hub in the federation group reported this event — NULL or
+   * '' for the hub's own, a child hub's id for a forwarded one. Optional
+   * because every caller outside the federated path leaves it unset, which
+   * normalises to LOCAL and reproduces the pre-federation behaviour exactly.
+   */
+  child_hub_id?: string | null;
 }
 
 // Normalised, backend-agnostic event used internally.
@@ -41,6 +49,7 @@ interface NormRow {
   rawModel: string | null;
   harness: string | null;
   remoteUrl: string | null;
+  childHubId: string;
 }
 
 const toIso = (v: unknown): string =>
@@ -71,7 +80,54 @@ function normaliseRow(r: PrEventRow, mapping: ModelMapping): NormRow {
     rawModel: r.model ?? null,
     harness: r.harness,
     remoteUrl: r.remote_url ?? null,
+    childHubId: r.child_hub_id || LOCAL_HUB,
   };
+}
+
+/**
+ * Parse the PR-number search out of a query param.
+ *
+ * Accepts the three spellings a developer actually has to hand: the bare number
+ * (`57`), the number with the `#` they copied out of GitHub (`#57`), and a
+ * pasted PR URL (`https://github.com/acme/api/pull/57/files`). GitLab's
+ * `merge_requests` and Bitbucket's `pull-requests` / `pullrequests` paths are
+ * accepted too — the hub sizes PRs from any host, only the derived *link* is
+ * GitHub-specific. Bitbucket needs both spellings: `pull-requests` is Server /
+ * Data Center, `pullrequests` (no hyphen) is what Cloud actually emits.
+ *
+ * Anything else returns null, meaning **no filter** rather than "match nothing".
+ * That asymmetry is deliberate: a half-typed box (`12a`) or a hand-edited link
+ * must not blank the overview and leave the reader thinking the data is gone.
+ * The UI parses the same grammar client-side (`hub-ui/src/prSearch.ts`) so the
+ * box and the server cannot disagree about what the text means.
+ */
+export function parsePrNumberFilter(raw: unknown): number | null {
+  if (raw == null) return null;
+  // Repeated ?pr= params arrive as an array from Express. Take the first entry
+  // that PARSES, not simply the first entry: `?pr=&pr=57` does carry a search,
+  // and reading it as "no filter" would run the windowed overview against a URL
+  // that visibly says PR #57 — the exact disagreement between link and page this
+  // feature exists to prevent. Never throws, whatever the shapes are.
+  const candidates = Array.isArray(raw) ? raw : [raw];
+  for (const value of candidates) {
+    const n = parseOnePrNumber(value);
+    if (n !== null) return n;
+  }
+  return null;
+}
+
+/** One value, one attempt. See `parsePrNumberFilter` for the array handling. */
+function parseOnePrNumber(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? value : null;
+  if (typeof value !== 'string') return null;
+  const s = value.trim();
+  if (!s) return null;
+  const m = /^#?(\d+)$/.exec(s) ?? /\/(?:pull-?requests|pull|merge_requests)\/(\d+)/.exec(s);
+  if (!m) return null;
+  const n = Number(m[1]);
+  // Past the safe-integer range the stored number and this one are no longer
+  // exactly comparable, so a "match" would be a rounding coincidence.
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
 type SizeDist = Record<SizeBucket, number>;
@@ -106,6 +162,8 @@ export interface PrOverviewResult {
   prs: Array<{
     repo: string;
     prNumber: number;
+    /** Which hub reported it: a child hub's id, or 'local' for this hub's own. */
+    childHubId: string;
     url: string | null;
     user_key: string;
     model: string;
@@ -155,6 +213,23 @@ export interface PrWindow {
    * `byModel`.
    */
   modelMetaRaw?: ReadonlyMap<string, ModelMeta> | null;
+  /**
+   * PR-number search. When it parses to a number it **supersedes** every other
+   * predicate on this window — `from`, `to`, `models` and `developers` are all
+   * ignored and the answer is the PR with that number.
+   *
+   * The override is the feature. A PR is a thing you are looking for, not a
+   * point in a reporting window: someone arriving with "#57" should not have to
+   * widen the date range, clear the model facet and clear the developer facet
+   * first. The three superseded axes are attributes of the answer, not
+   * preconditions of finding it.
+   *
+   * Not superseded here: the project (git remote). That filter is applied in SQL
+   * upstream of this function, and it is the one that has to stay — a PR number
+   * is unique per repo, not per org, so `#57` exists in every repo the org has
+   * ever reported.
+   */
+  prNumber?: number | string | null;
 }
 
 interface ResolvedPr {
@@ -173,6 +248,7 @@ interface ResolvedPr {
   repo: string;
   prNumber: number;
   url: string | null;   // GitHub link or null (non-GitHub host / unparseable)
+  childHubId: string;
 }
 
 // Collapse the raw event stream into one record per PR. A pr.updated never adds a
@@ -183,7 +259,12 @@ function resolvePrs(rows: ReadonlyArray<PrEventRow>, mapping: ModelMapping): Res
   for (const raw of rows) {
     const r = normaliseRow(raw, mapping);
     if (!r.repo || r.pr_number == null) continue; // not a sizeable PR event
-    const key = `${r.repo}#${r.pr_number}`;
+    // Keyed by hub as well as repo and number. A PR number is unique within a
+    // repo on ONE forge, and a parent hub accumulates groups that do not share
+    // one: two children each reporting acme/web#57 are two different PRs, and
+    // merging them produced a single row whose opener and size fell out of
+    // arrival order. The separator is a NUL so it cannot occur in either part.
+    const key = `${r.childHubId}\u0000${r.repo}#${r.pr_number}`;
     const g = groups.get(key);
     if (g) g.push(r); else groups.set(key, [r]);
   }
@@ -211,6 +292,7 @@ function resolvePrs(rows: ReadonlyArray<PrEventRow>, mapping: ModelMapping): Res
       repo: opener.repo!,
       prNumber: Number(opener.pr_number),
       url: prUrlFor(opener.remoteUrl, opener.repo, Number(opener.pr_number)),
+      childHubId: opener.childHubId,
     });
   }
   return resolved;
@@ -224,11 +306,21 @@ export function aggregatePrOverview(rows: ReadonlyArray<PrEventRow>, window?: Pr
     ? new Set(window.models.map(m => resolveModelId(m, mapping) as string))
     : null;
   const devFilter = window?.developers && window.developers.length ? new Set(window.developers) : null;
+  // Parsed here (not passed through raw) so the same grammar decides both "is
+  // there a search?" and "what number?" — an unparseable value falls back to the
+  // windowed filters instead of silently matching nothing.
+  const prNumber = parsePrNumberFilter(window?.prNumber);
   const prs = resolvePrs(rows, mapping).filter(pr =>
-    (!from || pr.openerAt >= from)
-    && (!to || pr.openerAt <= to)
-    && (!modelFilter || modelFilter.has(pr.model))
-    && (!devFilter || devFilter.has(pr.user_key)),
+    prNumber !== null
+      // Search mode: number only. The window, model and developer predicates
+      // above are deliberately not consulted — see PrWindow.prNumber. Note this
+      // runs after resolvePrs(), so the PR keeps its opener attribution and its
+      // latest sizing exactly as the windowed path computes them.
+      ? pr.prNumber === prNumber
+      : (!from || pr.openerAt >= from)
+        && (!to || pr.openerAt <= to)
+        && (!modelFilter || modelFilter.has(pr.model))
+        && (!devFilter || devFilter.has(pr.user_key)),
   );
 
   const byDayMap = new Map<string, SizeDist>();
@@ -336,10 +428,14 @@ export function aggregatePrOverview(rows: ReadonlyArray<PrEventRow>, window?: Pr
   const prsDetail = [...prs]
     .sort((a, b) =>
       a.openerAt.localeCompare(b.openerAt)
-      || `${a.repo}#${a.prNumber}`.localeCompare(`${b.repo}#${b.prNumber}`))
+      || `${a.repo}#${a.prNumber}`.localeCompare(`${b.repo}#${b.prNumber}`)
+      // Two hubs' same-numbered PRs opened at the same instant would otherwise
+      // order arbitrarily, which is the same non-determinism the key fixed.
+      || a.childHubId.localeCompare(b.childHubId))
     .map(p => ({
       repo: p.repo,
       prNumber: p.prNumber,
+      childHubId: p.childHubId,
       url: p.url,
       user_key: p.user_key,
       model: p.model,

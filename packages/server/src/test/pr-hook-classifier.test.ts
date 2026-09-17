@@ -28,6 +28,40 @@ describe('classifyTrigger', () => {
   });
 });
 
+describe('classifyTrigger — the branch is the branch, not the shell plumbing (9d34c1c0)', () => {
+  // The card reported `git push ... | tail -5` naming the branch 'tail'. That
+  // no longer reproduces — the CGLAB-11 segment-aware rewrite splits on the
+  // pipe, and line 230 below already covers it, so there is nothing to add
+  // there. The live half of the same defect is a redirection whose TARGET is a
+  // separate token: the filter only skipped tokens CONTAINING < or >, so a
+  // detached target survived as the last non-flag token and was reported as
+  // the branch the developer pushed to.
+  const branchOf = (cmd: string) => (classifyTrigger(cmd) as any)?.branch;
+
+  it('is not a redirection target written as its own token', () => {
+    expect(branchOf('git push -u origin feat/x > out.txt')).toBe('feat/x');
+    expect(branchOf('git push origin feat/x >> log.txt 2>&1')).toBe('feat/x');
+    expect(branchOf('git push -u origin feat/x 2> /dev/null')).toBe('feat/x');
+    expect(branchOf('git push origin feat/x 1> a.log 2> b.log')).toBe('feat/x');
+  });
+
+  it("is not a bash &> or {fd}> target either", () => {
+    // Narrowing the old per-token filter to a cut regressed exactly these: the
+    // cut anchored on optional DIGITS before the operator, so a token starting
+    // with & or { sailed past it. Found by the review of this fix.
+    expect(branchOf('git push -u origin feat/x &> out.txt')).toBe('feat/x');
+    expect(branchOf('git push -u origin feat/x &>out.txt')).toBe('feat/x');
+    expect(branchOf('git push -u origin feat/x &>>out.txt')).toBe('feat/x');
+    expect(branchOf('git push -u origin feat/x {fd}>out.txt')).toBe('feat/x');
+  });
+
+  it('is still found when the redirection comes with no branch at all', () => {
+    // Nothing to report rather than the log file — the caller falls back to the
+    // current branch, which is right; naming out.txt is not.
+    expect(branchOf('git push > out.txt')).toBeUndefined();
+  });
+});
+
 describe('buildDirective', () => {
   const message = 'You just opened PR #N. Call register_pr(...).';
 

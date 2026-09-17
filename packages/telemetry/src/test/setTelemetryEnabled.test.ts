@@ -16,6 +16,12 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+// The telemetry client is MOCKED below, but the constructor refuses to build
+// one under a test runner unless asked (a guard the merge brought in, after 24
+// real requests reached posthog.com per `npm test`). This is the test that
+// wants the client, so it opts in.
+process.env.AGENFK_TEST_ENABLE_TELEMETRY = '1';
+
 vi.mock('os', async (importOriginal) => {
   const actual = await importOriginal<typeof import('os')>();
   return { ...actual, homedir: vi.fn(() => actual.homedir()) };

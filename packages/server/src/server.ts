@@ -5,7 +5,7 @@ import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
 import { commitStagedForCard, resolveCommitRoot } from './closeCommit';
 import { mayPropagate, readCleanTreeSha, readHead, readTreeStatus } from './propagation';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, type DispatchState } from "@agenfk/core";
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -15,6 +15,7 @@ import { startRunTailer } from "./agent-runs/tailer.js";
 import { createWorktree, removeWorktree } from "./worktrees.js";
 import { applySetupResult, SETUP_TIMEOUT_MS, type SetupDecision, type SetupRun } from "./worktreeSetup.js";
 import { readGitHubAccount, signOutGitHub } from "./githubAccount.js";
+import { createOutputCapture, formatBytes, type CapturedOutput } from "./verifyCapture.js";
 import { startUpgradeSync, replayPendingUpgradeOutcome, type UpgradeSyncHandle } from "./hub/upgradeSync.js";
 import { startRepointSync, type RepointSyncHandle } from "./hub/repointSync.js";
 import { spawnSync } from 'child_process';
@@ -245,12 +246,28 @@ async function resolveProjectRepo(projectId: string): Promise<string | null> {
 
 // ── Validation log persistence ───────────────────────────────────────────────
 // Full command output from validate_progress is written to
-// <dbDir>/logs/<itemId>/<testId>.log. The HTTP response, comment, and tests[]
-// record carry only a head+tail truncated preview plus the log file path, so
-// MCP payloads stay small while full logs remain available on disk.
+// <tmpdir>/agenfk-verify-<uid>/<itemId>/<testId>.log. The HTTP response,
+// comment, and tests[] record carry only a head+tail truncated preview plus the
+// log file path, so MCP payloads stay small while full logs remain available.
+//
+// The temp dir, not <dbDir>/logs: the old home was ~/.agenfk-system/.agenfk/logs
+// on a system install — buried, and named only in a trailer, which made a
+// failing verifyCommand harder to diagnose than the failure was (BUG b233143b).
 const MAX_LOGS_PER_ITEM = 3;
 const PREVIEW_HEAD_BYTES = 1024;
 const PREVIEW_TAIL_BYTES = 1024;
+// How much raw output a failure message repeats. A test suite prints its verdict
+// at the END, so this is a tail, not a head.
+const FAILURE_TAIL_LINES = 25;
+// …and the tail is capped in BYTES too. A command that reports progress with a
+// bare \r (curl, wget, pip, docker pull, gh's spinner, test runners under the
+// FORCE_COLOR=1 this spawn sets) produces output that a \n-only splitter sees as
+// ONE line, so a line count alone was no bound at all: 500 KB of download
+// progress went straight into the message, which is the field an agent reads and
+// the one that is not byte-capped the way `output` is.
+const FAILURE_TAIL_BYTES = 4096;
+// After a cap-kill, how long to wait for stdio to drain before answering anyway.
+const KILL_GRACE_MS = 5000;
 
 /**
  * Item ids are server-generated uuids. Anything else must never reach a path
@@ -259,48 +276,281 @@ const PREVIEW_TAIL_BYTES = 1024;
  */
 const SAFE_ITEM_ID = /^[A-Za-z0-9._-]{1,128}$/;
 function assertSafeItemId(itemId: string): string {
-  if (!SAFE_ITEM_ID.test(itemId) || itemId === '.' || itemId === '..') {
+  // Returns the MATCH, not the argument. The value that reaches a path is then
+  // one the matcher produced rather than one that merely survived a test — the
+  // pattern admits no separator, no dot-dot and no absolute prefix, and it is
+  // worth being explicit about that because a recursive rmSync downstream is
+  // keyed off this value.
+  const matched = SAFE_ITEM_ID.exec(String(itemId ?? ''))?.[0];
+  if (!matched || matched === '.' || matched === '..') {
     throw new Error(`Refusing to use '${itemId}' as a log path segment: not a valid item id.`);
   }
-  return itemId;
+  return matched;
+}
+
+/**
+ * Test seam only — redirects the log root so a suite does not share the
+ * machine-global default with a live agenfk server running on the same box.
+ *
+ * Deliberately a function and not an environment variable: an env override puts
+ * an unvalidated, operator-supplied path into the source of every log write,
+ * which is a wider surface than the tests need. There is no supported way for a
+ * deployment to relocate these logs.
+ */
+let verifyLogRootOverride = '';
+export function setVerifyLogRootForTests(dir: string | null): void {
+  verifyLogRootOverride = dir ?? '';
+}
+
+/**
+ * Root for validation logs. Per-uid because os.tmpdir() is world-writable and
+ * verify output routinely echoes environment — tokens, connection strings, the
+ * occasional pasted credential. Exported so tests assert against the real path
+ * instead of re-implementing the naming and drifting from it.
+ *
+ * The default name is stable and predictable, shared by every agenfk server this
+ * uid runs; on a machine dogfooding agenfk a live server is writing here while
+ * tests run, so suites redirect via setVerifyLogRootForTests().
+ */
+export function getVerifyLogRoot(): string {
+  if (verifyLogRootOverride) return verifyLogRootOverride;
+  const uid = typeof process.getuid === 'function' ? `-${process.getuid()}` : '';
+  return path.join(os.tmpdir(), `agenfk-verify${uid}`);
+}
+
+/** Why the log root was refused, surfaced in the message and the server log. */
+let logRootRefusal = '';
+let logRootRefusalLogged = false;
+
+function refuseVerifyLogRoot(root: string, reason: string): null {
+  logRootRefusal = `${root} (${reason})`;
+  if (!logRootRefusalLogged) {
+    logRootRefusalLogged = true;
+    console.warn(`[verify] validation logs disabled — log root refused: ${logRootRefusal}`);
+  }
+  return null;
+}
+
+/**
+ * The temp root, created if needed — or null when it must not be used.
+ *
+ * Three separate hazards, all because the path is predictable and the directory
+ * is world-writable:
+ *
+ * 1. `mkdirSync(recursive)` is a no-op when the path already exists — including
+ *    one another user created, which would put our logs in their directory.
+ * 2. Worse, it is also a no-op for a SYMLINK, and `statSync` follows symlinks: an
+ *    attacker who plants `agenfk-verify-<uid> -> /somewhere/they/chose` passes a
+ *    uid check that is answering "is the thing at the other end mine?" instead of
+ *    "is this a real directory I own?". So the ENTRY is checked with lstat.
+ * 3. A local user can pre-create the path as their own to switch logging off
+ *    permanently for this uid. That cannot be prevented on a shared /tmp without
+ *    an unpredictable name, so the refusal is at least made LOUD — a silent
+ *    "couldn't write a log" is the same class of failure this module exists to
+ *    fix. (Windows has no getuid; %TEMP% is already per-user there.)
+ */
+function ensureVerifyLogRoot(): string | null {
+  const root = getVerifyLogRoot();
+  try {
+    fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+    const st = fs.lstatSync(root);
+    if (!st.isDirectory()) return refuseVerifyLogRoot(root, 'not a directory');
+    if (typeof process.getuid === 'function' && st.uid !== process.getuid()) {
+      return refuseVerifyLogRoot(root, `owned by uid ${st.uid}, not ${process.getuid()}`);
+    }
+    return root;
+  } catch (err: any) {
+    return refuseVerifyLogRoot(root, err?.code || 'unusable');
+  }
 }
 
 const getItemLogDir = (itemId: string): string =>
-  path.join(path.dirname(dbPath), 'logs', assertSafeItemId(itemId));
+  path.join(getVerifyLogRoot(), assertSafeItemId(itemId));
 
-const writeValidationLog = (itemId: string, testId: string, output: string): string => {
-  const dir = getItemLogDir(itemId);
-  fs.mkdirSync(dir, { recursive: true });
-  const logPath = path.join(dir, `${testId}.log`);
-  fs.writeFileSync(logPath, output);
-  // Prune to newest MAX_LOGS_PER_ITEM by mtime.
-  const entries = fs.readdirSync(dir)
-    .map(name => ({ name, mtime: fs.statSync(path.join(dir, name)).mtimeMs }))
-    .sort((a, b) => b.mtime - a.mtime);
-  for (const old of entries.slice(MAX_LOGS_PER_ITEM)) {
-    try { fs.unlinkSync(path.join(dir, old.name)); } catch { /* ignore */ }
+/**
+ * Open the log BEFORE the command runs, so its output can be streamed straight
+ * to disk instead of accumulated in memory (BUG 24c679df). Returns the fd and
+ * the path, or null when no log can be written safely — which must cost the
+ * diagnostics, never the run.
+ *
+ * Same guarantees the whole-string writer it replaced had: 'wx' so the 0600 mode is real (writeFileSync applies `mode` only when
+ * it CREATES the file, and follows symlinks, so without the exclusive flag a
+ * pre-planted name would be overwritten with someone else's permissions), and
+ * assertSafeItemId so nothing but a server-minted id reaches a path segment.
+ */
+const openValidationLog = (itemId: string, testId: string): { fd: number; logPath: string } | null => {
+  const root = ensureVerifyLogRoot();
+  if (!root) return null;
+  try {
+    const dir = path.join(root, assertSafeItemId(itemId));
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const logPath = path.join(dir, `${testId}.log`);
+    const fd = fs.openSync(logPath, 'wx', 0o600);
+    return { fd, logPath };
+  } catch {
+    return null;
   }
-  return logPath;
 };
 
-const buildOutputPreview = (output: string, logPath: string): string => {
+/**
+ * Post-run housekeeping for the streamed log. The fd is NOT closed here — the
+ * capture owns it and closes it in end(), so that write-eligibility and fd
+ * ownership cannot drift apart while an orphaned grandchild is still printing.
+ *
+ * Returns null when the file is gone, which on this path means the item was
+ * deleted mid-run and purgeItemLogs took the directory with it.
+ */
+const closeValidationLog = (handle: { fd: number; logPath: string } | null): string | null => {
+  if (!handle) return null;
+  try { pruneItemLogDir(path.dirname(handle.logPath), path.basename(handle.logPath)); } catch { /* advisory */ }
+  return fs.existsSync(handle.logPath) ? handle.logPath : null;
+};
+
+/**
+ * Post-write housekeeping, deliberately unable to invalidate the write it
+ * follows. Two hazards it avoids: the prune ranks by mtime and a coarse or
+ * backdated clock can tie — with readdir order being filesystem hash order, the
+ * file just written can land in the evicted slice, and the response then names a
+ * path the server deleted microseconds after promising it. And a concurrent
+ * DELETE (or an OS tmp-cleaner) can make statSync throw mid-prune, which used to
+ * abort the whole write path and report the log as unwritable.
+ */
+function pruneItemLogDir(dir: string, keep: string): void {
+  try {
+    const entries = fs.readdirSync(dir).flatMap((name) => {
+      try {
+        return [{ name, mtime: fs.statSync(path.join(dir, name)).mtimeMs }];
+      } catch {
+        return []; // vanished since readdir — skip it, do not abort
+      }
+    });
+    // MAX_LOGS_PER_ITEM counts files IN TOTAL, not 'old files besides the one
+    // just written' — so the budget for everything else is MAX - 1. Getting this
+    // wrong quietly grew the rolling window to 4 and a pre-existing test caught
+    // it: the promised file is protected, but the cap must still hold.
+    const evict = entries
+      .filter((e) => e.name !== keep)
+      .sort((a, b) => b.mtime - a.mtime)
+      .slice(Math.max(0, MAX_LOGS_PER_ITEM - 1));
+    for (const old of evict) {
+      try { fs.unlinkSync(path.join(dir, old.name)); } catch { /* ignore */ }
+    }
+  } catch { /* pruning is advisory */ }
+}
+
+/**
+ * The message shown when there is no log to point at. Names the reason, because
+ * "we couldn't write a log" with no cause is indistinguishable from a bug in the
+ * logging code, and the operator has no way to learn that a foreign-owned
+ * directory is the actual answer.
+ */
+const logUnavailable = (): string =>
+  logRootRefusal
+    ? `Full log: unavailable — log root refused: ${logRootRefusal}`
+    : 'Full log: unavailable — the temp directory could not be written';
+
+/**
+ * What became of the full log, in one clause — named once so the preview and
+ * the failure message cannot disagree. A ceiling, a failed write and a deleted
+ * item are three different problems with three different fixes, and reporting
+ * them all as the ceiling sends the operator to tune an env var that is not it.
+ */
+const describeLog = (captured: CapturedOutput, logPath: string | null, vanished = false): string => {
+  // A log that was written and then disappeared is not a log that could not be
+  // written. On this path it means the item was deleted mid-run and
+  // purgeItemLogs took the directory with it — telling the operator the temp
+  // directory is unwritable would send them hunting a problem they do not have.
+  if (vanished) return 'Full log: gone — the item was deleted while the command ran';
+  if (!logPath) return logUnavailable();
+  if (captured.logWriteError) return `Full log: ${logPath} (INCOMPLETE — writing it failed: ${captured.logWriteError})`;
+  if (captured.logTruncated) return `Full log: ${logPath} (truncated at the AGENFK_VERIFY_MAX_LOG_BYTES ceiling)`;
+  return `Full log: ${logPath}`;
+};
+
+/**
+ * Head + tail of the output, from the BOUNDED buffers the capture kept — never
+ * from the whole stream, which is no longer held anywhere (BUG 24c679df).
+ * `totalBytes` is the true size, so "the last 1KB of 900MB" cannot read the
+ * same as "all of it".
+ */
+const buildOutputPreview = (captured: CapturedOutput, logPath: string | null, vanished = false): string => {
   const headTailBudget = PREVIEW_HEAD_BYTES + PREVIEW_TAIL_BYTES;
   let body: string;
-  if (output.length <= headTailBudget) {
-    body = output;
+  // headIsComplete, not a byte count: the budgets are enforced in UTF-16 code
+  // units while totalBytes counts bytes, so for multi-byte output the head can
+  // already hold everything while totalBytes says otherwise — and the stitched
+  // form then duplicates the whole output and claims it truncated something.
+  if (captured.headIsComplete && captured.head.length <= headTailBudget) {
+    body = captured.head;
   } else {
-    const head = output.substring(0, PREVIEW_HEAD_BYTES);
-    const tail = output.substring(output.length - PREVIEW_TAIL_BYTES);
-    const omitted = output.length - headTailBudget;
-    body = `${head}\n... (${omitted} bytes truncated) ...\n${tail}`;
+    const head = captured.head.substring(0, PREVIEW_HEAD_BYTES);
+    const tail = captured.tail.substring(Math.max(0, captured.tail.length - PREVIEW_TAIL_BYTES));
+    const omitted = Math.max(0, captured.totalBytes - Buffer.byteLength(head) - Buffer.byteLength(tail));
+    body = `${head}\n... (${omitted} bytes truncated of ${formatBytes(captured.totalBytes)} total) ...\n${tail}`;
   }
-  return `${body}\n[Full log: ${logPath}]`;
+  return `${body}\n[${describeLog(captured, logPath, vanished)}]`;
 };
 
+/** ANSI escape sequences, stripped so the repeated tail is readable text. */
+const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+
+/**
+ * Last N non-blank lines — what a failing verifier actually wanted to see.
+ *
+ * Splits on bare \r as well as \n: progress-reporting tools rewrite one line
+ * with \r and never emit \n, and to a \n-only splitter the entire run is a
+ * single "line", so the line cap would hand back everything. Byte-capped after
+ * that, because a line count is not a size bound.
+ */
+const tailLines = (output: string, n: number): string => {
+  const lines = output.split(/\r\n|\r|\n/).filter((l) => l.trim() !== '');
+  const tail = lines.slice(-n).join('\n').replace(ANSI_RE, '');
+  return tail.length > FAILURE_TAIL_BYTES
+    ? `… (tail truncated) …\n${tail.slice(-FAILURE_TAIL_BYTES)}`
+    : tail;
+};
+
+/**
+ * What happened to the command, in one clause. Deliberately dumb: the exit code
+ * is reported as the number it returned, with no attempt to interpret the
+ * output. A guessed summary is worse than none — the full log path is always
+ * given alongside it.
+ */
+const describeExit = (
+  r: { code: number | null; timedOut?: boolean; signal?: NodeJS.Signals | null; spawnError?: string },
+  maxMs: number,
+): string => {
+  if (r.timedOut) {
+    return `killed after the ${Math.round(maxMs / 60000)}min runtime cap (exit code 124)`;
+  }
+  if (r.spawnError) {
+    // Not "exit code 1": a command that never started is a different diagnosis
+    // from one that ran and failed.
+    return `could not be started: ${r.spawnError}`;
+  }
+  if (r.code === null) {
+    // An OOM-kill is common enough on constrained machines that reporting
+    // "exit code null" — which is what a signal death looks like — would be the
+    // single most confusing thing this message could say.
+    return r.signal ? `killed by signal ${r.signal}, no exit code` : 'terminated without an exit code';
+  }
+  return `exit code ${r.code}`;
+};
+
+/** Hard cap on a verifyCommand's runtime; see its use in the validate route. */
+const verifyMaxMs = (): number =>
+  Number(process.env.AGENFK_VERIFY_MAX_MS) > 0 ? Number(process.env.AGENFK_VERIFY_MAX_MS) : 60 * 60 * 1000;
+
 const purgeItemLogs = (itemId: string): void => {
-  const dir = getItemLogDir(itemId);
-  if (fs.existsSync(dir)) {
-    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  try {
+    const dir = getItemLogDir(itemId);
+    if (fs.existsSync(dir)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  } catch {
+    // Advisory. Thrown, this ran after the parent was already marked TRASHED and
+    // before the children were walked — a malformed legacy id would answer
+    // DELETE /items/:id with a 500 and leave the tree half-trashed.
   }
 };
 
@@ -615,71 +865,147 @@ export const findProjectRoot = (startDir: string): string => {
 };
 
 /**
- * Commit a card's close, from the INDEX rather than from the whole tree.
+/**
+ * The commit the server makes when an item reaches its final flow step.
  *
- * This was `git add -A && git commit`, through a shell, in the project root. It
- * swept everything, and twice in one session it carried other agents'
- * half-finished edits into a card's commit - once with six failing tests
- * inside. Agents now share one worktree by design, so that is no longer an
- * accident between sessions: it is what every close would do.
+ * It commits the INDEX and stages nothing itself (BUG 315edc11 / CGLAB-22).
  *
- * See closeCommit.ts for why staging is the signal and why an empty index
- * declines rather than falling back.
+ * It used to run `git add -A`, which staged every untracked file in the
+ * repository — so closing one item swept in whatever happened to be lying
+ * around, including work in progress belonging to a DIFFERENT task or branch.
+ * Observed: a close(bug) commit carrying another item's WIP test, which had no
+ * implementation on that branch and would have failed CI under someone else's
+ * name.
+ *
+ * `git add -u` was tried and rejected: it narrows to TRACKED files, which is an
+ * orthogonal axis to "whose work is this". It leaves the same leak open for
+ * tracked modifications (and since git 2.0 it stages the whole repository, not
+ * the directory it runs in), while turning a rename into a commit that deletes
+ * the old path and never adds the new one — a commit that does not build,
+ * pushed under the item's name.
+ *
+ * The index is the only thing here that actually carries provenance: it is the
+ * author's explicit statement of what belongs to this change, renames and new
+ * files included. So nothing is staged automatically, and anything left
+ * unstaged is REPORTED rather than guessed at — silently dropping a file the
+ * author expected to land is the same defect as silently adding one they did
+ * not.
+ *
+ * THE ITEM'S OWN ROOT, and its CLAIMS. Two things this branch adds to the
+ * upstream result: the commit runs in `resolveCommitRoot` (a linked worktree
+ * has its OWN index, so committing from the primary checkout reads a different
+ * one), and when the card has declared claims the pathspec limits the commit to
+ * them — `.git/index` belongs to the WORKTREE, not to an agent, and several
+ * agents share one by design.
+ *
+ * Exported for the test; nothing else outside this module should call it.
  */
-export const autoGitCommit = async (
-  item: AgEnFKItem,
-  projectRoot: string | null | undefined,
-): Promise<{
+/** What the close commit actually did. Every state the agent must be told apart. */
+export type AutoGitCommitOutcome = 'committed' | 'nothing-staged' | 'declined' | 'failed';
+
+export interface AutoGitCommitResult {
+  outcome: AutoGitCommitOutcome;
+  /** Nothing went wrong that the operator needs to act on. */
   success: boolean;
+  committed: boolean;
   output: string;
+  /** Paths git can see changes in that the author did not stage. */
+  unstaged: string[];
+  /** Staged paths this card never claimed, when it declared claims. */
+  outsideClaims?: string[];
+  /** Why, for every outcome but 'committed'. */
+  detail?: string;
+  /** The same reason under the name callers and older tests already use. */
   error?: string;
-  /** Staged files the card never claimed. Reported, never blocking. */
-  outsideClaims?: readonly string[];
-}> => {
+}
+
+const git = (cmd: string, cwd: string): Promise<{ ok: boolean; out: string; err: string }> =>
+  new Promise((resolve) => exec(cmd, { cwd }, (e, stdout, stderr) =>
+    resolve({ ok: !e, out: stdout ?? '', err: (stderr || (e as any)?.message || '').trim() })));
+
+/** A merge, rebase, cherry-pick or revert the author has not finished. */
+const IN_PROGRESS_HEADS = ['MERGE_HEAD', 'REBASE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD'] as const;
+
+export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null | undefined): Promise<AutoGitCommitResult> => {
+  const message = `close(${item.type.toLowerCase()}): ${item.title} [${item.id}]`;
+  const stamp = () => new Date().toISOString();
+  const done = (r: AutoGitCommitResult): AutoGitCommitResult => {
+    const line = r.outcome === 'committed' ? `Committed: "${message}"` : `${r.outcome}: ${r.detail ?? ''}`;
+    console.log(`[${stamp()}] [AUTO_GIT] ${line}`);
+    return r;
+  };
+  const stop = (outcome: AutoGitCommitOutcome, detail: string, extra: Partial<AutoGitCommitResult> = {}): AutoGitCommitResult =>
+    done({ outcome, success: outcome !== 'failed', committed: false, output: '', unstaged: [], detail, error: detail, ...extra });
+
   /*
-   * THE ITEM'S WORKTREE, not the project root - a linked worktree has its OWN
-   * index, so committing from the primary checkout reads a different one. See
-   * resolveCommitRoot for what that did to every card with a worktree.
+   * THE ITEM'S WORKTREE, not the project root: a linked worktree has its own
+   * index, so committing from the primary checkout reads a different one. The
+   * root is refused rather than guessed - a stale projectRoot used to report
+   * every close as "nothing staged" forever.
    */
   const resolved = resolveCommitRoot(item as any, projectRoot);
-  if (resolved.root === null) {
-    console.log(`[${new Date().toISOString()}] [AUTO_GIT] ${resolved.reason}`);
-    return { success: false, output: resolved.reason, error: resolved.reason };
+  if (resolved.root === null) return stop('failed', resolved.reason);
+  const root = resolved.root;
+
+  // Swallowing git's own refusal made a server started outside a repository —
+  // or pointed at one by a stale projectRoot — report every close as a clean
+  // "nothing staged", forever.
+  const repo = await git('git rev-parse --git-dir', root);
+  if (!repo.ok) return stop('failed', `not a git repository: ${root}`);
+
+  // An unfinished merge leaves MERGE_HEAD set and the index full of somebody
+  // else's resolution; committing it produces a two-parent merge titled after
+  // this item.
+  for (const head of IN_PROGRESS_HEADS) {
+    if ((await git(`git rev-parse -q --verify ${head}`, root)).ok) {
+      return stop('declined', `a ${head.replace('_HEAD', '').toLowerCase().replace('_', ' ')} is in progress`);
+    }
   }
-  const result = commitStagedForCard(item, resolved.root, {
-    // execFileSync with an argument array, not a shell: the card's TITLE is in
-    // the message and arrives from a user.
-    run: args => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }),
-  },
+
+  // Working-tree changes the author did NOT stage: not ours to commit, ours to
+  // mention. Porcelain v1 with -z (a quoted path is a name the reader cannot
+  // copy), consuming the second   a rename emits.
+  const unstaged: string[] = [];
+  const status = await git('git status --porcelain -z', root);
+  const entries = status.out.split('\0');
+  for (let k = 0; k < entries.length; k++) {
+    const entry = entries[k];
+    if (entry.length < 4) continue;
+    const [x, y] = [entry[0], entry[1]];
+    if (x === 'R' || x === 'C') k++;
+    if (entry.startsWith('??') || y !== ' ') unstaged.push(entry.slice(3));
+  }
+
   /*
-   * The card's own paths, which is what turns "commit the index" into "commit
-   * MY files" (819e7192). `.git/index` belongs to the WORKTREE, not to an
-   * agent, and the design is several agents sharing one - so without this the
-   * close takes whatever any of them staged. Narrower than `git add -A`, and
-   * still not isolation.
-   *
-   * Observed rather than reasoned about: on 2026-09-15 three agents worked
-   * this tree at once and the index held two cards' work before either closed.
-   * The split was done by hand that time.
-   *
-   * Undefined on every card that has not declared any, which is still most of
-   * them, and that keeps the behaviour exactly what it was rather than landing
-   * as a silent change.
+   * THE COMMIT ITSELF IS `commitStagedForCard`'s decision, not a second copy of
+   * it. That module owns "commit the INDEX", the claims pathspec, the
+   * staged-then-changed refusal and the reason strings; reimplementing any of
+   * it here is how the two would drift.
    */
-  item.claims);
-  const timestamp = new Date().toISOString();
+  const result = commitStagedForCard(
+    item as any,
+    root,
+    { run: args => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) },
+    (item as any).claims,
+  );
   if (result.committed) {
-    console.log(`[${timestamp}] [AUTO_GIT] Committed the staged changes for ${item.id}\n${result.output ?? ''}`);
-    return { success: true, output: result.output ?? '', outsideClaims: result.outsideClaims };
+    return done({
+      outcome: 'committed', success: true, committed: true,
+      output: result.output ?? '', unstaged, outsideClaims: result.outsideClaims ? [...result.outsideClaims] : undefined,
+    });
   }
-  console.log(`[${timestamp}] [AUTO_GIT] Nothing committed for ${item.id}: ${result.reason}`);
+  const reason = result.reason ?? 'the close commit did not run';
   /*
-   * Carried on the refusal too, and that is the most useful moment for it: an
-   * agent that staged only files it does not own gets "nothing was staged",
-   * which is baffling when the tree plainly has staged files. Naming them
-   * turns that into a sentence somebody can act on.
+   * An EMPTY index is a normal, well-behaved close (the author committed their
+   * own work first). Staged files that are not OURS is a different fact - the
+   * card's work is not in the index - and a refusal the agent must act on.
+   * `commitStagedForCard` reports both under the same "nothing was staged"
+   * wording, so `outsideClaims` is what tells them apart.
    */
-  return { success: false, output: result.reason ?? '', error: result.reason, outsideClaims: result.outsideClaims };
+  const nothingOfOurs = (result.outsideClaims?.length ?? 0) > 0;
+  const outcome: AutoGitCommitOutcome =
+    !nothingOfOurs && /nothing was staged/i.test(reason) ? 'nothing-staged' : 'failed';
+  return stop(outcome, reason, { unstaged, outsideClaims: result.outsideClaims ? [...result.outsideClaims] : undefined });
 };
 
 // ── Storage initialisation ───────────────────────────────────────────────────
@@ -1752,6 +2078,18 @@ app.put("/projects/:id/project-root", limitExpensive, asyncHandler(async (req: a
 }));
 
 app.delete("/projects/:id", asyncHandler(async (req: any, res: any) => {
+  // Purge verify logs BEFORE the rows go. They are keyed by item id, and
+  // deleteProject hard-deletes the items — so once the rows are gone nothing can
+  // ever name those directories again, and <tmpdir>/agenfk-verify-<uid>/<itemId>/
+  // would sit on disk indefinitely holding the full raw output of every command
+  // that project ever ran. That output routinely echoes environment: tokens,
+  // connection strings. The trash path already purges; this is the same promise.
+  try {
+    const items = await storage.listItems({ projectId: req.params.id, limit: 1_000_000 });
+    for (const item of items) purgeItemLogs(item.id);
+  } catch {
+    // Advisory — never fail a project delete over a log directory.
+  }
   await storage.deleteProject(req.params.id);
   io.emit('items_updated');
   res.status(204).send();
@@ -3145,6 +3483,305 @@ function sanitizeCreateStatus(status: any, flow: { steps: Array<{ name: string; 
   return match ? (match.name as Status) : Status.TODO;
 }
 
+// ── External tracker references (JIRA keys, and raw refs for other trackers) ──
+//
+// externalId/externalUrl have lived on AgEnFKItem since the JIRA importer, and
+// the UI renders them as a clickable badge, but until now ONLY the JIRA and
+// GitHub imports could write them — the item routes destructured a fixed field
+// list that omitted both. These helpers are what let a plain create/update
+// attach a reference, and they are the only validation standing in front of it.
+
+/** Passed as `jiraItem` to clear an existing link. Safe as a sentinel because a
+ *  bare word with no `-<number>` suffix can never be a valid issue key, so no
+ *  real project can collide with it — see parseJiraKey. */
+export const JIRA_UNLINK_SENTINEL = 'none';
+
+/**
+ * Strict JIRA issue-key parser, returning the canonical uppercase form or null.
+ *
+ * Anchored deliberately: an embedded key (a browse URL, or prose mentioning an
+ * issue) is REJECTED rather than extracted, because silently pulling a key out
+ * of arbitrary text turns a paste mistake into a wrong-but-plausible link. On
+ * the disconnected path this format check is the only gate there is.
+ */
+export const parseJiraKey = (raw: unknown): string | null => {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  // Bounded FIRST. The grammar below is anchored but not finite — a 5000-char
+  // project key or a 400-digit issue number matches it — and this value becomes
+  // the item's externalId, part of the derived browse URL, and part of an
+  // outbound api.atlassian.com path. The raw-field branches cap their inputs;
+  // without this, `jiraItem` was the way around both caps.
+  if (trimmed.length > MAX_JIRA_KEY_LENGTH) return null;
+  // Matched BEFORE upper-casing and against explicit ASCII classes, because
+  // toUpperCase() folds non-ASCII into ASCII — 'ﬀ-1' would otherwise become the
+  // accepted 'FF-1'. The project key must start AND end alphanumeric, so the
+  // underscore can only appear between them: 'A_-1' is not a key JIRA issues.
+  // The issue number is a positive integer with no leading zeros: JIRA numbers
+  // issues from 1, and 'AB-007' would be a second spelling of 'AB-7', so two
+  // cards could carry different externalIds for one issue.
+  if (!/^[A-Za-z][A-Za-z0-9_]*[A-Za-z0-9]-[1-9]\d*$/.test(trimmed)) return null;
+  return trimmed.toUpperCase();
+};
+
+/** Upper bounds on a stored reference. Items persist as a whole-object JSON blob
+ *  (storage-sqlite), so an unbounded string here bloats every read of the item. */
+export const MAX_EXTERNAL_ID_LENGTH = 200;
+export const MAX_EXTERNAL_URL_LENGTH = 2048;
+/** Real JIRA keys are short (project key <= 10 chars by Atlassian's own limit).
+ *  This is deliberately generous while still finite. */
+export const MAX_JIRA_KEY_LENGTH = 64;
+
+/**
+ * externalUrl is rendered as `href={item.externalUrl}` by both KanbanBoard.tsx
+ * and CardDetailModal.tsx with no sanitising, so an attacker-supplied
+ * `javascript:` or `data:` URL stored here is a stored-XSS trigger on click.
+ * The server is the only place that can refuse it. http(s) only.
+ *
+ * Length is bounded separately, by the caller that accepts user-supplied URLs,
+ * so an over-long URL is reported as over-long rather than as an unsafe scheme.
+ * The internally derived browse URL is bounded at its source instead: the key
+ * is capped by MAX_JIRA_KEY_LENGTH and cloudUrl comes from the OAuth token.
+ */
+export const isSafeExternalUrl = (value: string): boolean => {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    // `http://user:pass@evil.com` is a well-formed http URL, and as a board
+    // badge it is a credential-embedding phishing href. Nothing legitimate
+    // needs userinfo in a tracker link.
+    if (parsed.username || parsed.password) return false;
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** Does this URL look like a JIRA browse link for exactly this key? Used to
+ *  decide whether a URL already on the card still describes the key being
+ *  linked. It is a shape check, not a provenance check — it cannot tell a
+ *  server-derived URL from a caller-supplied one. */
+export const isJiraBrowseUrlFor = (value: string, key: string): boolean => {
+  if (!isSafeExternalUrl(value)) return false;
+  try {
+    const parsed = new URL(value);
+    // Path only — the HOST is deliberately not checked, because this runs on
+    // the disconnected path where there is no token and therefore no known
+    // JIRA host to compare against. Stated plainly so nobody reads this as a
+    // host guarantee: it does NOT verify the URL points at a real JIRA site.
+    //
+    // What bounds the risk is that this branch only ever RETAINS a URL already
+    // stored on the card; it cannot introduce one. A caller able to plant
+    // https://evil.example/browse/KEY can already do so directly via the raw
+    // externalUrl field, which is an intentional capability for non-JIRA
+    // trackers, and the server binds loopback only.
+    //
+    // Matched on SEGMENTS, decoded one at a time — not on the decoded whole
+    // path. Decoding first and then comparing lets '%2F' smuggle a separator in,
+    // so '/x%2Fbrowse%2FKEY' (a single real segment) would read as a browse
+    // path. Per-segment decoding keeps '%2D' working as a spelling of '-' while
+    // '%2F' stays inside one segment and simply fails to match.
+    //
+    // The last two segments must be 'browse' and the key, which tolerates a
+    // context path ('/jira/browse/KEY' on JIRA Server/DC).
+    const segments = parsed.pathname.split('/').map(decodeURIComponent);
+    // A trailing slash leaves an empty final segment ('/browse/KEY/'), which
+    // would otherwise fail to match and silently drop a usable stored URL.
+    while (segments.length && segments[segments.length - 1] === '') segments.pop();
+    if (segments.length < 2) return false;
+    const last = segments[segments.length - 1].toUpperCase();
+    const penultimate = segments[segments.length - 2].toUpperCase();
+    return penultimate === 'BROWSE' && last === key.toUpperCase();
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Echo a rejected value back safely.
+ *
+ * `String(raw)` looks harmless but THROWS on an object with null toString and
+ * valueOf, which turned the clean-rejection path into a 500. And the echo is
+ * caller-controlled: unbounded it returns megabytes in the error body (and,
+ * through bulk, once per entry), and raw control bytes reach the operator's
+ * terminal, so it is truncated and stripped.
+ */
+export const describeRejectedInput = (raw: unknown): string => {
+  let text: string;
+  if (typeof raw === 'string') text = raw;
+  else {
+    try {
+      text = JSON.stringify(raw) ?? Object.prototype.toString.call(raw);
+    } catch {
+      text = Object.prototype.toString.call(raw);
+    }
+  }
+  // eslint-disable-next-line no-control-regex
+  const printable = text.replace(/[\u0000-\u001f\u007f]/g, '');
+  // Array.from, not slice: slice cuts UTF-16 code units and would emit a lone
+  // surrogate into the JSON error body for input ending in astral characters.
+  const chars = Array.from(printable);
+  return chars.length > 80 ? `${chars.slice(0, 80).join('')}…` : printable;
+};
+
+type JiraResolution =
+  | { kind: 'unlink' }
+  | { kind: 'link'; externalId: string; externalUrl: string | null; warning?: string }
+  | { kind: 'error'; error: string };
+
+// No JIRA call may hang a create/update behind an unresponsive Atlassian, so
+// every outbound call on the linking path is bounded — the API request helper
+// set no timeout of its own, and neither did the token refresh it falls back to
+// on a 401, which is the path that could stall unbounded.
+export const JIRA_HTTP_TIMEOUT_MS = 8000;
+
+/**
+ * Resolve a `jiraItem` value into the reference pair to store.
+ *
+ * Validate-if-connected: with an OAuth token present the key is confirmed
+ * against JIRA and the browse URL is derived from the token's cloudUrl; a key
+ * JIRA refuses (404/403) is rejected outright. Without a token — the offline
+ * and CI case — the format-checked key is stored bare, with no URL to invent.
+ * If JIRA is merely unreachable the link still goes through, but it comes back
+ * with a warning: an unverified link is a fact the caller must be told, not a
+ * failure to swallow.
+ */
+export const resolveJiraReference = async (
+  raw: unknown,
+  current?: { externalId?: string | null; externalUrl?: string | null },
+): Promise<JiraResolution> => {
+  if (typeof raw === 'string' && raw.trim().toLowerCase() === JIRA_UNLINK_SENTINEL) {
+    return { kind: 'unlink' };
+  }
+
+  const key = parseJiraKey(raw);
+  if (!key) {
+    return {
+      kind: 'error',
+      error: `Invalid JIRA item '${describeRejectedInput(raw)}'. Expected an issue key like 'CGLAB-163', or '${JIRA_UNLINK_SENTINEL}' to unlink.`,
+    };
+  }
+
+  const tokenData = loadJiraToken();
+  if (!tokenData) {
+    // Disconnected: the key is all we can honestly assert. But re-linking the
+    // SAME key while offline must not destroy the URL already on the card —
+    // that would silently strip the badge's href.
+    //
+    // Compared case-insensitively because `key` is normalised to upper case
+    // while a raw externalId is stored verbatim, so 'cglab-163' on the card
+    // would otherwise not match 'CGLAB-163' and the URL would be dropped.
+    //
+    // NOTE on provenance: the item carries no record of whether its stored URL
+    // was derived from a JIRA token or supplied raw by a caller, so this cannot
+    // claim the URL was ever "verified" — only that it is the URL already on
+    // the card and that it is shaped like a browse link for this exact key.
+    // That shape check is why a leftover URL for a DIFFERENT issue is dropped.
+    const sameKey = (current?.externalId ?? '').trim().toUpperCase() === key;
+    const keepUrl =
+      sameKey && current?.externalUrl && isJiraBrowseUrlFor(current.externalUrl, key)
+        ? current.externalUrl
+        : null;
+    return { kind: 'link', externalId: key, externalUrl: keepUrl };
+  }
+
+  const rawBrowseUrl = `${tokenData.cloudUrl}/browse/${key}`;
+  // The derived URL is stored and rendered as an href like any other, so it
+  // goes through the same guard. cloudUrl comes from the OAuth resource list
+  // unchecked, so a resource without a url yields the literal
+  // 'undefined/browse/KEY' — which is not a URL at all, and must not be stored.
+  const browseUrl = isSafeExternalUrl(rawBrowseUrl) ? rawBrowseUrl : null;
+  try {
+    await jiraApiRequest(
+      tokenData,
+      'get',
+      `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/issue/${encodeURIComponent(key)}?fields=summary`,
+      undefined,
+      JIRA_HTTP_TIMEOUT_MS,
+    );
+    return { kind: 'link', externalId: key, externalUrl: browseUrl };
+  } catch (err: any) {
+    const status = err?.response?.status;
+    if (status === 404 || status === 403 || status === 400) {
+      return {
+        kind: 'error',
+        error: `JIRA item '${key}' could not be found or is not readable with the connected account (HTTP ${status}).`,
+      };
+    }
+    // Transport failure, 5xx, expired refresh: the key is well-formed and JIRA
+    // simply could not answer. Link, but say so.
+    return {
+      kind: 'link',
+      externalId: key,
+      externalUrl: browseUrl,
+      warning: `Linked '${key}' without verifying it — JIRA could not be reached (${err?.code || err?.message || 'unknown error'}).`,
+    };
+  }
+};
+
+/** Attach an unverified-link warning to a response body, when there is one.
+ *  Both item write paths need this, and the shape must stay identical between
+ *  them so a client can read `jiraWarning` without caring which route ran. */
+export const withJiraWarning = <T extends object>(payload: T, warning?: string): T =>
+  warning ? { ...payload, jiraWarning: warning } : payload;
+
+/**
+ * Shared create/update handling for the reference fields. Returns the updates to
+ * apply (possibly nulls, to clear), or an error string for a 400.
+ */
+export const buildExternalRefUpdates = async (
+  body: any,
+  current?: { externalId?: string | null; externalUrl?: string | null },
+): Promise<{ error: string } | { updates: Record<string, any>; warning?: string }> => {
+  const updates: Record<string, any> = {};
+  let warning: string | undefined;
+
+  if (body.jiraItem !== undefined) {
+    const resolved = await resolveJiraReference(body.jiraItem, current);
+    if (resolved.kind === 'error') return { error: resolved.error };
+    if (resolved.kind === 'unlink') {
+      updates.externalId = null;
+      updates.externalUrl = null;
+    } else {
+      updates.externalId = resolved.externalId;
+      updates.externalUrl = resolved.externalUrl;
+      warning = resolved.warning;
+    }
+    // A validated key is authoritative: a conflicting raw externalId in the same
+    // payload must not be able to overwrite it below.
+    return { updates, warning };
+  }
+
+  if (body.externalId !== undefined) {
+    if (body.externalId === null || body.externalId === '') {
+      updates.externalId = null;
+    } else if (typeof body.externalId !== 'string') {
+      // String() would have turned an object into the literal '[object Object]'
+      // and stored it as the card's tracker id.
+      return { error: `Invalid externalId. Expected a string.` };
+    } else if (body.externalId.length > MAX_EXTERNAL_ID_LENGTH) {
+      return { error: `Invalid externalId. Maximum length is ${MAX_EXTERNAL_ID_LENGTH} characters.` };
+    } else {
+      updates.externalId = body.externalId;
+    }
+  }
+  if (body.externalUrl !== undefined) {
+    if (body.externalUrl === null || body.externalUrl === '') {
+      updates.externalUrl = null;
+    } else if (typeof body.externalUrl !== 'string') {
+      return { error: `Invalid externalUrl. Expected a string.` };
+    } else if (body.externalUrl.length > MAX_EXTERNAL_URL_LENGTH) {
+      return { error: `Invalid externalUrl. Maximum length is ${MAX_EXTERNAL_URL_LENGTH} characters.` };
+    } else if (!isSafeExternalUrl(body.externalUrl)) {
+      return { error: `Invalid externalUrl. Only http(s) URLs without embedded credentials are allowed.` };
+    } else {
+      updates.externalUrl = body.externalUrl;
+    }
+  }
+
+  return { updates, warning };
+};
+
 app.post("/items", asyncHandler(async (req: any, res: any) => {
   console.log(`[API_DEBUG] POST /items body keys: ${Object.keys(req.body).join(', ')}`);
   const { type, title, description, parentId, status, implementationPlan, projectId } = req.body;
@@ -3167,6 +3804,11 @@ app.post("/items", asyncHandler(async (req: any, res: any) => {
 
   const createParentError = await validateParentAssignment(null, projectId, parentId);
   if (createParentError) return res.status(400).json({ error: createParentError });
+
+  // Resolve the tracker reference BEFORE minting the item: a bad key must leave
+  // nothing behind, not create a card and then fail.
+  const externalRef = await buildExternalRefUpdates(req.body);
+  if ('error' in externalRef) return res.status(400).json({ error: externalRef.error });
 
   const newItem: AgEnFKItem = {
     id: uuidv4(),
@@ -3193,6 +3835,12 @@ app.post("/items", asyncHandler(async (req: any, res: any) => {
     (newItem as any).severity = "LOW";
   }
 
+  // On a brand-new item an unlink is a no-op — there is no prior reference to
+  // clear — so only real values are carried over, leaving the fields absent
+  // rather than explicitly null.
+  if (externalRef.updates.externalId) (newItem as any).externalId = externalRef.updates.externalId;
+  if (externalRef.updates.externalUrl) (newItem as any).externalUrl = externalRef.updates.externalUrl;
+
   const created = await storage.createItem(newItem);
   const timestamp = new Date().toISOString();
   console.log(`[${timestamp}] [API_CREATE] Item created: ${created.id} (${created.title}). Broadcasting refresh...`);
@@ -3213,7 +3861,7 @@ app.post("/items", asyncHandler(async (req: any, res: any) => {
     await syncParentStatus(created.parentId);
   }
 
-  res.status(201).json(created);
+  res.status(201).json(withJiraWarning(created, externalRef.warning));
 }));
 
 app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
@@ -3228,6 +3876,8 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
   // Rejected entries are reported back rather than silently dropped — the route
   // already `continue`s past unknown ids, which hides mistakes.
   const skipped: Array<{ id: string; error: string }> = [];
+  // Separate from `skipped`: these entries DID apply, with a caveat.
+  const warnings: Array<{ id: string; warning: string }> = [];
   const parentIdsToSync = new Set<string>();
   const projectIds = new Set<string>();
 
@@ -3258,15 +3908,40 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
       }
     }
 
+    // Resolved ABOVE the archive/unarchive `continue`s below. Those branches
+    // skip the rest of the loop, so a reference resolved after them was dropped
+    // on exactly those entries — a 200 with no link written and nothing in
+    // `skipped`, and a MALFORMED key accepted in silence. This is the same
+    // mistake PUT /items/:id had, so it gets the same fix.
+    const bulkRef = await buildExternalRefUpdates(bodyUpdates, currentItem as any);
+    if ('error' in bulkRef) {
+      skipped.push({ id, error: bulkRef.error });
+      continue;
+    }
+    const bulkRefUpdates = bulkRef.updates as any;
+    const hasBulkRef = Object.keys(bulkRefUpdates).length > 0;
+    // A bulk link made while JIRA was unreachable is written UNVERIFIED, and the
+    // caller has to be told. Reported through its OWN channel rather than
+    // through `skipped`: an entry in `skipped` means "this did not happen", and
+    // an unverified link DID happen. Emitted by noteUnverifiedLink() only after
+    // the write commits — pushing it here would claim a link on the entries that
+    // are later abandoned by the parent guard or by a failed write.
+    const noteUnverifiedLink = () => {
+      if (bulkRef.warning) warnings.push({ id, warning: bulkRef.warning });
+    };
+
     if (status === Status.ARCHIVED && currentItem.status !== Status.ARCHIVED) {
       await archiveRecursively(id);
+      if (hasBulkRef) await storage.updateItem(id, bulkRefUpdates);
+      noteUnverifiedLink();
       if (currentItem.parentId) parentIdsToSync.add(currentItem.parentId);
       continue;
     }
 
     if (status !== undefined && status !== Status.ARCHIVED && currentItem.status === Status.ARCHIVED) {
       await unarchiveRecursively(id);
-      await storage.updateItem(id, { status: status as Status });
+      await storage.updateItem(id, { status: status as Status, ...bulkRefUpdates });
+      noteUnverifiedLink();
       continue;
     }
 
@@ -3289,9 +3964,12 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
     if (comments !== undefined) updates.comments = comments;
     if (sortOrder !== undefined) updates.sortOrder = sortOrder;
 
+    Object.assign(updates, bulkRef.updates);
+
     try {
       const updated = await storage.updateItem(id, updates);
       results.push(updated);
+      noteUnverifiedLink();
       projectIds.add(updated.projectId);
 
       if (updated.parentId) {
@@ -3311,11 +3989,19 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
           // commit into whatever repository it was launched from. autoGitCommit
           // declines and says why.
           const projectRoot = (proj as any)?.projectRoot;
-          await autoGitCommit(updated, projectRoot);
+          // These routes have no message field to carry it, so the outcome is
+          // at least surfaced to the log rather than dropped on the floor.
+          const r = await autoGitCommit(updated, projectRoot);
+          if (r.outcome !== 'committed') {
+            console.warn(`[AUTO_GIT] ${updated.id}: no close commit (${r.outcome}) — ${r.detail ?? ''}`);
+          }
         }
       }
     } catch (e) {
+      // Previously swallowed entirely, so a failed write looked like a success
+      // to the caller. Reported now that there is a channel for it.
       console.error(`[API_BULK] Error updating ${id}:`, e);
+      skipped.push({ id, error: `Update failed: ${(e as any)?.message ?? 'unknown error'}` });
     }
   }
 
@@ -3328,8 +4014,14 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
     await syncParentStatus(parentId);
   }
 
-  // `skipped` is additive — existing callers read `results` only.
-  res.json(skipped.length > 0 ? { results, skipped } : { results });
+  // `skipped` and `warnings` are both additive — existing callers read `results`
+  // only. They mean different things: `skipped` did not apply, `warnings` did
+  // apply but with a caveat (an unverified JIRA link).
+  res.json({
+    results,
+    ...(skipped.length > 0 ? { skipped } : {}),
+    ...(warnings.length > 0 ? { warnings } : {}),
+  });
 }));
 
 app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
@@ -3402,20 +4094,6 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
     }
   }
 
-  if (status === Status.ARCHIVED && currentItem.status !== Status.ARCHIVED) {
-    await archiveRecursively(req.params.id);
-    io.emit('items_updated');
-    if (currentItem.parentId) await syncParentStatus(currentItem.parentId);
-    return res.json(await storage.getItem(req.params.id));
-  }
-
-  if (status !== undefined && status !== Status.ARCHIVED && currentItem.status === Status.ARCHIVED) {
-    await unarchiveRecursively(req.params.id);
-    await storage.updateItem(req.params.id, { status: status as Status });
-    io.emit('items_updated');
-    return res.json(await storage.getItem(req.params.id));
-  }
-
   // Validate type change
   if (type !== undefined) {
     const validTypes = Object.values(ItemType);
@@ -3438,6 +4116,42 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
 
   const parentError = await validateParentAssignment(req.params.id, currentItem.projectId, parentId);
   if (parentError) return res.status(400).json({ error: parentError });
+
+  // Resolved AFTER the cheap local guards above, so a request already doomed by
+  // a bad type or parent never spends a live JIRA round-trip, and ABOVE the
+  // archive/unarchive early returns, because those returns used to skip the
+  // reference entirely: `--status ARCHIVED --jira-item X`
+  // answered 200 having written no link, and a MALFORMED key answered 200 instead
+  // of 400. Validation has to happen on every path that can answer success.
+  const externalRef = await buildExternalRefUpdates(req.body, currentItem as any);
+  if ('error' in externalRef) return res.status(400).json({ error: externalRef.error });
+  const hasExternalRefUpdate = Object.keys(externalRef.updates).length > 0;
+
+  // Both archive branches answer with the freshly-read item plus any
+  // unverified-link warning. Written once so the two cannot drift — the warning
+  // was originally dropped on exactly these paths.
+  const respondWithStoredItem = async () => {
+    const stored = await storage.getItem(req.params.id);
+    // Deleted between the archive write and this read: answer 404 rather than
+    // spreading null into an object and returning a 200 carrying only a warning.
+    if (!stored) return res.status(404).json({ error: "Item not found" });
+    return res.json(withJiraWarning(stored as any, externalRef.warning));
+  };
+
+  if (status === Status.ARCHIVED && currentItem.status !== Status.ARCHIVED) {
+    await archiveRecursively(req.params.id);
+    if (hasExternalRefUpdate) await storage.updateItem(req.params.id, externalRef.updates as any);
+    io.emit('items_updated');
+    if (currentItem.parentId) await syncParentStatus(currentItem.parentId);
+    return respondWithStoredItem();
+  }
+
+  if (status !== undefined && status !== Status.ARCHIVED && currentItem.status === Status.ARCHIVED) {
+    await unarchiveRecursively(req.params.id);
+    await storage.updateItem(req.params.id, { status: status as Status, ...(externalRef.updates as any) });
+    io.emit('items_updated');
+    return respondWithStoredItem();
+  }
 
   const updates: any = {};
   if (title !== undefined) updates.title = title;
@@ -3469,6 +4183,8 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   if (prNumber !== undefined) updates.prNumber = prNumber;
   if (prStatus !== undefined) updates.prStatus = prStatus;
   if (claims !== undefined) updates.claims = claims;
+  // The JIRA link (main's mechanism, and it is the newer one).
+  Object.assign(updates, externalRef.updates);
   /*
    * The link to an issue in another tracker (af47b248).
    *
@@ -3563,13 +4279,18 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
           // commit into whatever repository it was launched from. autoGitCommit
           // declines and says why.
           const projectRoot = (proj as any)?.projectRoot;
-          await autoGitCommit(updated, projectRoot);
+          // These routes have no message field to carry it, so the outcome is
+          // at least surfaced to the log rather than dropped on the floor.
+          const r = await autoGitCommit(updated, projectRoot);
+          if (r.outcome !== 'committed') {
+            console.warn(`[AUTO_GIT] ${updated.id}: no close commit (${r.outcome}) — ${r.detail ?? ''}`);
+          }
         } else {
           console.log(`[TEST_MODE] Skipping auto-git commit for item ${updated.id}`);
         }
       }
 
-    res.json(updated);
+    res.json(withJiraWarning(updated, externalRef.warning));
   } catch (error) {
     res.status(404).json({ error: "Item not found" });
   }
@@ -3749,15 +4470,37 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     ? `\n\n⚠️ MANDATORY EXIT CRITERIA — you MUST satisfy ALL of the following before calling validate_progress again:\n\n${nextStepCriteria}`
     : '';
   const branchRef = (item as any).branchName || 'HEAD';
-  /*
-   * Filled in AFTER the commit attempt, because it is about what happened
-   * rather than about what was asked for. `pushInstruction` below is static -
-   * it is built here, before anything runs, so it can only ever hedge.
+  /**
+  /**
+   * What to tell the agent after DONE.
+   *
+   * It used to say flatly that "the server has auto-committed the changes",
+   * which stopped being true the moment the close commit stopped staging for
+   * you (BUG 315edc11): a file the author never staged does not land, and an
+   * agent told otherwise pushes and leaves it behind. Built from what the
+   * commit ACTUALLY did — including, load-bearingly, the case where it FAILED,
+   * which an earlier version reported as "nothing was staged" and thereby sent
+   * the agent to push a branch with none of its work on it.
    */
-  let closeCommitNote = '';
-  const pushInstruction = nextStatus === Status.DONE
-    ? `\n\n🚀 **Push your branch**: the server commits what you STAGED - it no longer stages for you, because several agents share this worktree. If you staged nothing, commit your own files first. Then:\n\`\`\`\ngit push -u origin ${branchRef}\n\`\`\``
-    : '';
+  const UNSTAGED_SHOWN = 20;
+  const describePush = (result?: AutoGitCommitResult): string => {
+    if (nextStatus !== Status.DONE) return '';
+    const paths = result?.unstaged ?? [];
+    const shown = paths.slice(0, UNSTAGED_SHOWN);
+    const left = paths.length
+      ? `\n\n⚠️ **Not committed** — these were not staged, so the close commit did not carry them:\n`
+        + shown.map(f => `- \`${f}\``).join('\n')
+        + (paths.length > shown.length ? `\n- …and ${paths.length - shown.length} more` : '')
+        + `\nStage and commit them yourself if they belong to this item.`
+      : '';
+    const made = !result
+      ? 'The server commits whatever you have staged.'
+      : result.outcome === 'committed' ? 'The server committed what you had staged.'
+      : result.outcome === 'nothing-staged' ? 'Nothing was staged, so the server made no close commit.'
+      : result.outcome === 'declined' ? `The server made NO close commit: ${result.detail}. Commit your work yourself.`
+      : `❌ The close commit FAILED: ${result.detail}. Nothing was committed — fix this before pushing.`;
+    return `${left}\n\n🚀 **Push your branch**: ${made} Run:\n\`\`\`\ngit push -u origin ${branchRef}\n\`\`\``;
+  };
 
   // A command is only required for the final step. For intermediate steps it is
   // optional — omitting it advances without running anything.
@@ -3855,11 +4598,14 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         const updated = await storage.updateItem(itemId, updates);
         io.emit('items_updated');
         if (updated.parentId) await syncParentStatus(updated.parentId);
-        // No `|| findProjectRoot(process.cwd())`. That fallback made a
-        // long-lived daemon commit into whatever repo it was launched from;
-        // autoGitCommit now declines instead, and says why on the card's log.
-        if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) autoGitCommit(updated, (project as any)?.projectRoot);
-        return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.${pushInstruction}`, output: 'Sibling propagation' });
+        // Awaited, unlike before: the response describes what the commit did,
+        // so it cannot be written before the commit has been attempted. No
+        // `|| findProjectRoot(process.cwd())`: that made a long-lived daemon
+        // commit into whatever repository it was launched from.
+        const gitResult = (process.env.NODE_ENV !== 'test' && !process.env.VITEST)
+          ? await autoGitCommit(updated, (project as any)?.projectRoot)
+          : undefined;
+        return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.${describePush(gitResult)}`, output: 'Sibling propagation' });
       }
       console.warn(`[VALIDATE] Sibling propagation refused for ${itemId}: ${refusal}`);
     } else {
@@ -3900,6 +4646,19 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // `res2` — the real HTTP response on the sync path, or a recorder that
   // captures the outcome into a ValidateRun on the async path.
   const runCommandAndFinalize = async (res2: any, run?: ValidateRun) => {
+  // Read once, so the cap reported in the failure message is the cap that was
+  // actually enforced even if the environment moves underneath us.
+  const maxMs = verifyMaxMs();
+  // Opened BEFORE the spawn, so the command's output can be streamed straight to
+  // disk. The whole stream is never held in memory (BUG 24c679df); the id has to
+  // be minted here rather than after the run for the same reason. Keyed by the
+  // id AS STORED, so the value reaching mkdir / open / unlink is one the server
+  // minted and an id that does not exist cannot create a directory at all.
+  const testId = uuidv4();
+  const storedItem = await storage.getItem(itemId);
+  const logHandle = storedItem ? openValidationLog(storedItem.id, testId) : null;
+  const capture = createOutputCapture({ fd: logHandle?.fd ?? null });
+
   // The commit and the working-tree state the command actually ran against,
   // captured BEFORE the spawn. A long run during which another agent commits
   // OR stages work must not let this green be recorded against a tree it never
@@ -3908,33 +4667,72 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   const gateRoot = projectRoot && resolveCommitRoot(item, projectRoot).root === projectRoot ? projectRoot : null;
   const headBeforeRun = gateRoot ? readHead(gateRoot, gitRun) : null;
   const statusBeforeRun = gateRoot ? readTreeStatus(gateRoot, gitRun) : null;
-  const { output, code, timedOut } = await new Promise<{ output: string; code: number | null; timedOut?: boolean }>((resolve) => {
+
+  // try/finally around the spawn, not just the awaited result: spawn() throws
+  // SYNCHRONOUSLY on a bad argument (a NUL byte in the command, a non-string
+  // cwd from a hand-edited project record). Without this the promise rejects
+  // with the log fd still open, and that is one leaked descriptor per
+  // occurrence with no recovery short of a restart. capture.end() is idempotent
+  // and owns the close.
+  let settledCapture: CapturedOutput | null = null;
+  const { captured, code, timedOut, signal, spawnError } = await (async () => {
+   try {
+    return await new Promise<{
+      captured: CapturedOutput; code: number | null; timedOut?: boolean; signal?: NodeJS.Signals | null; spawnError?: string;
+    }>((resolve) => {
     const child = spawn(resolvedCommand, { shell: true, cwd: projectRoot, env: { ...process.env, FORCE_COLOR: '1' } });
-    let out = '';
     let killed = false;
+    let settled = false;
+    let grace: ReturnType<typeof setTimeout> | undefined;
+    // Exactly one resolution, whichever signal arrives first.
+    const finish = (c: number | null, sig?: NodeJS.Signals | null, spawnErr?: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(killer);
+      if (grace) clearTimeout(grace);
+      settledCapture = capture.end();
+      resolve({ captured: settledCapture, code: killed ? 124 : c, timedOut: killed, signal: sig, spawnError: spawnErr });
+    };
     // Hard runtime cap: without it a hung verifyCommand (e.g. a test suite
     // waiting on stdin) would leave an async run 'running' forever, and the
     // 409 guard would lock the item's verify verb until a server restart.
-    const maxMs = Number(process.env.AGENFK_VERIFY_MAX_MS) > 0 ? Number(process.env.AGENFK_VERIFY_MAX_MS) : 60 * 60 * 1000;
     const killer = setTimeout(() => {
       killed = true;
-      out += `\n[agenfk] verifyCommand exceeded the ${Math.round(maxMs / 60000)}min cap (AGENFK_VERIFY_MAX_MS) and was killed.\n`;
+      capture.note(`\n[agenfk] verifyCommand exceeded the ${Math.round(maxMs / 60000)}min cap (AGENFK_VERIFY_MAX_MS) and was killed.\n`);
       try { child.kill('SIGKILL'); } catch { /* already gone */ }
+      // SIGKILL reaches the SHELL only. Grandchildren — vitest workers, npm
+      // lifecycle scripts — survive it and hold the inherited stdio pipes open,
+      // and 'close' waits for those pipes. Resolving only on 'close' meant the
+      // cap did not bound the run at all: the promise settled whenever an
+      // orphan happened to exit, the run stayed 'running' and
+      // activeValidateRunByItem stayed held, so every later verify on the item
+      // got VALIDATE_RUN_ACTIVE — the exact lock this cap exists to prevent.
+      // Once 'exit' has fired the process is gone; give stdio a moment to drain,
+      // then answer.
+      grace = setTimeout(() => finish(124), KILL_GRACE_MS);
+      if (typeof grace.unref === 'function') grace.unref();
     }, maxMs);
     if (typeof killer.unref === 'function') killer.unref();
-    // Live output for run followers, capped so a verbose command can't pin
-    // hundreds of MB in the run map; the full output still goes to the log file.
-    const LIVE_CAP = 1024 * 1024;
-    const onData = (d: Buffer) => { out += d.toString(); if (run && out.length <= LIVE_CAP) run.output = out; };
+    // Live output for run followers is the capture's bounded head, so a verbose
+    // command can't pin hundreds of MB in the run map — and now cannot pin them
+    // anywhere else either. The full output is on disk, not in this process.
+    const onData = (d: Buffer) => { capture.write(d); if (run) run.output = capture.live(); };
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
-    child.on('close', (c) => { clearTimeout(killer); resolve({ output: out, code: killed ? 124 : c, timedOut: killed }); });
-    child.on('error', (err) => { clearTimeout(killer); resolve({ output: err.message, code: 1 }); });
-  });
+    child.on('exit', (c, sig) => { if (killed) finish(124, sig); });
+    child.on('close', (c, sig) => finish(c, sig));
+    // Keep whatever the command already printed — discarding it loses the only
+    // evidence of why the spawn failed.
+    child.on('error', (err) => finish(1, null, err.message));
+    });
+   } finally {
+     if (!settledCapture) capture.end();
+   }
+  })();
 
-  const testId = uuidv4();
-  const logPath = writeValidationLog(itemId, testId, output);
-  const preview = buildOutputPreview(output, logPath);
+  const logPath = closeValidationLog(logHandle);
+  const logVanished = !!logHandle && logPath === null;
+  const preview = buildOutputPreview(captured, logPath, logVanished);
   const passed = code === 0 && !timedOut;
   const exitNote = exitCriteria ? `\n**Exit criteria**: ${exitCriteria}` : '';
 
@@ -3985,22 +4783,16 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       // recorded and no card may inherit it.
       const preCommitSha = endsFlow && gateRoot ? readHead(gateRoot, gitRun) : null;
       const preCommitStatus = endsFlow && gateRoot ? readTreeStatus(gateRoot, gitRun) : null;
+      let gitResult: AutoGitCommitResult | undefined;
       if (endsFlow && process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
         // Advisory: a git-commit failure must not report a PASSED validation
-        // (whose transition already landed) as failed to the run follower.
-        try {
-          const outcome = await autoGitCommit(updated, projectRoot);
-          /*
-           * KEPT, not discarded. The close commit now declines when nothing is
-           * staged, and the whole point of declining is that the agent finds
-           * out - it has work in the tree and no commit. Every call site threw
-           * this result away, and `pushInstruction` is built two hundred lines
-           * ABOVE this, so it could not depend on the outcome even in
-           * principle. The commit that introduced the decline claimed it "says
-           * so to the agent rather than only to a log". It did not.
-           */
-          if (!outcome.success && outcome.error) closeCommitNote = `\n\n⚠️ ${outcome.error}`;
-        }
+        // (whose transition already landed) as failed to the run follower. The
+        // catch is belt-and-braces — autoGitCommit resolves rather than throws,
+        // reporting a refusal as outcome 'failed' — but exec's callback is not
+        // the only way this can go wrong, and the transition must survive all
+        // of them. The outcome is KEPT, not discarded: it is what the response
+        // reports, so the agent learns the commit declined or failed.
+        try { gitResult = await autoGitCommit(updated, projectRoot); }
         catch (e: any) { console.error(`[validate] autoGitCommit failed after DONE: ${e?.message || e}`); }
       }
       /*
@@ -4059,7 +4851,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       itemId,
       payload: { command: resolvedCommand, status: 'PASSED', testId },
     });
-    return res2.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${pushInstruction}${closeCommitNote}`, output: preview });
+    return res2.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${describePush(gitResult)}`, output: preview });
   } else {
     const updates: any = { status: failureStatus, comments };
     if (nextStatus === Status.DONE) {
@@ -4079,7 +4871,15 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       itemId,
       payload: { command: resolvedCommand, status: 'FAILED', testId },
     });
-    return res2.status(422).json({ status: failureStatus, message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${projectRoot}\`\n\nOutput:\n${preview}`, output: preview });
+    return res2.status(422).json({
+      status: failureStatus,
+      // The outcome first, then the tail, then where the whole thing is. The
+      // exit code used to be computed and thrown away, so a red suite, a
+      // cap-kill and a command that never started were indistinguishable
+      // (BUG b233143b).
+      message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${projectRoot}\`\nResult: ${describeExit({ code, timedOut, signal, spawnError }, maxMs)}\n\nOutput: ${formatBytes(captured.totalBytes)}\n\nLast ${FAILURE_TAIL_LINES} lines of output:\n${tailLines(captured.tail, FAILURE_TAIL_LINES)}\n\n${describeLog(captured, logPath, logVanished)}`,
+      output: preview,
+    });
   }
   }; // end runCommandAndFinalize
 
@@ -4730,7 +5530,7 @@ const refreshJiraToken = async (tokenData: JiraTokenData): Promise<JiraTokenData
         client_id: clientId,
         client_secret: clientSecret,
         refresh_token: tokenData.refresh_token,
-      });
+      }, { timeout: JIRA_HTTP_TIMEOUT_MS });
       const updated: JiraTokenData = {
         ...tokenData,
         access_token: data.access_token,
@@ -4754,10 +5554,17 @@ const jiraApiRequest = async (
   tokenData: JiraTokenData,
   method: string,
   url: string,
-  body?: any
+  body?: any,
+  timeoutMs?: number
 ): Promise<{ data: any; tokenData: JiraTokenData }> => {
   const makeRequest = (token: string) =>
-    axios({ method, url, data: body, headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
+    axios({
+      method,
+      url,
+      data: body,
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+      ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
+    });
 
   try {
     const res = await makeRequest(tokenData.access_token);
@@ -5639,7 +6446,40 @@ app.get("/releases/latest", asyncHandler(async (_req: any, res: any) => {
 
   try {
     const { data } = await axios.get(`https://api.github.com/repos/${repo}/releases/latest`, { headers });
-    const tagName: string = data.tag_name;
+    let tagName: string = data.tag_name;
+    let meta: any = data;
+
+    // A hub build (`hub-v*`, CGLAB-8) is not a framework release, and this
+    // endpoint is what feeds the CLI's upgrade nag AND its tier gate. GitHub's
+    // /releases/latest can hand one back: when hub-v1.1.19-beta.1 was created
+    // without --prerelease it became GitHub's "latest stable", and every CLI
+    // read version "hub-v1.1.19-beta.1" from here. Re-query the list and answer
+    // with the newest real framework release.
+    if (isHubRelease(tagName)) {
+      const { data: list } = await axios.get(
+        `https://api.github.com/repos/${repo}/releases?per_page=30`,
+        { headers },
+      );
+      meta = ((Array.isArray(list) ? list : []) as any[])
+        .filter((r) => typeof r?.tag_name === 'string' && r.tag_name && !isHubRelease(r.tag_name) && !r.prerelease)
+        .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())[0];
+      tagName = meta?.tag_name ?? '';
+      if (!tagName) {
+        // Nothing to report. An empty version is what the CLI reads as "no
+        // upgrade available"; a hub tag must never reach it, and must never
+        // arrive with a tier attached — `mandatory` exits(1) every CLI call.
+        return res.json({
+          version: '',
+          tagName: null,
+          name: null,
+          body: '',
+          publishedAt: null,
+          url: null,
+          upgradeTier: 'optional',
+          currentVersion,
+        });
+      }
+    }
 
     // Fetch upgradeTier from the raw CLI package.json for this tag
     let upgradeTier: 'mandatory' | 'recommended' | 'optional' = 'optional';
@@ -5656,10 +6496,10 @@ app.get("/releases/latest", asyncHandler(async (_req: any, res: any) => {
     const releaseData = {
       version: tagName.replace(/^v/, ''),
       tagName,
-      name: data.name,
-      body: data.body || '',
-      publishedAt: data.published_at,
-      url: data.html_url,
+      name: meta.name,
+      body: meta.body || '',
+      publishedAt: meta.published_at,
+      url: meta.html_url,
       upgradeTier,
     };
     releaseCache = { data: releaseData, fetchedAt: Date.now() };

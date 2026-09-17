@@ -59,6 +59,9 @@ interface ToggleSetOptions {
   storageKey?: string;
 }
 
+/** Order-insensitive identity for a selection, so a re-ordered list is not a change. */
+const keyOf = (values: Iterable<string>) => [...values].sort().join('\u0000');
+
 export function useToggleSet(initial: Iterable<string> = [], opts: ToggleSetOptions = {}) {
   const { storageKey } = opts;
   const storage = useRef<StorageLike | null>(getLocalStorage()).current;
@@ -66,6 +69,34 @@ export function useToggleSet(initial: Iterable<string> = [], opts: ToggleSetOpti
   const [s, setS] = useState<Set<string>>(() =>
     storageKey ? readPersistedSet(storage, storageKey, initial) : new Set(initial),
   );
+
+  // Follow `initial` — for URL-persisted facets that means following the query
+  // string (BUG 02388ec7). It used to seed once at mount, so a Back that popped
+  // the URL left the address bar describing a view the page was not showing,
+  // and the next toggle wrote state-derived values back over the popped URL,
+  // undoing the Back silently.
+  //
+  // The obvious worry is fighting the page's write-back: a toggle changes state
+  // first and the page writes the URL in a later effect, so for one commit the
+  // two disagree. It does not bite, because this compares KEYS and reconciles to
+  // the same members either way — the write-back lands and the next run is a
+  // no-op. An earlier version guarded that window with a ref holding the
+  // previous external value; removing the ref changed no test, so it was a guard
+  // nothing could prove and it is gone rather than left to look load-bearing.
+  const externalKey = keyOf(initial);
+  useEffect(() => {
+    // NEVER for a storage-backed facet. There, `initial` is a constant default
+    // literal, not an external source of truth — the real seed came from
+    // localStorage. Syncing to it overwrites the restored selection with the
+    // default on MOUNT, and the persist effect below then writes that default
+    // back, destroying the user's choice permanently rather than for one
+    // render. That is what this did before the guard, to all six chip filters
+    // on Org and UserDetail.
+    if (storageKey) return;
+    setS(prev => (keyOf(prev) === externalKey
+      ? prev // same members: never re-render for a re-ordered list
+      : new Set(externalKey ? externalKey.split('\u0000') : [])));
+  }, [externalKey, storageKey]);
 
   useEffect(() => {
     if (storageKey) writePersistedSet(storage, storageKey, s);

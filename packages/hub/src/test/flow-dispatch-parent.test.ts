@@ -1,0 +1,345 @@
+// Parent side of flow dispatch (CGLAB-182, task 1).
+//
+// A parent hub sends one of its flows to its child hubs. It records WHO it was
+// sent to and WHAT happened per hub — serving a directive is not the same as
+// the flow landing, so the target state starts pending and only a report from
+// the child moves it (that report is task ef8c4cd1; here everything stays
+// pending, which is the honest answer until a child speaks).
+//
+// The load-bearing decision, confirmed with the user: scope 'all' means every
+// current AND FUTURE child hub. So a dispatch cannot be expanded into a fixed
+// list of targets when it is created — a hub enrolling next month has to
+// receive it on its first poll. Several tests below exist only to hold that.
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import supertest from 'supertest';
+import { createHubApp } from '../server';
+import { createPasswordUser } from '../auth/password';
+import { drainApp } from './helpers/drainApp';
+
+const DB = path.join(os.tmpdir(), `agenfk-hub-flowdispatch-${process.pid}.sqlite`);
+const SECRET = 'a'.repeat(64);
+const cleanup = () => { for (const s of ['', '-wal', '-shm']) { const f = DB + s; if (fs.existsSync(f)) fs.unlinkSync(f); } };
+
+describe('parent hub: dispatching a flow to child hubs', () => {
+  let app: any; let ctx: any; let cookie: string; let flowId: string;
+
+  const enroll = async (name: string) => {
+    const inv = await supertest(app).post('/hub/federation/invite/create').set('Cookie', cookie).send({});
+    const r = await supertest(app).post('/v1/federation/enroll')
+      .send({ inviteToken: inv.body.inviteToken, childHub: { name } });
+    expect(r.status).toBe(200);
+    return r.body as { token: string; childHubId: string };
+  };
+  /** What a child sees when it polls. 204 means "nothing to do". */
+  const poll = (token: string) =>
+    supertest(app).get('/v1/federation/directives').set('Authorization', `Bearer ${token}`);
+  const dispatch = (body: unknown) =>
+    supertest(app).post('/v1/admin/flow-dispatches').set('Cookie', cookie).send(body);
+
+  beforeEach(async () => {
+    cleanup();
+    const out = await createHubApp({ dbPath: DB, secretKey: SECRET, sessionSecret: 'sess', defaultOrgId: 'org' });
+    app = out.app; ctx = out.ctx;
+    await createPasswordUser(ctx.db, 'org', 'admin@x', 'longenough1', 'admin');
+    cookie = (await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' })).headers['set-cookie']?.[0] ?? '';
+    const made = await supertest(app).post('/v1/admin/flows').set('Cookie', cookie)
+      .send({
+        definition: {
+          name: 'Group TDD',
+          description: 'the org standard',
+          steps: [
+            { id: 'todo', name: 'TODO', order: 0 },
+            { id: 'done', name: 'DONE', order: 1 },
+          ],
+        },
+      });
+    expect(made.status).toBeLessThan(300);
+    flowId = made.body.id;
+  });
+
+  afterEach(async () => { ctx.stopWorkers?.(); await drainApp(app); await ctx.db.close(); cleanup(); });
+
+  describe('a dispatch is a decision about CONTENT, not a pointer to it', () => {
+    it('serves what was dispatched, not what the flow says now', async () => {
+      // Reading the flow LIVE at poll time meant an edit made after the
+      // dispatch reached whichever children had not polled yet — carried under
+      // the dispatch's ORIGINAL version number, because the payload paired a
+      // snapshot version with a live definition. Two hubs then run different
+      // flows while both report the same version, and the child's monotonic
+      // guard can never converge them.
+      const a = await enroll('alpha');
+      const b = await enroll('beta');
+      const d = await dispatch({ flowId, scope: 'all' });
+      expect(d.status).toBe(200);
+
+      const first = await poll(a.token);
+      expect(first.status).toBe(200);
+      expect(first.body.flow.definition.name).toBe('Group TDD');
+      const servedVersion = first.body.flow.version;
+
+      // The admin edits the flow afterwards. No new dispatch is made.
+      const edited = await supertest(app).put(`/v1/admin/flows/${flowId}`).set('Cookie', cookie)
+        .send({ definition: { name: 'Edited after the dispatch', steps: [{ id: 'todo', name: 'TODO', order: 0 }] } });
+      expect(edited.status).toBe(200);
+
+      const second = await poll(b.token);
+      expect(second.status).toBe(200);
+      expect(second.body.dispatchId).toBe(first.body.dispatchId);
+      // Same dispatch, same content, same version — for every child.
+      expect(second.body.flow.definition.name).toBe('Group TDD');
+      expect(second.body.flow.version).toBe(servedVersion);
+    });
+
+    it('pairs the served definition with the version it is actually at', async () => {
+      // The two numbers in the payload used to be able to disagree.
+      const a = await enroll('alpha');
+      await dispatch({ flowId, scope: 'all' });
+      const r = await poll(a.token);
+      expect(r.body.flow.version).toBe(r.body.flowVersion);
+    });
+  });
+
+  describe('targeting', () => {
+    it('reaches only the hubs named in a selected dispatch', async () => {
+      const a = await enroll('alpha');
+      const b = await enroll('beta');
+      expect((await dispatch({ flowId, scope: 'selected', childHubIds: [a.childHubId] })).status).toBe(200);
+
+      const forAlpha = await poll(a.token);
+      expect(forAlpha.status).toBe(200);
+      expect(forAlpha.body).toMatchObject({ kind: 'flow.dispatch' });
+
+      expect((await poll(b.token)).status).toBe(204);
+    });
+
+    it("reaches a hub that enrolled AFTER an 'all' dispatch was created", async () => {
+      // The whole reason 'all' cannot be frozen into a target list up front.
+      expect((await dispatch({ flowId, scope: 'all' })).status).toBe(200);
+      const late = await enroll('enrolled-later');
+      const r = await poll(late.token);
+      expect(r.status).toBe(200);
+      expect(r.body).toMatchObject({ kind: 'flow.dispatch' });
+    });
+
+    it('carries the flow definition, so the child needs no second request', async () => {
+      const a = await enroll('alpha');
+      await dispatch({ flowId, scope: 'all' });
+      const r = await poll(a.token);
+      expect(r.body.flow).toMatchObject({ id: flowId, name: 'Group TDD' });
+      expect(r.body.flow.definition.steps.map((s: any) => s.name)).toEqual(['TODO', 'DONE']);
+      expect(typeof r.body.dispatchId).toBe('string');
+      expect(typeof r.body.flowVersion).toBe('number');
+    });
+  });
+
+  describe('what stops a dispatch being served', () => {
+    it('a cancelled dispatch', async () => {
+      const a = await enroll('alpha');
+      const d = await dispatch({ flowId, scope: 'all' });
+      expect((await poll(a.token)).status).toBe(200);
+      const c = await supertest(app).post(`/v1/admin/flow-dispatches/${d.body.id}/cancel`).set('Cookie', cookie).send({});
+      expect(c.status).toBe(200);
+      expect((await poll(a.token)).status).toBe(204);
+    });
+
+    it('a detached hub, whose credential is dead anyway', async () => {
+      const a = await enroll('alpha');
+      await dispatch({ flowId, scope: 'all' });
+      await supertest(app).post(`/v1/admin/child-hubs/${a.childHubId}/detach`).set('Cookie', cookie).send({});
+      expect((await poll(a.token)).status).toBeGreaterThanOrEqual(400);
+    });
+
+    it('nothing at all, on a hub with no dispatches', async () => {
+      const a = await enroll('alpha');
+      expect((await poll(a.token)).status).toBe(204);
+    });
+  });
+
+  describe('the admin view of what happened', () => {
+    it('lists a dispatch with a pending target per hub, because nobody has reported yet', async () => {
+      const a = await enroll('alpha');
+      await enroll('beta');
+      await dispatch({ flowId, scope: 'all' });
+      await poll(a.token); // alpha has now SEEN it — still not installed
+
+      const list = await supertest(app).get('/v1/admin/flow-dispatches').set('Cookie', cookie);
+      expect(list.status).toBe(200);
+      const d = list.body.dispatches[0];
+      expect(d).toMatchObject({ flowId, scope: 'all' });
+      // Serving is not landing: alpha polled, and is still pending.
+      const alphaTarget = d.targets.find((t: any) => t.childHubId === a.childHubId);
+      expect(alphaTarget.state).toBe('pending');
+    });
+
+    it('refuses a dispatch of a flow that does not exist', async () => {
+      await enroll('alpha');
+      const r = await dispatch({ flowId: 'no-such-flow', scope: 'all' });
+      expect(r.status).toBeGreaterThanOrEqual(400);
+    });
+
+    it('tolerates the same hub named twice instead of falling over', async () => {
+      // A multi-select sending a repeated id is an ordinary client bug, not a
+      // server error. childHubIds was never de-duplicated, so the second
+      // target insert violated PRIMARY KEY (dispatch_id, child_hub_id), rolled
+      // the transaction back and surfaced as a 500 with nothing created.
+      const a = await enroll('alpha');
+      const r = await dispatch({ flowId, scope: 'selected', childHubIds: [a.childHubId, a.childHubId] });
+      expect(r.status).toBe(200);
+      const rows = await ctx.db.all<any>(
+        'SELECT child_hub_id FROM flow_dispatch_targets WHERE dispatch_id = ?', [r.body.id],
+      );
+      expect(rows).toHaveLength(1);
+    });
+
+    it('refuses a selected dispatch naming a hub it cannot target, rather than creating a black hole', async () => {
+      // Silently skipping bad ids produced a dispatch with no targets that
+      // could never be served to anyone — the feed requires scope 'all' or an
+      // explicit target row — returned 200, and was indistinguishable in the
+      // listing from an 'all' dispatch nobody had polled yet. The upgrade twin
+      // already refuses the whole batch and names what was missing.
+      const a = await enroll('alpha');
+      const r = await dispatch({ flowId, scope: 'selected', childHubIds: [a.childHubId, 'no-such-hub'] });
+      expect(r.status).toBe(404);
+      expect(r.body.missing).toEqual(['no-such-hub']);
+      expect(await ctx.db.get<any>('SELECT COUNT(*) AS n FROM flow_dispatches')).toMatchObject({ n: 0 });
+    });
+
+    it('refuses a selected dispatch naming a DETACHED hub', async () => {
+      const a = await enroll('alpha');
+      const b = await enroll('beta');
+      await supertest(app).post(`/v1/admin/child-hubs/${b.childHubId}/detach`).set('Cookie', cookie).send({});
+      const r = await dispatch({ flowId, scope: 'selected', childHubIds: [a.childHubId, b.childHubId] });
+      expect(r.status).toBe(404);
+      expect(r.body.missing).toEqual([b.childHubId]);
+    });
+
+    it("refuses a selected dispatch naming another org's child hub", async () => {
+      // The id resolves as a row, so only the org clause can refuse it.
+      const a = await enroll('alpha');
+      await ctx.db.run(
+        `INSERT INTO child_hubs (id, org_id, name, first_seen, last_seen) VALUES (?, ?, ?, ?, ?)`,
+        ['their-hub', 'other-org', 'Theirs', new Date().toISOString(), new Date().toISOString()],
+      );
+      const r = await dispatch({ flowId, scope: 'selected', childHubIds: [a.childHubId, 'their-hub'] });
+      expect(r.status).toBe(404);
+      expect(r.body.missing).toEqual(['their-hub']);
+    });
+
+    it('refuses a selected dispatch that names nobody', async () => {
+      // The twin has this; this file did not, and each route still owns its own
+      // empty-list guard line.
+      expect((await dispatch({ flowId, scope: 'selected', childHubIds: [] })).status).toBe(400);
+    });
+
+    it('names EVERY hub it could not target, in the order they were given', async () => {
+      const a = await enroll('alpha');
+      const r = await dispatch({ flowId, scope: 'selected', childHubIds: ['zzz', a.childHubId, 'aaa'] });
+      expect(r.status).toBe(404);
+      expect(r.body.missing).toEqual(['zzz', 'aaa']);
+    });
+
+    it('refuses a null or empty id instead of quietly dropping it', async () => {
+      // Filtering a malformed element out is the same defect as dropping an
+      // unknown hub: the admin names two hubs, one is null from a client bug,
+      // and a dispatch to ONE hub comes back 200 as though both were targeted.
+      const a = await enroll('alpha');
+      for (const junk of [null, '', 7, { id: 'x' }]) {
+        const r = await dispatch({ flowId, scope: 'selected', childHubIds: [a.childHubId, junk] });
+        expect(r.status).toBe(400);
+      }
+      expect(await ctx.db.get<any>('SELECT COUNT(*) AS n FROM flow_dispatches')).toMatchObject({ n: 0 });
+    });
+
+    it('refuses more hubs than one dispatch may name', async () => {
+      // childHubIds was unbounded, so a huge array became a huge IN list on one
+      // authenticated admin request.
+      const r = await dispatch({
+        flowId, scope: 'selected',
+        childHubIds: Array.from({ length: 501 }, (_, i) => `h-${i}`),
+      });
+      expect(r.status).toBe(400);
+    });
+
+    it('ignores childHubIds entirely under scope all', async () => {
+      // Named nowhere else, and worth holding: 'all' means every current AND
+      // future hub, so a stray id must not narrow it or refuse it.
+      const a = await enroll('alpha');
+      const r = await dispatch({ flowId, scope: 'all', childHubIds: ['no-such-hub'] });
+      expect(r.status).toBe(200);
+      expect((await poll(a.token)).status).toBe(200);
+    });
+
+    it('creates no target row for a hub that detaches mid-dispatch', async () => {
+      // The validation runs before the transaction, so a hub detaching in the
+      // gap used to get a target row anyway: there is no foreign key on
+      // flow_dispatch_targets.child_hub_id, the insert could not fail, and the
+      // feed's predicate matches that row forever — a dispatch stuck
+      // half-pending on the board with no hub able to answer it.
+      const a = await enroll('alpha');
+      const b = await enroll('beta');
+      const realRun = ctx.db.run.bind(ctx.db);
+      let detached = false;
+      ctx.db.run = async (sql: string, params?: any[]) => {
+        const r = await realRun(sql, params);
+        // Detach beta the instant the dispatch row lands — i.e. after the
+        // validation passed and inside the transaction.
+        if (!detached && /INSERT INTO flow_dispatches/.test(sql)) {
+          detached = true;
+          await realRun('UPDATE child_hubs SET detached_at = ? WHERE id = ?', [new Date().toISOString(), b.childHubId]);
+        }
+        return r;
+      };
+      try {
+        const r = await dispatch({ flowId, scope: 'selected', childHubIds: [a.childHubId, b.childHubId] });
+        expect(r.status).toBe(409);
+        expect(r.body.missing).toEqual([b.childHubId]);
+      } finally { ctx.db.run = realRun; }
+      // All or nothing: alpha must not be left holding half a dispatch.
+      expect(await ctx.db.get<any>('SELECT COUNT(*) AS n FROM flow_dispatch_targets')).toMatchObject({ n: 0 });
+      expect(await ctx.db.get<any>('SELECT COUNT(*) AS n FROM flow_dispatches')).toMatchObject({ n: 0 });
+    });
+
+    it("refuses a dispatch of another org's flow, which DOES exist", async () => {
+      // The id resolves, so only the ownership clause can refuse it — an
+      // unknown-id test cannot tell the two apart and passes either way.
+      await enroll('alpha');
+      await ctx.db.run(
+        `INSERT INTO flows (id, org_id, name, description, definition_json, source, version)
+         VALUES (?, ?, ?, ?, ?, 'hub', 1)`,
+        ['their-flow', 'other-org', 'Their Flow', null,
+         JSON.stringify({ name: 'Their Flow', steps: [{ id: 'a', name: 'A', order: 0 }] })],
+      );
+      const r = await dispatch({ flowId: 'their-flow', scope: 'all' });
+      expect(r.status).toBe(404);
+    });
+
+    it("never serves another org's dispatch to this org's child hub", async () => {
+      // A real foreign dispatch, seeded alongside ours. Without the org clause
+      // in the directive query the child is served the wrong group's flow —
+      // the worst outcome this feature can produce.
+      const a = await enroll('alpha');
+      await ctx.db.run(
+        `INSERT INTO flows (id, org_id, name, description, definition_json, source, version)
+         VALUES (?, ?, ?, ?, ?, 'hub', 1)`,
+        ['their-flow', 'other-org', 'Their Flow', null,
+         JSON.stringify({ name: 'Their Flow', steps: [{ id: 'a', name: 'A', order: 0 }] })],
+      );
+      await ctx.db.run(
+        `INSERT INTO flow_dispatches (id, org_id, flow_id, flow_version, scope_type, created_at)
+         VALUES (?, ?, ?, 1, 'all', ?)`,
+        ['their-dispatch', 'other-org', 'their-flow', '2020-01-01T00:00:00.000Z'],
+      );
+      // Ours is newer, so if org scoping were dropped the FOREIGN one would be
+      // served first — ordered by created_at, and theirs is dated 2020.
+      await dispatch({ flowId, scope: 'all' });
+
+      const r = await poll(a.token);
+      expect(r.status).toBe(200);
+      expect(r.body.flow.id).toBe(flowId);
+      expect(r.body.flow.name).toBe('Group TDD');
+    });
+  });
+});

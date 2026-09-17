@@ -1,15 +1,20 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { GitPullRequest, RefreshCw, TrendingUp, TrendingDown } from 'lucide-react';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { GitPullRequest, RefreshCw, Search, TrendingUp, TrendingDown, X } from 'lucide-react';
 import { api } from '../api';
 import { FacetMultiselect } from '../components/FacetMultiselect';
 import { FilterAccordion, parseFiltersOpen } from '../components/FilterAccordion';
 import { ModelMetaFilter } from '../components/ModelMetaFilter';
 import { shortRemote } from '../components/facetSearch';
 import { useToggleSet } from '../hooks/useToggleSet';
+import { useChildHubs } from '../hooks/useChildHubs';
+import { csvParam } from '../urlParams';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { useSettledKey } from '../hooks/useSettledKey';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
 import { SIZE_META, type SizeKey, buildDayAxis, pctDelta } from '../prOverview';
+import { parsePrQuery } from '../prSearch';
 import { buildMonthBands, dayHeaderInfo, contributionPcts, cellTooltip, placeTooltip } from '../prPerDay';
 import { buildVolumeSeries, type Granularity } from '../prVolumeGranularity';
 
@@ -60,6 +65,13 @@ interface PrOverviewResponse {
   prs: Array<{
     repo: string;
     prNumber: number;
+    /**
+     * CGLAB-184: which hub reported it — a child hub's id, or 'local' for this
+     * hub's own. On a parent hub (repo, prNumber) is NOT unique: two children
+     * can each size acme/web#57, and they are different PRs on different
+     * forges. Optional so a response from an older hub still types.
+     */
+    childHubId?: string;
     url: string | null;
     user_key: string;
     model: string;
@@ -72,6 +84,17 @@ interface PrOverviewResponse {
   previous: { prs: number; sizePoints: number } | null;
 }
 interface ProjectsResponse { projects: string[] }
+
+/**
+ * A stable identity for one PR row.
+ *
+ * Deliberately NOT `repo#number`: on a parent hub that pair collides across
+ * child hubs, and a duplicate React key makes reconciliation reuse one node for
+ * two rows — so a filter change can leave the wrong opener and size on screen.
+ * Falls back to 'local' for a response from a hub that predates the field.
+ */
+const prKey = (p: { repo: string; prNumber: number; childHubId?: string }) =>
+  `${p.childHubId ?? 'local'}\u0000${p.repo}#${p.prNumber}`;
 
 // XL→XS so the stacked bar renders largest at the bottom. Hoisted out of render.
 const SIZE_META_DESC = [...SIZE_META].reverse();
@@ -252,7 +275,7 @@ function PrDrilldownModal({ dev, day, prs, onClose }: {
             // row container, so repo / model / badge / time all open the PR.
             // Rows without a derived link stay inert.
             return p.url ? (
-              <li key={`${p.repo}#${p.prNumber}`}>
+              <li key={prKey(p)}>
                 <a
                   href={p.url}
                   target="_blank"
@@ -264,7 +287,7 @@ function PrDrilldownModal({ dev, day, prs, onClose }: {
                 </a>
               </li>
             ) : (
-              <li key={`${p.repo}#${p.prNumber}`} className="flex items-center gap-3 px-5 py-2.5">
+              <li key={prKey(p)} className="flex items-center gap-3 px-5 py-2.5">
                 {rowBody}
               </li>
             );
@@ -279,30 +302,107 @@ export function PrOverviewPage() {
   // The URL query string is the source of truth for every filter, so a refresh
   // or a shared link restores the exact same view. State is seeded from the URL
   // on first render and written back (replace) whenever a filter changes.
-  const [searchParams, setSearchParams] = useSearchParams();
-  const csv = (k: string) => (searchParams.get(k) ?? '').split(',').map(s => s.trim()).filter(Boolean);
-  const urlRange = searchParams.get('range');
-  const initRange = (RANGES.some(r => r.key === urlRange) ? urlRange : '30d') as RangeKey;
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const csv = (k: string) => csvParam(searchParams, k);
+  const readRange = (sp: URLSearchParams): RangeKey => {
+    const v = sp.get('range');
+    return (RANGES.some(r => r.key === v) ? v : '30d') as RangeKey;
+  };
+  const readGran = (sp: URLSearchParams): Granularity => {
+    const v = sp.get('gran');
+    return v === 'weekly' || v === 'monthly' ? v : 'daily';
+  };
+  // Repeated ?pr= params seed from the first entry that PARSES, mirroring the
+  // server's parsePrNumberFilter — see the prQuery state below for why.
+  const readPrQuery = (sp: URLSearchParams): string =>
+    [...sp.getAll('pr')].find(v => parsePrQuery(v) !== null) ?? '';
+  const initRange = readRange(searchParams);
 
   const projectSel = useToggleSet(csv('projects'));
   const devSel = useToggleSet(csv('developers'));
   const modelSel = useToggleSet(csv('model'));
+  const childHubSel = useToggleSet(csv('childHubId'));
+  const childHubs = useChildHubs(childHubSel.set);
   const [range, setRange] = useState<RangeKey>(initRange);
-  const urlGran = searchParams.get('gran');
-  const initGran: Granularity = urlGran === 'weekly' || urlGran === 'monthly' ? urlGran : 'daily';
-  const [gran, setGran] = useState<Granularity>(initGran);
+  const [gran, setGran] = useState<Granularity>(() => readGran(searchParams));
   // Explicit date range (YYYY-MM-DD); when set it overrides the preset range.
   const [customFrom, setCustomFrom] = useState<string>(searchParams.get('from') ?? '');
   const [customTo, setCustomTo] = useState<string>(searchParams.get('to') ?? '');
   // Accordion open/closed lives in the URL like every other filter, so a shared
   // or bookmarked link restores the same layout. Absent param = open.
   const [filtersOpen, setFiltersOpen] = useState(() => parseFiltersOpen(searchParams.get('filters')));
+  // PR-number search. The raw text is kept (so "#" and a half-typed box survive
+  // the keystroke that produced them) and parsed on every render; only the
+  // parsed number reaches the URL and the API, which is why a shared link says
+  // ?pr=57 however the user spelled it in the box.
+  //
+  // Repeated ?pr= params seed from the first entry that PARSES, mirroring the
+  // server's parsePrNumberFilter. searchParams.get returns the FIRST entry
+  // whatever it holds, so `?pr=&pr=57` would open the windowed overview and then
+  // the URL effect below would rewrite the address bar without `pr` at all —
+  // deleting the link's own evidence that it asked for PR #57.
+  const [prQuery, setPrQuery] = useState<string>(() => readPrQuery(searchParams));
+  const prNumber = parsePrQuery(prQuery);
+  // A PR search supersedes the date window, the model filter and the developer
+  // filter. Project (git remote) is the one filter it respects — a PR number is
+  // unique per repo, not per org.
+  const searchActive = prNumber !== null;
+  // The request waits for a pause in typing; the box, the URL and the disabled
+  // controls do not. Without this, entering `1234` commits four query keys and
+  // fires four searches — and a PR search reads the org's whole PR event stream
+  // with no time bound (see routes/queries.ts), so four keystrokes is four full
+  // scans to answer one question. Cold load is unaffected: the hook starts
+  // settled, so a shared ?pr=57 link is not one tick slower.
+  //
+  // A navigation is not typing. `navPr` is the PR number most recently
+  // delivered BY a navigation; while the box still holds it the debounce is
+  // bypassed, so a Back onto ?pr=57 does not spend 350ms with the box saying 57
+  // and the URL write-back publishing an address bar with no `pr` in it — which
+  // became permanent if the reader navigated again inside that window.
+  const [navPr, setNavPr] = useState<number | null>(() => parsePrQuery(readPrQuery(searchParams)));
+  const queryPrNumber = useDebouncedValue(prNumber, 350, navPr);
+
+  // Follow the URL, the way the chip facets already do (BUG 8e40e463).
+  //
+  // These six controls are plain state mirrored INTO the query string, so they
+  // were not merely stale on a navigation: react-router hands back a fresh
+  // setSearchParams on every location change, which re-runs the write-back
+  // effect below and rewrites the whole query string from mount-time state.
+  // The incoming values were deleted, not ignored.
+  //
+  // The discriminator is "did WE write this?", not the navigation type. A
+  // value-keyed follow cannot work, because the write-back omits a control at
+  // its default (no `range` when it is 30d, no `range` at all while an explicit
+  // from/to is set) — so "absent from the URL" does not mean "default", and a
+  // naive follow would reset the range every time a custom date range is used.
+  // And keying on POP alone left every PUSH broken: clicking the sidebar's own
+  // "PR overview" link while already on a filtered /prs cleared the chips,
+  // kept the range, and rewrote the bare /prs you asked for.
+  const location = useLocation();
+  const lastWritten = useRef<string | null>(null);
+  useEffect(() => {
+    const incoming = location.search.replace(/^\?/, '');
+    if (lastWritten.current === incoming) return; // our own write-back
+    const sp = new URLSearchParams(incoming);
+    setRange(readRange(sp));
+    setGran(readGran(sp));
+    setCustomFrom(sp.get('from') ?? '');
+    setCustomTo(sp.get('to') ?? '');
+    setFiltersOpen(parseFiltersOpen(sp.get('filters')));
+    const pr = readPrQuery(sp);
+    setPrQuery(pr);
+    setNavPr(parsePrQuery(pr));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.key, location.search]);
 
   useEffect(() => {
     const p = new URLSearchParams();
     if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
     if (devSel.set.size) p.set('developers', [...devSel.set].join(','));
     if (modelSel.set.size) p.set('model', [...modelSel.set].join(','));
+    // Same spelling the server reads, so a shared link needs no translation.
+    if (childHubSel.set.size) p.set('childHubId', [...childHubSel.set].join(','));
     if (customFrom || customTo) {
       // Explicit range takes precedence over the preset in the URL too.
       if (customFrom) p.set('from', customFrom);
@@ -311,10 +411,23 @@ export function PrOverviewPage() {
       p.set('range', range); // omit the default to keep the URL clean
     }
     if (gran !== 'daily') p.set('gran', gran); // volume-chart granularity (default omitted)
+    // The parsed number, not the raw box text — links stay short and a pasted URL
+    // does not end up in the address bar of everyone you share with.
+    //
+    // `queryPrNumber`, i.e. the number the request will actually make. Writing the
+    // immediate value meant typing "57" put `?pr=5` in the address bar for a
+    // moment: anyone who copied the link, or reloaded, mid-typing got PR #5. The
+    // box still follows the keyboard; the committed query is what the URL holds.
+    if (queryPrNumber !== null) p.set('pr', String(queryPrNumber));
     // Only the non-default (collapsed) state is written, so the common URL stays clean.
     if (!filtersOpen) p.set('filters', '0');
-    setSearchParams(p, { replace: true });
-  }, [projectSel.set, devSel.set, modelSel.set, range, gran, customFrom, customTo, filtersOpen, setSearchParams]);
+    // Remembered so the follow-the-URL effect above can tell our own write from
+    // somebody else's navigation.
+    lastWritten.current = p.toString();
+    // navigate rather than setSearchParams: the latter resolves to a bare
+    // "?query", which drops any fragment the URL arrived with.
+    navigate({ search: p.toString() ? `?${p}` : '', hash: location.hash }, { replace: true });
+  }, [projectSel.set, devSel.set, modelSel.set, childHubSel.set, range, gran, customFrom, customTo, filtersOpen, queryPrNumber, navigate, location.hash]);
 
   const from = useMemo(
     () => (customFrom ? `${customFrom}T00:00:00.000Z` : fromIsoForRange(new Date(), range)),
@@ -329,47 +442,155 @@ export function PrOverviewPage() {
   const baseQs = useMemo(() => {
     const p = new URLSearchParams();
     if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
+    // Sits with `projects`, not with model/developer: the hub partitions the
+    // data rather than narrowing a view of it, so the options query must be
+    // partitioned too — otherwise the model and developer lists offer names
+    // from hubs the board is not showing.
+    if (childHubSel.set.size) p.set('childHubId', [...childHubSel.set].join(','));
     p.set('from', from);
     if (toParam) p.set('to', toParam);
     return p;
-  }, [projectSel.set, from, toParam]);
+  }, [projectSel.set, childHubSel.set, from, toParam]);
 
   const dataQs = useMemo(() => {
+    // Search mode: projects + the number, and nothing else. The superseded
+    // filters are dropped from the request rather than sent alongside it, so the
+    // server can never disagree with the user about what "PR #57" means — and a
+    // stale ?model= left in the URL from before the search cannot quietly narrow
+    // the answer to zero rows.
+    //
+    // `queryPrNumber`, not `prNumber`: this is the one consumer that should lag
+    // the keyboard (see useDebouncedValue).
+    if (queryPrNumber !== null) {
+      const p = new URLSearchParams();
+      if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
+      // Kept through a PR search, like `projects` and for the same reason: #57
+      // exists in every repo AND on every hub, so dropping this would make one
+      // search return two unrelated PRs that merely share a number.
+      if (childHubSel.set.size) p.set('childHubId', [...childHubSel.set].join(','));
+      p.set('pr', String(queryPrNumber));
+      return p.toString();
+    }
     const p = new URLSearchParams(baseQs);
     if (modelSel.set.size) p.set('model', [...modelSel.set].join(','));
     if (devSel.set.size) p.set('users', [...devSel.set].join(','));
     return p.toString();
-  }, [baseQs, modelSel.set, devSel.set]);
+  }, [baseQs, modelSel.set, devSel.set, projectSel.set, childHubSel.set, queryPrNumber]);
 
   const overview = useQuery<PrOverviewResponse>({
     queryKey: ['pr-overview', dataQs],
     queryFn: async () => (await api.get(`/v1/prs/overview?${dataQs}`)).data,
+    // Keep the previous answer on screen while the next one loads. Without it
+    // every committed key change makes `data` undefined, which unmounts the whole
+    // results tree (KPIs, charts, heatmap) behind "Loading…" — and closes any
+    // open drill-down, whose effect resets on `[d]`. A keystroke should not
+    // blank the page.
+    placeholderData: keepPreviousData,
   });
+
+  /**
+   * Which query the ROWS on screen were actually asked for. `dataQs` names the
+   * REQUEST; because of `keepPreviousData` the answer being rendered can still
+   * belong to the previous one, and for a PR search that gap is seconds rather
+   * than a blink (the scan is deliberately unbounded). So every claim about the
+   * data — "Showing PR #57 only", "No PR #57 found", and above all whether this
+   * data may be used as a facet universe — is pinned here rather than to the key
+   * currently in flight.
+   */
+  const settledQs = useSettledKey(dataQs, overview.isPlaceholderData);
+  const settledParams = useMemo(() => new URLSearchParams(settledQs), [settledQs]);
+  // What the rendered rows really are: a PR search's answer, or a window's.
+  const dataIsSearch = settledParams.has('pr');
+  const answeredPrNumber = Number(settledParams.get('pr') ?? '0');
+  // True only while the rows on screen are the rows the copy says they are:
+  // the box has settled (debounce elapsed) AND the answer for that key has
+  // arrived. Until then the page is showing the previous result.
+  const answerMatchesBox =
+    !overview.isPlaceholderData && settledQs === dataQs && queryPrNumber === prNumber;
 
   // Model + developer dropdown options come from the overview UNFILTERED by
   // model/developer (same project + window). When neither filter is active the
   // main `overview` already holds the full lists, so the extra request only runs
-  // once a model or developer is selected.
-  const filtersActive = modelSel.set.size > 0 || devSel.set.size > 0;
+  // once a model or developer is selected — or while a PR search is on.
+  //
+  // The search case is not waste and was a bug: under a search the main overview
+  // is the ANSWER, not the option universe. A miss returns empty lists and a hit
+  // returns one developer, so sourcing the facets from it makes the Developer and
+  // Model controls disappear — the opposite of the agreed "disabled and greyed,
+  // not hidden", and it leaves a live selection in the URL with nothing on screen
+  // to show or clear it. Keep feeding them the unfiltered lists.
+  const filtersActive = !searchActive && (modelSel.set.size > 0 || devSel.set.size > 0);
   const optionsQuery = useQuery<PrOverviewResponse>({
     queryKey: ['pr-overview-opts', baseQs.toString()],
     queryFn: async () => (await api.get(`/v1/prs/overview?${baseQs.toString()}`)).data,
-    enabled: filtersActive,
+    enabled: filtersActive || searchActive,
     placeholderData: prev => prev, // keep prior options during refetch — don't blank the facet
   });
-  // While the unfiltered options query is still loading, fall back to the main
-  // overview so the Developer/Model controls (and the selected chip) never vanish.
-  const optionsData = (filtersActive ? optionsQuery.data : overview.data) ?? overview.data;
-  const modelOptions = optionsData?.byModel.map(m => m.model) ?? [];
-  const devOptions = optionsData?.byDeveloper.map(x => x.user_key) ?? [];
-  const projects = useQuery<ProjectsResponse>({ queryKey: ['projects'], queryFn: async () => (await api.get('/v1/projects')).data });
+  /**
+   * The option UNIVERSE behind the Developer/Model facets — never a search ANSWER.
+   * A miss contains no developers and no models and a hit contains exactly one of
+   * each, so sourcing the facets from an answer either hides the control (the bug
+   * this replaces) or offers a value the selected window does not contain, which
+   * the user can then pick to produce a zero-row overview.
+   *
+   * Two sources qualify. The unfiltered options query always does. The main
+   * overview does while it is neither a search answer nor narrowed by these same
+   * facets — and note that is a statement about the DATA, not about the box: the
+   * moment a search is typed its rows are still the window's and unfiltered, so
+   * the lists it carries are already the full ones. That is what keeps the facets
+   * populated and greyed through the search's own debounce and scan instead of
+   * blinking them out until the options request lands. `dataIsSearch` is the part
+   * that is easy to miss the other way: the instant the box is cleared
+   * `searchActive` is false while the rows on screen are STILL the search's answer.
+   */
+  const mainIsUniverse = !dataIsSearch && !filtersActive;
+  const universe = optionsQuery.data ?? (mainIsUniverse ? overview.data : undefined);
+  const modelOptions = universe?.byModel.map(m => m.model) ?? [];
+  const devOptions = universe?.byDeveloper.map(x => x.user_key) ?? [];
+  // Partitioned by hub, like the model and developer lists: a repo chip from a
+  // hub the board is not showing is a dead end.
+  const hubQs = childHubSel.set.size
+    ? `?${new URLSearchParams({ childHubId: [...childHubSel.set].join(',') })}`
+    : '';
+  const projects = useQuery<ProjectsResponse>({
+    queryKey: ['projects', hubQs],
+    queryFn: async () => (await api.get(`/v1/projects${hubQs}`)).data,
+  });
 
   // Picking a preset clears any explicit date range so the two don't fight.
   const pickRange = (r: RangeKey) => { setRange(r); setCustomFrom(''); setCustomTo(''); };
 
   const d = overview.data;
-  const to = d?.period.to ?? (toParam || new Date().toISOString());
-  const axis = useMemo(() => (d ? buildDayAxis(from, to) : []), [d, from, to]);
+  // The windowed end of the axis. A search answer's `period` is the span of the
+  // PRs it matched, NOT the selected window, so it must never size a windowed
+  // axis: after clearing a search the rows are still that answer, its `to` is the
+  // PR's own open date, and `buildDayAxis` returns [] whenever `from` lands after
+  // it — an empty heatmap and volume chart under a "Total PRs 1" tile.
+  const to = (!dataIsSearch ? d?.period.to : undefined) ?? (toParam || new Date().toISOString());
+  // Under a PR search the day axis is the days the matched PRs actually appear
+  // on, NOT a contiguous range. Two reasons, both load-bearing:
+  //  - the selected range is superseded, so it may well exclude the PR entirely;
+  //  - with no Project selected, one number matches a PR per repo, and those PRs
+  //    can be months or years apart. A contiguous axis over that span runs into
+  //    buildDayAxis's 366-column cap, and every day past the cap vanishes from
+  //    the volume chart and the heatmap — the KPI tile would count 2 PRs while
+  //    the chart drew 1, and the dropped PR would have no cell to drill into.
+  // An axis built from the data cannot truncate, because it is the data.
+  //
+  // It is also deliberately UNBOUNDED, which is a product decision rather than an
+  // oversight: the axis is as long as the matched PRs really span, so a PR open
+  // for three years renders ~1000 heatmap columns. The alternative — capping it —
+  // reintroduces exactly the failure this replaced, where the KPI tile counts a PR
+  // the chart cannot show and that PR has no cell to drill into. A long search is
+  // allowed to look long instead of being quietly wrong.
+  const searchDays = useMemo(
+    () => (searchActive && d ? [...new Set(d.byDay.map(x => x.day))].sort() : []),
+    [searchActive, d],
+  );
+  const axis = useMemo(
+    () => (d ? (searchActive ? searchDays : buildDayAxis(from, to)) : []),
+    [d, searchActive, searchDays, from, to],
+  );
   // Re-bucketed PR volume for the "PR volume by size" chart (daily/weekly/monthly).
   const volume = useMemo(() => (d ? buildVolumeSeries(d.byDay, axis, gran) : null), [d, axis, gran]);
   const volumeBuckets = volume?.buckets ?? [];
@@ -408,6 +629,35 @@ export function PrOverviewPage() {
     return d.prs.filter(p => p.user_key === drill.dev && p.day === drill.day);
   }, [drill, d?.prs]);
 
+  /**
+   * The filters that actually change the answer, as the labels that describe
+   * them. Both the badge count and the collapsed-bar summary read this one list,
+   * so they cannot drift apart — a facet counted but not listed (or listed but
+   * never counted) is exactly how a collapsed bar starts lying about what is
+   * live, and until now the two were separate literals that had to be kept in
+   * step by hand. Superseded facets are absent while a search is on: they hold a
+   * selection that changes nothing.
+   */
+  const activeFilters = useMemo(() => {
+    const out: string[] = [];
+    if (searchActive) out.push(`PR #${prNumber}`);
+    // Listed even during a PR search, like projects: the hub is not superseded
+    // by the search — it still scopes which hub's #57 is being asked about.
+    if (childHubSel.set.size) {
+      out.push(`${childHubSel.set.size} child hub${childHubSel.set.size === 1 ? '' : 's'}`);
+    }
+    if (projectSel.set.size) {
+      out.push(`${projectSel.set.size} project${projectSel.set.size === 1 ? '' : 's'}`);
+    }
+    if (!searchActive && devSel.set.size) {
+      out.push(`${devSel.set.size} developer${devSel.set.size === 1 ? '' : 's'}`);
+    }
+    if (!searchActive && modelSel.set.size) {
+      out.push(`${modelSel.set.size} model${modelSel.set.size === 1 ? '' : 's'}`);
+    }
+    return out;
+  }, [searchActive, prNumber, childHubSel.set, projectSel.set, devSel.set, modelSel.set]);
+
   return (
     <div className="max-w-[1200px] mx-auto space-y-6">
       <header className="flex items-end justify-between gap-4 flex-wrap">
@@ -418,7 +668,15 @@ export function PrOverviewPage() {
           </h1>
           <p className="mt-1 text-sm text-ink-tertiary">Pull requests per developer, weighted by size — for the selected period, with a daily breakdown.</p>
         </div>
-        <div className="flex items-center gap-2">
+        {/* Hover explains the greyed presets on a shared link: the "do not
+            apply" note lives inside the accordion, so with `?filters=0` a
+            colleague landing on this page sees disabled controls and no reason. */}
+        <div
+          className="flex items-center gap-2"
+          title={searchActive
+            ? 'A PR search supersedes the date range — this selection is kept but does not apply until the search is cleared'
+            : undefined}
+        >
           <div className="inline-flex rounded-lg border border-border-soft bg-chip p-0.5 text-[11px] font-medium">
             {RANGES.map(r => {
               const active = !customFrom && !customTo && range === r.key;
@@ -426,7 +684,10 @@ export function PrOverviewPage() {
                 <button
                   key={r.key}
                   onClick={() => pickRange(r.key)}
-                  className={`px-2.5 py-1 rounded-md transition-colors ${active
+                  // Superseded by a PR search: disabled, not hidden, and the
+                  // selection survives so clearing the search restores it.
+                  disabled={searchActive}
+                  className={`px-2.5 py-1 rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${active
                     ? 'bg-surface text-accent-text shadow-sm'
                     : 'text-ink-tertiary hover:text-ink'}`}
                 >
@@ -442,7 +703,8 @@ export function PrOverviewPage() {
               max={customTo || undefined}
               onChange={e => setCustomFrom(e.target.value)}
               aria-label="From date"
-              className="rounded-lg border border-border-soft bg-surface text-ink-secondary px-2 py-1"
+              disabled={searchActive}
+              className="rounded-lg border border-border-soft bg-surface text-ink-secondary px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50"
             />
             <span>→</span>
             <input
@@ -451,12 +713,14 @@ export function PrOverviewPage() {
               min={customFrom || undefined}
               onChange={e => setCustomTo(e.target.value)}
               aria-label="To date"
-              className="rounded-lg border border-border-soft bg-surface text-ink-secondary px-2 py-1"
+              disabled={searchActive}
+              className="rounded-lg border border-border-soft bg-surface text-ink-secondary px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50"
             />
             {(customFrom || customTo) && (
               <button
                 onClick={() => { setCustomFrom(''); setCustomTo(''); }}
-                className="ml-0.5 px-1.5 py-1 rounded-md text-ink-tertiary hover:text-rose-600 dark:hover:text-rose-400"
+                disabled={searchActive}
+                className="ml-0.5 px-1.5 py-1 rounded-md text-ink-tertiary hover:text-rose-600 dark:hover:text-rose-400 disabled:cursor-not-allowed disabled:opacity-50"
                 title="Clear date range"
               >
                 ✕
@@ -467,15 +731,83 @@ export function PrOverviewPage() {
       </header>
 
       <FilterAccordion
-        activeCount={[projectSel.set, devSel.set, modelSel.set].filter(s => s.size > 0).length}
-        activeSummary={[
-          ...(projectSel.set.size ? [`${projectSel.set.size} project${projectSel.set.size === 1 ? '' : 's'}`] : []),
-          ...(devSel.set.size ? [`${devSel.set.size} developer${devSel.set.size === 1 ? '' : 's'}`] : []),
-          ...(modelSel.set.size ? [`${modelSel.set.size} model${modelSel.set.size === 1 ? '' : 's'}`] : []),
-        ]}
+        activeCount={activeFilters.length}
+        activeSummary={activeFilters}
         initialOpen={filtersOpen}
         onOpenChange={setFiltersOpen}
       >
+      {/* PR search sits with the other filters (it IS one) but first, and stays
+          outside the accordion's fold of facet rows because it outranks them. */}
+      <div>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <label
+            htmlFor="pr-number-search"
+            className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary"
+          >
+            PR number
+          </label>
+          {prQuery !== '' && (
+            <button
+              onClick={() => setPrQuery('')}
+              aria-label="Clear PR search"
+              className="inline-flex items-center gap-1 text-[11px] font-medium text-ink-tertiary hover:text-danger-muted"
+            >
+              <X className="w-3 h-3" /> Clear
+            </button>
+          )}
+        </div>
+        <div className="mt-1.5 flex items-center gap-2 rounded-lg border border-border-soft bg-surface px-2.5 py-1.5 focus-within:border-border-brand">
+          <Search className="w-3.5 h-3.5 text-ink-tertiary shrink-0" aria-hidden="true" />
+          <input
+            id="pr-number-search"
+            type="text"
+            autoComplete="off"
+            value={prQuery}
+            onChange={e => setPrQuery(e.target.value)}
+            placeholder="57, #57, or paste a PR URL…"
+            aria-describedby="pr-search-note"
+            className="flex-1 min-w-0 bg-transparent outline-none text-[12px] font-mono text-ink placeholder:text-ink-tertiary"
+          />
+        </div>
+        <p id="pr-search-note" className="mt-1.5 text-[11px] text-ink-tertiary">
+          {searchActive ? (
+            answerMatchesBox ? (
+              <>
+                Showing <b className="text-ink-secondary">PR #{prNumber}</b> only — the date, model and
+                developer filters do not apply to a PR search. Project (git remote) still does, because
+                a PR number is only unique within one repo.
+              </>
+            ) : (
+              /* The rows on screen belong to the previous request (the box has not
+                 settled, or the scan is still running — a PR search is deliberately
+                 unbounded, so this is seconds). "Showing PR #58 only" over PR #57's
+                 table is a wrong statement, not merely a slow one. */
+              <>
+                Searching for <b className="text-ink-secondary">PR #{prNumber}</b>… the date, model
+                and developer filters do not apply to a PR search; the results below are still the
+                previous request.
+              </>
+            )
+          ) : (
+            'Find one PR by number — accepts 57, #57 or a pasted PR URL. It overrides the date, model'
+            + ' and developer filters; Project still applies.'
+          )}
+        </p>
+      </div>
+
+      {childHubs.show && (
+        <FacetMultiselect
+          label="Child hub"
+          options={childHubs.options}
+          selected={childHubSel.set}
+          onToggle={childHubSel.toggle}
+          onClear={childHubSel.clear}
+          optionLabel={childHubs.label}
+          inlineThreshold={6}
+          placeholder="Search hubs…"
+        />
+      )}
+
       <FacetMultiselect
         label="Project (git remote)"
         options={projects.data?.projects ?? []}
@@ -495,6 +827,7 @@ export function PrOverviewPage() {
         onClear={devSel.clear}
         inlineThreshold={6}
         placeholder="Search developers…"
+        disabled={searchActive}
       />
 
       <FacetMultiselect
@@ -505,19 +838,47 @@ export function PrOverviewPage() {
         onClear={modelSel.clear}
         inlineThreshold={6}
         placeholder="Search models…"
+        disabled={searchActive}
       />
 
       <ModelMetaFilter
-        rows={optionsData?.byModel ?? []}
+        rows={universe?.byModel ?? []}
         selected={modelSel.set}
         onApply={modelSel.addMany}
+        disabled={searchActive}
       />
       </FilterAccordion>
 
       {overview.isLoading && <div className="text-sm text-ink-tertiary py-8 text-center">Loading…</div>}
+      {/* keepPreviousData turned a failed request from a blank section into a
+          confident lie: the previous answer stays on screen indefinitely, under
+          the NEW labels, with no signal that anything went wrong. Say so. */}
+      {/* A failed request used to be silent: "Loading…" disappeared and the page
+          simply stopped rendering, which reads as "there is no data" rather than
+          "the query broke". keepPreviousData makes this worth saying out loud — a
+          PR search is the slowest, most breakable endpoint on the page. (Verified
+          behaviour: react-query v5 does NOT hold the placeholder across an error,
+          so the stale answer is already gone; the banner explains the gap rather
+          than dressing it up.) */}
+      {overview.isError && (
+        <div role="alert" className="rounded-2xl border border-border-soft bg-surface px-4 py-2.5 text-xs font-medium text-red-600 dark:text-red-400">
+          Could not load this overview.
+        </div>
+      )}
       {d && d.totals.prs === 0 && (
         <div className="rounded-2xl border border-border-soft bg-surface px-5 py-10 text-center text-sm text-ink-tertiary">
-          No PRs registered for this project and period.
+          {/* A search that misses must say which PR it missed, and whether a
+              project filter narrowed it. "No PRs for this project and period"
+              would be actively wrong here — the period is not in play.
+
+              And it may only make that claim about rows that were fetched for that
+              number: a zero-row PREVIOUS answer would otherwise read as "PR #58
+              does not exist" while #58 is still in flight. */}
+          {searchActive
+            ? answerMatchesBox
+              ? `No PR #${prNumber} found ${projectSel.set.size ? 'in the selected project' : 'in any project'} — it may belong to a different project, or was never reported through AgEnFK.`
+              : `Searching for PR #${prNumber}…`
+            : 'No PRs registered for this project and period.'}
         </div>
       )}
 
@@ -723,6 +1084,7 @@ export function PrOverviewPage() {
                   return (
                     <div
                       key={day}
+                      data-testid="heatmap-day"
                       className={`text-center rounded-md py-0.5 ${h.isToday
                         ? 'bg-chip outline outline-1 outline-border-brand'
                         : h.isWeekend ? 'bg-chip' : ''}`}

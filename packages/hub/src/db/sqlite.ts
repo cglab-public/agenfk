@@ -56,7 +56,8 @@ const SCHEMA_SQLITE = `
     item_title TEXT,
     external_id TEXT,
     reporting_version TEXT,
-    payload TEXT NOT NULL
+    payload TEXT NOT NULL,
+    child_hub_id TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_events_org_time ON events(org_id, occurred_at);
   CREATE INDEX IF NOT EXISTS idx_events_user_time ON events(org_id, user_key, occurred_at);
@@ -76,7 +77,11 @@ const SCHEMA_SQLITE = `
     validate_passes INTEGER NOT NULL DEFAULT 0,
     validate_fails INTEGER NOT NULL DEFAULT 0,
     prs_opened INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (org_id, user_key, day)
+    -- '' means "this hub's own data". A child hub's id here keeps a group's
+    -- series apart without a separate table or a WHERE clause on every
+    -- existing query.
+    child_hub_id TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (org_id, child_hub_id, user_key, day)
   );
   CREATE INDEX IF NOT EXISTS idx_rollups_org_day_user ON rollups_daily(org_id, day, user_key);
 
@@ -118,6 +123,165 @@ const SCHEMA_SQLITE = `
     used_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- Hub federation (CGLAB-181): child hubs enrolled with this (parent) hub,
+  -- and the federation keys they authenticate with. A federation key is a
+  -- principal of its own — never an api_keys row — so the two credential
+  -- kinds cannot reach each other's routes. detached_at is the parent-side
+  -- "leave the group" marker: every federation route refuses a detached hub
+  -- even if its key row was not revoked.
+  CREATE TABLE IF NOT EXISTS child_hubs (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    hub_version TEXT,
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    detached_at TEXT,
+    detached_by_user_id TEXT,
+    detached_by_email TEXT,
+    release_requested_at TEXT,
+    release_reason TEXT,
+    identity_policy TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_child_hubs_org ON child_hubs(org_id);
+
+  -- Flow dispatch (CGLAB-182): a parent hub sends one of its flows to its
+  -- child hubs. The dispatch is the intent; the targets are what actually
+  -- happened, one row per hub.
+  --
+  -- scope_type 'all' deliberately does NOT expand into target rows when the
+  -- dispatch is created: 'all' means every current AND FUTURE child hub, so a
+  -- hub enrolling next month has to receive it on its first poll. Targets for
+  -- 'all' therefore appear lazily, the first time a hub is served.
+  CREATE TABLE IF NOT EXISTS flow_dispatches (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    flow_id TEXT NOT NULL,
+    flow_version INTEGER NOT NULL,
+    -- The definition AS DISPATCHED. A dispatch is a decision about specific
+    -- content, so it carries that content rather than a pointer: reading the
+    -- flow live at poll time meant an edit made after the dispatch reached
+    -- whichever children had not polled yet, stored under the OLD version
+    -- number — two hubs running different flows that both report the same
+    -- version, and a monotonic guard that can never converge them.
+    definition_json TEXT,
+    scope_type TEXT NOT NULL CHECK (scope_type IN ('all','selected')),
+    created_by_user_id TEXT,
+    created_by_email TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    cancelled_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_flow_dispatches_org_time ON flow_dispatches(org_id, created_at);
+
+  -- state: pending | installed | failed | conflict. Only a report from the
+  -- child moves it off pending — serving a directive is not the flow landing.
+  CREATE TABLE IF NOT EXISTS flow_dispatch_targets (
+    dispatch_id TEXT NOT NULL,
+    child_hub_id TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',
+    detail TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (dispatch_id, child_hub_id)
+  );
+
+
+  -- Group upgrades (CGLAB-183). The parent names a target version; each child
+  -- fans it out over its OWN installations. Same shape as flow_dispatches, and
+  -- for the same reasons: scope 'all' means every current AND FUTURE hub, so
+  -- it is stored as intent and resolved per poll rather than expanded into
+  -- target rows here.
+  --
+  -- confirm_downgrade travels with the dispatch: the parent admin confirms a
+  -- backwards move once, in the blind, and the child carries the flag through
+  -- its local fan-out instead of asking again.
+  CREATE TABLE IF NOT EXISTS upgrade_dispatches (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    target_version TEXT NOT NULL,
+    scope_type TEXT NOT NULL CHECK (scope_type IN ('all','selected')),
+    confirm_downgrade INTEGER NOT NULL DEFAULT 0,
+    created_by_user_id TEXT,
+    created_by_email TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    cancelled_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_upgrade_dispatches_org_time ON upgrade_dispatches(org_id, created_at);
+
+  -- state: pending | running | cancel-pending | completed | cancelled.
+  --
+  -- Only a report from the child moves it off pending — serving a directive is
+  -- not the upgrade landing. 'cancel-pending' means the parent has ASKED this
+  -- hub to stop and has not been told it did; it is deliberately distinct from
+  -- 'cancelled', which the child confirmed. detail carries the child's
+  -- aggregate counts and skip reasons.
+  --
+  -- cancel_attempts bounds how often a cancel is re-offered, so a hub that
+  -- never answers one cannot starve every other directive behind it.
+  CREATE TABLE IF NOT EXISTS upgrade_dispatch_targets (
+    dispatch_id TEXT NOT NULL,
+    child_hub_id TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',
+    detail TEXT,
+    -- The sequence of the last progress report accepted for this hub. Progress
+    -- reports supersede one another and can arrive out of order, so the guard
+    -- is monotonic in this rather than "latest write wins".
+    seq INTEGER NOT NULL DEFAULT 0,
+    cancel_attempts INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (dispatch_id, child_hub_id)
+  );
+
+
+  -- What a child hub's fan-out of a group upgrade actually did (CGLAB-183).
+  --
+  -- Recorded rather than recomputed, because the tick that REPORTS is almost
+  -- never the tick that computed: the parent keeps re-serving a dispatch until
+  -- the child reports, and by the next tick the machines this upgraded are in
+  -- flight and would read as skipped. Re-deriving would hand the parent a
+  -- fleet with no skips in it, which is the one thing the skip reasons exist
+  -- to prevent.
+  CREATE TABLE IF NOT EXISTS upgrade_dispatch_fanout (
+    dispatch_id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    upgraded INTEGER NOT NULL DEFAULT 0,
+    skipped_json TEXT NOT NULL DEFAULT '[]',
+    directive_id TEXT,
+    -- Reporting bookkeeping (CGLAB-183 task 3). reported_seq is the sequence of
+    -- the last report sent upstream and reported_json the snapshot it carried,
+    -- so the next tick can tell whether anything actually MOVED — the cadence
+    -- is on change plus a final completion, not one event per child per minute
+    -- for the length of a rollout.
+    reported_seq INTEGER NOT NULL DEFAULT 0,
+    reported_json TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS federation_keys (
+    token_hash TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    child_hub_id TEXT NOT NULL,
+    label TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    revoked_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_federation_keys_child ON federation_keys(child_hub_id);
+
+  -- Child-side federation outbox (CGLAB-181). Rows queued for the parent hub
+  -- while this hub is a child. Durable on purpose: a parent outage must cost
+  -- delivery latency, never data, and the child keeps serving throughout.
+  CREATE TABLE IF NOT EXISTS federation_outbox (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    rejections INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_federation_outbox_due ON federation_outbox(next_attempt_at, seq);
+
   CREATE TABLE IF NOT EXISTS auth_config (
     org_id TEXT PRIMARY KEY,
     password_enabled INTEGER NOT NULL DEFAULT 1,
@@ -145,6 +309,7 @@ const SCHEMA_SQLITE = `
     registry_branch TEXT NOT NULL DEFAULT 'main',
     registry_token_enc TEXT,
     registry_copied_at TEXT,
+    identity_policy TEXT,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -154,7 +319,7 @@ const SCHEMA_SQLITE = `
     name TEXT NOT NULL,
     description TEXT,
     definition_json TEXT NOT NULL,
-    source TEXT NOT NULL DEFAULT 'hub' CHECK (source IN ('hub','community')),
+    source TEXT NOT NULL DEFAULT 'hub' CHECK (source IN ('hub','community','parent')),
     version INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -500,6 +665,54 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   if (!instHave.has('retired_by_email')) raw.exec("ALTER TABLE installations ADD COLUMN retired_by_email TEXT");
 
   // user_key_merges.reverted_at — BUG 098f8ba7.
+  // events.child_hub_id — CGLAB-184. Nullable, so existing rows keep meaning
+  // "this hub's own data" without a backfill.
+  const evCols2 = raw.prepare("PRAGMA table_info(events)").all() as Array<{ name: string }>;
+  if (!new Set(evCols2.map(c => c.name)).has('child_hub_id')) {
+    raw.exec("ALTER TABLE events ADD COLUMN child_hub_id TEXT");
+  }
+
+  // rollups_daily.child_hub_id joins the PRIMARY KEY, which SQLite cannot do
+  // with ALTER. The table is rebuilt rather than migrated: every boot already
+  // does DELETE FROM rollups_daily and recomputes from `events`, so there is
+  // no data here worth copying — and copying is what would make this depend on
+  // which other columns a given vintage of the table happens to have.
+  const rdCols0 = raw.prepare("PRAGMA table_info(rollups_daily)").all() as Array<{ name: string }>;
+  if (rdCols0.length > 0 && !new Set(rdCols0.map(c => c.name)).has('child_hub_id')) {
+    raw.exec(`
+      BEGIN;
+      DROP TABLE rollups_daily;
+      CREATE TABLE rollups_daily (
+        org_id TEXT NOT NULL,
+        user_key TEXT NOT NULL,
+        day TEXT NOT NULL,
+        events_count INTEGER NOT NULL DEFAULT 0,
+        items_closed INTEGER NOT NULL DEFAULT 0,
+        tokens_in INTEGER NOT NULL DEFAULT 0,
+        tokens_out INTEGER NOT NULL DEFAULT 0,
+        validate_passes INTEGER NOT NULL DEFAULT 0,
+        validate_fails INTEGER NOT NULL DEFAULT 0,
+        prs_opened INTEGER NOT NULL DEFAULT 0,
+        child_hub_id TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (org_id, child_hub_id, user_key, day)
+      );
+      COMMIT;
+    `);
+  }
+
+  // child_hubs.identity_policy + org_settings.identity_policy — CGLAB-184.
+  // Both tables already exist on deployed hubs, so CREATE TABLE IF NOT EXISTS
+  // never adds them. Without these the ping route's SELECT throws and every
+  // child in the group reads dead on the parent's roster.
+  const chCols = raw.prepare("PRAGMA table_info(child_hubs)").all() as Array<{ name: string }>;
+  if (chCols.length > 0 && !new Set(chCols.map(c => c.name)).has('identity_policy')) {
+    raw.exec("ALTER TABLE child_hubs ADD COLUMN identity_policy TEXT");
+  }
+  const osCols = raw.prepare("PRAGMA table_info(org_settings)").all() as Array<{ name: string }>;
+  if (osCols.length > 0 && !new Set(osCols.map(c => c.name)).has('identity_policy')) {
+    raw.exec("ALTER TABLE org_settings ADD COLUMN identity_policy TEXT");
+  }
+
   const ukmCols = raw.prepare("PRAGMA table_info(user_key_merges)").all() as Array<{ name: string }>;
   if (ukmCols.length > 0 && !new Set(ukmCols.map(c => c.name)).has('reverted_at')) {
     raw.exec("ALTER TABLE user_key_merges ADD COLUMN reverted_at TEXT");
@@ -549,6 +762,68 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
     `);
   }
 
+  // CGLAB-183 task 3 added reporting bookkeeping to tables task 1 and task 2
+  // created. CREATE TABLE IF NOT EXISTS never adds a column to a table that
+  // already exists, so a hub whose database was made by an earlier commit
+  // would throw "no such column: seq" on every progress path — and on the
+  // parent that happens inside the /deliver transaction, taking the child's
+  // whole delivery batch down with it.
+  for (const [table, column, ddl] of [
+    ['flow_dispatches', 'definition_json', 'definition_json TEXT'],
+    ['upgrade_dispatch_targets', 'seq', 'seq INTEGER NOT NULL DEFAULT 0'],
+    ['upgrade_dispatch_targets', 'cancel_attempts', 'cancel_attempts INTEGER NOT NULL DEFAULT 0'],
+    ['upgrade_dispatch_fanout', 'reported_seq', 'reported_seq INTEGER NOT NULL DEFAULT 0'],
+    ['upgrade_dispatch_fanout', 'reported_json', 'reported_json TEXT'],
+  ] as const) {
+    const cols = raw.prepare(`SELECT name FROM pragma_table_info(?)`).all(table) as Array<{ name: string }>;
+    if (cols.length > 0 && !cols.some(c => c.name === column)) {
+      raw.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+    }
+  }
+
+
+  // flows.source gains 'parent' — a flow this hub received from its parent hub
+  // (CGLAB-182). SQLite cannot ALTER a CHECK constraint, so an upgraded hub
+  // needs the table rebuilt; without this every dispatched flow fails its
+  // INSERT with a constraint error and the child silently installs nothing.
+  //
+  // Detected by reading the stored DDL rather than a column list: the column
+  // has always existed, it is the CHECK that changed. Same reasoning as the
+  // flow_assignments rebuild above — and like it, this runs in the migration
+  // block, never in the schema block, because CREATE TABLE IF NOT EXISTS
+  // leaves a deployed table alone.
+  const flowsDdl = (raw.prepare(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='flows'",
+  ).get() as { sql?: string } | undefined)?.sql ?? '';
+  if (flowsDdl && !flowsDdl.includes("'parent'")) {
+    raw.exec(`
+      BEGIN;
+      CREATE TABLE flows_new (
+        id TEXT PRIMARY KEY,
+        org_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT,
+        definition_json TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'hub' CHECK (source IN ('hub','community','parent')),
+        version INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        created_by_user_id TEXT,
+        org_available INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO flows_new (id, org_id, name, description, definition_json, source, version,
+                             created_at, updated_at, created_by_user_id, org_available)
+        SELECT id, org_id, name, description, definition_json, source, version,
+               created_at, updated_at, created_by_user_id,
+               COALESCE(org_available, 0)
+          FROM flows;
+      DROP TABLE flows;
+      ALTER TABLE flows_new RENAME TO flows;
+      COMMIT;
+    `);
+    raw.exec("CREATE INDEX IF NOT EXISTS idx_flows_org ON flows(org_id)");
+  }
+
   // rollups_daily.prs_opened — added with the PR metrics initiative.
   const rdCols = raw.prepare("PRAGMA table_info(rollups_daily)").all() as Array<{ name: string }>;
   const rdHave = new Set(rdCols.map(c => c.name));
@@ -567,6 +842,23 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_item_type_time ON events(org_id, item_type, occurred_at)");
   raw.exec("CREATE INDEX IF NOT EXISTS idx_events_external_id ON events(org_id, external_id)");
   raw.exec("CREATE INDEX IF NOT EXISTS idx_rollups_org_day_user ON rollups_daily(org_id, day, user_key)");
+  // Here, not in SCHEMA_SQLITE: on an upgraded hub the column does not exist
+  // until the migration above has run, and CREATE INDEX over a missing column
+  // kills the boot before it gets there.
+  raw.exec("CREATE INDEX IF NOT EXISTS idx_rollups_child ON rollups_daily(org_id, child_hub_id, day)");
+  // Filtering the event stream by originating hub (CGLAB-184). Same placement
+  // reasoning as the rollups index above: `events.child_hub_id` arrives through
+  // an ALTER on an upgraded hub, so the index cannot live in SCHEMA_SQLITE.
+  // A plain-column index from an earlier, unreleased commit on this branch.
+  // Superseded by the expression index below; dropping it only tidies dev and
+  // CI databases, since no released hub ever created it.
+  raw.exec("DROP INDEX IF EXISTS idx_events_org_child_time");
+  // Over COALESCE(child_hub_id, ''), matching the expression EVENTS reads use:
+  // SQLite cannot use an index across `(col IS NULL OR col = '')`, so a plain
+  // column index left the "this hub" selection walking the whole org.
+  // rollups_daily is the other case — NOT NULL there, so it keeps the plain
+  // column and its own idx_rollups_child.
+  raw.exec("CREATE INDEX IF NOT EXISTS idx_events_org_childnorm_time ON events(org_id, COALESCE(child_hub_id, ''), occurred_at)");
 
   return new SqliteAdapter(raw);
 }
