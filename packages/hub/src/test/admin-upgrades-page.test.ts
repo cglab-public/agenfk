@@ -51,6 +51,15 @@ describe('Story 4 — AdminUpgrades page', () => {
     expect(src).toMatch(/Upgrades/);
   });
 
+  it('builds the installation picker from installations, not from api keys (BUG bb27c0aa)', () => {
+    // From api_keys the picker listed one row per KEY: installation 97f4db4c
+    // rendered six times and "All (12)" was shown for nine machines; two
+    // machines with an unbound key were dropped entirely.
+    const src = readFileSync(PAGE_PATH, 'utf8');
+    expect(src).toMatch(/api\.get\(\s*['"]\/v1\/admin\/installations['"]/);
+    expect(src).toMatch(/buildInstallationOptions/);
+  });
+
   it('App.tsx registers the upgrades route under /admin', () => {
     const src = readFileSync(APP_PATH, 'utf8');
     expect(src).toMatch(/path=['"]upgrades['"]\s+element=\{<AdminUpgrades\s*\/>\}/);

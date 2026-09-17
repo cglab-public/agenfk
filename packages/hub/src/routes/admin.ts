@@ -8,6 +8,7 @@ import { randomUUID } from 'crypto';
 import { DEFAULT_FLOW } from '@agenfk/core';
 import { getAgenfkReleases, resetAgenfkReleaseCache } from '../services/githubReleases.js';
 import { compareSemver } from '../util/semver.js';
+import { isOnboardingKeyLabel } from '../util/keyLabel.js';
 import { eligibleInstallations } from '../services/fleetUpgrade.js';
 import { invalidFlowDefinition } from '../services/flowDefinition.js';
 import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
@@ -161,8 +162,33 @@ export function adminRouter(ctx: HubServerContext): Router {
 
   router.post('/api-keys', guard, asyncRoute(async (req: Request, res: Response) => {
     const label = typeof req.body?.label === 'string' ? req.body.label : null;
+    // Reserved: `invite:` / `device:` / bare `invite` mark a key the onboarding
+    // flows minted for ONE machine, and that label is what lets ingest bind an
+    // unbound key to the machine reporting through it. Letting a caller type it
+    // here would let a shared key inherit a single-machine binding — the machine
+    // that reported first would win and every other machine on that key would be
+    // refused as foreign_installation. The label has to stay hub-written for the
+    // binding rule to mean anything (util/keyLabel.ts).
+    if (isOnboardingKeyLabel(label)) {
+      return res.status(400).json({
+        error: 'label must not start with invite:/device: — those prefixes are reserved for the '
+          + 'onboarding flows, which bind the key to one machine. Onboard with `agenfk hub join` instead.',
+      });
+    }
     const token = await issueApiKey(ctx.db, req.session!.orgId, label ?? undefined);
-    res.status(201).json({ token, label });
+    // This route cannot bind an installation — it never has one to bind, and it
+    // must not pretend otherwise, because an unbound key gets 204 from
+    // GET /v1/upgrade-directive forever while ingest keeps working.
+    res.status(201).json({
+      token,
+      label,
+      unbound: true,
+      warning: 'Not bound to an installation: this key can ingest events, but it cannot receive '
+        + 'fleet upgrade directives, and it will not become bound on its own — discard it if you '
+        + 'meant to onboard a machine. To onboard, run `agenfk hub join <hubUrl> <inviteToken>` on '
+        + 'the machine (or `agenfk hub login` for the device-code flow); those issue a key already '
+        + 'bound to that installation.',
+    });
   }));
 
   router.delete('/api-keys/:tokenHashPreview', guard, asyncRoute(async (req: Request, res: Response) => {
