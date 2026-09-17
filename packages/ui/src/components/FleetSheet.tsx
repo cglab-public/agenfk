@@ -44,6 +44,8 @@ export interface FleetSheetProps {
    * about the count cannot depend on a caller remembering.
    */
   readonly running: ReadonlySet<string>;
+  /** The project flow's own exit step name(s), when known (fae59deb). */
+  readonly terminalStatuses?: ReadonlySet<string>;
   /** Launch these, in this order. Only ever the ones the plan cleared. */
   readonly onLaunch: (ids: readonly string[]) => void;
   readonly onClose: () => void;
@@ -100,7 +102,7 @@ function LaunchRow({ child }: { readonly child: FleetChild }): React.ReactElemen
   );
 }
 
-export function FleetSheet({ parent, all, depth, running, onLaunch, onClose }: FleetSheetProps): React.ReactElement {
+export function FleetSheet({ parent, all, depth, running, terminalStatuses, onLaunch, onClose }: FleetSheetProps): React.ReactElement {
   const plan = React.useMemo(() => {
     /*
      * Built HERE from the items rather than taken as a prop. The sheet already
@@ -111,11 +113,11 @@ export function FleetSheet({ parent, all, depth, running, onLaunch, onClose }: F
      * (BUG b0bccf90).
      */
     const failures = new Map(all.map(i => [i.id, i.failureCount ?? 0]));
-    return planFleet({ parentId: parent.id, all, depth, running, failures });
+    return planFleet({ parentId: parent.id, all, depth, running, failures, terminalStatuses });
     // `running` in the deps, not only in the call. A memo that reads a prop it
     // does not depend on keeps answering with the set it was built with, which
     // is the count going stale the moment a terminal opens.
-  }, [parent.id, all, depth, running]);
+  }, [parent.id, all, depth, running, terminalStatuses]);
   const launchable = plan.children.filter(c => c.launch).map(c => c.id);
 
   return (

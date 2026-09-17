@@ -53,7 +53,17 @@ export interface FleetPlan {
   readonly blocked: string | null;
 }
 
-/** Statuses whose cards are not work to dispatch. */
+/**
+ * Statuses whose cards are not work to dispatch, whatever flow is in play.
+ *
+ * A NAME LIST CANNOT SEE A CUSTOM FLOW. An item's status IS its flow step's
+ * name, and `agenfk flow create` produces an exit step called whatever the
+ * author typed - so a finished child on such a flow is not in this set, and the
+ * sheet counted it as launchable: "Launch 4" over a card that is already done.
+ * That is the same name-keying the sibling gate had, in the one number the
+ * sheet promises never to be generous about. `terminalStatuses` supplies the
+ * names this cannot know.
+ */
 const NOT_DISPATCHABLE = new Set(['DONE', 'TRASHED', 'ARCHIVED', 'IDEAS']);
 
 export interface FleetInputs {
@@ -80,6 +90,14 @@ export interface FleetInputs {
    * disappears from the list is a count somebody has to reconcile by hand.
    */
   readonly running?: ReadonlySet<string>;
+  /**
+   * The project flow's OWN exit step name(s), when known.
+   *
+   * The literal list above cannot see a custom flow; this is where its terminal
+   * step arrives. Absent when the flow was not read, which keeps the behaviour
+   * exactly what it was rather than guessing.
+   */
+  readonly terminalStatuses?: ReadonlySet<string>;
   /** Every item in the project. Needed whole: holders can be anywhere. */
   readonly all: readonly (ClaimCard & { title: string; parentId?: string | null })[];
   /** Whether the parent may fan out at all, and why not. */
@@ -95,8 +113,11 @@ export interface FleetInputs {
  * would return either both-launch, which is the race this prevents, or
  * both-held, which is a deadlock nobody asked for.
  */
-export function planFleet({ parentId, all, depth, failures, running }: FleetInputs): FleetPlan {
-  const kids = all.filter(i => i.parentId === parentId && !NOT_DISPATCHABLE.has(i.status.toUpperCase()));
+export function planFleet({ parentId, all, depth, failures, running, terminalStatuses }: FleetInputs): FleetPlan {
+  const kids = all.filter(i => i.parentId === parentId
+    && !NOT_DISPATCHABLE.has(i.status.toUpperCase())
+    // The flow's own exit step, matched as written: a status IS the step name.
+    && !terminalStatuses?.has(i.status));
 
   if (!depth.allowed) {
     /*

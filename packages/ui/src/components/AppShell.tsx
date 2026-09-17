@@ -1099,9 +1099,27 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { data: shellFlow, isPending: flowPending } = useQuery({
     queryKey: ['flow', activeProjectId],
     queryFn: () => api.getProjectFlow(activeProjectId!),
-    enabled: flowsOpen && !!activeProjectId,
+    // Also while the FAN-OUT SHEET is up: its count needs the flow's exit step
+    // so a finished card on a custom flow is not counted as launchable
+    // (fae59deb).
+    enabled: (flowsOpen || fleetParentId != null) && !!activeProjectId,
     staleTime: 30_000,
   });
+
+  /**
+   * The flow's own exit step, for the fan-out count (fae59deb).
+   *
+   * An item's status IS its flow step's name, so a card finished on a flow
+   * whose last step is called something else is not in fleetPlan's literal
+   * DONE/ARCHIVED list - and "Launch 4" counted a card that was already done.
+   * The LAST step by order, which is the exit whatever it is named. Absent when
+   * the flow was not read, which keeps the old behaviour rather than guessing.
+   */
+  const fleetTerminalStatuses = React.useMemo(() => {
+    const steps = [...((shellFlow as any)?.steps ?? [])].sort((a: any, b: any) => a.order - b.order);
+    const last = steps[steps.length - 1] as any;
+    return last?.name ? new Set<string>([last.name]) : undefined;
+  }, [shellFlow]);
 
   const info = desktopInfo();
   const isMac = info?.platform === 'darwin';
@@ -1601,6 +1619,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                * never going to launch.
                */
               running={itemsWithATerminal}
+              terminalStatuses={fleetTerminalStatuses}
               onClose={() => setFleetParentId(null)}
               onLaunch={(ids: readonly string[]) => {
                 setFleetParentId(null);

@@ -290,3 +290,28 @@ describe('a card the breaker has stopped', () => {
     expect(CIRCUIT_BREAK_AFTER_LOCAL).toBe(CIRCUIT_BREAK_AFTER);
   });
 });
+
+/**
+ * A finished card on a flow whose exit is not called DONE (fae59deb).
+ *
+ * An item's status IS its flow step's name, and `agenfk flow create` produces
+ * whatever name the author typed. The literal DONE/ARCHIVED list cannot see it,
+ * so a done child stayed dispatchable and "Launch N" counted it - the one number
+ * the sheet promises never to be generous about.
+ */
+describe('a card finished on a custom flow', () => {
+  it('is left out of the plan when the flow named the terminal step', () => {
+    const p = planFleet({
+      parentId: 'epic', depth: OK,
+      all: [epic, kid('a'), kid('b', undefined, 'SHIPPED')],
+      terminalStatuses: new Set(['SHIPPED']),
+    });
+    expect(p.children.map(c => c.id), 'a finished card was counted as launchable').toEqual(['a']);
+  });
+
+  it('is still a child when the flow was NOT read', () => {
+    // Absent keeps the old behaviour rather than guessing at a terminal name.
+    const p = planFleet({ parentId: 'epic', depth: OK, all: [epic, kid('a'), kid('b', undefined, 'SHIPPED')] });
+    expect(p.children.map(c => c.id)).toEqual(['a', 'b']);
+  });
+});
