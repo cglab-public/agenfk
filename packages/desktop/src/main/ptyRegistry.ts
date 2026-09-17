@@ -54,6 +54,16 @@ export interface PtyRegistryDeps {
   readonly spawn: PtySpawner;
   /** Resolves the worktree for a card. Throws rather than falling back. */
   readonly resolveCwd: (itemId: string) => Promise<{ cwd: string; branchName: string | null }>;
+  /**
+   * An agent is being dispatched (BUG 53ed7163).
+   *
+   * Called when a PTY ACTUALLY STARTS, because that is the moment an agent
+   * exists. Nothing registered a run before this: the tailer follows runs, the
+   * parser reads the transcript and the panel draws the events, and the feed
+   * was correctly empty forever - complete on both ends, disconnected in the
+   * middle.
+   */
+  readonly registerRun?: (info: { itemId: string; agentId: string; agentSessionId?: string }) => void;
   /** Sends a message to one window only. */
   readonly emit: (windowId: number, channel: string, payload: unknown) => void;
   /**
@@ -351,6 +361,10 @@ export class PtyRegistry {
        */
       const flow = new FlowControl({ pause: () => pty.pause(), resume: () => pty.resume() });
       this.sessions.set(sessionId, { pty, windowId: req.windowId, flow });
+      // The run exists from the moment the process does, so the tailer has
+      // something to follow. The AGENT's id, not this registry's handle: the
+      // transcript is named after the id the agent was given.
+      this.deps.registerRun?.({ itemId: req.itemId, agentId: req.agentId, agentSessionId });
       const startedAt = Date.now();
 
       /*

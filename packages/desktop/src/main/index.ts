@@ -18,6 +18,7 @@ import { resolveDesktopPaths } from './paths.js';
 import { listAgents, canDictateSessionId } from './agents.js';
 import { resolveDbPath } from './serverEnv.js';
 import { isAgenfkServer, servesUiBundle, httpGet } from './probes.js';
+import { agentRunSourcePath } from './agentRunSource.js';
 import { PtyRegistry } from './ptyRegistry.js';
 import { registerPtyIpc } from './ptyIpc.js';
 import { resolveWorktree } from './worktree.js';
@@ -428,6 +429,35 @@ async function boot(): Promise<void> {
       ptyRegistry = new PtyRegistry({
         spawn: spawnPty as never,
         resolveCwd: itemId => resolveWorktree(itemId, { port, get: httpGet, post: httpPost }),
+        /*
+         * A RUN IS REGISTERED WHEN AN AGENT STARTS (BUG 53ed7163).
+         *
+         * This is the link that was missing. Fire-and-forget on purpose: a
+         * terminal must open even when the server is slow or down, and the
+         * failure belongs in the log rather than thrown into the spawn. The
+         * step comes from the CARD, which is the only honest value; the model
+         * is 'unknown' because the desktop does not choose it.
+         */
+        registerRun: ({ itemId, agentId, agentSessionId }) => {
+          void (async () => {
+            try {
+              const res = await httpGet(port, `/items/${encodeURIComponent(itemId)}`);
+              const item = res?.body ? JSON.parse(res.body) : null;
+              await httpPost(port, '/agent-runs', {}, JSON.stringify({
+                itemId,
+                projectId: item?.projectId,
+                step: item?.status ?? 'IN_PROGRESS',
+                actor: 'worker',
+                harness: agentId,
+                model: 'unknown',
+                sessionId: agentSessionId,
+                sourcePath: agentRunSourcePath(agentId, agentSessionId),
+              }));
+            } catch (e) {
+              console.warn('[DESKTOP] could not register the run:', (e as Error)?.message);
+            }
+          })();
+        },
         /*
          * Waits for the capture rather than proceeding without it, which is
          * what lets the window paint first. Raced against a deadline so the

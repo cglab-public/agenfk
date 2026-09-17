@@ -1125,3 +1125,40 @@ describe('a session that ends by itself', () => {
     expect(spawned).toHaveLength(2);
   });
 });
+
+/**
+ * The run exists from the moment the process does (BUG 53ed7163).
+ *
+ * Everything downstream was already built and permanently empty: the tailer
+ * follows runs, the parser reads the transcript, the panel draws the events -
+ * and nothing ever created one, so launching an agent from the app recorded
+ * nothing at all.
+ */
+describe('registering the run when an agent starts', () => {
+  const withRun = (resolveCwd: () => Promise<{ cwd: string; branchName: string | null }>, calls: unknown[]) =>
+    new PtyRegistry({
+      spawn: spawner as never,
+      resolveCwd,
+      emit: () => {},
+      registerRun: info => calls.push(info),
+    });
+
+  it('registers one run per spawn, keyed on the AGENT session id', async () => {
+    const calls: any[] = [];
+    const reg = withRun(async () => ({ cwd: '/tmp/wt/i1', branchName: 'feat/x' }), calls);
+    await reg.spawn({ itemId: 'item-abc', agentId: 'pi', windowId: 1, cols: 80, rows: 24 });
+    expect(calls, 'an agent started and nothing recorded a run').toHaveLength(1);
+    expect(calls[0]).toMatchObject({ itemId: 'item-abc', agentId: 'pi' });
+    // The transcript is named after the id the AGENT was given, not the
+    // registry's handle - the tailer keys on it.
+    expect(calls[0].agentSessionId).toBeTruthy();
+  });
+
+  it('records nothing when the spawn is refused', async () => {
+    const calls: unknown[] = [];
+    const reg = withRun(async () => { throw new Error('no project root'); }, calls);
+    await expect(reg.spawn({ itemId: 'i1', agentId: 'pi', windowId: 1, cols: 80, rows: 24 }))
+      .rejects.toThrow(/project root/);
+    expect(calls, 'a run was registered for an agent that never started').toHaveLength(0);
+  });
+});
