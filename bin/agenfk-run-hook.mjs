@@ -124,15 +124,6 @@ function rememberRun(sessionId, runId) {
 }
 
 /**
- * The card this session is working on.
- *
- * Read from the note `agenfk gatekeeper` writes when it authorizes an edit —
- * never guessed. `GET /items?active=true` routinely returns dozens of items
- * across projects, and server.ts says why guessing is wrong in its own comment
- * on POST /agent-runs. Attributing an agent's work to the wrong card is worse
- * than recording none, so no note means no run.
- */
-/**
  * The project that owns a cwd, from the nearest `.agenfk/project.json`.
  *
  * The same file the MCP gatekeeper reads. Null when no project owns the
@@ -172,6 +163,15 @@ export function noteMatchesProject(note, projectId) {
   return noteProject === projectId;
 }
 
+/**
+ * The card this session is working on.
+ *
+ * Read from the note `agenfk gatekeeper` writes when it authorizes an edit —
+ * never guessed. `GET /items?active=true` routinely returns dozens of items
+ * across projects, and server.ts says why guessing is wrong in its own comment
+ * on POST /agent-runs. Attributing an agent's work to the wrong card is worse
+ * than recording none, so no note means no run.
+ */
 async function activeItem(readActiveWork, sessionId, projectId) {
   const work = readActiveWork(sessionId);
   if (!work?.itemId) return null;
