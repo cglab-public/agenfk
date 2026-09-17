@@ -6,6 +6,7 @@ import fs from 'fs';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import { compareSemver } from './version-utils.mjs';
+import { pruneInstallDir, pruneInstallDirAgainstManifest } from './sync-install-dir.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -156,6 +157,13 @@ function downloadAsset(repo, tag, pattern, outputPath) {
 // garbage skills in every agent session (CGLAB-94 / issue #163).
 const isMacMetadata = (name) => name.startsWith('._') || name === '.DS_Store';
 const copyFilter = (src) => !isMacMetadata(path.basename(src));
+// Say what was pruned, and say what could not be — an upgrade that reports
+// clean while the leak persists is the failure mode this whole fix exists for.
+function reportPrune({ removed, failed }) {
+  for (const rel of removed) console.log(`  Pruned (no longer shipped): ${rel}`);
+  for (const f of failed) console.log(`${YELLOW}  Could not prune ${f.path}: ${f.reason}${RESET}`);
+}
+
 // Fallback path for Node builds without fs.cpSync: `cp -r` can't filter, so
 // remove the artifacts after the fact.
 function sweepMacMetadata(dir) {
@@ -173,10 +181,27 @@ function sweepMacMetadata(dir) {
 
 if (isNpxCache) {
   const isUpdate = fs.existsSync(INSTALL_DIR);
+  // Read the INSTALLED version BEFORE the overlay below replaces package.json
+  // with REPO_ROOT's. Both downgrade guards compare against "what is installed",
+  // and reading it AFTER the copy compared the npx ref with itself — so the
+  // guard could not see a beta install newer than main, which is the one case
+  // it exists for.
+  const installedVersion = readLocalVersion(INSTALL_DIR);
+  // Set when the release archive pruned the install dir, so the source-tree
+  // fallback below does not prune a second time against a different ref.
+  let prunedAgainstArchive = false;
+  // Set whenever the install dir is NOT on a ref we may prune it against, so
+  // the source-tree fallback must not run. (Named for the question it answers,
+  // not for one of the reasons: "kept newer install" misdescribed the
+  // download-failure case, which is how that path was missed.)
+  let skipSourcePrune = false;
 
   if (isUpdate) {
     console.log(`${GREEN}Updating AgEnFK at ${INSTALL_DIR}...${RESET}`);
-    // Overlay new files from the npx cache onto the existing install
+    // Copy the new files over the existing install AND prune what this version
+    // no longer ships. A bare overlay left deleted files behind forever, and
+    // install.mjs re-installed them into every client's global config — that is
+    // how the repo-private /agenfk-release command kept coming back.
     if (fs.cpSync) {
       fs.cpSync(REPO_ROOT, INSTALL_DIR, { recursive: true, filter: copyFilter });
     } else {
@@ -205,18 +230,79 @@ if (isNpxCache) {
       // (no --beta) on a beta install resolves to the latest *stable* tag,
       // which is older than the local prerelease, and tar -xzf silently
       // reverts the install. (Bug 28635f38.)
-      const localVersion = readLocalVersion(INSTALL_DIR);
+      const localVersion = installedVersion;
       const remoteVersion = String(latestTag || '').replace(/^v/, '');
       if (localVersion && remoteVersion && compareSemver(remoteVersion, localVersion) < 0) {
         console.log(`${YELLOW}Skip: refusing to downgrade — local install is on a newer version (${localVersion}) than the resolved tag (${remoteVersion}). Pass --beta to track prereleases.${RESET}`);
+        // And skip the prune entirely. The install dir is deliberately left on a
+        // NEWER ref than either the resolved tag or REPO_ROOT (the npx git ref,
+        // i.e. the default branch). Pruning it against main would delete every
+        // command the newer prerelease adds that main lacks — the same failure
+        // the archive fork below exists to prevent, one branch over.
+        skipSourcePrune = true;
       } else {
-        downloadAsset(REPO, latestTag, 'agenfk-dist.tar.gz', path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
-        execSync(`tar ${tarFlags} "${toPosixPath(path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'))}" -C "${toPosixPath(INSTALL_DIR)}"`, { stdio: 'inherit' });
-        fs.unlinkSync(path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
+        const archive = path.join(INSTALL_DIR, 'agenfk-dist.tar.gz');
+        try {
+        downloadAsset(REPO, latestTag, 'agenfk-dist.tar.gz', archive);
+        execSync(`tar ${tarFlags} "${toPosixPath(archive)}" -C "${toPosixPath(INSTALL_DIR)}"`, { stdio: 'inherit' });
+        // Prune against the ARCHIVE, not against REPO_ROOT. REPO_ROOT is the
+        // npx git ref (the default branch); the tarball is fetchLatestTag,
+        // which is a DIFFERENT ref — betas are cut from release/vX.Y.Z-beta.N
+        // branches. Pruning a beta tarball against main deletes any command the
+        // beta adds that main lacks, so the install ships without a command it
+        // ships. The archive is the last writer here, so it is the authority.
+        try {
+          if (isUpdate) {
+            const listFlags = process.platform === 'win32' ? '--force-local -tzf' : '-tzf';
+            const listing = execSync(`tar ${listFlags} "${toPosixPath(archive)}"`, { encoding: 'utf8' })
+              .split('\n').filter(Boolean);
+            reportPrune(pruneInstallDirAgainstManifest(INSTALL_DIR, listing));
+            prunedAgainstArchive = true;
+          }
+        } catch (e) {
+          // The download and extract SUCCEEDED; only the listing failed. Letting
+          // this reach the outer catch printed "Failed to download pre-built
+          // binary" and "Falling back to source-based installation", both false,
+          // and then pruned against main anyway.
+          console.error(`${YELLOW}Could not prune against the release archive: ${e.message}${RESET}`);
+          skipSourcePrune = true; // don't fall back to a different ref
+        }
+        } finally {
+          // Covers the download and the extract too, not just the listing: curl
+          // writes a partial .tar.gz before failing, and that used to sit in the
+          // install dir permanently.
+          try { fs.unlinkSync(archive); } catch { /* already gone */ }
+        }
       }
     } catch (e) {
       console.error(`Failed to download pre-built binary: ${e.message}`);
       console.log(`${BLUE}Falling back to source-based installation...${RESET}`);
+      // And do NOT prune. The existing install is on the tag the user already
+      // has, which may be NEWER than REPO_ROOT (the npx git ref = the default
+      // branch) — a prerelease, say. Unauthenticated api.github.com is rate
+      // limited at 60/h, so fetchLatestTag throwing is routine, and pruning a
+      // beta install against main would delete every command the beta adds.
+      // Before this, that made a transient rate limit destructive where the
+      // pre-change behaviour was a harmless no-op overlay.
+      skipSourcePrune = true;
+    }
+  }
+
+  // Only when the npx cache genuinely IS the last writer for PRUNED_DIRS —
+  // i.e. --rebuild, where no archive was ever fetched. Every path where the
+  // install dir might be on a different (or newer) ref sets skipSourcePrune.
+  if (isUpdate && !prunedAgainstArchive && !skipSourcePrune) {
+    // Same downgrade guard the archive path applies above, and for the same
+    // reason: REPO_ROOT is the npx git ref (the default branch), while a beta
+    // install sits on a newer prerelease. Deleting the files this ref lacks
+    // would strip every command the newer tag ships — the failure the archive
+    // fork exists to prevent. (--rebuild skips the download block entirely, so
+    // it never reached that guard.)
+    const sourceVersion = readLocalVersion(REPO_ROOT);
+    if (installedVersion && sourceVersion && compareSemver(sourceVersion, installedVersion) < 0) {
+      console.log(`${YELLOW}Skip: not pruning — the install is on a newer version (${installedVersion}) than this source tree (${sourceVersion}).${RESET}`);
+    } else {
+      reportPrune(pruneInstallDir(REPO_ROOT, INSTALL_DIR));
     }
   }
 

@@ -255,6 +255,28 @@ async function run() {
         console.log(`${GREEN}[2b] Removing Gemini CLI slash commands...${NC}`);
         const geminiCommandsBase = path.join(os.homedir(), '.gemini', 'commands');
         let removed = false;
+        // Both layouts the installer/CLI may have written:
+        //  - flat   ~/.gemini/commands/agenfk-release.toml  (CLI `skills install`)
+        //  - nested ~/.gemini/commands/agenfk/...           (install.mjs step 10c)
+        // Removing only `agenfk.toml` + the nested dir stranded every agenfk-*.toml
+        // the CLI had written, including the repo-private release commands.
+        try {
+            for (const entry of await fs.readdir(geminiCommandsBase)) {
+                // Mirror the CLI's predicate exactly (removeAgenfkTomlFromDir uses
+                // `isAgenfkOwnedFile(entry,'.toml') || isAgenfkOwnedArtifact(entry)`):
+                //  - our flat TOML, matched on the SHADOWED name so a macOS
+                //    AppleDouble twin (._agenfk-release.toml) is removed too;
+                //  - ANY AppleDouble artifact of ours (._agenfk, ._agenfk-*.md),
+                //    which carries no extension and would be skipped by the
+                //    suffix test alone — e.g. the twin of the nested agenfk/ dir.
+                const shadowed = entry.startsWith('._') ? entry.slice(2) : entry;
+                const isOwnedToml = shadowed.startsWith('agenfk') && shadowed.endsWith('.toml');
+                const isOwnedArtifact = entry.startsWith('._') && shadowed.startsWith('agenfk');
+                if (isOwnedToml || isOwnedArtifact) {
+                    removed = (await rmIfExists(path.join(geminiCommandsBase, entry))) || removed;
+                }
+            }
+        } catch { /* dir absent */ }
         removed = (await rmIfExists(path.join(geminiCommandsBase, 'agenfk.toml'))) || removed;
         removed = (await rmIfExists(path.join(geminiCommandsBase, 'agenfk'))) || removed;
         return removed;

@@ -159,6 +159,15 @@ describe('issue #88 — uninstall.mjs removes every installed artifact', () => {
     // framework dir
     mkdirSync(p('.agenfk-system', 'scripts'), { recursive: true });
     writeFileSync(p('.agenfk-system', 'marker'), 'x');
+    // Gemini command TOMLs leaked by an older install — BOTH layouts, plus the
+    // macOS AppleDouble twin. Uninstall must clear all three shapes.
+    mkdirSync(p('.gemini', 'commands', 'agenfk'), { recursive: true });
+    writeFileSync(p('.gemini', 'commands', 'agenfk-release.toml'), 'leaked flat\n');
+    writeFileSync(p('.gemini', 'commands', '._agenfk-release-beta.toml'), 'leaked twin\n');
+    writeFileSync(p('.gemini', 'commands', 'agenfk', 'release.toml'), 'leaked nested\n');
+    // The AppleDouble twin of the nested agenfk/ dir — no extension, so it needs
+    // the artifact clause rather than the .toml suffix test to be removed.
+    writeFileSync(p('.gemini', 'commands', '._agenfk'), 'twin of the nested dir\n');
   }
 
   function runUninstall(args: string[]) {
@@ -193,6 +202,14 @@ describe('issue #88 — uninstall.mjs removes every installed artifact', () => {
     for (const f of opencodePluginFilenames()) {
       expect(existsSync(p('.config', 'opencode', 'plugins', f))).toBe(false);
     }
+  });
+
+  it('removes leaked Gemini command TOMLs in both layouts, including the AppleDouble twin', () => {
+    runUninstall(['-y']);
+    expect(existsSync(p('.gemini', 'commands', 'agenfk-release.toml'))).toBe(false);
+    expect(existsSync(p('.gemini', 'commands', '._agenfk-release-beta.toml'))).toBe(false);
+    expect(existsSync(p('.gemini', 'commands', 'agenfk'))).toBe(false);
+    expect(existsSync(p('.gemini', 'commands', '._agenfk'))).toBe(false);
   });
 
   it('strips gatekeeper + mcp-enforcer (Pre) and pr-hook (Post) from claude settings, keeping unrelated (Bug 2)', () => {
