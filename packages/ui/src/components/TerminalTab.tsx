@@ -17,10 +17,17 @@ import { tabIndicator, tabDotClass } from '../tabState';
 import { splitAvailability, WORKTREE_PANEL_PX } from '../splitAvailability';
 import { splitRatioAt, clampSplitRatio, splitRatioBounds, DEFAULT_SPLIT_RATIO } from '../splitRatio';
 import { layoutPanes } from '../splitGeometry';
-import { dropZone, type PaneTree } from '../splitTree';
+import { dropZone, type DropZone, type PaneTree } from '../splitTree';
 
 /** The drag payload: which session a tab is carrying. */
 export const SESSION_DRAG_MIME = 'application/x-agenfk-session';
+
+/** The half of a pane a zone covers, for the drag hint. */
+function dropHintStyle(zone: DropZone): React.CSSProperties {
+  return zone.direction === 'horizontal'
+    ? { top: 0, height: '100%', width: '50%', ...(zone.placement === 'before' ? { left: 0 } : { right: 0 }) }
+    : { left: 0, width: '100%', height: '50%', ...(zone.placement === 'before' ? { top: 0 } : { bottom: 0 }) };
+}
 import type { SessionState } from '../sessionRow';
 import { agentLabel } from '../agentLabels';
 import { WorktreePanel } from './WorktreePanel';
@@ -343,6 +350,8 @@ export function TerminalTab({
    * lands and which pane is narrow is testable without a DOM.
    */
   const [rowSize, setRowSize] = React.useState<{ width: number; height: number }>({ width: 0, height: 0 });
+  /** Which edge the drag in flight would land on, per pane. Null when none. */
+  const [dropHint, setDropHint] = React.useState<{ sessionId: string; zone: DropZone } | null>(null);
   React.useLayoutEffect(() => {
     const el = splitRowRef.current;
     if (!el) return;
@@ -756,9 +765,20 @@ export function TerminalTab({
            * edge, with the tab strip excluded from the top (that is where a
            * drag is a REORDER). The middle is not a split - it is a move.
            */
-          onDragOver={e => { e.preventDefault(); }}
+          onDragOver={e => {
+            // The payload is not readable during a drag (only its TYPES are),
+            // so a tab drag is recognised by its type and the zone computed
+            // from the pointer.
+            if (!e.dataTransfer?.types?.includes(SESSION_DRAG_MIME)) return;
+            e.preventDefault();
+            const box = e.currentTarget.getBoundingClientRect();
+            const zone = dropZone(box.width, box.height, e.clientX - box.left, e.clientY - box.top);
+            setDropHint(zone ? { sessionId: session.id, zone } : null);
+          }}
+          onDragLeave={() => setDropHint(cur => (cur?.sessionId === session.id ? null : cur))}
           onDrop={e => {
             e.preventDefault();
+            setDropHint(null);
             const dropped = e.dataTransfer?.getData(SESSION_DRAG_MIME);
             if (!dropped || dropped === session.id) return;
             const box = e.currentTarget.getBoundingClientRect();
@@ -783,6 +803,21 @@ export function TerminalTab({
             onActivity={a => onActivity?.(session.id, a)}
             onScreenActivity={a => onScreenActivity?.(session.id, a)}
           />
+          {/*
+           * WHERE IT WILL LAND, while the drag is still in the air.
+           *
+           * The zone exists either way; showing it is the difference between
+           * a gesture you aim and one you guess at. Four halves - left, right,
+           * top, bottom - which is the 2x2 the edges describe.
+           */}
+          {dropHint?.sessionId === session.id && (
+            <div
+              data-testid="drop-zone-hint"
+              data-zone={`${dropHint.zone.direction}-${dropHint.zone.placement}`}
+              className="pointer-events-none absolute z-20 rounded-sm border-2 border-brand bg-brand/20"
+              style={dropHintStyle(dropHint.zone)}
+            />
+          )}
         </div>
         );
       })}

@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -521,6 +521,45 @@ describe('the split divider', () => {
     renderTab(<TerminalTab {...withSplit(null)} onToggleSplit={onToggleSplit} sidebarWidthPx={224} />);
     dropOn(screen.getAllByTestId('terminal-pane')[0], 's2', 300, 200);
     expect(onToggleSplit).not.toHaveBeenCalled();
+  });
+
+  /** A dragover carrying the tab MIME - the only thing readable mid-drag. */
+  const dragOver = (pane: HTMLElement, clientX: number, clientY: number) => {
+    rectFor(pane);
+    const evt = new Event('dragover', { bubbles: true, cancelable: true }) as any;
+    evt.clientX = clientX;
+    evt.clientY = clientY;
+    evt.dataTransfer = { types: ['application/x-agenfk-session'], getData: () => '' };
+    act(() => { pane.dispatchEvent(evt); });
+  };
+
+  it('shows WHERE it will land while the drag is in the air', () => {
+    /*
+     * The zone exists either way; SHOWING it is the difference between a
+     * gesture you aim and one you guess at. Before this the pane simply split
+     * when you let go, with nothing telling you which half you were over.
+     */
+    renderTab(<TerminalTab {...withSplit(null)} onToggleSplit={vi.fn()} sidebarWidthPx={224} />);
+    const pane = screen.getAllByTestId('terminal-pane')[0];
+    dragOver(pane, 595, 200);
+    const hint = screen.getByTestId('drop-zone-hint');
+    expect(hint).toHaveAttribute('data-zone', 'horizontal-after');
+    expect(hint.style.right, 'the hint did not cover the right half').toBe('0px');
+  });
+
+  it('shows the whole side, not a sliver, for the other edges', () => {
+    renderTab(<TerminalTab {...withSplit(null)} onToggleSplit={vi.fn()} sidebarWidthPx={224} />);
+    const pane = screen.getAllByTestId('terminal-pane')[0];
+    dragOver(pane, 300, 395);
+    expect(screen.getByTestId('drop-zone-hint')).toHaveAttribute('data-zone', 'vertical-after');
+    expect(screen.getByTestId('drop-zone-hint').style.height).toBe('50%');
+  });
+
+  it('shows NO hint in the middle, where a drop would not split', () => {
+    renderTab(<TerminalTab {...withSplit(null)} onToggleSplit={vi.fn()} sidebarWidthPx={224} />);
+    const pane = screen.getAllByTestId('terminal-pane')[0];
+    dragOver(pane, 300, 200);
+    expect(screen.queryByTestId('drop-zone-hint')).toBeNull();
   });
 
   it('will not split a pane with the session it already shows', () => {
