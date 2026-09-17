@@ -39,6 +39,7 @@ import { NewProjectButton } from './NewProjectButton';
 import { api } from '../api';
 import type { AgEnFKItem, Project } from '../types';
 import { TerminalTab, type TerminalSession } from './TerminalTab';
+import { withItemBranches } from '../sessionBranch';
 import { NewTerminalDialog } from './NewTerminalDialog';
 import {
   listAgentsFromBridge, readPrefsFromBridge,
@@ -391,6 +392,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     () => allItemsForFleet.find(i => i.id === fleetParentId) ?? null,
     [allItemsForFleet, fleetParentId],
   );
+
+  /*
+   * THE BRANCH COMES FROM THE ITEM, kept in step (BUG: it was lost on reopen).
+   *
+   * A session's `branchName` was only ever set on the path that OPENS it, so a
+   * restored session had none and the terminal header fell back to "no branch
+   * yet" - on a card whose branch the sidebar, reading the same item, showed
+   * correctly. Two answers about one fact, which is the defect this epic keeps
+   * finding. Deriving it from the item means the restore fills it in as soon as
+   * the items load, and a branch created or renamed later stays accurate
+   * instead of freezing the value the tab happened to open with.
+   */
+  React.useEffect(() => {
+    setSessions(prev => withItemBranches(prev, allItemsForFleet));
+  }, [allItemsForFleet]);
   /**
    * Cards that already have a terminal, for the fleet sheet's count.
    *
