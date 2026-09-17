@@ -162,6 +162,8 @@ export interface TerminalTabProps {
    * a drop on the third pane of a nested tree is neither a toggle nor a pair.
    */
   readonly onDropSession?: (draggedId: string, targetId: string, zone: DropZone) => void;
+  /** A tab was dropped on ANOTHER TAB: reorder the strip, before or after it. */
+  readonly onReorder?: (draggedId: string, overId: string, side: 'before' | 'after') => void;
   /** Ask the shell to split with, or unsplit from, this session. */
   /**
    * Ask the shell to split with this session, ON THIS EDGE.
@@ -308,6 +310,7 @@ export function TerminalTab({
   paneTree,
   onPaneTreeChange,
   onDropSession,
+  onReorder,
   onToggleSplit,
   splitDirection = 'horizontal',
   splitDisabledReason,
@@ -387,6 +390,8 @@ export function TerminalTab({
   const [rowSize, setRowSize] = React.useState<{ width: number; height: number }>({ width: 0, height: 0 });
   /** Which edge the drag in flight would land on, per pane. Null when none. */
   const [dropHint, setDropHint] = React.useState<{ sessionId: string; zone: DropZone } | null>(null);
+  /** Where a tab drag would insert, while it is over the strip. */
+  const [reorderHint, setReorderHint] = React.useState<{ overId: string; side: 'before' | 'after' } | null>(null);
   React.useLayoutEffect(() => {
     const el = splitRowRef.current;
     if (!el) return;
@@ -610,11 +615,46 @@ export function TerminalTab({
           return (
             <div
               key={session.id}
+              data-testid="terminal-tab"
+              /*
+               * A DROP TARGET FOR REORDER (e488bcdd). The same payload the
+               * pane edges take; a drop HERE reorders the strip, a drop on a
+               * pane splits. The pane's top droppable zone excludes this strip
+               * precisely so the two gestures do not fight.
+               */
+              onDragOver={e => {
+                if (!onReorder || !e.dataTransfer?.types?.includes(SESSION_DRAG_MIME)) return;
+                e.preventDefault();
+                const box = e.currentTarget.getBoundingClientRect();
+                const side = e.clientX - box.left < box.width / 2 ? 'before' : 'after';
+                setReorderHint({ overId: session.id, side });
+              }}
+              onDragLeave={() => setReorderHint(cur => (cur?.overId === session.id ? null : cur))}
+              onDrop={e => {
+                if (!onReorder) return;
+                e.preventDefault();
+                setReorderHint(null);
+                const dropped = e.dataTransfer?.getData(SESSION_DRAG_MIME);
+                if (!dropped || dropped === session.id) return;
+                const box = e.currentTarget.getBoundingClientRect();
+                const side = e.clientX - box.left < box.width / 2 ? 'before' : 'after';
+                onReorder(dropped, session.id, side);
+              }}
               className={clsx(
-                'group flex max-w-[220px] items-center gap-2 border-r border-border-soft px-3 py-2',
+                'group relative flex max-w-[220px] items-center gap-2 border-r border-border-soft px-3 py-2',
                 selected ? 'bg-canvas' : 'hover:bg-canvas/50',
               )}
             >
+              {reorderHint?.overId === session.id && (
+                <span
+                  data-testid="tab-reorder-hint"
+                  data-side={reorderHint.side}
+                  className={clsx(
+                    'pointer-events-none absolute inset-y-0 z-10 w-0.5 bg-brand',
+                    reorderHint.side === 'before' ? 'left-0' : 'right-0',
+                  )}
+                />
+              )}
               <button
                 role="tab"
                 /*

@@ -40,6 +40,7 @@ import { api } from '../api';
 import type { AgEnFKItem, Project } from '../types';
 import { TerminalTab, type TerminalSession } from './TerminalTab';
 import { treeForDrop, treeForToggle, pruneTree, treeForFocus } from '../paneLayout';
+import { moveInOrder } from '../tabOrder';
 import type { PaneTree, DropZone, SplitDirection } from '../splitTree';
 import { withItemBranches } from '../sessionBranch';
 import { NewTerminalDialog } from './NewTerminalDialog';
@@ -990,6 +991,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [activeSession]);
 
   /**
+   * Reorder the strip (e488bcdd). The ARRAY order is the strip order, so the
+   * move is the whole feature - and the panes address sessions by id, not by
+   * position, so a reorder never disturbs a split.
+   */
+  const reorderSessions = React.useCallback((draggedId: string, overId: string, side: 'before' | 'after'): void => {
+    setSessions(prev => moveInOrder(prev, draggedId, overId, side));
+  }, []);
+
+  /**
    * Focusing a tab that is NOT on screen shows it in the focused pane.
    *
    * In an EFFECT rather than in each caller, so a tab opened by the restore
@@ -1456,6 +1466,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 onPaneTreeChange={setPaneTree}
                 onDropSession={applyDrop}
                 onToggleSplit={toggleSplit}
+                onReorder={reorderSessions}
                 /*
                  * The REAL width, not the old fixed 224. TerminalTab computes
                  * how many COLUMNS fit from this, so a resizable sidebar feeding

@@ -644,3 +644,67 @@ describe('a pane tree of more than two', () => {
     expect(onDropSession).toHaveBeenCalledWith('s3', 's1', { direction: 'horizontal', placement: 'after' });
   });
 });
+
+/**
+ * Reordering the strip (e488bcdd).
+ *
+ * The order was the order the sessions were opened and could not change. With
+ * three or more sessions the tab you want beside the active one can sit at the
+ * far end, and with a split open, choosing the pair is a person's decision -
+ * dragging is how a person expresses order without thinking.
+ *
+ * The drag payload is the SAME one the pane edges use; the tab strip answers a
+ * drop on a TAB as a reorder, and a drop on a pane as a split. The pane's top
+ * zone already excludes the strip for exactly this reason.
+ */
+describe('reordering the tab strip', () => {
+  const three = () => ({
+    ...baseProps(),
+    sessions: [
+      { id: 's1', itemId: 'i1', title: 'A card', agentId: 'claude-code', autoApprove: false, persist: false, openedAt: new Date().toISOString() },
+      { id: 's2', itemId: 'i2', title: 'Another card', agentId: 'codex', autoApprove: false, persist: false, openedAt: new Date().toISOString() },
+      { id: 's3', itemId: 'i3', title: 'A third card', agentId: 'pi', autoApprove: false, persist: false, openedAt: new Date().toISOString() },
+    ],
+    activeId: 's1',
+    onReorder: vi.fn(),
+  });
+
+  /** jsdom lays nothing out, so the tab is given the rect the gesture reads. */
+  const rect = (el: HTMLElement, width: number) => {
+    (el as any).getBoundingClientRect = () => ({
+      left: 0, top: 0, width, height: 40, right: width, bottom: 40, x: 0, y: 0, toJSON: () => ({}),
+    });
+  };
+  const dropOnTab = (tab: HTMLElement, dropped: string, clientX: number, width: number) => {
+    rect(tab, width);
+    const evt = new Event('drop', { bubbles: true, cancelable: true }) as any;
+    evt.clientX = clientX; evt.clientY = 20;
+    evt.dataTransfer = { getData: () => dropped, types: ['application/x-agenfk-session'] };
+    act(() => { tab.dispatchEvent(evt); });
+  };
+
+  it('reports the tab dropped on, and which half', () => {
+    const onReorder = vi.fn();
+    renderTab(<TerminalTab {...three()} onReorder={onReorder} />);
+    const tabs = screen.getAllByTestId('terminal-tab');
+    dropOnTab(tabs[0], 's3', 150, 200);        // right half of the first tab
+    expect(onReorder).toHaveBeenCalledWith('s3', 's1', 'after');
+  });
+
+  it('says BEFORE on the left half', () => {
+    const onReorder = vi.fn();
+    renderTab(<TerminalTab {...three()} onReorder={onReorder} />);
+    const tabs = screen.getAllByTestId('terminal-tab');
+    dropOnTab(tabs[1], 's3', 20, 200);         // left half
+    expect(onReorder).toHaveBeenCalledWith('s3', 's2', 'before');
+  });
+
+  it('offers no drop target at all when the shell cannot reorder', () => {
+    // No handler means the feature is not wired; a drop then falls through and
+    // does nothing, rather than moving a tab into an order nobody owns.
+    renderTab(<TerminalTab {...three()} onReorder={undefined} />);
+    const tabs = screen.getAllByTestId('terminal-tab');
+    dropOnTab(tabs[0], 's3', 150, 200);
+    expect(screen.queryByTestId('tab-reorder-hint')).toBeNull();
+  });
+});
