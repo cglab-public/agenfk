@@ -10,7 +10,7 @@ describe('keeping a session branch in step with its card', () => {
   it('fills in the branch a RESTORED session never had', () => {
     // The bug: branchName was set only when the tab was opened, so the restored
     // one had none and the header said "no branch yet" for a card that had one.
-    const restored = [{ itemId: 'i1' }, { itemId: 'i2' }];
+    const restored: { itemId: string; branchName?: string | null }[] = [{ itemId: 'i1' }, { itemId: 'i2' }];
     const next = withItemBranches(restored, [item('i1', 'feat/x'), item('i2', 'fix/y')]);
     expect(next.map(s => s.branchName)).toEqual(['feat/x', 'fix/y']);
   });
