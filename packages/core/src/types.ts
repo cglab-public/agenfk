@@ -372,6 +372,15 @@ export interface TestRecord {
   output: string;
   status: "PASSED" | "FAILED";
   executedAt: Date;
+  /**
+   * The commit the tree was at when this run passed (b29a8b3a).
+   *
+   * Read back by sibling propagation, which may inherit this green only while
+   * the shared tree is still here. Absent on every run recorded before this
+   * existed, and a sibling green with no commit does not propagate - a claim
+   * the tree cannot back is worse than running the command again.
+   */
+  commit?: string;
 }
 
 export interface ReviewRecord {

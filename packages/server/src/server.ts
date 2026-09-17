@@ -3,6 +3,7 @@ import cors from "cors";
 import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
 import { commitStagedForCard, resolveCommitRoot } from './closeCommit';
+import { mayPropagate, readCleanTreeSha, readHead, readTreeStatus } from './propagation';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, type DispatchState } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
@@ -2116,6 +2117,18 @@ const RUN_EVENT_KINDS = new Set(['dispatch', 'think', 'tool', 'result', 'diff', 
 
 // Register a run when the orchestrator dispatches a worker (establishes the
 // session↔card link that heuristic attribution cannot).
+/**
+ * One git runner for the validate path.
+ *
+ * Captured stderr and a timeout, like the other call sites here: git's
+ * `fatal:` lines belong in the log rather than on the server's stderr, and a
+ * synchronous git on a stalled mount must not pin the event loop for the
+ * whole server.
+ */
+const runGitSync = (args: readonly string[]): string =>
+  execFileSync('git', args as string[], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5_000 });
+const gitRun = { run: runGitSync };
+
 app.post("/agent-runs", asyncHandler(async (req: any, res: any) => {
   const { itemId, projectId, step, actor, harness, model, sessionId, sourcePath } = req.body || {};
   if (typeof itemId !== 'string' || !itemId) return res.status(400).json({ error: "itemId is required" });
@@ -3751,6 +3764,17 @@ async function handleValidateProgress(itemId: string, command: string | undefine
    */
   const exitStep = sorted[sorted.length - 1];
   const isExitStep = nextStatus === Status.DONE || !nextStep || nextStep.name === exitStep?.name;
+  /*
+   * Does this transition END the flow? Not the same question as `isExitStep`,
+   * which is positional. `agenfk flow create` produces flows with no boundary
+   * step, and there the last step by position is not terminal - treating it as
+   * the end fires the close commit one transition early, committing a shared
+   * index while the card still has a step to work. Only a boundary last step,
+   * or no next step at all, ends the flow.
+   */
+  const endsFlow = !nextStep
+    || nextStatus === Status.DONE
+    || (nextStep.name === exitStep?.name && isBoundaryStep(nextStep));
   const resolvedCommand = command || ((isFinalStep ? (project as any)?.verifyCommand : undefined));
   if (isFinalStep && !resolvedCommand) {
     return res.status(400).json({
@@ -3764,15 +3788,52 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   if (item.parentId) {
     const siblings = await storage.listItems({ parentId: item.parentId });
     // For final step (→ DONE), check siblings already DONE with same verifyCommand
-    if (nextStatus === Status.DONE) {
-      const passedSibling = siblings.find(s =>
-        s.id !== item.id &&
-        s.status === Status.DONE &&
-        s.tests?.some((t: any) => t.status === 'PASSED' && t.command === resolvedCommand)
-      );
-      if (passedSibling) {
+    if (endsFlow) {
+      /*
+       * THE GREEN MUST BELONG TO THIS TREE (b29a8b3a). A sibling's suite ran
+       * against the shared tree at some commit, and other agents may have
+       * moved it since - committed OR edited - and propagating then spends a
+       * stale green as proof of work never run here. SDLC.md names the
+       * precondition ("same branch/workspace"); this is the first code to
+       * check it.
+       *
+       * EVERY candidate is asked, not just the first: a stale older sibling
+       * must not shadow a younger one still green at this commit.
+       *
+       * A refusal falls through to RUNNING the command - the whole direction.
+       * A command run is cheap; a claim the tree cannot back is not.
+       */
+      /*
+       * THE ROOT THE COMMAND RUNS IN, which is `projectRoot`. A card with its
+       * own worktree runs its suite HERE but commits THERE (autoGitCommit
+       * resolves the worktree first), so a SHA from that checkout describes a
+       * tree the command never opened. Such a card does not propagate - one
+       * root or no claim.
+       */
+      const gateRoot = (project as any)?.projectRoot;
+      const sharesRoot = !!gateRoot && resolveCommitRoot(item, gateRoot).root === gateRoot;
+      const treeSha = sharesRoot ? readCleanTreeSha(gateRoot, gitRun) : null;
+      let pass: { sibling: any; test: any } | null = null;
+      let refusal = treeSha
+        ? 'no sibling green is tied to this commit'
+        : 'this tree is not clean at a commit, so no sibling green can be tied to it';
+      for (const s of siblings) {
+        if (pass || s.id === item.id || s.status !== Status.DONE) continue;
+        // Same checkout as the one the command runs in, or nothing transfers.
+        if (!sharesRoot || resolveCommitRoot(s, gateRoot).root !== gateRoot) continue;
+        // EVERY matching test, not the first: a sibling re-verified after a
+        // rollback has an older record that must not shadow the current one.
+        for (const test of s.tests || []) {
+          if (pass || test.status !== 'PASSED' || test.command !== resolvedCommand) continue;
+          const gate = mayPropagate(treeSha, test);
+          if (gate.allowed) pass = { sibling: s, test };
+          else refusal = gate.reason ?? refusal;
+        }
+      }
+      if (pass) {
+        const { sibling: passedSibling, test: siblingTest } = pass;
         const sibComment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).`, timestamp: new Date() };
-        const updates: any = { status: Status.DONE, comments: [...(item.comments || []), sibComment], tests: [...(item.tests || []), { id: uuidv4(), command: resolvedCommand, output: `Sibling propagation: verified by ${passedSibling.id}`, status: 'PASSED', executedAt: new Date() }], ...(isExitStep ? { failureCount: 0 } : {}) };
+        const updates: any = { status: nextStatus, comments: [...(item.comments || []), sibComment], tests: [...(item.tests || []), { id: uuidv4(), command: resolvedCommand, output: `Sibling propagation: verified by ${passedSibling.id}`, status: 'PASSED', executedAt: new Date(), commit: siblingTest.commit }], ...(isExitStep ? { failureCount: 0 } : {}) };
         const updated = await storage.updateItem(itemId, updates);
         io.emit('items_updated');
         if (updated.parentId) await syncParentStatus(updated.parentId);
@@ -3780,8 +3841,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         // long-lived daemon commit into whatever repo it was launched from;
         // autoGitCommit now declines instead, and says why on the card's log.
         if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) autoGitCommit(updated, (project as any)?.projectRoot);
-        return res.json({ status: Status.DONE, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to DONE.${pushInstruction}`, output: 'Sibling propagation' });
+        return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.${pushInstruction}`, output: 'Sibling propagation' });
       }
+      console.warn(`[VALIDATE] Sibling propagation refused for ${itemId}: ${refusal}`);
     } else {
       const passedSibling = siblings.find(s => {
         if (s.id === item.id) return false;
@@ -3820,6 +3882,14 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // `res2` — the real HTTP response on the sync path, or a recorder that
   // captures the outcome into a ValidateRun on the async path.
   const runCommandAndFinalize = async (res2: any, run?: ValidateRun) => {
+  // The commit and the working-tree state the command actually ran against,
+  // captured BEFORE the spawn. A long run during which another agent commits
+  // OR stages work must not let this green be recorded against a tree it never
+  // saw. Only a card that shares this root with its close commit can be
+  // recorded - see the gate above.
+  const gateRoot = projectRoot && resolveCommitRoot(item, projectRoot).root === projectRoot ? projectRoot : null;
+  const headBeforeRun = gateRoot ? readHead(gateRoot, gitRun) : null;
+  const statusBeforeRun = gateRoot ? readTreeStatus(gateRoot, gitRun) : null;
   const { output, code, timedOut } = await new Promise<{ output: string; code: number | null; timedOut?: boolean }>((resolve) => {
     const child = spawn(resolvedCommand, { shell: true, cwd: projectRoot, env: { ...process.env, FORCE_COLOR: '1' } });
     let out = '';
@@ -3883,13 +3953,21 @@ async function handleValidateProgress(itemId: string, command: string | undefine
        * so the clear can be about landing on the FINAL step, not a name.
        */
       if (isExitStep) updates.failureCount = 0;
-      if (nextStatus === Status.DONE) {
+      if (endsFlow) {
+        // The commit is attached AFTER the close commit below - the state a
+        // later card inherits is the one the sibling LEFT BEHIND, not the one
+        // it started from.
         updates.tests = [...(item.tests || []), { id: testId, command: resolvedCommand, output: preview, status: 'PASSED', executedAt: new Date() }];
       }
       const updated = await storage.updateItem(itemId, updates);
       io.emit('items_updated');
       if (updated.parentId) await syncParentStatus(updated.parentId);
-      if (nextStatus === Status.DONE && process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+      // HEAD just before our own close commit. If it moved during the run,
+      // another agent landed work this green never covered, so no commit is
+      // recorded and no card may inherit it.
+      const preCommitSha = endsFlow && gateRoot ? readHead(gateRoot, gitRun) : null;
+      const preCommitStatus = endsFlow && gateRoot ? readTreeStatus(gateRoot, gitRun) : null;
+      if (endsFlow && process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
         // Advisory: a git-commit failure must not report a PASSED validation
         // (whose transition already landed) as failed to the run follower.
         try {
@@ -3906,6 +3984,34 @@ async function handleValidateProgress(itemId: string, command: string | undefine
           if (!outcome.success && outcome.error) closeCommitNote = `\n\n⚠️ ${outcome.error}`;
         }
         catch (e: any) { console.error(`[validate] autoGitCommit failed after DONE: ${e?.message || e}`); }
+      }
+      /*
+       * Record WHERE this green was earned (b29a8b3a), now that the close
+       * commit has moved HEAD. Two guards, both fail closed:
+       *  - the run must not have outlived the tree it started on; and
+       *  - the tree must be CLEAN, because uncommitted work is content the
+       *    green never saw (see readCleanTreeSha).
+       * Where either fails, the record carries no commit and no card inherits
+       * this green - the honest direction is a command run, not a claim.
+       */
+      if (
+        endsFlow &&
+        gateRoot &&
+        preCommitSha === headBeforeRun &&
+        // A staged edit during the run would be swept into OUR close commit,
+        // stamping this green on content it never ran against. HEAD does not
+        // see that; the porcelain does.
+        preCommitStatus === statusBeforeRun
+      ) {
+        const verifiedSha = readCleanTreeSha(gateRoot, gitRun);
+        if (verifiedSha) {
+          const current = await storage.getItem(itemId);
+          const tests = (current?.tests || []).map((t: any) =>
+            t.id === testId ? { ...t, commit: verifiedSha } : t,
+          );
+          await storage.updateItem(itemId, { tests });
+          io.emit('items_updated');
+        }
       }
       recordHubEvent({
       type: 'validate.passed',
