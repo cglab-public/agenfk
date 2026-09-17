@@ -2,6 +2,38 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.20-beta.2] — 2026-09-17
+
+Cut from `fix/hub-installation-binding-integrity` (PR #190), stacked on
+`1.1.20-beta.1` — it carries everything in that beta plus the changes below.
+
+### The fleet-upgrade picker reads installations, not API keys (BUG bb27c0aa)
+
+The admin Fleet-upgrades picker was built from `GET /v1/admin/api-keys` — one row per
+**key**. Production showed 12 rows for 7 machines: one installation held six live keys and
+rendered six times, `All (12)` was shown while `scope=all` targets nine, and two machines
+were missing entirely because their live keys had no installation binding and were filtered
+out.
+
+Underneath it, an unbound key was not merely mislabelled but **inert**:
+`GET /v1/upgrade-directive` returns `204` when a key has no installation binding (likewise
+`/repoint-directive`; `PUT /flows/selection` returns 403), so two members' machines could
+never receive a fleet upgrade at all — while `scope=all` still created target rows for them
+that would sit `pending` forever.
+
+- The picker now reads `GET /v1/admin/installations` — one row per **machine** — via a new
+  pure module, with `api_keys` only as a display fallback, so labels come from live identity
+  rather than the issue-time snapshot.
+- An unbound key **binds itself** to the single machine it is demonstrably running on, on
+  that machine's first report. The race-prone guards live inside the `UPDATE`, so there is
+  no check-then-act window.
+- `POST /v1/admin/api-keys` now **rejects reserved `invite:` / `device:` labels** with 400,
+  so the onboarding prefixes stay hub-written by construction. Without that, a shared key
+  labelled `device:ci-runner` would inherit the single-machine binding and every other
+  machine on it would be refused as `foreign_installation`.
+- That route also states plainly that the key it mints will **not** bind itself, instead of
+  promising automatic binding, and points at `agenfk hub join`.
+
 ## [1.1.20-beta.1] — 2026-09-17
 
 Cut from `fix/prune-system-dir-on-upgrade` (PR #189).
