@@ -23,7 +23,7 @@
  */
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'fs';
 import { homedir } from 'os';
-import { join, dirname, resolve } from 'path';
+import { join, dirname, resolve, isAbsolute, parse } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -132,19 +132,60 @@ function rememberRun(sessionId, runId) {
  * on POST /agent-runs. Attributing an agent's work to the wrong card is worse
  * than recording none, so no note means no run.
  */
-async function activeItem(readActiveWork, sessionId) {
+/**
+ * The project that owns a cwd, from the nearest `.agenfk/project.json`.
+ *
+ * The same file the MCP gatekeeper reads. Null when no project owns the
+ * directory — a bare worktree, a temp dir — which is NOT the same as "a
+ * different project" and must not be treated as one.
+ */
+export function projectIdFromCwd(cwd) {
+  let dir = cwd && isAbsolute(cwd) ? cwd : resolve(cwd || '.');
+  const root = parse(dir).root;
+  for (;;) {
+    try {
+      const parsed = JSON.parse(readFileSync(join(dir, '.agenfk', 'project.json'), 'utf8'));
+      return parsed && typeof parsed.projectId === 'string' && parsed.projectId ? parsed.projectId : null;
+    } catch { /* no project file here — walk up */ }
+    // A malformed file is caught by the same try as an absent one; both mean
+    // "this directory does not name a project", and neither should block the
+    // walk. The root ends it.
+    if (dir === root) return null;
+    dir = dirname(dir);
+  }
+}
+
+/**
+ * Is this note about the project this session is actually in?
+ *
+ * The shared note is the only one the CLI gatekeeper writes, so without this
+ * check the last card authorized by ANY session on the machine captures the
+ * runs of every session. Refusing a note that names a different project is
+ * the safe half: a run on the wrong card is worse than no run, which is the
+ * rule this recorder already lives by. An unknown on either side keeps the
+ * old behaviour — refusing there would kill recording where it used to work.
+ */
+export function noteMatchesProject(note, projectId) {
+  if (!projectId) return true;
+  const noteProject = note && typeof note.projectId === 'string' ? note.projectId : '';
+  if (!noteProject) return true;
+  return noteProject === projectId;
+}
+
+async function activeItem(readActiveWork, sessionId, projectId) {
   const work = readActiveWork(sessionId);
   if (!work?.itemId) return null;
+  if (!noteMatchesProject(work, projectId)) return null;
   const item = await api(`/items/${encodeURIComponent(work.itemId)}`);
   return item?.id ? item : null;
 }
 
-async function ensureRun(sessionId, readActiveWork) {
+async function ensureRun(sessionId, readActiveWork, projectId) {
   // The note is consulted FIRST, every time. Keying the cache on the session
   // alone let it short-circuit ahead of the note, so switching cards mid
   // session kept posting to the first card's run — the wrong-card failure this
   // whole design exists to prevent. The key is session + item.
-  const item = await activeItem(readActiveWork, sessionId);
+  const item = await activeItem(readActiveWork, sessionId, projectId);
   if (!item) return null;
 
   const cacheKey = `${sessionId || 'nosession'}::${item.id}`;
@@ -240,7 +281,9 @@ async function main() {
   const event = toRunEvent(payload);
   if (!event) return;
 
-  const run = await ensureRun(payload.session_id, readActiveWork);
+  // The session's OWN project, from its cwd — not from the note. Comparing
+  // the two is what stops one session's card capturing another's runs.
+  const run = await ensureRun(payload.session_id, readActiveWork, projectIdFromCwd(payload.cwd));
   if (!run) return;
 
   const posted = await api(`/agent-runs/${run.runId}/events`, {
