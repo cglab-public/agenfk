@@ -8,7 +8,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  splitLeaf, removeLeaf, moveLeaf, setRatio, leaves, paneCount, dropZone,
+  splitLeaf, removeLeaf, moveLeaf, setRatioAtPath, dividerPathFor, pathToLeaf,
+  leaves, paneCount, dropZone,
   MAX_PANES, NARROW_PANE_PX, TAB_STRIP_PX,
   type PaneTree,
 } from '../splitTree';
@@ -75,17 +76,29 @@ describe('moving a pane', () => {
   });
 });
 
-describe('the divider ratio', () => {
-  it('is per node, so moving one boundary leaves the others alone', () => {
-    const t = splitLeaf(splitLeaf(leaf('a'), 'a', 'horizontal', 'b')!, 'b', 'vertical', 'c')!;
-    const moved = setRatio(t, 'a', 0.7) as any;
-    expect(moved.ratio).toBe(0.7);
-    expect(moved.first.type).toBe('leaf');
+describe('the divider ratio, per node', () => {
+  const nested = () => splitLeaf(splitLeaf(leaf('a'), 'a', 'horizontal', 'b')!, 'b', 'vertical', 'c')!;
+
+  it('addresses the split ADJACENT to a pane, not the outermost one', () => {
+    // THE BUG THIS REPLACES: setting the ratio "for b" wrote the ROOT split's
+    // ratio, so dragging b's divider moved the a|(b,c) boundary instead. The
+    // old test missed it because it only ever built one split deep.
+    const t = nested() as any;
+    expect(pathToLeaf(t, 'b')).toEqual([1, 0]);
+    const path = dividerPathFor(t, 'b');
+    expect(path, 'b hangs off the inner split').toEqual([1]);
+    const moved = setRatioAtPath(t, path!, 0.7) as any;
+    expect(moved.second.ratio).toBe(0.7);
+    expect(moved.ratio, 'it moved a different boundary').toBe(0.5);
+  });
+
+  it('a lone pane has no divider', () => {
+    expect(dividerPathFor(leaf('a'), 'a')).toBeNull();
   });
 
   it('clamps', () => {
     const t = splitLeaf(leaf('a'), 'a', 'horizontal', 'b')!;
-    expect((setRatio(t, 'a', 2) as any).ratio).toBe(1);
+    expect((setRatioAtPath(t, [], 2) as any).ratio).toBe(1);
   });
 });
 

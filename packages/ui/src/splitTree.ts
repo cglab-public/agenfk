@@ -130,13 +130,44 @@ export function moveLeaf(
   return splitLeaf(without, targetSessionId, direction, sessionId, placement);
 }
 
-/** Set the ratio of the split that owns `sessionId` as one of its leaves. */
-export function setRatio(tree: PaneTree, sessionId: string, ratio: number): PaneTree {
+/**
+ * The path to a leaf: 0 = into `first`, 1 = into `second`, root = [].
+ *
+ * A DIVIDER IS ADDRESSED BY ITS SPLIT, NOT BY A SESSION. The first version of
+ * this module took a sessionId and set the ratio of the first split whose
+ * subtree contained it - which, in a nested tree, is the OUTERMOST split, not
+ * the boundary beside that pane. Dragging the divider next to a pane moved a
+ * different boundary, and the tests did not catch it because they only ever
+ * built one split deep.
+ */
+export function pathToLeaf(tree: PaneTree, sessionId: string): number[] | null {
+  if (tree.type === 'leaf') return tree.sessionId === sessionId ? [] : null;
+  const first = pathToLeaf(tree.first, sessionId);
+  if (first) return [0, ...first];
+  const second = pathToLeaf(tree.second, sessionId);
+  if (second) return [1, ...second];
+  return null;
+}
+
+/**
+ * The split that a leaf hangs off: the divider you would drag to resize it.
+ *
+ * Null for the root leaf - a lone pane has no boundary.
+ */
+export function dividerPathFor(tree: PaneTree, sessionId: string): number[] | null {
+  const path = pathToLeaf(tree, sessionId);
+  return path && path.length > 0 ? path.slice(0, -1) : null;
+}
+
+/** Set the ratio of the split at `path` (the divider's own node). */
+export function setRatioAtPath(tree: PaneTree, path: readonly number[], ratio: number): PaneTree {
   const clamped = Math.min(1, Math.max(0, ratio));
+  if (path.length === 0) return tree.type === 'split' ? { ...tree, ratio: clamped } : tree;
   if (tree.type === 'leaf') return tree;
-  if (leaves(tree.first).includes(sessionId)) return { ...tree, ratio: clamped };
-  if (leaves(tree.second).includes(sessionId)) return { ...tree, ratio: clamped };
-  return tree;
+  const [head, ...rest] = path;
+  return head === 0
+    ? { ...tree, first: setRatioAtPath(tree.first, rest, clamped) }
+    : { ...tree, second: setRatioAtPath(tree.second, rest, clamped) };
 }
 
 export interface DropZone {
