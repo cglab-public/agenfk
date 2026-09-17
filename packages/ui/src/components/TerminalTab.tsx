@@ -16,6 +16,11 @@ import { clsx } from 'clsx';
 import { tabIndicator, tabDotClass } from '../tabState';
 import { splitAvailability, WORKTREE_PANEL_PX } from '../splitAvailability';
 import { splitRatioAt, clampSplitRatio, splitRatioBounds, DEFAULT_SPLIT_RATIO } from '../splitRatio';
+import { layoutPanes } from '../splitGeometry';
+import { dropZone, type PaneTree } from '../splitTree';
+
+/** The drag payload: which session a tab is carrying. */
+export const SESSION_DRAG_MIME = 'application/x-agenfk-session';
 import type { SessionState } from '../sessionRow';
 import { agentLabel } from '../agentLabels';
 import { WorktreePanel } from './WorktreePanel';
@@ -327,6 +332,28 @@ export function TerminalTab({
   const paneRowPx = rowWidth - sidebarWidthPx - (panelOpen ? WORKTREE_PANEL_PX : 0);
   const shownRatio = clampSplitRatio(splitRatio, paneRowPx);
   const ratioBounds = splitRatioBounds(paneRowPx);
+  /*
+   * The panes are FLAT and positioned by RECTANGLE, not by a recursive tree of
+   * flex boxes (7a717cb8). Two reasons, and the first is not negotiable: a
+   * recursive render re-parents a pane when the tree changes, and re-parenting
+   * unmounts it - which kills the PTY and the scrollback with it. Flat panes
+   * keep one stable parent each, so the layout can change freely.
+   *
+   * The second: the arithmetic lives in `layoutPanes`, so where a boundary
+   * lands and which pane is narrow is testable without a DOM.
+   */
+  const [rowSize, setRowSize] = React.useState<{ width: number; height: number }>({ width: 0, height: 0 });
+  React.useLayoutEffect(() => {
+    const el = splitRowRef.current;
+    if (!el) return;
+    const measure = (): void => setRowSize({ width: el.clientWidth, height: el.clientHeight });
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [sessions.length]);
+
   const moveSplitTo = React.useCallback((clientX: number): void => {
     const rect = splitRowRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -378,6 +405,28 @@ export function TerminalTab({
   React.useEffect(() => {
     if (!showDivider) draggingDivider.current = false;
   }, [showDivider]);
+  /*
+   * The layout as a tree. For now it is the pair the Split control asks for -
+   * the nested/multi-leaf case is what the drag zones add next, and it lands in
+   * the SAME two functions (`splitLeaf`/`layoutPanes`) rather than a second
+   * rendering path.
+   */
+  const paneTree: PaneTree = splitId && activeId && splitId !== activeId
+    ? {
+        type: 'split', direction: 'horizontal',
+        first: { type: 'leaf', sessionId: activeId },
+        second: { type: 'leaf', sessionId: splitId },
+        ratio: shownRatio,
+      }
+    : { type: 'leaf', sessionId: activeId ?? '' };
+  // Fallbacks cover the first paint (and jsdom, whose clientHeight is 0): the
+  // window is the closest honest guess before the row has been measured.
+  const layout = layoutPanes(
+    paneTree,
+    rowSize.width || paneRowPx,
+    rowSize.height || (typeof window !== 'undefined' ? window.innerHeight : 0),
+  );
+  const rectFor = new Map(layout.panes.map(p => [p.sessionId, p]));
   const current = sessions.find(s => s.id === activeId);
   /*
    * Asked even with the panel CLOSED, which is what makes moving the counts
@@ -547,6 +596,14 @@ export function TerminalTab({
             >
               <button
                 role="tab"
+                /*
+                 * DRAGGABLE (7a717cb8). Dropping it on a pane EDGE splits
+                 * there - right edge side by side, bottom edge stacked - which
+                 * is the gesture the Split button only approximated. The
+                 * payload is the session id, the one thing the pane needs.
+                 */
+                draggable
+                onDragStart={e => e.dataTransfer?.setData(SESSION_DRAG_MIME, session.id)}
                 aria-selected={selected}
                 onClick={() => onSelect(session.id)}
                 // The card stays in the tooltip: the strip says which agent,
@@ -680,23 +737,38 @@ export function TerminalTab({
       <div className="flex min-h-0 flex-1">
       <div
         ref={splitRowRef}
-        className={clsx('flex min-w-0 flex-1', splitId ? 'relative flex-row gap-px bg-border-soft' : 'flex-col')}
+        className={clsx('relative min-w-0 flex-1', splitId && 'bg-border-soft')}
       >
-      {sessions.map(session => (
+      {sessions.map(session => {
+        const rect = rectFor.get(session.id);
+        return (
         <div
           key={session.id}
           /*
-           * Hidden, never unmounted: unmounting kills the process. The split
-           * shows a SECOND pane rather than replacing the first, so both
-           * conditions are ors.
+           * Hidden, never unmounted: unmounting kills the process. Off-screen
+           * sessions keep their pane mounted and the flex slot they always
+           * had; on-screen ones take their rectangle from the layout.
            */
-          hidden={session.id !== activeId && session.id !== splitId}
+          hidden={!rect}
           data-testid="terminal-pane"
-          className={clsx('min-h-0 flex-1', splitId && 'min-w-0 bg-canvas')}
-          /* The leading pane's width is the divider position; the trailing one
-             grows into whatever is left. Only inline style, never a DOM move:
-             re-parenting a pane would unmount it and kill the agent. */
-          style={session.id === leadingPaneId ? { flex: `0 0 ${(shownRatio * 100).toFixed(2)}%` } : undefined}
+          /*
+           * A DROP ZONE, measured in the pane's own rectangle: 20% of each
+           * edge, with the tab strip excluded from the top (that is where a
+           * drag is a REORDER). The middle is not a split - it is a move.
+           */
+          onDragOver={e => { e.preventDefault(); }}
+          onDrop={e => {
+            e.preventDefault();
+            const dropped = e.dataTransfer?.getData(SESSION_DRAG_MIME);
+            if (!dropped || dropped === session.id) return;
+            const box = e.currentTarget.getBoundingClientRect();
+            const zone = dropZone(box.width, box.height, e.clientX - box.left, e.clientY - box.top);
+            if (zone) onToggleSplit?.(dropped);
+          }}
+          className={clsx('min-h-0', rect ? 'absolute overflow-hidden bg-canvas' : 'flex-1')}
+          /* Inline style only, never a DOM move: re-parenting a pane would
+             unmount it and kill the agent. */
+          style={rect ? { left: rect.x, top: rect.y, width: rect.width, height: rect.height } : undefined}
         >
           <TerminalPane
             itemId={session.itemId}
@@ -712,7 +784,8 @@ export function TerminalTab({
             onScreenActivity={a => onScreenActivity?.(session.id, a)}
           />
         </div>
-      ))}
+        );
+      })}
 
       {/* The divider itself (b014cc86). An ABSOLUTE overlay on the seam rather
           than a flex child, because inserting an element between two mapped

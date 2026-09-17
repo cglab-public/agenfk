@@ -444,20 +444,22 @@ describe('the split divider', () => {
      * back. `leadingPaneId` is gated on showDivider, not on splitId.
      */
     renderTab(<TerminalTab {...withSplit('s1')} onToggleSplit={vi.fn()} sidebarWidthPx={224} />);
-    const panes = screen.getAllByTestId('terminal-pane');
-    expect(panes[0].style.flex, 'the lone pane was given a split basis').toBe('');
+    expect(screen.queryByTestId('terminal-split-divider')).toBeNull();
+    const fullRow = 1600 - 224;
+    const width = parseFloat(screen.getAllByTestId('terminal-pane')[0].style.width);
+    expect(width, 'the lone pane was given half the row').toBeGreaterThan(fullRow / 2);
   });
 
   it('does not arm a drag on a right-click', () => {
     localStorage.setItem('agenfk_split_ratio', '0.3');
     renderTab(<TerminalTab {...withSplit('s2')} onToggleSplit={vi.fn()} sidebarWidthPx={224} />);
     const panes = screen.getAllByTestId('terminal-pane');
-    const before = panes[0].style.flex;
+    const before = panes[0].style.width;
     const divider = screen.getByTestId('terminal-split-divider');
     fireEvent.pointerDown(divider, { button: 2, pointerId: 1 });
     // A move WITH a button held, which only acts if the right-click armed it.
     fireEvent.pointerMove(divider, { clientX: 999, buttons: 1, pointerId: 1 });
-    expect(panes[0].style.flex, 'a right-click armed a drag').toBe(before);
+    expect(panes[0].style.width, 'a right-click armed a drag').toBe(before);
   });
 
   it('persists the position when the drag ends, not on every move', () => {
@@ -474,11 +476,57 @@ describe('the split divider', () => {
     // A ratio saved on a wide row puts a pane under the 592 floor on a narrow
     // one. The clamp has to happen at render, or the preference overrides the
     // floor the whole feature exists to respect.
+    // The pane WIDTH is the thing to check now: the layout is rectangles, not
+    // flex-basis.
     localStorage.setItem('agenfk_split_ratio', '0.75');
     renderTab(<TerminalTab {...withSplit('s2')} onToggleSplit={vi.fn()} sidebarWidthPx={224} />);
-    const panes = screen.getAllByTestId('terminal-pane');
-    const expected = `0 0 ${(clampSplitRatio(0.75, 1600 - 224) * 100).toFixed(2)}%`;
-    expect(panes[0].style.flex).toBe(expected);
-    expect(panes[0].style.flex, 'the raw stored ratio was applied').not.toContain('75.00%');
+    const fullRow = 1600 - 224;
+    const clamped = clampSplitRatio(0.75, fullRow);
+    const width = parseFloat(screen.getAllByTestId('terminal-pane')[0].style.width);
+    expect(width).toBeCloseTo(clamped * fullRow, 0);
+    expect(width, 'the raw stored ratio was applied').toBeLessThan(0.75 * fullRow);
+  });
+
+  /** jsdom lays nothing out, so the pane is given the rectangle the gesture reads. */
+  const rectFor = (pane: HTMLElement) => {
+    (pane as any).getBoundingClientRect = () => ({
+      left: 0, top: 0, width: 600, height: 400, right: 600, bottom: 400, x: 0, y: 0, toJSON: () => ({}),
+    });
+  };
+
+  /**
+   * jsdom has no DragEvent, and fireEvent.drop does not carry clientX or a
+   * dataTransfer through - so the event React will actually read is built by
+   * hand. Without this the handler sees `undefined - undefined` and the test
+   * would pass by computing null, which proves nothing.
+   */
+  const dropOn = (pane: HTMLElement, dropped: string, clientX: number, clientY: number) => {
+    rectFor(pane);
+    const evt = new Event('drop', { bubbles: true, cancelable: true }) as any;
+    evt.clientX = clientX;
+    evt.clientY = clientY;
+    evt.dataTransfer = { getData: () => dropped };
+    pane.dispatchEvent(evt);
+  };
+
+  it('splits when a tab is dropped on a pane EDGE', () => {
+    const onToggleSplit = vi.fn();
+    renderTab(<TerminalTab {...withSplit(null)} onToggleSplit={onToggleSplit} sidebarWidthPx={224} />);
+    dropOn(screen.getAllByTestId('terminal-pane')[0], 's2', 595, 200);
+    expect(onToggleSplit, 'the right edge did not split').toHaveBeenCalledWith('s2');
+  });
+
+  it('does not split on a drop in the MIDDLE - that is a move', () => {
+    const onToggleSplit = vi.fn();
+    renderTab(<TerminalTab {...withSplit(null)} onToggleSplit={onToggleSplit} sidebarWidthPx={224} />);
+    dropOn(screen.getAllByTestId('terminal-pane')[0], 's2', 300, 200);
+    expect(onToggleSplit).not.toHaveBeenCalled();
+  });
+
+  it('will not split a pane with the session it already shows', () => {
+    const onToggleSplit = vi.fn();
+    renderTab(<TerminalTab {...withSplit(null)} onToggleSplit={onToggleSplit} sidebarWidthPx={224} />);
+    dropOn(screen.getAllByTestId('terminal-pane')[0], 's1', 595, 200);
+    expect(onToggleSplit).not.toHaveBeenCalled();
   });
 });
