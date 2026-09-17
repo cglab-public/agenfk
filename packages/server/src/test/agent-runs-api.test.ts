@@ -51,6 +51,47 @@ describe('agent-runs REST', () => {
     expect(list.body[0].sessionId).toBe('sess-1');
   });
 
+  it('REUSES the running run when the same session is registered again', async () => {
+    // The desktop re-registers every restored terminal on each launch. Without
+    // this, four launches left four `running` rows for one conversation and the
+    // Runs panel showed four copies of it.
+    const first = await agent().post('/agent-runs').send({
+      itemId: 'item-reuse', step: 'IN_PROGRESS', sessionId: 'sess-reuse', harness: 'pi',
+    });
+    expect(first.status).toBe(201);
+    const again = await agent().post('/agent-runs').send({
+      itemId: 'item-reuse', step: 'IN_PROGRESS', sessionId: 'sess-reuse', harness: 'pi',
+      sourcePath: '~/.pi/agent/sessions/*/*_sess-reuse.jsonl',
+    });
+    expect(again.status).toBe(200);
+    expect(again.body.id).toBe(first.body.id);
+    // The later registration still teaches the run where its transcript is.
+    expect(again.body.sourcePath).toBe('~/.pi/agent/sessions/*/*_sess-reuse.jsonl');
+    expect((await agent().get('/items/item-reuse/agent-runs')).body).toHaveLength(1);
+  });
+
+  it('opens a NEW run once the previous one for that session has ended', async () => {
+    const first = await agent().post('/agent-runs').send({
+      itemId: 'item-reopen', step: 'IN_PROGRESS', sessionId: 'sess-reopen',
+    });
+    await agent().patch(`/agent-runs/${first.body.id}`).send({ status: 'done' });
+    const second = await agent().post('/agent-runs').send({
+      itemId: 'item-reopen', step: 'IN_PROGRESS', sessionId: 'sess-reopen',
+    });
+    expect(second.status).toBe(201);
+    expect(second.body.id).not.toBe(first.body.id);
+  });
+
+  it('does NOT reuse a running run from a different card', async () => {
+    const first = await agent().post('/agent-runs').send({
+      itemId: 'item-a', step: 'IN_PROGRESS', sessionId: 'sess-shared',
+    });
+    const other = await agent().post('/agent-runs').send({
+      itemId: 'item-b', step: 'IN_PROGRESS', sessionId: 'sess-shared',
+    });
+    expect(other.body.id).not.toBe(first.body.id);
+  });
+
   it('rejects an invalid actor and a missing itemId', async () => {
     expect((await agent().post('/agent-runs').send({ itemId: 'i', step: 's', actor: 'nope' })).status).toBe(400);
     expect((await agent().post('/agent-runs').send({ step: 's' })).status).toBe(400);

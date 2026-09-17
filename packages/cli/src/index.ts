@@ -5,6 +5,7 @@ import figlet from 'figlet';
 import axios from 'axios';
 import { ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, isHubRelease, isUpgrade, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
 import { writeActiveWork } from './activeWork.js';
+import { resolveItemIdPrefix } from './resolveItemId.js';
 import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT, setTelemetryEnabled } from '@agenfk/telemetry';
 import { checkClaudeCodeEnforcement, checkPiEnforcement } from './enforcement.js';
 import { execSync, execFileSync, spawn, spawnSync } from 'child_process';
@@ -3441,8 +3442,20 @@ run
   .option('--source <path>', 'Absolute path of the worker session JSONL (for live tailing)')
   .action(async (o) => {
     try {
+      /*
+       * Resolve a short id first, for the same reason `run list` does: a run
+       * stored with a truncated itemId never matches its card, because the
+       * per-card route filters by exact id.
+       */
+      let itemId = o.item;
+      if (itemId.length < 36) {
+        const { data: allItems } = await axios.get(`${API_URL}/items`);
+        const resolved = resolveItemIdPrefix(allItems, itemId);
+        if (!resolved.ok) { console.error(chalk.red(resolved.error)); process.exit(1); }
+        itemId = resolved.id;
+      }
       const { data } = await axios.post(`${API_URL}/agent-runs`, {
-        itemId: o.item, step: o.step, projectId: o.project, actor: o.actor,
+        itemId, step: o.step, projectId: o.project, actor: o.actor,
         harness: o.harness, model: o.model, sessionId: o.session, sourcePath: o.source,
       });
       console.log(structuredOutput(data));
@@ -3515,7 +3528,20 @@ run
   .requiredOption('--item <id>', 'AgEnFK item id')
   .action(async (o) => {
     try {
-      const { data } = await axios.get(`${API_URL}/items/${o.item}/agent-runs`);
+      /*
+       * Resolve a short id the way `agenfk get` does. This passed the value
+       * straight to the route, which filters by EXACT item id - so
+       * `run list --item 2cab541e` returned [] for a card that had runs, and
+       * made a working registration look broken.
+       */
+      let itemId = o.item;
+      if (itemId.length < 36) {
+        const { data: allItems } = await axios.get(`${API_URL}/items`);
+        const resolved = resolveItemIdPrefix(allItems, itemId);
+        if (!resolved.ok) { console.error(chalk.red(resolved.error)); process.exit(1); }
+        itemId = resolved.id;
+      }
+      const { data } = await axios.get(`${API_URL}/items/${itemId}/agent-runs`);
       console.log(structuredOutput(data));
     } catch (error: any) {
       console.error(chalk.red('Error listing runs:'), error.response?.data?.error || error.message);

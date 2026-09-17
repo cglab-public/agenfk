@@ -2487,6 +2487,28 @@ app.post("/agent-runs", asyncHandler(async (req: any, res: any) => {
       return res.status(400).json({ error: `${field} must be a string` });
     }
   }
+  /*
+   * A re-registration of a session that is STILL RUNNING is the same dispatch
+   * seen again, not a second one.
+   *
+   * The desktop re-registers every restored terminal on launch, so a machine
+   * with four relaunches had four `running` rows for ONE conversation and the
+   * Runs panel showed four copies of it. Reuse the row and teach it the
+   * sourcePath this call carries (a later registration often has one the first
+   * did not). A different card, or a previous run that already ended, is a new
+   * dispatch and still gets its own row.
+   */
+  if (sessionId) {
+    const existing = await storage.getAgentRunBySession(sessionId);
+    if (existing && existing.status === 'running' && existing.itemId === itemId) {
+      const updated = sourcePath && sourcePath !== existing.sourcePath
+        ? await storage.updateAgentRun(existing.id, { sourcePath })
+        : existing;
+      io.emit('run:updated', { itemId: updated.itemId, runId: updated.id });
+      return res.status(200).json(updated);
+    }
+  }
+
   const run = await storage.createAgentRun({
     id: uuidv4(),
     itemId,
