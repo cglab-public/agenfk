@@ -1,7 +1,7 @@
 /**
  * Where the split divider may sit (b014cc86).
  *
- * The rule is a floor, not a preference: a pane below PANE_FLOOR_PX is not a
+ * The rule is a floor, not a preference: a pane below MIN_PANE_PX is not a
  * smaller terminal, it is one that wraps every line. So the divider STOPS at
  * the floor instead of pushing the other pane under it.
  *
@@ -11,8 +11,7 @@
  * the tests pin.
  */
 import { describe, it, expect } from 'vitest';
-import { clampSplitRatio, splitRatioBounds, splitRatioAt } from '../splitRatio';
-import { PANE_FLOOR_PX } from '../splitAvailability';
+import { clampSplitRatio, splitRatioBounds, splitRatioAt, MIN_PANE_PX } from '../splitRatio';
 
 describe('where the divider may sit', () => {
   it('leaves a comfortable ratio alone', () => {
@@ -22,19 +21,25 @@ describe('where the divider may sit', () => {
     expect(clampSplitRatio(0.6, 2000)).toBeCloseTo(0.6, 5);
   });
 
-  it('stops at the floor instead of pushing the other pane under it', () => {
-    // Dragged hard left: the left pane cannot go below the floor, so the ratio
-    // settles exactly at floor / width.
-    expect(clampSplitRatio(0.05, 1200)).toBeCloseTo(PANE_FLOOR_PX / 1200, 5);
-    // ...and symmetrically on the right.
-    expect(clampSplitRatio(0.99, 1200)).toBeCloseTo(1 - PANE_FLOOR_PX / 1200, 5);
+  it('stops only where the pane would stop existing', () => {
+    /*
+     * The floor used to be PANE_FLOOR_PX (592px, the 80-column width), which on
+     * a 1216px row left the divider a ~32px range - dragging left did nothing
+     * visible and read as 'the left side never changes'. What a narrow pane
+     * COSTS is said in the header now; this only keeps it real and grabbable.
+     */
+    expect(clampSplitRatio(0.01, 1200)).toBeCloseTo(MIN_PANE_PX / 1200, 5);
+    expect(clampSplitRatio(0.99, 1200)).toBeCloseTo(1 - MIN_PANE_PX / 1200, 5);
+    // And the range is wide: this is the bug the old floor caused.
+    const { min, max } = splitRatioBounds(1216);
+    expect(max - min, 'the divider can barely move').toBeGreaterThan(0.7);
   });
 
   it('stays centred when the window cannot fit two floors at all', () => {
     // Otherwise the clamp would invert - min above max - and the divider would
     // jump. The split control is already disabled in this state.
-    expect(clampSplitRatio(0.1, 2 * PANE_FLOOR_PX - 10)).toBe(0.5);
-    expect(clampSplitRatio(0.9, 2 * PANE_FLOOR_PX - 10)).toBe(0.5);
+    expect(clampSplitRatio(0.1, 2 * MIN_PANE_PX - 10)).toBe(0.5);
+    expect(clampSplitRatio(0.9, 2 * MIN_PANE_PX - 10)).toBe(0.5);
   });
 
   it('falls back to centred on a width it cannot trust', () => {
@@ -47,14 +52,14 @@ describe('where the divider may sit', () => {
 describe('the range the floor allows', () => {
   it('names both extremes', () => {
     const b = splitRatioBounds(1200);
-    expect(b.min).toBeCloseTo(PANE_FLOOR_PX / 1200, 5);
-    expect(b.max).toBeCloseTo(1 - PANE_FLOOR_PX / 1200, 5);
+    expect(b.min).toBeCloseTo(MIN_PANE_PX / 1200, 5);
+    expect(b.max).toBeCloseTo(1 - MIN_PANE_PX / 1200, 5);
   });
 
   it('collapses to centred when two floors do not fit', () => {
     // The range would invert, so there is no range - and the split control is
     // disabled in this state anyway.
-    expect(splitRatioBounds(2 * PANE_FLOOR_PX - 10)).toEqual({ min: 0.5, max: 0.5 });
+    expect(splitRatioBounds(2 * MIN_PANE_PX - 10)).toEqual({ min: 0.5, max: 0.5 });
   });
 });
 
@@ -66,7 +71,7 @@ describe('where the pointer is, as a ratio', () => {
 
   it('applies the same floor at the edges', () => {
     // Pointer at the very left: floored, not 0.
-    expect(splitRatioAt(100, 100, 1200)).toBeCloseTo(PANE_FLOOR_PX / 1200, 5);
-    expect(splitRatioAt(100 + 1200, 100, 1200)).toBeCloseTo(1 - PANE_FLOOR_PX / 1200, 5);
+    expect(splitRatioAt(100, 100, 1200)).toBeCloseTo(MIN_PANE_PX / 1200, 5);
+    expect(splitRatioAt(100 + 1200, 100, 1200)).toBeCloseTo(1 - MIN_PANE_PX / 1200, 5);
   });
 });

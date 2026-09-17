@@ -457,19 +457,26 @@ describe('the split divider', () => {
     expect(localStorage.getItem('agenfk_split_ratio')).not.toBeNull();
   });
 
-  it('clamps a STORED ratio to this window, not the one it was saved in', () => {
-    // A ratio saved on a wide row puts a pane under the 592 floor on a narrow
-    // one. The clamp has to happen at render, or the preference overrides the
-    // floor the whole feature exists to respect.
-    // The pane WIDTH is the thing to check now: the layout is rectangles, not
-    // flex-basis.
+  it('applies a stored ratio, and clamps only one that would erase a pane', () => {
+    /*
+     * The old floor (592px, the 80-column width) clamped 0.75 down and left the
+     * divider a ~32px range, which is why dragging left looked broken. A ratio
+     * that leaves both panes real is now honoured; only one that would erase a
+     * pane is clamped, and the header SAYS a pane got narrow.
+     */
+    const fullRow = 1600 - 224;
     localStorage.setItem('agenfk_split_ratio', '0.75');
     renderTab(<TerminalTab {...withSplit('s2')} onToggleSplit={vi.fn()} sidebarWidthPx={224} />);
+    expect(parseFloat(screen.getAllByTestId('terminal-pane')[0].style.width)).toBeCloseTo(0.75 * fullRow, 0);
+  });
+
+  it('clamps a stored ratio that would leave a pane with no width at all', () => {
     const fullRow = 1600 - 224;
-    const clamped = clampSplitRatio(0.75, fullRow);
-    const width = parseFloat(screen.getAllByTestId('terminal-pane')[0].style.width);
-    expect(width).toBeCloseTo(clamped * fullRow, 0);
-    expect(width, 'the raw stored ratio was applied').toBeLessThan(0.75 * fullRow);
+    const clamped = clampSplitRatio(0.999, fullRow);
+    localStorage.setItem('agenfk_split_ratio', '0.999');
+    renderTab(<TerminalTab {...withSplit('s2')} onToggleSplit={vi.fn()} sidebarWidthPx={224} />);
+    expect(parseFloat(screen.getAllByTestId('terminal-pane')[0].style.width)).toBeCloseTo(clamped * fullRow, 0);
+    expect(clamped).toBeLessThan(1);
   });
 
   /** jsdom lays nothing out, so the pane is given the rectangle the gesture reads. */
