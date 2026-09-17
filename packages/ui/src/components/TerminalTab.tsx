@@ -15,7 +15,7 @@ import React from 'react';
 import { clsx } from 'clsx';
 import { tabIndicator, tabDotClass } from '../tabState';
 import { WORKTREE_PANEL_PX } from '../splitAvailability';
-import { splitRatioAt, clampSplitRatio, splitRatioBounds, DEFAULT_SPLIT_RATIO } from '../splitRatio';
+import { clampSplitRatio, splitRatioBounds, DEFAULT_SPLIT_RATIO } from '../splitRatio';
 import { layoutPanes } from '../splitGeometry';
 import { dropZone, setRatioAtPath, ratioAtPath, type DropZone, type PaneTree, type SplitDirection } from '../splitTree';
 
