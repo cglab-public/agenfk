@@ -8,7 +8,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  splitLeaf, removeLeaf, moveLeaf, setRatioAtPath, dividerPathFor, pathToLeaf, replaceSession,
+  splitLeaf, removeLeaf, moveLeaf, setRatioAtPath, ratioAtPath, dividerPathFor, pathToLeaf, replaceSession,
   leaves, paneCount, dropZone,
   MAX_PANES, NARROW_PANE_PX, TAB_STRIP_PX,
   type PaneTree,
@@ -149,5 +149,17 @@ describe('the floor advises, it does not refuse', () => {
     // this module returns null because of it.
     expect(NARROW_PANE_PX).toBeGreaterThan(0);
     expect(splitLeaf(leaf('a'), 'a', 'horizontal', 'b')).not.toBeNull();
+  });
+});
+
+describe('reading a divider back', () => {
+  it('returns the ratio of the split at the path, not the outermost', () => {
+    const t = splitLeaf(splitLeaf(leaf('a'), 'a', 'horizontal', 'b')!, 'b', 'vertical', 'c')!;
+    expect(ratioAtPath(t, [])).toBe(0.5);
+    expect(ratioAtPath(setRatioAtPath(t, [1], 0.25), [1])).toBe(0.25);
+  });
+  it('is null for a leaf, and for a path that does not exist', () => {
+    expect(ratioAtPath(leaf('a'), [])).toBeNull();
+    expect(ratioAtPath(leaf('a'), [0, 0])).toBeNull();
   });
 });

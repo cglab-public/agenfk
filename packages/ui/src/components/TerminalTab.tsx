@@ -17,7 +17,7 @@ import { tabIndicator, tabDotClass } from '../tabState';
 import { WORKTREE_PANEL_PX } from '../splitAvailability';
 import { splitRatioAt, clampSplitRatio, splitRatioBounds, DEFAULT_SPLIT_RATIO } from '../splitRatio';
 import { layoutPanes } from '../splitGeometry';
-import { dropZone, type DropZone, type PaneTree, type SplitDirection } from '../splitTree';
+import { dropZone, setRatioAtPath, ratioAtPath, type DropZone, type PaneTree, type SplitDirection } from '../splitTree';
 
 /** The drag payload: which session a tab is carrying. */
 export const SESSION_DRAG_MIME = 'application/x-agenfk-session';
@@ -144,6 +144,24 @@ export interface TerminalTabProps {
    * time and costs a pane to undo.
    */
   readonly splitId?: string | null;
+  /**
+   * The layout AS A TREE, owned by the shell (7a717cb8, 3b).
+   *
+   * When provided this is AUTHORITATIVE: it can hold any number of leaves and
+   * nest, which the `splitId` pair cannot. When absent, the pair below is
+   * derived from `activeId`/`splitId` so a caller that only ever wanted two
+   * panes keeps working unchanged.
+   */
+  readonly paneTree?: PaneTree | null;
+  /** The tree, after a split, a move or a divider drag. */
+  readonly onPaneTreeChange?: (tree: PaneTree | null) => void;
+  /**
+   * A tab was dropped on a pane EDGE. The shell applies it to the tree.
+   *
+   * Separate from `onToggleSplit` because the pair could only ever toggle, and
+   * a drop on the third pane of a nested tree is neither a toggle nor a pair.
+   */
+  readonly onDropSession?: (draggedId: string, targetId: string, zone: DropZone) => void;
   /** Ask the shell to split with, or unsplit from, this session. */
   /**
    * Ask the shell to split with this session, ON THIS EDGE.
@@ -287,6 +305,9 @@ export function TerminalTab({
   sessions,
   sessionStates,
   splitId,
+  paneTree,
+  onPaneTreeChange,
+  onDropSession,
   onToggleSplit,
   splitDirection = 'horizontal',
   splitDisabledReason,
@@ -377,62 +398,18 @@ export function TerminalTab({
     return () => ro.disconnect();
   }, [sessions.length]);
 
-  /** The extent a ratio is measured against: the WIDTH or the HEIGHT. */
-  const splitExtent = splitDirection === 'vertical'
-    ? (rowSize.height || (typeof window !== 'undefined' ? window.innerHeight : 0))
-    : paneRowPx;
-  const moveSplitTo = React.useCallback((pointer: number, vertical: boolean): void => {
-    const rect = splitRowRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    // No write here: a drag emits hundreds of moves and only the last matters.
-    // The preference is persisted when the drag ends.
-    setSplitRatio(vertical
-      ? splitRatioAt(pointer, rect.top, rect.height)
-      : splitRatioAt(pointer, rect.left, rect.width));
-  }, []);
-  const nudgeSplit = React.useCallback((delta: number): void => {
-    // From the SHOWN ratio, not the stored one: a ratio saved on a wider row is
-    // already clamped for this one, and nudging the raw value would make the
-    // first keypress a no-op that silently overwrites the preference.
-    // Clamped against the DERIVED width, not a rect that may be zero-sized.
-    const next = clampSplitRatio(shownRatio + delta, splitExtent);
-    setSplitRatio(next);
-    writeSplitRatio(next);
-  }, [shownRatio, splitExtent]);
   const persistSplit = React.useCallback((): void => {
     draggingDivider.current = false;
     setSplitRatio(current => { writeSplitRatio(current); return current; });
   }, []);
   /*
-   * The two panes on screen, in tab order. The LEADING one takes the ratio and
-   * the trailing one takes what is left, so the divider is the boundary
-   * between them rather than a thing that has to be positioned separately.
+   * The tree this component draws. The SHELL's tree when it provides one -
+   * that is what 3b is: more than two leaves, nested, a divider per split. The
+   * pair derived from `splitId`/`activeId` is the fallback for a caller that
+   * only ever wanted two panes, and it is a one-split tree like any other, so
+   * there is no second rendering path.
    */
-  const visiblePaneIds = splitId
-    ? sessions.filter(s => s.id === activeId || s.id === splitId).map(s => s.id)
-    : [];
-  const showDivider = splitId != null && visiblePaneIds.length === 2;
-  /*
-   * Gated on `showDivider`, NOT on `splitId`. A splitId can dangle (the split
-   * pane's tab was closed, or it IS the active pane), and giving the lone pane
-   * a 50% basis then would collapse the terminal to half the row with no
-   * divider on screen to drag it back. Before this style existed the dangling
-   * id was a harmless no-op, so the gate is what keeps it one.
-   */
-  const leadingPaneId = showDivider ? visiblePaneIds[0] : null;
-  // A session exiting mid-drag removes the divider, and a detached node never
-  // delivers lostpointercapture to React. Clearing here keeps a remount from
-  // inheriting an armed drag.
-  React.useEffect(() => {
-    if (!showDivider) draggingDivider.current = false;
-  }, [showDivider]);
-  /*
-   * The layout as a tree. For now it is the pair the Split control asks for -
-   * the nested/multi-leaf case is what the drag zones add next, and it lands in
-   * the SAME two functions (`splitLeaf`/`layoutPanes`) rather than a second
-   * rendering path.
-   */
-  const paneTree: PaneTree = splitId && activeId && splitId !== activeId
+  const derivedPair: PaneTree = splitId && activeId && splitId !== activeId
     ? {
         type: 'split', direction: splitDirection,
         first: { type: 'leaf', sessionId: activeId },
@@ -440,13 +417,32 @@ export function TerminalTab({
         ratio: shownRatio,
       }
     : { type: 'leaf', sessionId: activeId ?? '' };
+  const owningTree: PaneTree = paneTree !== undefined
+    ? (paneTree ?? { type: 'leaf', sessionId: activeId ?? '' })
+    : derivedPair;
+  const showDivider = owningTree.type === 'split';
+  // A session exiting mid-drag removes the divider, and a detached node never
+  // delivers lostpointercapture to React. Clearing here keeps a remount from
+  // inheriting an armed drag.
+  React.useEffect(() => {
+    if (!showDivider) draggingDivider.current = false;
+  }, [showDivider]);
   // Fallbacks cover the first paint (and jsdom, whose clientHeight is 0): the
   // window is the closest honest guess before the row has been measured.
   const layout = layoutPanes(
-    paneTree,
+    owningTree,
     rowSize.width || paneRowPx,
     rowSize.height || (typeof window !== 'undefined' ? window.innerHeight : 0),
   );
+  /**
+   * Write a ratio into the tree, measured in the split that divider belongs to.
+   * The shell owns the tree when it provides one; otherwise this is the pair's
+   * single preference, persisted on release.
+   */
+  const applyRatio = React.useCallback((path: readonly number[], ratio: number): void => {
+    if (paneTree !== undefined) onPaneTreeChange?.(setRatioAtPath(owningTree, path, ratio));
+    else setSplitRatio(clampSplitRatio(ratio, paneRowPx));
+  }, [paneTree, onPaneTreeChange, owningTree, paneRowPx]);
   /** Fitted and narrow: said, never refused. */
   const anyNarrow = layout.panes.some(p => p.narrow);
   const rectFor = new Map(layout.panes.map(p => [p.sessionId, p]));
@@ -798,7 +794,12 @@ export function TerminalTab({
             if (!dropped || dropped === session.id) return;
             const box = e.currentTarget.getBoundingClientRect();
             const zone = dropZone(box.width, box.height, e.clientX - box.left, e.clientY - box.top);
-            if (zone) onToggleSplit?.(dropped, zone.direction);
+            if (!zone) return;
+            // The shell's tree when there is one: a drop on the third pane of a
+            // nested tree is a split or a move at THAT pane, not a toggle of
+            // the pair.
+            if (onDropSession) onDropSession(dropped, session.id, zone);
+            else onToggleSplit?.(dropped, zone.direction);
           }}
           className={clsx('min-h-0', rect ? 'absolute overflow-hidden bg-canvas' : 'flex-1')}
           /* Inline style only, never a DOM move: re-parenting a pane would
@@ -837,30 +838,44 @@ export function TerminalTab({
         );
       })}
 
-      {/* The divider itself (b014cc86). An ABSOLUTE overlay on the seam rather
-          than a flex child, because inserting an element between two mapped
-          panes would change their parent and unmount them. Pointer events, so
-          mouse and touch share one path; the arrows move it without a drag. */}
-      {showDivider && (() => {
-        // The axis follows the SPLIT, not a constant: a stacked pair has a
+      {/* ONE DIVIDER PER SPLIT (7a717cb8, 3b). An ABSOLUTE overlay on the seam
+          rather than a flex child, because inserting an element between two
+          mapped panes would change their parent and unmount them. Pointer
+          events, so mouse and touch share one path; the arrows move it without
+          a drag. Each one writes only ITS OWN node's ratio, measured in that
+          node's rect, so a nested boundary moves the nested panes. */}
+      {layout.dividers.map(d => {
+        // The axis follows the SPLIT, not a constant: a stacked split has a
         // horizontal boundary and a row-resize cursor, and the drag reads the
         // pointer on the other coordinate.
-        const vertical = splitDirection === 'vertical';
+        const vertical = d.direction === 'vertical';
+        const ratio = paneTree !== undefined ? (ratioAtPath(owningTree, d.path) ?? 0.5) : shownRatio;
+        const min = paneTree !== undefined ? 0.02 : ratioBounds.min;
+        const max = paneTree !== undefined ? 0.98 : ratioBounds.max;
+        // Relative to THIS split's rect, never the window - a nested divider
+        // dragged as if it were the root moves the wrong boundary.
+        const ratioAtPointer = (clientX: number, clientY: number): number =>
+          vertical
+            ? (clientY - d.parent.y) / d.parent.height
+            : (clientX - d.parent.x) / d.parent.width;
         return (
         <div
+          key={d.path.length ? d.path.join('.') : 'root'}
           role="separator"
           aria-orientation={vertical ? 'horizontal' : 'vertical'}
           aria-label="Resize the two terminals"
-          aria-valuenow={Math.round(shownRatio * 100)}
-          aria-valuemin={Math.round(ratioBounds.min * 100)}
-          aria-valuemax={Math.round(ratioBounds.max * 100)}
+          aria-valuenow={Math.round(ratio * 100)}
+          aria-valuemin={Math.round(min * 100)}
+          aria-valuemax={Math.round(max * 100)}
           tabIndex={0}
           data-testid="terminal-split-divider"
           className={clsx(
             'absolute z-10 touch-none bg-transparent transition-colors hover:bg-brand/40 focus-visible:bg-brand/40 focus-visible:outline-none',
-            vertical ? 'inset-x-0 -mt-1 h-2 cursor-row-resize' : 'inset-y-0 -ml-1 w-2 cursor-col-resize',
+            vertical ? 'cursor-row-resize' : 'cursor-col-resize',
           )}
-          style={vertical ? { top: `${shownRatio * 100}%` } : { left: `${shownRatio * 100}%` }}
+          style={vertical
+            ? { left: d.x, top: d.y - 2, width: d.length, height: 4 }
+            : { left: d.x - 2, top: d.y, width: 4, height: d.length }}
           onPointerDown={e => {
             // Primary button only: a right-click should open its menu, not arm
             // a drag that the next move would then run with.
@@ -875,7 +890,7 @@ export function TerminalTab({
             // pointerup (cancelled, released off-window), and following an
             // unpressed cursor is the stuck-drag bug.
             if (e.buttons === 0) { persistSplit(); return; }
-            moveSplitTo(vertical ? e.clientY : e.clientX, vertical);
+            applyRatio(d.path, ratioAtPointer(e.clientX, e.clientY));
           }}
           onPointerUp={e => {
             e.currentTarget.releasePointerCapture?.(e.pointerId);
@@ -888,12 +903,12 @@ export function TerminalTab({
             const step = e.shiftKey ? 0.1 : 0.02;
             const back = vertical ? 'ArrowUp' : 'ArrowLeft';
             const on = vertical ? 'ArrowDown' : 'ArrowRight';
-            if (e.key === back) { e.preventDefault(); nudgeSplit(-step); }
-            if (e.key === on) { e.preventDefault(); nudgeSplit(step); }
+            if (e.key === back) { e.preventDefault(); applyRatio(d.path, ratio - step); }
+            if (e.key === on) { e.preventDefault(); applyRatio(d.path, ratio + step); }
           }}
         />
         );
-      })()}
+      })}
       </div>
 
       {/* Asks about the session you are LOOKING at, not all of them: the panel

@@ -70,6 +70,21 @@ describe('the dividers, addressed by the split they belong to', () => {
     expect(dividers.find(d => d.path.length === 0)).toMatchObject({ direction: 'horizontal', x: 500, length: 400 });
     expect(dividers.find(d => d.path.length === 1)).toMatchObject({ direction: 'vertical', x: 500, y: 200, length: 500 });
   });
+
+  it('carries the rect of the split it lives in, so a drag can be measured there', () => {
+    // A ratio is relative to ITS OWN node, not to the window. Without the
+    // parent's extent a nested divider can only be dragged as if it were the
+    // root - which moves the wrong boundary once the tree is more than one
+    // split deep.
+    const t = splitLeaf(two(), 'b', 'vertical', 'c')!;
+    const { dividers } = layoutPanes(t, 1000, 400);
+    expect(dividers.find(d => d.path.length === 0)).toMatchObject({
+      parent: { x: 0, y: 0, width: 1000, height: 400 },
+    });
+    expect(dividers.find(d => d.path.length === 1)).toMatchObject({
+      parent: { x: 500, y: 0, width: 500, height: 400 },
+    });
+  });
 });
 
 describe('narrow is advice, not a gate', () => {

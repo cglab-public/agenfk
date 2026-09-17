@@ -7,6 +7,7 @@ import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { TerminalTab } from '../components/TerminalTab';
 import { clampSplitRatio } from '../splitRatio';
+import { splitLeaf, type PaneTree } from '../splitTree';
 import { api } from '../api';
 
 vi.mock('../api', () => ({ api: { getGitStatus: vi.fn() } }));
@@ -571,5 +572,62 @@ describe('the split divider', () => {
     renderTab(<TerminalTab {...withSplit(null)} onToggleSplit={onToggleSplit} sidebarWidthPx={224} />);
     dropOn(screen.getAllByTestId('terminal-pane')[0], 's1', 595, 200);
     expect(onToggleSplit).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The tree owns the layout (7a717cb8, 3b).
+ *
+ * Two panes were the ceiling because the shell kept a `splitId`: one id, one
+ * direction, one divider. The shape above is a binary tree, so the partition
+ * works at three panes and nests - and every split gets its OWN divider, whose
+ * ratio is measured in its own node rather than in the window.
+ */
+describe('a pane tree of more than two', () => {
+  beforeEach(() => { Object.defineProperty(window, 'innerWidth', { value: 1600, configurable: true }); });
+
+  const sessions = () => [
+    { id: 's1', itemId: 'i1', title: 'A card', agentId: 'claude-code', autoApprove: false, persist: false, openedAt: new Date().toISOString() },
+    { id: 's2', itemId: 'i2', title: 'Another card', agentId: 'codex', autoApprove: false, persist: false, openedAt: new Date().toISOString() },
+    { id: 's3', itemId: 'i3', title: 'A third card', agentId: 'pi', autoApprove: false, persist: false, openedAt: new Date().toISOString() },
+  ];
+  /* a | (b / c) - the nested case the pair could not express. */
+  const nested = () => {
+    let t: PaneTree = { type: 'leaf', sessionId: 's1' };
+    t = splitLeaf(t, 's1', 'horizontal', 's2')!;
+    return splitLeaf(t, 's2', 'vertical', 's3')!;
+  };
+  const treeProps = () => ({
+    ...baseProps(),
+    sessions: sessions(),
+    activeId: 's1',
+    paneTree: nested(),
+    onPaneTreeChange: vi.fn(),
+    onDropSession: vi.fn(),
+  });
+
+  it('draws every leaf, and one divider per split', () => {
+    const { container } = renderTab(<TerminalTab {...treeProps()} />);
+    const visible = [...container.querySelectorAll('[data-testid="terminal-pane"]')]
+      .filter(p => !p.hasAttribute('hidden'));
+    expect(visible, 'not every pane in the tree reached the screen').toHaveLength(3);
+    // One per split, not one for the pair: the nested boundary needs its own.
+    expect(screen.getAllByTestId('terminal-split-divider')).toHaveLength(2);
+  });
+
+  it('routes a drop on a pane edge to the tree, carrying the edge', () => {
+    const onDropSession = vi.fn();
+    renderTab(<TerminalTab {...treeProps()} onDropSession={onDropSession} />);
+    const pane = screen.getAllByTestId('terminal-pane')[0];
+    (pane as any).getBoundingClientRect = () => ({
+      left: 0, top: 0, width: 600, height: 400, right: 600, bottom: 400, x: 0, y: 0, toJSON: () => ({}),
+    });
+    // s3 is not in the tree; dropping it here SPLITS s1. The right edge is
+    // horizontal-after, which is what the shell turns into splitLeaf.
+    const evt = new Event('drop', { bubbles: true, cancelable: true }) as any;
+    evt.clientX = 595; evt.clientY = 200;
+    evt.dataTransfer = { getData: () => 's3' };
+    act(() => { pane.dispatchEvent(evt); });
+    expect(onDropSession).toHaveBeenCalledWith('s3', 's1', { direction: 'horizontal', placement: 'after' });
   });
 });

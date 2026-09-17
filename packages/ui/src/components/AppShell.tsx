@@ -39,7 +39,8 @@ import { NewProjectButton } from './NewProjectButton';
 import { api } from '../api';
 import type { AgEnFKItem, Project } from '../types';
 import { TerminalTab, type TerminalSession } from './TerminalTab';
-import type { SplitDirection } from '../splitTree';
+import { treeForDrop, treeForToggle, pruneTree, treeForFocus } from '../paneLayout';
+import type { PaneTree, DropZone, SplitDirection } from '../splitTree';
 import { withItemBranches } from '../sessionBranch';
 import { NewTerminalDialog } from './NewTerminalDialog';
 import {
@@ -367,13 +368,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
      */
     return focusedItemId ? focusedItemId.split('#')[0] : null;
   }, [sessions, activeSession, focusedItemId]);
-  /** The second terminal on screen, or null. See TerminalTab for the fit rules. */
-  const [splitSession, setSplitSession] = React.useState<string | null>(null);
   /**
-   * Which way that pair is split. Kept beside the id because the id cannot say
-   * it, and dropping a tab on the BOTTOM edge has to stack (7a717cb8).
+   * The pane layout, as a TREE, owned here (7a717cb8, 3b).
+   *
+   * It replaced a `splitId`/`splitDirection` pair, and the reason is the
+   * ceiling that pair imposed: one id cannot describe three panes, and one
+   * direction cannot describe a boundary that points a different way three
+   * panes down. The shell owns it because which panes belong together is the
+   * person's decision and the shell is the only thing that knows what else is
+   * open - never derived from fan-out.
+   *
+   * Null means "no explicit arrangement": the pane showing the active session
+   * is the whole layout. TerminalTab draws that single leaf itself, so nothing
+   * here has to seed it on open.
    */
-  const [splitDirection, setSplitDirection] = React.useState<SplitDirection>('horizontal');
+  const [paneTree, setPaneTree] = React.useState<PaneTree | null>(null);
 
   /*
    * The card whose fan-out is being planned, or null (CGLAB-207).
@@ -955,6 +964,45 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setActiveSession(sessions.at(-1)?.id ?? null);
   }, [sessions, activeSession]);
 
+  /**
+   * A closed tab leaves the tree (7a717cb8).
+   *
+   * The arrangement is the person's, so it is not thrown away when one pane
+   * goes: its leaf collapses into the sibling and every other boundary stays
+   * where it was. Null only when the LAST pane went.
+   */
+  React.useEffect(() => {
+    setPaneTree(prev => pruneTree(prev, id => sessions.some(s => s.id === id)));
+  }, [sessions]);
+
+  /**
+   * A tab dropped on a pane edge: split there, or MOVE it there if it is
+   * already a pane. Moving is what keeps a nested arrangement reachable -
+   * without it the only way to a new shape is closing panes and starting over.
+   */
+  const applyDrop = React.useCallback((draggedId: string, targetId: string, zone: DropZone): void => {
+    setPaneTree(prev => treeForDrop(prev, activeSession, draggedId, targetId, zone));
+  }, [activeSession]);
+
+  /** The tab strip's Split control: add beside the focused pane, or take it out. */
+  const toggleSplit = React.useCallback((sessionId: string, direction: SplitDirection): void => {
+    setPaneTree(prev => treeForToggle(prev, activeSession, sessionId, direction));
+  }, [activeSession]);
+
+  /**
+   * Focusing a tab that is NOT on screen shows it in the focused pane.
+   *
+   * In an EFFECT rather than in each caller, so a tab opened by the restore
+   * path or the new-terminal dialog lands in a pane too - not only a click on
+   * the strip.
+   */
+  const prevActiveRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    const prev = prevActiveRef.current;
+    prevActiveRef.current = activeSession;
+    setPaneTree(tree => treeForFocus(tree, prev, activeSession));
+  }, [activeSession]);
+
 
   /**
    * Terminals from last time, put back with their conversations.
@@ -1399,17 +1447,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 sessions={sessions}
                 sessionStates={sessionStates}
                 /*
-                 * The second pane is ASKED FOR, never automatic (CGLAB-192).
-                 * Three agents running does not mean two panes open: only a
-                 * person knows which pair belongs side by side, and guessing
-                 * is wrong most of the time and costs a pane to undo.
+                 * The layout is a TREE, owned here (7a717cb8, 3b). The pair
+                 * the Split control asks for is one split in it; a drop on a
+                 * pane edge adds or moves a leaf, and each split draws its own
+                 * divider, so the arrangement can nest.
                  */
-                splitId={splitSession}
-                splitDirection={splitDirection}
-                onToggleSplit={(id, direction) => {
-                  setSplitSession(cur => (cur === id ? null : id));
-                  setSplitDirection(direction);
-                }}
+                paneTree={paneTree}
+                onPaneTreeChange={setPaneTree}
+                onDropSession={applyDrop}
+                onToggleSplit={toggleSplit}
                 /*
                  * The REAL width, not the old fixed 224. TerminalTab computes
                  * how many COLUMNS fit from this, so a resizable sidebar feeding

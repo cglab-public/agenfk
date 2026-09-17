@@ -33,6 +33,14 @@ export interface DividerInfo {
   readonly y: number;
   /** Its length: the pane extent it separates. */
   readonly length: number;
+  /**
+   * The rect of the split this divider belongs to.
+   *
+   * A ratio is relative to ITS OWN node, not to the window. Without this a
+   * nested divider can only be dragged as if it were the root, which moves the
+   * wrong boundary as soon as the tree is more than one split deep.
+   */
+  readonly parent: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
 }
 
 export interface SplitLayout {
@@ -71,15 +79,16 @@ export function layoutPanes(
       return;
     }
     const ratio = Math.min(MAX_RATIO, Math.max(MIN_RATIO, node.ratio));
+    const parent = { x, y, width: w, height: h };
     if (node.direction === 'horizontal') {
       const firstW = w * ratio;
       walk(node.first, x, y, firstW, h, [...path, 0]);
-      dividers.push({ path, direction: 'horizontal', x: x + firstW, y, length: h });
+      dividers.push({ path, direction: 'horizontal', x: x + firstW, y, length: h, parent });
       walk(node.second, x + firstW, y, w - firstW, h, [...path, 1]);
     } else {
       const firstH = h * ratio;
       walk(node.first, x, y, w, firstH, [...path, 0]);
-      dividers.push({ path, direction: 'vertical', x, y: y + firstH, length: w });
+      dividers.push({ path, direction: 'vertical', x, y: y + firstH, length: w, parent });
       walk(node.second, x, y + firstH, w, h - firstH, [...path, 1]);
     }
   };

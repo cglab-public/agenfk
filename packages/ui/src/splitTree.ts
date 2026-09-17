@@ -183,6 +183,14 @@ export function setRatioAtPath(tree: PaneTree, path: readonly number[], ratio: n
     : { ...tree, second: setRatioAtPath(tree.second, rest, clamped) };
 }
 
+/** The ratio of the split at `path`, for a divider's aria value. Null when there is no split there. */
+export function ratioAtPath(tree: PaneTree, path: readonly number[]): number | null {
+  if (path.length === 0) return tree.type === 'split' ? tree.ratio : null;
+  if (tree.type === 'leaf') return null;
+  const [head, ...rest] = path;
+  return head === 0 ? ratioAtPath(tree.first, rest) : ratioAtPath(tree.second, rest);
+}
+
 export interface DropZone {
   readonly direction: SplitDirection;
   readonly placement: 'before' | 'after';
