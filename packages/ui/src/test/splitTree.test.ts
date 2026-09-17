@@ -8,7 +8,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  splitLeaf, removeLeaf, moveLeaf, setRatioAtPath, dividerPathFor, pathToLeaf,
+  splitLeaf, removeLeaf, moveLeaf, setRatioAtPath, dividerPathFor, pathToLeaf, replaceSession,
   leaves, paneCount, dropZone,
   MAX_PANES, NARROW_PANE_PX, TAB_STRIP_PX,
   type PaneTree,
@@ -73,6 +73,18 @@ describe('moving a pane', () => {
   it('drops it beside another one', () => {
     const t = splitLeaf(splitLeaf(leaf('a'), 'a', 'horizontal', 'b')!, 'b', 'vertical', 'c')!;
     expect(leaves(moveLeaf(t, 'c', 'a', 'vertical', 'after')!)).toEqual(['a', 'c', 'b']);
+  });
+});
+
+describe('choosing a different session in a pane', () => {
+  it('keeps the SHAPE - the boundaries stay where they were', () => {
+    // Picking another tab must not throw the arrangement away: the pane that
+    // had the focus shows the new session and the splits are untouched.
+    const t = splitLeaf(splitLeaf(leaf('a'), 'a', 'horizontal', 'b')!, 'b', 'vertical', 'c')!;
+    const swapped = replaceSession(t, 'c', 'z') as any;
+    expect(leaves(swapped)).toEqual(['a', 'b', 'z']);
+    expect(swapped.first, 'the shape changed').toEqual((t as any).first);
+    expect(swapped.second.direction).toBe('vertical');
   });
 });
 

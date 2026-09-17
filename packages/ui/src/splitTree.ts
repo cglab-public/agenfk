@@ -159,6 +159,19 @@ export function dividerPathFor(tree: PaneTree, sessionId: string): number[] | nu
   return path && path.length > 0 ? path.slice(0, -1) : null;
 }
 
+/**
+ * Swap one session for another in place, keeping the shape.
+ *
+ * Choosing a DIFFERENT tab must not throw the arrangement away: the pane that
+ * had the focus shows the new session, and the boundaries stay where they were.
+ */
+export function replaceSession(tree: PaneTree, oldId: string, newId: string): PaneTree {
+  if (tree.type === 'leaf') {
+    return tree.sessionId === oldId ? { type: 'leaf', sessionId: newId } : tree;
+  }
+  return { ...tree, first: replaceSession(tree.first, oldId, newId), second: replaceSession(tree.second, oldId, newId) };
+}
+
 /** Set the ratio of the split at `path` (the divider's own node). */
 export function setRatioAtPath(tree: PaneTree, path: readonly number[], ratio: number): PaneTree {
   const clamped = Math.min(1, Math.max(0, ratio));
