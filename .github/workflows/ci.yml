@@ -47,5 +47,21 @@ jobs:
       - name: Test
         run: npm test
 
+      #
+      # THE UI SPECS, in their own step (BUG 66dee896).
+      #
+      # They were excluded from `npm test` by a performance commit (218s -> 58s)
+      # and the exclusion became a coverage hole: the terminal panes, the split,
+      # the fleet sheet and the shell itself ran only when somebody remembered
+      # to `cd packages/ui`, while the workflow reported a green suite over a
+      # surface it never entered.
+      #
+      # Their OWN config, not the root one: the ui package sets `environment:
+      # jsdom`, its own setup file and the react plugin, and under the root's
+      # node environment these files fail in the hundreds. The package already
+      # had a `test` script - nothing ran it.
+      - name: Test UI (packages/ui)
+        run: npm test -w packages/ui
+
       - name: Home-integrity verify (item 9c297075)
         run: node scripts/home-integrity.mjs verify
