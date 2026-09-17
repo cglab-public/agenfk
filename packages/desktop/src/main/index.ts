@@ -443,7 +443,7 @@ async function boot(): Promise<void> {
             try {
               const res = await httpGet(port, `/items/${encodeURIComponent(itemId)}`);
               const item = res?.body ? JSON.parse(res.body) : null;
-              await httpPost(port, '/agent-runs', {}, JSON.stringify({
+              const posted = await httpPost(port, '/agent-runs', {}, JSON.stringify({
                 itemId,
                 projectId: item?.projectId,
                 step: item?.status ?? 'IN_PROGRESS',
@@ -453,6 +453,15 @@ async function boot(): Promise<void> {
                 sessionId: agentSessionId,
                 sourcePath: agentRunSourcePath(agentId, agentSessionId),
               }));
+              /*
+               * CHECKED, not assumed. `httpPost` RESOLVES null on a failure
+               * rather than rejecting, so an unexamined await made a refused
+               * registration invisible: no run, no error, nothing to look at.
+               */
+              if (!posted || posted.status >= 300) {
+                console.warn('[DESKTOP] could not register the run:',
+                  posted ? `${posted.status} ${posted.body}` : 'no response from the server');
+              }
             } catch (e) {
               console.warn('[DESKTOP] could not register the run:', (e as Error)?.message);
             }
