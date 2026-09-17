@@ -3,8 +3,12 @@ name: CI
 on:
   push:
     branches: [main]
+  # No `branches:` filter on pull_request, deliberately. That filter matches the
+  # PR's BASE branch, so it silently skipped every PR stacked on another PR's
+  # branch — the mid-stack layers got no CI at all while the bottom one looked
+  # fine. Deviations from a green run then had to be spotted by hand. Keep it
+  # unfiltered so every layer of a stack is checked.
   pull_request:
-    branches: [main]
 
 # Least privilege for GITHUB_TOKEN. Without this block a public repo's token
 # takes the broad default scope, so a compromised action or dependency in the

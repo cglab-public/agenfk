@@ -14,8 +14,9 @@ name: "CodeQL Advanced"
 on:
   push:
     branches: [ "main" ]
+  # Unfiltered for the same reason as ci.yml: `branches:` matches the PR's base
+  # branch, so a PR stacked on another PR's branch was never scanned at all.
   pull_request:
-    branches: [ "main" ]
   schedule:
     - cron: '41 15 * * 0'
 
