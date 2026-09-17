@@ -17,7 +17,7 @@ import { tabIndicator, tabDotClass } from '../tabState';
 import { WORKTREE_PANEL_PX } from '../splitAvailability';
 import { clampSplitRatio, splitRatioBounds, DEFAULT_SPLIT_RATIO } from '../splitRatio';
 import { layoutPanes } from '../splitGeometry';
-import { dropZone, setRatioAtPath, ratioAtPath, type DropZone, type PaneTree, type SplitDirection } from '../splitTree';
+import { dropZone, setRatioAtPath, ratioAtPath, leaves, type DropZone, type PaneTree, type SplitDirection } from '../splitTree';
 
 /** The drag payload: which session a tab is carrying. */
 export const SESSION_DRAG_MIME = 'application/x-agenfk-session';
@@ -421,6 +421,8 @@ export function TerminalTab({
     ? (paneTree ?? { type: 'leaf', sessionId: activeId ?? '' })
     : derivedPair;
   const showDivider = owningTree.type === 'split';
+  /** Which sessions a pane is showing right now. */
+  const paneIds = React.useMemo(() => new Set(leaves(owningTree)), [owningTree]);
   // A session exiting mid-drag removes the divider, and a detached node never
   // delivers lostpointercapture to React. Clearing here keeps a remount from
   // inheriting an armed drag.
@@ -686,7 +688,10 @@ export function TerminalTab({
                  * there would be noise rather than instruction.
                  */
                 if (session.id === activeId) return null;
-                const isSplit = session.id === splitId;
+                // A pane is a LEAF OF THE TREE, not "the second id". Reading
+                // splitId here said "Split with" on a tab that clicking would
+                // actually REMOVE - the control misdescribing its own action.
+                const isSplit = paneIds.has(session.id);
                 const blocked = !isSplit && (splitDisabledReason ?? splitBlocked);
                 return (
                   <button
@@ -757,7 +762,7 @@ export function TerminalTab({
       <div className="flex min-h-0 flex-1">
       <div
         ref={splitRowRef}
-        className={clsx('relative min-w-0 flex-1', splitId && 'bg-border-soft')}
+        className={clsx('relative min-w-0 flex-1', showDivider && 'bg-border-soft')}
       >
       {sessions.map(session => {
         const rect = rectFor.get(session.id);

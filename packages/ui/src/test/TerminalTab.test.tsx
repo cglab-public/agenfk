@@ -604,6 +604,7 @@ describe('a pane tree of more than two', () => {
     paneTree: nested(),
     onPaneTreeChange: vi.fn(),
     onDropSession: vi.fn(),
+    onToggleSplit: vi.fn(),
   });
 
   it('draws every leaf, and one divider per split', () => {
@@ -613,6 +614,18 @@ describe('a pane tree of more than two', () => {
     expect(visible, 'not every pane in the tree reached the screen').toHaveLength(3);
     // One per split, not one for the pair: the nested boundary needs its own.
     expect(screen.getAllByTestId('terminal-split-divider')).toHaveLength(2);
+  });
+
+  it('says a pane tab is a PANE, not "split with"', () => {
+    // The strip read `splitId` to decide this, and the shell no longer passes
+    // one - so every pane tab would have said "Split with X" while clicking it
+    // REMOVED the pane. The label has to describe the action it performs.
+    renderTab(<TerminalTab {...treeProps()} />);
+    const controls = screen.getAllByTestId('tab-split');
+    expect(controls.length).toBeGreaterThan(0);
+    for (const c of controls) {
+      expect(c.getAttribute('aria-label')).toMatch(/unsplit/i);
+    }
   });
 
   it('routes a drop on a pane edge to the tree, carrying the edge', () => {
