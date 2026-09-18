@@ -19,6 +19,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 import { app, initStorage, VERIFY_TOKEN } from '../server';
 
 /**
@@ -73,6 +74,11 @@ describe('GET /agent-runs', () => {
     const res = await internal(agent().post('/agent-runs')).send({
       itemId, projectId, step: 'IN_PROGRESS', actor: 'worker',
       harness: 'claude-code', model: 'claude-opus-5',
+      // A distinct CONVERSATION per run. Without it the create route now
+      // reuses the still-running row for the same card+harness (43b37c93),
+      // and this fixture's 30 runs would collapse into one - which is the
+      // route working, not the bound under test failing.
+      sessionId: randomUUID(),
     });
     if (endAs) {
       await internal(agent().patch(`/agent-runs/${res.body.id}`)).send({ status: endAs });
@@ -197,6 +203,9 @@ describe('which runs the rail gets', () => {
       const created = await agent().post('/agent-runs').send({
         itemId: i.body.id, projectId: p.body.id, step: 'IN_PROGRESS',
         actor: 'worker', harness: 'claude-code', model: `m-${n}`,
+        // Distinct conversations, or the create route reuses one running row
+        // (43b37c93) and there is nothing to order.
+        sessionId: randomUUID(),
       });
       if (n === 0) expect(created.status, JSON.stringify(created.body)).toBe(201);
     }

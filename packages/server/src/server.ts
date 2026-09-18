@@ -2513,6 +2513,27 @@ app.post("/agent-runs", asyncHandler(async (req: any, res: any) => {
       io.emit('run:updated', { itemId: updated.itemId, runId: updated.id });
       return res.status(200).json(updated);
     }
+  } else {
+    /*
+     * NO SESSION ID: the card and the harness are the only stable identity
+     * there is. codex, gemini and shell cannot be handed a conversation id, so
+     * a restore has nothing else to key on - and with sessionId as the ONLY
+     * key, every relaunch of such a tab opened ANOTHER `running` row for the
+     * same terminal (four after three relaunches, measured).
+     *
+     * Same reuse, weaker key. The ceiling is stated rather than hidden: two
+     * codex panes on ONE card share a run, because nothing in the request can
+     * tell them apart - and a second `running` row for that pair is the thing
+     * this exists to stop.
+     */
+    const running = await storage.listAgentRuns({ itemId, status: 'running' });
+    const existing = running
+      .filter(r => (r.harness ?? 'pi') === (harness || 'pi') && !r.sessionId)
+      .at(-1);
+    if (existing) {
+      io.emit('run:updated', { itemId: existing.itemId, runId: existing.id });
+      return res.status(200).json(existing);
+    }
   }
 
   const run = await storage.createAgentRun({

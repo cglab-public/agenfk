@@ -70,6 +70,32 @@ describe('agent-runs REST', () => {
     expect((await agent().get('/items/item-reuse/agent-runs')).body).toHaveLength(1);
   });
 
+  it('reuses the running run for an agent with NO session id (codex)', async () => {
+    // codex cannot be handed a conversation id, so the desktop sends none -
+    // and with sessionId as the only key, every relaunch of a codex tab opened
+    // another `running` row for the same terminal.
+    const first = await agent().post('/agent-runs').send({
+      itemId: 'item-codex', step: 'IN_PROGRESS', harness: 'codex',
+    });
+    expect(first.status).toBe(201);
+    const again = await agent().post('/agent-runs').send({
+      itemId: 'item-codex', step: 'IN_PROGRESS', harness: 'codex',
+    });
+    expect(again.status).toBe(200);
+    expect(again.body.id).toBe(first.body.id);
+    expect((await agent().get('/items/item-codex/agent-runs')).body).toHaveLength(1);
+  });
+
+  it('does NOT reuse a no-session run across harnesses on the same card', async () => {
+    const codex = await agent().post('/agent-runs').send({
+      itemId: 'item-two-agents', step: 'IN_PROGRESS', harness: 'codex',
+    });
+    const gemini = await agent().post('/agent-runs').send({
+      itemId: 'item-two-agents', step: 'IN_PROGRESS', harness: 'gemini',
+    });
+    expect(gemini.body.id).not.toBe(codex.body.id);
+  });
+
   it('opens a NEW run once the previous one for that session has ended', async () => {
     const first = await agent().post('/agent-runs').send({
       itemId: 'item-reopen', step: 'IN_PROGRESS', sessionId: 'sess-reopen',
