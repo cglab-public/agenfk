@@ -105,3 +105,21 @@ describe('narrow is advice, not a gate', () => {
     expect(panes.every(p => !p.narrow)).toBe(true);
   });
 });
+
+describe('no horizontal scroll, however many panes (user decision, 7a717cb8)', () => {
+  it('fits four panes INSIDE the width: every rect starts at or after 0 and ends at or before it', () => {
+    // Four panes are not four comfortable columns - the tree halves what it
+    // divides - and that is accepted: the reader gets wrapped lines and the
+    // `narrow` advice, NOT a scroller. A rect that spilled past the edge would
+    // be the app deciding otherwise, so it is pinned here.
+    let t: PaneTree = leaf('a');
+    for (const id of ['b', 'c', 'd']) t = splitLeaf(t, 'a', 'horizontal', id)!;
+    const width = 900;
+    const { panes } = layoutPanes(t, width, 400);
+    expect(panes).toHaveLength(4);
+    for (const p of panes) {
+      expect(p.x).toBeGreaterThanOrEqual(0);
+      expect(p.x + p.width).toBeLessThanOrEqual(width + 1e-9);
+    }
+  });
+});
