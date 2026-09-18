@@ -22,7 +22,7 @@ import React from 'react';
 import { clsx } from 'clsx';
 import { agentLabel } from '../agentLabels';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, Book, Check, ChevronDown, ChevronRight, Folder, FolderOpen, GitBranch, LayoutGrid, ListFilter, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, Settings, type LucideIcon } from 'lucide-react';
+import { Activity, Book, Check, ChevronDown, ChevronRight, Folder, FolderOpen, GitBranch, LayoutGrid, ListFilter, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, Settings, SquareTerminal, type LucideIcon } from 'lucide-react';
 import { useSocketEvent, useSocket } from '../SocketContext';
 import { AgenfkWordmark } from './AgenfkWordmark';
 import { desktopInfo } from '../desktop';
@@ -37,6 +37,7 @@ import {
 } from '../sidebarPrefs';
 import { NewProjectButton } from './NewProjectButton';
 import { api } from '../api';
+import { HerdrPanes } from './HerdrPanes';
 import type { AgEnFKItem, Project } from '../types';
 import { TerminalTab, type TerminalSession } from './TerminalTab';
 import { treeForDrop, treeForToggle, pruneTree, treeForFocus } from '../paneLayout';
@@ -94,7 +95,7 @@ import { clampSidebarWidth, sidebarIsResizable, SIDEBAR_MIN_PX, SIDEBAR_MAX_PX, 
  * Every view here is reached from the sidebar or from a session, and each one
  * is a panel that stays mounted and is hidden rather than unmounted.
  */
-type ViewId = 'kanban' | 'terminal' | 'settings' | 'agents';
+type ViewId = 'kanban' | 'terminal' | 'settings' | 'agents' | 'herdr';
 
 /**
  * The WORK group at the top of the sidebar (CGLAB-164).
@@ -133,6 +134,13 @@ const WORK_ROWS: WorkRow[] = [
   // two routes to it, and a second glyph would read as a second feature.
   { kind: 'action', id: 'flows', label: 'Flows', Icon: GitBranch },
   { kind: 'view', id: 'agents', label: 'Agents', Icon: Activity },
+  /*
+   * Sessions this product did NOT start. Its own row rather than a filter on
+   * Agents, because the two answer different questions: Agents is "what did we
+   * run", this is "what is running". On the machine this was built for the
+   * second list held twenty-four panes and the first could show none of them.
+   */
+  { kind: 'view', id: 'herdr', label: 'Sessions', Icon: SquareTerminal },
 ];
 
 type Connection = 'connecting' | 'connected' | 'offline';
@@ -235,7 +243,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // Same latch idea as the terminal, for a much smaller reason: no request goes
   // out for a screen the user has never opened.
   const [settingsOpened, setSettingsOpened] = React.useState(false);
-  const { activeProjectId, focusedItemId, newItemRequest, setActiveProjectId, markProjectWorked, focusItem, terminalRequest } = useActiveProject();
+  const { activeProjectId, focusedItemId, newItemRequest, setActiveProjectId, markProjectWorked, focusItem, terminalRequest, requestNewItem } = useActiveProject();
   /**
    * The installation's settings, for the tmux default the dialog starts from.
    *
@@ -1547,6 +1555,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           */}
           <div
             role="region"
+            id="panel-herdr"
+            aria-label="herdr sessions"
+            tabIndex={0}
+            hidden={active !== 'herdr'}
+            className="flex min-h-0 flex-1 flex-col"
+          >
+            <header className="flex shrink-0 items-center gap-2 border-b border-border-soft px-4 py-2">
+              <h2 className="font-mono text-[10px] font-bold uppercase tracking-wide text-ink-tertiary">
+                Sessions
+              </h2>
+              <span className="text-[11px] text-ink-tertiary">already open in herdr</span>
+            </header>
+            {/* Mounted only while shown: the listing opens a unix socket per
+                session, and a hidden panel polling somebody's multiplexer is
+                load they never asked for. */}
+            {active === 'herdr' && <HerdrPanes />}
+          </div>
+
+          <div
+            role="region"
             id="panel-agents"
             aria-label="Agents"
             tabIndex={0}
@@ -1727,6 +1755,47 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           items={activeWork}
           projectNames={projectNames}
           currentItemId={sessions.find(s => s.id === activeSession)?.itemId}
+          /*
+           * The way out of an empty picker (CGLAB-164).
+           *
+           * `requestNewItem` is the route the sidebar's `+` already takes:
+           * it stamps the project as worked, selects it, and the board turns
+           * the request into the blank draft. Reusing it rather than opening
+           * a modal from here keeps ONE way into a new card, and the picker
+           * closes first so the draft is not opened underneath a dialog.
+           *
+           * THE TERMINAL'S project wins over the sidebar's selection, and that
+           * order is not arbitrary. This dialog is opened from the terminal
+           * strip and every row in it is about that terminal's world; pressing
+           * Create a card here means "a card for the thing I am looking at".
+           * Preferring the sidebar's selection filed it in the other repo AND
+           * re-pointed the board to follow, leaving the person somewhere they
+           * did not ask to be, holding a card they then have to move.
+           *
+           * The remembered project is the fallback, for a restored row that
+           * carries none — including a first launch, where restoring a terminal
+           * does not select a project and nothing else here would. With neither
+           * there is genuinely nowhere to put a card, and the picker hides the
+           * door rather than drawing one onto nothing.
+           *
+           * The seed is whatever was typed into the picker's search box: a
+           * phrase that found no card is usually the title of the card that
+           * does not exist yet, and making someone type it twice is the
+           * friction this whole change is about.
+           */
+          onCreateCard={(() => {
+            // `||`, not `??`: a row that arrives with an EMPTY projectId is
+            // not "a project", and `??` would keep it, fail the check below
+            // and hide the door on a screen that knows perfectly well which
+            // project is open.
+            const intoProject = sessions.find(s => s.id === activeSession)?.projectId
+              || activeProjectId;
+            if (!intoProject) return undefined;
+            return (seedTitle?: string) => {
+              setPickingCard(false);
+              requestNewItem(intoProject, seedTitle);
+            };
+          })()}
           onClose={() => setPickingCard(false)}
           onPick={item => {
             setPickingCard(false);

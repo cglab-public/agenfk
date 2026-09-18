@@ -16,6 +16,7 @@ import { useSocketEvent } from '../SocketContext';
 import { isDesktop } from '../desktop';
 import { useActiveProject } from '../ActiveProject';
 import { CardDetailModal } from './CardDetailModal';
+import { ItemTypeBadge, ITEM_TYPE_VISUAL } from './ItemTypeSquare';
 import { CardAnimationWrapper } from '../animations/CardAnimationWrapper';
 import '../animations'; // Side-effect: registers all easter egg animations
 import { useEasterEggs } from '../useEasterEggs';
@@ -288,9 +289,17 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
       )}
       <div className="flex justify-between items-start mb-2">
         <div className="flex items-center gap-1.5">
-          <span className={clsx("text-[9px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider flex items-center gap-1", item.type === ItemType.EPIC ? "bg-chip text-accent-text border-border-brand" : item.type === ItemType.STORY ? "bg-story-blue/10 text-story-blue border-story-blue/30" : item.type === ItemType.TASK ? "bg-brand/10 text-brand border-brand/30" : "bg-danger-muted/10 text-danger-muted border-danger-muted/30")}>
-            {item.type}
-          </span>
+          {/* One grammar, decided in one place (CGLAB-164). This ladder used
+              to paint STORY with `story-blue` and TASK with the brand teal —
+              the exact reverse of what the create form teaches, so a card
+              changed colour between being written and being seen. */}
+          <ItemTypeBadge type={item.type} size="sm" />
+          {/* item-type-colour-ok: the type decides whether this drill-down
+              button EXISTS — only a parent can be drilled into — never what
+              colour it is. The chip is `bg-chip` for every type that has one.
+              Marked deliberately: without it this site passed the grammar
+              sweep on about thirty characters of slack, so a reflow of the
+              line below would have turned it red for an innocent reason. */}
           {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && items?.some((i: AgEnFKItem) => i.parentId === item.id) && (
             <button onClick={(e) => { e.stopPropagation(); onDrillDown(item); }} className="bg-chip hover:bg-chip/70 text-accent-text px-1.5 py-0.5 rounded text-[9px] font-bold flex items-center gap-1 transition-colors" aria-label={`Show ${items?.filter((i: AgEnFKItem) => i.parentId === item.id).length} child items`}>
               <Search size={9} /> {items?.filter((i: AgEnFKItem) => i.parentId === item.id).length}
@@ -382,6 +391,9 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
       )}
       {item.description && <p className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2 mb-2">{item.description}</p>}
       
+      {/* item-type-colour-ok: the type decides whether this progress bar
+          EXISTS — only a parent has children to count — not what colour it
+          is. The bar is one colour for every type. */}
       {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && (
         <div className="mb-2">
           {(() => {
@@ -492,8 +504,8 @@ const stripDeepLinkParams = () => {
  * else: a draft genuinely has no id or timestamps until it is saved, so it is
  * not an AgEnFKItem yet and no honest type says otherwise.
  */
-const blankDraft = (projectId: string, status: Status): AgEnFKItem =>
-  ({ type: ItemType.TASK, status, title: '', description: '', projectId } as unknown as AgEnFKItem);
+const blankDraft = (projectId: string, status: Status, title = ''): AgEnFKItem =>
+  ({ type: ItemType.TASK, status, title, description: '', projectId } as unknown as AgEnFKItem);
 
 export const KanbanBoard: React.FC = () => {
   const queryClient = useQueryClient();
@@ -504,11 +516,15 @@ export const KanbanBoard: React.FC = () => {
   // Shared with the desktop sidebar (CGLAB-168). Same rules as before — a
   // ?project= deep link beats the remembered choice — they just live in
   // ActiveProject now so the sidebar and the board cannot disagree.
-  const { activeProjectId: selectedProjectId, setActiveProjectId: setSelectedProjectId, focusedItemId, newItemRequest, markProjectWorked, requestTerminalFor } = useActiveProject();
+  const { activeProjectId: selectedProjectId, setActiveProjectId: setSelectedProjectId, focusedItemId, newItemRequest, newItemTitle, markProjectWorked, requestTerminalFor } = useActiveProject();
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [projectSearch, setProjectSearch] = useState('');
   const [highlightedProjectIndex, setHighlightedProjectIndex] = useState(-1);
   const [newProjectName, setNewProjectName] = useState('');
+  // The card form has always been Title + Description; this one was Name alone,
+  // so a project made from the UI could never have a description — while
+  // `POST /projects` accepted one the whole time (CGLAB-164).
+  const [newProjectDescription, setNewProjectDescription] = useState('');
   const [isPinned, setIsPinned] = useState<boolean>(() => localStorage.getItem('agenfk_project_pinned') === 'true');
   const [confirmDeleteProjectId, setConfirmDeleteProjectId] = useState<string | null>(null);
   const [isPickerOpen, setIsPickerOpen] = useState(false);
@@ -845,14 +861,28 @@ export const KanbanBoard: React.FC = () => {
   });
 
   const createProjectMutation = useMutation({
-    mutationFn: (name: string) => api.createProject({ name }),
+    mutationFn: (project: { name: string; description?: string }) => api.createProject(project),
     onSuccess: (newProject) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
       handleSelectProject(newProject.id);
       setIsCreatingProject(false);
       setNewProjectName('');
+      setNewProjectDescription('');
     }
   });
+
+  /*
+   * What the form actually submits. Trimmed like the card form (`!title.trim()`)
+   * — `!"   "` is false, so a bare truthiness check let whitespace through and
+   * `POST /projects` agreed with it (`if (!name)`), leaving the picker a row
+   * nobody could name. A blank description is OMITTED rather than sent as "",
+   * because the server already defaults the field and an empty string is a
+   * value somebody typed.
+   */
+  const draftProject = (): { name: string; description?: string } => {
+    const description = newProjectDescription.trim();
+    return description ? { name: newProjectName.trim(), description } : { name: newProjectName.trim() };
+  };
 
   const deleteProjectMutation = useMutation({
     mutationFn: (id: string) => api.deleteProject(id),
@@ -1341,7 +1371,15 @@ export const KanbanBoard: React.FC = () => {
   useEffect(() => {
     if (!newItemRequest) return;
     const projectId = newItemRequest.slice(0, newItemRequest.lastIndexOf('#'));
-    setSelectedItem(blankDraft(projectId, Status.TODO));
+    // The draft opens holding whatever the caller already had. The card
+    // picker's empty state sends the phrase that matched no card — dropping it
+    // meant typing it a second time, in the one flow whose complaint is that
+    // writing a card costs too much.
+    setSelectedItem(blankDraft(projectId, Status.TODO, newItemTitle ?? ''));
+    // `newItemTitle` is deliberately not a dependency: it is set in the same
+    // batch as the request and read here, and listing it would re-open the
+    // draft on its own.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [newItemRequest]);
 
   const handleSearchNav = (direction: 'prev' | 'next') => {
@@ -1474,32 +1512,101 @@ export const KanbanBoard: React.FC = () => {
             )}
 
             {isCreatingProject ? (
-              <div className="space-y-4 text-left">
+              /*
+               * NAMING A NEW THING, in the same language the card form uses to
+               * name one (CGLAB-164, §03). Nothing here is a redesign: the label
+               * typography, the field surface, the button shapes and the
+               * cancel-before-confirm order are lifted off the new-item form in
+               * CardDetailModal, which is the screen this one kept looking
+               * unrelated to. NewProjectForm.test.tsx asserts each of those
+               * against BOTH forms, so the pair cannot drift apart again in
+               * silence.
+               */
+              <div data-testid="create-project-form" className="space-y-6 text-left">
                 <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-400 uppercase tracking-widest block mb-2">Project Name</label>
-                  <input 
+                  <label htmlFor="new-project-name" className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest block">Project Name</label>
+                  <input
+                    id="new-project-name"
                     autoFocus
                     type="text"
                     value={newProjectName}
                     onChange={(e) => setNewProjectName(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && newProjectName && createProjectMutation.mutate(newProjectName)}
+                    onKeyDown={(e) => e.key === 'Enter' && newProjectName.trim() && createProjectMutation.mutate(draftProject())}
                     placeholder="e.g. My Awesome App"
-                    className="w-full p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand"
+                    className="w-full text-lg font-bold bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand"
                   />
                 </div>
-                <div className="flex gap-3 pt-2">
-                  <button 
-                    disabled={!newProjectName || createProjectMutation.isPending}
-                    onClick={() => createProjectMutation.mutate(newProjectName)}
-                    className="flex-1 bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 disabled:opacity-50 font-bold py-3 rounded-xl transition-all"
+
+                <div className="space-y-2">
+                  <label htmlFor="new-project-description" className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest block">Description</label>
+                  <textarea
+                    id="new-project-description"
+                    value={newProjectDescription}
+                    onChange={(e) => setNewProjectDescription(e.target.value)}
+                    placeholder="What this project is for..."
+                    className="w-full bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand min-h-[120px]"
+                  />
+                </div>
+
+                {/*
+                 * THE TWO COMMANDS, SAID RATHER THAN OFFERED.
+                 *
+                 * `verifyCommand` and `setupCommand` are shell strings this
+                 * machine later runs, so `PUT /projects/:id` refuses them — its
+                 * allowlist is name/description/autoWorktree — and only the
+                 * `x-agenfk-internal` routes may write them. A browser holds no
+                 * such token, so an input here could not save: it would take the
+                 * text, fail, and look to the person typing exactly like a saved
+                 * setting. What was missing was never the field; it was anybody
+                 * saying what LEAVING them unset does, which is this.
+                 */}
+                <div className="space-y-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-900/40 p-4">
+                  <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Commands · set from the CLI, later</h4>
+                  <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                    With no <span className="font-semibold text-slate-600 dark:text-slate-300">verify command</span>, the move into the last step of
+                    the flow is refused with <code className="rounded bg-slate-200/70 dark:bg-slate-800 px-1 py-0.5 font-mono text-[11px] text-slate-600 dark:text-slate-300">NO_VERIFY_COMMAND</code> unless
+                    one is passed to that call. With no <span className="font-semibold text-slate-600 dark:text-slate-300">setup command</span>, a
+                    worktree cut for a repo that declares a dependency manifest arrives with those dependencies not installed and says
+                    so — nothing is guessed from a lockfile, because a wrong install running for minutes costs more than none at all.
+                  </p>
+                  <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                    Both run a shell on this machine, so they are set from a terminal rather than a browser:
+                  </p>
+                  {/* tabIndex, because this scrolls sideways inside a max-w-md panel
+                      and a scrollable region no keyboard can reach is a dead end. */}
+                  <pre
+                    tabIndex={0}
+                    role="region"
+                    aria-label="Commands that set the verify and setup commands"
+                    className="overflow-x-auto rounded-lg bg-slate-100 dark:bg-slate-950 p-3 font-mono text-[11px] leading-relaxed text-slate-600 dark:text-slate-300"
                   >
-                    {createProjectMutation.isPending ? <Loader2 className="animate-spin mx-auto" size={20} /> : 'Create Project'}
-                  </button>
-                  <button 
+{`agenfk update-project <id> --verify-command "npm test"
+agenfk update-project <id> --setup-command "npm ci"`}
+                  </pre>
+                </div>
+
+                <div className="flex justify-end gap-3 border-t border-slate-100 dark:border-slate-800 pt-4">
+                  <button
                     onClick={() => setIsCreatingProject(false)}
-                    className="px-6 py-3 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-500 font-bold hover:bg-slate-50 dark:hover:bg-slate-800 transition-all"
+                    className="bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 px-4 py-2 rounded-lg font-medium text-sm transition-all shadow-sm active:scale-95"
                   >
                     Cancel
+                  </button>
+                  <button
+                    /*
+                     * TRIMMED, like the card form (`!title.trim()`) and like the
+                     * sidebar's own create field. `!"   "` is false, so the bare
+                     * truthiness check enabled this button on whitespace and the
+                     * server took it — `POST /projects` guards with `if (!name)`,
+                     * which agrees with the bug rather than catching it — and the
+                     * picker grew a row nothing could tell from the next one.
+                     */
+                    disabled={!newProjectName.trim() || createProjectMutation.isPending}
+                    onClick={() => createProjectMutation.mutate(draftProject())}
+                    className="bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 disabled:opacity-50 px-6 py-2 rounded-lg font-bold text-sm transition-all active:scale-95 flex items-center gap-2"
+                  >
+                    {createProjectMutation.isPending ? <Loader2 className="animate-spin" size={16} /> : <Plus size={16} />}
+                    Create project
                   </button>
                 </div>
               </div>
@@ -1822,7 +1929,11 @@ export const KanbanBoard: React.FC = () => {
                   onClick={() => navigateTo(index)}
                   /* v8 ignore stop */
                   className={clsx("flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all whitespace-nowrap", index === navPath.length - 1 ? "bg-[image:var(--gradient-accent)] text-navy font-bold shadow-glow" : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800")}>
-                  <span className={clsx("w-2 h-2 rounded-full", nav.type === ItemType.EPIC ? "bg-brand-light" : "bg-story-blue")}></span>
+                  {/* The breadcrumb dot is a type colour too (CGLAB-164): it used to be
+                      `EPIC ? brand-light : story-blue`, which put a blue dot
+                      directly above the emerald STORY badge it had just
+                      revealed. Same grammar, same source. */}
+                  <span data-testid="breadcrumb-type-dot" className={clsx("w-2 h-2 rounded-full", ITEM_TYPE_VISUAL[nav.type]?.fill ?? "bg-slate-400")}></span>
                   <span>{nav.title}</span>
                 </button>
               </React.Fragment>

@@ -36,7 +36,7 @@
  */
 import React from 'react';
 import { clsx } from 'clsx';
-import { UserRound, AppWindow, Bell, Bot, type LucideIcon } from 'lucide-react';
+import { UserRound, AppWindow, Bell, Bot, SquareTerminal, type LucideIcon } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Switch } from './ui/switch';
 import {
@@ -47,6 +47,8 @@ import {
 } from './agentBridge';
 import { playAttentionSound, browserSoundDeps } from '../attentionSound';
 import { isNewerVersion } from '../versionCompare';
+import { describeHerdr, type HerdrView } from '../herdrSessions';
+import { API_URL } from '../apiUrl';
 import { api, type AppSettingsDto, type SoundTimingDto } from '../api';
 
 /**
@@ -220,6 +222,108 @@ interface SettingsSection {
    */
   readonly icon: LucideIcon;
   readonly rows: React.ReactNode;
+}
+
+/**
+ * What the Terminal section shows about herdr.
+ *
+ * THE NUMBERS ARE THE ARGUMENT. A toggle reading "Attach to open herdr
+ * sessions" asks the reader to take it on faith; "24 panes · 18 agents ·
+ * claude 11 · pi 7" does not. And on a machine with no herdr the line still
+ * appears, saying there is nothing to attach to — which is what lets this
+ * default to on without drawing a failure over something merely absent.
+ *
+ * READ ONLY. Nothing here can type into somebody's terminal.
+ */
+function HerdrRows(): React.ReactElement {
+  const { data, isLoading, isError } = useQuery<HerdrView>({
+    queryKey: ['herdr-sessions'],
+    queryFn: async () => {
+      const r = await fetch(`${API_URL}/herdr/sessions`);
+      if (!r.ok) throw new Error(`herdr sessions: ${r.status}`);
+      const body = await r.json();
+      /*
+       * `describeHerdr` runs in the component body and starts with
+       * `view.sessions.filter`. A 200 whose body is not this shape - a dev
+       * server answering index.html, a proxy - would throw during render, and
+       * there is no ErrorBoundary anywhere in this package: it would take the
+       * whole dashboard down rather than this one section.
+       */
+      if (!body || !Array.isArray(body.sessions)) {
+        throw new Error('herdr sessions: unexpected response shape');
+      }
+      return body;
+    },
+    // A listing, not a live view: the panel is opened deliberately and the
+    // answer is one socket round trip, so a short staleness beats a poll.
+    staleTime: 15_000,
+  });
+
+  const d = data ? describeHerdr(data) : null;
+  /*
+   * `text-amber-*`, not `text-warn`. There is no `--color-warn` token in
+   * `packages/brand/tokens.css` and Tailwind v4 here is CSS-first with no
+   * config, so `text-warn` compiles to NOTHING - the warning would have
+   * rendered in the inherited colour and been indistinguishable from the
+   * healthy case. The convention this file already uses sits 145 lines up.
+   */
+  const toneClass = d?.tone === 'warn' ? 'text-amber-600 dark:text-amber-400'
+    : d?.tone === 'good' ? 'text-accent-text' : 'text-ink-tertiary';
+
+  return (
+    <>
+      <SettingRow
+        testId="herdr-integrated-terminal"
+        title="Integrated terminal"
+        description="Terminals AgEnFK opens itself, through node-pty. Always on."
+        control={<span className="text-[11px] uppercase tracking-wider text-ink-tertiary">built in</span>}
+      />
+      <SettingRow
+        testId="herdr-attach"
+        title="herdr sessions detected"
+        /*
+         * NOT "attach". Nothing attaches yet, there is no stored setting, and
+         * the state below is read from the server rather than toggled - so a
+         * switch here would be a control that controls nothing, and the word
+         * "attach" would promise a behaviour this build does not have.
+         */
+        description="Agents already running in herdr, including ones AgEnFK did not launch. Read only."
+        meta={
+          isLoading ? <span data-testid="herdr-state">Looking for herdr…</span>
+          : isError ? <span data-testid="herdr-state">Could not ask the server.</span>
+          : d ? (
+            <span data-testid="herdr-state" className="block">
+              <span className={clsx('font-medium', toneClass)}>{d.headline}</span>
+              {d.detail && <span className="block text-ink-tertiary">{d.detail}</span>}
+            </span>
+          ) : null
+        }
+        control={<span className="text-[11px] uppercase tracking-wider text-ink-tertiary">detected</span>}
+      />
+      {d && d.byDirectory.length > 0 && (
+        <SettingRow
+          testId="herdr-directories"
+          indent
+          title="Where that work is"
+          description="Panes grouped by the directory they are running in."
+          meta={
+            <span data-testid="herdr-dirs" className="block">
+              {d.byDirectory.map(row => (
+                <span key={row.path} className="block">
+                  <span className="text-ink-secondary">{row.dir}</span>
+                  <span className="text-ink-tertiary"> · {row.panes} pane{row.panes === 1 ? '' : 's'}</span>
+                  {row.needsAPerson > 0 && (
+                    <span className="text-amber-600 dark:text-amber-400"> · {row.needsAPerson} waiting on a person</span>
+                  )}
+                </span>
+              ))}
+            </span>
+          }
+          control={<span />}
+        />
+      )}
+    </>
+  );
 }
 
 /** "a", "a and b", "a, b and c" — `join(' and ')` gives "a and b and c". */
@@ -735,6 +839,12 @@ export function SettingsPanel(): React.ReactElement {
      * list is a section nothing can reach, which is the same absence with more
      * code to read; git has the rows when they come back.
      */
+    {
+      id: 'terminal',
+      label: 'Terminal',
+      icon: SquareTerminal,
+      rows: <HerdrRows />,
+    },
     {
       id: 'agents',
       label: 'Agents',

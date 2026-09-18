@@ -43,6 +43,24 @@ export interface CardPickerProps {
   readonly currentItemId?: string;
   readonly onPick: (item: AgEnFKItem) => void;
   readonly onClose: () => void;
+  /**
+   * The way out when there is nothing to pick (CGLAB-164).
+   *
+   * Both empty branches were a sentence and nothing else, and the sentence
+   * told you to go somewhere else and do something you have to already know
+   * how to do — which is the question that opened this card: "I'm starting a
+   * task from nothing, where do I write it?"
+   *
+   * OPTIONAL on purpose. Creating a card needs a project to create it in, and
+   * a caller with no active project has nowhere to put one. Passing nothing
+   * hides the door rather than drawing one onto nothing, which is the defect
+   * this is fixing rather than a smaller helping of it.
+   *
+   * It receives whatever was typed into the search box, when something was: a
+   * phrase that matched no card is usually the title of the card that does not
+   * exist yet, and the picker is the only place that still has it.
+   */
+  readonly onCreateCard?: (seedTitle?: string) => void;
 }
 
 /**
@@ -89,7 +107,89 @@ function fold(value: string): string {
   return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
 }
 
-export function CardPicker({ items, currentItemId, projectNames, onPick, onClose }: CardPickerProps) {
+/**
+ * The doors an empty picker offers, and the one it only shows.
+ *
+ * Kept beside the component and given its own props because both empty
+ * branches need it and they are not the same branch: a failed search offers
+ * the filter back FIRST, since the likely fix after typing "zzzz" is the typo,
+ * not a missing card — putting "create" first invites a duplicate of the card
+ * you were looking for.
+ */
+function EmptyDoors({ onCreateCard, onClearSearch }: { onCreateCard?: () => void; onClearSearch?: () => void }) {
+  return (
+    <div className="flex flex-col gap-2 px-3 pb-2">
+      {onClearSearch && (
+        <button
+          type="button"
+          onClick={onClearSearch}
+          className="rounded-lg border border-border-soft px-3 py-2 text-xs text-ink transition-colors hover:bg-canvas"
+        >
+          {/* Named for both, because both can empty the list and the handler
+              resets both: a button named only for the search would leave a
+              project filter standing and look like it had done nothing. */}
+          Clear the search and filter
+        </button>
+      )}
+      {onCreateCard && (
+        <button
+          type="button"
+          // `() => onCreateCard()`, never `onClick={onCreateCard}`: React hands
+          // a click handler its mouse event, and the callback this ends up
+          // calling takes a seed TITLE as its first parameter. Passed straight
+          // through, the event object arrives where a string belongs and is
+          // handed to `.trim()`.
+          onClick={() => onCreateCard()}
+          className="rounded-lg border border-border-brand bg-chip px-3 py-2 text-xs font-semibold text-accent-text transition-opacity hover:opacity-90"
+        >
+          ＋ Create a card
+        </button>
+      )}
+      {/*
+       * The second door: describe the objective and let an agent propose the
+       * decomposition. DRAWN AND DISABLED, because there is nothing behind it
+       * — `analyze_request` echoes the request back and prints four static
+       * rules (packages/server/src/index.ts), and no endpoint decomposes
+       * anything. It belongs to its own card.
+       *
+       * Disabled with the reason ON SCREEN, not in a `title`: the terminal
+       * strip beside this had the same argument about its Split control and
+       * settled it the same way — a hover-only reason is the absent case
+       * wearing a tooltip.
+       */}
+      <div className="rounded-lg border border-dashed border-border-soft px-3 py-2">
+        {/*
+         * No `aria-describedby` here, deliberately. A `disabled` button is not
+         * focusable, so a description hung off it is never announced — it
+         * would be an attribute that looks like accessibility work and does
+         * none. The reason is delivered the way it actually reaches everyone:
+         * as visible text, immediately after the control, in reading order.
+         */}
+        <button
+          type="button"
+          disabled
+          className="w-full cursor-not-allowed text-left text-xs font-semibold text-ink-secondary"
+        >
+          ✧ Ask AgEnFK
+        </button>
+        {/*
+         * Readable ink, not decorative ink. This was `text-[10px]` in
+         * `ink-tertiary` on the translucent nav surface — around 2.5:1 in the
+         * light theme, under AA, which is the hidden version of "shown". The
+         * reason is the whole content of a control that does nothing else; if
+         * it cannot be read, the door is back to being a dead button.
+         */}
+        <p data-testid="ask-agenfk-reason" className="mt-1 text-[11px] leading-snug text-ink-secondary">
+          Describe the objective and have the decomposition proposed for you. Not built yet:
+          nothing on the server decomposes anything, so this would be a button that promises and
+          does not deliver.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+export function CardPicker({ items, currentItemId, projectNames, onPick, onClose, onCreateCard }: CardPickerProps) {
   const [query, setQuery] = React.useState('');
   const [projectId, setProjectId] = React.useState<string>('');
 
@@ -188,9 +288,17 @@ export function CardPicker({ items, currentItemId, projectNames, onPick, onClose
              * they simply mistyped, which is the kind of confident wrong
              * answer that makes people stop trusting a filter.
              */
-            <p className="px-3 py-6 text-center text-xs text-ink-tertiary">
-              No card matches that. Clear the search or pick another project.
-            </p>
+            <>
+              <p className="px-3 py-6 text-center text-xs text-ink-tertiary">
+                No card matches that. Clear the search or pick another project.
+              </p>
+              <EmptyDoors
+                // The phrase that matched nothing is handed over as the title
+                // of the card that does not exist yet.
+                onCreateCard={onCreateCard && (() => onCreateCard(query.trim() || undefined))}
+                onClearSearch={() => { setQuery(''); setProjectId(''); }}
+              />
+            </>
           ) : ordered.length === 0 ? (
             /*
              * A sentence, not an empty box. Reachable when every card has left
@@ -198,9 +306,16 @@ export function CardPicker({ items, currentItemId, projectNames, onPick, onClose
              * is in flight" tells the user what to do next where a blank panel
              * would not.
              */
-            <p className="px-3 py-6 text-center text-xs text-ink-tertiary">
-              No work in flight. Start a card on the board, then open a terminal on it.
-            </p>
+            <>
+              <p className="px-3 py-6 text-center text-xs text-ink-tertiary">
+                No work in flight. Start a card on the board, then open a terminal on it.
+              </p>
+              {/* Reached only when nothing was typed and no project was
+                  chosen, so there is no seed to carry and the callback goes
+                  through as it is. It is safe to pass directly because
+                  `EmptyDoors` calls it with NO arguments — see the button. */}
+              <EmptyDoors onCreateCard={onCreateCard} />
+            </>
           ) : (
             <ul>
               {ordered.map(item => (

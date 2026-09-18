@@ -3,6 +3,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
 import { Loader2, AlertCircle, Search, X, ArrowLeft, Download } from 'lucide-react';
 import { clsx } from 'clsx';
+import { ItemTypeSquare, ItemTypeBadge, ITEM_TYPES } from './ItemTypeSquare';
+import { ItemType } from '../types';
 
 interface Props {
   open: boolean;
@@ -24,12 +26,15 @@ const AGENFK_TYPE_MAP: Record<string, string> = {
 const mapToAgEnFKType = (issueType: string): string =>
   AGENFK_TYPE_MAP[issueType] ?? 'TASK';
 
-const TYPE_COLORS: Record<string, string> = {
-  EPIC: 'bg-chip text-accent-text',
-  STORY: 'bg-story-blue/10 text-story-blue',
-  TASK: 'bg-brand/10 text-brand',
-  BUG: 'bg-danger-muted/10 text-danger-muted',
-};
+/*
+ * The four types, in the order they are offered (CGLAB-164).
+ *
+ * This used to be `Object.keys(TYPE_COLORS)` over a private per-type palette —
+ * one of the mappings the product carried at the same time, and one that said
+ * STORY was blue while the create form's square said STORY was green. Colour
+ * now comes from `ItemTypeSquare`, the single place a type's colour is
+ * decided, and this is just a list.
+ */
 
 export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) => {
   const queryClient = useQueryClient();
@@ -359,16 +364,19 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
                             <div className="flex items-center gap-1.5 shrink-0">
                               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">{issue.statusCategory || issue.status}</span>
                               <span className="text-xs text-slate-300 dark:text-slate-600">→</span>
+                              <ItemTypeSquare type={currentType as ItemType} size="sm" />
                               <select
                                 value={currentType}
                                 onChange={(e) => updateIssueType(issue.key, e.target.value)}
-                                className={clsx(
-                                  'text-[10px] font-bold px-1.5 py-0.5 rounded border border-transparent focus:border-brand focus:ring-0 bg-transparent cursor-pointer appearance-none text-center min-w-[60px]',
-                                  TYPE_COLORS[currentType]
-                                )}
+                                // Reads as a CONTROL again. The retired TYPE_COLORS tint was doing
+                                // double duty: it carried the wrong grammar AND it was the only
+                                // thing saying "this opens". Dropping it left secondary ink on
+                                // nothing. The square beside it is aria-hidden and inert, so the
+                                // border and the hover are what remain to say it is pressable.
+                                className="text-[10px] font-bold px-1.5 py-0.5 rounded border border-border-soft hover:bg-canvas focus:border-brand focus:ring-0 bg-transparent cursor-pointer appearance-none text-center min-w-[60px] text-ink-secondary"
                                 data-testid={`type-select-${issue.key}`}
                               >
-                                {Object.keys(TYPE_COLORS).map(t => (
+                                {ITEM_TYPES.map(t => (
                                   <option key={t} value={t} className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-sans text-xs">
                                     {t}
                                   </option>
@@ -395,9 +403,16 @@ export const JiraImportModal: React.FC<Props> = ({ open, onClose, projectId }) =
                 {Array.from(selectedIssues.entries()).map(([key, type]) => (
                   <li key={key} className="flex items-center justify-between font-mono bg-slate-50 dark:bg-slate-800/50 px-2 py-1 rounded">
                     <span>{key}</span>
-                    <span className={clsx('text-[10px] font-bold px-1.5 py-0.5 rounded', type ? TYPE_COLORS[type] : 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400')}>
-                      {type || 'AUTO'}
-                    </span>
+                    {type ? (
+                      <ItemTypeBadge type={type as ItemType} />
+                    ) : (
+                      // No type chosen yet: AUTO is not a type, so it gets no
+                      // square — a grammar that labels a non-value is a
+                      // grammar that means less.
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400">
+                        AUTO
+                      </span>
+                    )}
                   </li>
                 ))}
               </ul>

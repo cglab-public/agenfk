@@ -38,7 +38,7 @@ const useRegistryClient = (): RegistryClient => useHost().registryClient;
 const useEditorTheme = (): 'light' | 'dark' => useHost().theme;
 const useTabLabels = () => useHost().tabLabels;
 const useEditorLabels = (): FlowEditorLabels => useHost().labels;
-import { X, Plus, Trash2, GripVertical, Save, GitBranch, Check, CopyPlus, Lock, Search, Globe, Loader2, AlertCircle, Download, Upload, ExternalLink, Zap, FlaskConical, ShieldCheck, Clock, BookOpen, Briefcase, Eye, Code, Bug, Star, Lightbulb, Pause, Archive } from 'lucide-react';
+import { X, Plus, Trash2, GripVertical, Save, GitBranch, Check, CopyPlus, Lock, Search, Globe, Loader2, AlertCircle, AlertTriangle, ChevronRight, Download, Upload, ExternalLink, Zap, FlaskConical, ShieldCheck, Clock, BookOpen, Briefcase, Eye, Code, Bug, Star, Lightbulb, Pause, Archive } from 'lucide-react';
 
 // Available icons for flow steps — key stored in FlowStep.icon, value rendered in UI
 const STEP_ICON_OPTIONS: { key: string; label: string; node: React.ReactNode }[] = [
@@ -77,6 +77,45 @@ const RESERVED_NAMES = new Set([
 ]);
 
 const BUILTIN_ID = '__builtin__';
+
+/**
+ * CGLAB-164. The per-step colour is a stripe on the row's leading edge. Two
+ * variants render it — an anchor's is decorative, a working step's carries the
+ * colour input on top of it — and the whole point of the stripe is that it
+ * reads as one continuous rail down the list, which it stops doing the moment
+ * the two drift apart. Stated once so they cannot.
+ */
+const STEP_STRIPE_CLASS = 'shrink-0 self-stretch';
+const STEP_STRIPE_WIDTH = 4;
+
+/**
+ * The transparent `<input type="color">` that turns the rail into a control.
+ *
+ * Both dimensions are explicit on purpose. Given only `inset-y-0` and no
+ * height, a colour input falls back to its INTRINSIC size — Blink renders a
+ * ~50x27 colour-well — and the box becomes over-constrained, so `bottom` and
+ * `right` are dropped. Measured in Chrome, that left the lower half of a
+ * visible rail dead to the click and pushed the live area sideways over the
+ * step number, so clicking the number opened the colour picker. jsdom has no
+ * layout, so no test in this suite can see any of that: the guard has to be
+ * that the declaration itself cannot fall back to auto.
+ *
+ * 24px wide against a 4px rail is WCAG 2.2 SC 2.5.8 (24x24 minimum target).
+ * The extra 20px is hit area, not paint: it hangs off the row's left edge and
+ * stops 2px short of the step-number column.
+ */
+const STEP_COLOR_INPUT_CLASS =
+  'absolute top-0 -left-2.5 h-full w-6 opacity-0 cursor-pointer border-0 p-0 bg-transparent disabled:cursor-not-allowed';
+
+/**
+ * Column widths, shared by the rows and by the single heading above them. The
+ * heading only stays honest if it is the same width as the column it names, so
+ * neither side gets to hand-copy the number.
+ */
+const STEP_COL_INDEX = 'w-4';
+const STEP_COL_ICON = 'w-6';
+const STEP_COL_NAME = 'w-52';
+const STEP_COL_ACTIONS = 'w-[46px]';
 
 /**
  * Footer CTA captions. The editor's own wording is correct for the standalone
@@ -250,12 +289,22 @@ interface ExitCriteriaSummaryProps {
   value: string;
   disabled: boolean;
   onEdit: () => void;
+  /**
+   * CGLAB-164. A WORKING step with no exit criteria is a gate that does not
+   * close — the gatekeeper reads this field and `agenfk verify` refuses without
+   * it, so an empty one lets work through unchecked. That is legal, and worth
+   * seeing, so it is stated in amber rather than rendered as a blank field.
+   * Anchors pass `false`: TODO and DONE carry no criteria by design, and
+   * flagging them would only teach the reader to ignore the colour.
+   */
+  warnWhenEmpty?: boolean;
 }
 
-const ExitCriteriaSummary: React.FC<ExitCriteriaSummaryProps> = ({ index, value, disabled, onEdit }) => {
+const ExitCriteriaSummary: React.FC<ExitCriteriaSummaryProps> = ({ index, value, disabled, onEdit, warnWhenEmpty = false }) => {
   const trimmed = value.trim();
   const firstLine = trimmed.split('\n').find(l => l.trim()) ?? '';
   const tokens = estimateTokenCount(trimmed);
+  const warn = !trimmed && warnWhenEmpty;
   return (
     <button
       data-testid={`step-exit-criteria-${index}`}
@@ -263,17 +312,30 @@ const ExitCriteriaSummary: React.FC<ExitCriteriaSummaryProps> = ({ index, value,
       disabled={disabled}
       onClick={onEdit}
       title={disabled ? undefined : 'Edit exit criteria (markdown)'}
-      className="w-full text-left px-2 py-1.5 rounded-md border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 hover:border-slate-300 dark:hover:border-slate-500 transition-colors disabled:opacity-60 disabled:cursor-not-allowed min-h-[52px]"
+      className={clsx(
+        'w-full text-left px-2 py-1.5 rounded-md border transition-colors disabled:opacity-60 disabled:cursor-not-allowed',
+        warn
+          ? 'border-amber-300 dark:border-amber-500/50 bg-amber-50 dark:bg-amber-900/20 hover:border-amber-400 dark:hover:border-amber-400'
+          : 'border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 hover:border-slate-300 dark:hover:border-slate-500'
+      )}
     >
       {firstLine ? (
-        <span className="block text-xs text-slate-600 dark:text-slate-300 truncate">{firstLine}</span>
+        <span className="text-xs text-slate-600 dark:text-slate-300 line-clamp-3">{firstLine}</span>
+      ) : warn ? (
+        <span
+          data-testid={`step-exit-criteria-empty-${index}`}
+          className="flex items-start gap-1 text-xs text-amber-700 dark:text-amber-400"
+        >
+          <AlertTriangle size={12} className="shrink-0 mt-0.5" />
+          <span>No exit criteria — this step lets work through unchecked.</span>
+        </span>
       ) : (
         <span className="block text-xs italic text-slate-400 dark:text-slate-500">
           No exit criteria — click to add
         </span>
       )}
       <span className="block text-[10px] tabular-nums text-slate-400 dark:text-slate-500 mt-0.5">
-        ~{tokens} {tokens === 1 ? 'token' : 'tokens'} (estimate){disabled ? '' : ' · edit'}
+        ~{tokens} {tokens === 1 ? 'token' : 'tokens'} (estimate){disabled ? '' : warn ? ' · add' : ' · edit'}
       </span>
     </button>
   );
@@ -328,6 +390,13 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   // silently assigns the version that is already on the server.
   const [persisted, setPersisted] = useState<string | null>(null);
   const [openIconPickerIndex, setOpenIconPickerIndex] = useState<number | null>(null);
+  // CGLAB-164: the description is written once and rarely reopened, so it sits
+  // collapsed in the header meta line instead of taking a third of the height
+  // above the steps — which are what this screen is opened to change.
+  // Deliberately NOT reset when the selected flow changes (unlike name /
+  // description / steps below): whether the reader wants the description open
+  // is a preference about the view, not a property of the flow being viewed.
+  const [descriptionOpen, setDescriptionOpen] = useState(false);
   // CGLAB-109: which step's exit criteria are open in the popup editor.
   const [exitCriteriaEditIndex, setExitCriteriaEditIndex] = useState<number | null>(null);
 
@@ -620,8 +689,12 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
 
   return (
     <div className="flex flex-col h-full" data-testid="editor-panel">
-      {/* Right panel header — inline-editable flow name */}
-      <div className="px-6 pt-5 pb-3 shrink-0">
+      {/* Right panel header — inline-editable flow name, then a meta line
+          carrying the step count, the version and the description disclosure.
+          CGLAB-164: the description used to be the first block of the
+          scrollable body, between the name and the steps; it pushed the step
+          list — the reason the screen is open — below the fold. */}
+      <div className="px-6 pt-5 pb-3 shrink-0" data-testid="flow-editor-header">
         <div className="flex items-center gap-2 mb-1.5">
           {isHubManaged ? (
             <span
@@ -664,39 +737,62 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             className="w-full text-xl font-bold text-slate-800 dark:text-slate-100 bg-transparent border-b-2 border-transparent hover:border-slate-300 dark:hover:border-slate-600 focus:border-brand focus:outline-none placeholder-slate-400 dark:placeholder-slate-600 transition-colors pb-0.5"
           />
         )}
-      </div>
 
-      {/* Scrollable form body */}
-      <div className="flex-1 overflow-y-auto px-6 pb-4 space-y-5 [&::-webkit-scrollbar]:hidden" style={{ msOverflowStyle: 'none', scrollbarWidth: 'none' } as React.CSSProperties}>
-
-        {/* Description */}
-        <div>
-          <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1 uppercase tracking-wide">
-            Description
-          </label>
+        {/* Meta line: step count · version · description disclosure */}
+        <div className="flex items-center flex-wrap gap-2 mt-1.5 text-xs text-slate-500 dark:text-slate-400">
+          <span data-testid="flow-step-count">
+            {steps.length} {steps.length === 1 ? 'step' : 'steps'}
+          </span>
+          {flow?.version && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span
+                data-testid="flow-version-badge"
+                className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300"
+              >
+                v{flow.version}
+              </span>
+            </>
+          )}
+          <span aria-hidden="true">·</span>
+          <button
+            data-testid="flow-description-toggle"
+            type="button"
+            aria-expanded={descriptionOpen}
+            aria-controls="flow-description-field"
+            onClick={() => setDescriptionOpen(open => !open)}
+            className="inline-flex items-center gap-0.5 rounded hover:text-slate-700 dark:hover:text-slate-200 focus:outline-none focus:ring-1 focus:ring-brand transition-colors"
+          >
+            <ChevronRight size={12} className={clsx('transition-transform', descriptionOpen && 'rotate-90')} />
+            description
+            {description.trim() !== '' && (
+              <>
+                <span
+                  data-testid="flow-description-indicator"
+                  aria-hidden="true"
+                  className="ml-0.5 w-1.5 h-1.5 rounded-full bg-slate-400 dark:bg-slate-500"
+                />
+                <span className="sr-only"> (this flow has one)</span>
+              </>
+            )}
+          </button>
+        </div>
+        {descriptionOpen && (
           <textarea
             data-testid="flow-description-input"
+            id="flow-description-field"
             value={description}
             onChange={e => { setDescription(e.target.value); setSaved(false); }}
             rows={2}
             placeholder="Optional description of this flow"
             disabled={isReadOnly}
-            className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-brand resize-none disabled:opacity-60 disabled:cursor-not-allowed"
+            className="w-full mt-2 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-brand resize-none disabled:opacity-60 disabled:cursor-not-allowed"
           />
-        </div>
-
-        {/* Version — read-only, auto-managed */}
-        {flow?.version && (
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Version</span>
-            <span
-              data-testid="flow-version-badge"
-              className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300"
-            >
-              v{flow.version}
-            </span>
-          </div>
         )}
+      </div>
+
+      {/* Scrollable form body */}
+      <div className="flex-1 overflow-y-auto px-6 pb-4 space-y-5 [&::-webkit-scrollbar]:hidden" style={{ msOverflowStyle: 'none', scrollbarWidth: 'none' } as React.CSSProperties}>
 
         {/* Steps */}
         <div>
@@ -717,8 +813,27 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             )}
           </div>
 
-          {/* Kanban-style: one column per step, horizontally scrollable */}
-          <div className="flex flex-row gap-3 overflow-x-auto pb-2 [&::-webkit-scrollbar]:hidden" style={{ msOverflowStyle: 'none', scrollbarWidth: 'none' } as React.CSSProperties} data-testid="steps-columns">
+          {/* CGLAB-164: one ROW per step, read top to bottom.
+
+              This was a horizontal kanban strip of w-52 columns, which put
+              664px of steps past the right edge and made drag-to-reorder a
+              drag across a scroll — one of the hardest interactions there is.
+              Vertical shows the whole flow at once, the numbers carry the
+              order, and "name (key)" / "label (display)" stop being repeated
+              once per step: they are a column heading now, stated once. */}
+          <div className="flex flex-col gap-2 pb-2" data-testid="steps-columns">
+            <div
+              data-testid="steps-header-row"
+              className="flex items-center gap-3 text-[10px] font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500"
+              style={{ paddingLeft: `calc(0.75rem + ${STEP_STRIPE_WIDTH + 1}px)`, paddingRight: '0.75rem' }}
+            >
+              <span className={clsx(STEP_COL_INDEX, 'shrink-0 text-right')}>#</span>
+              <span className={clsx(STEP_COL_ICON, 'shrink-0')} aria-hidden="true" />
+              <span className={clsx(STEP_COL_NAME, 'shrink-0')}>name · label</span>
+              <span className="flex-1 min-w-0">exit criteria</span>
+              <span className={clsx(STEP_COL_ACTIONS, 'shrink-0')} aria-hidden="true" />
+            </div>
+
             {steps.map((step, index) => {
               const isAnchor = !!step.isAnchor;
               const isTodoAnchor = isAnchor && step.name.toUpperCase() === 'TODO';
@@ -731,6 +846,17 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               const shapeIssue = stepShowsOwnIssue(index) ? stepIssue(definitionIssues, index) : undefined;
               const stepColor = step.color ?? '#04cc98';
               const anchorColor = isDoneAnchor ? '#10b981' : '#94a3b8';
+              // Short flows always have room below; long ones do not, for the
+              // rows past the midpoint. This is a HEURISTIC, not a solution:
+              // the predicate is the row's index in the list, while the real
+              // constraint is where the scroller happens to be parked. Swept
+              // across every scroll position of a 16-step flow at 1280x720, it
+              // leaves the popover fully visible 85% of the time against 77%
+              // for always-below and 81% for always-above — better on every
+              // row and worse on none, but rows in the FIRST half still clip
+              // about a fifth of the time. Measuring the badge against the
+              // scroller's viewport is the real fix; see the card's follow-up.
+              const iconPickerAbove = steps.length > 5 && index > steps.length / 2;
 
               return (
                 <div
@@ -741,135 +867,129 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                   onDragOver={e => !isStepLocked && handleDragOver(e, index)}
                   onDrop={e => !isStepLocked && handleDrop(e, index)}
                   onDragEnd={handleDragEnd}
-                  style={isAnchor ? { borderTopColor: anchorColor, borderTopWidth: 3 } : { borderTopColor: stepColor, borderTopWidth: 3 }}
                   className={clsx(
-                    'rounded-xl border flex flex-col shrink-0 w-52 transition-all',
+                    // Left corners square so the colour rail can be flush
+                    // against them; see STEP_STRIPE_CLASS.
+                    'flex w-full items-stretch rounded-r-xl border transition-all',
+                    // Anchors are scaffolding, not work: dashed and dimmed so
+                    // the eye skips them on the way down the list.
                     isAnchor
-                      ? 'bg-slate-100 dark:bg-slate-700/60 border-slate-300 dark:border-slate-600 opacity-80'
+                      ? 'border-dashed bg-slate-100/70 dark:bg-slate-800/40 border-slate-300 dark:border-slate-600 opacity-70'
                       : dragOverIndex === index
                       ? 'bg-slate-50 dark:bg-slate-800/50 border-border-brand shadow-md'
                       : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700'
                   )}
                 >
-                  {/* Column header */}
-                  <div className="flex items-center gap-1.5 px-3 pt-3 pb-2">
-                    {isAnchor ? (
-                      <>
-                        <div
-                          data-testid={`step-anchor-lock-${index}`}
-                          className="text-slate-400 dark:text-slate-500 shrink-0"
-                          title="Anchor step — cannot be moved or deleted"
-                        >
-                          <Lock size={14} />
-                        </div>
-                        <div
-                          data-testid={`step-color-swatch-${index}`}
-                          className="w-4 h-4 rounded shrink-0 border border-white/30"
-                          style={{ backgroundColor: anchorColor }}
-                          title="Step color (fixed for anchor steps)"
-                        />
-                        <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 truncate flex-1">
-                          {step.label}
-                        </span>
-                        <span className="text-xs px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-600 text-slate-500 dark:text-slate-400 font-medium shrink-0">
-                          anchor
-                        </span>
-                      </>
-                    ) : (
-                      <>
-                        {/* Color picker */}
-                        <input
-                          data-testid={`step-color-${index}`}
-                          type="color"
-                          value={stepColor}
-                          onChange={e => updateStep(index, { color: e.target.value })}
-                          disabled={isReadOnly}
-                          title="Pick step color"
-                          className="w-5 h-5 rounded cursor-pointer border border-slate-300 dark:border-slate-600 p-0 bg-transparent shrink-0 disabled:cursor-not-allowed disabled:opacity-60"
-                        />
-                        {/* Icon picker */}
-                        <div className="relative shrink-0">
-                          <button
-                            data-testid={`step-icon-btn-${index}`}
-                            type="button"
-                            disabled={isReadOnly}
-                            onClick={() => setOpenIconPickerIndex(openIconPickerIndex === index ? null : index)}
-                            title="Pick step icon"
-                            className="w-6 h-6 flex items-center justify-center rounded border border-slate-300 dark:border-slate-600 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            {renderStepIcon(step.icon, <Zap size={12} />)}
-                          </button>
-                          {openIconPickerIndex === index && !isReadOnly && (
-                            <div className="absolute top-7 left-0 z-50 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg p-2 grid grid-cols-6 gap-1 w-44">
-                              {STEP_ICON_OPTIONS.map(opt => (
-                                <button
-                                  key={opt.key}
-                                  type="button"
-                                  title={opt.label}
-                                  onClick={() => { updateStep(index, { icon: opt.key }); setOpenIconPickerIndex(null); }}
-                                  className={clsx(
-                                    'w-6 h-6 flex items-center justify-center rounded transition-colors text-slate-600 dark:text-slate-300',
-                                    step.icon === opt.key
-                                      ? 'bg-chip text-accent-text'
-                                      : 'hover:bg-slate-100 dark:hover:bg-slate-700'
-                                  )}
-                                >
-                                  {opt.node}
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                        {/* Drag handle */}
-                        <div
-                          className={clsx(
-                            'shrink-0',
-                            isReadOnly
-                              ? 'text-slate-300 dark:text-slate-600'
-                              : 'cursor-grab active:cursor-grabbing text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
-                          )}
-                          title={isReadOnly ? undefined : 'Drag to reorder'}
-                        >
-                          <GripVertical size={16} />
-                        </div>
-                        {/* Delete button */}
-                        {!isReadOnly && (
-                          <button
-                            data-testid={`delete-step-${index}`}
-                            type="button"
-                            onClick={() => removeStep(index)}
-                            title="Remove step"
-                            className="ml-auto p-1 rounded-lg transition-colors shrink-0 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        )}
-                      </>
-                    )}
-                  </div>
+                  {/* The colour, as a 4px stripe on the leading edge. It used
+                      to be a 16px swatch sitting next to the icon badge, where
+                      the two competed for the same 40px and the coloured fill
+                      swallowed the glyph. On the edge it reads as a stripe down
+                      the whole list at a glance — which is what a per-step
+                      colour is FOR — and on a working step the stripe IS the
+                      picker: the native input lies transparent on top of it. */}
+                  {isAnchor ? (
+                    <div
+                      data-testid={`step-color-swatch-${index}`}
+                      className={STEP_STRIPE_CLASS}
+                      style={{ width: STEP_STRIPE_WIDTH, backgroundColor: anchorColor }}
+                      title="Step color (fixed for anchor steps)"
+                    />
+                  ) : (
+                    <div
+                      data-testid={`step-color-stripe-${index}`}
+                      className={clsx('relative focus-within:ring-2 focus-within:ring-brand', STEP_STRIPE_CLASS)}
+                      style={{ width: STEP_STRIPE_WIDTH, backgroundColor: stepColor }}
+                    >
+                      <input
+                        data-testid={`step-color-${index}`}
+                        type="color"
+                        value={stepColor}
+                        onChange={e => updateStep(index, { color: e.target.value })}
+                        disabled={isReadOnly}
+                        aria-label={`Step ${index + 1} color`}
+                        title={isReadOnly ? 'Step color' : 'Step color — click to pick'}
+                        className={STEP_COLOR_INPUT_CLASS}
+                      />
+                    </div>
+                  )}
 
-                  {/* Column body */}
-                  <div className="flex-1 space-y-2 px-3 pb-3">
-                    {isAnchor && isTodoAnchor && (
-                      <div>
-                        <label className="block text-xs text-slate-400 dark:text-slate-500 mb-0.5">
-                          Exit Criteria
-                        </label>
-                        <ExitCriteriaSummary
-                          index={index}
-                          value={step.exitCriteria ?? ''}
+                  <div className="flex-1 min-w-0 flex items-start gap-3 px-3 py-2.5">
+                    {/* Position in the flow — the order the strip used to carry
+                        by being horizontal. */}
+                    <span
+                      data-testid={`step-index-${index}`}
+                      className={clsx(STEP_COL_INDEX, 'shrink-0 pt-1 text-right text-xs font-mono tabular-nums text-slate-400 dark:text-slate-500')}
+                    >
+                      {index + 1}
+                    </span>
+
+                    {/* Icon badge — still a button, still the same 17-icon
+                        popover; it just no longer carries the colour fill. */}
+                    {isAnchor ? (
+                      <div
+                        data-testid={`step-anchor-lock-${index}`}
+                        className={clsx(STEP_COL_ICON, 'h-6 shrink-0 flex items-center justify-center rounded border border-dashed border-slate-300 dark:border-slate-600 text-slate-400 dark:text-slate-500')}
+                        title="Anchor step — cannot be moved or deleted"
+                      >
+                        <Lock size={12} />
+                      </div>
+                    ) : (
+                      <div className="relative shrink-0">
+                        <button
+                          data-testid={`step-icon-btn-${index}`}
+                          type="button"
                           disabled={isReadOnly}
-                          onEdit={() => setExitCriteriaEditIndex(index)}
-                        />
+                          onClick={() => setOpenIconPickerIndex(openIconPickerIndex === index ? null : index)}
+                          title="Pick step icon"
+                          className={clsx(STEP_COL_ICON, 'h-6 flex items-center justify-center rounded border border-slate-300 dark:border-slate-600 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed')}
+                        >
+                          {renderStepIcon(step.icon, <Zap size={12} />)}
+                        </button>
+                        {openIconPickerIndex === index && !isReadOnly && (
+                          <div
+                            data-testid={`step-icon-picker-${index}`}
+                            data-placement={iconPickerAbove ? 'above' : 'below'}
+                            className={clsx(
+                              'absolute left-0 z-50 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg p-2 grid grid-cols-6 gap-1 w-44',
+                              iconPickerAbove ? 'bottom-7' : 'top-7'
+                            )}
+                          >
+                            {STEP_ICON_OPTIONS.map(opt => (
+                              <button
+                                key={opt.key}
+                                data-testid={`step-icon-option-${index}-${opt.key}`}
+                                type="button"
+                                title={opt.label}
+                                aria-pressed={step.icon === opt.key}
+                                onClick={() => { updateStep(index, { icon: opt.key }); setOpenIconPickerIndex(null); }}
+                                className={clsx(
+                                  'w-6 h-6 flex items-center justify-center rounded transition-colors text-slate-600 dark:text-slate-300',
+                                  step.icon === opt.key
+                                    ? 'bg-chip text-accent-text'
+                                    : 'hover:bg-slate-100 dark:hover:bg-slate-700'
+                                )}
+                              >
+                                {opt.node}
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
-                    {!isAnchor && (
-                      <>
-                        {/* Name */}
-                        <div>
-                          <label className="block text-xs text-slate-400 dark:text-slate-500 mb-0.5">
-                            Name (key)
-                          </label>
+
+                    {/* Name (the key) and label (what the board shows). */}
+                    <div className={clsx(STEP_COL_NAME, 'shrink-0 min-w-0')}>
+                      {isAnchor ? (
+                        <>
+                          <p className="text-xs font-mono uppercase tracking-wide text-slate-500 dark:text-slate-400 truncate">
+                            {step.name}
+                          </p>
+                          <p className="text-xs text-slate-400 dark:text-slate-500 truncate">
+                            {step.label}
+                          </p>
+                        </>
+                      ) : (
+                        <>
                           <input
                             data-testid={`step-name-${index}`}
                             type="text"
@@ -877,8 +997,9 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                             onChange={e => updateStep(index, { name: e.target.value })}
                             placeholder="e.g. in_progress"
                             disabled={isStepLocked}
+                            aria-label={`Step ${index + 1} name (key)`}
                             className={clsx(
-                              'w-full px-2 py-1 rounded-md border text-xs focus:outline-none focus:ring-1 disabled:opacity-60',
+                              'w-full px-2 py-1 rounded-md border text-xs font-mono uppercase tracking-wide focus:outline-none focus:ring-1 disabled:opacity-60',
                               hasReservedName
                                 ? 'border-red-400 focus:ring-red-400 bg-red-50 dark:bg-red-900/20 text-slate-800 dark:text-slate-100'
                                 : 'border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 focus:ring-brand'
@@ -894,12 +1015,6 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                               Reserved name
                             </p>
                           )}
-                        </div>
-                        {/* Label */}
-                        <div>
-                          <label className="block text-xs text-slate-400 dark:text-slate-500 mb-0.5">
-                            Label (display)
-                          </label>
                           <input
                             data-testid={`step-label-${index}`}
                             type="text"
@@ -907,24 +1022,73 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                             onChange={e => updateStep(index, { label: e.target.value })}
                             placeholder="e.g. In Progress"
                             disabled={isStepLocked}
-                            className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-brand disabled:opacity-60"
+                            aria-label={`Step ${index + 1} label (display)`}
+                            className="w-full mt-1 px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-brand disabled:opacity-60"
                           />
-                        </div>
-                        {/* Exit criteria (CGLAB-109): compact summary — the
-                            popup is the full markdown editor. */}
-                        <div>
-                          <label className="block text-xs text-slate-400 dark:text-slate-500 mb-0.5">
-                            Exit Criteria
-                          </label>
-                          <ExitCriteriaSummary
-                            index={index}
-                            value={step.exitCriteria ?? ''}
-                            disabled={isStepLocked}
-                            onEdit={() => setExitCriteriaEditIndex(index)}
-                          />
-                        </div>
-                      </>
-                    )}
+                        </>
+                      )}
+                    </div>
+
+                    {/* Exit criteria — the most consequential field on the
+                        screen (the gatekeeper reads it and `agenfk verify`
+                        refuses without it), so it gets the width that is left
+                        rather than a truncated line. CGLAB-109 keeps the popup
+                        as the only place they are edited. */}
+                    <div className="flex-1 min-w-0">
+                      {isDoneAnchor ? (
+                        <p className="text-xs italic text-slate-400 dark:text-slate-500 pt-1">
+                          Anchor. Reachable only through <span className="font-mono not-italic">agenfk verify</span> on the final step.
+                        </p>
+                      ) : (
+                        <ExitCriteriaSummary
+                          index={index}
+                          value={step.exitCriteria ?? ''}
+                          disabled={isReadOnly}
+                          warnWhenEmpty={!isAnchor}
+                          onEdit={() => setExitCriteriaEditIndex(index)}
+                        />
+                      )}
+                      {isTodoAnchor && (
+                        <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">
+                          Anchor. Not reorderable, not deletable.
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Reorder / delete, or the anchor badge that explains why
+                        neither is offered. */}
+                    <div className={clsx(STEP_COL_ACTIONS, 'shrink-0 flex items-center justify-end gap-1 pt-1')}>
+                      {isAnchor ? (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400 font-medium">
+                          anchor
+                        </span>
+                      ) : (
+                        <>
+                          <div
+                            className={clsx(
+                              'shrink-0',
+                              isReadOnly
+                                ? 'text-slate-300 dark:text-slate-600'
+                                : 'cursor-grab active:cursor-grabbing text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
+                            )}
+                            title={isReadOnly ? undefined : 'Drag to reorder'}
+                          >
+                            <GripVertical size={16} />
+                          </div>
+                          {!isReadOnly && (
+                            <button
+                              data-testid={`delete-step-${index}`}
+                              type="button"
+                              onClick={() => removeStep(index)}
+                              title="Remove step"
+                              className="p-1 rounded-lg transition-colors text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
               );

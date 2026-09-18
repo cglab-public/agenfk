@@ -37,8 +37,26 @@ interface ActiveProjectValue {
    * and a plain value would compare equal and the board would ignore it.
    */
   newItemRequest: string | null;
-  /** Start a new card in a project, from outside the board. */
-  requestNewItem: (projectId: string) => void;
+  /**
+   * The words the draft should open with, when the caller had some.
+   *
+   * Kept BESIDE `newItemRequest` rather than folded into it: that value is a
+   * parsed string (`<projectId>#<nonce>`) with two readers, and widening its
+   * shape to carry a title would have made every one of them parse a title out
+   * of a project id. Overwritten by the next request — including with `null`
+   * when that request carries no seed — which is what keeps a stale title from
+   * reaching a draft opened by another door.
+   */
+  newItemTitle: string | null;
+  /**
+   * Start a new card in a project, from outside the board.
+   *
+   * `seedTitle` is for callers that already hold the words — the card picker's
+   * empty state hands over whatever was typed into its search box, because a
+   * phrase that matched no card is usually the title of the card that does not
+   * exist yet, and asking for it a second time is the friction being removed.
+   */
+  requestNewItem: (projectId: string, seedTitle?: string) => void;
   /**
    * A request to open a terminal ON a card, from the board (CGLAB-176).
    *
@@ -77,6 +95,7 @@ export function ActiveProjectProvider({ children }: { children: React.ReactNode 
   // launch would yank the board to wherever you happened to click last time.
   const [focusedItemId, setFocusedItemId] = useState<string | null>(null);
   const [newItemRequest, setNewItemRequest] = useState<string | null>(null);
+  const [newItemTitle, setNewItemTitle] = useState<string | null>(null);
   const [terminalRequest, setTerminalRequest] = useState<{ item: AgEnFKItem; nonce: number } | null>(null);
   const nonce = useRef(0);
 
@@ -123,13 +142,18 @@ export function ActiveProjectProvider({ children }: { children: React.ReactNode 
     setFocusedItemId(`${itemId}#${nonce.current}`);
   }, [setActiveProjectId]);
 
-  const requestNewItem = useCallback((projectId: string) => {
+  const requestNewItem = useCallback((projectId: string, seedTitle?: string) => {
     // Asking for a card in a project is work, so it stamps — unlike opening it.
     if (projectId) touchProjectUsed(projectId);
     // The draft belongs to the project whose row was clicked, not to whichever
     // one happened to be selected.
     setActiveProjectId(projectId);
     nonce.current += 1;
+    // Set the title FIRST: both land in the same batch, and the board reads the
+    // title inside the effect keyed on the request. Writing them in the other
+    // order is the same render either way — but the order that matches the read
+    // is the one that survives someone later splitting the effect.
+    setNewItemTitle(seedTitle?.trim() || null);
     setNewItemRequest(`${projectId}#${nonce.current}`);
   }, [setActiveProjectId]);
 
@@ -150,8 +174,8 @@ export function ActiveProjectProvider({ children }: { children: React.ReactNode 
   // Memoised because KanbanBoard is a very large consumer: a fresh object each
   // render would re-render the whole board on any parent update.
   const value = useMemo(
-    () => ({ activeProjectId, setActiveProjectId, focusedItemId, focusItem, newItemRequest, requestNewItem, markProjectWorked, terminalRequest, requestTerminalFor }),
-    [activeProjectId, setActiveProjectId, focusedItemId, focusItem, newItemRequest, requestNewItem, markProjectWorked, terminalRequest, requestTerminalFor],
+    () => ({ activeProjectId, setActiveProjectId, focusedItemId, focusItem, newItemRequest, newItemTitle, requestNewItem, markProjectWorked, terminalRequest, requestTerminalFor }),
+    [activeProjectId, setActiveProjectId, focusedItemId, focusItem, newItemRequest, newItemTitle, requestNewItem, markProjectWorked, terminalRequest, requestTerminalFor],
   );
 
   return (
