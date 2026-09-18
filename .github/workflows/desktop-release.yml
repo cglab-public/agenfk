@@ -69,6 +69,30 @@ jobs:
           WIN_CSC_LINK: ${{ secrets.WIN_CERT_PFX }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CERT_PASSWORD }}
 
+      - name: Attach installers to the release
+        # THE TAG AND THE RELEASE HAVE DIFFERENT NAMES. The desktop build runs on
+        # `desktop-vX`; the release the framework flow creates is `vX`. electron-
+        # builder's implicit publish targeted the tag it was built for and
+        # defaulted to a DRAFT, so it collided with the existing pre-release and
+        # died with "existing type not compatible with publishing type" - and it
+        # would have made a SECOND release page. Stripping the prefix uploads the
+        # installers onto the release people are already being sent to.
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME#desktop-}"
+          # A desktop tag pushed on its own still gets a page to attach to.
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --prerelease --title "$TAG" --notes "Desktop installers for $TAG"
+          # nullglob: a platform builds only its OWN formats, and an unmatched
+          # glob would otherwise be passed through literally and fail the upload.
+          shopt -s nullglob
+          files=(packages/desktop/release/*.dmg packages/desktop/release/*.zip \
+                 packages/desktop/release/*.exe packages/desktop/release/*.AppImage \
+                 packages/desktop/release/*.deb)
+          gh release upload "$TAG" "${files[@]}" --clobber
+
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
