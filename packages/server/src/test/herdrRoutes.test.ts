@@ -9,6 +9,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { buildHerdrSnapshot, SESSION_READ_TIMEOUT_MS, type HerdrDeps } from '../herdrRoutes';
+import { EXPENSIVE_ROUTE_LIMIT } from '@agenfk/core';
 import type { HerdrSession, SnapshotResult } from '../herdr';
 
 const SESSION = (name: string): HerdrSession => ({ name, socketPath: `/cfg/${name}.sock` });
@@ -309,5 +310,35 @@ describe('the deadline', () => {
     expect(read).toHaveBeenCalledWith(expect.any(String), SESSION_READ_TIMEOUT_MS);
     expect(SESSION_READ_TIMEOUT_MS).toBeGreaterThan(0);
     expect(SESSION_READ_TIMEOUT_MS).toBeLessThanOrEqual(10_000);
+  });
+});
+
+/* ── the route itself, mounted ─────────────────────────────────────────── */
+
+describe('GET /herdr/sessions', () => {
+  it('carries the expensive-route limiter', async () => {
+    /*
+     * IT WALKS A DIRECTORY AND THEN OPENS ONE UNIX SOCKET PER SESSION, which is
+     * exactly what `limitExpensive` exists for, and this server has no auth
+     * while its CORS accepts any localhost origin. Any page on any localhost
+     * port can loop on it — and herdr is a SINGLE PROCESS, so exhausting its
+     * accept backlog degrades the operator's real terminal, the one thing this
+     * code promises never to touch.
+     *
+     * The limiter is declared 141 lines after the route was first written, so
+     * naming it there throws ReferenceError at module load. The suite imports
+     * `app` rather than booting it, so that would have been green — which is
+     * why `serverBoots.test.ts` exists and why this asserts behaviour rather
+     * than the presence of a word.
+     */
+    const { app } = await import('../server');
+    const request = (await import('supertest')).default;
+
+    const codes: number[] = [];
+    for (let i = 0; i < EXPENSIVE_ROUTE_LIMIT + 2; i += 1) {
+      codes.push((await request(app).get('/herdr/sessions')).status);
+    }
+    expect(codes.filter(c => c === 429).length, 'the limiter must eventually refuse').toBeGreaterThan(0);
+    expect(codes[0], 'and the first call must still work').toBe(200);
   });
 });

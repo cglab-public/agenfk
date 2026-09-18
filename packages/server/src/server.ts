@@ -1457,22 +1457,6 @@ app.put("/api/telemetry/config", (req: any, res: any) => {
 
 // DB status & backup endpoints
 
-/**
- * The herdr sessions already open on this machine (CGLAB-266 / CGLAB-267).
- *
- * READ ONLY. The protocol can also type into a pane and move the operator's
- * real screen; none of that is reachable from here.
- *
- * NEVER 500s ON ABSENCE. A machine with no herdr answers 200 with an empty list
- * and a printable reason, because the setting that consumes this ships enabled
- * and "not installed" is an ordinary answer, not a failure. Likewise a socket
- * left behind by a crash: it is reported unreachable per session so one stale
- * file cannot hide the sessions that are running.
- */
-app.get("/herdr/sessions", asyncHandler(async (_req: any, res: any) => {
-  res.json(await buildHerdrSnapshot(realHerdrDeps));
-}));
-
 app.get("/db/status", asyncHandler(async (_req: any, res: any) => {
   const dbType = 'sqlite';
   let backupCount = 0;
@@ -1645,6 +1629,26 @@ const limitExpensive = rateLimit({
     });
   },
 });
+
+/**
+ * The herdr sessions already open on this machine (CGLAB-266 / CGLAB-267).
+ *
+ * READ ONLY. The protocol can also type into a pane and move the operator's
+ * real screen; none of that is reachable from here.
+ *
+ * NEVER 500s ON ABSENCE. A machine with no herdr answers 200 with an empty list
+ * and a printable reason, because the setting that consumes this ships enabled
+ * and "not installed" is an ordinary answer, not a failure. Likewise a socket
+ * left behind by a crash: it is reported unreachable per session so one stale
+ * file cannot hide the sessions that are running.
+ * RATE LIMITED, and it had to move below the limiter to be: this walks a
+ * directory and then opens one unix socket per session. Written above the
+ * `const`, naming it throws ReferenceError at module load - and the suite
+ * imports `app` rather than booting it, so that would have been green too.
+ */
+app.get("/herdr/sessions", limitExpensive, asyncHandler(async (_req: any, res: any) => {
+  res.json(await buildHerdrSnapshot(realHerdrDeps));
+}));
 
 app.get("/items/:id/git-status", limitExpensive, asyncHandler(async (req: any, res: any) => {
   const item: any = await storage.getItem(req.params.id);
@@ -6740,6 +6744,11 @@ export function resolveUiDir(explicit?: string | null): string | null {
  * Exported so a test can assert it still covers every registered route.
  */
 export const API_PATH_PREFIXES = [
+  // `/herdr` lists the sessions open in the multiplexer. Without it here, the
+  // desktop - which serves the UI from this same origin - answers the API call
+  // with index.html and a 200, so `r.ok` is true and the JSON parse is what
+  // fails. A guard test in serve-ui.test.ts catches exactly this.
+  '/herdr',
   '/api', '/version', '/db', '/backup', '/projects', '/flows', '/prs',
   '/token-events', '/registry', '/items', '/internal', '/jira', '/github',
   '/releases', '/agent-runs', '/settings', '/terminal-sessions', '/socket.io',
