@@ -7,6 +7,7 @@ import { HubEvent } from '@agenfk/core';
 import { userKeyFor } from '../util/userKey.js';
 import { loadAliasMap, resolveAliasKey } from '../util/userKeyAlias.js';
 import { isEmailShapedKey } from '../util/userKey.js';
+import { isOnboardingKeyLabel } from '../util/keyLabel.js';
 
 
 
@@ -59,6 +60,51 @@ function isValidEvent(e: any): e is HubEvent {
     e.actor && typeof e.actor.osUser === 'string' &&
     typeof e.payload === 'object'
   );
+}
+
+/**
+ * Give an unbound key the single machine it is demonstrably running on
+ * (BUG bb27c0aa).
+ *
+ * Two guards are in the UPDATE itself, not in JavaScript, because they are the
+ * ones a concurrent batch could invalidate between checking and acting: the key
+ * must still be unbound, and the machine must have no other live bound key (if
+ * it has one it already receives directives, and a second binding adds ambiguity
+ * for no gain). Deciding them inside one statement removes the check-then-act
+ * window rather than narrowing it.
+ *
+ * ELIGIBILITY is the third guard and stays in `isOnboardingKeyLabel`: the label
+ * cannot change under us, and that predicate is the same one
+ * POST /v1/admin/api-keys uses to refuse manufacturing such a label.
+ */
+async function selfBindUnboundKey(
+  ctx: HubServerContext,
+  orgId: string,
+  tokenHash: string,
+  installations: ReadonlySet<string>,
+): Promise<void> {
+  if (installations.size !== 1) return;
+  const only = [...installations][0];
+
+  const key = await ctx.db.get<{ label: string | null }>(
+    'SELECT label FROM api_keys WHERE token_hash = ? AND org_id = ? AND installation_id IS NULL',
+    [tokenHash, orgId],
+  );
+  if (!key || !isOnboardingKeyLabel(key.label)) return;
+
+  const result = await ctx.db.run(
+    `UPDATE api_keys
+        SET installation_id = ?
+      WHERE token_hash = ? AND org_id = ? AND installation_id IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM api_keys other
+           WHERE other.org_id = ? AND other.installation_id = ? AND other.revoked_at IS NULL
+        )`,
+    [only, tokenHash, orgId, orgId, only],
+  );
+  if (result.changes > 0) {
+    console.log(`[HUB] Bound api key ${tokenHash.slice(0, 8)} to installation ${only} on first report.`);
+  }
 }
 
 const INSERT_EVENT_SQL = `
@@ -514,6 +560,15 @@ export function eventsRouter(ctx: HubServerContext): Router {
       await forwardEvents(ctx.db, ctx.config.secretKey, forwardable);
     } catch (err) {
       console.warn('[FEDERATION] could not queue events for the parent:', (err as Error).message);
+    }
+
+    // Self-heal an unbound key (BUG bb27c0aa): a binding is written once, at
+    // issuance, and never repaired, so a key minted without one — the admin
+    // "create key" form, an older CLI — would stay invisible to every fleet
+    // command forever. Production had two members in exactly that state: their
+    // events ingested fine, but no upgrade directive could ever reach them.
+    if (!keyInstallation) {
+      await selfBindUnboundKey(ctx, orgId, req.hubApiKey!.tokenHash, seenInstallations);
     }
 
     res.json({ ingested, skipped, rejected, hiddenDropped, installationId: installationFromHeader, rejections });

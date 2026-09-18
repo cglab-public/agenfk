@@ -136,6 +136,25 @@ export function isInstallableMarkdown(name) {
   return typeof name === 'string' && name.endsWith('.md') && !isMacMetadata(name);
 }
 
+// Commands that cut releases of the AgEnFK framework itself. They live in the
+// repo's own .claude/commands/ and must NEVER reach a user's global config.
+const REPO_PRIVATE_NAMES = ['agenfk-release', 'agenfk-release-beta', 'agenfk-release-hub'];
+
+// True for a repo-private release command in either shape a copy step sees it:
+// `agenfk-release.md` (a flat command) or `agenfk-release/` (a skill dir).
+//
+// Applied at COPY sites only, deliberately NOT folded into
+// isInstallableMarkdown: removal steps (uninstall, removeCommandsFromDir) filter
+// with that predicate to decide what to DELETE, and excluding these names there
+// would leave a leaked copy behind forever instead of cleaning it up.
+//
+// Mirrored in packages/cli/src/index.ts, which cannot import from scripts/.
+export function isRepoPrivateCommand(name) {
+  if (typeof name !== 'string') return false;
+  const base = shadowedName(name).replace(/\.md$/, '');
+  return REPO_PRIVATE_NAMES.includes(base);
+}
+
 // The name an AppleDouble twin shadows: `._agenfk.md` -> `agenfk.md`.
 function shadowedName(name) {
   return name.startsWith('._') ? name.slice(2) : name;

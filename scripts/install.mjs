@@ -4,9 +4,9 @@ import os from 'os';
 import path from 'path';
 import { spawn, spawnSync, execSync } from 'child_process';
 import crypto from 'crypto';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import readline from 'readline';
-import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, isMacMetadata, isAgenfkOwnedEntry } from './install-helpers.mjs';
+import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry } from './install-helpers.mjs';
 
 const GREEN = '\x1b[32m';
 const BLUE = '\x1b[34m';
@@ -299,6 +299,10 @@ async function run() {
     }
 
     // If dists are missing, attempt to re-download the release tarball for this version.
+    // Set by autoHealRedownload when it extracts an archive, so the prune below
+    // can use that listing before the temp file is removed.
+    let healedArchive = null;
+
     async function autoHealRedownload() {
         let pkgVersion = '0.0.0';
         try {
@@ -333,10 +337,26 @@ async function run() {
                 : ['-xzf', tmpFile, '-C', rootDir];
             const tarResult = spawnSync('tar', tarArgs, { stdio: 'inherit' });
             if (tarResult.status !== 0) return false;
+            // This extraction is an overlay like any other, and it holds the
+            // only authoritative listing this run will ever see — the finally
+            // below deletes it. Prune here or the auto-healed install keeps
+            // files this version dropped and re-installs them, which is the
+            // exact leak step 1c exists to close. (1c cannot help: it runs
+            // before this, and there is no --dist-tarball on this path.)
+            healedArchive = tmpFile;
             console.log(`${GREEN}  Re-download complete.${NC}`);
             return true;
         } catch { return false; } finally {
-            if (existsSync(tmpFile)) rmSync(tmpFile, { force: true });
+            // Kept alive ONLY when step 1a will still run and needs its listing.
+            // Otherwise delete now: the compensating cleanup lives inside step
+            // 1a, which is itself inside `if (!onlyPlatform)`, so a scoped run
+            // (or an early exit for missing dists) left a multi-MB tarball in
+            // os.tmpdir() forever.
+            const willPrune = healedArchive === tmpFile && !onlyPlatform;
+            if (!willPrune && existsSync(tmpFile)) {
+                rmSync(tmpFile, { force: true });
+                if (healedArchive === tmpFile) healedArchive = null;
+            }
         }
     }
 
@@ -372,6 +392,104 @@ async function run() {
 
         debugLog('decision: all pre-built dists present');
         console.log(`${GREEN}[1/14] Pre-built dist bundles verified.${NC}`);
+
+    // 1a. Prune the INSTALL DIR against the tarball that was just extracted.
+    //
+    // `tar -xzf` is an overlay that deletes nothing, so on every tar-based
+    // upgrade route the install dir keeps files this version dropped — and the
+    // steps below enumerate <rootDir>/commands and <rootDir>/skills into every
+    // client's config, re-installing them. Reading "what we ship" back out of
+    // the install dir is circular (the install dir IS the stale thing), so the
+    // archive listing is the only authority. The caller passes
+    // --dist-tarball=<path> and keeps the archive until this has run.
+    //
+    // MUST run before anything installs FROM this tree (steps 8*, 10*): pruning
+    // afterwards still lets a stale file reach the client config for a whole
+    // upgrade cycle.
+    //
+    // SCOPE — what this does NOT do. It stops stale files being re-installed;
+    // it does not remove a copy already sitting in a client's config. Step 8f
+    // deletes the three repo-private release commands by name, which covers the
+    // reported symptom, but any OTHER file dropped upstream stays in
+    // ~/.claude/commands, ~/.config/opencode/commands, ~/.agents/skills and
+    // ~/.gemini/commands/agenfk until the user reinstalls.
+    //
+    // A destination-side reconcile was built for that and deliberately dropped:
+    // deciding ownership by filename prefix deleted users' own agenfk-*.md
+    // files, and the manifest that replaced it deleted other clients' commands
+    // whenever a run covered less than the manifest (a scoped `--only=`, or a
+    // CLI probe that missed). Both were measured, not theorised. Cleaning the
+    // destination safely needs a design that survives partial runs; until then
+    // this stays a source-side fix.
+    const tarballArg = process.argv.find(a => a.startsWith('--dist-tarball='));
+    // Prefer an EXPLICIT argv over the env var, then env, then a tarball we just
+    // auto-healed. Passing it as an argv string meant shell-quoting a filesystem
+    // path, and JSON.stringify is NOT shell quoting: on Windows `C:\Users\...`
+    // reached argv as `C:\\Users\\...`, the file read as "not found", the prune
+    // was silently skipped and a deleted upstream file stayed installed. The argv
+    // form is still honoured for a bootstrap older than this change.
+    const candidates = [
+        tarballArg ? tarballArg.slice('--dist-tarball='.length) : null,
+        process.env.AGENFK_DIST_TARBALL,
+        healedArchive,
+    ].filter(Boolean);
+    // Prefer a candidate that EXISTS. Selecting with a plain `||` would let a
+    // stale explicit argv path defeat a valid env var or a just-healed archive
+    // and silently degrade to "Skipped: not found" — no fallback, no prune.
+    const tarball = candidates.find((c) => existsSync(c)) ?? candidates[0] ?? null;
+    // Clear it before any child is spawned: callers delete the archive once this
+    // run finishes, so an inherited stale path would make a later install.mjs
+    // read "Skipped: not found" and silently degrade to no prune.
+    delete process.env.AGENFK_DIST_TARBALL;
+    if (tarball) {
+        console.log(`${GREEN}[1a/14] Pruning install dir against the release archive...${NC}`);
+        // A distributed tarball never contains .git, so its presence means a
+        // developer's working tree, and pruning that against a RELEASE archive
+        // would silently delete their in-flight commands, skills and rules.
+        //
+        // Deliberately NOT identical to step 11b's sweep, which keys on .git
+        // alone: ~/.agenfk-system is itself a clone whenever packages/create
+        // took its --rebuild or download-failure fallback, and those installs
+        // must still be pruned. The install dir has a known path, which a
+        // developer's working tree cannot accidentally match.
+        // .git alone is NOT enough: ~/.agenfk-system is itself a clone whenever
+        // packages/create took its --rebuild or download-failure fallback
+        // (`git clone <repo> <INSTALL_DIR>`). Treating those installs as dev
+        // checkouts silently disabled the prune for exactly the users who
+        // cannot self-diagnose it. The install dir has a known path, so it is
+        // the discriminator a developer's working tree cannot accidentally match.
+        const installDir = path.join(os.homedir(), '.agenfk-system');
+        const isInstallDir = path.resolve(rootDir) === path.resolve(installDir);
+        if (existsSync(path.join(rootDir, '.git')) && !isInstallDir) {
+            console.log('  Skipping (dev checkout detected: .git present).');
+        } else if (!existsSync(tarball)) {
+            console.log(`${YELLOW}  Skipped: ${tarball} not found${NC}`);
+        } else {
+            try {
+                const { pruneInstallDirAgainstManifest } = await import(
+                    pathToFileURL(path.join(rootDir, 'bin', 'sync-install-dir.mjs')).href);
+                // Same Windows handling autoHealRedownload uses below: BSD tar
+                // reads a bare `C:` as a remote hostname, and MSYS2 tar wants a
+                // POSIX path. Without these the prune silently degrades to a
+                // "Skipped:" line on Windows and the leak stays open there.
+                const listFlags = process.platform === 'win32' ? '--force-local -tzf' : '-tzf';
+                const listing = execSync(`tar ${listFlags} "${toPosixPath(tarball)}"`, { encoding: 'utf8' })
+                    .split('\n').filter(Boolean);
+                const { removed, failed } = pruneInstallDirAgainstManifest(rootDir, listing);
+                for (const rel of removed) console.log(`  Pruned (no longer shipped): ${rel}`);
+                for (const f of failed) console.log(`${YELLOW}  Could not prune ${f.path}: ${f.reason}${NC}`);
+                if (removed.length === 0 && failed.length === 0) console.log('  Nothing stale found');
+            } catch (e) {
+                // Never fail an upgrade over the prune, but never hide it either.
+                console.log(`${YELLOW}  Skipped: ${e.message}${NC}`);
+            }
+        }
+        if (healedArchive) {
+            try { rmSync(healedArchive, { force: true }); } catch { /* best effort */ }
+            healedArchive = null;
+        }
+    }
+
         cleanStaleSrc();
     } else {
         const missingDists = requiredDists.filter(d => !existsSync(path.join(rootDir, d)));
@@ -946,6 +1064,10 @@ process.exit(0);
             const files = await fs.readdir(commandsDir);
             for (const file of files) {
                 if (!isInstallableMarkdown(file)) continue;
+                // Repo-private release commands must never reach a global config,
+                // even when step 8f's cleanup ran earlier — the copy below would
+                // otherwise restore the file it just deleted.
+                if (isRepoPrivateCommand(file)) continue;
                 const skillName = file.replace(/\.md$/, '');
                 const skillDir = path.join(claudeSkillsDir, skillName);
                 await fs.mkdir(skillDir, { recursive: true });
@@ -1036,6 +1158,7 @@ process.exit(0);
             const files = await fs.readdir(commandsDir);
             for (const file of files) {
                 if (!isInstallableMarkdown(file)) continue;
+                if (isRepoPrivateCommand(file)) continue;
                 const skillName = file.replace(/\.md$/, '');
                 const skillDir = path.join(agentsSkillsDir, skillName);
                 await fs.mkdir(skillDir, { recursive: true });
@@ -1061,7 +1184,13 @@ process.exit(0);
         const stale = ['agenfk-release', 'agenfk-release-beta', 'agenfk-release-hub'];
         const targets = [];
         for (const name of stale) {
-            // Gemini tomls are written prefix-stripped: agenfk-release.md → agenfk/release.toml (see step 10c).
+            // Gemini tomls exist in TWO layouts and both must be cleaned:
+            //  - nested, written by step 10c:   ~/.gemini/commands/agenfk/release.toml
+            //  - flat, written by the CLI's `agenfk skills install`
+            //    (syncCommandsToml):            ~/.gemini/commands/agenfk-release.toml
+            // Cleaning only the nested form left a leaked flat toml stranded in
+            // the user's config forever — the CLI had already written it before
+            // this filter existed.
             const geminiName = name.replace(/^agenfk-/, '');
             targets.push(
                 path.join(os.homedir(), '.claude', 'commands', `${name}.md`),
@@ -1069,6 +1198,7 @@ process.exit(0);
                 path.join(os.homedir(), '.config', 'opencode', 'commands', `${name}.md`),
                 path.join(os.homedir(), '.config', 'opencode', 'skills', name),
                 path.join(os.homedir(), '.gemini', 'commands', 'agenfk', `${geminiName}.toml`),
+                path.join(os.homedir(), '.gemini', 'commands', `${name}.toml`),
                 path.join(os.homedir(), '.agents', 'skills', name),
             );
         }
@@ -1159,7 +1289,7 @@ process.exit(0);
             if (existsSync(commandsDir)) {
                 const files = await fs.readdir(commandsDir);
                 for (const file of files) {
-                    if (isInstallableMarkdown(file)) {
+                    if (isInstallableMarkdown(file) && !isRepoPrivateCommand(file)) {
                         await fs.copyFile(path.join(commandsDir, file), path.join(integration.targetBase, file));
                         console.log(`  Installed: ${path.join(integration.targetBase, file)}`);
                     }
@@ -1181,6 +1311,7 @@ process.exit(0);
                 const files = await fs.readdir(commandsDir);
                 for (const file of files) {
                     if (!isInstallableMarkdown(file)) continue;
+                    if (isRepoPrivateCommand(file)) continue;
                     const mdPath = path.join(commandsDir, file);
                     const mdContent = readFileSync(mdPath, 'utf8');
                     // Parse description from YAML frontmatter
@@ -1273,6 +1404,8 @@ process.exit(0);
         }
         console.log(swept > 0 ? `  Removed ${swept} stale macOS metadata artifact(s)` : '  None found');
     }
+
+
 
     // 12. Mirror the shared hook scripts into ~/.agenfk/bin. This MUST happen
     // regardless of --only target: in-process plugins (OpenCode) and the pi
