@@ -38,7 +38,7 @@ export const VERIFY_TOKEN = (() => {
     return ephemeral;
   }
 })();
-import { exec, execSync, execFileSync, spawn } from "child_process";
+import { exec, execFile, execSync, execFileSync, spawn } from "child_process";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import { readGitStatus } from './gitStatus.js';
@@ -919,8 +919,14 @@ export interface AutoGitCommitResult {
   error?: string;
 }
 
-const git = (cmd: string, cwd: string): Promise<{ ok: boolean; out: string; err: string }> =>
-  new Promise((resolve) => exec(cmd, { cwd }, (e, stdout, stderr) =>
+/*
+ * ARGUMENTS, never a shell string. These run against the USER's repository, and
+ * a shell adds quoting rules nobody here needs and a surface nobody here wants:
+ * the only interpolated value today is a constant, but "today" is the whole
+ * problem. execFile takes argv directly, like the rest of the server.
+ */
+const git = (args: readonly string[], cwd: string): Promise<{ ok: boolean; out: string; err: string }> =>
+  new Promise((resolve) => execFile('git', args as string[], { cwd }, (e, stdout, stderr) =>
     resolve({ ok: !e, out: stdout ?? '', err: (stderr || (e as any)?.message || '').trim() })));
 
 /** A merge, rebase, cherry-pick or revert the author has not finished. */
@@ -950,14 +956,14 @@ export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null
   // Swallowing git's own refusal made a server started outside a repository —
   // or pointed at one by a stale projectRoot — report every close as a clean
   // "nothing staged", forever.
-  const repo = await git('git rev-parse --git-dir', root);
+  const repo = await git(['rev-parse', '--git-dir'], root);
   if (!repo.ok) return stop('failed', `not a git repository: ${root}`);
 
   // An unfinished merge leaves MERGE_HEAD set and the index full of somebody
   // else's resolution; committing it produces a two-parent merge titled after
   // this item.
   for (const head of IN_PROGRESS_HEADS) {
-    if ((await git(`git rev-parse -q --verify ${head}`, root)).ok) {
+    if ((await git(['rev-parse', '-q', '--verify', head], root)).ok) {
       return stop('declined', `a ${head.replace('_HEAD', '').toLowerCase().replace('_', ' ')} is in progress`);
     }
   }
@@ -966,7 +972,7 @@ export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null
   // mention. Porcelain v1 with -z (a quoted path is a name the reader cannot
   // copy), consuming the second   a rename emits.
   const unstaged: string[] = [];
-  const status = await git('git status --porcelain -z', root);
+  const status = await git(['status', '--porcelain', '-z'], root);
   const entries = status.out.split('\0');
   for (let k = 0; k < entries.length; k++) {
     const entry = entries[k];
