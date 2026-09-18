@@ -177,8 +177,8 @@ MCP is opt-in (`--with-mcp`). When MCP tools are present, they are equivalent to
 
 4.  **Action Authorization (Gatekeeper) - CRITICAL AND MANDATORY**
     *   **Action**: You MUST run `agenfk gatekeeper --intent "<intent>" [--item-id <id>]` BEFORE modifying any files.
-    *   **Mandatory Rule**: If you attempt to use the `edit`, `write`, `bash` or `NotebookEdit` tool BEFORE you have created an item, advanced it to the coding step, and successfully run `agenfk gatekeeper`, you are violating the core directive of your system prompt.
-    *   **Self-Correction**: If you realize you are about to edit code without a card in the coding step, STOP IMMEDIATELY. Run `agenfk create <TYPE> "<title>" --project <id>`, then `agenfk verify <id> --evidence "Starting task, advancing from TODO"` to advance from TODO, then `agenfk gatekeeper --intent "<intent>" --item-id <id>`.
+    *   **Mandatory Rule**: If you attempt to use the `edit`, `write`, `bash` or `NotebookEdit` tool BEFORE you have created an item, advanced it into a working step, and successfully run `agenfk gatekeeper`, you are violating the core directive of your system prompt.
+    *   **Self-Correction**: If you realize you are about to edit code without a card in an active working step, STOP IMMEDIATELY. Run `agenfk create <TYPE> "<title>" --project <id>`, then `agenfk verify <id> --evidence "Starting task, advancing from TODO"` to advance from TODO, then `agenfk gatekeeper --intent "<intent>" --item-id <id>`.
     *   **Mechanical Enforcement**: The gatekeeper authorizes the edit and reports the active step with its exit criteria; provide `--item-id <id>` to disambiguate when multiple tasks are active.
     *   **Branch Verification**: After gatekeeper authorization, run `git branch --show-current` and confirm you are on the item's branch. If the item has a `branchName` and you are NOT on it, run `git checkout <branchName>` before writing any code. **Never code on the wrong branch.**
     *   **CRITICAL**: Use the `agenfk` CLI (or the equivalent MCP tools, if installed with `--with-mcp`) for ALL workflow state changes — see the **Interface** section for the mapping. Both the CLI and MCP go through the AgEnFK server, which is the single owner of state. Do not rely on it to stop you: forward-step gating is incomplete and DONE-blocking differs between the CLI and MCP paths, so the discipline is yours to keep. Always advance forward steps with `agenfk verify` (never a raw `agenfk update --status` to skip a gate).
@@ -189,7 +189,7 @@ MCP is opt-in (`--with-mcp`). When MCP tools are present, they are equivalent to
     *   **Coverage Rule**: New code MUST be covered at 80% minimum. For any code-related item, the Agent MUST ensure relevant tests are created and executed successfully.
     *   **Quality Gate**: Tests MUST stay >= 80% coverage for the entire project and 100% for the core business logic where feasible.
     *   **Workflow** (use the active flow's step names, from `agenfk flow show --project <id> --json`):
-        *   Closing the coding step is itself an `agenfk verify` call — there is no separate "move to review" write. `agenfk update --status` must never be used to go forward.
+        *   Closing the first working step is itself an `agenfk verify` call — there is no separate "move to review" write. `agenfk update --status` must never be used to go forward.
         *   Run `agenfk gatekeeper --item-id <itemId>` before `agenfk verify` — it reports the step you are on and its exit criteria.
         *   `agenfk verify <itemId> --evidence "<text>" ["<command>"]` — `evidence` is **required**: describe concretely how you satisfied the current step's exit criteria. It is logged as a tagged comment (audit trail) and serves as your mandatory confirmation before the step advances. The command is **optional** on intermediate steps: pass one only when the step's criteria call for it, and never the test runner on a step whose criteria expect red tests. Omitting it advances on the evidence; `verifyCommand` is substituted only on the final step (below).
         *   The Agent verifies coverage and regressions in each intermediate step.
@@ -201,7 +201,7 @@ MCP is opt-in (`--with-mcp`). When MCP tools are present, they are equivalent to
     *   **Action**: The Agent reads the current step's exit criteria FIRST (they define what an acceptable review is), reviews accordingly, then runs `agenfk verify <itemId> --evidence "<text>" ["<command>"]` to gate the transition to the next step.
     *   **Test Suite Enforcement**: The project's `verifyCommand` (set via `agenfk update-project <id> --verify-command "<cmd>"`) is substituted automatically only on the **final step** when no `command` is provided. On intermediate steps the command is optional and omitting it advances on the evidence alone. No advance is possible without evidence, which agents cannot fabricate or skip.
     *   **Transition Logic (Automated by Tool)**:
-        1. The agent closes the coding step with `agenfk verify <id> --evidence "<text>" ["<command>"]`, which is what advances it.
+        1. The agent closes the first working step with `agenfk verify <id> --evidence "<text>" ["<command>"]`, which is what advances it.
         2. The agent reviews — independently, via a separate review agent, when the step's exit criteria call for it; otherwise re-reads files and checks correctness itself.
         3. The agent runs `agenfk verify <itemId> --evidence "<concrete description of how exit criteria were met>" ["<command>"]` — logs evidence as a tagged comment, runs the command, and advances to the next flow step.
         4. Success: advances to the next step. Failure: the advance is refused and the item stays where it is. Repeat for each intermediate step until DONE.
@@ -219,7 +219,7 @@ MCP is opt-in (`--with-mcp`). When MCP tools are present, they are equivalent to
     *   **Post-Completion Prompt (MANDATORY)**: After an item (TASK, STORY, BUG, or EPIC) has been moved to `DONE`, the Agent **MUST** ask the user what they would like to do next, providing exactly these three options:
         1. **Release**: Cut a release following the project's own release process (release command, CI pipeline, or manual tag + GitHub release).
         2. **New Task**: Start a new session for a new task, epic, or bug (by calling `/clear` followed by `/agenfk`).
-        3. **Continue Current**: Keep working on the current item (the Agent MUST then ask what else should be included, then roll the item back to the flow's coding step with `agenfk update <id> --status <step>` — a backward move, which is what `update --status` is for).
+        3. **Continue Current**: Keep working on the current item (the Agent MUST then ask what else should be included, then roll the item back to the flow's first working step with `agenfk update <id> --status <step>` — a backward move, which is what `update --status` is for).
 
 ## Quality Guards — MANDATORY
 

@@ -87,8 +87,8 @@ describe('getActiveStepItems (moved to core)', () => {
 
 describe('resolveStepContract on a CLI-authored flow', () => {
   // The contract the gatekeeper prints IS the agent's working instructions:
-  // "First working step (where TODO lands): X" and "Final step (omit the
-  // command here; the project's verifyCommand runs and lands DONE): Y". On a
+  // "First working step (the step after <first>): X" and "Final step (omit the
+  // command here; the project's verifyCommand runs and closes the item): Y". On a
   // flow authored through `agenfk flow create` — which only ever asks "Is this
   // a terminal/special step?" and emits isSpecial, never isAnchor — both were
   // computed with predicates that cannot see isSpecial, so the gatekeeper
@@ -622,7 +622,7 @@ describe('mutation hardening for the gatekeeper (CGLAB-110)', () => {
   it('joins the active flow steps with the arrow separator', () => {
     const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], anchoredFlow, {});
     expect(d.message).toContain('TODO → DISCOVERY → IN_PROGRESS → DONE');
-    expect(d.message).toContain('Final step (omit the command here; the project\'s verifyCommand runs and lands DONE): IN_PROGRESS');
+    expect(d.message).toContain('Final step (omit the command here; the project\'s verifyCommand runs and closes the item): IN_PROGRESS');
   });
 
   it('renders a nameless flow without a quoted name', () => {
@@ -681,11 +681,12 @@ describe('mutation hardening for the gatekeeper (CGLAB-110)', () => {
 
   it('pins the exact first-working-step and final-step lines, and omits the first-step line when there is none', () => {
     // CGLAB-275: "Coding step: DISCOVERY" read as an instruction to code on a
-    // discovery step. The line says what the step IS (where TODO lands), and
-    // the final-step line says what happens there instead of a bare "omit".
+    // discovery step. The line says what the step IS (the step after the first
+    // anchor, named from the flow — never a literal TODO), and the final-step
+    // line says what happens there instead of a bare "omit".
     const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], anchoredFlow, {});
     expect(d.message).not.toContain('Coding step');
-    expect(d.message).toContain('First working step (where TODO lands): DISCOVERY\nFinal step (omit the command here; the project\'s verifyCommand runs and lands DONE): IN_PROGRESS');
+    expect(d.message).toContain('First working step (the step after TODO): DISCOVERY\nFinal step (omit the command here; the project\'s verifyCommand runs and closes the item): IN_PROGRESS');
     const anchorsOnly: GatekeeperFlow = {
       steps: [
         { name: 'TODO', order: 0, isAnchor: true },
@@ -696,7 +697,7 @@ describe('mutation hardening for the gatekeeper (CGLAB-110)', () => {
     expect(d2.message).not.toContain('First working step');
     // Exact adjacency: with no coding step, the final-step line follows the
     // flow line directly — nothing may be injected in between.
-    expect(d2.message).toContain('Active flow: TODO → DONE\nFinal step (omit the command here; the project\'s verifyCommand runs and lands DONE): TODO');
+    expect(d2.message).toContain('Active flow: TODO → DONE\nFinal step (omit the command here; the project\'s verifyCommand runs and closes the item): TODO');
   });
 
   it('leaks no step-shape copy when the flow could not be resolved', () => {

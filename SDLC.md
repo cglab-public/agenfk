@@ -231,7 +231,7 @@ The `/agenfk-release` skill includes a **Step 0 PR merge gate**:
 4. workflow_gatekeeper({ intent: "Fix null check", role: "coding" })
    → Gatekeeper auto-checks out the branch
 5. [Agent implements the fix]
-6. validate_progress({ id, evidence: "<how the coding step's criteria were met>" })
+6. validate_progress({ id, evidence: "<how this step's criteria were met>" })
 7. [Agent reviews: independently via a separate review agent when the step's exit criteria require it, else re-reads files and checks correctness]
 8. workflow_gatekeeper({ intent: "Review", role: "validating", itemId })
    → Response includes exitCriteria for the current step
@@ -254,7 +254,7 @@ The `/agenfk-release` skill includes a **Step 0 PR merge gate**:
 2. validate_progress({ id, evidence: "<why this is ready to start>" })
 3. workflow_gatekeeper({ intent: "Add toggle", role: "coding" })
 4. [Agent implements the feature]
-5. validate_progress({ id, evidence: "<how the coding step's criteria were met>" })
+5. validate_progress({ id, evidence: "<how this step's criteria were met>" })
 6. [Review — independent when the step's criteria require it] → workflow_gatekeeper({ intent: "Review", role: "validating", itemId })
 7. validate_progress({ itemId, command: "npm run build" })
    → Passes → the next step in the flow

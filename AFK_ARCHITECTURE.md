@@ -37,7 +37,7 @@ AgenFK features an automated orchestration layer where the primary agent acts as
     - **Protocol**: Decomposes request into `TODO` sub-items and **PAUSES** for human approval.
 2.  **Coding Agent (IN_PROGRESS Phase)**:
     - **Trigger**: Human approval of the plan.
-    - **Protocol**: Implements the plan, then calls `validate_progress` to close the coding step. Never signal completion with `update_item({ status })` — a forward transition by any route other than `validate_progress` skips the gate.
+    - **Protocol**: Implements the plan, then calls `validate_progress` to close the step it is on. Never signal completion with `update_item({ status })` — a forward transition by any route other than `validate_progress` skips the gate.
 3.  **Review Agent (REVIEW Phase)**:
     - **Trigger**: Automatic spawn when item enters REVIEW.
     - **Protocol**: Calls `workflow_gatekeeper(itemId)` to read exit criteria, audits code for security and requirements, then calls `validate_progress` to advance to `TEST`.

@@ -222,9 +222,12 @@ export function renderStepContract(c: StepContract, status: string, advanceHint:
     ? `\n\nActive flow${c.activeFlow.name ? ` "${c.activeFlow.name}"` : ''}: ${c.activeFlow.steps.join(' → ')}`
       // Say what each step IS, never what to do on it. "Coding step: DISCOVERY"
       // read as an instruction to code on a discovery step (CGLAB-275); the
-      // step's own exit criteria are the instructions.
-      + (c.codingStep ? `\nFirst working step (where TODO lands): ${c.codingStep}` : '')
-      + (c.finalStep ? `\nFinal step (omit the command here; the project's verifyCommand runs and lands DONE): ${c.finalStep}` : '')
+      // step's own exit criteria are the instructions. Names come from the flow
+      // itself — the anchors are not assumed to be called TODO or DONE. The one
+      // deliberate "do" is "omit the command": that is how the final gate runs
+      // the project's verifyCommand, and getting it wrong skips the gate.
+      + (c.codingStep ? `\nFirst working step (the step after ${c.activeFlow.steps[0]}): ${c.codingStep}` : '')
+      + (c.finalStep ? `\nFinal step (omit the command here; the project's verifyCommand runs and closes the item): ${c.finalStep}` : '')
     : '';
 
   return `${head}${steps}`;

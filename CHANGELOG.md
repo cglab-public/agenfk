@@ -11,9 +11,13 @@ agent-facing output that misled the pi agent is now fixed, not only the rollback
 
 - The gatekeeper's step-shape block printed `Coding step: DISCOVERY` on a TDD flow — the
   first non-anchor step, labelled as if it were where code is written. It now reads
-  `First working step (where TODO lands): DISCOVERY`, and the final-step line says plainly
+  `First working step (the step after TODO): DISCOVERY` — the anchor's name comes from the
+  flow, nothing is assumed to be called TODO or DONE — and the final-step line says plainly
   what happens there: `Final step (omit the command here; the project's verifyCommand runs
-  and lands DONE): REVIEW`.
+  and closes the item): REVIEW`.
+- The shipped skill and slash commands called the first non-anchor step "the coding step"
+  throughout, which is the same misread written down. They now say "first working step",
+  and the rule against editing without a card says "an active working step".
 - The verify success response's `MANDATORY EXIT CRITERIA` banner did not name the step the
   criteria belong to. After the silent rollback, the agent read the criteria of the step it
   had just re-entered as those of the step it believed it was on, and concluded that a

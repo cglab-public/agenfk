@@ -28,7 +28,7 @@ You are executing the `/agenfk-close <id>` command as a **Closing Agent**. Follo
 - If the item has children (EPIC with STORYs, STORY with TASKs), run `agenfk list --project <id> --json` (filter by parent) to check their status.
 - Any child still in an intermediate flow step must be progressed to DONE first: run `agenfk verify <childId> --evidence "<how this step's criteria were met>"` once per remaining step. The command is optional on intermediate steps — pass one only when the step's criteria call for it; `verifyCommand` is substituted only on the final step. A non-zero command refuses the advance and leaves the child where it is. Never set `DONE` directly by any route.
 - **Sibling propagation**: If one child's `agenfk verify` already reached DONE, remaining siblings will pass immediately (same verified code). Run `agenfk verify <id> --evidence "<evidence>"` on each — the server skips execution via sibling propagation.
-- Any child still sitting in the flow's coding step should be flagged to the user before proceeding. Identify that step from `agenfk flow show --project <projectId> --json` — it is the first non-anchor step, whatever it is named — rather than assuming it is called `IN_PROGRESS`.
+- Any child still sitting in the flow's first working step should be flagged to the user before proceeding. Identify that step from `agenfk flow show --project <projectId> --json` — it is the first non-anchor step, whatever it is named — rather than assuming it is called `IN_PROGRESS`.
 - Only proceed to Step 5 once ALL children are DONE.
 
 **Step 5 — Stage what this card changed**
@@ -53,4 +53,4 @@ You are executing the `/agenfk-close <id>` command as a **Closing Agent**. Follo
 - After the item has been moved to `DONE`, you **MUST** ask the user what they would like to do next, providing exactly these three options:
     1. **Release**: Cut a release following the project's own release process (release command, CI pipeline, or manual tag + GitHub release).
     2. **New Task**: Start a new session for a new task, epic, or bug (by calling `/clear` followed by `/agenfk`).
-    3. **Continue Current**: Keep working on the current item (you MUST then ask what else should be included, then roll the item back to the flow's coding step with `agenfk update <id> --status <step>` — a backward move, which is what `update --status` is for).
+    3. **Continue Current**: Keep working on the current item (you MUST then ask what else should be included, then roll the item back to the flow's first working step with `agenfk update <id> --status <step>` — a backward move, which is what `update --status` is for).

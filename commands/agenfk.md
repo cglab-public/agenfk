@@ -83,7 +83,7 @@ Before creating any item, evaluate the request against these signals:
 1. Resolve the current project id by running `agenfk current-project` (it walks up from the cwd to the nearest `.agenfk/project.json`). Use the printed id as `<projectId>` in every command below. If it errors, the directory is not initialized — run `agenfk list-projects --json` and ask the user whether to link an existing project or create a new one (per the base agenfk skill's Initialization procedure) before continuing. Never auto-create a project without asking.
 2. Identify the item to work on:
    - **If the user named a specific item id** (e.g. "work on `dd9658a6-…`"), load it directly with `agenfk get <id> --json` and resume that item. Do **not** try to read a file named `<id>.json` — items live in the AgEnFK server, not on disk; `agenfk get <id> --json` is the only way to fetch one.
-   - **Otherwise**, run `agenfk list --project <projectId> --active --json` to check for an item already in an active working step. `--active` returns only in-flight items (excludes TODO/DONE and PAUSED/BLOCKED/terminal) — a much smaller list than all items, so your context stays lean as the board fills. If one exists, resume it. If none exists, create a new item with `agenfk create <TYPE> "<title>" --project <id>` (using the type determined in Step 0), then run `agenfk verify <id> --evidence "Starting task, advancing from TODO"` to advance from TODO to the coding step.
+   - **Otherwise**, run `agenfk list --project <projectId> --active --json` to check for an item already in an active working step. `--active` returns only in-flight items (excludes TODO/DONE and PAUSED/BLOCKED/terminal) — a much smaller list than all items, so your context stays lean as the board fills. If one exists, resume it. If none exists, create a new item with `agenfk create <TYPE> "<title>" --project <id>` (using the type determined in Step 0), then run `agenfk verify <id> --evidence "Starting task, advancing from TODO"` to advance from TODO to the first working step.
 3. Run `agenfk flow show --project <projectId> --json` to load the **full flow with all steps and their exit criteria**. Read it carefully — this is your workflow contract for the session. Each step's exit criteria is your mandatory work definition before running `agenfk verify` again.
 4. Run `agenfk gatekeeper --intent "<intent>" --item-id <itemId>` before making any file changes.
 5. **Branch verification** — after gatekeeper authorization, run `git branch --show-current` and confirm you are on the correct branch for this work. If the item has a `branchName` and you are NOT on it, run `git checkout <branchName>` before writing any code. **Never code on the wrong branch.**
@@ -102,7 +102,7 @@ defines none, so this is the common case — empty criteria never mean "no work"
 1. **Read the step you are actually on.** Run `agenfk gatekeeper --intent "<intent>" --item-id <itemId>`.
    It authorizes the edit and reports everything you need: the step the item is currently on,
    that step's **exit criteria**, the **active flow's steps**, and — resolved for you, so you
-   never derive them — which step is the **coding step** and which is the **final step**.
+   never derive them — which step is the **first working step** and which is the **final step**.
 
    Read its verdict on the criteria carefully, because three cases look similar and mean
    different things:
@@ -123,7 +123,7 @@ defines none, so this is the common case — empty criteria never mean "no work"
    criteria, use the step's position in the flow, per the defaults below.
 
 2. **Do the work this step calls for.** Follow the criteria if there are any. If there are
-   none, default by position: on the **coding step**, explore the codebase and understand the
+   none, default by position: on the **first working step**, explore the codebase and understand the
    context, then implement the change; on the **final step**, get the project's test suite
    green; on any **other** step, verify what the previous steps produced — at minimum satisfy
    step 3 and step 4 below. Along the way:
@@ -223,7 +223,7 @@ placeholders deliberately: substitute the real step names from the flow you load
 
 | Pass | Step you are on | What you do | How you advance |
 |------|-----------------|-------------|-----------------|
-| 1 | `<coding step>` — first non-anchor step | Explore, then implement (step 2 default), then review it (step 3 floor) | `agenfk verify <id> --evidence "..."` — command optional; a build check if the criteria want one |
+| 1 | `<first working step>` — first non-anchor step | Explore, then implement (step 2 default), then review it (step 3 floor) | `agenfk verify <id> --evidence "..."` — command optional; a build check if the criteria want one |
 | n | any middle step | Whatever its criteria say; review it if they are silent | `agenfk verify <id> --evidence "..."` — command optional; never the test runner on a red-tests step |
 | last | `<final step>` — last step before `DONE` | Suite green, criteria met | `agenfk verify <id> --evidence "..."` — **no command**, uses `verifyCommand` → **DONE** |
 
@@ -241,4 +241,4 @@ which is exactly why the position-based defaults in steps 2 and 3 exist.
 3. After the item has been moved to `DONE`, you **MUST** ask the user what they would like to do next, providing exactly these three options:
     - **Release**: Cut a release following the project's own release process (release command, CI pipeline, or manual tag + GitHub release).
     - **New Task**: Start a new session for a new task, epic, or bug (by calling `/clear` followed by `/agenfk`).
-    - **Continue Current**: Keep working on the current item (you MUST then ask what else should be included, then roll the item back to the flow's coding step with `agenfk update <id> --status <step>` — a backward move, which is what `update --status` is for).
+    - **Continue Current**: Keep working on the current item (you MUST then ask what else should be included, then roll the item back to the flow's first working step with `agenfk update <id> --status <step>` — a backward move, which is what `update --status` is for).
