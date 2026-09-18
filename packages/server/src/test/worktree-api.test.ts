@@ -378,7 +378,15 @@ describe('project root must never become the home directory (CGLAB-166 review)',
   });
 
   it('still resolves a real project root normally', () => {
-    expect(findProjectRoot(repo)).toBe(repo);
+    // A REAL root, marker included: without `.agenfk` the walk finds nothing
+    // and the honest answer is null, which is the test above's point.
+    const realRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-fpr-real-'));
+    fs.mkdirSync(path.join(realRoot, '.agenfk'), { recursive: true });
+    try {
+      expect(findProjectRoot(realRoot)).toBe(realRoot);
+    } finally {
+      fs.rmSync(realRoot, { recursive: true, force: true });
+    }
   });
 });
 

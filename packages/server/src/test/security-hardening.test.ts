@@ -288,10 +288,14 @@ describe('findProjectRoot terminates', () => {
       const start = Date.now();
       const out = findProjectRoot(relative);
       expect(Date.now() - start, `findProjectRoot(${JSON.stringify(relative)}) hung`).toBeLessThan(2000);
-      // And it answers with something absolute: a relative "project root" would
-      // be resolved against the SERVER's cwd later, which is the defect this
-      // whole area keeps producing.
-      expect(path.isAbsolute(out), `returned a relative root: ${out}`).toBe(true);
+      /*
+       * NULL is the answer for a relative path with no marker above it: not
+       * found. What it must never be is a RELATIVE string, because that one
+       * would later be resolved against the SERVER's cwd - the defect this
+       * whole area keeps producing. (The resolved absolute case is covered by
+       * the test below.)
+       */
+      expect(out === null || path.isAbsolute(out), `returned a relative root: ${out}`).toBe(true);
     }
   });
 
@@ -308,13 +312,19 @@ describe('findProjectRoot terminates', () => {
     }
   });
 
-  it('gives back an absolute path when it finds nothing', () => {
-    // The no-match answer is used as a cwd by callers, so returning the
-    // caller's own relative string would hand git a path resolved against the
-    // server's working directory.
+  it('says NOT FOUND when it finds nothing, instead of its own start dir', () => {
+    /*
+     * The no-match answer used to be the (resolved) starting directory, which
+     * made a failure indistinguishable from an answer: a worktree has no
+     * `.agenfk` (it is gitignored), so a verify run from one recorded that
+     * worktree as the project's own root, and everything resolving through
+     * projectRoot - autoGitCommit above all - aimed at one card's directory
+     * from then on, with no message. Null is the answer; callers that still
+     * need a cwd say `?? process.cwd()` explicitly.
+     */
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-fpr-none-'));
     try {
-      expect(path.isAbsolute(findProjectRoot(dir))).toBe(true);
+      expect(findProjectRoot(dir)).toBeNull();
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

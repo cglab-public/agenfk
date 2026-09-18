@@ -817,7 +817,7 @@ function realBase(p: string): string {
   });
 }
 
-export const findProjectRoot = (startDir: string): string => {
+export const findProjectRoot = (startDir: string): string | null => {
   const home = os.homedir();
   /*
    * RESOLVED FIRST, and this is not tidiness - it is what makes the loop below
@@ -860,32 +860,22 @@ export const findProjectRoot = (startDir: string): string => {
     if (parent === currentDir) break;
     currentDir = parent;
   }
-  // The RESOLVED start, never the caller's string. See above.
-  return path.resolve(startDir);
+  /*
+   * NOT FOUND IS null, not the starting directory.
+   *
+   * Returning `path.resolve(startDir)` made a FAILURE indistinguishable from
+   * an answer: a caller could not tell "this is the project root" from "the
+   * walk reached the filesystem root and gave up". A worktree has no
+   * `.agenfk` (it is gitignored, so it does not travel into one), so a verify
+   * run from one recorded that worktree as the project's own root - and
+   * everything resolving through projectRoot, autoGitCommit above all, then
+   * aimed at one card's directory, permanently, with no message.
+   *
+   * The sink above stays where it is; this is the return value telling the
+   * truth about it.
+   */
+  return null;
 };
-
-/**
- * Does this directory actually hold a `.agenfk` marker?
- *
- * The proof that distinguishes a real project root from findProjectRoot's
- * fallback, which returns its STARTING directory when the walk finds nothing -
- * a failure that is indistinguishable from an answer once it is a string.
- *
- * Module-level, beside the walk that already reads the same marker, so the
- * route stays a route: a file-system read written inline in a request handler
- * is also what the "uncontrolled path" and "missing rate limiting" CodeQL
- * queries look for, and the walk here is the one place that reads it.
- *
- * `path.resolve` FIRST, and it is load-bearing for two reasons. Semantically it
- * is what findProjectRoot already does - a root that is relative would be
- * resolved against the SERVER's cwd later, the defect this whole area keeps
- * producing. And it is the barrier that keeps the read out of CodeQL's
- * "uncontrolled data used in path expression": the walk below resolves before
- * touching disk, which is why its own `path.join(currentDir, '.agenfk')` is not
- * flagged while the same expression on a raw value is.
- */
-export const hasProjectMarker = (root: string): boolean =>
-  fs.existsSync(path.join(path.resolve(root), '.agenfk'));
 
 /**
 /**
@@ -1052,7 +1042,7 @@ const initStorage = async () => {
       } catch { /* ignore malformed config */ }
     }
     if (!dbPath) {
-      const root = findProjectRoot(process.cwd());
+      const root = findProjectRoot(process.cwd()) ?? process.cwd();
       dbPath = path.join(root, ".agenfk", "db.sqlite");
     }
   }
@@ -1401,7 +1391,7 @@ app.get("/", (req, res, next) => {
 });
 
 app.get("/api/readme", asyncHandler(async (_req: any, res: any) => {
-  const root = findProjectRoot(process.cwd());
+  const root = findProjectRoot(process.cwd()) ?? process.cwd();
   const readmePath = path.join(root, "README.md");
   if (!fs.existsSync(readmePath)) {
     return res.status(404).json({ error: "README.md not found" });
@@ -5247,14 +5237,18 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
      * belonging to ONE card, permanently, with no message. Checking for the
      * marker is what tells a real found root from a fallback.
      */
-    const isRealRoot = hasProjectMarker(resolvedRoot);
-    if (item && isRealRoot && isPersistableProjectRoot(resolvedRoot, os.homedir())) {
+    /*
+     * `findProjectRoot` now ANSWER whether it found anything: null is the walk
+     * reaching the filesystem root without a `.agenfk` marker, which is what a
+     * buggy expression used to record as the project's root.
+     */
+    if (item && resolvedRoot && isPersistableProjectRoot(resolvedRoot, os.homedir())) {
       await storage.updateProject(item.projectId, { projectRoot: resolvedRoot });
     } else if (item) {
-      const why = !isRealRoot
-        ? 'no .agenfk marker there (a worktree has none) - it is not a project root'
+      const why = resolvedRoot === null
+        ? 'no .agenfk marker above it (a worktree has none) - it is not a project root'
         : 'it is not a persistable project root';
-      console.warn(`[PROJECT_ROOT] Refusing to record ${resolvedRoot} as a project root (item ${item.id}): ${why}`);
+      console.warn(`[PROJECT_ROOT] Refusing to record ${resolvedRoot ?? cwd} as a project root (item ${item.id}): ${why}`);
     }
   }
   // One active run per item — a second verify while one runs is almost always
@@ -6513,7 +6507,7 @@ app.post("/releases/update", asyncHandler(async (req: any, res: any) => {
       releaseCache = null; // Force fresh version read after update
       // Notify browser then restart server
       io.emit('server_restarting');
-      const serverBin = path.join(findProjectRoot(process.cwd()), 'packages/server/dist/server.js');
+      const serverBin = path.join(findProjectRoot(process.cwd()) ?? process.cwd(), 'packages/server/dist/server.js');
       // Spawn a detached shell that waits for current process to exit, then starts new server
       const restarter = spawn('sh', ['-c', `sleep 2 && node ${JSON.stringify(serverBin)}`], {
         detached: true,
