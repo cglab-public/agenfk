@@ -804,7 +804,7 @@ export function TerminalTab({
         ref={splitRowRef}
         className={clsx('relative min-w-0 flex-1', showDivider && 'bg-border-soft')}
       >
-      {sessions.map(session => {
+      {sessions.map((session, index) => {
         const rect = rectFor.get(session.id);
         return (
         <div
@@ -846,11 +846,41 @@ export function TerminalTab({
             if (onDropSession) onDropSession(dropped, session.id, zone);
             else onToggleSplit?.(dropped, zone.direction);
           }}
-          className={clsx('min-h-0', rect ? 'absolute overflow-hidden bg-canvas' : 'flex-1')}
+          className={clsx('flex min-h-0 flex-col', rect ? 'absolute overflow-hidden bg-canvas' : 'flex-1')}
           /* Inline style only, never a DOM move: re-parenting a pane would
              unmount it and kill the agent. */
           style={rect ? { left: rect.x, top: rect.y, width: rect.width, height: rect.height } : undefined}
         >
+          {/*
+           * THE PANE'S OWN IDENTITY, when there is more than one (ccbe7ba4).
+           *
+           * The header above shows ONE branch - the active session's - so with
+           * a split the other pane's branch was unreadable without clicking its
+           * tab, which is exactly when more than one agent is running. The name
+           * comes first because it is the same string the tab strip builds
+           * (`Claude Code 1`), so a pane and its tab are recognisably the same
+           * thing. Composed from what the strip already has: no new data.
+           *
+           * Only when split: a lone pane is already named in the header, and a
+           * second copy beside it is noise.
+           */}
+          {paneIds.size > 1 && (
+            <div
+              data-testid="pane-identity"
+              className="flex shrink-0 items-center gap-1.5 border-b border-border-soft bg-nav-surface px-2 py-0.5 text-[10px]"
+            >
+              <AgentIcon agentId={session.agentId} size={10} />
+              <span className="truncate text-ink-secondary">{`${agentLabel(session.agentId)} ${index + 1}`}</span>
+              <span
+                className="truncate font-mono text-ink-tertiary"
+                title={session.branchName ?? undefined}
+              >
+                {session.branchName ?? 'no branch yet'}
+              </span>
+            </div>
+          )}
+          {/* min-h-0 so a long line of output cannot push the pane taller. */}
+          <div className="min-h-0 flex-1">
           <TerminalPane
             itemId={session.itemId}
             agentId={session.agentId}
@@ -864,6 +894,7 @@ export function TerminalTab({
             onActivity={a => onActivity?.(session.id, a)}
             onScreenActivity={a => onScreenActivity?.(session.id, a)}
           />
+          </div>
           {/*
            * WHERE IT WILL LAND, while the drag is still in the air.
            *

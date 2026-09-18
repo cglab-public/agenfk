@@ -628,6 +628,35 @@ describe('a pane tree of more than two', () => {
     }
   });
 
+  it('gives every pane its OWN identity line, with its branch', () => {
+    // With two panes the header showed ONE branch - the active session's - so
+    // the other pane's branch was unreadable without clicking its tab, exactly
+    // when more than one agent is running. Each pane carries its own line now.
+    const branched = sessions().map((s, i) => ({
+      ...s, branchName: ['feat/a', 'fix/b', 'feat/c'][i],
+    }));
+    renderTab(<TerminalTab {...treeProps()} sessions={branched} />);
+    const labels = screen.getAllByTestId('pane-identity');
+    expect(labels, 'a pane had no identity line').toHaveLength(3);
+    expect(labels[0].textContent).toMatch(/Claude Code 1/);
+    expect(labels[0].textContent).toContain('feat/a');
+    expect(labels[1].textContent).toContain('fix/b');
+    expect(labels[2].textContent).toContain('feat/c');
+  });
+
+  it('says so when a pane has no branch yet, rather than staying silent', () => {
+    renderTab(<TerminalTab {...treeProps()} />);   // no branchName at all
+    const labels = screen.getAllByTestId('pane-identity');
+    expect(labels[0].textContent).toMatch(/no branch yet/i);
+  });
+
+  it('does NOT add an identity line when there is only one pane', () => {
+    // One pane is already named in the header above; a second copy beside it
+    // would be noise.
+    renderTab(<TerminalTab {...baseProps()} />);
+    expect(screen.queryAllByTestId('pane-identity')).toHaveLength(0);
+  });
+
   it('routes a drop on a pane edge to the tree, carrying the edge', () => {
     const onDropSession = vi.fn();
     renderTab(<TerminalTab {...treeProps()} onDropSession={onDropSession} />);
