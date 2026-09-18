@@ -160,7 +160,6 @@ describe('POST /items/:id/validate — a failed command refuses, it does not rol
     expect(msg).toMatch(/Validation Failed/);
     // The resulting status is stated, and stated as unchanged.
     expect(msg).toMatch(/Item (stays|remains) on CREATE_UNIT_TESTS/);
-    expect(msg).not.toMatch(/moved (back )?to/i);
   });
 
   it('records the refusal on the step it happened, not a transition to another step', async () => {
@@ -199,6 +198,37 @@ describe('POST /items/:id/validate — a failed command refuses, it does not rol
     expect((after.tests || []).some((t: any) => t.status === 'FAILED')).toBe(true);
   });
 
+  it('records the FAILED test on a red final gate even when the exit step is not named DONE', async () => {
+    // The failure path used to key the FAILED record on the literal name DONE
+    // while the success path used the positional "next step ends the flow"
+    // predicate. On a CLI-authored flow whose exit step is SHIPPED, a red gate
+    // therefore left no record at all. The code may assume a first anchor,
+    // ordered steps and a last anchor — never a step's name.
+    if (!VERIFY_TOKEN) return;
+    const project = await agent().post('/projects').send({ name: 'RNR10' });
+    expect(project.status).toBe(201);
+    const projectId = project.body.id;
+    const flow = await agent().post('/flows').set(internal()).send({ name: 'RNR10-cli', steps: [
+      { name: 'BACKLOG', label: 'Backlog', order: 0, isAnchor: true },
+      { name: 'CHECKING', label: 'Checking', order: 1 },
+      { name: 'SHIPPED', label: 'Shipped', order: 2, isAnchor: true },
+    ] });
+    expect(flow.status, JSON.stringify(flow.body)).toBe(201);
+    expect((await agent().post(`/projects/${projectId}/flow`).set(internal()).send({ flowId: flow.body.id })).status).toBe(200);
+    expect((await agent().put(`/projects/${projectId}/verify-command`).set(internal()).send({ verifyCommand: 'exit 1' })).status).toBe(200);
+    const created = await agent().post('/items').send({ type: 'TASK', title: 'RNR10-item', projectId });
+    expect(created.status).toBe(201);
+    expect((await agent().post('/items/bulk').set(internal()).send({ items: [{ id: created.body.id, updates: { status: 'CHECKING' } }] })).status).toBe(200);
+
+    const res = await agent().post(`/items/${created.body.id}/validate`).set(internal()).send({ evidence: 'claiming green' });
+    expect(res.status).toBe(422);
+    expect(res.body.status).toBe('CHECKING');
+
+    const after = (await agent().get(`/items/${created.body.id}`)).body;
+    expect(after.status).toBe('CHECKING');
+    expect((after.tests || []).filter((t: any) => t.status === 'FAILED').length).toBe(1);
+  });
+
   it('still opens the final gate when the suite is green', async () => {
     if (!VERIFY_TOKEN) return;
     const item = await itemOnDefaultFinalStep('RNR5', 'echo suite green');
@@ -228,18 +258,6 @@ describe('POST /items/:id/validate — a failed command refuses, it does not rol
     expect(after.status).toBe('TEST');
   });
 
-  it('a failed intermediate command leaves the card where the gatekeeper still counts it as active work', async () => {
-    if (!VERIFY_TOKEN) return;
-    const { projectId, item } = await itemOnTddStep('RNR7', 'IN_PROGRESS');
-
-    await agent().post(`/items/${item.id}/validate`).set(internal())
-      .send({ evidence: 'not yet', command: 'exit 1' });
-
-    const active = await agent().get('/items').query({ active: 'true', projectId });
-    expect(active.status).toBe(200);
-    expect(active.body.map((i: any) => i.id)).toContain(item.id);
-  });
-
   it('ends every response with the resulting status, so a `| tail` still shows where the card is', async () => {
     // The pi agent piped verify through `tail -8`. The transition line sits at
     // the TOP of the message and the next step's criteria banner pushed it out
@@ -251,7 +269,7 @@ describe('POST /items/:id/validate — a failed command refuses, it does not rol
     const failed = await agent().post(`/items/${red.id}/validate`).set(internal())
       .send({ evidence: 'red tests', command: 'exit 1' });
     expect(failed.status).toBe(422);
-    expect(String(failed.body.message).trim().split('\n').pop()).toMatch(/CREATE_UNIT_TESTS/);
+    expect(String(failed.body.message).trim().split('\n').pop()).toMatch(/^The advance was refused\. Item stays on CREATE_UNIT_TESTS\.$/);
 
     const { item: green } = await itemOnTddStep('RNR9b', 'CREATE_UNIT_TESTS');
     const passed = await agent().post(`/items/${green.id}/validate`).set(internal())

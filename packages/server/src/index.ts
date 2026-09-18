@@ -476,7 +476,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "review_changes",
-        description: "DEPRECATED: Use validate_progress instead. Runs a build command and advances to the next flow step.",
+        description: "DEPRECATED: Use validate_progress instead. Optionally runs a command and advances to the next flow step; a non-zero exit refuses the advance and the item stays on its current step.",
         inputSchema: {
           type: "object",
           properties: {

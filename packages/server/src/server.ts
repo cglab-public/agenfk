@@ -4521,10 +4521,12 @@ function pruneValidateRuns() {
 
 // ── validate_progress: unified exit-criteria gate (flow-aware) ───────────────
 // command is optional; if omitted, project.verifyCommand is used.
-/** Trailing line of every verify response. The transition line sits at the top
- *  and the next step's criteria banner pushes it out of a `| tail`; the LAST
- *  line must always say where the card is (CGLAB-275). */
+/** Trailing line of every verify response that reports a step outcome. The
+ *  transition line sits at the top and the next step's criteria banner pushes
+ *  it out of a `| tail`; the LAST line must always say where the card is
+ *  (CGLAB-275). `nowOn` after a move, `staysOn` after a refused advance. */
 const nowOn = (status: string) => `\n\nItem is now on ${status}.`;
+const staysOn = (status: string) => `\n\nThe advance was refused. Item stays on ${status}.`;
 
 // Advances item to the next flow step. On failure the advance is refused and the item stays put (CGLAB-275).
 // `asyncRun` (pre-reserved by the route so the concurrency guard has no
@@ -4876,7 +4878,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const staleComment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation ${passed ? 'PASSED' : 'FAILED'} (not applied)\n\nItem moved ${item.status} → ${freshItem.status} while the command ran; the computed transition is stale and was NOT applied. Re-run verify from the current step.\n**Command**: \`${resolvedCommand}\`\n\n**Output**:\n\`\`\`\n${preview}\n\`\`\``, timestamp: new Date() };
     await storage.updateItem(itemId, { comments: [...(freshItem.comments || []), staleComment] });
     io.emit('items_updated');
-    return res2.status(409).json({ status: freshItem.status, message: `⚠️ Validation ${passed ? 'passed' : 'failed'}, but the item changed step (${item.status} → ${freshItem.status}) while the command ran — no transition applied. Re-run verify from the current step.`, output: preview });
+    return res2.status(409).json({ status: freshItem.status, message: `⚠️ Validation ${passed ? 'passed' : 'failed'}, but the item changed step (${item.status} → ${freshItem.status}) while the command ran — no transition applied. Re-run verify from the current step.${nowOn(freshItem.status)}`, output: preview });
   }
   Object.assign(item, freshItem);
 
@@ -4982,7 +4984,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     return res2.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${describePush(gitResult)}${nowOn(nextStatus)}`, output: preview });
   } else {
     const updates: any = { status: failureStatus, comments };
-    if (nextStatus === Status.DONE) {
+    // Same positional predicate as the PASSED record above: a red final gate on
+    // a flow whose exit step is not named DONE must still leave a FAILED record.
+    if (endsFlow) {
       updates.tests = [...(item.tests || []), { id: testId, command: resolvedCommand, output: preview, status: 'FAILED', executedAt: new Date() }];
     }
     await storage.updateItem(itemId, updates);
@@ -5005,7 +5009,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       // exit code used to be computed and thrown away, so a red suite, a
       // cap-kill and a command that never started were indistinguishable
       // (BUG b233143b).
-      message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${projectRoot}\`\nResult: ${describeExit({ code, timedOut, signal, spawnError }, maxMs)}\n\nOutput: ${formatBytes(captured.totalBytes)}\n\nLast ${FAILURE_TAIL_LINES} lines of output:\n${tailLines(captured.tail, FAILURE_TAIL_LINES)}\n\n${describeLog(captured, logPath, logVanished)}\n\nThe advance was refused. Item stays on ${failureStatus}.`,
+      message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${projectRoot}\`\nResult: ${describeExit({ code, timedOut, signal, spawnError }, maxMs)}\n\nOutput: ${formatBytes(captured.totalBytes)}\n\nLast ${FAILURE_TAIL_LINES} lines of output:\n${tailLines(captured.tail, FAILURE_TAIL_LINES)}\n\n${describeLog(captured, logPath, logVanished)}${staysOn(failureStatus)}`,
       output: preview,
     });
   }
