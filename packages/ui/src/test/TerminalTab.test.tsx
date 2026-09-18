@@ -657,6 +657,25 @@ describe('a pane tree of more than two', () => {
     expect(screen.queryAllByTestId('pane-identity')).toHaveLength(0);
   });
 
+  it('hides the whole header when more than one pane is open', () => {
+    // The header names the ACTIVE card and branch, which is a second and
+    // conflicting answer once every pane carries its own line (ccbe7ba4): for
+    // every pane but the focused one it is simply wrong. It also buys the
+    // panes the row back.
+    const branched = sessions().map(s => ({ ...s, branchName: 'feat/x' }));
+    renderTab(<TerminalTab {...treeProps()} sessions={branched} />);
+    expect(screen.getAllByTestId('pane-identity')).toHaveLength(3);
+    expect(screen.queryByTestId('terminal-header'), 'the header survived the split').toBeNull();
+  });
+
+  it('keeps the header when there is a single pane', () => {
+    // With one pane there is nowhere else for the card and branch to live.
+    const one = { ...baseProps().sessions[0], branchName: 'feat/only' };
+    renderTab(<TerminalTab {...baseProps()} sessions={[one]} />);
+    expect(screen.getByTestId('terminal-header')).toBeInTheDocument();
+    expect(screen.getByTestId('session-branch').textContent).toContain('feat/only');
+  });
+
   it('routes a drop on a pane edge to the tree, carrying the edge', () => {
     const onDropSession = vi.fn();
     renderTab(<TerminalTab {...treeProps()} onDropSession={onDropSession} />);

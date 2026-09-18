@@ -495,10 +495,18 @@ export function TerminalTab({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* Which worktree you are typing into. With several terminals open this
-          is the only thing on screen that distinguishes them, and sending a
-          command to the wrong branch is a real and expensive mistake. */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-border-soft bg-nav-surface px-3 py-1.5 text-xs">
+      {/*
+       * WHICH WORKTREE you are typing into - and HIDDEN once there is more than
+       * one pane.
+       *
+       * It names the ACTIVE card and branch, which is a second, conflicting
+       * answer the moment every pane carries its own line (ccbe7ba4): for
+       * every pane but the focused one it is simply wrong, and sending a
+       * command to the wrong branch is exactly the expensive mistake this bar
+       * was added to prevent. It also gives the split panes the row back.
+       */}
+      {paneIds.size <= 1 && (
+      <div data-testid="terminal-header" className="flex shrink-0 items-center gap-2 border-b border-border-soft bg-nav-surface px-3 py-1.5 text-xs">
         <span className="truncate text-ink-secondary">
           {current?.projectName && <span className="text-ink-tertiary">{current.projectName} / </span>}
           {current?.title}
@@ -597,6 +605,7 @@ export function TerminalTab({
           </button>
         ))}
       </div>
+      )}
 
       <div role="tablist" aria-label="Open terminals" className="flex shrink-0 items-stretch border-b border-border-soft bg-nav-surface">
         {sessions.map((session, index) => {
