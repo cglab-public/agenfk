@@ -235,7 +235,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // Same latch idea as the terminal, for a much smaller reason: no request goes
   // out for a screen the user has never opened.
   const [settingsOpened, setSettingsOpened] = React.useState(false);
-  const { activeProjectId, focusedItemId, newItemRequest, setActiveProjectId, markProjectWorked, focusItem, terminalRequest } = useActiveProject();
+  const { activeProjectId, focusedItemId, newItemRequest, setActiveProjectId, markProjectWorked, focusItem, terminalRequest, requestNewItem } = useActiveProject();
   /**
    * The installation's settings, for the tmux default the dialog starts from.
    *
@@ -1727,6 +1727,31 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           items={activeWork}
           projectNames={projectNames}
           currentItemId={sessions.find(s => s.id === activeSession)?.itemId}
+          /*
+           * The way out of an empty picker (CGLAB-164).
+           *
+           * `requestNewItem` is the route the sidebar's `+` already takes:
+           * it stamps the project as worked, selects it, and the board turns
+           * the request into the blank draft. Reusing it rather than opening
+           * a modal from here keeps ONE way into a new card, and the picker
+           * closes first so the draft is not opened underneath a dialog.
+           *
+           * The project falls back to the one the terminal on screen belongs
+           * to. Restoring a terminal does not select a project — only opening
+           * one does — so a first launch with remembered tabs lands here with
+           * nothing active, and that is the state with the FEWEST other routes
+           * to a card. With neither, there is genuinely nowhere to put one and
+           * the picker hides the door rather than drawing it onto nothing.
+           */
+          onCreateCard={(() => {
+            const intoProject = activeProjectId
+              ?? sessions.find(s => s.id === activeSession)?.projectId;
+            if (!intoProject) return undefined;
+            return () => {
+              setPickingCard(false);
+              requestNewItem(intoProject);
+            };
+          })()}
           onClose={() => setPickingCard(false)}
           onPick={item => {
             setPickingCard(false);

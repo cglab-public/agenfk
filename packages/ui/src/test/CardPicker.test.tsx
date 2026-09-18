@@ -236,3 +236,107 @@ describe('the picker with only a handful', () => {
     expect(screen.queryByRole('searchbox')).toBeNull();
   });
 });
+
+/**
+ * The empty state gets a way out (CGLAB-164).
+ *
+ * Both empty branches are a sentence and nothing else. "No work in flight.
+ * Start a card on the board, then open a terminal on it" tells someone to
+ * leave this dialog, find the board, find the project, hover it and press a
+ * `+` they have to already know about — which is the exact question that
+ * opened this card: "I'm starting a task from nothing, where do I write it?"
+ *
+ * Two doors, because there are two people here: the one who knows what the
+ * card says and the one holding an objective they have not decomposed yet.
+ * Only the first door is built. The second is drawn, disabled, and says why —
+ * the decomposer does not exist (`analyze_request` echoes the request and
+ * prints four static rules), and it belongs to another card.
+ */
+describe('the way out of an empty picker', () => {
+  it('offers to create a card when nothing is in flight', () => {
+    const onCreateCard = vi.fn();
+    render(<CardPicker items={[]} onPick={vi.fn()} onClose={vi.fn()} onCreateCard={onCreateCard} />);
+    fireEvent.click(screen.getByRole('button', { name: /create a card/i }));
+    expect(onCreateCard).toHaveBeenCalled();
+  });
+
+  it('offers the same door when a search found nothing', () => {
+    // A mistyped search and an empty board are different facts — the picker
+    // already refuses to conflate them — but the way out is the same.
+    const MANY = Array.from({ length: 8 }, (_, i) => card(`i${i}`, `Card number ${i}`));
+    render(<CardPicker items={MANY} onPick={vi.fn()} onClose={vi.fn()} onCreateCard={vi.fn()} />);
+    fireEvent.change(screen.getByRole('searchbox', { name: /search cards/i }), { target: { value: 'zzzz' } });
+    expect(screen.getByText(/no card matches that/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /create a card/i })).toBeTruthy();
+  });
+
+  it('offers to clear the search before it offers to create anything', () => {
+    /*
+     * Order matters here and it is not cosmetic. After a failed search the
+     * overwhelmingly likely fix is a typo, not a missing card — putting
+     * "create" first invites someone to make a duplicate of the card they
+     * were looking for.
+     */
+    const MANY = Array.from({ length: 8 }, (_, i) => card(`i${i}`, `Card number ${i}`));
+    render(<CardPicker items={MANY} onPick={vi.fn()} onClose={vi.fn()} onCreateCard={vi.fn()} />);
+    fireEvent.change(screen.getByRole('searchbox', { name: /search cards/i }), { target: { value: 'zzzz' } });
+    const buttons = screen.getAllByRole('button').map(b => b.textContent ?? '');
+    const clear = buttons.findIndex(t => /clear the search/i.test(t));
+    const create = buttons.findIndex(t => /create a card/i.test(t));
+    expect(clear).toBeGreaterThanOrEqual(0);
+    expect(create).toBeGreaterThan(clear);
+  });
+
+  it('puts the cards back when the search is cleared', () => {
+    const MANY = Array.from({ length: 8 }, (_, i) => card(`i${i}`, `Card number ${i}`));
+    render(<CardPicker items={MANY} onPick={vi.fn()} onClose={vi.fn()} onCreateCard={vi.fn()} />);
+    fireEvent.change(screen.getByRole('searchbox', { name: /search cards/i }), { target: { value: 'zzzz' } });
+    fireEvent.click(screen.getByRole('button', { name: /clear the search/i }));
+    expect(screen.getByTitle('Card number 0')).toBeTruthy();
+    expect(screen.queryByText(/no card matches that/i)).toBeNull();
+  });
+
+  it('draws no create door when the caller has nowhere to create into', () => {
+    // No active project means no project to put the card in. A door onto
+    // nothing is the defect this card exists to fix, not a smaller version
+    // of it.
+    render(<CardPicker items={[]} onPick={vi.fn()} onClose={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: /create a card/i })).toBeNull();
+    expect(screen.getByText(/no work in flight/i)).toBeTruthy();
+  });
+
+  it('shows Ask AgEnFK, disabled, with the reason said in words', () => {
+    /*
+     * The one thing this must not do is promise. The decomposer is not built:
+     * `analyze_request` echoes the request back and prints four static rules,
+     * and there is no endpoint that decomposes anything. Drawn and disabled
+     * says "this is coming and it is not here"; a live-looking button says
+     * "this works", and finding out it does not is how a control loses its
+     * credit permanently.
+     */
+    render(<CardPicker items={[]} onPick={vi.fn()} onClose={vi.fn()} onCreateCard={vi.fn()} />);
+    const ask = screen.getByRole('button', { name: /ask agenfk/i }) as HTMLButtonElement;
+    expect(ask.disabled).toBe(true);
+    // The reason is on screen, not in a tooltip nobody opens.
+    expect(screen.getByTestId('ask-agenfk-reason').textContent).toMatch(/not built|not here yet|coming/i);
+  });
+
+  it('never fires anything when Ask AgEnFK is clicked', () => {
+    const onCreateCard = vi.fn();
+    const onPick = vi.fn();
+    const onClose = vi.fn();
+    render(<CardPicker items={[]} onPick={onPick} onClose={onClose} onCreateCard={onCreateCard} />);
+    fireEvent.click(screen.getByRole('button', { name: /ask agenfk/i }));
+    expect(onCreateCard).not.toHaveBeenCalled();
+    expect(onPick).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('keeps the doors out of the way when there are cards to pick', () => {
+    // The picker's job is picking. The doors belong to the state where there
+    // is nothing to pick.
+    render(<CardPicker items={THREE} onPick={vi.fn()} onClose={vi.fn()} onCreateCard={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: /create a card/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /ask agenfk/i })).toBeNull();
+  });
+});

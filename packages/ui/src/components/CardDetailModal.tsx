@@ -14,6 +14,7 @@ import { useSocketEvent } from '../SocketContext';
 import { stripAnsi, calculateCost, formatCost, calculateCycleTimeMs, formatDuration } from '../utils';
 import { api } from '../api';
 import { RunsPanel, type AgentRun } from './RunsPanel';
+import { ItemTypeSquare, itemTypeHint } from './ItemTypeSquare';
 
 interface CardDetailModalProps {
   item: AgEnFKItem;
@@ -135,6 +136,25 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
     }
   }, [item.id]);
 
+  /**
+   * Put focus inside the dialog when it opens.
+   *
+   * `aria-modal="true"` promises assistive tech that everything behind this is
+   * inert, and opening with focus still out on the board contradicts that on
+   * the very first Tab. The draft aims focus at its first field (`autoFocus`
+   * on the title), so this only has to cover the detail view, which has no
+   * field to aim at — the panel itself takes it, the same shape `CardPicker`
+   * already uses.
+   *
+   * On mount only, deliberately: re-running it per render would drag focus
+   * back off whatever the user had just clicked.
+   */
+  const panelRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (!isNew) panelRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -221,7 +241,33 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 dark:bg-black/70 backdrop-blur-sm">
-      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-6xl h-[calc(100vh-2rem)] overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200 border border-slate-200 dark:border-slate-800">
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        // Focusable so the effect above can aim focus here; -1 keeps it out
+        // of the Tab order itself.
+        tabIndex={-1}
+        // Announced as SOMETHING when it opens. It was an unnamed <div> over
+        // the app, so a screen reader had nothing to say about it at all.
+        aria-label={isNew ? 'New item' : item.title}
+        className={clsx(
+          "bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200 border border-slate-200 dark:border-slate-800",
+          /*
+           * A draft is sized to what a draft has (CGLAB-164).
+           *
+           * Both branches used `max-w-6xl h-[calc(100vh-2rem)]`: 72rem wide and
+           * the full window height, for a title, a description and a type. It
+           * made a small decision look like a large one and left Create a
+           * screen away from the field just typed into. The DETAIL view keeps
+           * that size — it has tabs, a run panel and a progress log, and it
+           * earns the room.
+           */
+          isNew
+            ? "max-w-xl max-h-[calc(100vh-2rem)]"
+            : "max-w-6xl h-[calc(100vh-2rem)]",
+        )}
+      >
         {/* Modal Header */}
         <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50 relative z-20 shrink-0">
           <div className="flex items-center justify-between">
@@ -251,15 +297,36 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 {item.type}
               </span>
             ) : (
-              <select 
-                value={type}
-                onChange={(e) => setType(e.target.value as ItemType)}
-                className="text-xs font-bold px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-brand uppercase tracking-wider"
-              >
-                {Object.values(ItemType).map(t => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
+              /*
+               * The dropdown stays; the grammar changes (CGLAB-164).
+               *
+               * Asked for twice, in these words: "we can keep the dropdown we
+               * have today, task etc, but use the same icons as JIRA". So the
+               * <select> is untouched — same element, same options, same
+               * handler — and what it sits in is a small filled square in the
+               * type's colour, which is what every tracker uses to say "issue
+               * type" and what gets read before the word does.
+               */
+              <span className="flex items-center gap-1.5">
+                <ItemTypeSquare type={type} testId="new-item-type-square" />
+                <select
+                  value={type}
+                  onChange={(e) => setType(e.target.value as ItemType)}
+                  // One <label> served three inputs here; this was the
+                  // combobox announced with no name at all.
+                  aria-label="Type"
+                  // …and the sentence explaining what the chosen type means
+                  // is several elements away in the DOM, so without this it
+                  // is reachable only in browse mode — never on focus, which
+                  // is when it is needed.
+                  aria-describedby="new-item-type-hint"
+                  className="text-xs font-bold px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-brand uppercase tracking-wider"
+                >
+                  {Object.values(ItemType).map(t => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </select>
+              </span>
             )}
             {!isNew && (
               <span className={clsx(
@@ -340,9 +407,21 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               {item.branchName && <><span className="opacity-40">·</span><span className="truncate max-w-[280px]" title={item.branchName}>{item.branchName}</span></>}
             </div>
           )}
+          {/* What the chosen type MEANS, under the control that chooses it —
+              the same slot the meta line occupies on a real card. Every
+              sentence in it is the server's own decomposition rule
+              (analyze_request), not a promise this screen invented. */}
+          {isNew && (
+            <p id="new-item-type-hint" data-testid="new-item-type-hint" className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">
+              {itemTypeHint(type)}
+            </p>
+          )}
         </div>
 
-        {/* Tab Navigation */}
+        {/* Tab Navigation — hidden on a draft, where every other tab is
+            hidden anyway and what is left is a one-tab tab bar: a control
+            that cannot be used for anything. */}
+        {tabs.length > 1 && (
         <div className="flex px-6 border-b border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-x-auto relative z-30 shrink-0">
           {tabs.map(tab => (
             <button
@@ -367,17 +446,19 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
             </button>
           ))}
         </div>
+        )}
 
         {/* Modal Body */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto p-8 space-y-8">
+        <div ref={scrollRef} className={clsx("flex-1 overflow-y-auto", isNew ? "p-6 space-y-5" : "p-8 space-y-8")}>
           {activeTab === 'overview' && (
             <>
               <div>
                 {isNew ? (
                   <div className="space-y-2">
-                    <label className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Title</label>
+                    <label htmlFor="new-item-title" className="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Title</label>
                     <input
                       autoFocus
+                      id="new-item-title"
                       type="text"
                       value={title}
                       onChange={(e) => setTitle(e.target.value)}
@@ -440,13 +521,21 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               </div>
 
               <div>
-                <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3">Description</h4>
+                {/* A <label> when there is a field to label, a heading when
+                    there is prose to head. It was a heading in both cases, so
+                    the textarea was announced as an unnamed textbox. */}
+                {isNew ? (
+                  <label htmlFor="new-item-description" className="block text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3">Description</label>
+                ) : (
+                  <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3">Description</h4>
+                )}
                 {isNew ? (
                   <textarea
+                    id="new-item-description"
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
                     placeholder="Describe what needs to be done..."
-                    className="w-full bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand min-h-[150px]"
+                    className="w-full bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand min-h-[120px]"
                   />
                 ) : isEditing ? (
                   <textarea
@@ -482,6 +571,11 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 </div>
               )}
 
+              {/* Not on a draft (CGLAB-164). A cycle time of zero on a card
+                  created zero seconds ago, and a parent of "None" on a card
+                  that cannot have one yet — two panels answering questions
+                  nobody asked of a blank form. */}
+              {!isNew && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="flex flex-col">
                   <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3">Metrics</h4>
@@ -525,8 +619,11 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                   </div>
                 </div>
               </div>
+              )}
 
-              {/* Progress Comments Section */}
+              {/* Progress Comments Section — a log of what happened to a card
+                  that has not happened yet is an empty box with a heading. */}
+              {!isNew && (
               <div className="pt-4 border-t border-slate-100 dark:border-slate-800">
                 <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">
                   <Tag size={14} />
@@ -563,6 +660,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                   </div>
                 )}
               </div>
+              )}
             </>
           )}
 
@@ -807,8 +905,27 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
         </div>
 
         {/* Modal Footer */}
-        <div className="px-6 py-4 border-t border-slate-100 dark:border-slate-800 flex justify-between bg-slate-50/50 dark:bg-slate-800/50">
+        <div className="px-6 py-4 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3 bg-slate-50/50 dark:bg-slate-800/50">
           <div>
+            {/*
+              * Where this draft lands, said out loud rather than left to be
+              * known by heart.
+              *
+              * It reports the status the draft ACTUALLY carries, which is not
+              * always the project's first step: the per-column `+` passes that
+              * column's step, while the header button and the `newItemRequest`
+              * route — the one the card picker's new door goes through — both
+              * hardcode `Status.TODO` (KanbanBoard.tsx), and the server falls
+              * back to `TODO` for a name its flow does not contain. So on a
+              * project whose first step is named something else, this line is
+              * honest about the value being sent and that value is the thing
+              * worth fixing, upstream of this modal.
+              */}
+            {isNew && (
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Lands in <span className="font-mono font-bold text-accent-text">{item.status}</span>.
+              </p>
+            )}
             {!isNew && !isEditing && (
               <button
                 onClick={handleDelete}
