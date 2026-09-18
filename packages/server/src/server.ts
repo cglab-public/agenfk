@@ -4521,6 +4521,11 @@ function pruneValidateRuns() {
 
 // ── validate_progress: unified exit-criteria gate (flow-aware) ───────────────
 // command is optional; if omitted, project.verifyCommand is used.
+/** Trailing line of every verify response. The transition line sits at the top
+ *  and the next step's criteria banner pushes it out of a `| tail`; the LAST
+ *  line must always say where the card is (CGLAB-275). */
+const nowOn = (status: string) => `\n\nItem is now on ${status}.`;
+
 // Advances item to the next flow step. On failure the advance is refused and the item stays put (CGLAB-275).
 // `asyncRun` (pre-reserved by the route so the concurrency guard has no
 // check-then-set window) only changes behaviour when a command actually
@@ -4573,7 +4578,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     io.emit('items_updated');
     const codingStepCriteria = (codingStep as any).exitCriteria as string | undefined;
     const mandatoryNote = codingStepCriteria ? `\n\n⚠️ MANDATORY EXIT CRITERIA — you MUST satisfy ALL of the following before calling validate_progress again:\n\n${codingStepCriteria}` : '';
-    return res.json({ status: codingStep.name, message: `✅ Validation Passed!\n\nItem moved to ${codingStep.name}.${mandatoryNote}\n\nItem is now on ${codingStep.name}.` });
+    return res.json({ status: codingStep.name, message: `✅ Validation Passed!\n\nItem moved to ${codingStep.name}.${mandatoryNote}${nowOn(codingStep.name)}` });
   }
 
   const nextStep = sorted[currentFlowStep.index + 1];
@@ -4728,7 +4733,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         const gitResult = (process.env.NODE_ENV !== 'test' && !process.env.VITEST)
           ? await autoGitCommit(updated, (project as any)?.projectRoot)
           : undefined;
-        return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.${describePush(gitResult)}\n\nItem is now on ${nextStatus}.`, output: 'Sibling propagation' });
+        return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.${describePush(gitResult)}${nowOn(nextStatus)}`, output: 'Sibling propagation' });
       }
       console.warn(`[VALIDATE] Sibling propagation refused for ${itemId}: ${refusal}`);
     } else {
@@ -4746,7 +4751,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         await ensureWorktreeForItem(updated, true);
         io.emit('items_updated');
         if (updated.parentId) await syncParentStatus(updated.parentId);
-        return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}\n\nItem is now on ${nextStatus}.`, output: 'Sibling propagation' });
+        return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}${nowOn(nextStatus)}`, output: 'Sibling propagation' });
       }
     }
   }
@@ -4759,7 +4764,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     await ensureWorktreeForItem(updated, true);
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId);
-    return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}\n\nItem is now on ${nextStatus}.` });
+    return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}${nowOn(nextStatus)}` });
   }
 
   // See above: declining beats committing somewhere plausible.
@@ -4974,7 +4979,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       itemId,
       payload: { command: resolvedCommand, status: 'PASSED', testId },
     });
-    return res2.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${describePush(gitResult)}\n\nItem is now on ${nextStatus}.`, output: preview });
+    return res2.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${describePush(gitResult)}${nowOn(nextStatus)}`, output: preview });
   } else {
     const updates: any = { status: failureStatus, comments };
     if (nextStatus === Status.DONE) {
