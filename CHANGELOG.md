@@ -2,6 +2,30 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.20] — 2026-09-18
+
+Stable, cumulative over `1.1.20-beta.1` and `1.1.20-beta.2` (PR #189). Both fixes were
+exercised end-to-end in a fresh Docker install over SSH: install 1.1.19, upgrade to beta.1,
+upgrade to beta.2, then re-run the npx bootstrap with and without `--beta`.
+
+### `~/.agenfk-system` is pruned on upgrade (BUG 957c6c44)
+
+Upgrades no longer keep files the new version dropped: the install dir is pruned against the
+release-archive listing, repo-private release commands are filtered at every copy site, both
+downgrade guards read the installed version before the overlay, `--dist-tarball` travels via
+`AGENFK_DIST_TARBALL`, and leaked release commands are cleared in all three on-disk shapes.
+Note that the first upgrade FROM a pre-1.1.20 install is still driven by the old CLI, which
+does not hand the archive to the installer, so the install-dir prune takes effect from the
+second upgrade on; the client-config cleanup runs on the first.
+
+### The fleet-upgrade picker reads installations, not API keys (BUG bb27c0aa)
+
+One row per machine from `GET /v1/admin/installations`; an unbound key binds itself to the
+single machine it reports from; `POST /v1/admin/api-keys` rejects reserved `invite:` /
+`device:` labels and no longer promises automatic binding.
+
+### CI checks every layer of a stacked PR, not just the bottom one.
+
 ## [1.1.20-beta.2] — 2026-09-17
 
 Cut from `fix/hub-installation-binding-integrity` (PR #190), stacked on
