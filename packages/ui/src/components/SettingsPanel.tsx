@@ -48,6 +48,7 @@ import {
 import { playAttentionSound, browserSoundDeps } from '../attentionSound';
 import { isNewerVersion } from '../versionCompare';
 import { describeHerdr, type HerdrView } from '../herdrSessions';
+import { HerdrMark } from './HerdrMark';
 import { API_URL } from '../apiUrl';
 import { api, type AppSettingsDto, type SoundTimingDto } from '../api';
 
@@ -280,6 +281,7 @@ function HerdrRows(): React.ReactElement {
       />
       <SettingRow
         testId="herdr-attach"
+        lead={<HerdrMark className="h-5 w-5 text-ink-tertiary" />}
         title="herdr sessions detected"
         /*
          * NOT "attach". Nothing attaches yet, there is no stored setting, and

@@ -900,7 +900,10 @@ describe('sidebar navigation has to reach the board (CGLAB-172)', () => {
     fireEvent.click(await screen.findByTitle('Some work'));
 
     // Create in the dialog, then the Terminal panel is the visible one.
-    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
+    // The verb depends on whether that card already has a session - Create when
+    // it has none, Continue when it does - and these scenarios are about the
+    // rail, not about which word the dialog chose.
+    fireEvent.click(await screen.findByRole('button', { name: /^(create|continue)$/i }));
     await waitFor(() =>
       expect(document.getElementById('panel-terminal')!.hasAttribute('hidden')).toBe(false));
   });
@@ -951,7 +954,10 @@ describe('the Terminal tab must not kill the agent (CGLAB-169)', () => {
     renderShell();
     fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
     fireEvent.click(await screen.findByTitle('Some work'));
-    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
+    // The verb depends on whether that card already has a session - Create when
+    // it has none, Continue when it does - and these scenarios are about the
+    // rail, not about which word the dialog chose.
+    fireEvent.click(await screen.findByRole('button', { name: /^(create|continue)$/i }));
 
     const panel = document.getElementById('panel-terminal')!;
     await waitFor(() => expect(panel.hasAttribute('hidden')).toBe(false));
@@ -982,7 +988,10 @@ describe('several terminals at once (CGLAB-169)', () => {
 
   const openTerminalOn = async (title: string) => {
     fireEvent.click(await sidebarCard(title));
-    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
+    // The verb depends on whether that card already has a session - Create when
+    // it has none, Continue when it does - and these scenarios are about the
+    // rail, not about which word the dialog chose.
+    fireEvent.click(await screen.findByRole('button', { name: /^(create|continue)$/i }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   };
 
@@ -1088,7 +1097,10 @@ describe('several terminals at once (CGLAB-169)', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /claude code/i }));
     fireEvent.click(within(await screen.findByRole('listbox')).getByRole('option', { name: /gemini/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
+    // The verb depends on whether that card already has a session - Create when
+    // it has none, Continue when it does - and these scenarios are about the
+    // rail, not about which word the dialog chose.
+    fireEvent.click(await screen.findByRole('button', { name: /^(create|continue)$/i }));
 
     await waitFor(() => expect(api.updateItem).toHaveBeenCalledWith('i1', { agentId: 'gemini' }));
   });
@@ -1217,7 +1229,10 @@ describe('the Sessions rail (CGLAB-170)', () => {
 
     const list = document.querySelector('[data-testid="project-list"]') as HTMLElement;
     fireEvent.click(await within(list).findByTitle('First card'));
-    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
+    // The verb depends on whether that card already has a session - Create when
+    // it has none, Continue when it does - and these scenarios are about the
+    // rail, not about which word the dialog chose.
+    fireEvent.click(await screen.findByRole('button', { name: /^(create|continue)$/i }));
 
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     await waitFor(() => expect(screen.getAllByTestId('session-dot').length).toBeGreaterThan(0));
@@ -1243,7 +1258,10 @@ describe('the Sessions rail (CGLAB-170)', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
     const list = document.querySelector('[data-testid="project-list"]') as HTMLElement;
     fireEvent.click(await within(list).findByTitle('First card'));
-    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
+    // The verb depends on whether that card already has a session - Create when
+    // it has none, Continue when it does - and these scenarios are about the
+    // rail, not about which word the dialog chose.
+    fireEvent.click(await screen.findByRole('button', { name: /^(create|continue)$/i }));
 
     // ONE row, not two. Listing it twice would say two agents are working on
     // the card where there is one - and now that the row sits directly under
@@ -1724,7 +1742,10 @@ describe('the WORK group in the sidebar (CGLAB-164)', () => {
     renderShell();
     fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
     fireEvent.click(await screen.findByTitle('Some work'));
-    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
+    // The verb depends on whether that card already has a session - Create when
+    // it has none, Continue when it does - and these scenarios are about the
+    // rail, not about which word the dialog chose.
+    fireEvent.click(await screen.findByRole('button', { name: /^(create|continue)$/i }));
     await waitFor(() =>
       expect(document.getElementById('panel-terminal')!.hasAttribute('hidden')).toBe(false));
 

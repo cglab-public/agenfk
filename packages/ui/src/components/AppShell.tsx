@@ -37,7 +37,7 @@ import {
 } from '../sidebarPrefs';
 import { NewProjectButton } from './NewProjectButton';
 import { api } from '../api';
-import { HerdrPanes } from './HerdrPanes';
+import { herdrSessionRows, herdrProjectRows, type OwnedPane } from '../herdrTreeRows';
 import type { AgEnFKItem, Project } from '../types';
 import { TerminalTab, type TerminalSession } from './TerminalTab';
 import { treeForDrop, treeForToggle, pruneTree, treeForFocus } from '../paneLayout';
@@ -95,7 +95,7 @@ import { clampSidebarWidth, sidebarIsResizable, SIDEBAR_MIN_PX, SIDEBAR_MAX_PX, 
  * Every view here is reached from the sidebar or from a session, and each one
  * is a panel that stays mounted and is hidden rather than unmounted.
  */
-type ViewId = 'kanban' | 'terminal' | 'settings' | 'agents' | 'herdr';
+type ViewId = 'kanban' | 'terminal' | 'settings' | 'agents';
 
 /**
  * The WORK group at the top of the sidebar (CGLAB-164).
@@ -140,7 +140,6 @@ const WORK_ROWS: WorkRow[] = [
    * run", this is "what is running". On the machine this was built for the
    * second list held twenty-four panes and the first could show none of them.
    */
-  { kind: 'view', id: 'herdr', label: 'Sessions', Icon: SquareTerminal },
 ];
 
 type Connection = 'connecting' | 'connected' | 'offline';
@@ -583,6 +582,38 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     [live, liveTick],
   );
 
+  /**
+   * The panes herdr is holding, so work this product did not start still shows
+   * up where work lives: in the tree, under the project or card it belongs to.
+   *
+   * One query for the whole shell rather than one per row, and a plain interval
+   * rather than a socket: herdr pushes events, but subscribing from the browser
+   * would mean a second transport for a list that is cheap to re-read.
+   */
+  const { data: herdrBody } = useQuery<{ sessions: { reachable: boolean; panes: OwnedPane[] }[] }>({
+    queryKey: ['herdr-tree'],
+    queryFn: async () => {
+      const r = await fetch(`${API_URL}/herdr/sessions`);
+      if (!r.ok) throw new Error(`herdr: ${r.status}`);
+      const body = await r.json();
+      if (!body || !Array.isArray(body.sessions)) throw new Error('herdr: unexpected shape');
+      return body;
+    },
+    // A machine with no herdr answers 200 with an empty list, so a failure here
+    // is a real one and must not retry forever behind the user's back.
+    retry: 1,
+    staleTime: 10_000,
+    refetchInterval: 15_000,
+  });
+
+  const herdrPanes: OwnedPane[] = React.useMemo(
+    () => (herdrBody?.sessions ?? []).filter(x => x.reachable).flatMap(x => x.panes ?? []),
+    [herdrBody],
+  );
+
+  /** Panes that belong to a project but to no card. Most of them, today. */
+  const herdrProject = React.useMemo(() => herdrProjectRows(herdrPanes), [herdrPanes]);
+
   const sessionRows: SessionRow[] = React.useMemo(() => {
     // liveTick is a dependency on purpose: going dark is driven by a clock, not
     // by new data, so without it the dots would only ever turn off when
@@ -733,11 +764,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
      * than `live.isLive()` — and the same pass could call a row `running` from
      * the fresh read and then drop it on the stale one.
      */
-    return liveSessions([...byAgent.values()], {
+    const ours = liveSessions([...byAgent.values()], {
       isLive: id => liveItems.has(id),
       appStartedAt: APP_STARTED_AT,
     });
-  }, [runs, sessions, live, liveItems, liveTick, graceTick]);
+    /*
+     * herdr panes that belong to a card join the same list, AFTER ours - a pane
+     * we started is described better by our own record than by a mirror of the
+     * terminal it happens to be in. `liveSessions` is not applied to them: it
+     * decides liveness from OUR clocks, and herdr already answered the question
+     * for its own panes.
+     */
+    const theirs = herdrSessionRows(herdrPanes)
+      .filter(r => !ours.some(o => o.itemId === r.itemId && o.agentId === r.agentId));
+    return [...ours, ...theirs];
+  }, [runs, sessions, live, liveItems, liveTick, graceTick, herdrPanes]);
 
   /*
    * THE CLOCK THAT MAKES `unverifiable` REACHABLE (CGLAB-195).
@@ -1555,26 +1596,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           */}
           <div
             role="region"
-            id="panel-herdr"
-            aria-label="herdr sessions"
-            tabIndex={0}
-            hidden={active !== 'herdr'}
-            className="flex min-h-0 flex-1 flex-col"
-          >
-            <header className="flex shrink-0 items-center gap-2 border-b border-border-soft px-4 py-2">
-              <h2 className="font-mono text-[10px] font-bold uppercase tracking-wide text-ink-tertiary">
-                Sessions
-              </h2>
-              <span className="text-[11px] text-ink-tertiary">already open in herdr</span>
-            </header>
-            {/* Mounted only while shown: the listing opens a unix socket per
-                session, and a hidden panel polling somebody's multiplexer is
-                load they never asked for. */}
-            {active === 'herdr' && <HerdrPanes />}
-          </div>
-
-          <div
-            role="region"
             id="panel-agents"
             aria-label="Agents"
             tabIndex={0}
@@ -1839,6 +1860,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <NewTerminalDialog
           cardTitle={pending.title}
           defaultAgentId={pending.agentId}
+          /*
+           * A card whose work is ALREADY running does not need a second
+           * terminal, so the button says Continue. `sessionRows` is the right
+           * source because the herdr panes are already folded into it - the
+           * dialog does not need to know which multiplexer anything is in, only
+           * that something is there.
+           */
+          existing={(() => {
+            const live = sessionRows.find(
+              r => r.itemId === pending.itemId && r.state !== 'failed',
+            );
+            if (!live) return undefined;
+            const where = (live as { source?: string }).source === 'herdr' ? 'herdr' : 'agenfk';
+            return { agentId: live.agentId, where } as const;
+          })()}
           listAgents={listAgentsFromBridge}
           // Shift, never clear: dismissing ONE question must not throw away the
           // rest of the wave. Clearing here was the single-slot habit surviving
