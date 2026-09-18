@@ -63,6 +63,25 @@ function downloadAsset(repo, tag, pattern, outputPath) {
   execSync(`gh release download ${tag} --repo ${repo} --pattern '${pattern}' --output "${outputPath}"`, { stdio: 'inherit' });
 }
 
+// Archive kept alive until install.mjs has run. `tar -xzf` deletes nothing, so
+// the install dir still holds files this version dropped, and the only
+// non-circular authority on what is current is the archive listing (the install
+// dir IS the stale thing). This file is what `npx agenfk@latest` actually runs —
+// the root package is private and packages/create is the published `agenfk` —
+// so leaving it out left the highest-traffic upgrade route unfixed.
+//
+// Deliberately NOT pruned on the two no-archive routes, and this is a stated
+// limitation rather than an oversight:
+//   - `isGitRepo` (a clone): `git pull` above already applies upstream DELETIONS
+//     to tracked files, so the install dir is not stale in the first place.
+//   - `--rebuild` on a NON-git install: there is no archive and no source tree to
+//     diff against, so there is NO authority for what this version ships. Pruning
+//     against a guess would delete files the install legitimately needs. The
+//     repo-private release commands are still suppressed there by the copy-site
+//     filter (isRepoPrivateCommand); any OTHER file deleted upstream can persist
+//     on that one dev-oriented route until a reinstall.
+let distTarball = null;
+
 if (fs.existsSync(INSTALL_DIR)) {
   console.log(`${GREEN}AgEnFK already installed at ${INSTALL_DIR}${RESET}`);
   const isGitRepo = fs.existsSync(path.join(INSTALL_DIR, '.git'));
@@ -76,9 +95,14 @@ if (fs.existsSync(INSTALL_DIR)) {
       const latestTag = fetchLatestTag(REPO_NAME);
       downloadAsset(REPO_NAME, latestTag, 'agenfk-dist.tar.gz', path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
       execSync(`tar -xzf "${path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')}" -C "${INSTALL_DIR}"`, { stdio: 'inherit' });
-      fs.unlinkSync(path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
+      distTarball = path.join(INSTALL_DIR, 'agenfk-dist.tar.gz');
     } catch (e) {
       console.error(`Failed to update pre-built binary: ${e.message}`);
+      // curl writes a partial .tar.gz before failing, and a failed extract
+      // leaves the whole archive behind — either way it would sit in the
+      // install dir permanently, since only the success path records it for
+      // cleanup below.
+      try { fs.unlinkSync(path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')); } catch { /* not there */ }
     }
   }
 } else {
@@ -91,6 +115,7 @@ if (fs.existsSync(INSTALL_DIR)) {
       execSync(`tar -xzf "${path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')}" -C "${INSTALL_DIR}"`, { stdio: 'inherit' });
       fs.unlinkSync(path.join(INSTALL_DIR, 'agenfk-dist.tar.gz'));
     } catch (e) {
+      try { fs.unlinkSync(path.join(INSTALL_DIR, 'agenfk-dist.tar.gz')); } catch { /* not there */ }
       console.error(`Failed to download pre-built binary: ${e.message}`);
       console.log(`${BLUE}Falling back to git clone...${RESET}`);
       execSync(`git clone ${REPO_URL} ${JSON.stringify(INSTALL_DIR)}`, { stdio: 'inherit', shell: true });
@@ -102,4 +127,15 @@ if (fs.existsSync(INSTALL_DIR)) {
 }
 
 console.log(`\n${GREEN}Running install...${RESET}\n`);
-execSync(`node scripts/install.mjs${shouldRebuild ? ' --rebuild' : ''}`, { cwd: INSTALL_DIR, stdio: 'inherit' });
+const tarballEnv = distTarball && fs.existsSync(distTarball) ? distTarball : null;
+try {
+  execSync(`node scripts/install.mjs${shouldRebuild ? ' --rebuild' : ''}`, {
+    cwd: INSTALL_DIR,
+    stdio: 'inherit',
+    // Path via env, never interpolated into the command string: a filesystem
+    // path is not shell-safe (see scripts/install.mjs).
+    env: { ...process.env, ...(tarballEnv ? { AGENFK_DIST_TARBALL: tarballEnv } : {}) },
+  });
+} finally {
+  if (distTarball) { try { fs.unlinkSync(distTarball); } catch { /* already gone */ } }
+}

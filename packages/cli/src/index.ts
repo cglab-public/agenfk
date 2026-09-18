@@ -717,6 +717,7 @@ program
 
       const tempDir = path.join(os.tmpdir(), `agenfk-upgrade-${Date.now()}`);
       fs.mkdirSync(tempDir, { recursive: true });
+      let distTarball: string | null = null;
       try {
         log(chalk.gray(`Downloading pre-built binary for ${resolvedTag}...`));
         downloadReleaseAsset(REPO, resolvedTag, 'agenfk-dist.tar.gz', path.join(tempDir, 'agenfk-dist.tar.gz'));
@@ -725,14 +726,22 @@ program
         // AppleDouble (`._*`) entries; never let them into the install dir
         // (CGLAB-94 / issue #163).
         execSync(`tar --exclude='._*' --exclude='.DS_Store' -xzf "${path.join(tempDir, 'agenfk-dist.tar.gz')}" -C "${rootDir}"`, { stdio: isJson ? 'ignore' : 'inherit' });
+        // `tar -xzf` deletes nothing, so the install dir keeps files this
+        // version dropped — and its own commands/ cannot be asked what is
+        // current, because it IS the stale thing. Hand install.mjs the archive
+        // so it can prune against the authoritative listing. The temp dir is
+        // therefore cleaned up AFTER install.mjs runs, not here.
+        distTarball = path.join(tempDir, 'agenfk-dist.tar.gz');
       } catch (e: any) {
         log(chalk.yellow('Pre-built binary not available, falling back to source build...'));
-      } finally {
         fs.rmSync(tempDir, { recursive: true, force: true });
       }
 
       const installScript = path.join(rootDir, 'scripts', 'install.mjs');
       if (!fs.existsSync(installScript)) {
+        // The archive is now kept until install.mjs has run, so this early
+        // return is the one path that would otherwise strand it in tmp.
+        fs.rmSync(tempDir, { recursive: true, force: true });
         const msg = 'Install script not found. Please upgrade manually from GitHub.';
         emitResult({ status: 'failed', fromVersion: CURRENT_VERSION, toVersion: targetVersion, error: msg });
         errLog(chalk.red(msg));
@@ -740,8 +749,16 @@ program
       }
 
       const localAgenfkDir = path.join(rootDir, '.agenfk');
+      // tempDir is deliberately kept alive until install.mjs has run, so any
+      // throw between here and there must clean it up itself — the outer catch
+      // calls emitResult, which process.exit()s past every pending finally.
+      try {
       if (stageJsonMigration(localAgenfkDir)) {
         log(chalk.yellow('Legacy db.json detected — data will be migrated to SQLite on next server start.'));
+      }
+      } catch (e) {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+        throw e;
       }
 
       const debuglogFlag = options.debuglog ? ' --debuglog' : '';
@@ -756,13 +773,25 @@ program
         execSync(`node scripts/install.mjs${debuglogFlag}`, {
           cwd: rootDir,
           stdio: isJson ? 'ignore' : 'inherit',
-          env: { ...process.env, AGENFK_SERVER_WAS_RUNNING: servicesRunning ? '1' : '0' },
+          env: {
+            ...process.env,
+            AGENFK_SERVER_WAS_RUNNING: servicesRunning ? '1' : '0',
+            // Path via env, never interpolated into the command string: a
+            // filesystem path is not shell-safe (see scripts/install.mjs).
+            ...(distTarball ? { AGENFK_DIST_TARBALL: distTarball } : {}),
+          },
         });
       } catch (e: any) {
+        // Before emitResult: it calls process.exit, which does NOT run pending
+        // finally blocks, so the multi-MB tarball would be left in os.tmpdir()
+        // on exactly the failure path.
+        fs.rmSync(tempDir, { recursive: true, force: true });
         const msg = `Upgrade failed during installation: ${e?.message ?? e}`;
         emitResult({ status: 'failed', fromVersion: CURRENT_VERSION, toVersion: targetVersion, error: msg });
         errLog(chalk.red(msg));
         return;
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
       }
 
       log(chalk.green(`Successfully upgraded to ${targetVersion}`));
@@ -2878,6 +2907,26 @@ function isInstallableMarkdown(name: string): boolean {
   return name.endsWith('.md') && !isMacMetadata(name);
 }
 
+/**
+ * Repo-private release commands (they cut releases of AgEnFK itself and live in
+ * the repo's own .claude/commands/). Never installable into a user's config.
+ *
+ * Applied at COPY sites only, never in removeCommandsFromDir: that filters with
+ * isInstallableMarkdown to decide what to DELETE, and excluding these names
+ * there would strand a leaked copy instead of cleaning it up.
+ * Deliberately mirrored from scripts/install-helpers.mjs — this package's build
+ * cannot import from scripts/.
+ */
+const REPO_PRIVATE_NAMES = ['agenfk-release', 'agenfk-release-beta', 'agenfk-release-hub'];
+function isRepoPrivateCommand(name: string): boolean {
+  return REPO_PRIVATE_NAMES.includes(shadowedName(name).replace(/\.md$/, ''));
+}
+
+/** Copy filter for command/skill sync steps: installable AND not repo-private. */
+function isInstallableCommand(name: string): boolean {
+  return isInstallableMarkdown(name) && !isRepoPrivateCommand(name);
+}
+
 /** The name an AppleDouble twin shadows: `._agenfk.md` -> `agenfk.md`. */
 function shadowedName(name: string): string {
   return name.startsWith('._') ? name.slice(2) : name;
@@ -2910,7 +2959,7 @@ function isAgenfkOwnedArtifact(name: string): boolean {
 /** Install commands as flat .md files (for OpenCode slash commands) */
 function syncCommandsFlat(srcDir: string, destDir: string, platformKey?: string): string[] {
   if (!fs.existsSync(srcDir)) return [];
-  const files = (fs.readdirSync(srcDir) as string[]).filter(isInstallableMarkdown);
+  const files = (fs.readdirSync(srcDir) as string[]).filter(isInstallableCommand);
   const installed: string[] = [];
   fs.mkdirSync(destDir, { recursive: true });
   for (const file of files) {
@@ -2941,7 +2990,7 @@ function removeAgenfkFlatFromDir(dir: string): void {
 /** Generate Gemini TOML slash commands from commands/*.md files */
 function syncCommandsToml(srcDir: string, destDir: string): string[] {
   if (!fs.existsSync(srcDir)) return [];
-  const files = (fs.readdirSync(srcDir) as string[]).filter(isInstallableMarkdown);
+  const files = (fs.readdirSync(srcDir) as string[]).filter(isInstallableCommand);
   const installed: string[] = [];
   fs.mkdirSync(destDir, { recursive: true });
   for (const file of files) {
@@ -2980,7 +3029,7 @@ function syncCommandsToDir(
   platformKey?: string
 ): string[] {
   if (!fs.existsSync(srcDir)) return [];
-  const files = (fs.readdirSync(srcDir) as string[]).filter(isInstallableMarkdown);
+  const files = (fs.readdirSync(srcDir) as string[]).filter(isInstallableCommand);
   const installed: string[] = [];
   for (const file of files) {
     let src = path.join(srcDir, file);

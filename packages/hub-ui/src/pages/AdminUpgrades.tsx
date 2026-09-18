@@ -47,6 +47,7 @@ interface AvailableVersionsResponse { versions: string[]; fleetFloor: string | n
 
 import { canIssueDirective } from './adminUpgradesGate';
 import { installationDisplayName } from './installationDisplayName';
+import { buildInstallationOptions, type InstallationRow } from './installationOptions';
 import { filterInstallationOptions } from './filterInstallationOptions';
 
 interface GroupTarget {
@@ -98,14 +99,17 @@ export function AdminUpgrades() {
     staleTime: 5 * 60 * 1000,
   });
 
-  const installationOptions = useMemo(() =>
-    (apiKeysQ.data ?? [])
-      .filter(k => k.installationId && !k.revokedAt)
-      .map(k => ({
-        id: k.installationId!,
-        label: [k.label, k.gitName ?? k.gitEmail].filter(Boolean).join(' — ') || k.installationId!,
-      })),
-    [apiKeysQ.data],
+  // The picker's actual source of truth: one row per MACHINE. Deriving it from
+  // api_keys repeated any machine holding several keys and dropped machines
+  // whose live key had no installation binding (BUG bb27c0aa).
+  const installationsQ = useQuery<InstallationRow[]>({
+    queryKey: ['admin-installations'],
+    queryFn: async () => (await api.get('/v1/admin/installations')).data,
+  });
+
+  const installationOptions = useMemo(
+    () => buildInstallationOptions(installationsQ.data ?? [], apiKeysQ.data ?? []),
+    [installationsQ.data, apiKeysQ.data],
   );
 
   const cancelMut = useMutation({

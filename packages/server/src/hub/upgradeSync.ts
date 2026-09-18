@@ -16,6 +16,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { execSync, spawn } from 'child_process';
+import { pathToFileURL } from 'url';
 import {
   readUpgradeState, writeUpgradeState, clearUpgradeState,
   UpgradeState,
@@ -65,13 +66,56 @@ function defaultInstallRoot(): string | null {
 const DIST_REPO = 'cglab-public/agenfk';
 const DIST_ASSET = 'agenfk-dist.tar.gz';
 
-async function defaultSelfExtract(input: { installRoot: string; targetVersion: string }): Promise<{ ok: true } | { ok: false; error: string }> {
+/** Exported for the test; nothing else outside this module should call it. */
+export async function defaultSelfExtract(input: { installRoot: string; targetVersion: string }): Promise<{ ok: true } | { ok: false; error: string }> {
   const tag = `v${stripV(input.targetVersion)}`;
   const url = `https://github.com/${DIST_REPO}/releases/download/${tag}/${DIST_ASSET}`;
   const tmpFile = path.join(os.tmpdir(), `agenfk-self-heal-${Date.now()}.tar.gz`);
   try {
     execSync(`curl -fsSL -o "${tmpFile}" "${url}"`, { stdio: 'pipe' });
     execSync(`tar -xzf "${tmpFile}" -C "${input.installRoot}"`, { stdio: 'pipe' });
+    // `tar -xzf` is an overlay that deletes nothing, so files this version
+    // dropped survive in the install root — and the next install.mjs run from
+    // any route then treats them as shipped and re-installs them into every
+    // client's config. The archive listing is the only non-circular authority
+    // on what is current (the install root IS the stale thing), so prune
+    // against it here. Best-effort: a failed prune must not fail a recovery.
+    try {
+      const { pruneInstallDirAgainstManifest } = await import(
+        pathToFileURL(path.join(input.installRoot, 'bin', 'sync-install-dir.mjs')).href
+      ) as {
+        pruneInstallDirAgainstManifest: (dir: string, paths: string[]) =>
+          { removed: string[]; failed: { path: string; reason: string }[] };
+      };
+      // A distributed tarball never contains .git, so its presence means a
+      // developer's working tree — pruning that against a release archive would
+      // delete in-flight work. Mirrors install.mjs step 1a, including its
+      // carve-out: ~/.agenfk-system is ITSELF a clone whenever packages/create
+      // took its --rebuild or download-failure fallback, and those are real
+      // user installs that must still be pruned.
+      //
+      // This only skips the PRUNE. It must never return: `npm ci` below is what
+      // makes a forced recovery a complete install (BUG bbe794bc), and
+      // returning here skipped it while reporting ok:true — a false success on
+      // a server that can then boot with a missing module.
+      const installDir = path.join(os.homedir(), '.agenfk-system');
+      const isDevTree = fs.existsSync(path.join(input.installRoot, '.git'))
+        && path.resolve(input.installRoot) !== path.resolve(installDir);
+      if (isDevTree) {
+        console.log('[self-extract] prune skipped (dev checkout detected: .git present)');
+      } else {
+        const listing = execSync(`tar -tzf "${tmpFile}"`, { encoding: 'utf8' })
+          .split('\n').map((l) => l.trim()).filter(Boolean);
+        const { removed, failed } = pruneInstallDirAgainstManifest(input.installRoot, listing);
+        for (const rel of removed) console.log(`[self-extract] pruned (no longer shipped): ${rel}`);
+        for (const f of failed) console.warn(`[self-extract] could not prune ${f.path}: ${f.reason}`);
+      }
+    } catch (e: any) {
+      // Best-effort — a failed prune must not fail a recovery — but NOT silent.
+      // A missing module, a corrupt archive or an EPERM all used to look like a
+      // clean fleet upgrade with the leak intact.
+      console.warn(`[self-extract] prune skipped: ${e?.message || e}`);
+    }
     // BUG bbe794bc: the tarball ships package.json + lockfile + dist/, but NOT
     // node_modules. A tar-only overlay would advance the on-disk version while
     // leaving deps unsatisfied if the target added/bumped a production dep — the
