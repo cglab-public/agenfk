@@ -241,7 +241,18 @@ function HerdrRows(): React.ReactElement {
     queryFn: async () => {
       const r = await fetch(`${API_URL}/herdr/sessions`);
       if (!r.ok) throw new Error(`herdr sessions: ${r.status}`);
-      return r.json();
+      const body = await r.json();
+      /*
+       * `describeHerdr` runs in the component body and starts with
+       * `view.sessions.filter`. A 200 whose body is not this shape - a dev
+       * server answering index.html, a proxy - would throw during render, and
+       * there is no ErrorBoundary anywhere in this package: it would take the
+       * whole dashboard down rather than this one section.
+       */
+      if (!body || !Array.isArray(body.sessions)) {
+        throw new Error('herdr sessions: unexpected response shape');
+      }
+      return body;
     },
     // A listing, not a live view: the panel is opened deliberately and the
     // answer is one socket round trip, so a short staleness beats a poll.
@@ -249,7 +260,14 @@ function HerdrRows(): React.ReactElement {
   });
 
   const d = data ? describeHerdr(data) : null;
-  const toneClass = d?.tone === 'warn' ? 'text-warn'
+  /*
+   * `text-amber-*`, not `text-warn`. There is no `--color-warn` token in
+   * `packages/brand/tokens.css` and Tailwind v4 here is CSS-first with no
+   * config, so `text-warn` compiles to NOTHING - the warning would have
+   * rendered in the inherited colour and been indistinguishable from the
+   * healthy case. The convention this file already uses sits 145 lines up.
+   */
+  const toneClass = d?.tone === 'warn' ? 'text-amber-600 dark:text-amber-400'
     : d?.tone === 'good' ? 'text-accent-text' : 'text-ink-tertiary';
 
   return (
@@ -262,8 +280,14 @@ function HerdrRows(): React.ReactElement {
       />
       <SettingRow
         testId="herdr-attach"
-        title="Attach to open herdr sessions"
-        description="Show agents already running in herdr, including ones AgEnFK did not launch."
+        title="herdr sessions detected"
+        /*
+         * NOT "attach". Nothing attaches yet, there is no stored setting, and
+         * the state below is read from the server rather than toggled - so a
+         * switch here would be a control that controls nothing, and the word
+         * "attach" would promise a behaviour this build does not have.
+         */
+        description="Agents already running in herdr, including ones AgEnFK did not launch. Read only."
         meta={
           isLoading ? <span data-testid="herdr-state">Looking for herdr…</span>
           : isError ? <span data-testid="herdr-state">Could not ask the server.</span>
@@ -274,7 +298,7 @@ function HerdrRows(): React.ReactElement {
             </span>
           ) : null
         }
-        control={<span className="text-[11px] uppercase tracking-wider text-accent-text">on</span>}
+        control={<span className="text-[11px] uppercase tracking-wider text-ink-tertiary">detected</span>}
       />
       {d && d.byDirectory.length > 0 && (
         <SettingRow
@@ -289,7 +313,7 @@ function HerdrRows(): React.ReactElement {
                   <span className="text-ink-secondary">{row.dir}</span>
                   <span className="text-ink-tertiary"> · {row.panes} pane{row.panes === 1 ? '' : 's'}</span>
                   {row.needsAPerson > 0 && (
-                    <span className="text-warn"> · {row.needsAPerson} waiting on a person</span>
+                    <span className="text-amber-600 dark:text-amber-400"> · {row.needsAPerson} waiting on a person</span>
                   )}
                 </span>
               ))}

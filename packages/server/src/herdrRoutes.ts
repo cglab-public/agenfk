@@ -28,6 +28,25 @@ import { liveHerdrSessions, readSnapshot, type HerdrPane, type HerdrSession, typ
 /** How long one session may take before the listing gives up on it. */
 export const SESSION_READ_TIMEOUT_MS = 3_000;
 
+/**
+ * Anything shaped like a session identifier, taken out of a pane title.
+ *
+ * MEASURED, NOT IMAGINED. On the machine this was written on, two panes carried
+ * the title `claude --resume 4b4508d1-2f57-43df-9491-93dc99d96d…` — a resumable
+ * session id, in plaintext, on a route with no authentication whose CORS
+ * accepts any localhost origin. The pane title is the most useful field in this
+ * payload and worth keeping: "Implementar fault tolerance no LiteLLM" is what
+ * lets a person recognise their own work. The uuid inside it is not.
+ *
+ * `paneView` already drops `agent_session` because it carries an id. This is
+ * the same reasoning applied to the place the id also leaks.
+ */
+const SESSION_ID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4,12}\b/gi;
+
+function withoutSessionIds(title: string | undefined): string | undefined {
+  return typeof title === 'string' ? title.replace(SESSION_ID, '…') : title;
+}
+
 export interface HerdrDeps {
   readonly discover: () => HerdrSession[];
   readonly read: (socketPath: string, timeoutMs?: number) => Promise<SnapshotResult>;
@@ -78,7 +97,7 @@ function paneView(p: HerdrPane): HerdrPane {
     cwd: p.cwd,
     agent: p.agent,
     agent_status: p.agent_status,
-    terminal_title_stripped: p.terminal_title_stripped,
+    terminal_title_stripped: withoutSessionIds(p.terminal_title_stripped),
     focused: p.focused,
   };
 }

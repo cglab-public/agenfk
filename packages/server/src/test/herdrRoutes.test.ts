@@ -8,7 +8,7 @@
  * left behind by a crash, and one dead session among live ones.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { buildHerdrSnapshot, type HerdrDeps } from '../herdrRoutes';
+import { buildHerdrSnapshot, SESSION_READ_TIMEOUT_MS, type HerdrDeps } from '../herdrRoutes';
 import type { HerdrSession, SnapshotResult } from '../herdr';
 
 const SESSION = (name: string): HerdrSession => ({ name, socketPath: `/cfg/${name}.sock` });
@@ -17,8 +17,10 @@ const snap = (panes: Record<string, unknown>[]): SnapshotResult => ({
   ok: true,
   snapshot: {
     protocol: 17,
+    // ASYMMETRIC ON PURPOSE. With one workspace and one tab, swapping
+    // `counts.tabs` for `workspaces.length` is undetectable - and it was.
     workspaces: [{ workspace_id: 'w1' }],
-    tabs: [{ tab_id: 'w1:t1' }],
+    tabs: [{ tab_id: 'w1:t1' }, { tab_id: 'w1:t2' }],
     panes,
     agents: panes.filter(p => p.agent),
   },
@@ -91,7 +93,7 @@ describe('when herdr is running', () => {
     expect(body.available).toBe(true);
     expect(body.sessions[0]).toMatchObject({
       name: 'default', reachable: true,
-      counts: { workspaces: 1, tabs: 1, panes: 3, agents: 2 },
+      counts: { workspaces: 1, tabs: 2, panes: 3, agents: 2 },
     });
   });
 
@@ -225,5 +227,87 @@ describe('reading many sessions', () => {
     await buildHerdrSnapshot(deps({ read }));
     // The deps signature carries the timeout; the route must pass one.
     expect(read).toHaveBeenCalledWith(expect.any(String), expect.any(Number));
+  });
+});
+
+/* ── the seam: what the route emits is what the screen consumes ─────────── */
+
+describe('the fields the screen actually reads', () => {
+  /*
+   * THE DEFECT BOTH CARDS EXIST TO CURE, reproduced in their own test suites:
+   * the route was tested against its own fixtures, the screen against its own,
+   * and NOTHING tested the seam. Nine mutations survived there — deleting
+   * `cwd` from `paneView` left every test in both packages green while killing
+   * the whole "Where that work is" section, because `byDirectory` skips any
+   * pane without a path.
+   */
+  it('emits exactly the pane fields it means to, and no more', async () => {
+    const body = await buildHerdrSnapshot(deps());
+    const got = Object.keys(body.sessions[0].panes[0]).sort();
+    expect(got).toEqual([
+      'agent', 'agent_status', 'cwd', 'focused',
+      'pane_id', 'tab_id', 'terminal_title_stripped', 'workspace_id',
+    ]);
+  });
+
+  it('emits the session fields the screen reads, including the one it prints', async () => {
+    /*
+     * The first version of this block asserted the PANE shape and forgot the
+     * session's own - so deleting `protocol` survived, and the Settings line
+     * would silently stop saying which version it is talking to. A protocol is
+     * a compatibility fact and the only one the screen shows.
+     */
+    const body = await buildHerdrSnapshot(deps());
+    const s0 = body.sessions[0];
+    expect(s0.protocol).toBe(17);
+    expect(Object.keys(s0).sort()).toEqual([
+      'byAgent', 'counts', 'name', 'panes', 'protocol', 'reachable', 'socketPath',
+    ]);
+  });
+
+  it('keeps cwd, which is the only thing the directory grouping has to work with', async () => {
+    const body = await buildHerdrSnapshot(deps());
+    for (const p of body.sessions[0].panes) expect(p.cwd, p.pane_id as string).toBe('/repo');
+  });
+
+  it('keeps agent_status, which is the only thing that can say a pane needs a person', async () => {
+    const body = await buildHerdrSnapshot(deps());
+    expect(body.sessions[0].panes.map(p => p.agent_status)).toEqual(['working', 'idle', undefined]);
+  });
+
+  it('REDACTS a session id out of the title, and keeps the sentence', async () => {
+    // Measured on a live herdr: `claude --resume 4b4508d1-…` was a real title.
+    const body = await buildHerdrSnapshot(deps({
+      read: async () => snap([{
+        pane_id: 'p', cwd: '/r',
+        terminal_title_stripped: 'claude --resume 4b4508d1-2f57-43df-9491-93dc99d96d00',
+      }]),
+    }));
+    const title = body.sessions[0].panes[0].terminal_title_stripped as string;
+    expect(title).not.toMatch(/4b4508d1/);
+    expect(title).toContain('claude --resume');
+  });
+
+  it('leaves an ordinary title alone', async () => {
+    const body = await buildHerdrSnapshot(deps({
+      read: async () => snap([{ pane_id: 'p', cwd: '/r', terminal_title_stripped: 'Fault tolerance no LiteLLM' }]),
+    }));
+    expect(body.sessions[0].panes[0].terminal_title_stripped).toBe('Fault tolerance no LiteLLM');
+  });
+});
+
+describe('the deadline', () => {
+  it('is the value it says it is, not merely a number', async () => {
+    /*
+     * The old test asserted `expect.any(Number)` — arity, not bound. Both
+     * `0` (every read aborts before connect, a healthy machine reports "none
+     * answering") and `3_000_000` (a hung socket holds the request for fifty
+     * minutes) survived it.
+     */
+    const read = vi.fn(async () => snap(PANES));
+    await buildHerdrSnapshot(deps({ read }));
+    expect(read).toHaveBeenCalledWith(expect.any(String), SESSION_READ_TIMEOUT_MS);
+    expect(SESSION_READ_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(SESSION_READ_TIMEOUT_MS).toBeLessThanOrEqual(10_000);
   });
 });
