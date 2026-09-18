@@ -131,12 +131,17 @@ describe('the type grammar', () => {
          * person writes it — and comments are blanked out of `source`, so it
          * is looked for in the raw lines.
          *
-         * Four lines and the match's own, and NOTHING below it. The first
-         * version reached one line past the match, so a marker written under a
-         * violation would have excused it — a suppression pointing the wrong
-         * way, which is the hardest kind to notice in review.
+         * NOTHING BELOW the match: a marker written under a violation must
+         * not excuse it, which is a suppression pointing the wrong way and the
+         * hardest kind to notice in review.
+         *
+         * Eight lines above, though, not four. A marker is written at the top
+         * of the comment that JUSTIFIES it, and a justification worth reading
+         * runs several lines — tightening this to four put the marker on the
+         * drill-down button out of its own block's reach, which is the same
+         * dead hatch as before wearing the opposite mistake.
          */
-        const nearby = rawLines.slice(Math.max(0, line - 5), line).join('\n');
+        const nearby = rawLines.slice(Math.max(0, line - 9), line).join('\n');
         if (nearby.includes('item-type-colour-ok')) continue;
         offenders.push(`${file.slice(root.length + 1)}:${line}: ${source.split('\n')[line - 1].trim()}`);
       }
