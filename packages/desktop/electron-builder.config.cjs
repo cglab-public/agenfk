@@ -131,6 +131,18 @@ module.exports = {
 
   mac: {
     icon: APP_ICON,
+    /*
+     * SIGNED ONLY WHEN THERE IS A CERTIFICATE TO SIGN WITH.
+     *
+     * `identity: null` means "do not sign". Left to auto-discovery, a CI
+     * runner finds whatever identity its image ships, tries to sign with an
+     * EMPTY password, and dies with the unhelpful "<project dir> not a file"
+     * - which is why every macOS release failed while Windows built. Setting
+     * it from CSC_LINK keeps signing opt-in: provide the cert and it signs.
+     * CSC_IDENTITY_AUTO_DISCOVERY was tried in the workflow and electron-
+     * builder ignored it on this path.
+     */
+    identity: process.env.CSC_LINK ? undefined : null,
     category: 'public.app-category.developer-tools',
     target: [
       { target: 'dmg', arch: ['arm64', 'x64'] },
@@ -162,6 +174,16 @@ module.exports = {
 
   linux: {
     icon: APP_ICON_SET,
+    /*
+     * A NAME, not the package identifier.
+     *
+     * electron-builder derives the artifact name from `name`, which here is
+     * the SCOPED `@agenfk/desktop` - so fpm tried to write
+     * `release/@agenfk/desktop_x.y.z_arm64.deb`, a path with a slash in it,
+     * and died with "Parent directory does not exist". The AppImage was fine;
+     * only deb was affected. This names every Linux artifact explicitly.
+     */
+    artifactName: '${productName}-${version}-${arch}.${ext}',
     target: [
       { target: 'AppImage', arch: ['x64', 'arm64'] },
       { target: 'deb', arch: ['x64', 'arm64'] },

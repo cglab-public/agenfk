@@ -26,5 +26,6 @@
     "electron-builder": "^26.0.12",
     "typescript": "~5.9.3"
   },
-  "author": "CG/lab"
+  "author": "CG/lab",
+  "homepage": "https://github.com/cglab-public/agenfk"
 }

@@ -61,7 +61,6 @@ jobs:
           # EMPTY password - then dies with the unhelpful "⨯ <project dir> not a
           # file". The flag is set from the secrets so adding both cert and
           # password turns signing back on by itself.
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
           CSC_LINK: ${{ secrets.MAC_CERT_P12 }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
