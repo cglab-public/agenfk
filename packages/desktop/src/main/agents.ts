@@ -288,3 +288,22 @@ export function canDictateSessionId(agentId: string): boolean {
   const fresh = AGENTS.find(a => a.id === agentId)?.session?.fresh;
   return Boolean(fresh && fresh('3f2504e0-4f89-11d3-9a0c-0305e82c3301').length > 0);
 }
+
+/**
+ * What reopening actually preserves, SAID PER AGENT (dce6ee7d).
+ *
+ * The first version said you would lose everything, which was false for
+ * claude-code and pi; the replacement said the conversation comes back,
+ * unconditionally, which is false for the rest - codex cannot be told its own
+ * id, and gemini and shell have no session descriptor at all. Both are the
+ * same mistake: one sentence for agents that behave differently, and the
+ * reassuring direction is the dangerous one.
+ *
+ * Derived from `canDictateSessionId` rather than a list written here, because
+ * a hand-kept copy beside the real one is exactly the thing that drifts.
+ */
+export function reopenNotice(agents: readonly { id: string; label: string }[]): string {
+  const resuming = agents.filter(a => canDictateSessionId(a.id)).map(a => a.label);
+  return 'Your terminals are reopened either way. The conversation resumes for: '
+    + `${resuming.join(', ') || 'no installed agent'}; other agents start fresh.`;
+}

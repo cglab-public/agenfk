@@ -15,7 +15,7 @@ import { readFileSync } from 'fs';
 import { readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
 import { resolveServer, type ResolvedServer } from './serverLifecycle.js';
 import { resolveDesktopPaths } from './paths.js';
-import { listAgents, canDictateSessionId } from './agents.js';
+import { listAgents, reopenNotice } from './agents.js';
 import { resolveDbPath } from './serverEnv.js';
 import { isAgenfkServer, servesUiBundle, httpGet } from './probes.js';
 import { agentRunSourcePath } from './agentRunSource.js';
@@ -407,11 +407,7 @@ async function boot(): Promise<void> {
          * Derived from `canDictateSessionId` rather than listed here, because a
          * hand-written list beside the real one is the thing that drifts.
          */
-        const resuming = listAgents().filter(a => canDictateSessionId(a.id)).map(a => a.label);
-        console.log(
-          `[DESKTOP] Your terminals are reopened either way. The conversation resumes for: `
-          + `${resuming.join(', ') || 'no installed agent'}; other agents start fresh.`,
-        );
+        console.log(`[DESKTOP] ${reopenNotice(listAgents())}`);
         /*
          * On Windows `tmuxStatus.warning` is the raw enum
          * 'tmux_unsupported_on_windows', and printing it as the fix presented
