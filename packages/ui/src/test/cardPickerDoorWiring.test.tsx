@@ -92,8 +92,13 @@ const setBridge = () => {
  * a handler of its own that quietly does nothing.
  */
 const Probe: React.FC = () => {
-  const { newItemRequest, activeProjectId } = useActiveProject();
-  return <div data-testid="probe">{newItemRequest ?? 'none'}|{activeProjectId ?? 'none'}</div>;
+  const { newItemRequest, activeProjectId, newItemTitle } = useActiveProject();
+  return (
+    <>
+      <div data-testid="probe">{newItemRequest ?? 'none'}|{activeProjectId ?? 'none'}</div>
+      <div data-testid="probe-title">{newItemTitle ?? 'none'}</div>
+    </>
+  );
 };
 
 const restored = [{
@@ -172,17 +177,73 @@ describe('Create a card, from the empty picker', () => {
       expect(screen.queryByRole('dialog', { name: /which card/i })).toBeNull());
   });
 
+  it('creates the card for the TERMINAL you are looking at, not for the sidebar selection', async () => {
+    /*
+     * Precedence, and the first version had it backwards.
+     *
+     * The board is on "agenfk" while the terminal in front of you belongs to
+     * "horizon-lab". This picker is opened FROM the terminal strip and every
+     * row in it is about that terminal's world; pressing Create a card here
+     * means "a card for this thing I am looking at". Preferring the sidebar's
+     * selection filed it in the other repo AND re-pointed the board to follow
+     * — so the person lands somewhere they did not ask for, holding a card
+     * they now have to move.
+     */
+    localStorage.setItem('agenfk_project_id', 'p1');
+    vi.mocked(api.listProjects).mockResolvedValue([
+      { id: 'p1', name: 'agenfk', createdAt: new Date(), updatedAt: new Date() },
+      { id: 'p2', name: 'horizon-lab', createdAt: new Date(), updatedAt: new Date() },
+    ] as never);
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(
+      [{ ...restored[0], projectId: 'p2' }] as never,
+    );
+    await openTheEmptyPicker();
+    fireEvent.click(await screen.findByRole('button', { name: /create a card/i }));
+    await waitFor(() =>
+      expect(screen.getByTestId('probe').textContent).toMatch(/^p2#\d+\|p2$/));
+  });
+
+  it('falls back to the remembered project when the row carries an EMPTY project, not just a missing one', async () => {
+    /*
+     * `??` only steps aside for null and undefined, so a row that arrived with
+     * `projectId: ''` — off-type, but it comes over the wire — short-circuited
+     * to the empty string and then failed the truthiness check that decides
+     * whether the door is drawn. The door vanished on a screen where the app
+     * plainly knew which project was open.
+     */
+    localStorage.setItem('agenfk_project_id', 'p1');
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(
+      [{ ...restored[0], projectId: '' }] as never,
+    );
+    await openTheEmptyPicker();
+    fireEvent.click(await screen.findByRole('button', { name: /create a card/i }));
+    await waitFor(() =>
+      expect(screen.getByTestId('probe').textContent).toMatch(/^p1#\d+\|p1$/));
+  });
+
+  it('falls back to the remembered project when the terminal row has none', async () => {
+    /*
+     * The other half of the precedence rule. A restored row without a project
+     * — and there are such rows — must not leave the door hidden when the app
+     * plainly knows which project is open.
+     */
+    localStorage.setItem('agenfk_project_id', 'p1');
+    vi.mocked(api.listTerminalSessions).mockResolvedValue(
+      [{ ...restored[0], projectId: undefined }] as never,
+    );
+    await openTheEmptyPicker();
+    fireEvent.click(await screen.findByRole('button', { name: /create a card/i }));
+    await waitFor(() =>
+      expect(screen.getByTestId('probe').textContent).toMatch(/^p1#\d+\|p1$/));
+  });
+
   it('still opens onto a project on a first launch, where none is remembered yet', async () => {
     /*
-     * The case that made this test file seed a project in the first place, and
-     * the reason it is not seeded here: restoring a terminal does NOT select a
-     * project — only opening one does (`requestTerminal`) — so a fresh profile
-     * with remembered terminals arrives in the Terminal view with nothing
-     * active, and the door would be hidden exactly where the person has the
-     * fewest other routes to a card.
-     *
-     * The terminal on screen knows which project it belongs to. That is the
-     * project the card goes in.
+     * A fresh profile with remembered terminals: restoring a terminal does NOT
+     * select a project — only opening one does (`requestTerminal`) — so the
+     * app arrives in the Terminal view with nothing active, and the door would
+     * be hidden exactly where the person has the fewest other routes to a
+     * card. The terminal on screen knows its project; that is the one.
      */
     localStorage.clear();
     await openTheEmptyPicker();
@@ -205,6 +266,30 @@ describe('Create a card, from the empty picker', () => {
     const picker = await openTheEmptyPicker();
     expect(picker.textContent).toMatch(/no work in flight/i);
     expect(screen.queryByRole('button', { name: /create a card/i })).toBeNull();
+  });
+
+  it('carries the phrase that was typed all the way to the draft', async () => {
+    /*
+     * End to end, because the component test can only prove the picker HANDS
+     * the phrase over — the defect being fixed is that the shell dropped it on
+     * the floor and opened an empty Title.
+     *
+     * The list here has cards in it; the search is what empties it, which is
+     * the exact moment someone has already written what they want.
+     */
+    localStorage.setItem('agenfk_project_id', 'p1');
+    vi.mocked(api.listActiveItems).mockResolvedValue(
+      Array.from({ length: 8 }, (_, i) => ({
+        id: `x${i}`, projectId: 'p1', type: 'TASK', title: `Card number ${i}`, status: 'IN_PROGRESS',
+      })) as never,
+    );
+    await openTheEmptyPicker();
+    fireEvent.change(await screen.findByRole('searchbox', { name: /search cards/i }), {
+      target: { value: 'fix the picker dismiss' },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: /create a card/i }));
+    await waitFor(() =>
+      expect(screen.getByTestId('probe-title').textContent).toBe('fix the picker dismiss'));
   });
 
   it('leaves Ask AgEnFK inert, because nothing is behind it yet', async () => {

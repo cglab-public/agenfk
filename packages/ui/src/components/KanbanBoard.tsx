@@ -16,6 +16,7 @@ import { useSocketEvent } from '../SocketContext';
 import { isDesktop } from '../desktop';
 import { useActiveProject } from '../ActiveProject';
 import { CardDetailModal } from './CardDetailModal';
+import { ItemTypeBadge, ITEM_TYPE_VISUAL } from './ItemTypeSquare';
 import { CardAnimationWrapper } from '../animations/CardAnimationWrapper';
 import '../animations'; // Side-effect: registers all easter egg animations
 import { useEasterEggs } from '../useEasterEggs';
@@ -288,9 +289,17 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
       )}
       <div className="flex justify-between items-start mb-2">
         <div className="flex items-center gap-1.5">
-          <span className={clsx("text-[9px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider flex items-center gap-1", item.type === ItemType.EPIC ? "bg-chip text-accent-text border-border-brand" : item.type === ItemType.STORY ? "bg-story-blue/10 text-story-blue border-story-blue/30" : item.type === ItemType.TASK ? "bg-brand/10 text-brand border-brand/30" : "bg-danger-muted/10 text-danger-muted border-danger-muted/30")}>
-            {item.type}
-          </span>
+          {/* One grammar, decided in one place (CGLAB-164). This ladder used
+              to paint STORY with `story-blue` and TASK with the brand teal —
+              the exact reverse of what the create form teaches, so a card
+              changed colour between being written and being seen. */}
+          <ItemTypeBadge type={item.type} size="sm" />
+          {/* item-type-colour-ok: the type decides whether this drill-down
+              button EXISTS — only a parent can be drilled into — never what
+              colour it is. The chip is `bg-chip` for every type that has one.
+              Marked deliberately: without it this site passed the grammar
+              sweep on about thirty characters of slack, so a reflow of the
+              line below would have turned it red for an innocent reason. */}
           {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && items?.some((i: AgEnFKItem) => i.parentId === item.id) && (
             <button onClick={(e) => { e.stopPropagation(); onDrillDown(item); }} className="bg-chip hover:bg-chip/70 text-accent-text px-1.5 py-0.5 rounded text-[9px] font-bold flex items-center gap-1 transition-colors" aria-label={`Show ${items?.filter((i: AgEnFKItem) => i.parentId === item.id).length} child items`}>
               <Search size={9} /> {items?.filter((i: AgEnFKItem) => i.parentId === item.id).length}
@@ -382,6 +391,9 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
       )}
       {item.description && <p className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2 mb-2">{item.description}</p>}
       
+      {/* item-type-colour-ok: the type decides whether this progress bar
+          EXISTS — only a parent has children to count — not what colour it
+          is. The bar is one colour for every type. */}
       {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && (
         <div className="mb-2">
           {(() => {
@@ -492,8 +504,8 @@ const stripDeepLinkParams = () => {
  * else: a draft genuinely has no id or timestamps until it is saved, so it is
  * not an AgEnFKItem yet and no honest type says otherwise.
  */
-const blankDraft = (projectId: string, status: Status): AgEnFKItem =>
-  ({ type: ItemType.TASK, status, title: '', description: '', projectId } as unknown as AgEnFKItem);
+const blankDraft = (projectId: string, status: Status, title = ''): AgEnFKItem =>
+  ({ type: ItemType.TASK, status, title, description: '', projectId } as unknown as AgEnFKItem);
 
 export const KanbanBoard: React.FC = () => {
   const queryClient = useQueryClient();
@@ -504,7 +516,7 @@ export const KanbanBoard: React.FC = () => {
   // Shared with the desktop sidebar (CGLAB-168). Same rules as before — a
   // ?project= deep link beats the remembered choice — they just live in
   // ActiveProject now so the sidebar and the board cannot disagree.
-  const { activeProjectId: selectedProjectId, setActiveProjectId: setSelectedProjectId, focusedItemId, newItemRequest, markProjectWorked, requestTerminalFor } = useActiveProject();
+  const { activeProjectId: selectedProjectId, setActiveProjectId: setSelectedProjectId, focusedItemId, newItemRequest, newItemTitle, markProjectWorked, requestTerminalFor } = useActiveProject();
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [projectSearch, setProjectSearch] = useState('');
   const [highlightedProjectIndex, setHighlightedProjectIndex] = useState(-1);
@@ -1359,7 +1371,15 @@ export const KanbanBoard: React.FC = () => {
   useEffect(() => {
     if (!newItemRequest) return;
     const projectId = newItemRequest.slice(0, newItemRequest.lastIndexOf('#'));
-    setSelectedItem(blankDraft(projectId, Status.TODO));
+    // The draft opens holding whatever the caller already had. The card
+    // picker's empty state sends the phrase that matched no card — dropping it
+    // meant typing it a second time, in the one flow whose complaint is that
+    // writing a card costs too much.
+    setSelectedItem(blankDraft(projectId, Status.TODO, newItemTitle ?? ''));
+    // `newItemTitle` is deliberately not a dependency: it is set in the same
+    // batch as the request and read here, and listing it would re-open the
+    // draft on its own.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [newItemRequest]);
 
   const handleSearchNav = (direction: 'prev' | 'next') => {
@@ -1909,7 +1929,11 @@ agenfk update-project <id> --setup-command "npm ci"`}
                   onClick={() => navigateTo(index)}
                   /* v8 ignore stop */
                   className={clsx("flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all whitespace-nowrap", index === navPath.length - 1 ? "bg-[image:var(--gradient-accent)] text-navy font-bold shadow-glow" : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800")}>
-                  <span className={clsx("w-2 h-2 rounded-full", nav.type === ItemType.EPIC ? "bg-brand-light" : "bg-story-blue")}></span>
+                  {/* The breadcrumb dot is a type colour too (CGLAB-164): it used to be
+                      `EPIC ? brand-light : story-blue`, which put a blue dot
+                      directly above the emerald STORY badge it had just
+                      revealed. Same grammar, same source. */}
+                  <span data-testid="breadcrumb-type-dot" className={clsx("w-2 h-2 rounded-full", ITEM_TYPE_VISUAL[nav.type]?.fill ?? "bg-slate-400")}></span>
                   <span>{nav.title}</span>
                 </button>
               </React.Fragment>

@@ -55,8 +55,12 @@ export interface CardPickerProps {
    * a caller with no active project has nowhere to put one. Passing nothing
    * hides the door rather than drawing one onto nothing, which is the defect
    * this is fixing rather than a smaller helping of it.
+   *
+   * It receives whatever was typed into the search box, when something was: a
+   * phrase that matched no card is usually the title of the card that does not
+   * exist yet, and the picker is the only place that still has it.
    */
-  readonly onCreateCard?: () => void;
+  readonly onCreateCard?: (seedTitle?: string) => void;
 }
 
 /**
@@ -130,7 +134,12 @@ function EmptyDoors({ onCreateCard, onClearSearch }: { onCreateCard?: () => void
       {onCreateCard && (
         <button
           type="button"
-          onClick={onCreateCard}
+          // `() => onCreateCard()`, never `onClick={onCreateCard}`: React hands
+          // a click handler its mouse event, and the callback this ends up
+          // calling takes a seed TITLE as its first parameter. Passed straight
+          // through, the event object arrives where a string belongs and is
+          // handed to `.trim()`.
+          onClick={() => onCreateCard()}
           className="rounded-lg border border-border-brand bg-chip px-3 py-2 text-xs font-semibold text-accent-text transition-opacity hover:opacity-90"
         >
           ＋ Create a card
@@ -159,14 +168,21 @@ function EmptyDoors({ onCreateCard, onClearSearch }: { onCreateCard?: () => void
         <button
           type="button"
           disabled
-          className="w-full cursor-not-allowed text-left text-xs font-semibold text-ink-tertiary opacity-70"
+          className="w-full cursor-not-allowed text-left text-xs font-semibold text-ink-secondary"
         >
           ✧ Ask AgEnFK
         </button>
-        <p data-testid="ask-agenfk-reason" className="mt-1 text-[10px] leading-snug text-ink-tertiary">
-          Describe the objective and have the decomposition proposed for you. Not built yet —
-          nothing decomposes anything on the server side, so this would be a button that promises
-          and does not deliver.
+        {/*
+         * Readable ink, not decorative ink. This was `text-[10px]` in
+         * `ink-tertiary` on the translucent nav surface — around 2.5:1 in the
+         * light theme, under AA, which is the hidden version of "shown". The
+         * reason is the whole content of a control that does nothing else; if
+         * it cannot be read, the door is back to being a dead button.
+         */}
+        <p data-testid="ask-agenfk-reason" className="mt-1 text-[11px] leading-snug text-ink-secondary">
+          Describe the objective and have the decomposition proposed for you. Not built yet:
+          nothing on the server decomposes anything, so this would be a button that promises and
+          does not deliver.
         </p>
       </div>
     </div>
@@ -277,7 +293,9 @@ export function CardPicker({ items, currentItemId, projectNames, onPick, onClose
                 No card matches that. Clear the search or pick another project.
               </p>
               <EmptyDoors
-                onCreateCard={onCreateCard}
+                // The phrase that matched nothing is handed over as the title
+                // of the card that does not exist yet.
+                onCreateCard={onCreateCard && (() => onCreateCard(query.trim() || undefined))}
                 onClearSearch={() => { setQuery(''); setProjectId(''); }}
               />
             </>
@@ -292,6 +310,10 @@ export function CardPicker({ items, currentItemId, projectNames, onPick, onClose
               <p className="px-3 py-6 text-center text-xs text-ink-tertiary">
                 No work in flight. Start a card on the board, then open a terminal on it.
               </p>
+              {/* Reached only when nothing was typed and no project was
+                  chosen, so there is no seed to carry and the callback goes
+                  through as it is. It is safe to pass directly because
+                  `EmptyDoors` calls it with NO arguments — see the button. */}
               <EmptyDoors onCreateCard={onCreateCard} />
             </>
           ) : (

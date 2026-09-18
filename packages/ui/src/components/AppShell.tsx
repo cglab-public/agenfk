@@ -1736,20 +1736,36 @@ export function AppShell({ children }: { children: React.ReactNode }) {
            * a modal from here keeps ONE way into a new card, and the picker
            * closes first so the draft is not opened underneath a dialog.
            *
-           * The project falls back to the one the terminal on screen belongs
-           * to. Restoring a terminal does not select a project — only opening
-           * one does — so a first launch with remembered tabs lands here with
-           * nothing active, and that is the state with the FEWEST other routes
-           * to a card. With neither, there is genuinely nowhere to put one and
-           * the picker hides the door rather than drawing it onto nothing.
+           * THE TERMINAL'S project wins over the sidebar's selection, and that
+           * order is not arbitrary. This dialog is opened from the terminal
+           * strip and every row in it is about that terminal's world; pressing
+           * Create a card here means "a card for the thing I am looking at".
+           * Preferring the sidebar's selection filed it in the other repo AND
+           * re-pointed the board to follow, leaving the person somewhere they
+           * did not ask to be, holding a card they then have to move.
+           *
+           * The remembered project is the fallback, for a restored row that
+           * carries none — including a first launch, where restoring a terminal
+           * does not select a project and nothing else here would. With neither
+           * there is genuinely nowhere to put a card, and the picker hides the
+           * door rather than drawing one onto nothing.
+           *
+           * The seed is whatever was typed into the picker's search box: a
+           * phrase that found no card is usually the title of the card that
+           * does not exist yet, and making someone type it twice is the
+           * friction this whole change is about.
            */
           onCreateCard={(() => {
-            const intoProject = activeProjectId
-              ?? sessions.find(s => s.id === activeSession)?.projectId;
+            // `||`, not `??`: a row that arrives with an EMPTY projectId is
+            // not "a project", and `??` would keep it, fail the check below
+            // and hide the door on a screen that knows perfectly well which
+            // project is open.
+            const intoProject = sessions.find(s => s.id === activeSession)?.projectId
+              || activeProjectId;
             if (!intoProject) return undefined;
-            return () => {
+            return (seedTitle?: string) => {
               setPickingCard(false);
-              requestNewItem(intoProject);
+              requestNewItem(intoProject, seedTitle);
             };
           })()}
           onClose={() => setPickingCard(false)}

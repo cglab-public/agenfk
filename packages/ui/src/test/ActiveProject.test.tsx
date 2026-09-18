@@ -16,7 +16,7 @@ import { ActiveProjectProvider, useActiveProject } from '../ActiveProject';
 import { readLastUsed } from '../sidebarPrefs';
 
 function Probe() {
-  const { activeProjectId, setActiveProjectId, focusedItemId, focusItem, newItemRequest, requestNewItem, markProjectWorked, terminalRequest, requestTerminalFor } = useActiveProject();
+  const { activeProjectId, setActiveProjectId, focusedItemId, focusItem, newItemRequest, newItemTitle, requestNewItem, markProjectWorked, terminalRequest, requestTerminalFor } = useActiveProject();
   return (
     <div>
       <span data-testid="active">{activeProjectId ?? 'none'}</span>
@@ -27,7 +27,9 @@ function Probe() {
       <button onClick={() => focusItem('i9', 'p2')}>focus i9 in p2</button>
       <button onClick={() => focusItem('i9', 'p2')}>focus i9 again</button>
       <span data-testid="new-item">{newItemRequest ?? 'none'}</span>
+      <span data-testid="new-item-title">{newItemTitle ?? 'none'}</span>
       <button onClick={() => requestNewItem('p2')}>new in p2</button>
+      <button onClick={() => requestNewItem('p2', '  fix the picker dismiss  ')}>new in p2 with words</button>
       <button onClick={() => requestNewItem('p2')}>new in p2 again</button>
       <button onClick={() => markProjectWorked('p2')}>work in p2</button>
       <button onClick={() => markProjectWorked('')}>work in nothing</button>
@@ -182,6 +184,30 @@ describe('creating a card from the sidebar', () => {
     const first = screen.getByTestId('new-item').textContent;
     act(() => { fireEvent.click(screen.getByText('new in p2 again')); });
     expect(screen.getByTestId('new-item').textContent).not.toBe(first);
+  });
+
+  it('carries the words a caller already had, trimmed', () => {
+    // The card picker's empty state hands over the phrase typed into its
+    // search box, so the draft opens holding it instead of making someone
+    // type it twice.
+    renderProbe();
+    act(() => { fireEvent.click(screen.getByText('new in p2 with words')); });
+    expect(screen.getByTestId('new-item-title').textContent).toBe('fix the picker dismiss');
+  });
+
+  it('drops the previous words when the next request has none', () => {
+    /*
+     * The stale-title case, which had a comment claiming it and no test.
+     * Seed from the picker, dismiss the draft, then open a new card from the
+     * sidebar `+` — that second draft must be empty. Nothing CLEARS the title;
+     * it is overwritten, and this is the assertion that the overwrite actually
+     * happens on a request that carries no seed.
+     */
+    renderProbe();
+    act(() => { fireEvent.click(screen.getByText('new in p2 with words')); });
+    expect(screen.getByTestId('new-item-title').textContent).toBe('fix the picker dismiss');
+    act(() => { fireEvent.click(screen.getByText('new in p2')); });
+    expect(screen.getByTestId('new-item-title').textContent).toBe('none');
   });
 
   it('does not persist the request', () => {

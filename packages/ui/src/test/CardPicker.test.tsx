@@ -260,6 +260,47 @@ describe('the way out of an empty picker', () => {
     expect(onCreateCard).toHaveBeenCalled();
   });
 
+  it('hands the words already typed to the card being created', () => {
+    /*
+     * Someone types "fix the picker dismiss", nothing matches, and they press
+     * Create a card — the phrase they just wrote is the title of the card they
+     * want. Dropping it and opening an empty Title makes them type it twice,
+     * in a dialog whose entire reason for existing is that writing cards is
+     * too much friction.
+     */
+    const onCreateCard = vi.fn();
+    const MANY = Array.from({ length: 8 }, (_, i) => card(`i${i}`, `Card number ${i}`));
+    render(<CardPicker items={MANY} onPick={vi.fn()} onClose={vi.fn()} onCreateCard={onCreateCard} />);
+    fireEvent.change(screen.getByRole('searchbox', { name: /search cards/i }), { target: { value: '  fix the picker dismiss  ' } });
+    fireEvent.click(screen.getByRole('button', { name: /create a card/i }));
+    expect(onCreateCard).toHaveBeenCalledWith('fix the picker dismiss');
+  });
+
+  it('hands over no seed at all on the branch where nothing could have been typed', () => {
+    /*
+     * The empty board draws no search box (`items.length > 6 ||
+     * projectOptions.length > 1`), so this branch structurally cannot carry a
+     * phrase — and it must pass NOTHING rather than `''`, or the draft opens
+     * with a blank title that reads as "already filled in".
+     *
+     * Renamed after review, which was right that the old name — "passes
+     * nothing when there was nothing typed" — claimed to prove the trimming
+     * and proved the default. The trimming is proved by the sibling above,
+     * which types a padded phrase and asserts the trimmed one comes out; typing
+     * only spaces cannot be used for it, since a whitespace query matches every
+     * card and never reaches an empty branch at all.
+     */
+    const onCreateCard = vi.fn();
+    render(<CardPicker items={[]} onPick={vi.fn()} onClose={vi.fn()} onCreateCard={onCreateCard} />);
+    fireEvent.click(screen.getByRole('button', { name: /create a card/i }));
+    expect(onCreateCard).toHaveBeenCalled();
+    // The ARGUMENT, not the arity: "called with no seed" and "called with an
+    // explicit undefined" are the same fact to the caller, and the thing that
+    // must never happen is a seed that is a blank string — or, as an earlier
+    // version of this branch managed, React's mouse event.
+    expect(onCreateCard.mock.calls[0][0]).toBeUndefined();
+  });
+
   it('offers the same door when a search found nothing', () => {
     // A mistyped search and an empty board are different facts — the picker
     // already refuses to conflate them — but the way out is the same.
@@ -305,31 +346,42 @@ describe('the way out of an empty picker', () => {
     expect(screen.getByText(/no work in flight/i)).toBeTruthy();
   });
 
-  it('shows Ask AgEnFK, disabled, with the reason said in words', () => {
+  it('cannot be activated, which is the whole point of drawing it', () => {
     /*
-     * The one thing this must not do is promise. The decomposer is not built:
-     * `analyze_request` echoes the request back and prints four static rules,
-     * and there is no endpoint that decomposes anything. Drawn and disabled
-     * says "this is coming and it is not here"; a live-looking button says
-     * "this works", and finding out it does not is how a control loses its
-     * credit permanently.
+     * `disabled` is the load-bearing assertion and it is now alone with it.
+     *
+     * The test that stood here — click it, assert no callback fired — could
+     * not fail: there is no handler on this button to begin with, and jsdom
+     * does not deliver a click to a disabled control anyway. Deleting
+     * `disabled` from the production code left it green, which is precisely
+     * the state it existed to forbid.
      */
     render(<CardPicker items={[]} onPick={vi.fn()} onClose={vi.fn()} onCreateCard={vi.fn()} />);
     const ask = screen.getByRole('button', { name: /ask agenfk/i }) as HTMLButtonElement;
     expect(ask.disabled).toBe(true);
-    // The reason is on screen, not in a tooltip nobody opens.
-    expect(screen.getByTestId('ask-agenfk-reason').textContent).toMatch(/not built|not here yet|coming/i);
   });
 
-  it('never fires anything when Ask AgEnFK is clicked', () => {
-    const onCreateCard = vi.fn();
-    const onPick = vi.fn();
-    const onClose = vi.fn();
-    render(<CardPicker items={[]} onPick={onPick} onClose={onClose} onCreateCard={onCreateCard} />);
-    fireEvent.click(screen.getByRole('button', { name: /ask agenfk/i }));
-    expect(onCreateCard).not.toHaveBeenCalled();
-    expect(onPick).not.toHaveBeenCalled();
-    expect(onClose).not.toHaveBeenCalled();
+  it('says WHY it is inert, in visible words, without promising it works', () => {
+    /*
+     * The assertion this card turns on, and the one that was weakest.
+     *
+     * `/not built|not here yet|coming/i` accepted "Coming soon — describe your
+     * objective and we will decompose it for you", which is exactly the lie
+     * the card exists to prevent: soothing future tense over a thing that does
+     * not exist, read by a user as "it works, just not yet for me".
+     *
+     * So: the reason must state the ABSENCE, must not be phrased as a promise,
+     * and must actually be visible rather than shipped in a hidden node.
+     */
+    render(<CardPicker items={[]} onPick={vi.fn()} onClose={vi.fn()} onCreateCard={vi.fn()} />);
+    const reason = screen.getByTestId('ask-agenfk-reason');
+    expect(reason).toBeVisible();
+    expect(reason.textContent).toMatch(/not built|does not exist|nothing .*decompos/i);
+    expect(reason.textContent).not.toMatch(/coming soon|we will|shortly|any day now/i);
+    // And not painted in the faintest ink the theme has, at a size that makes
+    // "visible" a technicality. The reason is the control's only content.
+    expect(reason.className).not.toMatch(/ink-tertiary/);
+    expect(reason.className).not.toMatch(/text-\[10px\]/);
   });
 
   it('keeps the doors out of the way when there are cards to pick', () => {

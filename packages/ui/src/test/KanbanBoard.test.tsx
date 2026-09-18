@@ -9,6 +9,7 @@ import { ActiveProjectProvider, useActiveProject } from '../ActiveProject';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api } from '../api';
 import { ItemType, Status } from '../types';
+import { ITEM_TYPE_VISUAL } from '../components/ItemTypeSquare';
 import { io } from 'socket.io-client';
 import { SocketProvider } from '../SocketContext';
 
@@ -1353,5 +1354,134 @@ describe('the terminal button on a card', () => {
     asDesktop(false);
     await boardWithOneCard();
     expect(screen.queryByRole('button', { name: /open a terminal on/i })).toBeNull();
+  });
+});
+
+/**
+ * One type grammar, everywhere a card is drawn (CGLAB-164).
+ *
+ * The create form taught story=green / task=blue — JIRA's grammar, asked for
+ * by name — while this board said story=`story-blue` / task=`brand` teal, and
+ * the Subitems table said something third. The screen that TEACHES the mapping
+ * taught the reverse of the screen the card lands on: pick STORY, see green,
+ * press Create, and the card appears blue among green TASKs.
+ */
+describe('the type badge on a board card', () => {
+  // Its own reset: this describe is a sibling of `KanbanBoard`, so that
+  // block's beforeEach does not reach here, and a cached items query from the
+  // previous case renders the previous type's card.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    queryClient.clear();
+    vi.mocked(api.getProjectFlow).mockResolvedValue(DEFAULT_FLOW_MOCK as any);
+  });
+
+  const boardWith = async (type: string) => {
+    const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+    vi.mocked(api.listProjects).mockResolvedValue([project] as any);
+    vi.mocked(api.listItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p1', title: 'Wire the thing', type, status: 'TODO', createdAt: new Date(), updatedAt: new Date() },
+    ] as any);
+    localStorage.setItem('agenfk_project_id', 'p1');
+    render(<KanbanBoard />, { wrapper });
+    await screen.findByText('Wire the thing');
+    return screen.getAllByTestId('item-type-badge')[0];
+  };
+
+  afterEach(() => cleanup());
+
+  it('wears the same colour the create form taught, for every type', async () => {
+    for (const type of Object.values(ItemType)) {
+      const badge = await boardWith(type);
+      expect(badge.textContent).toContain(type);
+      expect((badge.firstElementChild as HTMLElement).className, `board disagrees with the grammar for ${type}`)
+        .toContain(ITEM_TYPE_VISUAL[type].fill);
+      cleanup();
+      queryClient.clear();
+    }
+  });
+
+  it('paints the drill-down breadcrumb from the same grammar', async () => {
+    /*
+     * The fifth site, and the one the first sweep missed: the breadcrumb dot
+     * was `nav.type === EPIC ? brand-light : story-blue`, so drilling into an
+     * epic put a blue dot directly above the emerald STORY badge it had just
+     * revealed — two answers to "what colour is a story" on one screen.
+     *
+     * The blanket version of this check now lives in ItemTypeSquare.test.tsx,
+     * which reads the components directory; this one proves the rendered
+     * result on the screen that had the defect.
+     */
+    const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+    vi.mocked(api.listProjects).mockResolvedValue([project] as any);
+    vi.mocked(api.listItems).mockResolvedValue([
+      { id: 'e1', projectId: 'p1', title: 'The epic', type: 'EPIC', status: 'TODO', createdAt: new Date(), updatedAt: new Date() },
+      { id: 's1', projectId: 'p1', parentId: 'e1', title: 'The story', type: 'STORY', status: 'TODO', createdAt: new Date(), updatedAt: new Date() },
+    ] as any);
+    localStorage.setItem('agenfk_project_id', 'p1');
+    render(<KanbanBoard />, { wrapper });
+    fireEvent.click(await screen.findByRole('button', { name: /1 child items/i }));
+    const dot = await screen.findByTestId('breadcrumb-type-dot');
+    expect(dot.className).toContain(ITEM_TYPE_VISUAL[ItemType.EPIC].fill);
+    expect(dot.className).not.toMatch(/story-blue|brand-light/);
+  });
+});
+
+describe('a card asked for from outside the board', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    queryClient.clear();
+    vi.mocked(api.getProjectFlow).mockResolvedValue(DEFAULT_FLOW_MOCK as any);
+  });
+  afterEach(() => cleanup());
+
+  it('opens the draft already carrying the words that were typed', async () => {
+    /*
+     * The card picker's empty state hands over the phrase someone just typed
+     * into its search box. If the board ignores it, they type it twice — in a
+     * flow whose whole complaint was that writing cards costs too much.
+     */
+    function SeedHarness() {
+      const { requestNewItem } = useActiveProject();
+      return (
+        <>
+          <button onClick={() => requestNewItem('p1', 'fix the picker dismiss')}>seed</button>
+          <KanbanBoard />
+        </>
+      );
+    }
+    vi.mocked(api.listProjects).mockResolvedValue([
+      { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() },
+    ] as any);
+    vi.mocked(api.listItems).mockResolvedValue([] as any);
+    localStorage.setItem('agenfk_project_id', 'p1');
+    render(<SeedHarness />, { wrapper });
+    fireEvent.click(await screen.findByText('seed'));
+    await waitFor(() =>
+      expect((screen.getByPlaceholderText(/Title of your new task/i) as HTMLInputElement).value)
+        .toBe('fix the picker dismiss'));
+  });
+
+  it('still opens an empty draft when nothing was typed', async () => {
+    function PlainHarness() {
+      const { requestNewItem } = useActiveProject();
+      return (
+        <>
+          <button onClick={() => requestNewItem('p1')}>plain</button>
+          <KanbanBoard />
+        </>
+      );
+    }
+    vi.mocked(api.listProjects).mockResolvedValue([
+      { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() },
+    ] as any);
+    vi.mocked(api.listItems).mockResolvedValue([] as any);
+    localStorage.setItem('agenfk_project_id', 'p1');
+    render(<PlainHarness />, { wrapper });
+    fireEvent.click(await screen.findByText('plain'));
+    await waitFor(() =>
+      expect((screen.getByPlaceholderText(/Title of your new task/i) as HTMLInputElement).value).toBe(''));
   });
 });

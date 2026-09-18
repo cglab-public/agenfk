@@ -1,7 +1,7 @@
 import React from 'react';
 import { AgEnFKItem, ItemType, Status } from '../types';
 import {
-  X, Layout, Tag, AlignLeft, AlertCircle, Zap,
+  X, Layout, Tag, AlignLeft, Zap,
   Clock, Calendar, FileText, ArrowLeft, Plus,
   Loader2, ShieldCheck, FlaskConical, Copy, Check, Pencil, Trash2, ExternalLink
 } from 'lucide-react';
@@ -14,7 +14,7 @@ import { useSocketEvent } from '../SocketContext';
 import { stripAnsi, calculateCost, formatCost, calculateCycleTimeMs, formatDuration } from '../utils';
 import { api } from '../api';
 import { RunsPanel, type AgentRun } from './RunsPanel';
-import { ItemTypeSquare, itemTypeHint } from './ItemTypeSquare';
+import { ItemTypeSquare, ItemTypeBadge, itemTypeHint } from './ItemTypeSquare';
 
 interface CardDetailModalProps {
   item: AgEnFKItem;
@@ -283,19 +283,10 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               </button>
             )}
             {!isNew ? (
-              <span className={clsx(
-                "text-xs font-bold px-2.5 py-1 rounded-md border uppercase tracking-wider flex items-center gap-1.5",
-                item.type === ItemType.EPIC ? "bg-chip text-accent-text border-border-brand" :
-                item.type === ItemType.STORY ? "bg-story-blue/10 text-story-blue border-story-blue/30" :
-                item.type === ItemType.TASK ? "bg-brand/10 text-brand border-brand/30" :
-                "bg-danger-muted/10 text-danger-muted border-danger-muted/30"
-              )}>
-                {item.type === ItemType.EPIC && <Layout size={12} />}
-                {item.type === ItemType.STORY && <Tag size={12} />}
-                {item.type === ItemType.TASK && <AlignLeft size={12} />}
-                {item.type === ItemType.BUG && <AlertCircle size={12} />}
-                {item.type}
-              </span>
+              /* The same badge the board and the create form use (CGLAB-164).
+                 This chip had its own tint ladder and its own four icons, and
+                 it disagreed with the square in the draft one panel away. */
+              <ItemTypeBadge type={item.type} size="md" />
             ) : (
               /*
                * The dropdown stays; the grammar changes (CGLAB-164).
@@ -723,15 +714,11 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                           onClick={() => { onSelectItem(sub); setActiveTab('overview'); }}
                         >
                           <td className="px-4 py-3">
-                            <span className={clsx(
-                              "text-[10px] font-bold px-1.5 py-0.5 rounded border uppercase",
-                              sub.type === ItemType.EPIC ? "bg-chip text-accent-text border-border-brand" :
-                              sub.type === ItemType.STORY ? "bg-blue-50 text-blue-700 border-blue-100 dark:bg-blue-900/20 dark:text-blue-300 dark:border-blue-800" :
-                              sub.type === ItemType.TASK ? "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border-emerald-100 dark:border-emerald-800" :
-                              "bg-rose-50 dark:bg-rose-900/20 text-red-700 border-red-100 dark:bg-rose-900/20 dark:text-red-300 border-red-800"
-                            )}>
-                              {sub.type}
-                            </span>
+                            {/* The THIRD mapping this product carried: STORY
+                                blue and TASK green here, the opposite of the
+                                header one panel up — on the one screen where a
+                                parent and its children are read together. */}
+                            <ItemTypeBadge type={sub.type} />
                           </td>
                           <td className="px-4 py-3 font-medium text-slate-900 dark:text-slate-100">{sub.title}</td>
                           <td className="px-4 py-3 text-right">

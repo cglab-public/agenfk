@@ -8,7 +8,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../ThemeContext';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ItemType, Status } from '../types';
-import { itemTypeHint } from '../components/ItemTypeSquare';
+import { itemTypeHint, ITEM_TYPE_VISUAL } from '../components/ItemTypeSquare';
 import { api } from '../api';
 
 // Mock window.matchMedia
@@ -896,13 +896,22 @@ describe('the create form is a draft, not a finished card', () => {
     expect(itemTypeHint(ItemType.EPIC)).not.toBe(itemTypeHint(ItemType.TASK));
   });
 
-  it('leaves the real card its plain type chip, with no create-form grammar on it', () => {
-    // The visible half of "the detail view is unchanged". The square belongs
-    // to the control that CHOOSES a type; a card whose type is settled shows
-    // the chip it always showed.
+  it('shows the card it creates in the SAME grammar it taught while creating it', () => {
+    /*
+     * This test used to assert the opposite — that a real card must keep its
+     * old tint and must NOT wear the create form's grammar — and in doing so
+     * it pinned the defect in place. Pick STORY in the draft, see green, press
+     * Create: the card arrived wearing blue, among TASKs wearing green. The
+     * one screen that teaches the colour→type mapping taught the reverse of
+     * every screen the card then appears on.
+     *
+     * The draft's square was the correct half (JIRA's grammar, asked for by
+     * name); the rest of the product was the outlier. The badge is now one
+     * component, and this asserts the agreement instead of the divergence.
+     */
     render(
       <CardDetailModal
-        item={{ id: 'i9', projectId: 'p1', type: ItemType.BUG, title: 'Real card', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() } as any}
+        item={{ id: 'i9', projectId: 'p1', type: ItemType.STORY, title: 'Real card', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() } as any}
         allItems={[]}
         onClose={() => {}}
         onSelectItem={() => {}}
@@ -911,10 +920,36 @@ describe('the create form is a draft, not a finished card', () => {
       />,
       { wrapper },
     );
+    const badge = screen.getAllByTestId('item-type-badge')[0];
+    expect(badge.textContent).toContain('STORY');
+    expect((badge.firstElementChild as HTMLElement).className).toContain(ITEM_TYPE_VISUAL[ItemType.STORY].fill);
+    // No `not.toMatch(/story-blue/)` here: the badge is one shared component
+    // now, so that assertion would read a string this test's own dependency
+    // defines. The blanket rule lives in ItemTypeSquare.test.tsx, which reads
+    // the components directory and can see a surface this file never renders.
+    // The CONTROL stays exclusive to the draft: a settled type is shown, not chosen.
     expect(screen.queryByTestId('new-item-type-square')).toBeNull();
-    expect(screen.queryByTestId('new-item-type-hint')).toBeNull();
     expect(screen.queryByRole('combobox', { name: /type/i })).toBeNull();
-    expect(screen.getAllByText('BUG').length).toBeGreaterThan(0);
+  });
+
+  it('uses that same grammar in the Subitems table, which had a third palette of its own', () => {
+    // STORY=`blue-50`, TASK=`emerald-50` lived here — a third mapping, on the
+    // one screen where a parent and its children are read side by side.
+    render(
+      <CardDetailModal
+        item={{ id: 'i9', projectId: 'p1', type: ItemType.EPIC, title: 'Parent', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() } as any}
+        allItems={[{ id: 'sub1', parentId: 'i9', projectId: 'p1', title: 'A child', type: ItemType.STORY, status: Status.TODO } as any]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper },
+    );
+    fireEvent.click(screen.getByRole('button', { name: /^subitems/i }));
+    const child = screen.getAllByTestId('item-type-badge').find(b => b.textContent?.includes('STORY'))!;
+    expect(child).toBeTruthy();
+    expect((child.firstElementChild as HTMLElement).className).toContain(ITEM_TYPE_VISUAL[ItemType.STORY].fill);
   });
 
   it('carries the description through to the card it creates', () => {
