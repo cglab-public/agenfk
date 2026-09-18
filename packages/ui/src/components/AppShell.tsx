@@ -1860,6 +1860,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <NewTerminalDialog
           cardTitle={pending.title}
           defaultAgentId={pending.agentId}
+          /*
+           * A card whose work is ALREADY running does not need a second
+           * terminal, so the button says Continue. `sessionRows` is the right
+           * source because the herdr panes are already folded into it - the
+           * dialog does not need to know which multiplexer anything is in, only
+           * that something is there.
+           */
+          existing={(() => {
+            const live = sessionRows.find(
+              r => r.itemId === pending.itemId && r.state !== 'failed',
+            );
+            if (!live) return undefined;
+            const where = (live as { source?: string }).source === 'herdr' ? 'herdr' : 'agenfk';
+            return { agentId: live.agentId, where } as const;
+          })()}
           listAgents={listAgentsFromBridge}
           // Shift, never clear: dismissing ONE question must not throw away the
           // rest of the wave. Clearing here was the single-slot habit surviving
