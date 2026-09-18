@@ -220,8 +220,11 @@ export function renderStepContract(c: StepContract, status: string, advanceHint:
 
   const steps = c.activeFlow
     ? `\n\nActive flow${c.activeFlow.name ? ` "${c.activeFlow.name}"` : ''}: ${c.activeFlow.steps.join(' → ')}`
-      + (c.codingStep ? `\nCoding step: ${c.codingStep}` : '')
-      + (c.finalStep ? `\nFinal step (omit the command on this one): ${c.finalStep}` : '')
+      // Say what each step IS, never what to do on it. "Coding step: DISCOVERY"
+      // read as an instruction to code on a discovery step (CGLAB-275); the
+      // step's own exit criteria are the instructions.
+      + (c.codingStep ? `\nFirst working step (where TODO lands): ${c.codingStep}` : '')
+      + (c.finalStep ? `\nFinal step (omit the command here; the project's verifyCommand runs and lands DONE): ${c.finalStep}` : '')
     : '';
 
   return `${head}${steps}`;

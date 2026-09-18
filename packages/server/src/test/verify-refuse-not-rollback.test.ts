@@ -278,6 +278,30 @@ describe('POST /items/:id/validate — a failed command refuses, it does not rol
     expect(String(passed.body.message).trim().split('\n').pop()).toMatch(/Item is now on IN_PROGRESS/);
   });
 
+  it('names the step in the criteria banner, and says it is the step the item is NOW on', async () => {
+    // After the silent rollback, a no-command verify advanced DISCOVERY →
+    // CREATE_UNIT_TESTS and printed CREATE_UNIT_TESTS's criteria. The banner did
+    // not say whose criteria they were, so the agent — believing it was already
+    // on CREATE_UNIT_TESTS — read them as "still here" and concluded the
+    // no-command verify had not advanced. The banner must name the step.
+    if (!VERIFY_TOKEN) return;
+    const { item } = await itemOnTddStep('RNR11', 'DISCOVERY');
+    const res = await agent().post(`/items/${item.id}/validate`).set(internal())
+      .send({ evidence: 'discovery done' });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('CREATE_UNIT_TESTS');
+    expect(res.body.message).toMatch(/MANDATORY EXIT CRITERIA for CREATE_UNIT_TESTS — the step this item is now on/);
+    expect(res.body.message).toContain('Tests written; they can all fail at this point.');
+
+    // The TODO → first-step path builds its banner separately; pin it too.
+    const { item: fresh } = await itemOnTddStep('RNR11b', 'TODO');
+    const first = await agent().post(`/items/${fresh.id}/validate`).set(internal())
+      .send({ evidence: 'starting' });
+    expect(first.status).toBe(200);
+    expect(first.body.status).toBe('DISCOVERY');
+    expect(first.body.message).toMatch(/MANDATORY EXIT CRITERIA for DISCOVERY — the step this item is now on/);
+  });
+
   it('an intermediate step with no command still advances without running anything (unchanged)', async () => {
     if (!VERIFY_TOKEN) return;
     const { item } = await itemOnTddStep('RNR8', 'CREATE_UNIT_TESTS');

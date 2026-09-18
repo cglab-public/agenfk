@@ -87,7 +87,8 @@ describe('getActiveStepItems (moved to core)', () => {
 
 describe('resolveStepContract on a CLI-authored flow', () => {
   // The contract the gatekeeper prints IS the agent's working instructions:
-  // "Coding step: X" and "Final step (omit the command on this one): Y". On a
+  // "First working step (where TODO lands): X" and "Final step (omit the
+  // command here; the project's verifyCommand runs and lands DONE): Y". On a
   // flow authored through `agenfk flow create` — which only ever asks "Is this
   // a terminal/special step?" and emits isSpecial, never isAnchor — both were
   // computed with predicates that cannot see isSpecial, so the gatekeeper
@@ -474,9 +475,9 @@ describe('the gatekeeper resolves the coding and final steps itself (F6)', () =>
     expect(d.codingStep).toBe('BUILD');
   });
 
-  it('puts the coding and final steps in the message so no derivation is needed', () => {
+  it('puts the first working step and final step in the message so no derivation is needed', () => {
     const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], anchoredFlow, {});
-    expect(d.message).toMatch(/coding step/i);
+    expect(d.message).toMatch(/first working step/i);
     expect(d.message).toMatch(/final step/i);
   });
 
@@ -621,7 +622,7 @@ describe('mutation hardening for the gatekeeper (CGLAB-110)', () => {
   it('joins the active flow steps with the arrow separator', () => {
     const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], anchoredFlow, {});
     expect(d.message).toContain('TODO → DISCOVERY → IN_PROGRESS → DONE');
-    expect(d.message).toContain('Final step (omit the command on this one): IN_PROGRESS');
+    expect(d.message).toContain('Final step (omit the command here; the project\'s verifyCommand runs and lands DONE): IN_PROGRESS');
   });
 
   it('renders a nameless flow without a quoted name', () => {
@@ -678,9 +679,13 @@ describe('mutation hardening for the gatekeeper (CGLAB-110)', () => {
     expect(d.message).toContain('(IN_PROGRESS)\n  • [bbbbbbbb] Story S');
   });
 
-  it('pins the exact coding-step and final-step lines, and omits the coding line when there is none', () => {
+  it('pins the exact first-working-step and final-step lines, and omits the first-step line when there is none', () => {
+    // CGLAB-275: "Coding step: DISCOVERY" read as an instruction to code on a
+    // discovery step. The line says what the step IS (where TODO lands), and
+    // the final-step line says what happens there instead of a bare "omit".
     const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], anchoredFlow, {});
-    expect(d.message).toContain('Coding step: DISCOVERY\nFinal step (omit the command on this one): IN_PROGRESS');
+    expect(d.message).not.toContain('Coding step');
+    expect(d.message).toContain('First working step (where TODO lands): DISCOVERY\nFinal step (omit the command here; the project\'s verifyCommand runs and lands DONE): IN_PROGRESS');
     const anchorsOnly: GatekeeperFlow = {
       steps: [
         { name: 'TODO', order: 0, isAnchor: true },
@@ -688,16 +693,16 @@ describe('mutation hardening for the gatekeeper (CGLAB-110)', () => {
       ],
     } as GatekeeperFlow;
     const d2 = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], anchorsOnly, {});
-    expect(d2.message).not.toContain('Coding step:');
+    expect(d2.message).not.toContain('First working step');
     // Exact adjacency: with no coding step, the final-step line follows the
     // flow line directly — nothing may be injected in between.
-    expect(d2.message).toContain('Active flow: TODO → DONE\nFinal step (omit the command on this one): TODO');
+    expect(d2.message).toContain('Active flow: TODO → DONE\nFinal step (omit the command here; the project\'s verifyCommand runs and lands DONE): TODO');
   });
 
   it('leaks no step-shape copy when the flow could not be resolved', () => {
     const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], null as any, {});
     expect(d.message).not.toContain('Active flow');
-    expect(d.message).not.toContain('Coding step');
+    expect(d.message).not.toContain('First working step');
     // With no flow there is no step-shape block at all: the message must end
     // exactly where the advice ends — nothing appended after it.
     expect(d.message).toMatch(/before advancing\.$/);

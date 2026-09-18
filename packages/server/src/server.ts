@@ -4525,6 +4525,11 @@ function pruneValidateRuns() {
  *  transition line sits at the top and the next step's criteria banner pushes
  *  it out of a `| tail`; the LAST line must always say where the card is
  *  (CGLAB-275). `nowOn` after a move, `staysOn` after a refused advance. */
+/** The exit criteria of the step an item just entered, as the agent's next
+ *  work definition. It NAMES the step: an unnamed banner was read as the
+ *  criteria of the step the agent believed it was on (CGLAB-275). */
+const criteriaBanner = (step: string, criteria: string) =>
+  `\n\n⚠️ MANDATORY EXIT CRITERIA for ${step} — the step this item is now on. You MUST satisfy ALL of the following before calling validate_progress again:\n\n${criteria}`;
 const nowOn = (status: string) => `\n\nItem is now on ${status}.`;
 const staysOn = (status: string) => `\n\nThe advance was refused. Item stays on ${status}.`;
 
@@ -4579,7 +4584,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     await ensureWorktreeForItem(movedToCoding, true);
     io.emit('items_updated');
     const codingStepCriteria = (codingStep as any).exitCriteria as string | undefined;
-    const mandatoryNote = codingStepCriteria ? `\n\n⚠️ MANDATORY EXIT CRITERIA — you MUST satisfy ALL of the following before calling validate_progress again:\n\n${codingStepCriteria}` : '';
+    const mandatoryNote = codingStepCriteria ? criteriaBanner(codingStep.name, codingStepCriteria) : '';
     return res.json({ status: codingStep.name, message: `✅ Validation Passed!\n\nItem moved to ${codingStep.name}.${mandatoryNote}${nowOn(codingStep.name)}` });
   }
 
@@ -4597,7 +4602,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // Exit criteria of the step the item is moving INTO — returned as mandatory agent instructions
   const nextStepCriteria = (nextStep as any)?.exitCriteria as string | undefined;
   const mandatoryInstructions = (nextStatus !== Status.DONE && nextStepCriteria)
-    ? `\n\n⚠️ MANDATORY EXIT CRITERIA — you MUST satisfy ALL of the following before calling validate_progress again:\n\n${nextStepCriteria}`
+    ? criteriaBanner(nextStatus, nextStepCriteria)
     : '';
   const branchRef = (item as any).branchName || 'HEAD';
   /**
@@ -4636,7 +4641,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // optional — omitting it advances without running anything.
   //
   // "Final" cannot be the literal name DONE. resolveStepContract tells the agent
-  // "Final step (omit the command on this one): X", and on a flow whose exit
+  // "Final step (omit the command here; ...): X", and on a flow whose exit
   // step is named anything else — which is every flow `agenfk flow create`
   // produces — X is the last REAL step while this test said DONE. The agent
   // dutifully omitted the command, this took the intermediate path, and the

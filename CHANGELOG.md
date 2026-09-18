@@ -2,6 +2,25 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.21-beta.4] — 2026-09-18
+
+Beta, cumulative over `1.1.21-beta.3`. Closes out the CGLAB-275 incident: every piece of
+agent-facing output that misled the pi agent is now fixed, not only the rollback.
+
+### The gatekeeper and the verify banner say what a step IS, never what to do on it (CGLAB-275)
+
+- The gatekeeper's step-shape block printed `Coding step: DISCOVERY` on a TDD flow — the
+  first non-anchor step, labelled as if it were where code is written. It now reads
+  `First working step (where TODO lands): DISCOVERY`, and the final-step line says plainly
+  what happens there: `Final step (omit the command here; the project's verifyCommand runs
+  and lands DONE): REVIEW`.
+- The verify success response's `MANDATORY EXIT CRITERIA` banner did not name the step the
+  criteria belong to. After the silent rollback, the agent read the criteria of the step it
+  had just re-entered as those of the step it believed it was on, and concluded that a
+  no-command verify does not advance. The banner now reads `MANDATORY EXIT CRITERIA for
+  <STEP> — the step this item is now on`, on both the TODO→first-step and the
+  intermediate paths.
+
 ## [1.1.21-beta.3] — 2026-09-18
 
 Beta, cumulative over `1.1.21-beta.2` (which shipped without its own entry here — it
