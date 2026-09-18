@@ -102,7 +102,6 @@ second category.
 before this rule existed. They are reachable only from the CLI, so the settings
 screen cannot show them. Moving them is a migration, and the migration is only
 worth doing if the settings screen is going to surface them.
-||||||| beb237f6
 
 ## Hub Federation (hub of hubs)
 

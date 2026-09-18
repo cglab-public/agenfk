@@ -265,3 +265,28 @@ describe('the claims rule is usable, not just present', () => {
     }
   });
 });
+
+/**
+ * NO MERGE-CONFLICT MARKER EVER SHIPS.
+ *
+ * A diff3 base marker (`||||||| <sha>`) survived a merge in three of these
+ * bundles, and the installer then wrote it into every user's live config -
+ * `~/.claude/CLAUDE.md` is loaded into EVERY Claude Code session, so the junk
+ * reached every agent on that machine, not just the one who hit the conflict.
+ *
+ * Only the BASE marker survived, which is exactly why nobody saw it: the text
+ * around it read as a plausible union of both sides, so the file never looked
+ * broken. A guard is the only thing that catches that shape.
+ */
+describe('shipped rule bundles carry no merge-conflict marker', () => {
+  // `|` is table syntax and `=` can be a setext underline, so these require the
+  // diff3 shapes specifically: seven of a kind, then a space or end of line.
+  const MARKERS: RegExp[] = [/^<{7}(?: |$)/, /^\|{7}(?: |$)/, /^={7}$/, /^>{7}(?: |$)/];
+  for (const file of Object.keys(BUNDLES)) {
+    it(`${file} is clean`, () => {
+      const text = fs.readFileSync(path.join(REPO_ROOT, file), 'utf8');
+      const bad = text.split('\n').filter(l => MARKERS.some(re => re.test(l)));
+      expect(bad, `merge-conflict marker(s) in ${file}: ${bad.join(' | ')}`).toEqual([]);
+    });
+  }
+});

@@ -130,7 +130,6 @@ afterwards.
 When you genuinely cannot tell, say so in those words rather than picking the
 optimistic reading. `unverifiable` is a real answer and a useful one; a
 confident wrong answer is neither.
-||||||| beb237f6
 
 Token usage is captured automatically by the server-side ingestion worker — agents do not need to (and cannot) self-report tokens.
 
