@@ -4,8 +4,15 @@ import { AppShell } from './components/AppShell'
 import { SocketProvider } from './SocketContext'
 import { isDesktop } from './desktop'
 import { ActiveProjectProvider } from './ActiveProject'
+import { SplashScreen } from './components/SplashScreen'
 
 function App() {
+  /*
+   * The startup curtain (004bd193). ONE mount, once per window: the brand book
+   * allows the animation on the first load and nowhere else, so there is no
+   * route back into it - once it has gone, it is not rendered again.
+   */
+  const [splash, setSplash] = React.useState(true)
   // One codebase, two shells. In a browser this is the board it has always
   // been; only the Electron app — which announces itself through the preload
   // bridge — gets the sidebar, tabs and status bar around it (CGLAB-168).
@@ -50,6 +57,8 @@ function App() {
   }, [])
 
   return (
+    <>
+    {splash && <SplashScreen onDone={() => setSplash(false)} />}
     <ActiveProjectProvider>
       <SocketProvider>
         {isDesktop() ? (
@@ -61,6 +70,7 @@ function App() {
         )}
       </SocketProvider>
     </ActiveProjectProvider>
+    </>
   )
 }
 
