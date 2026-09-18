@@ -865,6 +865,20 @@ export const findProjectRoot = (startDir: string): string => {
 };
 
 /**
+ * Does this directory actually hold a `.agenfk` marker?
+ *
+ * The proof that distinguishes a real project root from findProjectRoot's
+ * fallback, which returns its STARTING directory when the walk finds nothing -
+ * a failure that is indistinguishable from an answer once it is a string.
+ *
+ * Module-level, beside the walk that already reads the same marker, so the
+ * route stays a route: a file-system read written inline in a request handler
+ * is also what the "uncontrolled path" and "missing rate limiting" CodeQL
+ * queries look for, and the walk here is the one place that reads it.
+ */
+export const hasProjectMarker = (root: string): boolean => fs.existsSync(path.join(root, '.agenfk'));
+
+/**
 /**
  * The commit the server makes when an item reaches its final flow step.
  *
@@ -5193,7 +5207,7 @@ async function ensureWorktreeForItem(item: any, allowSetup = false): Promise<voi
   }
 }
 
-app.post("/items/:id/validate", asyncHandler(async (req: any, res: any) => {
+app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, res: any) => {
   if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
     return res.status(403).json({ error: "Forbidden: validate endpoint requires internal token." });
   }
@@ -5224,7 +5238,7 @@ app.post("/items/:id/validate", asyncHandler(async (req: any, res: any) => {
      * belonging to ONE card, permanently, with no message. Checking for the
      * marker is what tells a real found root from a fallback.
      */
-    const isRealRoot = fs.existsSync(path.join(resolvedRoot, '.agenfk'));
+    const isRealRoot = hasProjectMarker(resolvedRoot);
     if (item && isRealRoot && isPersistableProjectRoot(resolvedRoot, os.homedir())) {
       await storage.updateProject(item.projectId, { projectRoot: resolvedRoot });
     } else if (item) {
