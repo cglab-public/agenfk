@@ -44,7 +44,11 @@ jobs:
         run: npm run build
 
       - name: Package
-        run: npm run ${{ matrix.target }} -w packages/desktop
+        # --publish never: on a tag electron-builder AUTO-PUBLISHES, and the
+        # beta release already exists as a pre-release, so it dies with
+        # "existing type not compatible with publishing type". The workflow's
+        # job is artifacts, not publishing.
+        run: npm run ${{ matrix.target }} -w packages/desktop -- --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Signing is opt-in: without the secrets the build still produces
@@ -57,7 +61,7 @@ jobs:
           # EMPTY password - then dies with the unhelpful "⨯ <project dir> not a
           # file". The flag is set from the secrets so adding both cert and
           # password turns signing back on by itself.
-          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.MAC_CERT_P12 != '' && secrets.MAC_CERT_PASSWORD != '' && 'true' || 'false' }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
           CSC_LINK: ${{ secrets.MAC_CERT_P12 }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
