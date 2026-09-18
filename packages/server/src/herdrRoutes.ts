@@ -23,7 +23,8 @@
  * Dependencies are injected so every one of those failures can be staged without
  * a herdr, a socket, or a filesystem.
  */
-import { liveHerdrSessions, readSnapshot, type HerdrPane, type HerdrSession, type SnapshotResult } from './herdr.js';
+import { liveHerdrSessions, readSnapshot, readPane, type HerdrPane, type HerdrSession, type SnapshotResult } from './herdr.js';
+import { ownerOfPane, type OwnerCard, type OwnerProject, type PaneOwner } from './herdrOwnership.js';
 
 /** How long one session may take before the listing gives up on it. */
 export const SESSION_READ_TIMEOUT_MS = 3_000;
@@ -50,7 +51,20 @@ function withoutSessionIds(title: string | undefined): string | undefined {
 export interface HerdrDeps {
   readonly discover: () => HerdrSession[];
   readonly read: (socketPath: string, timeoutMs?: number) => Promise<SnapshotResult>;
+  /**
+   * What AgEnFK knows, so a pane can be told apart from a session it started.
+   * Absent means nothing is claimed and every pane reads as external — which is
+   * the right answer for a caller that did not ask the question.
+   */
+  readonly cards?: readonly OwnerCard[];
+  readonly projects?: readonly OwnerProject[];
 }
+
+export type HerdrPaneOwner =
+  | { readonly kind: 'card'; readonly cardId: string; readonly title: string;
+      readonly status: string; readonly branchName?: string; readonly projectName?: string }
+  | { readonly kind: 'project'; readonly projectName: string }
+  | { readonly kind: 'external' };
 
 export interface HerdrSessionView {
   readonly name: string;
@@ -67,7 +81,7 @@ export interface HerdrSessionView {
   };
   /** How many panes each harness holds. The Agents screen lists exactly this. */
   readonly byAgent: Record<string, number>;
-  readonly panes: readonly HerdrPane[];
+  readonly panes: readonly (HerdrPane & { owner: HerdrPaneOwner })[];
   readonly error?: { readonly code: string; readonly message: string };
 }
 
@@ -102,7 +116,11 @@ function paneView(p: HerdrPane): HerdrPane {
   };
 }
 
-function viewOf(session: HerdrSession, result: SnapshotResult): HerdrSessionView {
+function viewOf(
+  session: HerdrSession,
+  result: SnapshotResult,
+  owners: { cards: readonly OwnerCard[]; projects: readonly OwnerProject[] },
+): HerdrSessionView {
   if (!result.ok) {
     return {
       name: session.name,
@@ -132,8 +150,34 @@ function viewOf(session: HerdrSession, result: SnapshotResult): HerdrSessionView
       panes: s.panes.length, agents: s.agents.length,
     },
     byAgent,
-    panes: s.panes.map(paneView),
+    panes: s.panes.map(p => {
+      const owner = ownerOfPane(typeof p.cwd === 'string' ? p.cwd : '', owners);
+      return { ...paneView(p), owner: ownerView(owner) };
+    }),
   };
+}
+
+/**
+ * Who a pane belongs to, flattened for the wire.
+ *
+ * A SESSION THAT IS NOT OURS STAYS NOT OURS. `external` is the answer for work
+ * the developer started themselves: it runs in its own directory, it needs no
+ * worktree, and giving it a card would be an association nobody asked for and
+ * nobody could correct.
+ */
+function ownerView(o: PaneOwner): HerdrPaneOwner {
+  if (o.kind === 'card') {
+    return {
+      kind: 'card',
+      cardId: o.card.id,
+      title: o.card.title,
+      status: o.card.status,
+      branchName: o.card.branchName,
+      projectName: o.project?.name,
+    };
+  }
+  if (o.kind === 'project') return { kind: 'project', projectName: o.project.name };
+  return { kind: 'external' };
 }
 
 /**
@@ -164,6 +208,7 @@ export async function buildHerdrSnapshot(deps: HerdrDeps): Promise<HerdrView & {
     };
   }
 
+  const owners = { cards: deps.cards ?? [], projects: deps.projects ?? [] };
   const settled = await Promise.allSettled(
     sessions.map(s => deps.read(s.socketPath, SESSION_READ_TIMEOUT_MS)),
   );
@@ -171,7 +216,7 @@ export async function buildHerdrSnapshot(deps: HerdrDeps): Promise<HerdrView & {
     const r = settled[i];
     return viewOf(s, r.status === 'fulfilled'
       ? r.value
-      : { ok: false, error: { code: 'unreachable', message: String(r.reason) } });
+      : { ok: false, error: { code: 'unreachable', message: String(r.reason) } }, owners);
   });
 
   const live = views.filter(v => v.reachable).length;

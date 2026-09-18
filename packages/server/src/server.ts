@@ -43,6 +43,8 @@ import { createServer } from "http";
 import { Server } from "socket.io";
 import { readGitStatus } from './gitStatus.js';
 import { buildHerdrSnapshot, realHerdrDeps } from './herdrRoutes.js';
+import { sendPaneText, sendPaneKeys, focusPane } from './herdrWrite.js';
+import { readPane } from './herdr.js';
 
 // The local API server is for this machine only. It binds to loopback by
 // default (override with AGENFK_HOST) and only accepts browser requests from
@@ -1647,7 +1649,85 @@ const limitExpensive = rateLimit({
  * imports `app` rather than booting it, so that would have been green too.
  */
 app.get("/herdr/sessions", limitExpensive, asyncHandler(async (_req: any, res: any) => {
-  res.json(await buildHerdrSnapshot(realHerdrDeps));
+  /*
+   * The cards and projects are what lets a pane be told apart from a session
+   * AgEnFK started. Handed in rather than read inside `buildHerdrSnapshot`, so
+   * the whole listing stays testable without a database - and so a caller that
+   * does not ask the ownership question cannot be given a guess.
+   */
+  const [projects, items] = await Promise.all([
+    storage.listProjects(),
+    storage.listItems({ limit: 1_000_000 }),
+  ]);
+  res.json(await buildHerdrSnapshot({
+    ...realHerdrDeps,
+    cards: (items as any[]).map(i => ({
+      id: i.id, title: i.title, status: i.status,
+      branchName: i.branchName, worktreePath: i.worktreePath, projectId: i.projectId,
+    })),
+    projects: (projects as any[]).map(p => ({ id: p.id, name: p.name, projectRoot: p.projectRoot })),
+  }));
+}));
+
+/**
+ * One pane's content, on demand.
+ *
+ * NOT part of the listing: dragging every pane's text into a directory view is
+ * a different amount of data and a different decision. This is what "open one"
+ * asks for.
+ */
+app.get("/herdr/panes/:paneId/content", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const socketPath = String(req.query.socket ?? '');
+  if (!socketPath) return res.status(400).json({ error: 'socket (query) required' });
+  const r = await readPane(socketPath, {
+    paneId: String(req.params.paneId),
+    source: (req.query.source as any) ?? 'recent',
+    lines: Number(req.query.lines ?? 200),
+  });
+  // A pane that is gone is 404, not empty text: empty would read as a live,
+  // blank terminal, which is the opposite of the truth.
+  if (!r.ok) return res.status(r.error.code === 'pane_not_found' ? 404 : 502).json(r.error);
+  return res.json(r.read);
+}));
+
+/**
+ * Typing into somebody else's terminal.
+ *
+ * THREE ROUTES, THREE ACTS, and none of them folds into another. `focus` in
+ * particular moves the operator's real screen - pane, tab and workspace at once
+ * - so it is its own call that a person has to choose, never a side effect of
+ * sending text.
+ */
+app.post("/herdr/panes/:paneId/text", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const { socket, text } = req.body ?? {};
+  if (typeof socket !== 'string' || !socket) return res.status(400).json({ error: 'socket (string) required' });
+  if (typeof text !== 'string') return res.status(400).json({ error: 'text (string) required' });
+  try {
+    const r = await sendPaneText(socket, String(req.params.paneId), text);
+    return r.ok ? res.json({ ok: true }) : res.status(502).json(r.error);
+  } catch (e: any) {
+    // A refusal from our own guards is the caller's mistake, not the server's.
+    return res.status(400).json({ error: e.message });
+  }
+}));
+
+app.post("/herdr/panes/:paneId/keys", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const { socket, keys } = req.body ?? {};
+  if (typeof socket !== 'string' || !socket) return res.status(400).json({ error: 'socket (string) required' });
+  if (!Array.isArray(keys)) return res.status(400).json({ error: 'keys (array) required' });
+  try {
+    const r = await sendPaneKeys(socket, String(req.params.paneId), keys.map(String));
+    return r.ok ? res.json({ ok: true }) : res.status(502).json(r.error);
+  } catch (e: any) {
+    return res.status(400).json({ error: e.message });
+  }
+}));
+
+app.post("/herdr/panes/:paneId/focus", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const { socket } = req.body ?? {};
+  if (typeof socket !== 'string' || !socket) return res.status(400).json({ error: 'socket (string) required' });
+  const r = await focusPane(socket, String(req.params.paneId));
+  return r.ok ? res.json({ ok: true }) : res.status(502).json(r.error);
 }));
 
 app.get("/items/:id/git-status", limitExpensive, asyncHandler(async (req: any, res: any) => {

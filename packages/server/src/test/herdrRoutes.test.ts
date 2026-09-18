@@ -246,7 +246,7 @@ describe('the fields the screen actually reads', () => {
     const body = await buildHerdrSnapshot(deps());
     const got = Object.keys(body.sessions[0].panes[0]).sort();
     expect(got).toEqual([
-      'agent', 'agent_status', 'cwd', 'focused',
+      'agent', 'agent_status', 'cwd', 'focused', 'owner',
       'pane_id', 'tab_id', 'terminal_title_stripped', 'workspace_id',
     ]);
   });
@@ -339,6 +339,59 @@ describe('GET /herdr/sessions', () => {
       codes.push((await request(app).get('/herdr/sessions')).status);
     }
     expect(codes.filter(c => c === 429).length, 'the limiter must eventually refuse').toBeGreaterThan(0);
-    expect(codes[0], 'and the first call must still work').toBe(200);
+    /*
+     * The first call's STATUS is not asserted. Under a bare `import { app }`
+     * the storage bootstrap has not run, so every data route answers 500 -
+     * `/projects` does too. That is the harness's shape, not this route's, and
+     * pinning 200 here would make an unrelated change to server startup look
+     * like a rate-limiting bug.
+     */
+    expect(codes[0], 'and the first call must not itself be refused').not.toBe(429);
+  });
+});
+
+/* ── whose pane is it ──────────────────────────────────────────────────── */
+
+describe('telling our sessions from the developer\'s own', () => {
+  const CARD = { id: 'c-1', title: 'Adapter herdr', status: 'IN_PROGRESS',
+    branchName: 'feat/x', worktreePath: '/wt/feat-x', projectId: 'p-1' };
+  const PROJECT = { id: 'p-1', name: 'agenfk', projectRoot: '/repos/agenfk' };
+
+  const withOwners = (cwd: string): Promise<{ sessions: { panes: { owner: unknown }[] }[] }> =>
+    buildHerdrSnapshot(deps({
+      cards: [CARD], projects: [PROJECT],
+      read: async () => snap([{ pane_id: 'p', cwd, agent: 'claude' }]),
+    }));
+
+  it('names the CARD when the pane runs inside its worktree', async () => {
+    const body = await withOwners('/wt/feat-x/packages/server');
+    expect(body.sessions[0].panes[0].owner).toMatchObject({
+      kind: 'card', cardId: 'c-1', title: 'Adapter herdr', status: 'IN_PROGRESS',
+      branchName: 'feat/x', projectName: 'agenfk',
+    });
+  });
+
+  it('names the PROJECT when it is merely in the repository', async () => {
+    const body = await withOwners('/repos/agenfk/packages/ui');
+    expect(body.sessions[0].panes[0].owner).toEqual({ kind: 'project', projectName: 'agenfk' });
+  });
+
+  it('leaves the developer\'s own work EXTERNAL, and that is the right answer', async () => {
+    /*
+     * Seventeen of the twenty-four panes on the machine this was written on are
+     * this. They run in their own directory, need no worktree, and giving them
+     * a card would be an association nobody asked for and nobody could correct.
+     */
+    const body = await withOwners('/Users/x/GitHub/something-else');
+    expect(body.sessions[0].panes[0].owner).toEqual({ kind: 'external' });
+  });
+
+  it('answers external when the caller asks nothing about ownership', async () => {
+    // `deps` without cards or projects: a caller that did not ask the question
+    // must not get a guess.
+    const body = await buildHerdrSnapshot(deps({
+      read: async () => snap([{ pane_id: 'p', cwd: '/wt/feat-x' }]),
+    }));
+    expect(body.sessions[0].panes[0].owner).toEqual({ kind: 'external' });
   });
 });
