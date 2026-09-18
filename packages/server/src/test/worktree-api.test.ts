@@ -735,3 +735,47 @@ describe('files staged outside the claim', () => {
     expect(outcome.outsideClaims).toEqual(['stray.ts']);
   });
 });
+
+/**
+ * GET /items/:id/diff (be411ffb).
+ *
+ * The panel could say a file changed and never what changed, so the answer to
+ * "what did this agent just do" was to leave the app and run git by hand.
+ */
+describe('GET /items/:id/diff', () => {
+  it('returns the unified diff of a modified file in the item worktree', async () => {
+    const item = await makeItem('Diff me');
+    const created = await agent().post(`/items/${item.id}/worktree`).send({ root });
+    const wt = created.body.path as string;
+
+    fs.writeFileSync(path.join(wt, 'README.md'), '# fixture\nadded line\n');
+    const res = await agent().get(`/items/${item.id}/diff`).query({ path: 'README.md' });
+    expect(res.status).toBe(200);
+    expect(res.body.path).toBe('README.md');
+    expect(res.body.diff).toContain('+added line');
+  });
+
+  it('shows an UNTRACKED file as wholly added', async () => {
+    const item = await makeItem('Untracked');
+    const wt = (await agent().post(`/items/${item.id}/worktree`).send({ root })).body.path as string;
+
+    fs.writeFileSync(path.join(wt, 'brand-new.ts'), 'export const x = 1;\n');
+    const res = await agent().get(`/items/${item.id}/diff`).query({ path: 'brand-new.ts' });
+    expect(res.status).toBe(200);
+    expect(res.body.diff).toContain('+export const x = 1;');
+  });
+
+  it('refuses a path that escapes the worktree', async () => {
+    const item = await makeItem('Escape');
+    await agent().post(`/items/${item.id}/worktree`).send({ root });
+
+    const res = await agent().get(`/items/${item.id}/diff`).query({ path: '../../../../etc/passwd' });
+    expect(res.status).toBe(403);
+  });
+
+  it('409s for a card with no worktree, rather than diffing somewhere else', async () => {
+    const item = await makeItem('No worktree');
+    const res = await agent().get(`/items/${item.id}/diff`).query({ path: 'README.md' });
+    expect(res.status).toBe(409);
+  });
+});

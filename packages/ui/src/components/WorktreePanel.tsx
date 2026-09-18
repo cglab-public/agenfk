@@ -32,6 +32,7 @@
 import React from 'react';
 import { clsx } from 'clsx';
 import { useGitStatus, type WorktreeView } from '../gitStatus';
+import { DiffModal } from './DiffModal';
 
 /** Colour carries the kind, and the letter carries it again for greyscale. */
 const STATE_MARK: Record<string, { letter: string; className: string }> = {
@@ -56,6 +57,8 @@ export function WorktreePanel({ itemId }: {
    * where both are in view.
    */
   const [view, setView] = React.useState<WorktreeView>('changed');
+  /** The file whose diff is open, or null (be411ffb). */
+  const [diffOf, setDiffOf] = React.useState<{ path: string; staged: boolean } | null>(null);
   const files = (data?.files ?? []).filter(f => (view === 'staged' ? f.staged : !f.staged));
   const count = (v: WorktreeView) =>
     (data?.files ?? []).filter(f => (v === 'staged' ? f.staged : !f.staged)).length;
@@ -111,30 +114,48 @@ export function WorktreePanel({ itemId }: {
           {files.map((file, i) => {
             const mark = STATE_MARK[file.state] ?? STATE_MARK.modified;
             return (
-              <li
-                key={`${file.path}-${file.staged}-${i}`}
-                className="flex items-baseline gap-2 px-3 py-1 text-[11px]"
-              >
-                <span className={clsx('w-3 shrink-0 font-mono font-bold', mark.className)}>
-                  {mark.letter}
-                </span>
-                <span className="min-w-0 flex-1">
-                  {/* Tail-truncated: the end of a path is what identifies the
-                      file, so cutting the front keeps the useful half. */}
-                  <span className="block truncate text-ink-secondary" title={file.path} dir="rtl">
-                    {file.path}
+              <li key={`${file.path}-${file.staged}-${i}`}>
+                {/*
+                 * A BUTTON, because the row now does something (be411ffb). A
+                 * list of filenames you cannot open answers "which files" and
+                 * stops one question short of the one being asked.
+                 */}
+                <button
+                  type="button"
+                  onClick={() => setDiffOf({ path: file.path, staged: file.staged })}
+                  title={`Show the diff of ${file.path}`}
+                  className="flex w-full items-baseline gap-2 px-3 py-1 text-left text-[11px] transition-colors hover:bg-canvas"
+                >
+                  <span className={clsx('w-3 shrink-0 font-mono font-bold', mark.className)}>
+                    {mark.letter}
                   </span>
-                  {file.from && (
-                    <span className="block truncate text-[10px] text-ink-tertiary" title={file.from}>
-                      from {file.from}
+                  <span className="min-w-0 flex-1">
+                    {/* Tail-truncated: the end of a path is what identifies the
+                        file, so cutting the front keeps the useful half. */}
+                    <span className="block truncate text-ink-secondary" title={file.path} dir="rtl">
+                      {file.path}
                     </span>
-                  )}
-                </span>
+                    {file.from && (
+                      <span className="block truncate text-[10px] text-ink-tertiary" title={file.from}>
+                        from {file.from}
+                      </span>
+                    )}
+                  </span>
+                </button>
               </li>
             );
           })}
         </ul>
       </div>
+
+      {diffOf && itemId && (
+        <DiffModal
+          itemId={itemId}
+          filePath={diffOf.path}
+          staged={diffOf.staged}
+          onClose={() => setDiffOf(null)}
+        />
+      )}
     </aside>
   );
 }

@@ -1730,6 +1730,63 @@ app.get("/items/:id/files", limitExpensive, asyncHandler(async (req: any, res: a
 }));
 
 /**
+ * The DIFF of one file in the item's worktree.
+ *
+ * The panel could say a file changed and never what changed, so answering
+ * "what did this agent just do" meant leaving the app and running git by hand -
+ * which is the thing the panel exists to avoid.
+ *
+ * CONTAINMENT, and it is lexical on purpose. `isInsideRoot` collapses `..`
+ * because the file may be DELETED, and a deleted path cannot be realpath'd;
+ * the resulting pathspec is handed to git as an ARGUMENT (execFile, never a
+ * shell), and git confines a pathspec to its own repository. Between the two,
+ * nothing here reads or runs outside the worktree.
+ */
+app.get("/items/:id/diff", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const item: any = await storage.getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: "Item not found" });
+  if (!item.worktreePath || !fs.existsSync(item.worktreePath)) {
+    return res.status(409).json({ error: "This item has no worktree on disk yet." });
+  }
+  const asked = typeof req.query?.path === 'string' ? req.query.path : '';
+  if (!asked) return res.status(400).json({ error: "path is required" });
+  const staged = req.query?.staged === 'true';
+
+  let root: string;
+  try { root = fs.realpathSync(item.worktreePath); }
+  catch { return res.status(409).json({ error: "This item's worktree is not readable." }); }
+
+  const safe = containedPath(root, path.resolve(root, asked));
+  if (safe === null) {
+    return res.status(403).json({ error: "Refusing to diff outside the worktree." });
+  }
+  const rel = path.relative(root, safe);
+
+  // A whole generated file can be megabytes; the reader wants the shape, not
+  // the payload. Truncated rather than refused, and SAID rather than silently.
+  const MAX = 400_000;
+  const run = (args: string[]): string => execFileSync('git', ['-C', root, ...args], {
+    encoding: 'utf8', maxBuffer: MAX * 2, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  try {
+    let diff = run(['diff', ...(staged ? ['--cached'] : []), '--', rel]);
+    if (!diff && !staged && fs.existsSync(safe)) {
+      // UNTRACKED: `git diff` ignores it, so show the whole file as added.
+      // --no-index exits 1 when there is a difference, so the output arrives
+      // on the throw.
+      try { diff = run(['diff', '--no-index', '--', '/dev/null', rel]); }
+      catch (e: any) { diff = e?.stdout ?? ''; }
+    }
+    if (diff.length > MAX) diff = `${diff.slice(0, MAX)}\n… diff truncated\n`;
+    res.json({ path: rel, staged, diff });
+  } catch (e: any) {
+    const why = (e?.stderr || e?.message || 'failed').toString();
+    res.status(409).json({ error: `Could not diff that file: ${why.slice(0, 300)}` });
+  }
+}));
+
+/**
  * Start a task from a branch, in one action (CGLAB-179).
  *
  * A composition, not new machinery — the card's own reading and it is right:

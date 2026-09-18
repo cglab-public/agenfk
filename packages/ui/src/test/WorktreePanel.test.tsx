@@ -16,7 +16,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { WorktreePanel } from '../components/WorktreePanel';
 import { api } from '../api';
 
-vi.mock('../api', () => ({ api: { getGitStatus: vi.fn() } }));
+vi.mock('../api', () => ({ api: { getGitStatus: vi.fn(), getFileDiff: vi.fn() } }));
 
 // Call history does not reset on its own, and one test here asserts that the
 // api was NOT called — which passes or fails on whatever ran before it.
@@ -166,3 +166,30 @@ describe('what it refuses to imply', () => {
  * What the tab was for — "which files has this agent touched" — is what the
  * changed list above answers, and those tests stay.
  */
+
+/**
+ * Opening the diff (be411ffb).
+ *
+ * The panel could say a file changed and never WHAT changed, so answering
+ * "what did this agent just do" meant leaving the app to run git by hand.
+ */
+describe('opening the diff of a file', () => {
+  it('opens the diff of the file the row names', async () => {
+    vi.mocked(api.getGitStatus).mockResolvedValue({
+      changed: 1, staged: 0,
+      files: [{ path: 'src/a.ts', staged: false, state: 'modified' }],
+    } as never);
+    vi.mocked(api.getFileDiff).mockResolvedValue({
+      path: 'src/a.ts', staged: false, diff: '@@ -1 +1 @@\n-old line\n+new line',
+    } as never);
+
+    renderPanel();
+    // The row is a BUTTON now - a filename list you cannot open stops one
+    // question short of the one being asked.
+    fireEvent.click(await screen.findByRole('button', { name: /src\/a\.ts/i }));
+
+    expect(await screen.findByTestId('file-diff-modal')).toBeInTheDocument();
+    expect(api.getFileDiff).toHaveBeenCalledWith('i1', 'src/a.ts', false);
+    expect(await screen.findByText('+new line')).toBeInTheDocument();
+  });
+});

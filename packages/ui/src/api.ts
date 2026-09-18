@@ -196,6 +196,26 @@ export const api = {
    * The server filters out sessions whose card is gone or trashed, so what
    * comes back here is what can actually be opened.
    */
+  /**
+   * The unified diff of one file in the item's worktree (be411ffb).
+   *
+   * `staged` picks `git diff --cached`, so the panel's two tabs diff the half
+   * they are showing rather than always the working tree.
+   */
+  getFileDiff: async (itemId: string, filePath: string, staged: boolean): Promise<{
+    path: string; staged: boolean; diff: string;
+  }> => {
+    try {
+      const { data } = await axios.get(`${API_URL}/items/${itemId}/diff`, {
+        params: { path: filePath, staged },
+      });
+      return data;
+    } catch (e) {
+      console.error('API Error reading file diff for', filePath, e);
+      throw e;
+    }
+  },
+
   listTerminalSessions: async (projectId?: string): Promise<TerminalSessionDto[]> => {
     try {
       const { data } = await axios.get(`${API_URL}/terminal-sessions`, {
