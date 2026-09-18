@@ -85,8 +85,27 @@ const BUILTIN_ID = '__builtin__';
  * reads as one continuous rail down the list, which it stops doing the moment
  * the two drift apart. Stated once so they cannot.
  */
-const STEP_STRIPE_CLASS = 'shrink-0 self-stretch my-3 rounded-full';
+const STEP_STRIPE_CLASS = 'shrink-0 self-stretch';
 const STEP_STRIPE_WIDTH = 4;
+
+/**
+ * The transparent `<input type="color">` that turns the rail into a control.
+ *
+ * Both dimensions are explicit on purpose. Given only `inset-y-0` and no
+ * height, a colour input falls back to its INTRINSIC size — Blink renders a
+ * ~50x27 colour-well — and the box becomes over-constrained, so `bottom` and
+ * `right` are dropped. Measured in Chrome, that left the lower half of a
+ * visible rail dead to the click and pushed the live area sideways over the
+ * step number, so clicking the number opened the colour picker. jsdom has no
+ * layout, so no test in this suite can see any of that: the guard has to be
+ * that the declaration itself cannot fall back to auto.
+ *
+ * 24px wide against a 4px rail is WCAG 2.2 SC 2.5.8 (24x24 minimum target).
+ * The extra 20px is hit area, not paint: it hangs off the row's left edge and
+ * stops 2px short of the step-number column.
+ */
+const STEP_COLOR_INPUT_CLASS =
+  'absolute top-0 -left-2.5 h-full w-6 opacity-0 cursor-pointer border-0 p-0 bg-transparent disabled:cursor-not-allowed';
 
 /**
  * Column widths, shared by the rows and by the single heading above them. The
@@ -746,6 +765,16 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
           >
             <ChevronRight size={12} className={clsx('transition-transform', descriptionOpen && 'rotate-90')} />
             description
+            {description.trim() !== '' && (
+              <>
+                <span
+                  data-testid="flow-description-indicator"
+                  aria-hidden="true"
+                  className="ml-0.5 w-1.5 h-1.5 rounded-full bg-slate-400 dark:bg-slate-500"
+                />
+                <span className="sr-only"> (this flow has one)</span>
+              </>
+            )}
           </button>
         </div>
         {descriptionOpen && (
@@ -817,6 +846,17 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               const shapeIssue = stepShowsOwnIssue(index) ? stepIssue(definitionIssues, index) : undefined;
               const stepColor = step.color ?? '#04cc98';
               const anchorColor = isDoneAnchor ? '#10b981' : '#94a3b8';
+              // Short flows always have room below; long ones do not, for the
+              // rows past the midpoint. This is a HEURISTIC, not a solution:
+              // the predicate is the row's index in the list, while the real
+              // constraint is where the scroller happens to be parked. Swept
+              // across every scroll position of a 16-step flow at 1280x720, it
+              // leaves the popover fully visible 85% of the time against 77%
+              // for always-below and 81% for always-above — better on every
+              // row and worse on none, but rows in the FIRST half still clip
+              // about a fifth of the time. Measuring the badge against the
+              // scroller's viewport is the real fix; see the card's follow-up.
+              const iconPickerAbove = steps.length > 5 && index > steps.length / 2;
 
               return (
                 <div
@@ -828,7 +868,9 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                   onDrop={e => !isStepLocked && handleDrop(e, index)}
                   onDragEnd={handleDragEnd}
                   className={clsx(
-                    'flex w-full items-stretch rounded-xl border transition-all',
+                    // Left corners square so the colour rail can be flush
+                    // against them; see STEP_STRIPE_CLASS.
+                    'flex w-full items-stretch rounded-r-xl border transition-all',
                     // Anchors are scaffolding, not work: dashed and dimmed so
                     // the eye skips them on the way down the list.
                     isAnchor
@@ -855,9 +897,8 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                   ) : (
                     <div
                       data-testid={`step-color-stripe-${index}`}
-                      className={clsx('relative focus-within:ring-2 focus-within:ring-brand focus-within:ring-offset-1', STEP_STRIPE_CLASS)}
+                      className={clsx('relative focus-within:ring-2 focus-within:ring-brand', STEP_STRIPE_CLASS)}
                       style={{ width: STEP_STRIPE_WIDTH, backgroundColor: stepColor }}
-                      title={isReadOnly ? 'Step color' : 'Step color — click to pick'}
                     >
                       <input
                         data-testid={`step-color-${index}`}
@@ -866,7 +907,8 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                         onChange={e => updateStep(index, { color: e.target.value })}
                         disabled={isReadOnly}
                         aria-label={`Step ${index + 1} color`}
-                        className="absolute -inset-x-1 inset-y-0 opacity-0 cursor-pointer border-0 p-0 bg-transparent disabled:cursor-not-allowed"
+                        title={isReadOnly ? 'Step color' : 'Step color — click to pick'}
+                        className={STEP_COLOR_INPUT_CLASS}
                       />
                     </div>
                   )}
@@ -906,7 +948,11 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                         {openIconPickerIndex === index && !isReadOnly && (
                           <div
                             data-testid={`step-icon-picker-${index}`}
-                            className="absolute top-7 left-0 z-50 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg p-2 grid grid-cols-6 gap-1 w-44"
+                            data-placement={iconPickerAbove ? 'above' : 'below'}
+                            className={clsx(
+                              'absolute left-0 z-50 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg p-2 grid grid-cols-6 gap-1 w-44',
+                              iconPickerAbove ? 'bottom-7' : 'top-7'
+                            )}
                           >
                             {STEP_ICON_OPTIONS.map(opt => (
                               <button

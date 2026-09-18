@@ -2276,7 +2276,7 @@ describe('Flow editor — vertical step list (CGLAB-164)', () => {
     await openFlow();
     const header = screen.getByTestId('flow-editor-header');
     expect(header.contains(screen.getByTestId('flow-version-badge'))).toBe(true);
-    expect(screen.getByTestId('flow-step-count').textContent).toContain('4');
+    expect(screen.getByTestId('flow-step-count').textContent).toBe('4 steps');
   });
 
   // ── One row per step, read top to bottom ─────────────────────────────────
@@ -2361,6 +2361,25 @@ describe('Flow editor — vertical step list (CGLAB-164)', () => {
 
   // ── The colour moves to the left edge and becomes the hit target ─────────
 
+  it('keeps the rail full-bleed against a square left edge', async () => {
+    await openFlow();
+    // A 4px box cannot hold an 11px radius — CSS clamps it — so a rounded row
+    // corner and a full-height rail cannot both be right. The row's LEFT
+    // corners are square so the rail can be flush; the right stay rounded.
+    const row = screen.getByTestId('step-row-1');
+    expect(row.className).toMatch(/\brounded-r-xl\b/);
+    expect(row.className).not.toMatch(/\brounded-xl\b/);
+    // And the rail runs the row's full height. The first attempt at the corner
+    // problem inset it (`my-3`) and rounded it (`rounded-full`), which turned
+    // the rail into a column of loose pills — the opposite of what a per-step
+    // colour is for. Neither may come back.
+    const stripe = screen.getByTestId('step-color-stripe-1');
+    expect(stripe.className).toMatch(/\bself-stretch\b/);
+    expect(stripe.className).not.toMatch(/\bmy-\d/);
+    expect(stripe.className).not.toMatch(/rounded-full/);
+    expect(screen.getByTestId('step-color-swatch-0').className).not.toMatch(/\bmy-\d/);
+  });
+
   it('paints the step colour as a 4px stripe on the row’s left edge', async () => {
     await openFlow();
     const stripe = screen.getByTestId('step-color-stripe-1') as HTMLElement;
@@ -2440,24 +2459,45 @@ describe('Flow editor — vertical step list (CGLAB-164)', () => {
 
   it('takes the colour control out from beside the icon badge', async () => {
     await openFlow();
-    const badge = screen.getByTestId('step-icon-btn-1') as HTMLElement;
     const picker = screen.getByTestId('step-color-1');
-    // It used to be the badge's immediate neighbour, the two of them splitting
-    // 40px; the glyph lost. The badge now carries no colour of its own and the
-    // picker is not in its container at all.
-    expect(badge.style.backgroundColor).toBe('');
-    expect(badge.parentElement?.contains(picker)).toBe(false);
+    // The colour control used to be the badge's immediate neighbour, the two
+    // splitting 40px, and the glyph lost. It now lives in the rail, and the
+    // rail is not next to the badge — it is the row's leading edge.
     expect(screen.getByTestId('step-color-stripe-1').contains(picker)).toBe(true);
+    expect(screen.getByTestId('step-row-1').firstElementChild).toBe(
+      screen.getByTestId('step-color-stripe-1')
+    );
   });
 
-  it('gives the transparent picker a visible focus state and a usable hit area', async () => {
+  it('gives the transparent picker a visible focus state', async () => {
     await openFlow();
     // The control went from a bordered 20px input to an invisible overlay, so
-    // the focus ring has to be put back on the wrapper, and the 4px rail has
-    // to be padded out horizontally or it is below any sane target size.
+    // the focus ring has to be put back on the wrapper it now sits in.
     const stripe = screen.getByTestId('step-color-stripe-1');
     expect(stripe.className).toMatch(/focus-within:ring/);
-    expect((screen.getByTestId('step-color-1') as HTMLElement).className).toContain('-inset-x-1');
+    // …without a ring offset, whose default colour is white and haloes on dark.
+    expect(stripe.className).not.toMatch(/ring-offset-\d/);
+  });
+
+  it('sizes the transparent picker explicitly, so it cannot fall back to the colour-well', async () => {
+    await openFlow();
+    // READ THIS BEFORE WEAKENING IT. jsdom has no layout and no hit-testing,
+    // so NOTHING in this file can assert that the rail is actually clickable;
+    // the geometry was proved in Chrome (see the card's evidence) and this is
+    // only the guard against the specific declaration that broke it. The
+    // shipped bug was `-inset-x-1 inset-y-0` with no width or height: an
+    // `<input type="color">` with auto dimensions takes its intrinsic ~50x27
+    // colour-well size, the box goes over-constrained, `right`/`bottom` are
+    // dropped, and the live area ends up half the rail's height and sitting
+    // over the step number. Both dimensions must be stated.
+    const cls = (screen.getByTestId('step-color-1') as HTMLElement).className;
+    expect(cls).toMatch(/\bh-full\b/);
+    expect(cls).toMatch(/\bw-6\b/);
+    // The horizontal offset is load-bearing too, and for the same reason: the
+    // overlay is 24px against a 4px rail, so without pulling it left by 10px
+    // the extra 20px lands on the step-number column and clicking the number
+    // opens the picker again — measured at 8px of overlap.
+    expect(cls).toMatch(/-left-2\.5/);
   });
 
   // ── Anchors read as scaffolding, not as work ────────────────────────────
@@ -2491,11 +2531,108 @@ describe('Flow editor — vertical step list (CGLAB-164)', () => {
     // The two working steps have swapped, and the numbers followed them.
     expect((screen.getByTestId('step-name-1') as HTMLInputElement).value).toBe('apply_blocked');
     expect((screen.getByTestId('step-name-2') as HTMLInputElement).value).toBe('in_review');
-    expect(screen.getByTestId('step-index-1').textContent).toBe('2');
-    expect(screen.getByTestId('step-index-2').textContent).toBe('3');
+    // (No assertion on step-index here: it renders `index + 1` straight off
+    // the map, so it is true of any two-element list and proves nothing.)
     // The anchors did not move.
     expect(screen.getByTestId('step-anchor-lock-0')).toBeDefined();
     expect(screen.getByTestId('step-anchor-lock-3')).toBeDefined();
+  });
+
+  it('opens the icon popover upward on the lower rows of a long flow', async () => {
+    // The popover lives inside the body's overflow-y-auto scroller, whose
+    // scrollbar is hidden, so a downward grid on the last rows is clipped with
+    // nothing to say so.
+    const LONG: Flow = {
+      ...VERTICAL_FLOW,
+      steps: [
+        { id: 'l0', name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
+        ...Array.from({ length: 6 }, (_, i) => ({
+          id: `l${i + 1}`,
+          name: `step_${i + 1}`,
+          label: `Step ${i + 1}`,
+          order: i + 1,
+          exitCriteria: 'done when done',
+        })),
+        { id: 'l7', name: 'DONE', label: 'Done', order: 7, exitCriteria: '', isAnchor: true },
+      ],
+    };
+    vi.mocked(api.listFlows).mockResolvedValue([LONG, SAMPLE_FLOW_2]);
+    await openFlow();
+
+    fireEvent.click(screen.getByTestId('step-icon-btn-1'));
+    expect(screen.getByTestId('step-icon-picker-1').getAttribute('data-placement')).toBe('below');
+    expect(screen.getByTestId('step-icon-picker-1').className).toContain('top-7');
+
+    fireEvent.click(screen.getByTestId('step-icon-btn-6'));
+    expect(screen.getByTestId('step-icon-picker-6').getAttribute('data-placement')).toBe('above');
+    expect(screen.getByTestId('step-icon-picker-6').className).toContain('bottom-7');
+  });
+
+  it('flips only past the midpoint, on the smallest flow long enough to need it', async () => {
+    // Six steps: indices 0..5, so `index > 3` flips 4 and 5 and nothing else.
+    // This is the case that separates the real predicate from `>=`, and from
+    // dropping the length guard altogether.
+    const SIX: Flow = {
+      ...VERTICAL_FLOW,
+      steps: [
+        { id: 'x0', name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
+        ...Array.from({ length: 4 }, (_, i) => ({
+          id: `x${i + 1}`, name: `step_${i + 1}`, label: `Step ${i + 1}`,
+          order: i + 1, exitCriteria: 'done when done',
+        })),
+        { id: 'x5', name: 'DONE', label: 'Done', order: 5, exitCriteria: '', isAnchor: true },
+      ],
+    };
+    vi.mocked(api.listFlows).mockResolvedValue([SIX, SAMPLE_FLOW_2]);
+    await openFlow();
+    for (const [index, expected] of [[1, 'below'], [2, 'below'], [3, 'below'], [4, 'above']] as const) {
+      fireEvent.click(screen.getByTestId(`step-icon-btn-${index}`));
+      expect(screen.getByTestId(`step-icon-picker-${index}`).getAttribute('data-placement')).toBe(expected);
+      fireEvent.click(screen.getByTestId(`step-icon-btn-${index}`));
+    }
+  });
+
+  it('does not flip on a five-step flow, which still has room below', async () => {
+    // The length guard: with `index > length / 2` alone, index 3 of 5 would
+    // flip. Five steps is three working rows — the panel has room.
+    const FIVE: Flow = {
+      ...VERTICAL_FLOW,
+      steps: [
+        { id: 'f0', name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
+        ...Array.from({ length: 3 }, (_, i) => ({
+          id: `f${i + 1}`, name: `step_${i + 1}`, label: `Step ${i + 1}`,
+          order: i + 1, exitCriteria: 'done when done',
+        })),
+        { id: 'f4', name: 'DONE', label: 'Done', order: 4, exitCriteria: '', isAnchor: true },
+      ],
+    };
+    vi.mocked(api.listFlows).mockResolvedValue([FIVE, SAMPLE_FLOW_2]);
+    await openFlow();
+    fireEvent.click(screen.getByTestId('step-icon-btn-3'));
+    expect(screen.getByTestId('step-icon-picker-3').getAttribute('data-placement')).toBe('below');
+  });
+
+  it('keeps the popover downward on a flow short enough to have room', async () => {
+    await openFlow();
+    fireEvent.click(screen.getByTestId('step-icon-btn-2'));
+    expect(screen.getByTestId('step-icon-picker-2').getAttribute('data-placement')).toBe('below');
+  });
+
+  it('marks the collapsed disclosure when there is a description to find', async () => {
+    await openFlow();
+    // Collapsed is the precondition the name claims: the whole point of the
+    // dot is that the description is NOT on screen to be seen.
+    expect(screen.queryByTestId('flow-description-input')).toBeNull();
+    expect(screen.getByTestId('flow-description-indicator')).toBeDefined();
+    // …and it is announced, not just drawn: the dot itself is aria-hidden, so
+    // the fact has to reach the toggle's accessible name.
+    expect(screen.getByTestId('flow-description-toggle').textContent).toMatch(/this flow has one/i);
+  });
+
+  it('leaves the disclosure unmarked when the flow has no description', async () => {
+    vi.mocked(api.listFlows).mockResolvedValue([{ ...VERTICAL_FLOW, description: '   ' }, SAMPLE_FLOW_2]);
+    await openFlow();
+    expect(screen.queryByTestId('flow-description-indicator')).toBeNull();
   });
 
   it('keeps every anchor guarantee the old columns made', async () => {
