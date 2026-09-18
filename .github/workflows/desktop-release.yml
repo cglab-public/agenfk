@@ -78,6 +78,11 @@ jobs:
         # would have made a SECOND release page. Stripping the prefix uploads the
         # installers onto the release people are already being sent to.
         if: startsWith(github.ref, 'refs/tags/desktop-v')
+        # BASH ON EVERY RUNNER, including Windows: this step uses array syntax
+        # and `${VAR#prefix}`, and the Windows default is PowerShell - where the
+        # same script fails with a syntax error the log renders as a wall of
+        # source. Git Bash ships on the windows runner.
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
