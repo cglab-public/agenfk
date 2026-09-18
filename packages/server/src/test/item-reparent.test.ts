@@ -22,6 +22,23 @@ import { app, initStorage } from '../server';
 import * as fs from 'fs';
 import * as path from 'path';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` makes supertest start an ephemeral server and tear it down for
+ * EVERY call — this file makes 45 of them. That churn produced
+ * `Error: Parse Error: Expected HTTP/, RTSP/ or ICE/`, a transport failure that
+ * hands the test an empty body: `res.body.id` is then undefined, the next call
+ * goes to `/items/undefined`, and one flaky socket surfaces as `expected 404 to
+ * be 400` in whichever test happened to be running. Different test every run,
+ * green when run alone.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 const TEST_DB = path.resolve('./item-reparent-test-db.sqlite');
 
 describe('item re-parenting', () => {
@@ -39,13 +56,13 @@ describe('item re-parenting', () => {
   });
 
   const makeProject = async (name: string) => {
-    const r = await request(app).post('/projects').send({ name });
+    const r = await agent().post('/projects').send({ name });
     expect(r.status).toBe(201);
     return r.body.id;
   };
 
   const makeItem = async (type: string, title: string, opts: { projectId?: string; parentId?: string } = {}) => {
-    const r = await request(app).post('/items').send({
+    const r = await agent().post('/items').send({
       type,
       title,
       projectId: opts.projectId ?? projectId,
@@ -68,11 +85,11 @@ describe('item re-parenting', () => {
     const bug = await makeItem('BUG', 'Loose bug');
     expect(bug.parentId ?? null).toBeNull();
 
-    const r = await request(app).put(`/items/${bug.id}`).send({ parentId: story.id });
+    const r = await agent().put(`/items/${bug.id}`).send({ parentId: story.id });
     expect(r.status).toBe(200);
     expect(r.body.parentId).toBe(story.id);
 
-    const children = await request(app).get(`/items?parentId=${story.id}`);
+    const children = await agent().get(`/items?parentId=${story.id}`);
     expect(children.body.map((c: any) => c.id)).toContain(bug.id);
   });
 
@@ -81,11 +98,11 @@ describe('item re-parenting', () => {
     const b = await makeItem('STORY', 'Story B');
     const task = await makeItem('TASK', 'Task', { parentId: a.id });
 
-    const r = await request(app).put(`/items/${task.id}`).send({ parentId: b.id });
+    const r = await agent().put(`/items/${task.id}`).send({ parentId: b.id });
     expect(r.status).toBe(200);
     expect(r.body.parentId).toBe(b.id);
 
-    const oldChildren = await request(app).get(`/items?parentId=${a.id}`);
+    const oldChildren = await agent().get(`/items?parentId=${a.id}`);
     expect(oldChildren.body.map((c: any) => c.id)).not.toContain(task.id);
   });
 
@@ -93,7 +110,7 @@ describe('item re-parenting', () => {
     const story = await makeItem('STORY', 'Story');
     const task = await makeItem('TASK', 'Task', { parentId: story.id });
 
-    const r = await request(app).put(`/items/${task.id}`).send({ parentId: null });
+    const r = await agent().put(`/items/${task.id}`).send({ parentId: null });
     expect(r.status).toBe(200);
     expect(r.body.parentId ?? null).toBeNull();
   });
@@ -102,7 +119,7 @@ describe('item re-parenting', () => {
     const story = await makeItem('STORY', 'Story');
     const task = await makeItem('TASK', 'Task', { parentId: story.id });
 
-    const r = await request(app).put(`/items/${task.id}`).send({ title: 'Renamed' });
+    const r = await agent().put(`/items/${task.id}`).send({ title: 'Renamed' });
     expect(r.status).toBe(200);
     expect(r.body.title).toBe('Renamed');
     expect(r.body.parentId).toBe(story.id);
@@ -112,11 +129,11 @@ describe('item re-parenting', () => {
   it('rejects a parent id that does not exist', async () => {
     const task = await makeItem('TASK', 'Task');
 
-    const r = await request(app).put(`/items/${task.id}`).send({ parentId: 'no-such-item' });
+    const r = await agent().put(`/items/${task.id}`).send({ parentId: 'no-such-item' });
     expect(r.status).toBe(400);
     expect(r.body.error).toMatch(/parent/i);
 
-    const after = await request(app).get(`/items/${task.id}`);
+    const after = await agent().get(`/items/${task.id}`);
     expect(after.body.parentId ?? null).toBeNull();
   });
 
@@ -124,7 +141,7 @@ describe('item re-parenting', () => {
     const foreign = await makeItem('STORY', 'Foreign story', { projectId: otherProjectId });
     const task = await makeItem('TASK', 'Task');
 
-    const r = await request(app).put(`/items/${task.id}`).send({ parentId: foreign.id });
+    const r = await agent().put(`/items/${task.id}`).send({ parentId: foreign.id });
     expect(r.status).toBe(400);
     expect(r.body.error).toMatch(/project/i);
   });
@@ -132,7 +149,7 @@ describe('item re-parenting', () => {
   it('rejects self-parenting', async () => {
     const task = await makeItem('TASK', 'Task');
 
-    const r = await request(app).put(`/items/${task.id}`).send({ parentId: task.id });
+    const r = await agent().put(`/items/${task.id}`).send({ parentId: task.id });
     expect(r.status).toBe(400);
     expect(r.body.error).toMatch(/own parent/i);
   });
@@ -142,7 +159,7 @@ describe('item re-parenting', () => {
     const epic = await makeItem('EPIC', 'Epic');
     const story = await makeItem('STORY', 'Story', { parentId: epic.id });
 
-    const r = await request(app).put(`/items/${epic.id}`).send({ parentId: story.id });
+    const r = await agent().put(`/items/${epic.id}`).send({ parentId: story.id });
     expect(r.status).toBe(400);
     expect(r.body.error).toMatch(/descendant|cycle/i);
   });
@@ -152,11 +169,11 @@ describe('item re-parenting', () => {
     const story = await makeItem('STORY', 'Story', { parentId: epic.id });
     const task = await makeItem('TASK', 'Task', { parentId: story.id });
 
-    const r = await request(app).put(`/items/${epic.id}`).send({ parentId: task.id });
+    const r = await agent().put(`/items/${epic.id}`).send({ parentId: task.id });
     expect(r.status).toBe(400);
     expect(r.body.error).toMatch(/descendant|cycle/i);
 
-    const after = await request(app).get(`/items/${epic.id}`);
+    const after = await agent().get(`/items/${epic.id}`);
     expect(after.body.parentId ?? null).toBeNull();
   });
 
@@ -167,7 +184,7 @@ describe('item re-parenting', () => {
     const task = await makeItem('TASK', 'Task', { parentId: storyA.id });
 
     // storyB is not a descendant of task, so this is legal.
-    const r = await request(app).put(`/items/${task.id}`).send({ parentId: storyB.id });
+    const r = await agent().put(`/items/${task.id}`).send({ parentId: storyB.id });
     expect(r.status).toBe(200);
     expect(r.body.parentId).toBe(storyB.id);
   });
@@ -183,20 +200,20 @@ describe('item re-parenting', () => {
     const laggard = await makeItem('TASK', 'Laggard', { parentId: oldParent.id });
 
     // Children at REVIEW + IN_PROGRESS roll the parent up to IN_PROGRESS.
-    await request(app).put(`/items/${ahead.id}`).send({ status: 'IN_PROGRESS' });
-    await request(app).put(`/items/${ahead.id}`).send({ status: 'REVIEW' });
-    await request(app).put(`/items/${laggard.id}`).send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${ahead.id}`).send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${ahead.id}`).send({ status: 'REVIEW' });
+    await agent().put(`/items/${laggard.id}`).send({ status: 'IN_PROGRESS' });
 
-    const before = await request(app).get(`/items/${oldParent.id}`);
+    const before = await agent().get(`/items/${oldParent.id}`);
     expect(before.body.status).toBe('IN_PROGRESS');
 
     // Move the laggard out. The old parent's only remaining child is at REVIEW,
     // so it should roll up to REVIEW — it will only do so if the OLD parent is
     // re-synced, which is the point.
-    const moved = await request(app).put(`/items/${laggard.id}`).send({ parentId: newParent.id });
+    const moved = await agent().put(`/items/${laggard.id}`).send({ parentId: newParent.id });
     expect(moved.status).toBe(200);
 
-    const after = await request(app).get(`/items/${oldParent.id}`);
+    const after = await agent().get(`/items/${oldParent.id}`);
     expect(after.body.status).toBe('REVIEW');
   });
 
@@ -204,16 +221,16 @@ describe('item re-parenting', () => {
     const oldParent = await makeItem('STORY', 'Old parent');
     const child = await makeItem('TASK', 'Child', { parentId: oldParent.id });
 
-    await request(app).put(`/items/${child.id}`).send({ status: 'IN_PROGRESS' });
-    const parentNow = await request(app).get(`/items/${oldParent.id}`);
+    await agent().put(`/items/${child.id}`).send({ status: 'IN_PROGRESS' });
+    const parentNow = await agent().get(`/items/${oldParent.id}`);
     expect(parentNow.body.status).toBe('IN_PROGRESS');
 
-    const r = await request(app).put(`/items/${child.id}`).send({ parentId: null });
+    const r = await agent().put(`/items/${child.id}`).send({ parentId: null });
     expect(r.status).toBe(200);
 
     // Old parent has no children left; syncParentStatus leaves a childless
     // parent alone, so this pins the CURRENT contract rather than inventing one.
-    const after = await request(app).get(`/items/${oldParent.id}`);
+    const after = await agent().get(`/items/${oldParent.id}`);
     expect(after.body.status).toBe('IN_PROGRESS');
   });
 
@@ -222,12 +239,12 @@ describe('item re-parenting', () => {
     const story = await makeItem('STORY', 'Story');
     const task = await makeItem('TASK', 'Task', { parentId: story.id });
 
-    await request(app).put(`/items/${task.id}`).send({ parentId: null });
+    await agent().put(`/items/${task.id}`).send({ parentId: null });
 
-    const reread = await request(app).get(`/items/${task.id}`);
+    const reread = await agent().get(`/items/${task.id}`);
     expect(reread.body.parentId ?? null).toBeNull();
 
-    const children = await request(app).get(`/items?parentId=${story.id}`);
+    const children = await agent().get(`/items?parentId=${story.id}`);
     expect(children.body.map((c: any) => c.id)).not.toContain(task.id);
   });
 
@@ -235,9 +252,9 @@ describe('item re-parenting', () => {
     const story = await makeItem('STORY', 'Story');
     const task = await makeItem('TASK', 'Task');
 
-    await request(app).put(`/items/${task.id}`).send({ parentId: story.id });
+    await agent().put(`/items/${task.id}`).send({ parentId: story.id });
 
-    const reread = await request(app).get(`/items/${task.id}`);
+    const reread = await agent().get(`/items/${task.id}`);
     expect(reread.body.parentId).toBe(story.id);
   });
 
@@ -250,25 +267,25 @@ describe('item re-parenting', () => {
       const epic = await makeItem('EPIC', 'Epic');
       const story = await makeItem('STORY', 'Story', { parentId: epic.id });
 
-      const r = await request(app).post('/items/bulk').send({
+      const r = await agent().post('/items/bulk').send({
         items: [{ id: epic.id, updates: { parentId: story.id } }],
       });
       expect(r.status).toBe(200);
       expect(r.body.skipped?.[0]?.error).toMatch(/descendant|cycle/i);
 
-      const after = await request(app).get(`/items/${epic.id}`);
+      const after = await agent().get(`/items/${epic.id}`);
       expect(after.body.parentId ?? null).toBeNull();
     });
 
     it('refuses a nonexistent parent', async () => {
       const task = await makeItem('TASK', 'Task');
 
-      const r = await request(app).post('/items/bulk').send({
+      const r = await agent().post('/items/bulk').send({
         items: [{ id: task.id, updates: { parentId: 'nope' } }],
       });
       expect(r.body.skipped?.[0]?.error).toMatch(/not found/i);
 
-      const after = await request(app).get(`/items/${task.id}`);
+      const after = await agent().get(`/items/${task.id}`);
       expect(after.body.parentId ?? null).toBeNull();
     });
 
@@ -276,7 +293,7 @@ describe('item re-parenting', () => {
       const foreign = await makeItem('STORY', 'Foreign', { projectId: otherProjectId });
       const task = await makeItem('TASK', 'Task');
 
-      const r = await request(app).post('/items/bulk').send({
+      const r = await agent().post('/items/bulk').send({
         items: [{ id: task.id, updates: { parentId: foreign.id } }],
       });
       expect(r.body.skipped?.[0]?.error).toMatch(/project/i);
@@ -288,24 +305,24 @@ describe('item re-parenting', () => {
       const ahead = await makeItem('TASK', 'Ahead', { parentId: oldParent.id });
       const laggard = await makeItem('TASK', 'Laggard', { parentId: oldParent.id });
 
-      await request(app).put(`/items/${ahead.id}`).send({ status: 'IN_PROGRESS' });
-      await request(app).put(`/items/${ahead.id}`).send({ status: 'REVIEW' });
-      await request(app).put(`/items/${laggard.id}`).send({ status: 'IN_PROGRESS' });
+      await agent().put(`/items/${ahead.id}`).send({ status: 'IN_PROGRESS' });
+      await agent().put(`/items/${ahead.id}`).send({ status: 'REVIEW' });
+      await agent().put(`/items/${laggard.id}`).send({ status: 'IN_PROGRESS' });
 
-      const r = await request(app).post('/items/bulk').send({
+      const r = await agent().post('/items/bulk').send({
         items: [{ id: laggard.id, updates: { parentId: newParent.id } }],
       });
       expect(r.status).toBe(200);
       expect(r.body.results[0].parentId).toBe(newParent.id);
 
-      const after = await request(app).get(`/items/${oldParent.id}`);
+      const after = await agent().get(`/items/${oldParent.id}`);
       expect(after.body.status).toBe('REVIEW');
     });
   });
 
   describe('POST /items enforces parent existence and project', () => {
     it('refuses a nonexistent parent at create time', async () => {
-      const r = await request(app).post('/items').send({
+      const r = await agent().post('/items').send({
         type: 'TASK', title: 'Orphan', projectId, parentId: 'no-such-parent',
       });
       expect(r.status).toBe(400);
@@ -315,7 +332,7 @@ describe('item re-parenting', () => {
     it('refuses a cross-project parent at create time', async () => {
       const foreign = await makeItem('STORY', 'Foreign', { projectId: otherProjectId });
 
-      const r = await request(app).post('/items').send({
+      const r = await agent().post('/items').send({
         type: 'TASK', title: 'Misfiled', projectId, parentId: foreign.id,
       });
       expect(r.status).toBe(400);
@@ -324,7 +341,7 @@ describe('item re-parenting', () => {
 
     it('still creates a child under a valid parent', async () => {
       const story = await makeItem('STORY', 'Story');
-      const r = await request(app).post('/items').send({
+      const r = await agent().post('/items').send({
         type: 'TASK', title: 'Child', projectId, parentId: story.id,
       });
       expect(r.status).toBe(201);
@@ -335,7 +352,7 @@ describe('item re-parenting', () => {
   it('rejects a non-string parentId with 400 rather than a 500 from the driver', async () => {
     const task = await makeItem('TASK', 'Task');
 
-    const r = await request(app).put(`/items/${task.id}`).send({ parentId: { nested: true } });
+    const r = await agent().put(`/items/${task.id}`).send({ parentId: { nested: true } });
     expect(r.status).toBe(400);
     expect(r.body.error).toMatch(/string/i);
   });

@@ -22,6 +22,8 @@ const ENV_KEYS = [
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let app: any, initStorage: any;
+let __server: any;
+const agent = () => request(__server);
 
 const hubSteps = [
   { id: 'h1', name: 'BACKLOG', label: 'Backlog', order: 0, isAnchor: true },
@@ -97,7 +99,18 @@ describe('org-flow routes (hub enabled)', () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
     stubHubFetch(); // stub before import so any startup fetch is intercepted
     if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+
+        /*
+     * The server is created right after the dynamic import, in the same hook
+     * (BUG 9de0c99c). This file cannot use a module-level `beforeAll` for it,
+     * because `app` does not exist until that import runs — but the reason for
+     * having ONE server is the same: `agent()` starts and tears down an
+     * ephemeral one per call, and that churn produced `Error: Parse Error:
+     * Expected HTTP/`, a transport failure that surfaces as a confident wrong
+     * assertion in whichever test was running.
+     */
     ({ app, initStorage } = await import('../server'));
+    __server = app.listen(0);
     await initStorage();
   });
 
@@ -119,7 +132,7 @@ describe('org-flow routes (hub enabled)', () => {
   });
 
   it('GET /flows/org-available returns the hub available set', async () => {
-    const r = await request(app).get('/flows/org-available');
+    const r = await agent().get('/flows/org-available');
     expect(r.status).toBe(200);
     expect(r.body.hubEnabled).toBe(true);
     expect(r.body.flows).toHaveLength(1);
@@ -128,9 +141,9 @@ describe('org-flow routes (hub enabled)', () => {
   });
 
   it('POST select-org selects a flow and rebinds the project', async () => {
-    const project = (await request(app).post('/projects').send({ name: 'p' })).body;
+    const project = (await agent().post('/projects').send({ name: 'p' })).body;
 
-    const r = await request(app)
+    const r = await agent()
       .post(`/projects/${project.id}/flow/select-org`)
       .send({ flowId: 'hub-remote-1' });
     expect(r.status).toBe(200);
@@ -138,20 +151,20 @@ describe('org-flow routes (hub enabled)', () => {
     expect(r.body.source).toBe('hub');
 
     // Rebind persisted — plain GET reflects the hub flow
-    const plain = await request(app).get(`/projects/${project.id}/flow`);
+    const plain = await agent().get(`/projects/${project.id}/flow`);
     expect(plain.body.name).toBe('Hub Managed Flow');
   });
 
   it('select-org on a missing project → 404', async () => {
-    const r = await request(app)
+    const r = await agent()
       .post('/projects/does-not-exist/flow/select-org')
       .send({ flowId: 'hub-remote-1' });
     expect(r.status).toBe(404);
   });
 
   it('select-org without flowId → 400', async () => {
-    const project = (await request(app).post('/projects').send({ name: 'p2' })).body;
-    const r = await request(app)
+    const project = (await agent().post('/projects').send({ name: 'p2' })).body;
+    const r = await agent()
       .post(`/projects/${project.id}/flow/select-org`)
       .send({});
     expect(r.status).toBe(400);
@@ -159,72 +172,72 @@ describe('org-flow routes (hub enabled)', () => {
 
   it('migrates in-flight cards when the selected flow changes step names', async () => {
     // project on a LOCAL flow whose steps differ from the hub flow (BACKLOG/DOING/SHIPPED)
-    const local = (await request(app).post('/flows').send({ name: 'LocalFlow', steps: [
+    const local = (await agent().post('/flows').send({ name: 'LocalFlow', steps: [
       { id: 'l1', name: 'TODO', label: 'Todo', order: 0, isAnchor: true },
       { id: 'l2', name: 'DOING', label: 'Doing', order: 1 },
       { id: 'l3', name: 'DONE', label: 'Done', order: 2, isAnchor: true },
     ] })).body;
-    const project = (await request(app).post('/projects').send({ name: 'pm' })).body;
-    await request(app).post(`/projects/${project.id}/flow`).send({ flowId: local.id });
+    const project = (await agent().post('/projects').send({ name: 'pm' })).body;
+    await agent().post(`/projects/${project.id}/flow`).send({ flowId: local.id });
     // seed an item on a status that does NOT exist in the hub flow's steps
-    await request(app).post('/items').send({ type: 'TASK', title: 't', projectId: project.id });
+    await agent().post('/items').send({ type: 'TASK', title: 't', projectId: project.id });
 
-    const r = await request(app).post(`/projects/${project.id}/flow/select-org`).send({ flowId: 'hub-remote-1' });
+    const r = await agent().post(`/projects/${project.id}/flow/select-org`).send({ flowId: 'hub-remote-1' });
     expect(r.status).toBe(200);
     expect(r.body.name).toBe('Hub Managed Flow');
     // every item must now be on a status that exists in the hub flow's steps
-    const items = (await request(app).get(`/items?projectId=${project.id}`)).body;
+    const items = (await agent().get(`/items?projectId=${project.id}`)).body;
     const validStatuses = ['BACKLOG', 'DOING', 'SHIPPED'];
     for (const it of items) expect(validStatuses).toContain(it.status);
   });
 
   it('clearing the selection (flowId null) unbinds the project locally', async () => {
-    const local = (await request(app).post('/flows').send({ name: 'LocalOnly', steps: [
+    const local = (await agent().post('/flows').send({ name: 'LocalOnly', steps: [
       { id: 'l1', name: 'TODO', label: 'Todo', order: 0, isAnchor: true },
       { id: 'l2', name: 'DONE', label: 'Done', order: 1, isAnchor: true },
     ] })).body;
-    const project = (await request(app).post('/projects').send({ name: 'pc' })).body;
-    await request(app).post(`/projects/${project.id}/flow`).send({ flowId: local.id });
-    const r = await request(app).post(`/projects/${project.id}/flow/select-org`).send({ flowId: null });
+    const project = (await agent().post('/projects').send({ name: 'pc' })).body;
+    await agent().post(`/projects/${project.id}/flow`).send({ flowId: local.id });
+    const r = await agent().post(`/projects/${project.id}/flow/select-org`).send({ flowId: null });
     expect(r.status).toBe(200);
     // project no longer bound to the local flow -> plain flow read returns the built-in default
-    const flow = (await request(app).get(`/projects/${project.id}/flow`)).body;
+    const flow = (await agent().get(`/projects/${project.id}/flow`)).body;
     expect(flow.name).not.toBe('LocalOnly');
   });
 
   it('clearing the selection migrates in-flight cards off the old flow to the default flow', async () => {
     // Local flow with a custom status that the built-in DEFAULT_FLOW lacks.
-    const local = (await request(app).post('/flows').send({ name: 'CustomClear', steps: [
+    const local = (await agent().post('/flows').send({ name: 'CustomClear', steps: [
       { id: 'l1', name: 'TODO', label: 'Todo', order: 0, isAnchor: true },
       { id: 'l2', name: 'CUSTOMSTAGE', label: 'Custom', order: 1 },
       { id: 'l3', name: 'DONE', label: 'Done', order: 2, isAnchor: true },
     ] })).body;
-    const project = (await request(app).post('/projects').send({ name: 'pcmig' })).body;
-    await request(app).post(`/projects/${project.id}/flow`).send({ flowId: local.id });
+    const project = (await agent().post('/projects').send({ name: 'pcmig' })).body;
+    await agent().post(`/projects/${project.id}/flow`).send({ flowId: local.id });
     // Park an item on the custom status that won't exist after clearing to default.
-    const item = (await request(app).post('/items').send({ type: 'TASK', title: 't', projectId: project.id })).body;
-    await request(app).put(`/items/${item.id}`).send({ status: 'CUSTOMSTAGE' });
+    const item = (await agent().post('/items').send({ type: 'TASK', title: 't', projectId: project.id })).body;
+    await agent().put(`/items/${item.id}`).send({ status: 'CUSTOMSTAGE' });
 
-    const r = await request(app).post(`/projects/${project.id}/flow/select-org`).send({ flowId: null });
+    const r = await agent().post(`/projects/${project.id}/flow/select-org`).send({ flowId: null });
     expect(r.status).toBe(200);
     // No item may be left orphaned on a status the default flow doesn't define.
     const defaultStatuses = (r.body.steps as any[]).map((s) => s.name);
-    const items = (await request(app).get(`/items?projectId=${project.id}`)).body;
+    const items = (await agent().get(`/items?projectId=${project.id}`)).body;
     for (const it of items) expect(defaultStatuses).toContain(it.status);
   });
 
   it('returns 502 when the hub selection succeeds but the local reconcile fails', async () => {
     activeMode = 'error'; // /v1/flows/active returns 500 during reconcile
-    const project = (await request(app).post('/projects').send({ name: 'pf' })).body;
-    const r = await request(app).post(`/projects/${project.id}/flow/select-org`).send({ flowId: 'hub-remote-1' });
+    const project = (await agent().post('/projects').send({ name: 'pf' })).body;
+    const r = await agent().post(`/projects/${project.id}/flow/select-org`).send({ flowId: 'hub-remote-1' });
     expect(r.status).toBe(502);
     expect(r.body.reconciled).toBe(false);
   });
 
   it('passes through a hub 401 as 401 (re-auth needed, not 502)', async () => {
     selectionStatus = 401;
-    const project = (await request(app).post('/projects').send({ name: 'p401' })).body;
-    const r = await request(app).post(`/projects/${project.id}/flow/select-org`).send({ flowId: 'hub-remote-1' });
+    const project = (await agent().post('/projects').send({ name: 'p401' })).body;
+    const r = await agent().post(`/projects/${project.id}/flow/select-org`).send({ flowId: 'hub-remote-1' });
     expect(r.status).toBe(401);
   });
 });

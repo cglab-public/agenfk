@@ -32,11 +32,29 @@ if (!fs.existsSync(agenfkDir)) {
 
 try { fs.unlinkSync(SERVER_PORT_FILE); } catch { /* ignore */ }
 
-console.log(`Starting API Server (requested port ${REQUESTED_API_PORT})...`);
+/*
+ * ONE ORIGIN (CGLAB-165). The API serves the built UI when there is one, so
+ * there is a single port for both - and, load-bearingly, so the DESKTOP can
+ * adopt this server. The desktop loads its window from the server it adopts and
+ * refuses one that serves no HTML (`servesUiBundle`), which is exactly what a
+ * bare API is; with the UI on its own vite port the app had nothing to adopt
+ * and fell back to a browser. The server side was already built for this
+ * (AGENFK_SERVE_UI); only this script still started vite separately.
+ */
+const uiDist = path.join(rootDir, 'packages/ui', 'dist');
+const servesUi = fs.existsSync(path.join(uiDist, 'index.html'));
+
+console.log(`Starting API Server (requested port ${REQUESTED_API_PORT})${servesUi ? ' with the built UI' : ''}...`);
 const apiLogPath = path.join(agenfkDir, 'api.log');
 const apiLog = fs.openSync(apiLogPath, 'w');
 const apiProcess = spawn('node', [path.join(rootDir, 'packages/server/dist/server.js')], {
-    env: { ...process.env, AGENFK_DB_PATH: dbPath, AGENFK_PORT: REQUESTED_API_PORT, VITE_PORT: UI_PORT },
+    env: {
+        ...process.env,
+        AGENFK_DB_PATH: dbPath,
+        AGENFK_PORT: REQUESTED_API_PORT,
+        VITE_PORT: UI_PORT,
+        ...(servesUi ? { AGENFK_SERVE_UI: uiDist } : {}),
+    },
     detached: true,
     stdio: ['ignore', apiLog, apiLog]
 });
@@ -56,19 +74,26 @@ if (API_PORT !== REQUESTED_API_PORT) {
     console.log(`API Server bound to port ${API_PORT} (requested ${REQUESTED_API_PORT} was unavailable).`);
 }
 
-console.log(`Starting UI on port ${UI_PORT}...`);
 const uiLogPath = path.join(agenfkDir, 'ui.log');
-const uiLog = fs.openSync(uiLogPath, 'w');
 const isMinGW = !!(process.env.MSYSTEM || process.env.MINGW_PREFIX);
 const npmCmd = (os.platform() === 'win32' && !isMinGW) ? 'npm.cmd' : 'npm';
-const uiProcess = spawn(npmCmd, ['run', 'preview'], {
-    cwd: path.join(rootDir, 'packages/ui'),
-    env: { ...process.env, VITE_PORT: UI_PORT, VITE_API_URL: `http://localhost:${API_PORT}` },
-    detached: true,
-    stdio: ['ignore', uiLog, uiLog],
-    shell: os.platform() === 'win32', // .cmd scripts need shell on Windows (MinGW + native)
-});
-uiProcess.unref();
+if (servesUi) {
+    // Remove a STALE vite URL: `agenfk ui` reads this log, and a 5173 left over
+    // from a previous run would point at a port nothing is serving any more.
+    try { fs.unlinkSync(uiLogPath); } catch { /* nothing to remove */ }
+    console.log(`UI served by the API on port ${API_PORT} (no separate vite).`);
+} else {
+    console.log(`No built UI found; starting vite preview on port ${UI_PORT}...`);
+    const uiLog = fs.openSync(uiLogPath, 'w');
+    const uiProcess = spawn(npmCmd, ['run', 'preview'], {
+        cwd: path.join(rootDir, 'packages/ui'),
+        env: { ...process.env, VITE_PORT: UI_PORT, VITE_API_URL: `http://localhost:${API_PORT}` },
+        detached: true,
+        stdio: ['ignore', uiLog, uiLog],
+        shell: os.platform() === 'win32', // .cmd scripts need shell on Windows (MinGW + native)
+    });
+    uiProcess.unref();
+}
 
 console.log("Services started in background.");
 console.log(`API: http://localhost:${API_PORT}`);
@@ -77,8 +102,9 @@ console.log("Logs: " + path.join(agenfkDir, '*.log'));
 
 // Simple wait for UI
 console.log("Waiting for UI to be ready...");
-let uiUrl = `http://localhost:${UI_PORT}`;
-for (let i = 0; i < 15; i++) {
+// The API's own port when it serves the UI; the vite port otherwise.
+let uiUrl = servesUi ? `http://localhost:${API_PORT}` : `http://localhost:${UI_PORT}`;
+for (let i = 0; i < 15 && !servesUi; i++) {
     if (fs.existsSync(uiLogPath)) {
         const content = fs.readFileSync(uiLogPath, 'utf8');
         const matches = content.match(/http:\/\/localhost:[0-9]+/g);

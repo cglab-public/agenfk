@@ -1,0 +1,111 @@
+# Builds AgEnFK Desktop for macOS, Windows and Linux (CGLAB-171).
+#
+# A matrix rather than one job because the installers are platform-bound: a
+# Windows NSIS installer needs a Windows runner, and macOS signing and
+# notarization can only happen on macOS. One runner cannot produce all three.
+name: Desktop release
+
+on:
+  push:
+    tags: ['desktop-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: dist:mac
+          - os: windows-latest
+            target: dist:win
+          - os: ubuntu-latest
+            target: dist:linux
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      # Electron's binary IS needed here, unlike the ordinary CI job, because
+      # electron-builder packages it into the installer.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build workspace
+        run: npm run build
+
+      - name: Package
+        # --publish never: on a tag electron-builder AUTO-PUBLISHES, and the
+        # beta release already exists as a pre-release, so it dies with
+        # "existing type not compatible with publishing type". The workflow's
+        # job is artifacts, not publishing.
+        run: npm run ${{ matrix.target }} -w packages/desktop -- --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signing is opt-in: without the secrets the build still produces
+          # installers, they simply warn on first launch. Failing the build
+          # instead would block every fork and every contributor.
+          #
+          # AUTO-DISCOVERY HAS TO BE OFF, and that is the half that broke every
+          # macOS release. On a runner with no certs electron-builder still
+          # finds whatever identity the image ships and tries to sign with an
+          # EMPTY password - then dies with the unhelpful "⨯ <project dir> not a
+          # file". The flag is set from the secrets so adding both cert and
+          # password turns signing back on by itself.
+          CSC_LINK: ${{ secrets.MAC_CERT_P12 }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CERT_PFX }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CERT_PASSWORD }}
+
+      - name: Attach installers to the release
+        # THE TAG AND THE RELEASE HAVE DIFFERENT NAMES. The desktop build runs on
+        # `desktop-vX`; the release the framework flow creates is `vX`. electron-
+        # builder's implicit publish targeted the tag it was built for and
+        # defaulted to a DRAFT, so it collided with the existing pre-release and
+        # died with "existing type not compatible with publishing type" - and it
+        # would have made a SECOND release page. Stripping the prefix uploads the
+        # installers onto the release people are already being sent to.
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        # BASH ON EVERY RUNNER, including Windows: this step uses array syntax
+        # and `${VAR#prefix}`, and the Windows default is PowerShell - where the
+        # same script fails with a syntax error the log renders as a wall of
+        # source. Git Bash ships on the windows runner.
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME#desktop-}"
+          # A desktop tag pushed on its own still gets a page to attach to.
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --prerelease --title "$TAG" --notes "Desktop installers for $TAG"
+          # nullglob: a platform builds only its OWN formats, and an unmatched
+          # glob would otherwise be passed through literally and fail the upload.
+          shopt -s nullglob
+          files=(packages/desktop/release/*.dmg packages/desktop/release/*.zip \
+                 packages/desktop/release/*.exe packages/desktop/release/*.AppImage \
+                 packages/desktop/release/*.deb)
+          gh release upload "$TAG" "${files[@]}" --clobber
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: agenfk-desktop-${{ matrix.os }}
+          path: |
+            packages/desktop/release/*.dmg
+            packages/desktop/release/*.zip
+            packages/desktop/release/*.exe
+            packages/desktop/release/*.AppImage
+            packages/desktop/release/*.deb
+          if-no-files-found: error

@@ -22,6 +22,23 @@ import { app, initStorage } from '../server';
 import * as fs from 'fs';
 import * as path from 'path';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. That
+ * churn produced `Error: Parse Error: Expected HTTP/, RTSP/ or ICE/` — a
+ * transport failure, not an assertion about anything under test. It hands the
+ * test an empty body, so `res.body.id` is undefined and the next call goes to
+ * `/items/undefined`; one bad socket then surfaces as `expected 404 to be 400`
+ * in whichever test happened to be running. Different test every run, green
+ * when run alone.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 const TEST_DB = path.resolve('./item-type-change-test-db.sqlite');
 
 describe('item type change (CGLAB-86)', () => {
@@ -40,13 +57,13 @@ describe('item type change (CGLAB-86)', () => {
   beforeEach(async () => {
     if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
     await initStorage();
-    const r = await request(app).post('/projects').send({ name: 'type-change-test' });
+    const r = await agent().post('/projects').send({ name: 'type-change-test' });
     expect(r.status).toBe(201);
     projectId = r.body.id;
   });
 
   const makeItem = async (type: string, title: string, opts: { parentId?: string } = {}) => {
-    const r = await request(app).post('/items').send({
+    const r = await agent().post('/items').send({
       type,
       title,
       projectId,
@@ -57,7 +74,7 @@ describe('item type change (CGLAB-86)', () => {
   };
 
   const putType = async (id: string, type: string) =>
-    request(app).put(`/items/${id}`).send({ type });
+    agent().put(`/items/${id}`).send({ type });
 
   it('allows EPIC -> STORY when the epic has children (the reported bug)', async () => {
     const epic = await makeItem('EPIC', 'Parent epic');
@@ -68,7 +85,7 @@ describe('item type change (CGLAB-86)', () => {
     expect(res.body.type).toBe('STORY');
 
     // The child must survive the retype intact and still attached.
-    const after = await request(app).get(`/items/${child.id}`);
+    const after = await agent().get(`/items/${child.id}`);
     expect(after.status).toBe(200);
     expect(after.body.parentId).toBe(epic.id);
     expect(after.body.type).toBe('STORY');
@@ -137,7 +154,7 @@ describe('item type change (CGLAB-86)', () => {
 
   it('still rejects invalid type values', async () => {
     const task = await makeItem('TASK', 'Task');
-    const res = await request(app).put(`/items/${task.id}`).send({ type: 'MEGA' });
+    const res = await agent().put(`/items/${task.id}`).send({ type: 'MEGA' });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/Invalid type/i);
   });

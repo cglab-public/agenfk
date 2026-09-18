@@ -111,6 +111,8 @@ export interface RegistryFlow {
 }
 
 export interface AgEnFKItem {
+  /** Which agent works this card. Lives on the item, not in localStorage. */
+  agentId?: string;
   id: string;
   projectId: string;
   type: ItemType;

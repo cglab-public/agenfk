@@ -23,10 +23,22 @@ import * as os from 'os';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 import supertest from 'supertest';
+import { loginAs } from './helpers/loginAs';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { drainApp } from './helpers/drainApp';
+
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-upgrade-force-cancel-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -37,10 +49,6 @@ const cleanup = () => {
   }
 };
 
-const loginAs = async (app: any, email: string, password: string) => {
-  const r = await supertest(app).post('/auth/login').send({ email, password });
-  return r.headers['set-cookie']?.[0] ?? '';
-};
 
 async function seedInstallation(db: any, orgId: string, installationId: string, occurredAt = '2026-05-01T10:00:00Z') {
   await db.run(
@@ -79,6 +87,8 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel { force: true }', () => {
       releaseExists: async (version: string) => version === '0.3.1',
     } as any);
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
     await createPasswordUser(ctx.db, 'org-a', 'view@x', 'longenough1', 'viewer');
@@ -93,13 +103,13 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel { force: true }', () => {
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
   async function issueDirectiveAll(): Promise<string> {
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .post('/v1/admin/upgrade')
       .set('Cookie', cookieAdmin)
       .send({ targetVersion: '0.3.1', scope: { type: 'all' } });
@@ -119,7 +129,7 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel { force: true }', () => {
     const directiveId = await issueDirectiveAll();
     await markInProgress(directiveId, 'inst-1');
 
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .post(`/v1/admin/upgrade/${directiveId}/cancel`)
       .set('Cookie', cookieAdmin)
       .send({ force: true });
@@ -143,7 +153,7 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel { force: true }', () => {
     const directiveId = await issueDirectiveAll();
     await markInProgress(directiveId, 'inst-1');
 
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .post(`/v1/admin/upgrade/${directiveId}/cancel`)
       .set('Cookie', cookieAdmin)
       .send({});
@@ -171,7 +181,7 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel { force: true }', () => {
       [directiveId],
     );
 
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .post(`/v1/admin/upgrade/${directiveId}/cancel`)
       .set('Cookie', cookieAdmin)
       .send({ force: true });
@@ -192,7 +202,7 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel { force: true }', () => {
 
   it('force requires admin (viewer gets 403)', async () => {
     const directiveId = await issueDirectiveAll();
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .post(`/v1/admin/upgrade/${directiveId}/cancel`)
       .set('Cookie', cookieView)
       .send({ force: true });
@@ -204,19 +214,19 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel { force: true }', () => {
     await markInProgress(directiveId, 'inst-1');
 
     // Sanity: the wedge exists — a fresh directive 409s on the in_progress target.
-    const blocked = await supertest(app)
+    const blocked = await supertest(__server)
       .post('/v1/admin/upgrade')
       .set('Cookie', cookieAdmin)
       .send({ targetVersion: '0.3.1', scope: { type: 'installation', installationId: 'inst-1' }, confirmDowngrade: true });
     expect(blocked.status).toBe(409);
     expect(blocked.body.conflicts?.[0]?.conflictingDirectiveId).toBe(directiveId);
 
-    await supertest(app)
+    await supertest(__server)
       .post(`/v1/admin/upgrade/${directiveId}/cancel`)
       .set('Cookie', cookieAdmin)
       .send({ force: true });
 
-    const fresh = await supertest(app)
+    const fresh = await supertest(__server)
       .post('/v1/admin/upgrade')
       .set('Cookie', cookieAdmin)
       .send({ targetVersion: '0.3.1', scope: { type: 'installation', installationId: 'inst-1' }, confirmDowngrade: true });
@@ -226,11 +236,11 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel { force: true }', () => {
   it('is idempotent: repeating force-cancel returns cancelledCount=0, forcedCount=0', async () => {
     const directiveId = await issueDirectiveAll();
     await markInProgress(directiveId, 'inst-1');
-    await supertest(app)
+    await supertest(__server)
       .post(`/v1/admin/upgrade/${directiveId}/cancel`)
       .set('Cookie', cookieAdmin)
       .send({ force: true });
-    const again = await supertest(app)
+    const again = await supertest(__server)
       .post(`/v1/admin/upgrade/${directiveId}/cancel`)
       .set('Cookie', cookieAdmin)
       .send({ force: true });
@@ -242,13 +252,13 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel { force: true }', () => {
   it('a late fleet:upgrade:started cannot resurrect a cancelled target (would re-wedge)', async () => {
     const directiveId = await issueDirectiveAll();
     await markInProgress(directiveId, 'inst-1');
-    await supertest(app)
+    await supertest(__server)
       .post(`/v1/admin/upgrade/${directiveId}/cancel`)
       .set('Cookie', cookieAdmin)
       .send({ force: true });
 
     // The zombie agent comes back and reports "started" for the old directive.
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .post('/v1/events')
       .set('Authorization', `Bearer ${fleetTokenInst1}`)
       .send({ events: [upgradeEvent('fleet:upgrade:started', 'inst-1', directiveId)] });
@@ -261,7 +271,7 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel { force: true }', () => {
     expect(row!.state).toBe('cancelled');
 
     // And issuing a fresh directive for inst-1 still works.
-    const fresh = await supertest(app)
+    const fresh = await supertest(__server)
       .post('/v1/admin/upgrade')
       .set('Cookie', cookieAdmin)
       .send({ targetVersion: '0.3.1', scope: { type: 'installation', installationId: 'inst-1' }, confirmDowngrade: true });
@@ -271,14 +281,14 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel { force: true }', () => {
   it('a late terminal report (succeeded) remains authoritative over a force-cancel', async () => {
     const directiveId = await issueDirectiveAll();
     await markInProgress(directiveId, 'inst-1');
-    await supertest(app)
+    await supertest(__server)
       .post(`/v1/admin/upgrade/${directiveId}/cancel`)
       .set('Cookie', cookieAdmin)
       .send({ force: true });
 
     // The upgrade actually finished — the terminal report should win: it is
     // more truthful and, being terminal, cannot re-wedge issuance.
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .post('/v1/events')
       .set('Authorization', `Bearer ${fleetTokenInst1}`)
       .send({ events: [upgradeEvent('fleet:upgrade:succeeded', 'inst-1', directiveId, { resultVersion: '0.3.1' })] });
@@ -297,12 +307,12 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel { force: true }', () => {
   it('a late terminal failed report overwrites the force-cancel error_message with the real reason', async () => {
     const directiveId = await issueDirectiveAll();
     await markInProgress(directiveId, 'inst-1');
-    await supertest(app)
+    await supertest(__server)
       .post(`/v1/admin/upgrade/${directiveId}/cancel`)
       .set('Cookie', cookieAdmin)
       .send({ force: true });
 
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .post('/v1/events')
       .set('Authorization', `Bearer ${fleetTokenInst1}`)
       .send({ events: [upgradeEvent('fleet:upgrade:failed', 'inst-1', directiveId, { error: 'install.mjs exit 1' })] });
@@ -319,12 +329,12 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel { force: true }', () => {
   it('a late started is also blocked on plain-cancelled and terminal targets', async () => {
     const directiveId = await issueDirectiveAll();
     // inst-1: plain cancel while still pending.
-    await supertest(app)
+    await supertest(__server)
       .post(`/v1/admin/upgrade/${directiveId}/cancel`)
       .set('Cookie', cookieAdmin)
       .send({});
 
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .post('/v1/events')
       .set('Authorization', `Bearer ${fleetTokenInst1}`)
       .send({ events: [upgradeEvent('fleet:upgrade:started', 'inst-1', directiveId)] });
@@ -340,7 +350,7 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel { force: true }', () => {
       `UPDATE upgrade_directive_targets SET state = 'succeeded' WHERE directive_id = ? AND installation_id = 'inst-1'`,
       [directiveId],
     );
-    const r2 = await supertest(app)
+    const r2 = await supertest(__server)
       .post('/v1/events')
       .set('Authorization', `Bearer ${fleetTokenInst1}`)
       .send({ events: [upgradeEvent('fleet:upgrade:started', 'inst-1', directiveId)] });

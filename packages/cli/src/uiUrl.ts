@@ -6,6 +6,7 @@
  * the user-facing behaviour; the browser launch itself is environmental.
  */
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 const DEFAULT_UI_URL = 'http://localhost:5173';
@@ -20,7 +21,16 @@ export function resolveDashboardUrl(rootDir: string): string {
   try {
     logContent = fs.readFileSync(path.join(rootDir, '.agenfk', 'ui.log'), 'utf8');
   } catch {
-    // No log (or unreadable) — the default URL is still usable.
+    /*
+     * NO VITE LOG: the API is probably serving the UI itself (one origin,
+     * CGLAB-165), and its port is the one thing that knows where. Without this
+     * the fallback stayed 5173 - a port nothing serves any more once the API
+     * carries the bundle - and `agenfk ui` would open a browser at a dead URL.
+     */
+    try {
+      const port = fs.readFileSync(path.join(os.homedir(), '.agenfk', 'server-port'), 'utf8').trim();
+      if (port) return `http://localhost:${port}`;
+    } catch { /* no server either; the default is still usable */ }
     return DEFAULT_UI_URL;
   }
   const match = logContent.match(/http:\/\/localhost:\d+/);

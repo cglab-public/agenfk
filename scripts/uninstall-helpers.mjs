@@ -9,7 +9,7 @@
 
 // Every hook variant the installer writes. Used both for bin removal and for
 // filtering hook entries out of every client's settings/hooks file.
-export const HOOK_VARIANTS = ['agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook'];
+export const HOOK_VARIANTS = ['agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook', 'agenfk-run-hook'];
 
 // Bin filenames the installer drops into ~/.local/bin. The `agenfk` CLI symlink
 // plus all three hook variants. On Windows each is a `.cmd` shim.
@@ -18,9 +18,22 @@ export function hookBinFilenames(platform) {
   return ['agenfk', ...HOOK_VARIANTS].map((n) => `${n}${suffix}`);
 }
 
+// Not every hook has an Opencode plugin. The installer copies one only where a
+// `bin/<name>-opencode.mjs` source exists, and agenfk-run-hook has none — it is
+// a Claude Code PostToolUse hook. Deriving this list from HOOK_VARIANTS made the
+// uninstaller claim a plugin that is never written; harmless at runtime, because
+// removal is a no-op, but it is an assertion about the installed state and it
+// was false. The test cross-checks this against bin/*-opencode.mjs, so adding a
+// plugin without adding it here fails rather than silently leaking on uninstall.
+export const OPENCODE_PLUGIN_VARIANTS = [
+  'agenfk-gatekeeper',
+  'agenfk-mcp-enforcer',
+  'agenfk-pr-hook',
+];
+
 // Opencode plugin filenames the installer copies into ~/.config/opencode/plugins.
 export function opencodePluginFilenames() {
-  return HOOK_VARIANTS.map((n) => `${n}.mjs`);
+  return OPENCODE_PLUGIN_VARIANTS.map((n) => `${n}.mjs`);
 }
 
 // True if a single hook entry (from any client's hook array) references an AgenFK

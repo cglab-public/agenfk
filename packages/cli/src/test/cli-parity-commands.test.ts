@@ -187,6 +187,46 @@ describe('agenfk update-project <id>', () => {
       { headers: { 'x-agenfk-internal': 'test-verify-token' } },
     );
   });
+
+  it('PUTs projectRoot on the gated route too, never on the open one', async () => {
+    /*
+     * Same reasoning as verifyCommand, and the same bug (e60e20aa): the project
+     * root is the CWD `git add -A && git commit` runs in and that worktrees are
+     * cut from, so the open route refuses it. Without the header this command
+     * would exist and never work, which is worse than not having it.
+     */
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue('test-verify-token');
+    mockedAxios.put.mockResolvedValue({ data: { id: 'proj-1' } });
+
+    await program.parseAsync([
+      'node', 'agenfk', 'update-project', 'proj-1', '--project-root', '/tmp/some-repo',
+    ]);
+
+    expect(mockedAxios.put).toHaveBeenCalledWith(
+      `${API}/projects/proj-1/project-root`,
+      { projectRoot: '/tmp/some-repo' },
+      { headers: { 'x-agenfk-internal': 'test-verify-token' } },
+    );
+    // Nothing went to the open route: there was nothing else to send.
+    expect(mockedAxios.put.mock.calls.every(c => !String(c[0]).endsWith('/projects/proj-1'))).toBe(true);
+  });
+
+  it('resolves a relative project root against the CALLER cwd', async () => {
+    // The server has a different cwd entirely, so a relative path sent as
+    // typed would land somewhere the person cannot see.
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue('test-verify-token');
+    mockedAxios.put.mockResolvedValue({ data: { id: 'proj-1' } });
+
+    await program.parseAsync([
+      'node', 'agenfk', 'update-project', 'proj-1', '--project-root', './here',
+    ]);
+
+    const sent = mockedAxios.put.mock.calls.find(c => String(c[0]).endsWith('/project-root'))?.[1] as { projectRoot: string };
+    expect(sent.projectRoot.startsWith('/')).toBe(true);
+    expect(sent.projectRoot).not.toBe('./here');
+  });
 });
 
 // ---------------------------------------------------------------------------

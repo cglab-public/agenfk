@@ -1,9 +1,22 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import supertest from 'supertest';
+import { loginAs } from './helpers/loginAs';
 import { createHubApp } from '../server';
+import { drainApp } from './helpers/drainApp';
 import { openSqliteDb } from '../db/sqlite';
 import { createPasswordUser } from '../auth/password';
 import { decryptSecret } from '../crypto';
+
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
 
 /**
  * Per-org flow registry repo (CGLAB-138).
@@ -21,10 +34,6 @@ const SECRET = 'a'.repeat(64);
 const PUBLIC_REPO = 'cglab-public/agenfk-flows';
 const ORG_REPO = 'acme-corp/agenfk-flows';
 
-const loginAs = async (app: any, email: string, password: string) => {
-  const r = await supertest(app).post('/auth/login').send({ email, password });
-  return r.headers['set-cookie']?.[0] ?? '';
-};
 
 /** Two community flows, as the public registry serves them. */
 const COMMUNITY_FLOWS = [
@@ -150,6 +159,8 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
       db,
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
     await createPasswordUser(ctx.db, 'org-a', 'view@x', 'longenough1', 'viewer');
@@ -158,13 +169,15 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
   });
 
   afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(__server);
     await db.close();
     vi.unstubAllGlobals();
   });
 
   // ── GET /v1/admin/registry-config ─────────────────────────────────────────
   it('GET /v1/admin/registry-config defaults to the public repo with no token', async () => {
-    const r = await supertest(app).get('/v1/admin/registry-config').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/admin/registry-config').set('Cookie', cookieAdmin);
     expect(r.status).toBe(200);
     expect(r.body.repo).toBe(PUBLIC_REPO);
     expect(r.body.isPublic).toBe(true);
@@ -174,11 +187,11 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
   it('GET /v1/admin/registry-config NEVER returns the token, only that one exists', async () => {
     const gh = githubFake({ writeOk: true, privateRead: true });
     vi.stubGlobal('fetch', gh.fn);
-    await supertest(app).put('/v1/admin/registry-config')
+    await supertest(__server).put('/v1/admin/registry-config')
       .set('Cookie', cookieAdmin)
       .send({ repo: ORG_REPO, token: 'ghp_supersecret_token_123' });
 
-    const r = await supertest(app).get('/v1/admin/registry-config').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/admin/registry-config').set('Cookie', cookieAdmin);
     expect(JSON.stringify(r.body)).not.toContain('ghp_supersecret_token_123');
     expect(r.body.hasToken).toBe(true);
     // The shape must not leak the ciphertext either.
@@ -186,13 +199,13 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
   });
 
   it('GET /v1/admin/registry-config rejects non-admin', async () => {
-    const r = await supertest(app).get('/v1/admin/registry-config').set('Cookie', cookieView);
+    const r = await supertest(__server).get('/v1/admin/registry-config').set('Cookie', cookieView);
     expect(r.status).toBe(403);
   });
 
   // ── PUT /v1/admin/registry-config — validation ────────────────────────────
   it('PUT rejects a repo that is not owner/repo', async () => {
-    const r = await supertest(app).put('/v1/admin/registry-config')
+    const r = await supertest(__server).put('/v1/admin/registry-config')
       .set('Cookie', cookieAdmin).send({ repo: 'not-a-slug' });
     expect(r.status).toBe(400);
   });
@@ -201,7 +214,7 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
     // Mirrors the GH_NAME_RE guard on the local publish route: a leading dash
     // would be read as a flag by an argv-form git call.
     for (const bad of ['-evil/repo', 'owner/-evil', 'own er/repo', 'owner/repo;rm -rf /', 'a/b/c']) {
-      const r = await supertest(app).put('/v1/admin/registry-config')
+      const r = await supertest(__server).put('/v1/admin/registry-config')
         .set('Cookie', cookieAdmin).send({ repo: bad, token: 'ghp_x' });
       expect(r.status, bad).toBe(400);
     }
@@ -215,13 +228,13 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
     const gh = githubFake({ writeOk: true, privateRead: true });
     vi.stubGlobal('fetch', gh.fn);
     for (const bad of ['ma in', 'main?ref=other', '../../etc/passwd', '-main', 'main/', 'main\n']) {
-      const r = await supertest(app).put('/v1/admin/registry-config')
+      const r = await supertest(__server).put('/v1/admin/registry-config')
         .set('Cookie', cookieAdmin).send({ repo: ORG_REPO, token: 'ghp_x', branch: bad });
       expect(r.status, JSON.stringify(bad)).toBe(400);
       expect(r.body.error, JSON.stringify(bad)).toMatch(/branch/i);
     }
     expect(gh.calls).toHaveLength(0);
-    const after = await supertest(app).get('/v1/admin/registry-config').set('Cookie', cookieAdmin);
+    const after = await supertest(__server).get('/v1/admin/registry-config').set('Cookie', cookieAdmin);
     expect(after.body.branch).toBe('main');
   });
 
@@ -230,15 +243,15 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
     // lock admins out of the flow they most likely want.
     const gh = githubFake({ writeOk: true, privateRead: true });
     vi.stubGlobal('fetch', gh.fn);
-    const r = await supertest(app).put('/v1/admin/registry-config')
+    const r = await supertest(__server).put('/v1/admin/registry-config')
       .set('Cookie', cookieAdmin).send({ repo: ORG_REPO, token: 'ghp_x', branch: 'release/2.0' });
     expect(r.status, JSON.stringify(r.body)).toBe(200);
-    const after = await supertest(app).get('/v1/admin/registry-config').set('Cookie', cookieAdmin);
+    const after = await supertest(__server).get('/v1/admin/registry-config').set('Cookie', cookieAdmin);
     expect(after.body.branch).toBe('release/2.0');
   });
 
   it('PUT rejects a non-admin', async () => {
-    const r = await supertest(app).put('/v1/admin/registry-config')
+    const r = await supertest(__server).put('/v1/admin/registry-config')
       .set('Cookie', cookieView).send({ repo: ORG_REPO, token: 'ghp_x' });
     expect(r.status).toBe(403);
   });
@@ -248,14 +261,14 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
     const gh = githubFake({ writeOk: false, privateRead: true });
     vi.stubGlobal('fetch', gh.fn);
 
-    const r = await supertest(app).put('/v1/admin/registry-config')
+    const r = await supertest(__server).put('/v1/admin/registry-config')
       .set('Cookie', cookieAdmin).send({ repo: ORG_REPO, token: 'ghp_x' });
 
     expect(r.status).toBe(422);
     expect(r.body.error).toMatch(/write|access|probe/i);
 
     // The decisive assertion: the setting did NOT land.
-    const after = await supertest(app).get('/v1/admin/registry-config').set('Cookie', cookieAdmin);
+    const after = await supertest(__server).get('/v1/admin/registry-config').set('Cookie', cookieAdmin);
     expect(after.body.repo).toBe(PUBLIC_REPO);
     expect(after.body.hasToken).toBe(false);
     // And no flow was written into the rejected repo.
@@ -265,7 +278,7 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
   it('PUT fails the save when no token is available for a private target', async () => {
     const gh = githubFake({ writeOk: true, privateRead: true });
     vi.stubGlobal('fetch', gh.fn);
-    const r = await supertest(app).put('/v1/admin/registry-config')
+    const r = await supertest(__server).put('/v1/admin/registry-config')
       .set('Cookie', cookieAdmin).send({ repo: ORG_REPO });
     expect(r.status).toBe(400);
     expect(r.body.error).toMatch(/token/i);
@@ -276,7 +289,7 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
     const gh = githubFake({ writeOk: true, privateRead: true });
     vi.stubGlobal('fetch', gh.fn);
 
-    const r = await supertest(app).put('/v1/admin/registry-config')
+    const r = await supertest(__server).put('/v1/admin/registry-config')
       .set('Cookie', cookieAdmin).send({ repo: ORG_REPO, token: 'ghp_x' });
 
     expect(r.status).toBe(200);
@@ -300,7 +313,7 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
   it('PUT stores the token encrypted at rest, decryptable with the hub key', async () => {
     const gh = githubFake({ writeOk: true, privateRead: true });
     vi.stubGlobal('fetch', gh.fn);
-    await supertest(app).put('/v1/admin/registry-config')
+    await supertest(__server).put('/v1/admin/registry-config')
       .set('Cookie', cookieAdmin).send({ repo: ORG_REPO, token: 'ghp_supersecret_token_123' });
 
     const row = await ctx.db.get<{ registry_repo: string; registry_token_enc: string | null }>(
@@ -316,13 +329,13 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
   it('PUT does NOT re-copy when the repo is unchanged (copy is one-time)', async () => {
     const gh = githubFake({ writeOk: true, privateRead: true });
     vi.stubGlobal('fetch', gh.fn);
-    await supertest(app).put('/v1/admin/registry-config')
+    await supertest(__server).put('/v1/admin/registry-config')
       .set('Cookie', cookieAdmin).send({ repo: ORG_REPO, token: 'ghp_x' });
     const firstPuts = gh.calls.filter((c) => c.method === 'PUT').length;
     expect(firstPuts).toBeGreaterThan(0);
 
     gh.calls.length = 0;
-    const r = await supertest(app).put('/v1/admin/registry-config')
+    const r = await supertest(__server).put('/v1/admin/registry-config')
       .set('Cookie', cookieAdmin).send({ repo: ORG_REPO });
     expect(r.status).toBe(200);
     expect(r.body.copied).toBe(0);
@@ -339,7 +352,7 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
       files: { 'tdd-flow.json': '{ "name": "TDD Flow", "steps": [] }' },
     });
     vi.stubGlobal('fetch', gh.fn);
-    await supertest(app).put('/v1/admin/registry-config')
+    await supertest(__server).put('/v1/admin/registry-config')
       .set('Cookie', cookieAdmin).send({ repo: ORG_REPO, token: 'ghp_x' });
     // Reset to the half-populated state the switch left behind: the copy just
     // wrote lean-flow.json, but for this test we want the run to have STOPPED
@@ -348,7 +361,7 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
     delete gh.written['lean-flow.json'];
     gh.calls.length = 0;
 
-    const r = await supertest(app).post('/v1/admin/registry-config/sync')
+    const r = await supertest(__server).post('/v1/admin/registry-config/sync')
       .set('Cookie', cookieAdmin);
     expect(r.status).toBe(200);
     expect(r.body.copied).toBe(1);
@@ -370,11 +383,11 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
       },
     });
     vi.stubGlobal('fetch', gh.fn);
-    await supertest(app).put('/v1/admin/registry-config')
+    await supertest(__server).put('/v1/admin/registry-config')
       .set('Cookie', cookieAdmin).send({ repo: ORG_REPO, token: 'ghp_x' });
     gh.calls.length = 0;
 
-    const r = await supertest(app).post('/v1/admin/registry-config/sync')
+    const r = await supertest(__server).post('/v1/admin/registry-config/sync')
       .set('Cookie', cookieAdmin);
     expect(r.status).toBe(200);
     expect(r.body.copied).toBe(0);
@@ -420,7 +433,7 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
       throw new Error(`unexpected ${method} ${url}`);
     }));
 
-    const r = await supertest(app).put('/v1/admin/registry-config')
+    const r = await supertest(__server).put('/v1/admin/registry-config')
       .set('Cookie', cookieAdmin).send({ repo: ORG_REPO, token: 'ghp_x' });
     expect(r.status, JSON.stringify(r.body)).toBe(200);
     expect(r.body.copied).toBe(200);
@@ -429,7 +442,7 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
   });
 
   it('sync rejects a non-admin', async () => {
-    const r = await supertest(app).post('/v1/admin/registry-config/sync').set('Cookie', cookieView);
+    const r = await supertest(__server).post('/v1/admin/registry-config/sync').set('Cookie', cookieView);
     expect(r.status).toBe(403);
   });
 
@@ -437,11 +450,11 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
   it('PUT back to the public repo succeeds with NO reverse copy', async () => {
     const gh = githubFake({ writeOk: true, privateRead: true });
     vi.stubGlobal('fetch', gh.fn);
-    await supertest(app).put('/v1/admin/registry-config')
+    await supertest(__server).put('/v1/admin/registry-config')
       .set('Cookie', cookieAdmin).send({ repo: ORG_REPO, token: 'ghp_x' });
 
     gh.calls.length = 0;
-    const r = await supertest(app).put('/v1/admin/registry-config')
+    const r = await supertest(__server).put('/v1/admin/registry-config')
       .set('Cookie', cookieAdmin).send({ repo: PUBLIC_REPO });
     expect(r.status).toBe(200);
     expect(r.body.repo).toBe(PUBLIC_REPO);
@@ -457,13 +470,13 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
     // shown "community flows copied" indefinitely.
     const gh = githubFake({ writeOk: true, privateRead: true });
     vi.stubGlobal('fetch', gh.fn);
-    await supertest(app).put('/v1/admin/registry-config')
+    await supertest(__server).put('/v1/admin/registry-config')
       .set('Cookie', cookieAdmin).send({ repo: ORG_REPO, token: 'ghp_x' });
-    expect((await supertest(app).get('/v1/admin/registry-config').set('Cookie', cookieAdmin)).body.copiedAt).toBeTruthy();
+    expect((await supertest(__server).get('/v1/admin/registry-config').set('Cookie', cookieAdmin)).body.copiedAt).toBeTruthy();
 
-    await supertest(app).put('/v1/admin/registry-config')
+    await supertest(__server).put('/v1/admin/registry-config')
       .set('Cookie', cookieAdmin).send({ repo: PUBLIC_REPO });
-    const after = await supertest(app).get('/v1/admin/registry-config').set('Cookie', cookieAdmin);
+    const after = await supertest(__server).get('/v1/admin/registry-config').set('Cookie', cookieAdmin);
     expect(after.body.repo).toBe(PUBLIC_REPO);
     expect(after.body.copiedAt).toBeNull();
   });
@@ -472,11 +485,11 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
   it('GET /v1/admin/registry/flows reads the ORG repo once configured', async () => {
     const gh = githubFake({ writeOk: true, privateRead: true });
     vi.stubGlobal('fetch', gh.fn);
-    await supertest(app).put('/v1/admin/registry-config')
+    await supertest(__server).put('/v1/admin/registry-config')
       .set('Cookie', cookieAdmin).send({ repo: ORG_REPO, token: 'ghp_orgtoken_999' });
     gh.calls.length = 0;
 
-    const r = await supertest(app).get('/v1/admin/registry/flows').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/admin/registry/flows').set('Cookie', cookieAdmin);
     expect(r.status).toBe(200);
     const listing = gh.calls.find((c) => c.method === 'GET' && c.url.includes('/contents/flows?'));
     expect(listing!.url).toContain(ORG_REPO);
@@ -489,11 +502,11 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
     // token rides along, so this test fails against the old behaviour.
     const gh = githubFake({ writeOk: true, privateRead: true });
     vi.stubGlobal('fetch', gh.fn);
-    await supertest(app).put('/v1/admin/registry-config')
+    await supertest(__server).put('/v1/admin/registry-config')
       .set('Cookie', cookieAdmin).send({ repo: ORG_REPO, token: 'ghp_orgtoken_999' });
     gh.calls.length = 0;
 
-    const r = await supertest(app).get('/v1/admin/registry/flows').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/admin/registry/flows').set('Cookie', cookieAdmin);
     expect(r.status).toBe(200);
     expect(r.body.length).toBeGreaterThan(0);
     for (const c of gh.calls) {
@@ -504,7 +517,7 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
   it('reads fall back to ANONYMOUS public access when the org is on the public repo', async () => {
     const gh = githubFake({ writeOk: true });
     vi.stubGlobal('fetch', gh.fn);
-    const r = await supertest(app).get('/v1/admin/registry/flows').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/admin/registry/flows').set('Cookie', cookieAdmin);
     expect(r.status).toBe(200);
     const listing = gh.calls.find((c) => c.url.includes('/contents/flows?'));
     expect(listing!.url).toContain(PUBLIC_REPO);
@@ -514,7 +527,7 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
   it('POST /v1/admin/flows/install installs from the ORG repo', async () => {
     const gh = githubFake({ writeOk: true, privateRead: true });
     vi.stubGlobal('fetch', gh.fn);
-    await supertest(app).put('/v1/admin/registry-config')
+    await supertest(__server).put('/v1/admin/registry-config')
       .set('Cookie', cookieAdmin).send({ repo: ORG_REPO, token: 'ghp_x' });
 
     // Seed the org repo with a flow file the hub can read back.
@@ -526,7 +539,7 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
       ],
     });
 
-    const r = await supertest(app).post('/v1/admin/flows/install')
+    const r = await supertest(__server).post('/v1/admin/flows/install')
       .set('Cookie', cookieAdmin).send({ filename: 'lean-flow.json' });
     expect(r.status).toBe(201);
     const fetch_ = gh.calls.find((c) => c.url.includes('/contents/flows/lean-flow.json'));
@@ -538,7 +551,7 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
   it('a token stored for one org is never used for another', async () => {
     const gh = githubFake({ writeOk: true, privateRead: true });
     vi.stubGlobal('fetch', gh.fn);
-    await supertest(app).put('/v1/admin/registry-config')
+    await supertest(__server).put('/v1/admin/registry-config')
       .set('Cookie', cookieAdmin).send({ repo: ORG_REPO, token: 'ghp_orgA_token' });
 
     // Second org in the same hub must start clean.
@@ -546,7 +559,7 @@ describe('hub admin: per-org flow registry repo (CGLAB-138)', () => {
     await ctx.db.run('INSERT OR IGNORE INTO auth_config (org_id, password_enabled) VALUES (?, 1)', ['org-b']);
     await createPasswordUser(ctx.db, 'org-b', 'admin@b', 'longenough1', 'admin');
     const cookieB = await loginAs(app, 'admin@b', 'longenough1');
-    const r = await supertest(app).get('/v1/admin/registry-config').set('Cookie', cookieB);
+    const r = await supertest(__server).get('/v1/admin/registry-config').set('Cookie', cookieB);
     expect(r.body.repo).toBe(PUBLIC_REPO);
     expect(r.body.hasToken).toBe(false);
   });
@@ -582,6 +595,8 @@ describe('hub admin: browse community alongside the org registry', () => {
       defaultOrgId: 'org-a', db,
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
     await createPasswordUser(ctx.db, 'org-a', 'view@x', 'longenough1', 'viewer');
@@ -598,7 +613,7 @@ describe('hub admin: browse community alongside the org registry', () => {
   const switchToPrivate = async () => {
     const gh = githubFake({ writeOk: true, privateRead: true });
     vi.stubGlobal('fetch', gh.fn);
-    const r = await supertest(app).put('/v1/admin/registry-config')
+    const r = await supertest(__server).put('/v1/admin/registry-config')
       .set('Cookie', cookieAdmin).send({ repo: ORG_REPO, token: 'ghp_x' });
     expect(r.status, JSON.stringify(r.body)).toBe(200);
     gh.calls.length = 0; // keep only post-switch traffic
@@ -607,7 +622,7 @@ describe('hub admin: browse community alongside the org registry', () => {
 
   it('source=community lists the PUBLIC repo even when the org is on a private one', async () => {
     const gh = await switchToPrivate();
-    const r = await supertest(app).get('/v1/admin/registry/flows?source=community').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/admin/registry/flows?source=community').set('Cookie', cookieAdmin);
     expect(r.status).toBe(200);
     expect(r.body.map((f: any) => f.name).sort()).toEqual(['Lean Flow', 'TDD Flow']);
     expect(gh.calls.filter((c) => c.url.includes('/contents/flows?') && c.url.includes(PUBLIC_REPO))).toHaveLength(1);
@@ -619,7 +634,7 @@ describe('hub admin: browse community alongside the org registry', () => {
     // public community repo hands that credential to a repo the org has no
     // relationship with, and writes it into GitHub's access logs.
     const gh = await switchToPrivate();
-    await supertest(app).get('/v1/admin/registry/flows?source=community').set('Cookie', cookieAdmin);
+    await supertest(__server).get('/v1/admin/registry/flows?source=community').set('Cookie', cookieAdmin);
     const publicCalls = gh.calls.filter((c) => c.url.includes(PUBLIC_REPO));
     expect(publicCalls.length).toBeGreaterThan(0);
     for (const c of publicCalls) expect(c.auth, `${c.method} ${c.url}`).toBeUndefined();
@@ -627,7 +642,7 @@ describe('hub admin: browse community alongside the org registry', () => {
 
   it('source=org lists the org repo, authenticated', async () => {
     const gh = await switchToPrivate();
-    const r = await supertest(app).get('/v1/admin/registry/flows?source=org').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/admin/registry/flows?source=org').set('Cookie', cookieAdmin);
     expect(r.status).toBe(200);
     const listing = gh.calls.find((c) => c.url.includes(ORG_REPO) && c.url.includes('/contents/flows?'));
     expect(listing).toBeDefined();
@@ -637,7 +652,7 @@ describe('hub admin: browse community alongside the org registry', () => {
   it('no source param behaves exactly as source=org', async () => {
     // Back-compat: the shipped hub-ui client sends no source at all.
     const gh = await switchToPrivate();
-    const plain = await supertest(app).get('/v1/admin/registry/flows').set('Cookie', cookieAdmin);
+    const plain = await supertest(__server).get('/v1/admin/registry/flows').set('Cookie', cookieAdmin);
     expect(plain.status).toBe(200);
     expect(plain.body.length).toBeGreaterThan(0);
     expect(gh.calls.some((c) => c.url.includes(ORG_REPO))).toBe(true);
@@ -646,7 +661,7 @@ describe('hub admin: browse community alongside the org registry', () => {
   it('source=community on a PUBLIC org lists the public repo (same thing, no error)', async () => {
     const gh = githubFake({ writeOk: true, privateRead: true });
     vi.stubGlobal('fetch', gh.fn);
-    const r = await supertest(app).get('/v1/admin/registry/flows?source=community').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/admin/registry/flows?source=community').set('Cookie', cookieAdmin);
     expect(r.status).toBe(200);
     expect(r.body.map((f: any) => f.name).sort()).toEqual(['Lean Flow', 'TDD Flow']);
   });
@@ -656,7 +671,7 @@ describe('hub admin: browse community alongside the org registry', () => {
     // one: a stale or typo'd client would quietly show private flows under a
     // "Community" heading — the exact confusion this feature exists to remove.
     await switchToPrivate();
-    const r = await supertest(app).get('/v1/admin/registry/flows?source=other').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/admin/registry/flows?source=other').set('Cookie', cookieAdmin);
     expect(r.status).toBe(400);
     expect(r.body.error).toMatch(/source/i);
   });
@@ -666,7 +681,7 @@ describe('hub admin: browse community alongside the org registry', () => {
     // hub would fetch it with the org's stored PAT. Only the two names the
     // server already knows are reachable.
     const gh = await switchToPrivate();
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .get('/v1/admin/registry/flows?source=org&repo=victim/corp-secrets').set('Cookie', cookieAdmin);
     expect(r.status).toBe(200);
     const listings = gh.calls.filter((c) => c.url.includes('/contents/flows'));
@@ -681,7 +696,7 @@ describe('hub admin: browse community alongside the org registry', () => {
     // Defence in depth: `?source=victim/corp-secrets` must not be read as a
     // repo. source is an enum, never a name.
     const gh = await switchToPrivate();
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .get('/v1/admin/registry/flows?source=victim%2Fcorp-secrets').set('Cookie', cookieAdmin);
     expect(r.status).toBe(400);
     expect(gh.calls.some((c) => c.url.includes('victim'))).toBe(false);
@@ -689,7 +704,7 @@ describe('hub admin: browse community alongside the org registry', () => {
 
   it('source=community install works while the org is on a private repo', async () => {
     await switchToPrivate();
-    const r = await supertest(app).post('/v1/admin/flows/install')
+    const r = await supertest(__server).post('/v1/admin/flows/install')
       .set('Cookie', cookieAdmin).send({ filename: 'tdd-flow.json', source: 'community' });
     expect(r.status, JSON.stringify(r.body)).toBe(201);
     expect(r.body.name).toBe('TDD Flow');
@@ -697,7 +712,7 @@ describe('hub admin: browse community alongside the org registry', () => {
 
   it('source=community install does not send the org token to the public repo', async () => {
     const gh = await switchToPrivate();
-    const r = await supertest(app).post('/v1/admin/flows/install')
+    const r = await supertest(__server).post('/v1/admin/flows/install')
       .set('Cookie', cookieAdmin).send({ filename: 'tdd-flow.json', source: 'community' });
     expect(r.status, JSON.stringify(r.body)).toBe(201);
     for (const c of gh.calls.filter((c) => c.url.includes(PUBLIC_REPO))) {
@@ -709,23 +724,23 @@ describe('hub admin: browse community alongside the org registry', () => {
     // After the switch the org repo holds the copied flows, so the shipped
     // hub-ui client keeps working untouched.
     await switchToPrivate();
-    const r = await supertest(app).post('/v1/admin/flows/install')
+    const r = await supertest(__server).post('/v1/admin/flows/install')
       .set('Cookie', cookieAdmin).send({ filename: 'tdd-flow.json' });
     expect(r.status, JSON.stringify(r.body)).toBe(201);
   });
 
   it('install rejects an unknown source', async () => {
     await switchToPrivate();
-    const r = await supertest(app).post('/v1/admin/flows/install')
+    const r = await supertest(__server).post('/v1/admin/flows/install')
       .set('Cookie', cookieAdmin).send({ filename: 'tdd-flow.json', source: 'victim' });
     expect(r.status).toBe(400);
   });
 
   it('source is rejected for a non-admin on both routes', async () => {
     await switchToPrivate();
-    const g = await supertest(app).get('/v1/admin/registry/flows?source=community').set('Cookie', cookieView);
+    const g = await supertest(__server).get('/v1/admin/registry/flows?source=community').set('Cookie', cookieView);
     expect(g.status).toBe(403);
-    const p = await supertest(app).post('/v1/admin/flows/install')
+    const p = await supertest(__server).post('/v1/admin/flows/install')
       .set('Cookie', cookieView).send({ filename: 'tdd-flow.json', source: 'community' });
     expect(p.status).toBe(403);
   });

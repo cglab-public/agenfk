@@ -13,9 +13,21 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import supertest from 'supertest';
+import { loginAs } from './helpers/loginAs';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { drainApp } from './helpers/drainApp';
+
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-merge-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -27,10 +39,6 @@ const cleanup = () => {
   }
 };
 
-const loginAs = async (app: any, email: string, password: string) => {
-  const r = await supertest(app).post('/auth/login').send({ email, password });
-  return r.headers['set-cookie']?.[0] ?? '';
-};
 
 describe('user_key merge admin API', () => {
   let app: any;
@@ -62,7 +70,7 @@ describe('user_key merge admin API', () => {
     );
 
   const merge = (from: string, to: string, cookie = cookieAdmin) =>
-    supertest(app).post('/v1/admin/user-keys/merge').set('Cookie', cookie).send({ from, to });
+    supertest(__server).post('/v1/admin/user-keys/merge').set('Cookie', cookie).send({ from, to });
 
   const rollup = (userKey: string, day: string) =>
     ctx.db.get(
@@ -84,6 +92,8 @@ describe('user_key merge admin API', () => {
       defaultOrgId: 'org-a',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
     await createPasswordUser(ctx.db, 'org-a', 'view@x', 'longenough1', 'viewer');
@@ -93,14 +103,14 @@ describe('user_key merge admin API', () => {
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
   describe('authz', () => {
     it('rejects unauthenticated requests', async () => {
-      const r = await supertest(app).post('/v1/admin/user-keys/merge').send({ from: 'a@x', to: 'b@x' });
+      const r = await supertest(__server).post('/v1/admin/user-keys/merge').send({ from: 'a@x', to: 'b@x' });
       expect(r.status).toBe(401);
     });
 
@@ -342,7 +352,7 @@ describe('user_key merge admin API', () => {
       await addEvent('e1', 'dev', '2026-02-01');
       await ctx.db.run('UPDATE events SET user_key = ? WHERE event_id = ?', ['dev@acme.com', 'e1']);
 
-      const r = await supertest(app)
+      const r = await supertest(__server)
         .post('/v1/admin/rollups/recompute')
         .set('Cookie', cookieAdmin)
         .send({ since: '2026-01-01' });
@@ -353,18 +363,18 @@ describe('user_key merge admin API', () => {
 
     it('accepts full: true', async () => {
       await addEvent('e1', 'dev@acme.com', '2025-01-01');
-      const r = await supertest(app).post('/v1/admin/rollups/recompute').set('Cookie', cookieAdmin).send({ full: true });
+      const r = await supertest(__server).post('/v1/admin/rollups/recompute').set('Cookie', cookieAdmin).send({ full: true });
       expect(r.status).toBe(200);
       expect(r.body.days).toBe(1);
     });
 
     it('rejects a malformed since', async () => {
-      const r = await supertest(app).post('/v1/admin/rollups/recompute').set('Cookie', cookieAdmin).send({ since: 'yesterday' });
+      const r = await supertest(__server).post('/v1/admin/rollups/recompute').set('Cookie', cookieAdmin).send({ since: 'yesterday' });
       expect(r.status).toBe(400);
     });
 
     it('rejects a viewer', async () => {
-      const r = await supertest(app).post('/v1/admin/rollups/recompute').set('Cookie', cookieView).send({ full: true });
+      const r = await supertest(__server).post('/v1/admin/rollups/recompute').set('Cookie', cookieView).send({ full: true });
       expect(r.status).toBe(403);
     });
   });

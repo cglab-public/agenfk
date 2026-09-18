@@ -18,6 +18,8 @@ import { getApiUrl } from "@agenfk/telemetry";
 import { createApiClient } from "./apiClient.js";
 import { execSync, execFileSync, spawnSync, spawn } from "child_process";
 import { getActiveStepItems, resolveStepContract, renderStepContract } from "./gatekeeper-utils";
+import { resolveBranchHint } from './branchHint';
+import { dispatchDriftNotice, driftTargets } from '@agenfk/core';
 import { buildUpgradeNotice } from "./mcpUpgradeNotice";
 
 // Load the install-time secret token — must match what the API server loaded.
@@ -751,9 +753,11 @@ async function callToolHandler(request: any): Promise<any> {
           return { isError: true, content: [{ type: "text", text: `❌ CONFIG ERROR: No AgEnFK project found in the current directory, and no itemId was provided.` }] };
         }
 
-        // Validate that the project exists in the database
+        // Validate that the project exists in the database. The record is
+        // KEPT: its projectRoot is where base drift is measured from.
+        let project: any;
         try {
-          await api.get(`/projects/${effectiveProjectId}`);
+          project = (await api.get(`/projects/${effectiveProjectId}`)).data;
         } catch (error: any) {
           return { isError: true, content: [{ type: "text", text: `❌ CONFIG ERROR: Project ID [${effectiveProjectId}] does not exist in the database.` }] };
         }
@@ -814,28 +818,39 @@ async function callToolHandler(request: any): Promise<any> {
           'call validate_progress(itemId, evidence)',
         );
 
-        // Branch hint
-        let branchHint = '';
-        if (task.branchName) {
-          try {
-            // execFileSync with an argument array, never a template literal in a
-            // shell: branchName is stored data, and this runs implicitly on every
-            // gatekeeper call, so a name like `main; rm -rf ~` must not be able to
-            // break out of the command. `--` stops it being read as an option.
-            execFileSync('git', ['rev-parse', '--verify', '--', task.branchName], { stdio: 'ignore' });
-            const currentBranch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' }).trim();
-            if (currentBranch !== task.branchName) {
-              execFileSync('git', ['checkout', '--', task.branchName], { stdio: 'ignore' });
-              branchHint = `\n🔀 Switched to branch '${task.branchName}'.`;
-            } else {
-              branchHint = `\n🔀 Already on branch '${task.branchName}'.`;
-            }
-          } catch {
-            branchHint = `\n⚠️ Branch '${task.branchName}' does not exist locally. Work on the current branch or ask the user to create it.`;
-          }
-        }
+        /*
+         * In the ITEM'S tree, never the server's own cwd.
+         *
+         * These three git commands used to run with no cwd and no -C, so the
+         * gatekeeper read the branch of one repository and checked out in
+         * another - whichever the server process was started in. Extracted to
+         * branchHint.ts, where the cwd can be asserted rather than assumed;
+         * see the header there for why a write in the wrong tree is worse than
+         * a read in one.
+         */
+        const branchHint = resolveBranchHint(task, {
+          run: args => execFileSync('git', args, { encoding: 'utf8' }),
+        });
 
-        return { content: [{ type: "text", text: `✅ AUTHORIZED.\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${branchHint}${exitCriteriaHint}` }] };
+        /*
+         * The base moved underneath the agent (CGLAB-197).
+         *
+         * The gatekeeper is where this lands because it is the one piece of
+         * server-authored text that reaches the agent's context before it
+         * starts editing - Orca injects the same block into the worker's
+         * prompt preamble at dispatch, and we have no worker-prompt builder.
+         *
+         * ADVISORY ONLY. `measureBaseDrift` also returns `shouldWait`, and
+         * that threshold belongs to the DISPATCHER (the fan-out sheet), not
+         * here: a gate that refused every edit on a stale base would stop work
+         * for a condition the module itself calls mostly harmless.
+         */
+        const driftTarget = driftTargets(task, allItems, project?.projectRoot);
+        const driftNotice = driftTarget
+          ? dispatchDriftNotice({ ...driftTarget, deps: { run: args => execFileSync('git', args, { encoding: 'utf8' }) } })
+          : '';
+
+        return { content: [{ type: "text", text: `✅ AUTHORIZED.\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${branchHint}${exitCriteriaHint}${driftNotice}` }] };
       }
       case "analyze_request": {
         const { request: userRequest } = z.object({ request: z.string() }).parse(request.params.arguments);

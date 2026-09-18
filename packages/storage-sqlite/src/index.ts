@@ -13,6 +13,10 @@ import {
   TokenEvent,
   TokenEventQuery,
   IngestionState,
+  AppSettings,
+  DEFAULT_APP_SETTINGS,
+  isLegalSettingValue,
+  TerminalSession,
   Pr,
   PrSizing,
   AgentRun,
@@ -118,6 +122,29 @@ export class SQLiteStorageProvider implements StorageProvider {
       CREATE INDEX IF NOT EXISTS idx_token_events_session ON token_events(session_id);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_token_events_dedup
         ON token_events(client, source_path, source_offset);
+      CREATE TABLE IF NOT EXISTS terminal_sessions (
+        id TEXT PRIMARY KEY,
+        item_id TEXT NOT NULL,
+        project_id TEXT,
+        agent_id TEXT NOT NULL,
+        agent_session_id TEXT,
+        -- Part of the session IDENTITY, not decoration (BUG 63fcf702).
+        --
+        -- persist decides whether the terminal runs inside tmux, and
+        -- auto_approve is baked into the tmux session NAME, so a restore that
+        -- does not know them cannot find the session that survived: it looked
+        -- for the ask variant of a session created as auto, found nothing, and
+        -- started a second agent beside the one still running.
+        persist INTEGER NOT NULL DEFAULT 0,
+        auto_approve INTEGER NOT NULL DEFAULT 0,
+        opened_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_terminal_sessions_item ON terminal_sessions(item_id);
+      CREATE INDEX IF NOT EXISTS idx_terminal_sessions_project ON terminal_sessions(project_id);
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS ingestion_state (
         source_path TEXT PRIMARY KEY,
         last_offset INTEGER NOT NULL,
@@ -169,6 +196,7 @@ export class SQLiteStorageProvider implements StorageProvider {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_run_events_dedup ON run_events(run_id, seq);
     `);
     this.migrateFlowsTable();
+    this.migrateTerminalSessionsTable();
   }
 
   // ── Hub outbox helpers ─────────────────────────────────────────────────────
@@ -311,6 +339,27 @@ export class SQLiteStorageProvider implements StorageProvider {
     return Number(result.changes ?? 0);
   }
 
+  /**
+   * Add `persist` / `auto_approve` to `terminal_sessions` when an older
+   * database lacks them (BUG 63fcf702).
+   *
+   * Plain ALTER with a default rather than a rebuild: both are new columns
+   * with a safe zero value, and rows written before this existed genuinely do
+   * not know their session's identity — defaulting them to "not persisted,
+   * prompts on" is the conservative answer, not a guess dressed up as data.
+   */
+  private migrateTerminalSessionsTable(): void {
+    const columns = (
+      this.database.prepare('PRAGMA table_info(terminal_sessions)').all() as { name: string }[]
+    ).map((c) => c.name);
+    if (!columns.includes('persist')) {
+      this.database.exec('ALTER TABLE terminal_sessions ADD COLUMN persist INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!columns.includes('auto_approve')) {
+      this.database.exec('ALTER TABLE terminal_sessions ADD COLUMN auto_approve INTEGER NOT NULL DEFAULT 0');
+    }
+  }
+
   /** Remove stale `project_id` column from `flows` if present (recreate via rename). */
   private migrateFlowsTable(): void {
     const columns = (
@@ -414,6 +463,19 @@ export class SQLiteStorageProvider implements StorageProvider {
     }
 
     const updated = { ...existing, ...updates, updatedAt: new Date() } as AgEnFKItem;
+    /*
+     * A card that reached DONE has no failed-attempt history to carry
+     * (CGLAB-202). Reaching the end is the one event that means the work
+     * landed, so it is the one that clears - a run ending `done` does not,
+     * because the hook closes runs `done` on SessionEnd whether or not the
+     * attempt succeeded.
+     *
+     * Cleared HERE because every path to DONE routes through this method:
+     * validate_progress, its sibling propagation, and an internal PUT.
+     */
+    if (updated.status === Status.DONE && existing.status !== Status.DONE) {
+      updated.failureCount = 0;
+    }
     this.database.prepare(
       'UPDATE items SET project_id = ?, type = ?, status = ?, parent_id = ?, data = ? WHERE id = ?'
     ).run(updated.projectId, updated.type, updated.status, updated.parentId ?? null, JSON.stringify(updated), id);
@@ -422,6 +484,11 @@ export class SQLiteStorageProvider implements StorageProvider {
 
   async deleteItem(id: string): Promise<boolean> {
     const result = this.database.prepare('DELETE FROM items WHERE id = ?').run(id) as { changes: number };
+    // The card's remembered terminals go with it. Left behind, they would make
+    // the desktop try to resolve a worktree for a card that no longer exists —
+    // at app startup, which is the least helpful moment for it to fail, and on
+    // every launch from then on.
+    this.database.prepare('DELETE FROM terminal_sessions WHERE item_id = ?').run(id);
     return result.changes > 0;
   }
 
@@ -685,14 +752,101 @@ export class SQLiteStorageProvider implements StorageProvider {
     if (query.status !== undefined) { where.push('status = ?'); params.push(query.status); }
     let sql = 'SELECT * FROM agent_runs';
     if (where.length) sql += ' WHERE ' + where.join(' AND ');
-    sql += ' ORDER BY started_at ASC';
+    /*
+     * Newest first, because the LIMIT applies AFTER the sort.
+     *
+     * Ordered ASC, a capped response was the OLDEST runs ever recorded — so on
+     * a machine with more history than the page size, an agent started right
+     * now was never in the answer, and the sessions rail showed work that
+     * finished weeks ago instead. Runs also stay `running` forever (nothing
+     * sends the closing update), so those old rows never aged out of the
+     * filter on their own.
+     */
+    // rowid breaks ties. started_at has millisecond resolution, so a burst of
+    // runs recorded in the same millisecond would otherwise come back in an
+    // arbitrary order — and with a LIMIT applied, an arbitrary SUBSET.
+    sql += ' ORDER BY started_at DESC, rowid DESC';
     if (query.limit !== undefined) { sql += ' LIMIT ?'; params.push(query.limit); }
     const rows = this.database.prepare(sql).all(...params) as any[];
-    return rows.map((r) => this.mapAgentRunRow(r));
+    // Oldest-first for the caller: the page is chosen from the newest end, but
+    // consumers that render a sequence still want it in the order it happened.
+    return rows.map((r) => this.mapAgentRunRow(r)).reverse();
   }
 
-  async appendRunEvent(event: RunEvent): Promise<void> {
-    this.database.prepare(
+  /**
+   * Append an event and report WHERE it landed.
+   *
+   * Returning the position is not bookkeeping. The number is assigned inside
+   * the insert — correctly, because computing it in the route raced — but that
+   * left the caller holding an object whose `seq` is still undefined, which is
+   * the object the server then emits over the socket. Every live consumer
+   * compares events by `seq`, so a stream of undefineds collapses to one
+   * event: a Claude Code session showed a single line in the Runs panel and
+   * then nothing, for as long as it ran.
+   *
+   * Null means nothing was written. The insert is `INSERT OR IGNORE` against
+   * `UNIQUE(run_id, seq)`, so a repeat is silently dropped — and reporting a
+   * position for a row that does not exist would have the caller broadcast a
+   * duplicate to every open panel.
+   */
+  async appendRunEvent(event: RunEvent): Promise<number | null> {
+    /*
+     * The position is assigned INSIDE the insert when the caller did not give
+     * one, and that is the whole fix.
+     *
+     * It used to be computed in the route as `(await listRunEvents(id)).length`
+     * — a read, an await, then a write. Two events in flight computed the SAME
+     * number, and the insert is `INSERT OR IGNORE` against
+     * `UNIQUE(run_id, seq)`, so the second was dropped SILENTLY: the API
+     * answered 201 and emitted run:event, and the UI showed an event that
+     * vanished on the next refresh.
+     *
+     * It survived because the pi tailer is a serialized loop that never
+     * produced two at once. The Claude Code hook makes concurrency ordinary.
+     *
+     * Zero-based, matching what `.length` produced before, so existing rows
+     * and existing readers are unaffected.
+     *
+     * A SELECT-based insert is atomic within the statement, so no two writers
+     * can read the same maximum. It also replaces an O(n) read of every event
+     * on the run with a single indexed aggregate.
+     */
+    if (event.seq === undefined || event.seq === null) {
+      const written = this.database.prepare(
+        `INSERT OR IGNORE INTO run_events
+          (id, run_id, seq, ts, lane, kind, tool, text, payload, tokens)
+         SELECT ?, ?, COALESCE(MAX(seq) + 1, 0), ?, ?, ?, ?, ?, ?, ?
+           FROM run_events WHERE run_id = ?`
+      ).run(
+        event.id,
+        event.runId,
+        event.ts,
+        event.lane,
+        event.kind,
+        event.tool ?? null,
+        event.text ?? null,
+        // Already a string by the time it reaches storage: the route
+        // serialises it. Stringifying again double-encoded it, so a reader
+        // doing JSON.parse got back a string instead of the object.
+        event.payload ?? null,
+        event.tokens ?? null,
+        event.runId,
+      );
+      /*
+       * Read back by ID, not by recomputing the maximum. Another writer may
+       * have appended in between, and `MAX(seq)` would then report their
+       * position as ours. The id is the only thing that identifies this row.
+       */
+      if (written.changes === 0) return null;
+      const row = this.database
+        .prepare('SELECT seq FROM run_events WHERE id = ?')
+        .get(event.id) as { seq: number } | undefined;
+      return row?.seq ?? null;
+    }
+
+    // An explicit position wins. The pi tailer knows the real order from the
+    // transcript, and that order is better than arrival order.
+    const explicit = this.database.prepare(
       `INSERT OR IGNORE INTO run_events
         (id, run_id, seq, ts, lane, kind, tool, text, payload, tokens)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -705,10 +859,18 @@ export class SQLiteStorageProvider implements StorageProvider {
       event.kind,
       event.tool ?? null,
       event.text ?? null,
+      // Passed through, exactly as the auto-position branch does. It is
+      // already a string - the route serialises it - and stringifying again
+      // stored a string OF a string, so a reader doing JSON.parse got the
+      // text back instead of the object. The two branches disagreed about
+      // the same field, and this is the one the pi tailer always took.
       event.payload ?? null,
       event.tokens ?? null,
     );
+    // The position asked for, or nothing when the row was already there.
+    return explicit.changes === 0 ? null : event.seq;
   }
+
 
   async listRunEvents(runId: string): Promise<RunEvent[]> {
     const rows = this.database.prepare(
@@ -729,6 +891,114 @@ export class SQLiteStorageProvider implements StorageProvider {
   }
 
   // ── Observability: ingestion state (resumable file-watcher offsets) ────────
+
+  /**
+   * Installation-wide settings, as stored values layered over the defaults.
+   *
+   * Key/value rather than one column per setting: a new setting then needs no
+   * migration, and a row written by a NEWER version that this one does not know
+   * about is ignored on read instead of crashing — which matters because the
+   * desktop app, the CLI and the server can be different builds against the
+   * same database.
+   *
+   * Values are JSON so a boolean stays a boolean. Storing '1'/'0' or 'true' as
+   * bare text is how a preference comes back as a truthy string and inverts
+   * itself.
+   */
+  async listTerminalSessions(projectId?: string): Promise<TerminalSession[]> {
+    const rows = (projectId
+      ? this.database.prepare(
+          'SELECT * FROM terminal_sessions WHERE project_id = ? ORDER BY opened_at'
+        ).all(projectId)
+      : this.database.prepare('SELECT * FROM terminal_sessions ORDER BY opened_at').all()
+    ) as Array<Record<string, string | null>>;
+    return rows.map(r => ({
+      id: r.id as string,
+      itemId: r.item_id as string,
+      projectId: r.project_id ?? undefined,
+      agentId: r.agent_id as string,
+      // null and undefined both mean "cannot resume this one"; normalised here
+      // so no caller has to know which of the two it got back.
+      agentSessionId: r.agent_session_id ?? undefined,
+      // SQLite has no boolean. Compared against 1 rather than coerced, so the
+      // string "0" a legacy row might hold cannot come back as true.
+      persist: Number(r.persist) === 1,
+      autoApprove: Number(r.auto_approve) === 1,
+      openedAt: r.opened_at as string,
+    }));
+  }
+
+  async recordTerminalSession(session: TerminalSession): Promise<TerminalSession> {
+    this.database.prepare(
+      'INSERT INTO terminal_sessions ' +
+      '(id, item_id, project_id, agent_id, agent_session_id, persist, auto_approve, opened_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(
+      session.id, session.itemId, session.projectId ?? null,
+      session.agentId, session.agentSessionId ?? null,
+      session.persist ? 1 : 0, session.autoApprove ? 1 : 0,
+      session.openedAt,
+    );
+    return session;
+  }
+
+  async forgetTerminalSession(id: string): Promise<void> {
+    this.database.prepare('DELETE FROM terminal_sessions WHERE id = ?').run(id);
+  }
+
+  async getSettings(): Promise<AppSettings> {
+    const rows = this.database.prepare('SELECT key, value FROM app_settings')
+      .all() as Array<{ key: string; value: string }>;
+    // Object.create(null), not {}: a row keyed '__proto__' would otherwise set
+    // the prototype instead of an own property, and the later lookups would
+    // resolve THROUGH it — turning a stored row into a way to flip settings
+    // this function claims to ignore. Needs direct database access to exploit,
+    // but the claim in the comment above should be true, not nearly true.
+    const stored: Record<string, unknown> = Object.create(null);
+    for (const row of rows) {
+      // A corrupt row must not take the whole settings read down with it; the
+      // default is a safe answer and the user can set it again.
+      try { stored[row.key] = JSON.parse(row.value); } catch { /* keep the default */ }
+    }
+    const settings = { ...DEFAULT_APP_SETTINGS };
+    // Only keys the CURRENT build knows. Anything else in the table belongs to
+    // another version and is none of this one's business.
+    for (const key of Object.keys(DEFAULT_APP_SETTINGS) as Array<keyof AppSettings>) {
+      const value = stored[key];
+      // `isLegalSettingValue`, not a `typeof` comparison. They agree for every
+      // boolean; they part company on an enum, where `typeof` accepts any
+      // string at all. A row saying soundTiming is 'whenever' — written by an
+      // older build, a newer one, or a hand-edited database — would otherwise
+      // come back out and behave as whichever branch the UI falls through to.
+      if (isLegalSettingValue(key, value)) {
+        (settings[key] as unknown) = value;
+      }
+    }
+    return settings;
+  }
+
+  async updateSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
+    const write = this.database.prepare(
+      'INSERT INTO app_settings (key, value) VALUES (?, ?) ' +
+      'ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+    );
+    // A transaction so a multi-key write cannot land half-applied and leave the
+    // user with a settings screen showing a state they never chose. Written as
+    // explicit BEGIN/COMMIT because the driver here is node:sqlite's
+    // DatabaseSync, which has no better-sqlite3-style transaction() wrapper.
+    this.database.exec('BEGIN');
+    try {
+      for (const [key, value] of Object.entries(patch)) {
+        if (value === undefined) continue;
+        write.run(key, JSON.stringify(value));
+      }
+      this.database.exec('COMMIT');
+    } catch (err) {
+      this.database.exec('ROLLBACK');
+      throw err;
+    }
+    return this.getSettings();
+  }
 
   async getIngestionState(sourcePath: string): Promise<IngestionState | null> {
     const row = this.database.prepare(

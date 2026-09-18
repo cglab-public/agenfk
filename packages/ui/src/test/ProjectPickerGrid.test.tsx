@@ -5,12 +5,14 @@ import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-libra
 import { KanbanBoard } from '../components/KanbanBoard';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../ThemeContext';
+import { ActiveProjectProvider } from '../ActiveProject';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api } from '../api';
 
 // Mock socket.io-client
 vi.mock('socket.io-client', () => ({
   io: vi.fn(() => ({
+    connect: vi.fn(),
     on: vi.fn(),
     off: vi.fn(),
     emit: vi.fn(),
@@ -111,9 +113,11 @@ describe('ProjectPickerGrid', () => {
     });
     const wrapper = ({ children }: { children: React.ReactNode }) => (
       <QueryClientProvider client={queryClient}>
+    <ActiveProjectProvider>
         <ThemeProvider>
           {children}
         </ThemeProvider>
+        </ActiveProjectProvider>
       </QueryClientProvider>
     );
     render(<KanbanBoard />, { wrapper });

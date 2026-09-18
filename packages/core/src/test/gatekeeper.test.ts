@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   getActiveStepItems,
+  resolveStepContract,
   decideGatekeeperAuthorization,
   findItemAcrossProjects,
   detectCrossProjectItem,
@@ -40,9 +41,95 @@ describe('getActiveStepItems (moved to core)', () => {
     expect(getActiveStepItems(items, tddFlow).map(i => i.id)).toEqual(['a', 'b', 'c', 'd']);
   });
 
+  it('treats a terminal step marked only isSpecial as finished, not as active', () => {
+    // `agenfk flow create` never asks about isAnchor — it only ever asks "Is
+    // this a terminal/special step?" and emits isSpecial. So a flow authored
+    // through the CLI has a DONE-equivalent step that no isAnchor filter can
+    // see, and with no isAnchor step anywhere the anchor set is EMPTY (the
+    // ['TODO','DONE'] fallback applies only when flow is null). Everything
+    // terminal then counts as in flight.
+    //
+    // server.ts asks a related question in several places with a DIFFERENT
+    // predicate (!isSpecial && !PLATFORM_STATUSES) — deliberately, because
+    // those need to KEEP anchor steps. Line numbers are not cited here: the
+    // two I first wrote down had already moved by the next commit, which is
+    // what line references in comments always do.
+    const cliAuthoredFlow = {
+      name: 'CLI Flow',
+      steps: [
+        { name: 'BACKLOG', order: 0, isSpecial: true },
+        { name: 'BUILDING', order: 1 },
+        { name: 'SHIPPED', order: 2, isSpecial: true },
+      ],
+    };
+    const items = [item('a', 'BACKLOG'), item('b', 'BUILDING'), item('c', 'SHIPPED')];
+    expect(getActiveStepItems(items, cliAuthoredFlow).map(i => i.id)).toEqual(['b']);
+  });
+
+  it('still counts a step that is neither anchor nor special', () => {
+    // Guards the fix from overshooting into "exclude anything with a flag".
+    const flow = {
+      name: 'Plain',
+      steps: [
+        { name: 'TODO', order: 0, isAnchor: true },
+        { name: 'DOING', order: 1 },
+        { name: 'DONE', order: 2, isAnchor: true },
+      ],
+    };
+    expect(getActiveStepItems([item('x', 'DOING')], flow).map(i => i.id)).toEqual(['x']);
+  });
+
   it('excludes anchors and inactive statuses', () => {
     const items = [item('1', 'TODO'), item('2', 'BLOCKED'), item('3', 'IN_PROGRESS'), item('4', 'DONE')];
     expect(getActiveStepItems(items, tddFlow).map(i => i.id)).toEqual(['3']);
+  });
+});
+
+describe('resolveStepContract on a CLI-authored flow', () => {
+  // The contract the gatekeeper prints IS the agent's working instructions:
+  // "Coding step: X" and "Final step (omit the command on this one): Y". On a
+  // flow authored through `agenfk flow create` — which only ever asks "Is this
+  // a terminal/special step?" and emits isSpecial, never isAnchor — both were
+  // computed with predicates that cannot see isSpecial, so the gatekeeper
+  // steered agents at the holding step and told them to land on the terminal
+  // step without running the verify command.
+  const cliFlow = {
+    name: 'CLI Flow',
+    steps: [
+      { name: 'BACKLOG', order: 0, isSpecial: true },
+      { name: 'BUILDING', order: 1 },
+      { name: 'CHECKING', order: 2 },
+      { name: 'SHIPPED', order: 3, isSpecial: true },
+    ],
+  };
+
+  it('names a real working step as the coding step, not the holding step', () => {
+    expect(resolveStepContract(cliFlow, 'BUILDING').codingStep).toBe('BUILDING');
+  });
+
+  it('names the last real step as the final step, not the terminal one', () => {
+    // The old filter dropped only the literal name 'DONE', so any flow whose
+    // terminal step is called something else kept it as the final step.
+    expect(resolveStepContract(cliFlow, 'BUILDING').finalStep).toBe('CHECKING');
+  });
+
+  it('still agrees with getActiveStepItems about what counts as real work', () => {
+    // The two must never disagree: one decides whether an item is in flight,
+    // the other tells the agent which step to work. A flow where the contract
+    // names a step that getActiveStepItems calls finished is incoherent.
+    const contract = resolveStepContract(cliFlow, 'BUILDING');
+    const active = getActiveStepItems(
+      [item('a', 'BACKLOG'), item('b', 'BUILDING'), item('c', 'CHECKING'), item('d', 'SHIPPED')],
+      cliFlow,
+    ).map(i => i.status);
+    expect(active).toContain(contract.codingStep);
+    expect(active).toContain(contract.finalStep);
+  });
+
+  it('leaves an isAnchor flow exactly as it was', () => {
+    const contract = resolveStepContract(tddFlow, 'IN_PROGRESS');
+    expect(contract.codingStep).toBe('DISCOVERY');
+    expect(contract.finalStep).toBe('REVIEW');
   });
 });
 
@@ -625,5 +712,74 @@ describe('mutation hardening for the gatekeeper (CGLAB-110)', () => {
     const d = decideGatekeeperAuthorization([item('a1b2c3d4-9999', 'IN_PROGRESS', 'STORY', 'My Story')], tddFlow, {});
     expect(d.message).toContain('STORY: [a1b2c3d4] My Story');
     expect(d.message).toContain('Current step: IN_PROGRESS');
+  });
+});
+
+/**
+ * The claim gate, reached through the gatekeeper (819e7192).
+ *
+ * claimGate.test.ts proves the decision is right. This proves it is REACHED:
+ * the branch was added to decideGatekeeperAuthorization and the whole core
+ * suite stayed green, which says nothing about a path nothing walks.
+ *
+ * It also pins the two things easiest to get wrong in the wiring rather than
+ * in the decision - the ORDER of the two questions, and which list the holders
+ * come from.
+ */
+describe('claim conflicts reach the gatekeeper', () => {
+  const claiming = (id: string, status: string, claims?: string[]): GatekeeperItem =>
+    ({ ...item(id, status), claims });
+
+  it('refuses a card whose claim another card already holds', () => {
+    const decision = decideGatekeeperAuthorization(
+      [claiming('mine', 'IN_PROGRESS', ['packages/ui/src/App.tsx']), claiming('theirs', 'REVIEW', ['packages/ui/'])],
+      tddFlow,
+      { itemId: 'mine' },
+    );
+    expect(decision.authorized, 'the claim gate is not wired in').toBe(false);
+    expect(decision.message).toContain('CLAIM CONFLICT');
+    expect(decision.message).toContain('theirs');
+  });
+
+  it('still authorizes when nothing is claimed, which is every card today', () => {
+    // The wiring must not turn into an outage on the deploy that adds it.
+    const decision = decideGatekeeperAuthorization(
+      [item('mine', 'IN_PROGRESS'), item('theirs', 'REVIEW')],
+      tddFlow,
+      { itemId: 'mine' },
+    );
+    expect(decision.authorized).toBe(true);
+  });
+
+  it('holds files for a PAUSED card, which getActiveStepItems drops', () => {
+    /*
+     * THE wiring test. The holders list must be `items`, not `workingItems`:
+     * getActiveStepItems filters PAUSED out, so passing it would hand a paused
+     * agent's half-edited files to somebody else, and it would find out on
+     * resume. Using the wrong list authorizes here, and the defect is invisible
+     * in claimGate.test.ts because that layer never sees the filter.
+     */
+    const decision = decideGatekeeperAuthorization(
+      [claiming('mine', 'IN_PROGRESS', ['packages/ui/src/App.tsx']), claiming('theirs', 'PAUSED', ['packages/ui/'])],
+      tddFlow,
+      { itemId: 'mine' },
+    );
+    expect(decision.authorized, 'a paused card lost its files through the gatekeeper').toBe(false);
+  });
+
+  it('answers "may it work at all" before "may it work here"', () => {
+    /*
+     * Order matters for the message, not the verdict. A card sitting on TODO
+     * with a colliding claim has two problems, and being told about the file
+     * conflict would send it to renegotiate a claim when what it needs is to
+     * start the card.
+     */
+    const decision = decideGatekeeperAuthorization(
+      [claiming('mine', 'TODO', ['packages/ui/src/App.tsx']), claiming('theirs', 'REVIEW', ['packages/ui/'])],
+      tddFlow,
+      { itemId: 'mine' },
+    );
+    expect(decision.authorized).toBe(false);
+    expect(decision.message).not.toContain('CLAIM CONFLICT');
   });
 });

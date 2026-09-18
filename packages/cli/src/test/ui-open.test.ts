@@ -120,6 +120,17 @@ describe('agenfk ui --open command', () => {
   });
 });
 
+/*
+ * `--web` on every invocation here, and it is not a workaround.
+ *
+ * These tests are about the URL the command BUILDS - the ?item and ?project
+ * deep link - not about which surface receives it. `agenfk ui` now prefers the
+ * desktop app when one is installed, so without the flag they would be testing
+ * the surface choice and asserting the URL by accident, and they would pass or
+ * fail depending on whether the machine running CI happens to have the app.
+ *
+ * The surface choice has its own tests in openTarget.test.ts.
+ */
 describe('agenfk ui --open browser launch', () => {
   let tmpCwd: string;
   let realCwd: string;
@@ -154,7 +165,7 @@ describe('agenfk ui --open browser launch', () => {
     fs.writeFileSync(path.join(tmpCwd, '.agenfk', 'project.json'), JSON.stringify({ projectId: 'proj-1' }));
     process.chdir(tmpCwd);
 
-    await program.parseAsync(['node', 'agenfk', 'ui', '--open', 'item-123']);
+    await program.parseAsync(['node', 'agenfk', 'ui', '--web', '--open', 'item-123']);
 
     const urls = launchedUrls().filter((u) => u.includes('?item=item-123'));
     expect(urls.length).toBeGreaterThan(0);
@@ -170,7 +181,7 @@ describe('agenfk ui --open browser launch', () => {
     // No .agenfk directory anywhere up this tmp dir's tree.
     process.chdir(tmpCwd);
 
-    await program.parseAsync(['node', 'agenfk', 'ui', '--open', 'item-456']);
+    await program.parseAsync(['node', 'agenfk', 'ui', '--web', '--open', 'item-456']);
 
     const urls = launchedUrls().filter((u) => u.includes('?item=item-456'));
     expect(urls.length).toBeGreaterThan(0);
@@ -187,7 +198,7 @@ describe('agenfk ui --open browser launch', () => {
     fs.writeFileSync(path.join(tmpCwd, '.agenfk', 'project.json'), JSON.stringify({ projectId: 'proj-cwd' }));
     process.chdir(tmpCwd);
 
-    await program.parseAsync(['node', 'agenfk', 'ui', '--open', 'item-777']);
+    await program.parseAsync(['node', 'agenfk', 'ui', '--web', '--open', 'item-777']);
 
     const urls = launchedUrls().filter((u) => u.includes('?item=item-777'));
     expect(urls.length).toBeGreaterThan(0);
@@ -201,7 +212,7 @@ describe('agenfk ui --open browser launch', () => {
     tmpCwd = makeTmpDir('agenfk-ui-open-cwd-');
     process.chdir(tmpCwd);
 
-    await program.parseAsync(['node', 'agenfk', 'ui', '--open', '']);
+    await program.parseAsync(['node', 'agenfk', 'ui', '--web', '--open', '']);
 
     expect(process.exitCode).toBe(1);
     expect(launchedUrls().length).toBe(0);
@@ -215,7 +226,7 @@ describe('agenfk ui --open browser launch', () => {
     tmpCwd = makeTmpDir('agenfk-ui-open-cwd-');
     process.chdir(tmpCwd);
 
-    await program.parseAsync(['node', 'agenfk', 'ui', '--open', 'a"; echo $(id) `id`']);
+    await program.parseAsync(['node', 'agenfk', 'ui', '--web', '--open', 'a"; echo $(id) `id`']);
 
     const calls = vi.mocked(execSync).mock.calls.map((c) => String(c[0]));
     expect(calls.length).toBeGreaterThan(0);

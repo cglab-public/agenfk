@@ -1,20 +1,27 @@
 /**
  * @vitest-environment jsdom
  */
-import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor, within, act } from '@testing-library/react';
 import { KanbanBoard } from '../components/KanbanBoard';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../ThemeContext';
+import { ActiveProjectProvider, useActiveProject } from '../ActiveProject';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api } from '../api';
 import { ItemType, Status } from '../types';
 import { io } from 'socket.io-client';
+import { SocketProvider } from '../SocketContext';
 
-// Mock socket.io-client
+// Mock socket.io-client. Handlers are recorded rather than dropped so a test
+// can fire a server event — `project_switched` in particular, since the pin
+// exists to suppress exactly that and nothing else proves it does.
+const socketHandlers: Record<string, (payload: unknown) => void> = {};
 vi.mock('socket.io-client', () => ({
   io: vi.fn(() => ({
-    on: vi.fn(),
-    off: vi.fn(),
+    connected: true,
+    connect: vi.fn(),
+    on: vi.fn((event: string, handler: (payload: unknown) => void) => { socketHandlers[event] = handler; }),
+    off: vi.fn((event: string) => { delete socketHandlers[event]; }),
     emit: vi.fn(),
     disconnect: vi.fn(),
   })),
@@ -89,9 +96,11 @@ const queryClient = new QueryClient({
 
 const wrapper = ({ children }: { children: React.ReactNode }) => (
   <QueryClientProvider client={queryClient}>
+    <ActiveProjectProvider>
     <ThemeProvider>
       {children}
     </ThemeProvider>
+    </ActiveProjectProvider>
   </QueryClientProvider>
 );
 
@@ -107,10 +116,347 @@ describe('KanbanBoard', () => {
     cleanup();
   });
 
-  it('should show project selector when no project is selected', async () => {
+  describe('switching project from outside the board (CGLAB-168)', () => {
+    it('clears the drill-down so the new project is not filtered by the old one\'s epic', async () => {
+      // The sidebar sets the shared project id directly. If navPath survives
+      // that, every column filters project B's items by project A's epic id:
+      // an empty board under a breadcrumb still naming A's epic, with nothing
+      // on screen to explain it.
+      const projects = [
+        { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() },
+        { id: 'p2', name: 'P2', createdAt: new Date(), updatedAt: new Date() },
+      ];
+      const epic = { id: 'e1', projectId: 'p1', type: ItemType.EPIC, title: 'Epic One', status: Status.IN_PROGRESS, createdAt: new Date(), updatedAt: new Date() };
+      const child = { id: 'c1', projectId: 'p1', parentId: 'e1', type: ItemType.TASK, title: 'Child Task', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() };
+      const other = { id: 'o1', projectId: 'p2', type: ItemType.TASK, title: 'Other Task', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() };
+
+      vi.mocked(api.listProjects).mockResolvedValue(projects as any);
+      vi.mocked(api.listItems).mockImplementation((async (params: any) =>
+        params?.projectId === 'p2' ? [other] : [epic, child]) as any);
+      localStorage.setItem('agenfk_project_id', 'p1');
+
+      function Harness() {
+        const { setActiveProjectId } = useActiveProject();
+        return (
+          <>
+            <button onClick={() => setActiveProjectId('p2')}>switch outside</button>
+            <KanbanBoard />
+          </>
+        );
+      }
+      render(<Harness />, { wrapper });
+
+      // Drill into the epic via its child-count button.
+      fireEvent.click(await screen.findByRole('button', { name: /Show 1 child items/i }));
+      await screen.findByText('Child Task');
+
+      fireEvent.click(screen.getByText('switch outside'));
+
+      // The new project's item must be visible, not filtered away.
+      expect(await screen.findByText('Other Task')).toBeDefined();
+      expect(screen.queryByText('Child Task')).toBeNull();
+    });
+  });
+
+  describe('navigating to a card from the sidebar (CGLAB-172)', () => {
+    const ITEM = { id: 'i1', projectId: 'p1', type: ItemType.TASK, title: 'Target Task', status: Status.IN_PROGRESS, createdAt: new Date(), updatedAt: new Date() };
+
+    function FocusHarness() {
+      const { focusItem, setActiveProjectId } = useActiveProject();
+      return (
+        <>
+          <button onClick={() => focusItem('i1', 'p1')}>focus i1</button>
+          <button onClick={() => setActiveProjectId('p2')}>go to p2</button>
+          <KanbanBoard />
+        </>
+      );
+    }
+
+    it('does not re-hijack the search box when the items list refreshes', async () => {
+      // The effect that reacts to focusedItemId has `items` in its deps, and
+      // focusedItemId is never cleared. An agent fires items_updated
+      // constantly, and each one gives `items` a new reference. Without a
+      // one-shot guard the board keeps re-applying a navigation the user
+      // finished with minutes ago: it overwrites whatever they have since
+      // typed, re-runs the search and scrolls the board back.
+      const projects = [{ id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() }];
+      vi.mocked(api.listProjects).mockResolvedValue(projects as any);
+      // The refetch must return genuinely DIFFERENT data, not just a fresh
+      // array. TanStack Query's structuralSharing reuses the previous object
+      // when the payload is deep-equal, so an identical refetch leaves `items`
+      // referentially unchanged and the effect never re-runs — the bug hides.
+      // What actually happens in an AgEnFK install is an agent touching some
+      // OTHER item in the project, which is what this simulates.
+      let revision = 0;
+      vi.mocked(api.listItems).mockImplementation((async () => {
+        revision += 1;
+        return [ITEM, { ...ITEM, id: 'i2', title: `Agent Task ${revision}` }];
+      }) as any);
+      localStorage.setItem('agenfk_project_id', 'p1');
+      render(<FocusHarness />, { wrapper });
+      await screen.findByText('Target Task');
+
+      fireEvent.click(screen.getByText('focus i1'));
+      const search = screen.getByPlaceholderText(/Search Item ID or Name/i) as HTMLInputElement;
+      await waitFor(() => expect(search.value).toBe('i1'));
+
+      // The user moves on and types their own query.
+      fireEvent.change(search, { target: { value: 'something else' } });
+      expect(search.value).toBe('something else');
+
+      // An agent touches any item in the project. Wait for the NEW data to be
+      // on screen, so the assertion below cannot pass merely because the
+      // refetch had not landed yet.
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: ['items'] });
+      });
+      await screen.findByText(/Agent Task 2/);
+
+      expect(search.value).toBe('something else');
+    });
+
+    it('does not flash NOT FOUND on a project the user opened normally', async () => {
+      // Focus a card in p1, then switch to p2 from the sidebar. The stale
+      // focusedItemId re-fires against p2's items, finds nothing, and the
+      // header reports NOT FOUND for a project the user just opened by hand.
+      const projects = [
+        { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() },
+        { id: 'p2', name: 'P2', createdAt: new Date(), updatedAt: new Date() },
+      ];
+      const other = { id: 'o1', projectId: 'p2', type: ItemType.TASK, title: 'Other Task', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() };
+      vi.mocked(api.listProjects).mockResolvedValue(projects as any);
+      vi.mocked(api.listItems).mockImplementation((async (params: any) =>
+        params?.projectId === 'p2' ? [other] : [ITEM]) as any);
+      localStorage.setItem('agenfk_project_id', 'p1');
+      render(<FocusHarness />, { wrapper });
+      await screen.findByText('Target Task');
+
+      fireEvent.click(screen.getByText('focus i1'));
+      await waitFor(() =>
+        expect((screen.getByPlaceholderText(/Search Item ID or Name/i) as HTMLInputElement).value).toBe('i1'));
+
+      fireEvent.click(screen.getByText('go to p2'));
+      expect(await screen.findByText('Other Task')).toBeDefined();
+      expect(screen.queryByText(/NOT FOUND/i)).toBeNull();
+    });
+
+    it('waits for fresh data instead of burning the one-shot on a stale cache', async () => {
+      // The hole the first guard left. TanStack returns a CACHED array
+      // synchronously while it refetches in the background, and
+      // `invalidateQueries` does not refetch INACTIVE queries — so a project
+      // the user left minutes ago still has its old item list in cache,
+      // missing everything an agent has created since.
+      //
+      // Click such an item in the sidebar and the effect ran against that
+      // stale array, found nothing, flashed NOT FOUND, and burned the ref. The
+      // fresh data then arrived and the guard refused to re-run: the click did
+      // nothing at all, for an item plainly visible in the sidebar.
+      const projects = [{ id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() }];
+      vi.mocked(api.listProjects).mockResolvedValue(projects as any);
+
+      // Seed the cache the way a previous visit would have, WITHOUT i1.
+      queryClient.setQueryData(['items', 'p1'], []);
+
+      // The refetch is still in flight when the click lands.
+      let release: (v: unknown) => void = () => {};
+      const inFlight = new Promise(res => { release = res; });
+      vi.mocked(api.listItems).mockImplementation((async () => {
+        await inFlight;
+        return [ITEM];
+      }) as any);
+
+      localStorage.setItem('agenfk_project_id', 'p1');
+      render(<FocusHarness />, { wrapper });
+      // The header has to exist before we can click, but the items fetch is
+      // still parked on `inFlight` — which is precisely the state under test:
+      // cached data on screen, fresh data not yet arrived.
+      const search = await screen.findByPlaceholderText(/Search Item ID or Name/i) as HTMLInputElement;
+
+      fireEvent.click(screen.getByText('focus i1'));
+
+      // Now the real data lands.
+      await act(async () => { release([ITEM]); await Promise.resolve(); });
+      await screen.findByText('Target Task');
+
+      // The navigation must have happened once the data was actually there.
+      await waitFor(() => expect(search.value).toBe('i1'));
+    });
+
+    it('still goes to the card when the same row is clicked twice', async () => {
+      // The guard must key on the nonce, not the bare id, or the second click
+      // on an already-visited row becomes a no-op.
+      const projects = [{ id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() }];
+      vi.mocked(api.listProjects).mockResolvedValue(projects as any);
+      vi.mocked(api.listItems).mockResolvedValue([ITEM] as any);
+      localStorage.setItem('agenfk_project_id', 'p1');
+      render(<FocusHarness />, { wrapper });
+      await screen.findByText('Target Task');
+
+      fireEvent.click(screen.getByText('focus i1'));
+      const search = screen.getByPlaceholderText(/Search Item ID or Name/i) as HTMLInputElement;
+      await waitFor(() => expect(search.value).toBe('i1'));
+
+      fireEvent.change(search, { target: { value: '' } });
+      fireEvent.click(screen.getByText('focus i1'));
+      await waitFor(() => expect(search.value).toBe('i1'));
+    });
+  });
+
+  describe('desktop shell — no duplicated identity (CGLAB-168)', () => {
+    const asDesktop = (on: boolean) => {
+      if (on) {
+        Object.defineProperty(window, 'agenfkDesktop', {
+          value: { isDesktop: true, platform: 'darwin', versions: { electron: '40', chrome: '1', node: '24' } },
+          configurable: true, writable: true,
+        });
+      } else {
+        delete (window as unknown as Record<string, unknown>).agenfkDesktop;
+      }
+    };
+    afterEach(() => asDesktop(false));
+
+    const withProject = async () => {
+      const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+      vi.mocked(api.listProjects).mockResolvedValue([project] as any);
+      vi.mocked(api.listItems).mockResolvedValue([] as any);
+      localStorage.setItem('agenfk_project_id', 'p1');
+      render(<KanbanBoard />, { wrapper });
+      // Wait on something that renders in BOTH modes — the project line is
+      // exactly what these tests are about.
+      await screen.findByRole('button', { name: /New Item/i });
+    };
+
+    it('puts the search first in the header, where the identity block used to sit', async () => {
+      // With the logo, the app name and the project line all gone in desktop
+      // mode, the left of the header is empty and the search floats in the
+      // middle of it. Ordering is the assertion that survives a CSS rewrite.
+      asDesktop(true);
+      await withProject();
+      const header = document.querySelector('header')!;
+      const controls = Array.from(header.querySelectorAll('input, button'));
+      expect(controls[0]).toBe(screen.getByPlaceholderText(/Search Item ID or Name/i));
+    });
+
+    it('drops the project line too — the sidebar owns project switching now', async () => {
+      asDesktop(true);
+      await withProject();
+      expect(screen.queryByText(/PROJECT:/i)).toBeNull();
+    });
+
+    it('KEEPS the auto-switch pin reachable in the desktop app', async () => {
+      // This is NOT the sidebar's pin. The sidebar's pin writes
+      // agenfk_pinned_projects and only reorders the list; this one writes
+      // agenfk_project_pinned and is the only thing that stops a
+      // `project_switched` event from yanking the board to whatever project an
+      // agent just touched. Hiding it with the rest of the identity block
+      // deleted a working control with no replacement: anyone already pinned
+      // was stuck pinned, anyone not pinned could never pin.
+      asDesktop(true);
+      await withProject();
+      expect(screen.queryByTestId('pin-project-btn')).not.toBeNull();
+    });
+
+    it('wires the desktop pin to the preference the socket handler reads', async () => {
+      asDesktop(true);
+      await withProject();
+      fireEvent.click(screen.getByTestId('pin-project-btn'));
+      await waitFor(() => expect(localStorage.getItem('agenfk_project_pinned')).toBe('true'));
+    });
+
+    it('lets the desktop pin actually suppress an agent-driven switch', async () => {
+      // The end-to-end guarantee, which the assertion above does NOT make: the
+      // preference is only worth restoring if firing the event it guards
+      // leaves the board where the user put it.
+      asDesktop(true);
+      const projects = [
+        { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() },
+        { id: 'p2', name: 'P2', createdAt: new Date(), updatedAt: new Date() },
+      ];
+      const mine = { id: 'a1', projectId: 'p1', type: ItemType.TASK, title: 'My Work', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() };
+      const theirs = { id: 'b1', projectId: 'p2', type: ItemType.TASK, title: 'Agent Work', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() };
+      vi.mocked(api.listProjects).mockResolvedValue(projects as any);
+      vi.mocked(api.listItems).mockImplementation((async (params: any) =>
+        params?.projectId === 'p2' ? [theirs] : [mine]) as any);
+      localStorage.setItem('agenfk_project_id', 'p1');
+      render(
+        <QueryClientProvider client={queryClient}>
+          <ActiveProjectProvider>
+            <SocketProvider>
+              <ThemeProvider><KanbanBoard /></ThemeProvider>
+            </SocketProvider>
+          </ActiveProjectProvider>
+        </QueryClientProvider>,
+      );
+      await screen.findByText('My Work');
+
+      fireEvent.click(screen.getByTestId('pin-project-btn'));
+      await waitFor(() => expect(localStorage.getItem('agenfk_project_pinned')).toBe('true'));
+
+      // An agent touches project 2. Unpinned, this yanks the board there.
+      await act(async () => { socketHandlers['project_switched']?.({ projectId: 'p2' }); });
+
+      expect(screen.queryByText('Agent Work')).toBeNull();
+      expect(screen.getByText('My Work')).toBeDefined();
+    });
+
+    it('keeps the project line in the browser, where nothing else shows it', async () => {
+      asDesktop(false);
+      await withProject();
+      expect(screen.getByText(/PROJECT:/i)).toBeDefined();
+    });
+
+    it('drops the app name and version chip in the desktop app, where the title bar carries them', async () => {
+      asDesktop(true);
+      await withProject();
+      expect(screen.queryByText('AgEnFK Dashboard')).toBeNull();
+      expect(screen.queryByRole('button', { name: /README/i })).toBeNull();
+    });
+
+    it('drops the project PICKER but not the pin — they do different things', async () => {
+      // The distinction the first cut of this story got wrong. The picker is
+      // pure navigation and the sidebar now does it better, so it goes. The
+      // pin changes behaviour (it suppresses auto-switching) and the sidebar
+      // has no equivalent, so it stays. Asserting both in one test is what
+      // stops the next cleanup from sweeping them up together again.
+      asDesktop(true);
+      await withProject();
+      expect(screen.queryByRole('button', { name: /Switch Project/i })).toBeNull();
+      expect(screen.queryByTestId('pin-project-btn')).not.toBeNull();
+    });
+
+    it('leaves the browser header exactly as it was', async () => {
+      asDesktop(false);
+      await withProject();
+      expect(screen.getByText('AgEnFK Dashboard')).toBeDefined();
+      expect(screen.getByRole('button', { name: /README/i })).toBeDefined();
+    });
+  });
+
+  it('shows the welcome screen when there are no projects at all', async () => {
+    /*
+     * This used to expect the project PICKER, which is a chooser - and with no
+     * projects it was a dialog asking a question that had no answers. The
+     * welcome screen asks the question somebody in that position actually has
+     * (004bd193).
+     *
+     * "None yet" and "none chosen" are different screens now; the picker is
+     * still what the second one shows, covered below.
+     */
     vi.mocked(api.listProjects).mockResolvedValue([]);
     render(<KanbanBoard />, { wrapper });
-    expect(await screen.findByText(/Welcome to AgEnFK/i)).toBeDefined();
+    expect(await screen.findByTestId('welcome-screen')).toBeDefined();
+    expect(screen.getByRole('button', { name: /new project/i })).toBeDefined();
+  });
+
+  it('still shows the picker when projects exist but none is chosen', async () => {
+    // The branch the welcome screen must not have swallowed: here there IS
+    // something to pick from, so a chooser is the right answer.
+    vi.mocked(api.listProjects).mockResolvedValue([
+      { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() },
+    ]);
+    render(<KanbanBoard />, { wrapper });
+    expect(await screen.findByTestId('project-picker-panel')).toBeDefined();
+    expect(screen.queryByTestId('welcome-screen')).toBeNull();
   });
 
   it('should render items in correct columns', async () => {
@@ -132,8 +478,8 @@ describe('KanbanBoard', () => {
     
     render(<KanbanBoard />, { wrapper });
     
-    const createBtn = await screen.findByText(/Create New Project/i);
-    fireEvent.click(createBtn);
+    // Through the welcome screen now, which is what an empty install shows.
+    fireEvent.click(await screen.findByRole('button', { name: /new project/i }));
     
     const input = await screen.findByPlaceholderText(/e.g. My Awesome App/i);
     fireEvent.change(input, { target: { value: 'New Project' } });
@@ -957,5 +1303,55 @@ describe('KanbanBoard', () => {
         expect(screen.queryByText('Move to project')).toBeNull();
       });
     });
+  });
+});
+
+/**
+ * Opening a terminal from a card (CGLAB-176).
+ *
+ * The button is desktop-only, and that is not a limitation of the feature — it
+ * is where its consumer lives. `App.tsx` mounts `AppShell`, the only thing that
+ * reads the terminal request, behind `isDesktop()`. In a browser the click
+ * would bump a nonce nobody reads: no dialog, no error, no explanation.
+ *
+ * Caught in review, not by the first round of tests, and the reason is worth
+ * recording: the shell test mounts `AppShell` directly, and the provider test
+ * asserts only that the context field changed. Neither could see that nothing
+ * downstream was listening in the shipped tree.
+ */
+describe('the terminal button on a card', () => {
+  const asDesktop = (on: boolean) => {
+    if (on) {
+      Object.defineProperty(window, 'agenfkDesktop', {
+        value: { isDesktop: true, platform: 'darwin', versions: { electron: '40', chrome: '1', node: '24' } },
+        configurable: true, writable: true,
+      });
+    } else {
+      delete (window as unknown as Record<string, unknown>).agenfkDesktop;
+    }
+  };
+  afterEach(() => asDesktop(false));
+
+  const boardWithOneCard = async () => {
+    const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+    vi.mocked(api.listProjects).mockResolvedValue([project] as any);
+    vi.mocked(api.listItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p1', title: 'Wire the thing', type: 'TASK', status: 'TODO', createdAt: new Date(), updatedAt: new Date() },
+    ] as any);
+    localStorage.setItem('agenfk_project_id', 'p1');
+    render(<KanbanBoard />, { wrapper });
+    await screen.findByText('Wire the thing');
+  };
+
+  it('is offered on the desktop, where something is listening', async () => {
+    asDesktop(true);
+    await boardWithOneCard();
+    expect(screen.getByRole('button', { name: /open a terminal on Wire the thing/i })).toBeTruthy();
+  });
+
+  it('is not offered in a browser, where the click would do nothing', async () => {
+    asDesktop(false);
+    await boardWithOneCard();
+    expect(screen.queryByRole('button', { name: /open a terminal on/i })).toBeNull();
   });
 });

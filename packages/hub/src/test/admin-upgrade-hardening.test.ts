@@ -17,6 +17,17 @@ import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-upgrade-hardening-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
 const cleanup = () => {
@@ -49,15 +60,17 @@ describe('Story 5 — POST /v1/admin/upgrade hardening', () => {
       releaseExists: async () => true,
     } as any);
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
-    const login = await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
+    const login = await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
     cookieAdmin = login.headers['set-cookie']?.[0] ?? '';
   });
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
@@ -65,10 +78,10 @@ describe('Story 5 — POST /v1/admin/upgrade hardening', () => {
   describe('audit metadata', () => {
     it('persists created_by_email + request_ip and surfaces them in GET /v1/admin/upgrade', async () => {
       await seedInstallation(ctx.db, 'org-a', 'inst-1');
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/admin/upgrade').set('Cookie', cookieAdmin)
         .send({ targetVersion: '0.3.1', scope: { type: 'all' } });
-      const r = await supertest(app).get('/v1/admin/upgrade').set('Cookie', cookieAdmin);
+      const r = await supertest(__server).get('/v1/admin/upgrade').set('Cookie', cookieAdmin);
       expect(r.status).toBe(200);
       const d = r.body.directives[0];
       expect(d.createdByEmail).toBe('admin@x');
@@ -82,7 +95,7 @@ describe('Story 5 — POST /v1/admin/upgrade hardening', () => {
     it('returns 409 with downgrades[] when any in-scope installation would move to an older version', async () => {
       await seedInstallation(ctx.db, 'org-a', 'inst-1', '0.3.5');
       await seedInstallation(ctx.db, 'org-a', 'inst-2', '0.3.0');
-      const r = await supertest(app)
+      const r = await supertest(__server)
         .post('/v1/admin/upgrade').set('Cookie', cookieAdmin)
         .send({ targetVersion: '0.3.1', scope: { type: 'all' } });
       expect(r.status).toBe(409);
@@ -96,7 +109,7 @@ describe('Story 5 — POST /v1/admin/upgrade hardening', () => {
 
     it('proceeds when confirmDowngrade=true is passed', async () => {
       await seedInstallation(ctx.db, 'org-a', 'inst-1', '0.3.5');
-      const r = await supertest(app)
+      const r = await supertest(__server)
         .post('/v1/admin/upgrade').set('Cookie', cookieAdmin)
         .send({ targetVersion: '0.3.1', scope: { type: 'all' }, confirmDowngrade: true });
       expect(r.status).toBe(201);
@@ -104,7 +117,7 @@ describe('Story 5 — POST /v1/admin/upgrade hardening', () => {
 
     it('proceeds without confirmation when no installation is being downgraded', async () => {
       await seedInstallation(ctx.db, 'org-a', 'inst-1', '0.3.0');
-      const r = await supertest(app)
+      const r = await supertest(__server)
         .post('/v1/admin/upgrade').set('Cookie', cookieAdmin)
         .send({ targetVersion: '0.3.1', scope: { type: 'all' } });
       expect(r.status).toBe(201);
@@ -112,7 +125,7 @@ describe('Story 5 — POST /v1/admin/upgrade hardening', () => {
 
     it('proceeds without confirmation when an installation has no known version yet', async () => {
       await seedInstallation(ctx.db, 'org-a', 'inst-fresh', null);
-      const r = await supertest(app)
+      const r = await supertest(__server)
         .post('/v1/admin/upgrade').set('Cookie', cookieAdmin)
         .send({ targetVersion: '0.3.1', scope: { type: 'all' } });
       expect(r.status).toBe(201);
@@ -122,12 +135,12 @@ describe('Story 5 — POST /v1/admin/upgrade hardening', () => {
   describe('single-pending guard', () => {
     it('returns 409 with conflicts[] when any in-scope installation has a pending target', async () => {
       await seedInstallation(ctx.db, 'org-a', 'inst-1', '0.3.0');
-      const first = await supertest(app)
+      const first = await supertest(__server)
         .post('/v1/admin/upgrade').set('Cookie', cookieAdmin)
         .send({ targetVersion: '0.3.1', scope: { type: 'all' } });
       expect(first.status).toBe(201);
 
-      const second = await supertest(app)
+      const second = await supertest(__server)
         .post('/v1/admin/upgrade').set('Cookie', cookieAdmin)
         .send({ targetVersion: '0.3.2', scope: { type: 'all' } });
       expect(second.status).toBe(409);
@@ -138,7 +151,7 @@ describe('Story 5 — POST /v1/admin/upgrade hardening', () => {
 
     it('does not block when the prior directive has already finished (succeeded/failed only)', async () => {
       await seedInstallation(ctx.db, 'org-a', 'inst-1', '0.3.0');
-      const first = await supertest(app)
+      const first = await supertest(__server)
         .post('/v1/admin/upgrade').set('Cookie', cookieAdmin)
         .send({ targetVersion: '0.3.1', scope: { type: 'all' } });
       // Simulate the fleet client reporting succeeded — directly transition the row.
@@ -146,7 +159,7 @@ describe('Story 5 — POST /v1/admin/upgrade hardening', () => {
         "UPDATE upgrade_directive_targets SET state = 'succeeded' WHERE directive_id = ?",
         [first.body.directiveId],
       );
-      const second = await supertest(app)
+      const second = await supertest(__server)
         .post('/v1/admin/upgrade').set('Cookie', cookieAdmin)
         .send({ targetVersion: '0.3.2', scope: { type: 'all' } });
       expect(second.status).toBe(201);

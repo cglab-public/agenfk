@@ -16,6 +16,7 @@ import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/re
 import { KanbanBoard } from '../components/KanbanBoard';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../ThemeContext';
+import { ActiveProjectProvider } from '../ActiveProject';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api } from '../api';
 import { ItemType, Status } from '../types';
@@ -23,6 +24,7 @@ import { ItemType, Status } from '../types';
 // Mock socket.io-client
 vi.mock('socket.io-client', () => ({
   io: vi.fn(() => ({
+    connect: vi.fn(),
     on: vi.fn(),
     off: vi.fn(),
     emit: vi.fn(),
@@ -95,9 +97,11 @@ const queryClient = new QueryClient({
 
 const wrapper = ({ children }: { children: React.ReactNode }) => (
   <QueryClientProvider client={queryClient}>
+    <ActiveProjectProvider>
     <ThemeProvider>
       {children}
     </ThemeProvider>
+    </ActiveProjectProvider>
   </QueryClientProvider>
 );
 

@@ -2,6 +2,50 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.21-beta.1] — 2026-09-18
+
+Beta, cumulative over `1.1.20` (the merged stable line) — this branch carries the Electron
+desktop epic (CGLAB-164) plus the fixes found while exercising it end to end.
+
+### Runs are registered, reused, and attributed correctly (53ed7163, 9fece9e1, 43b37c93)
+
+The desktop now records a run when it opens an agent (`PtyRegistry.registerRun`, with the
+transcript glob the tailer follows); a re-registration of a session that is still running
+reuses its row instead of opening a second one, keyed on session id, falling back to
+card+harness for agents that cannot be handed an id. The recorder refuses a gatekeeper note
+that names a DIFFERENT project, so one session's runs can no longer land on another's card,
+and `agensfk run list --item` accepts an 8-char prefix like every other command.
+
+### The terminal layout is a pane tree (7a717cb8, e488bcdd, ccbe7ba4, 992376b8)
+
+Splits nest, `layoutPanes` draws one divider per split (each writing only its own node's
+ratio), a tab can be dropped on a pane edge to split or moved to rearrange, tabs can be
+reordered by dragging, every pane carries its own agent name and branch, and the header is
+hidden once more than one pane is on screen. Four panes fit the width — wrapped lines and a
+narrow-pane advice, never a horizontal scroller.
+
+### See a file's diff from the worktree panel (be411ffb)
+
+`GET /items/:id/diff` returns the unified diff of one file in the item's worktree (staged or
+working tree, untracked shown as added), and the panel's rows open it in a modal.
+
+### Packaging and releases
+
+- The installer no longer generates `scripts/start-services.mjs` over a TRACKED repo file
+  (ccc7e57c) — the script is shipped and read by `agenfk up`.
+- The release job bumps with `bump-version.mjs` (internal refs included) and regenerates the
+  lockfile, and marks a suffixed version as a GitHub PRE-release.
+- macOS, Windows and Linux installers all build: a safe `executableName` for Linux, an
+  explicit `artifactName` for deb/AppImage, `homepage` metadata, and signing that stays off
+  unless a certificate is supplied (macOS was auto-discovering a runner identity and failing).
+
+### Server correctness
+
+`findProjectRoot` returns `null` when the walk finds no `.agenfk`, so a verify run from a
+worktree can no longer repoint the project's `projectRoot` at one card's directory (957513e9);
+the validate route is rate-limited; and the close commit runs git with argv rather than a
+shell (c3d36f46).
+
 ## [1.1.20] — 2026-09-18
 
 Stable, cumulative over `1.1.20-beta.1` and `1.1.20-beta.2` (PR #189). Both fixes were

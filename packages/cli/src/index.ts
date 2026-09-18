@@ -3,9 +3,13 @@ import chalk from 'chalk';
 import { resolveFromOptions } from './harnessModel.js';
 import figlet from 'figlet';
 import axios from 'axios';
-import { ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, isHubRelease, isUpgrade } from '@agenfk/core';
-import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
+import { ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, isHubRelease, isUpgrade, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
+import { writeActiveWork } from './activeWork.js';
+import { resolveItemIdPrefix } from './resolveItemId.js';
+import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT, setTelemetryEnabled } from '@agenfk/telemetry';
+import { checkClaudeCodeEnforcement, checkPiEnforcement } from './enforcement.js';
 import { execSync, execFileSync, spawn, spawnSync } from 'child_process';
+import { chooseOpenTarget } from './openTarget.js';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -44,6 +48,7 @@ const INTEGRATION_ALIASES: Record<string, string> = {
   codex: 'codex',
   gemini: 'gemini',
   'gemini-cli': 'gemini',
+  pi: 'pi',
 };
 const INTEGRATION_LABELS: Record<string, string> = {
   claude: 'Claude Code',
@@ -51,6 +56,20 @@ const INTEGRATION_LABELS: Record<string, string> = {
   cursor: 'Cursor',
   codex: 'Codex',
   gemini: 'Gemini CLI',
+  /*
+   * pi was missing, and it is the client with the DEEPEST integration here: a
+   * native extension carrying the pre-edit gatekeeper, the mcp-enforcer and the
+   * PR-sizing reminder. The installer has always known how to install it -
+   * `shouldRun('pi')` - so `integration install all` reached it while
+   * `integration install pi` said it was unsupported.
+   *
+   * Not a cosmetic omission. This map is read as the answer to "which clients
+   * does AgEnFK support", and during CGLAB-169 it was taken as the source of
+   * truth for the terminal's agent picker: pi was left out and opencode put in.
+   * integration-list-covers-what-ships.test.ts now derives the expected set
+   * from the installer so the next divergence fails instead of misleading.
+   */
+  pi: 'Pi',
 };
 
 const telemetry = new TelemetryClient();
@@ -941,9 +960,10 @@ program
 
 program
   .command('ui')
-  .description('Show dashboard information and open in browser')
+  .description('Open the dashboard: the desktop app when there is one, otherwise the browser')
   .option('--open <itemId>', 'Open the dashboard with that item highlighted (deep-links the Search Box to the item id)')
-  .action(async (options: { open?: string }) => {
+  .option('--web', 'Force the browser, even when the desktop app is installed or running')
+  .action(async (options: { open?: string; web?: boolean }) => {
     console.log(chalk.cyan('🌐 Opening UI...'));
 
     const rootDir = path.resolve(__dirname, '../../..');
@@ -970,7 +990,62 @@ program
     }
 
     console.log(chalk.white(`Dashboard: ${uiUrl}`));
-    
+
+    /*
+     * THE DESKTOP APP FIRST, when there is one (cb05216e).
+     *
+     * This opened a browser unconditionally, and the browser surface does not
+     * have the projects tree, the terminals or the preload bridge - the app
+     * serves the same bundle, so the two look alike and only one of them can do
+     * the things people come here for. The case that made it obvious: the app
+     * is open on screen and this puts a tab next to it.
+     */
+    const appCandidates = process.platform === 'darwin'
+      ? [
+          '/Applications/AgEnFK.app',
+          path.join(os.homedir(), 'Applications', 'AgEnFK.app'),
+          // The build from source, which is where development happens.
+          path.resolve(rootDir, 'packages/desktop/release/mac-arm64/AgEnFK.app'),
+          path.resolve(rootDir, 'packages/desktop/release/mac/AgEnFK.app'),
+        ].filter(p => fs.existsSync(p))
+      : [];
+
+    /*
+     * Matched on the BUNDLE ID, not on "is some Electron running". Every
+     * Electron app on the machine would answer yes to the looser question, and
+     * the command would then try to focus somebody else's editor.
+     */
+    let appIsRunning = false;
+    if (process.platform === 'darwin') {
+      try {
+        execSync('pgrep -f "AgEnFK.app/Contents/MacOS/AgEnFK"', { stdio: 'ignore' });
+        appIsRunning = true;
+      } catch { /* not running, which is not an error */ }
+    }
+
+    const target = chooseOpenTarget({
+      forceWeb: options.web === true,
+      appIsRunning,
+      installedApps: appCandidates,
+    });
+
+    if (target.kind === 'desktop') {
+      // `open -a` FOCUSES a running app rather than starting a second one, and
+      // the main process holds a single-instance lock anyway - so a second
+      // launch would exit silently and look like this did nothing.
+      console.log(chalk.cyan(`Opening the desktop app (${target.why}). Use --web for the browser.`));
+      try {
+        execFileSync('open', ['-a', target.appPath], { stdio: 'ignore' });
+        return;
+      } catch {
+        // Falls through to the browser rather than failing: a dashboard in the
+        // wrong surface beats no dashboard.
+        console.log(chalk.yellow('Could not open the desktop app; falling back to the browser.'));
+      }
+    } else {
+      console.log(chalk.white(`Opening the browser (${target.why}).`));
+    }
+
     try {
       if (isMinGW()) {
         try {
@@ -1661,6 +1736,9 @@ program
   .option('--type <type>', 'New type (EPIC, STORY, TASK, BUG)')
   .option('--parent <parentId>', "Re-parent under another item; pass 'none' to detach to top level")
   .option('--jira-item <key>', "Link this card to a JIRA item by key (e.g. CGLAB-163); pass 'none' to unlink")
+  .option('--claims <paths>', 'Comma-separated paths this card owns; pass an empty string to release them')
+  .option('--external-id <key>', 'Issue key in another tracker, e.g. a JIRA key')
+  .option('--external-url <url>', 'Link to that issue')
   .action(async (id, options) => {
     try {
       // Handle short ID
@@ -1684,6 +1762,27 @@ program
       if (options.title) updates.title = options.title;
       if (options.description) updates.description = options.description;
       if (options.type) updates.type = options.type.toUpperCase();
+      /*
+       * The paths this card owns while it is worked (819e7192).
+       *
+       * Split and trimmed here rather than sent raw: a shell quoting a list
+       * produces stray spaces, and a claim with a trailing space is MALFORMED -
+       * the server rejects it, correctly, with a message about a path the user
+       * believes they typed cleanly.
+       *
+       * An empty string releases, and that has to stay reachable: a card that
+       * over-claimed and cannot give the paths back blocks every sibling until
+       * it closes. `undefined` means "not mentioned" and leaves them alone,
+       * which is what every other `agenfk update` call in the world is doing.
+       */
+      if (options.externalId !== undefined) updates.externalId = options.externalId;
+      if (options.externalUrl !== undefined) updates.externalUrl = options.externalUrl;
+      if (options.claims !== undefined) {
+        updates.claims = String(options.claims)
+          .split(',')
+          .map((c: string) => c.trim())
+          .filter(Boolean);
+      }
 
       if (options.parent !== undefined) {
         const detachWords = ['none', 'null', 'root', ''];
@@ -1828,17 +1927,21 @@ program
 
 program
   .command('update-project <id>')
-  .description('Update a project\'s name, description, or verify command (MCP fallback: update_project)')
+  .description('Update a project\'s name, description, verify command, or project root (MCP fallback: update_project)')
   .option('--name <name>', 'New project name')
   .option('--description <text>', 'New project description')
   .option('--verify-command <cmd>', 'Project-level verification command')
+  .option('--setup-command <cmd>', 'What to run in a newly cut worktree to make it usable (e.g. "npm ci")')
+  .option('--project-root <path>', 'Absolute path to the repository this project lives in')
   .action(async (id, options) => {
     try {
       const updates: Record<string, unknown> = {};
       if (options.name !== undefined) updates.name = options.name;
       if (options.description !== undefined) updates.description = options.description;
-      if (options.verifyCommand === undefined && Object.keys(updates).length === 0) {
-        console.error(chalk.yellow('Nothing to update. Pass at least one of --name, --description, --verify-command.'));
+      if (options.verifyCommand === undefined && options.projectRoot === undefined
+          && options.setupCommand === undefined
+          && Object.keys(updates).length === 0) {
+        console.error(chalk.yellow('Nothing to update. Pass at least one of --name, --description, --verify-command, --setup-command, --project-root.'));
         process.exit(1);
         return;
       }
@@ -1859,6 +1962,53 @@ program
         ({ data } = await axios.put(
           `${API_URL}/projects/${id}/verify-command`,
           { verifyCommand: options.verifyCommand },
+          { headers: { 'x-agenfk-internal': token } },
+        ));
+      }
+      /*
+       * setupCommand is privileged for the same reason, and it is the one most
+       * likely to be mistaken for a harmless preference: it is a shell string
+       * run in a directory this machine just created. Same endpoint shape, same
+       * token.
+       */
+      if (options.setupCommand !== undefined) {
+        const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
+        if (!fs.existsSync(tokenPath)) {
+          console.error(chalk.red('Error: ~/.agenfk/verify-token not found. Run npm run install:framework first.'));
+          process.exit(1);
+          return;
+        }
+        const token = fs.readFileSync(tokenPath, 'utf8').trim();
+        ({ data } = await axios.put(
+          `${API_URL}/projects/${id}/setup-command`,
+          { setupCommand: options.setupCommand },
+          { headers: { 'x-agenfk-internal': token } },
+        ));
+      }
+      /*
+       * The project root is privileged for the same reason verifyCommand is:
+       * it is the CWD that `git add -A && git commit` runs in and that
+       * worktrees are cut from. So it goes through the internal endpoint too.
+       *
+       * It exists because there was NO way to correct a wrong one — the value
+       * is otherwise written only as a side effect of validating from inside a
+       * directory, so a project that picked up the wrong root kept it. Four
+       * projects pointing at $HOME is the state that made this necessary.
+       */
+      if (options.projectRoot !== undefined) {
+        const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
+        if (!fs.existsSync(tokenPath)) {
+          console.error(chalk.red('Error: ~/.agenfk/verify-token not found. Run npm run install:framework first.'));
+          process.exit(1);
+          return;
+        }
+        const token = fs.readFileSync(tokenPath, 'utf8').trim();
+        // Resolved here rather than on the server: a relative path means
+        // relative to where the PERSON is standing, and the server has a
+        // different cwd entirely.
+        ({ data } = await axios.put(
+          `${API_URL}/projects/${id}/project-root`,
+          { projectRoot: path.resolve(process.cwd(), options.projectRoot) },
           { headers: { 'x-agenfk-internal': token } },
         ));
       }
@@ -1959,6 +2109,100 @@ program
       }
     } else {
       console.log(chalk.gray('N/A (Opencode not detected)'));
+    }
+
+    /*
+     * Enforcement, for the clients that actually have it.
+     *
+     * This was missing entirely, which meant health could report "All systems
+     * healthy" on a machine where nothing gated an edit. The rules are still
+     * READ in that state, so the agent believes it is enforced — health saying
+     * fine turns a missing safeguard into a confirmed one.
+     *
+     * Silent when a client is not installed at all: a machine without pi is
+     * not a machine with broken pi enforcement, and a check that complains
+     * about absent software trains people to ignore it.
+     */
+    /*
+     * Gated on the CLIENT's directory, not on settings.json.
+     *
+     * Gating on the file reopened the very bug this check exists to close:
+     * Claude Code creates ~/.claude without necessarily creating
+     * settings.json, so the single most important case — Claude installed,
+     * enforcement never installed — skipped the check entirely and printed
+     * "All systems healthy".
+     */
+    const claudeDir = path.join(os.homedir(), '.claude');
+    const claudeSettingsPath = path.join(claudeDir, 'settings.json');
+    if (fs.existsSync(claudeDir)) {
+      process.stdout.write('Checking Claude Code enforcement... ');
+      // Three distinct states, and collapsing them misdiagnoses two of them.
+      // An unreadable file is NOT "not registered": the remedy for that one
+      // rewrites settings.json wholesale, so telling a user with a trailing
+      // comma to reinstall would silently delete the rest of their config.
+      let parsed: unknown = null;
+      let unreadable = false;
+      if (fs.existsSync(claudeSettingsPath)) {
+        try { parsed = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf8')); }
+        catch { unreadable = true; }
+      }
+      if (unreadable) {
+        console.log(chalk.red('UNREADABLE'));
+        console.log(chalk.yellow(`   - Could not parse ${claudeSettingsPath}`));
+        console.log(chalk.gray('   - Fix that file by hand. Reinstalling would overwrite it.'));
+        issues++;
+      } else {
+      const result = checkClaudeCodeEnforcement(
+        parsed,
+        hook => ['', '.cmd', '.mjs'].some(ext =>
+          fs.existsSync(path.join(os.homedir(), '.local', 'bin', `${hook}${ext}`))),
+      );
+      if (result.ok) {
+        console.log(chalk.green('OK'));
+      } else {
+        console.log(chalk.red('INCOMPLETE'));
+        // Named, not counted. "2 hooks missing" sends the user hunting.
+        if (result.missing.length) {
+          console.log(chalk.yellow(`   - Not registered: ${result.missing.join(', ')}`));
+        }
+        if (result.missingBinaries.length) {
+          console.log(chalk.yellow(`   - Registered but not installed: ${result.missingBinaries.join(', ')}`));
+        }
+        console.log(chalk.gray(`   - Fix: ${result.hint}`));
+        issues++;
+      }
+      }
+    } else {
+      // Said, not skipped. Every sibling check prints a line even when it does
+      // not apply, and silence here is indistinguishable from "fine".
+      console.log('Checking Claude Code enforcement... ' + chalk.gray('N/A (Claude Code not detected)'));
+    }
+
+    const piDir = path.join(os.homedir(), '.pi');
+    if (fs.existsSync(piDir)) {
+      process.stdout.write('Checking pi enforcement... ');
+      const result = checkPiEnforcement(
+        fs.existsSync(path.join(piDir, 'agent', 'extensions', 'agenfk.ts')),
+        // The extension delegates every decision to these, and its runner
+        // swallows a spawn failure rather than break the host — so missing
+        // scripts mean pi allows every edit, silently.
+        script => fs.existsSync(path.join(os.homedir(), '.agenfk', 'bin', script)),
+      );
+      if (result.ok) {
+        console.log(chalk.green('OK'));
+      } else {
+        console.log(chalk.red('INCOMPLETE'));
+        if (result.missing.length) {
+          console.log(chalk.yellow(`   - Absent: ${result.missing.join(', ')}`));
+        }
+        if (result.missingBinaries.length) {
+          console.log(chalk.yellow(`   - Extension present but its scripts are gone: ${result.missingBinaries.join(', ')}`));
+        }
+        console.log(chalk.gray(`   - Fix: ${result.hint}`));
+        issues++;
+      }
+    } else {
+      console.log('Checking pi enforcement... ' + chalk.gray('N/A (pi not detected)'));
     }
 
     // 4. Skills Check
@@ -2424,14 +2668,12 @@ configSetCommand
       process.exit(1);
     }
     const enabled = normalised === 'true';
-    const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
     try {
-      let config: Record<string, unknown> = {};
-      if (fs.existsSync(configPath)) {
-        config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      }
-      config.telemetry = enabled;
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+      // The shared writer rather than a read-modify-write here. The settings
+      // screen sets the same flag, and two hand-rolled versions of "keep the
+      // other keys" is how one of them eventually drops flowRegistry or the
+      // GitHub repo mappings. See packages/telemetry/src/index.ts.
+      setTelemetryEnabled(enabled);
       if (enabled) {
         console.log(chalk.green('Telemetry enabled.') + ' Anonymous usage data will be sent to help improve AgEnFK.');
         console.log(chalk.gray('  To opt out at any time: agenfk config set telemetry false'));
@@ -3249,8 +3491,20 @@ run
   .option('--source <path>', 'Absolute path of the worker session JSONL (for live tailing)')
   .action(async (o) => {
     try {
+      /*
+       * Resolve a short id first, for the same reason `run list` does: a run
+       * stored with a truncated itemId never matches its card, because the
+       * per-card route filters by exact id.
+       */
+      let itemId = o.item;
+      if (itemId.length < 36) {
+        const { data: allItems } = await axios.get(`${API_URL}/items`);
+        const resolved = resolveItemIdPrefix(allItems, itemId);
+        if (!resolved.ok) { console.error(chalk.red(resolved.error)); process.exit(1); }
+        itemId = resolved.id;
+      }
       const { data } = await axios.post(`${API_URL}/agent-runs`, {
-        itemId: o.item, step: o.step, projectId: o.project, actor: o.actor,
+        itemId, step: o.step, projectId: o.project, actor: o.actor,
         harness: o.harness, model: o.model, sessionId: o.session, sourcePath: o.source,
       });
       console.log(structuredOutput(data));
@@ -3323,7 +3577,20 @@ run
   .requiredOption('--item <id>', 'AgEnFK item id')
   .action(async (o) => {
     try {
-      const { data } = await axios.get(`${API_URL}/items/${o.item}/agent-runs`);
+      /*
+       * Resolve a short id the way `agenfk get` does. This passed the value
+       * straight to the route, which filters by EXACT item id - so
+       * `run list --item 2cab541e` returned [] for a card that had runs, and
+       * made a working registration look broken.
+       */
+      let itemId = o.item;
+      if (itemId.length < 36) {
+        const { data: allItems } = await axios.get(`${API_URL}/items`);
+        const resolved = resolveItemIdPrefix(allItems, itemId);
+        if (!resolved.ok) { console.error(chalk.red(resolved.error)); process.exit(1); }
+        itemId = resolved.id;
+      }
+      const { data } = await axios.get(`${API_URL}/items/${itemId}/agent-runs`);
       console.log(structuredOutput(data));
     } catch (error: any) {
       console.error(chalk.red('Error listing runs:'), error.response?.data?.error || error.message);
@@ -3418,11 +3685,45 @@ program
         role: options.role,
       });
 
+      /*
+       * THE BASE MOVED UNDER THE AGENT (44163aa2), and the CLI is where most
+       * agents actually are - the MCP tool is opt-in. Same notice the MCP
+       * gatekeeper appends, from the same core helper, so the two cannot say
+       * different things about the same tree.
+       *
+       * Advisory only: `shouldWait` (the 20-commit threshold) belongs to the
+       * DISPATCHER, not to a gate that runs before every edit.
+       */
+      let driftNotice = '';
+      if (decision.authorized && decision.task) {
+        const project = await axios
+          .get(`${API_URL}/projects/${(decision.task as any).projectId}`)
+          .then(r => r.data)
+          .catch(() => null);
+        const target = driftTargets(decision.task as any, projectItems, project?.projectRoot);
+        if (target) {
+          driftNotice = dispatchDriftNotice({
+            ...target,
+            deps: { run: args => execFileSync('git', args as string[], { encoding: 'utf8' }) },
+          });
+        }
+      }
+
+      // Record which card this session is working on (CGLAB-177). This is the
+      // one place the workflow resolves that unambiguously — the run recorder
+      // reads it instead of guessing, because `?active=true` can return dozens
+      // of items across projects and attributing work to the wrong card is
+      // worse than recording none.
+      if (decision.authorized && decision.task?.id) {
+        writeActiveWork({ id: decision.task.id, projectId: (decision.task as any).projectId });
+      }
+
       if (options.json) {
         console.log(JSON.stringify({
           authorized: decision.authorized,
           message: decision.message,
           task: decision.task ? { id: decision.task.id, title: decision.task.title, status: decision.task.status } : null,
+          baseDrift: driftNotice || null,
           exitCriteria: decision.exitCriteria ?? null,
           // criteriaState keeps "absent" and "unknown" distinguishable for JSON
           // consumers; exitCriteria is null for both.
@@ -3433,7 +3734,7 @@ program
           flowFetchFailed,
         }));
       } else {
-        console.log(decision.authorized ? chalk.green(decision.message) : chalk.red(decision.message));
+        console.log(decision.authorized ? chalk.green(decision.message + driftNotice) : chalk.red(decision.message));
         if (flowFetchFailed) {
           console.error(chalk.yellow(`⚠️  Could not load the project's flow from ${API_URL}. Exit criteria are unknown, not absent — retry or run \`agenfk flow show\` before advancing.`));
         }
@@ -3591,6 +3892,150 @@ branchCmd
     }
   });
 
+const worktreeCmd = program
+  .command('worktree')
+  .description('Manage per-item git worktrees, so several agents can work at once');
+
+worktreeCmd
+  .command('prune')
+  .option('-y, --yes', 'Remove without asking. Only what a dry run would have listed.')
+  .description('Show which finished cards still hold a worktree, and remove the ones you confirm')
+  .action(async (options: { yes?: boolean }) => {
+    /*
+     * Deliberately a command rather than a rule.
+     *
+     * Removing a worktree when its card reaches the final step is the obvious
+     * policy and the wrong one: people go back to a directory after closing a
+     * card, and deleting a working tree is not something undo recovers. So
+     * this lists what it WOULD remove and removes only what the person
+     * confirms — which still answers the real complaint, because what has
+     * already accumulated can finally be cleared.
+     */
+    // The same resolution `current-project` uses: the nearest .agenfk/project.json.
+    const projFile = findProjectJsonPath(process.cwd());
+    if (!projFile) {
+      console.error(chalk.red('No AgEnFK project here. Run this from inside an initialized project.'));
+      process.exit(1);
+      return;
+    }
+    let projectId: string | null = null;
+    try { projectId = JSON.parse(fs.readFileSync(projFile, 'utf8')).projectId || null; } catch { /* handled below */ }
+    if (!projectId) {
+      console.error(chalk.red(`${projFile} is missing a "projectId" key.`));
+      process.exit(1);
+      return;
+    }
+    const { data: items } = await axios.get(`${API_URL}/items`, {
+      params: projectId ? { projectId } : undefined,
+    });
+    const { data: flow } = await axios
+      .get(`${API_URL}/projects/${projectId}/flow`)
+      .catch(() => ({ data: null }));
+
+    // "Finished" is whatever this project's flow says it is. Hardcoding DONE
+    // would offer nothing on a custom flow.
+    const finalSteps: string[] = flow?.steps?.length
+      ? [flow.steps[flow.steps.length - 1].name]
+      : ['DONE'];
+
+    const candidates = prunableWorktrees(items ?? [], {
+      finalSteps,
+      isDirty: (dir: string) => {
+        // Throws if the directory is gone or is not a repository, and the
+        // caller treats a throw as "do not touch" — a failed check read as
+        // clean is how a tool deletes work nobody pushed.
+        const out = execFileSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8' });
+        return out.trim().length > 0;
+      },
+    });
+
+    if (candidates.length === 0) {
+      console.log(chalk.green('Nothing to prune: no finished card is holding a clean worktree.'));
+      return;
+    }
+
+    console.log(chalk.blue(`\n${candidates.length} worktree(s) could be removed:\n`));
+    for (const c of candidates) {
+      console.log(`  ${chalk.bold(c.title)}`);
+      console.log(chalk.gray(`    ${c.path}`));
+      console.log(chalk.gray(`    ${c.reason}`));
+    }
+
+    if (!options.yes) {
+      // The listing IS the default. Someone running this to see what is there
+      // must not have anything deleted by it.
+      console.log(chalk.yellow('\nNothing was removed. Re-run with --yes to remove these.'));
+      return;
+    }
+
+    let removed = 0;
+    for (const c of candidates) {
+      try {
+        // Through git, not rm: it also clears the .git/worktrees registration,
+        // and leaving those behind is half the slowdown this is meant to fix.
+        execFileSync('git', ['worktree', 'remove', c.path], { stdio: 'ignore' });
+        removed += 1;
+      } catch (e: any) {
+        console.log(chalk.yellow(`  Kept ${c.path}: ${e?.message ?? 'git refused'}`));
+      }
+    }
+    console.log(chalk.green(`\nRemoved ${removed} of ${candidates.length}.`));
+  });
+
+worktreeCmd
+  .command('create <itemId>')
+  .description("Create (or adopt) the item's git worktree and link it to the item")
+  .option('--root <path>', 'Directory that holds all worktrees (default: ~/.agenfk/worktrees)')
+  .action(async (itemId, options) => {
+    try {
+      const { data } = await axios.post(`${API_URL}/items/${itemId}/worktree`, {
+        root: options.root,
+      });
+      const verb = data.created ? 'Created' : 'Reusing';
+      console.log(chalk.green(`✅ ${verb} worktree for [${itemId.substring(0, 8)}]`));
+      console.log(`   ${chalk.cyan(data.path)}  ${chalk.dim(`(${data.branchName})`)}`);
+    } catch (e: any) {
+      console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
+      process.exit(1);
+    }
+  });
+
+worktreeCmd
+  .command('status <itemId>')
+  .description("Show the item's worktree and whether its directory is still there")
+  .action(async (itemId) => {
+    try {
+      const { data } = await axios.get(`${API_URL}/items/${itemId}/worktree`);
+      if (!data.path) {
+        console.log(chalk.yellow(`No worktree for [${itemId.substring(0, 8)}].`));
+        return;
+      }
+      console.log(`Worktree: ${chalk.cyan(data.path)}`);
+      console.log(`Branch:   ${chalk.cyan(data.branchName ?? '(none)')}`);
+      // "recorded but missing" is a real state — someone deleted the directory
+      // by hand — and it needs recreating, not a plain cd.
+      console.log(`On disk:  ${data.exists ? chalk.green('yes') : chalk.yellow('no — run `agenfk worktree create` to recreate')}`);
+    } catch (e: any) {
+      console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
+      process.exit(1);
+    }
+  });
+
+worktreeCmd
+  .command('remove <itemId>')
+  .description("Remove the item's worktree directory (the branch and its commits are kept)")
+  .action(async (itemId) => {
+    try {
+      const { data } = await axios.delete(`${API_URL}/items/${itemId}/worktree`);
+      console.log(data.removed
+        ? chalk.green(`✅ Worktree removed for [${itemId.substring(0, 8)}]. The branch and its commits are untouched.`)
+        : chalk.yellow(`No worktree to remove for [${itemId.substring(0, 8)}].`));
+    } catch (e: any) {
+      console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
+      process.exit(1);
+    }
+  });
+
 branchCmd
   .command('push <itemId>')
   .description('Push the item\'s tracked branch to remote (no-op if no remote configured)')
@@ -3698,6 +4143,53 @@ function checkGhCli(): boolean {
 const prCmd = program
   .command('pr')
   .description('Manage pull requests for AgEnFK items (requires GitHub CLI)');
+
+prCmd
+  .command('import <prNumber>')
+  .description('Open a card from an existing pull request, bringing its title, body and branch')
+  .action(async (prNumber: string) => {
+    /*
+     * The card CGLAB-177 asked for. The server holds every decision — reuse
+     * rather than duplicate, body without the conversation, no fetch for a
+     * fork — so this is the thin part: find the project, POST, report.
+     *
+     * It exists at all because `tasks-from-branch` shipped as a route with no
+     * caller in either the CLI or the UI, which means the composition it built
+     * cannot be reached by anyone. A second unreachable endpoint would have
+     * been the same mistake twice.
+     */
+    const projFile = findProjectJsonPath(process.cwd());
+    if (!projFile) {
+      console.error(chalk.red('No AgEnFK project here. Run this from inside an initialized project.'));
+      process.exit(1);
+      return;
+    }
+    let projectId: string | null = null;
+    try { projectId = JSON.parse(fs.readFileSync(projFile, 'utf8')).projectId || null; } catch { /* handled below */ }
+    if (!projectId) {
+      console.error(chalk.red(`${projFile} is missing a "projectId" key.`));
+      process.exit(1);
+      return;
+    }
+    try {
+      const { data } = await axios.post(`${API_URL}/projects/${projectId}/tasks-from-pr`, { prNumber });
+      if (data.reused) {
+        // Not an error, and not silent either: the person asked for a card and
+        // is getting one they already had, which they need to be told.
+        console.log(chalk.yellow(`Reused ${data.item.id} — ${data.reason}`));
+        return;
+      }
+      console.log(chalk.green(`Created ${data.item.id}  ${data.item.title}`));
+      if (data.worktree?.path) console.log(chalk.dim(`  worktree: ${data.worktree.path}`));
+      // The card exists either way; what is missing is said plainly rather
+      // than left for the person to discover when they go looking for it.
+      if (data.worktreeSkipped) console.log(chalk.yellow(`  no worktree: ${data.worktreeSkipped}`));
+      if (data.worktreeError) console.log(chalk.yellow(`  no worktree: ${data.worktreeError}`));
+    } catch (e: any) {
+      console.error(chalk.red(e?.response?.data?.error ?? e?.message ?? String(e)));
+      process.exit(1);
+    }
+  });
 
 prCmd
   .command('create <itemId>')

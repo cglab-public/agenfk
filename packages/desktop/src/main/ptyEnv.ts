@@ -1,0 +1,217 @@
+/**
+ * The environment a terminal is born into (CGLAB-169).
+ *
+ * The least visible part of the subsystem and the one that breaks the most.
+ * Nothing throws and nothing logs; the agent's interface simply renders in the
+ * wrong colours, or the launch fails with ENOENT for a binary the user plainly
+ * has. The symptom points at the agent, never at us.
+ *
+ * Two independent problems are solved here.
+ *
+ * TERM. A main process launched from Finder has no TERM at all, so node-pty
+ * falls back to plain `xterm` — no 256 colours, no truecolor. Every agent TUI
+ * draws degraded, on every machine, always. An inherited TERM is overridden
+ * rather than trusted: it describes whatever launched the app, and we know what
+ * we actually render.
+ *
+ * PATH. That same process inherits launchd's minimal PATH, which contains none
+ * of ~/.local/bin, Homebrew, nvm, asdf or mise. Detection already recovers a
+ * usable PATH from a login shell; before this module the spawn then used the
+ * minimal one anyway, so the picker could say "installed" and launching could
+ * still fail. That is CGLAB-177's bug one layer down.
+ */
+import { execFile } from 'child_process';
+import * as os from 'os';
+
+/**
+ * Marks a login shell spawned BY the capture, so a user whose rc file launches
+ * or talks to this app cannot make the capture spawn a shell that spawns the
+ * capture again.
+ */
+export const LOGIN_CAPTURE_GUARD = 'AGENFK_SHELL_CAPTURE';
+
+/**
+ * Variables that describe how *we* were launched, not how the user works.
+ *
+ * A deny list rather than an allow list on purpose: a developer's own exports
+ * are exactly what make their tools work, and an allow list would quietly break
+ * every setup we failed to anticipate. ELECTRON_RUN_AS_NODE is the sharpest
+ * one — an agent that shells out to node would re-enter our own binary.
+ */
+const STRIP_PREFIXES = ['ELECTRON_', 'VITE_', 'MAIN_VITE_', 'PRELOAD_VITE_', 'RENDERER_VITE_', 'npm_', 'AGENFK_SHELL_'];
+/**
+ * The Claude Code session this app was LAUNCHED FROM, if it was.
+ *
+ * Listed by name and never by prefix. `CLAUDE_CODE_CHILD_SESSION` is the one
+ * that did the damage — Claude sees it, turns transcript saving off, and then
+ * `--continue` has no conversation to continue, which is the whole of "going
+ * back to a session does not work". The rest are the same session's identity
+ * and control channel, which describe a conversation our agent is not part of.
+ *
+ * By name because the prefix is shared with configuration that MUST survive:
+ * stripping `CLAUDE_CODE_*` wholesale would be a worse bug than the one this
+ * fixes. Anything the user exported for their own agent stays.
+ */
+const STRIP_INHERITED_AGENT_SESSION = [
+  'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_CODE_SESSION_ID',
+  'CLAUDE_CODE_MESSAGING_SOCKET',
+  'CLAUDE_CODE_MESSAGING_TOKEN',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_EXECPATH',
+  'CLAUDE_CODE_BRIDGE_SESSION_ID',
+  'CLAUDE_CODE_INVOKED_SKILLS',
+  'CLAUDE_CODE_SSE_PORT',
+  /*
+   * The four without the `CLAUDE_CODE_` prefix, which is exactly why a prefix
+   * rule would not have been a shortcut — it would have missed these and taken
+   * configuration instead.
+   *
+   *   CLAUDECODE     the canonical "you are inside Claude Code" flag. Left in
+   *                  place, every agent this app spawns — codex and pi included
+   *                  — is told it is inside a session it is not in, and
+   *                  third-party tooling branches on it.
+   *   CLAUDE_EFFORT  the LAUNCHING conversation's reasoning-effort level, which
+   *                  the agent's own hooks and Bash tool then read as theirs.
+   *   CLAUDE_PID     names the launching process. A `pkill` guard built from it
+   *                  protects the wrong one.
+   *   AI_AGENT       identity of whoever launched us.
+   *   TRACEPARENT    grafts the spawned agent's spans onto somebody else's
+   *                  trace.
+   */
+  'CLAUDECODE',
+  'CLAUDE_EFFORT',
+  'CLAUDE_PID',
+  'AI_AGENT',
+  'TRACEPARENT',
+  /*
+   * Not Claude's, but the same kind of fact and the same launch scenario.
+   * `tmux.ts` attaches a session of its own, and `attach-session` refuses from
+   * inside another server — "sessions should be nested with care, unset $TMUX
+   * to force". Unsetting is precisely what tmux asks for, and the session this
+   * app manages is its own.
+   */
+  'TMUX',
+  'TMUX_PANE',
+];
+
+const STRIP_EXACT = new Set([
+  'NODE_ENV', 'NODE_OPTIONS', 'INIT_CWD', 'VITEST', 'VITEST_WORKER_ID', 'VITEST_POOL_ID',
+  ...STRIP_INHERITED_AGENT_SESSION,
+]);
+
+const shouldStrip = (key: string): boolean =>
+  STRIP_EXACT.has(key) || STRIP_PREFIXES.some(p => key.startsWith(p));
+
+/**
+ * Merge a recovered PATH over an inherited one.
+ *
+ * Recovered entries lead, because they are the ones the inherited PATH is
+ * missing. It is a merge and not a replacement: something the app was launched
+ * with may genuinely be needed, and dropping it trades one missing-binary bug
+ * for another. Empty segments are dropped — an empty PATH entry means "the
+ * current directory" to some shells, which is a real hazard in a directory an
+ * agent is writing to.
+ */
+export function mergePath(recovered: string | null | undefined, inherited: string | null | undefined): string {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of [...(recovered ?? '').split(':'), ...(inherited ?? '').split(':')]) {
+    if (!part || seen.has(part)) continue;
+    seen.add(part);
+    out.push(part);
+  }
+  return out.join(':');
+}
+
+/** Read `env` output into a map. */
+export function parseEnvDump(dump: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of dump.split('\n')) {
+    const eq = line.indexOf('=');
+    // No '=' means it is not an assignment — a login shell prints banners, motd
+    // and rc-file chatter alongside the env output.
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq);
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    if (key === LOGIN_CAPTURE_GUARD) continue;
+    // slice, not split: base64 secrets, connection strings and JWTs carry '='
+    // in the value and splitting on every one truncates them.
+    out[key] = line.slice(eq + 1);
+  }
+  return out;
+}
+
+/**
+ * The PATH an interactive login shell would have.
+ *
+ * Returns null on any failure — a broken rc file must degrade the terminal's
+ * PATH, never stop the app from opening one.
+ */
+export function captureLoginPath(timeoutMs = 5000): Promise<string | null> {
+  if (process.platform === 'win32') return Promise.resolve(null);
+  // The guard, actually read. It was previously set into the child and
+  // stripped from the result but never checked, so the comment promised a
+  // safeguard that did not exist — and its test only asserted the constant was
+  // non-empty, which passed with the mechanism entirely absent.
+  if (process.env[LOGIN_CAPTURE_GUARD] === '1') return Promise.resolve(null);
+  const shell = process.env.SHELL || os.userInfo().shell || '/bin/bash';
+  return new Promise(resolve => {
+    execFile(
+      shell,
+      ['-lic', 'env'],
+      { env: { ...process.env, [LOGIN_CAPTURE_GUARD]: '1' }, timeout: timeoutMs, maxBuffer: 1024 * 1024 },
+      (err, stdout) => resolve(err ? null : (parseEnvDump(String(stdout)).PATH ?? null)),
+    );
+  });
+}
+
+/**
+ * Build the environment for a PTY.
+ *
+ * `loginPath` is the PATH recovered from a login shell, if one was obtained.
+ * Passing it here is the whole point: detecting an agent with one PATH and
+ * spawning it with another is how "installed" turns into ENOENT.
+ */
+export function buildPtyEnv(base: NodeJS.ProcessEnv, loginPath?: string | null): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (value === undefined || shouldStrip(key)) continue;
+    env[key] = value;
+  }
+
+  if (loginPath) env.PATH = mergePath(loginPath, base.PATH);
+
+  // Forced, not defaulted. See the header: an inherited TERM describes whoever
+  // launched us, and there may not be one at all.
+  env.TERM = 'xterm-256color';
+  env.COLORTERM = 'truecolor';
+  env.TERM_PROGRAM = 'agenfk';
+
+  /*
+   * Ask for the transcript, rather than hoping it is on.
+   *
+   * Stripping the inherited marker above fixes the case we found. It does not
+   * make resume reliable: persistence can be off for reasons this process
+   * cannot see, and the failure is SILENT — the terminal behaves perfectly and
+   * the conversation is simply not there when you come back for it.
+   *
+   * Resume is something this app offers, so it asks for what resume needs.
+   * Forced rather than defaulted, for the same reason as TERM: an inherited
+   * value describes somebody else's intent, and here that value being '0' is
+   * exactly the case that leaves the feature quietly broken.
+   *
+   * Set unconditionally because the name is namespaced — an agent that is not
+   * Claude ignores it — and the alternative, threading the agent id down here,
+   * would make the environment depend on the launch instead of on the machine.
+   *
+   * The name comes from the Claude binary itself, not from the truncated
+   * warning that led us here.
+   */
+  env.CLAUDE_CODE_FORCE_SESSION_PERSISTENCE = '1';
+
+  // A shell with no HOME cannot read its own configuration.
+  if (!env.HOME) env.HOME = os.homedir();
+
+  return env;
+}
