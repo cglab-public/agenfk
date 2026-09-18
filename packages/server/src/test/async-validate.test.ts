@@ -12,7 +12,7 @@
  *  - GET /items/validate-runs/:runId reports { status: 'running' | 'passed' |
  *    'failed', output } and, once finished, { itemStatus }.
  *  - The background completion applies the SAME side effects as the sync path
- *    (item transition on pass, rollback on fail, validation comment).
+ *    (item transition on pass, refused advance on fail — the card stays put, validation comment).
  *  - Only one active run per item: a second async validate while one is
  *    running returns 409 with the existing runId.
  *  - Paths that never execute a command (intermediate step with no command)
@@ -184,7 +184,7 @@ describe('POST /items/:id/validate — async runs', () => {
     expect(validationComments.length).toBeGreaterThan(0);
   });
 
-  it('applies the failure side effects in the background (rollback to coding step)', async () => {
+  it('applies the failure side effects in the background (refused advance, card stays put)', async () => {
     if (!VERIFY_TOKEN) return;
     const item = await itemOnFinalStep('AV3', 'echo async-fail-output && exit 3');
 
@@ -200,7 +200,11 @@ describe('POST /items/:id/validate — async runs', () => {
 
     const after = (await agent().get(`/items/${item.id}`)).body;
     expect(after.status).not.toBe('DONE');
-    expect(after.status).not.toBe('TEST'); // rolled back off the final step
+    // CGLAB-275: a failed gate refuses the advance and moves the card nowhere.
+    // It used to roll back to the coding step, which on a custom flow could be
+    // two steps behind and was never reported.
+    expect(after.status).toBe('TEST');
+    expect(done.body.itemStatus).toBe('TEST');
   });
 
   it('rejects a concurrent run for the same item with 409 + the active runId', async () => {

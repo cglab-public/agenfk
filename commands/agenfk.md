@@ -168,15 +168,19 @@ defines none, so this is the common case — empty criteria never mean "no work"
    - On the **final step** (identified in step 1), **omit the command** — this runs the
      project's `verifyCommand` and lands DONE. This is the *only* step where omitting the
      command substitutes `verifyCommand`.
-   - On every **other** step, pass a **build/compile command** for the project's stack
-     (e.g. `npm run build`, `cargo build`, `go build ./...`).
+   - On every **other** step the command is **optional**. Pass one only when the step's
+     criteria call for it (a build or type-check is the usual fit on a compiled stack). Never
+     pass the test runner on a step whose criteria expect red tests — a TDD "write the failing
+     tests" step ends red by design, and that is not a failure. Omitting the command advances
+     on your evidence alone; that is the intended path, not a gap.
    - **Success, and the step you advanced into is `DONE`**: you are finished looping. Skip to
      the branch push below.
    - **Success, otherwise**: the item advanced. Go back to **step 1** — the new step has its
      own criteria and its own bar.
-   - **Failure**: the item is rolled back to the flow's coding step. Go back to **step 1** to
-     re-read where you now are, then fix and work forward again. Do not carry the previous
-     step's criteria into the coding step.
+   - **Failure** (the command exited non-zero): the advance is **refused** and the item stays
+     on its current step — nothing is rolled back. Fix what failed and verify again from the
+     same step. The response's last line always names the step the item is now on; read it
+     rather than assuming, and never truncate that output with `| tail`.
    - Do NOT set `DONE` directly by any route — not `agenfk update <id> --status DONE`, not the
      equivalent MCP call. `agenfk verify` on the final step is the only legitimate way in.
 
@@ -219,8 +223,8 @@ placeholders deliberately: substitute the real step names from the flow you load
 
 | Pass | Step you are on | What you do | How you advance |
 |------|-----------------|-------------|-----------------|
-| 1 | `<coding step>` — first non-anchor step | Explore, then implement (step 2 default), then review it (step 3 floor) | `agenfk verify <id> --evidence "..." "<build command>"` |
-| n | any middle step | Whatever its criteria say; review it if they are silent | `agenfk verify <id> --evidence "..." "<build command>"` |
+| 1 | `<coding step>` — first non-anchor step | Explore, then implement (step 2 default), then review it (step 3 floor) | `agenfk verify <id> --evidence "..."` — command optional; a build check if the criteria want one |
+| n | any middle step | Whatever its criteria say; review it if they are silent | `agenfk verify <id> --evidence "..."` — command optional; never the test runner on a red-tests step |
 | last | `<final step>` — last step before `DONE` | Suite green, criteria met | `agenfk verify <id> --evidence "..."` — **no command**, uses `verifyCommand` → **DONE** |
 
 The number of passes equals the number of working steps in your flow, not three. A flow whose

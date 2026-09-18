@@ -4521,7 +4521,7 @@ function pruneValidateRuns() {
 
 // ── validate_progress: unified exit-criteria gate (flow-aware) ───────────────
 // command is optional; if omitted, project.verifyCommand is used.
-// Advances item to the next flow step. On failure, moves back to the coding step.
+// Advances item to the next flow step. On failure the advance is refused and the item stays put (CGLAB-275).
 // `asyncRun` (pre-reserved by the route so the concurrency guard has no
 // check-then-set window) only changes behaviour when a command actually
 // executes; every other path (anchor advance, sibling propagation, no-command
@@ -4573,18 +4573,20 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     io.emit('items_updated');
     const codingStepCriteria = (codingStep as any).exitCriteria as string | undefined;
     const mandatoryNote = codingStepCriteria ? `\n\n⚠️ MANDATORY EXIT CRITERIA — you MUST satisfy ALL of the following before calling validate_progress again:\n\n${codingStepCriteria}` : '';
-    return res.json({ status: codingStep.name, message: `✅ Validation Passed!\n\nItem moved to ${codingStep.name}.${mandatoryNote}` });
+    return res.json({ status: codingStep.name, message: `✅ Validation Passed!\n\nItem moved to ${codingStep.name}.${mandatoryNote}\n\nItem is now on ${codingStep.name}.` });
   }
 
   const nextStep = sorted[currentFlowStep.index + 1];
   const nextStatus = (nextStep?.name ?? Status.DONE) as Status;
-  // Falling straight to the literal IN_PROGRESS puts the item on a status the
-  // flow may not contain, and that is a one-way door: findCurrentFlowStep then
-  // returns undefined so every later verify 400s, and buildAllowedTransitions
-  // takes its currentIdx === -1 recovery branch, which on a flow with no real
-  // steps offers nothing to come back to. Prefer the flow's own first step —
-  // staying inside the flow always leaves a route out.
-  const failureStatus = (codingStep?.name ?? sorted[0]?.name ?? Status.IN_PROGRESS) as Status;
+  // A failed command REFUSES the advance; it moves the card nowhere (CGLAB-275).
+  // It used to roll the card back to the flow's first non-anchor step, computed
+  // by position. On a TDD flow that step is DISCOVERY, so an agent that passed
+  // pytest on a red-tests step — doing exactly what the step asked — was sent two
+  // steps backwards, and the response never said so. The server cannot judge
+  // prose criteria, so a non-zero exit from an optional command is not evidence
+  // the step failed; on the final step the command IS the gate, and there too the
+  // right answer is "not DONE", not "back to the coding step".
+  const failureStatus = item.status as Status;
   // Exit criteria of the step the item is moving INTO — returned as mandatory agent instructions
   const nextStepCriteria = (nextStep as any)?.exitCriteria as string | undefined;
   const mandatoryInstructions = (nextStatus !== Status.DONE && nextStepCriteria)
@@ -4726,7 +4728,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         const gitResult = (process.env.NODE_ENV !== 'test' && !process.env.VITEST)
           ? await autoGitCommit(updated, (project as any)?.projectRoot)
           : undefined;
-        return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.${describePush(gitResult)}`, output: 'Sibling propagation' });
+        return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.${describePush(gitResult)}\n\nItem is now on ${nextStatus}.`, output: 'Sibling propagation' });
       }
       console.warn(`[VALIDATE] Sibling propagation refused for ${itemId}: ${refusal}`);
     } else {
@@ -4744,7 +4746,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         await ensureWorktreeForItem(updated, true);
         io.emit('items_updated');
         if (updated.parentId) await syncParentStatus(updated.parentId);
-        return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}`, output: 'Sibling propagation' });
+        return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}\n\nItem is now on ${nextStatus}.`, output: 'Sibling propagation' });
       }
     }
   }
@@ -4757,7 +4759,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     await ensureWorktreeForItem(updated, true);
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId);
-    return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}` });
+    return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}\n\nItem is now on ${nextStatus}.` });
   }
 
   // See above: declining beats committing somewhere plausible.
@@ -4876,7 +4878,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   const comments = [...(item.comments || []), {
     id: uuidv4(),
     author: 'ValidateTool',
-    content: `### Validation ${passed ? 'PASSED' : 'FAILED'}\n\n**Step**: ${item.status} → ${passed ? nextStatus : failureStatus}${exitNote}\n**Command**: \`${resolvedCommand}\`\n\n**Output**:\n\`\`\`\n${preview}\n\`\`\``,
+    content: `### Validation ${passed ? 'PASSED' : 'FAILED'}\n\n**Step**: ${passed ? `${item.status} → ${nextStatus}` : `${item.status} (advance refused — the card stays here)`}${exitNote}\n**Command**: \`${resolvedCommand}\`\n\n**Output**:\n\`\`\`\n${preview}\n\`\`\``,
     timestamp: new Date(),
   }];
 
@@ -4972,7 +4974,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       itemId,
       payload: { command: resolvedCommand, status: 'PASSED', testId },
     });
-    return res2.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${describePush(gitResult)}`, output: preview });
+    return res2.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${describePush(gitResult)}\n\nItem is now on ${nextStatus}.`, output: preview });
   } else {
     const updates: any = { status: failureStatus, comments };
     if (nextStatus === Status.DONE) {
@@ -4984,7 +4986,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       type: 'validate.failed',
       projectId: item.projectId,
       itemId,
-      payload: { fromStatus: item.status, fellBackTo: failureStatus, command: resolvedCommand },
+      payload: { fromStatus: item.status, stayedOn: failureStatus, command: resolvedCommand },
     });
     recordHubEvent({
       type: 'test.logged',
@@ -4998,7 +5000,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       // exit code used to be computed and thrown away, so a red suite, a
       // cap-kill and a command that never started were indistinguishable
       // (BUG b233143b).
-      message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${projectRoot}\`\nResult: ${describeExit({ code, timedOut, signal, spawnError }, maxMs)}\n\nOutput: ${formatBytes(captured.totalBytes)}\n\nLast ${FAILURE_TAIL_LINES} lines of output:\n${tailLines(captured.tail, FAILURE_TAIL_LINES)}\n\n${describeLog(captured, logPath, logVanished)}`,
+      message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${projectRoot}\`\nResult: ${describeExit({ code, timedOut, signal, spawnError }, maxMs)}\n\nOutput: ${formatBytes(captured.totalBytes)}\n\nLast ${FAILURE_TAIL_LINES} lines of output:\n${tailLines(captured.tail, FAILURE_TAIL_LINES)}\n\n${describeLog(captured, logPath, logVanished)}\n\nThe advance was refused. Item stays on ${failureStatus}.`,
       output: preview,
     });
   }

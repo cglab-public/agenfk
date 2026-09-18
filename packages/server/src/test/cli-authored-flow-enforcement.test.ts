@@ -127,8 +127,9 @@ describe('a CLI-authored flow gets the same COMMAND GATE as the default one', ()
 
   it('never strands an item outside its own flow, even on a degenerate one', async () => {
     // If EVERY step is marked terminal — which `agenfk flow create` permits,
-    // it just asks yes/no per step — there is no coding step to roll back to.
-    // Falling back to the literal IN_PROGRESS puts the item on a status the
+    // it just asks yes/no per step — there is no coding step. A failed verify
+    // now stays put (CGLAB-275), but this pins the older hazard too: landing on
+    // the literal IN_PROGRESS puts the item on a status the
     // flow does not contain, and that is a one-way door: findCurrentFlowStep
     // returns undefined so every later verify 400s, and buildAllowedTransitions
     // takes its currentIdx === -1 recovery branch whose real-step filter is
@@ -155,12 +156,12 @@ describe('a CLI-authored flow gets the same COMMAND GATE as the default one', ()
     expect(['ONE', 'TWO']).toContain(after.body.status);
   });
 
-  it('sends a failed verify back to a step the agent is still allowed to work in', async () => {
-    // A failed verify rolls the item back to the "coding step". If that is
-    // computed with a predicate blind to isSpecial, it lands on BACKLOG — a
-    // boundary step — and the gatekeeper then reports no active task and
-    // mechanically blocks every Edit. The agent is sent back to fix a failure
-    // and simultaneously forbidden from touching the code.
+  it('leaves a failed verify on a step the agent is still allowed to work in', async () => {
+    // A failed verify used to roll the item back to the "coding step"; computed
+    // with a predicate blind to isSpecial, that landed on BACKLOG — a boundary
+    // step — and the gatekeeper then blocked every Edit. Since CGLAB-275 a
+    // failed verify stays put, and the property that matters is unchanged: the
+    // agent sent to fix a failure must still be allowed to touch the code.
     const projectId = await projectOnCliFlow('cli-failure-rollback', 'exit 1');
     const item = await agent().post('/items').set('x-agenfk-internal', VERIFY_TOKEN!).send({ type: 'TASK', title: 'probe', projectId });
     await agent().put(`/items/${item.body.id}`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ status: 'CHECKING' });

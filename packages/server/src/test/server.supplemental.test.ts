@@ -692,7 +692,7 @@ describe('POST /items/:id/review success paths', () => {
     }
   });
 
-  it('returns 422 on failing command and moves back to IN_PROGRESS', async () => {
+  it('returns 422 on failing command and leaves the item on REVIEW (refused, not rolled back)', async () => {
     if (!VERIFY_TOKEN) return;
     const p = await makeProject(app, 'P3');
     const item = await makeItem(app, { type: 'TASK', title: 'T3', projectId: p.id });
@@ -705,7 +705,10 @@ describe('POST /items/:id/review success paths', () => {
       .send({ command: 'exit 1' });
 
     expect(res.status).toBe(422);
-    expect(res.body.status).toBe('IN_PROGRESS');
+    // CGLAB-275: a failed command refuses the advance; the card stays where it was.
+    expect(res.body.status).toBe('REVIEW');
+    const after = (await agent().get(`/items/${item.id}`)).body;
+    expect(after.status).toBe('REVIEW');
   });
 });
 

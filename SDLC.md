@@ -109,11 +109,11 @@ The agent calls `validate_progress` at each intermediate flow step to advance to
 validate_progress({ itemId, command: "npm run build" })
 ```
 
-- `command` is optional. If omitted, the project's `verifyCommand` is used.
-- The **agent picks the command** for intermediate steps (build, lint, type-check, etc.).
+- `command` is optional. If omitted on the final step, the project's `verifyCommand` is used; if omitted on an intermediate step, nothing runs and the item advances on the evidence.
+- The **agent picks the command** for intermediate steps (build, lint, type-check, etc.) when the step's criteria call for one. A step whose criteria expect red tests (TDD) should not be verified with the test runner.
 - On the **final intermediate step** (the last step before DONE), `verifyCommand` is enforced and, on success, the server makes a `close(<type>)` commit **of whatever you have staged**. It stages nothing for you: `git add` the work that belongs to this item before verifying, or it will not land. The DONE response names anything it left behind.
 - If the command passes (exit code 0): item advances to the next flow step.
-- If it fails: item moves back to the first non-anchor step (i.e., `IN_PROGRESS` in the default flow).
+- If it fails (non-zero exit): the advance is refused and the item **stays on its current step**. Nothing is rolled back; on the final step this is what keeps a red suite out of DONE. The response's last line names the resulting step.
 - A comment is logged with the command output.
 
 **Before calling `validate_progress`**, the agent should call `workflow_gatekeeper(intent, itemId)` — or `agenfk gatekeeper` on the CLI, which reports the same thing. The response authorizes the edit and carries the current step's `exitCriteria` plus the active flow's steps. The agent must satisfy those criteria before advancing.

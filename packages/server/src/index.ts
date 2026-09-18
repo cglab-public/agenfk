@@ -463,7 +463,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "validate_progress",
-        description: "Step-completion gate: you MUST describe how you satisfied the current step's exit criteria before the step advances. Provide your evidence in the 'evidence' field — it will be logged as a comment tagged with the current step name, creating an audit trail. Optionally run a build/test command. On success, advances to the next flow step and returns the next step's exit criteria — treat those as your new mandatory work definition. On failure, moves back to the coding step.",
+        description: "Step-completion gate: you MUST describe how you satisfied the current step's exit criteria before the step advances. Provide your evidence in the 'evidence' field — it will be logged as a comment tagged with the current step name, creating an audit trail. Optionally run a command; on intermediate steps it is not required — pass one only when the current step's exit criteria call for it, and only a command those criteria expect to succeed. On success, advances to the next flow step and returns the next step's exit criteria — treat those as your new mandatory work definition. If the command exits non-zero the advance is refused and the item stays on its current step (on the final step this is the hard gate that keeps a red suite out of DONE); nothing is rolled back.",
         inputSchema: {
           type: "object",
           properties: {

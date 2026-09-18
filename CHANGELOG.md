@@ -2,6 +2,35 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.21-beta.3] — 2026-09-18
+
+Beta, cumulative over `1.1.21-beta.2` (which shipped without its own entry here — it
+carried the desktop installer fixes and the merge-conflict-marker cleanup in the rule
+bundles, PR #182).
+
+### A failed verify command refuses the advance; it no longer rolls the card back (CGLAB-275)
+
+Observed on a TDD flow driven by a pi agent: the agent wrote red tests on the
+"create unit tests" step — exactly what that step asked for — and passed pytest as the
+verify command. The suite exited non-zero, and the server rolled the card back to the
+flow's first non-anchor step, computed by position. On that flow the step is DISCOVERY,
+two steps behind, and the failure response never said so. The agent then read the
+criteria banner of a later verify as "still on the same step" and learned the wrong
+lesson: that tests must pass to move between steps.
+
+- A non-zero verify command on **any** step leaves the card **where it is**. The server
+  cannot judge prose exit criteria, so the exit code of an optional command is not
+  evidence the step failed. On the step before DONE the command is the gate, and there too
+  the answer is "not DONE", not "back to the coding step".
+- The code assumes only what a flow guarantees: a first anchor, ordered steps, a last
+  anchor. No step name or position is consulted on the failure path any more.
+- **Every verify response ends with the resulting status** ("Item is now on X" /
+  "Item stays on X"), so an agent that truncates the output still sees where the card is.
+- The `validate.failed` hub event carries `stayedOn` instead of `fellBackTo`.
+- The skill, slash commands, README and SDLC no longer tell agents to pass a build
+  command on every intermediate step: the command is optional there, and a step whose
+  criteria expect red tests is not verified with the test runner.
+
 ## [1.1.21-beta.1] — 2026-09-18
 
 Beta, cumulative over `1.1.20` (the merged stable line) — this branch carries the Electron
