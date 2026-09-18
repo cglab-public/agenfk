@@ -304,7 +304,7 @@ describe('the shape of it', () => {
     // appearing or vanishing is a decision somebody has to come here and make.
     // General is absent on purpose: it held only the tmux toggle.
     expect(within(rail).getAllByRole('button').map(b => b.textContent))
-      .toEqual(['Account', 'App', 'Notifications', 'Agents']);
+      .toEqual(['Account', 'App', 'Notifications', 'Terminal', 'Agents']);
   });
 
   it('lists only sections that have something in them', async () => {
@@ -941,7 +941,7 @@ describe('the section menu carries an icon', () => {
     renderShell();
     await openSettingsRaw();
     const rail = await screen.findByRole('navigation', { name: /settings sections/i });
-    for (const label of ['Account', 'App', 'Notifications', 'Agents']) {
+    for (const label of ['Account', 'App', 'Notifications', 'Terminal', 'Agents']) {
       expect(
         within(rail).getByRole('button', { name: label }),
         `the rail no longer answers to "${label}"`,
@@ -956,6 +956,6 @@ describe('the section menu carries an icon', () => {
     await openSettingsRaw();
     const rail = await screen.findByRole('navigation', { name: /settings sections/i });
     expect(within(rail).getAllByRole('button').map(b => b.textContent))
-      .toEqual(['Account', 'App', 'Notifications', 'Agents']);
+      .toEqual(['Account', 'App', 'Notifications', 'Terminal', 'Agents']);
   });
 });

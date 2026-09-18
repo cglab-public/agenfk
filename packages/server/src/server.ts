@@ -42,6 +42,7 @@ import { exec, execFile, execSync, execFileSync, spawn } from "child_process";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import { readGitStatus } from './gitStatus.js';
+import { buildHerdrSnapshot, realHerdrDeps } from './herdrRoutes.js';
 
 // The local API server is for this machine only. It binds to loopback by
 // default (override with AGENFK_HOST) and only accepts browser requests from
@@ -1455,6 +1456,22 @@ app.put("/api/telemetry/config", (req: any, res: any) => {
 });
 
 // DB status & backup endpoints
+
+/**
+ * The herdr sessions already open on this machine (CGLAB-266 / CGLAB-267).
+ *
+ * READ ONLY. The protocol can also type into a pane and move the operator's
+ * real screen; none of that is reachable from here.
+ *
+ * NEVER 500s ON ABSENCE. A machine with no herdr answers 200 with an empty list
+ * and a printable reason, because the setting that consumes this ships enabled
+ * and "not installed" is an ordinary answer, not a failure. Likewise a socket
+ * left behind by a crash: it is reported unreachable per session so one stale
+ * file cannot hide the sessions that are running.
+ */
+app.get("/herdr/sessions", asyncHandler(async (_req: any, res: any) => {
+  res.json(await buildHerdrSnapshot(realHerdrDeps));
+}));
 
 app.get("/db/status", asyncHandler(async (_req: any, res: any) => {
   const dbType = 'sqlite';
