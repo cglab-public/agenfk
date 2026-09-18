@@ -875,8 +875,17 @@ export const findProjectRoot = (startDir: string): string => {
  * route stays a route: a file-system read written inline in a request handler
  * is also what the "uncontrolled path" and "missing rate limiting" CodeQL
  * queries look for, and the walk here is the one place that reads it.
+ *
+ * `path.resolve` FIRST, and it is load-bearing for two reasons. Semantically it
+ * is what findProjectRoot already does - a root that is relative would be
+ * resolved against the SERVER's cwd later, the defect this whole area keeps
+ * producing. And it is the barrier that keeps the read out of CodeQL's
+ * "uncontrolled data used in path expression": the walk below resolves before
+ * touching disk, which is why its own `path.join(currentDir, '.agenfk')` is not
+ * flagged while the same expression on a raw value is.
  */
-export const hasProjectMarker = (root: string): boolean => fs.existsSync(path.join(root, '.agenfk'));
+export const hasProjectMarker = (root: string): boolean =>
+  fs.existsSync(path.join(path.resolve(root), '.agenfk'));
 
 /**
 /**
