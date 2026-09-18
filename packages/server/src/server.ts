@@ -5191,10 +5191,26 @@ app.post("/items/:id/validate", asyncHandler(async (req: any, res: any) => {
     // runs in, so recording $HOME points both at the user's private files.
     // Keeping whatever was there is strictly better than overwriting it with
     // that.
-    if (item && isPersistableProjectRoot(resolvedRoot, os.homedir())) {
+    /*
+     * THE MARKER IS THE PROOF. findProjectRoot returns its STARTING directory
+     * when the walk finds no `.agenfk` ancestor - which is a FAILURE, not an
+     * answer, and the two are indistinguishable by looking at the string.
+     *
+     * It is not hypothetical: `.agenfk/` is gitignored, so a worktree has
+     * none, and a verify run from one used to record that worktree as the
+     * project's own root. Every later operation that resolves through
+     * projectRoot - autoGitCommit above all - then aimed at a directory
+     * belonging to ONE card, permanently, with no message. Checking for the
+     * marker is what tells a real found root from a fallback.
+     */
+    const isRealRoot = fs.existsSync(path.join(resolvedRoot, '.agenfk'));
+    if (item && isRealRoot && isPersistableProjectRoot(resolvedRoot, os.homedir())) {
       await storage.updateProject(item.projectId, { projectRoot: resolvedRoot });
     } else if (item) {
-      console.warn(`[PROJECT_ROOT] Refusing to record ${resolvedRoot} as a project root (item ${item.id})`);
+      const why = !isRealRoot
+        ? 'no .agenfk marker there (a worktree has none) - it is not a project root'
+        : 'it is not a persistable project root';
+      console.warn(`[PROJECT_ROOT] Refusing to record ${resolvedRoot} as a project root (item ${item.id}): ${why}`);
     }
   }
   // One active run per item — a second verify while one runs is almost always

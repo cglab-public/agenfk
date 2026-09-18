@@ -141,9 +141,14 @@ describe('CGLAB-13 — verifyCommand runs in the project working directory', () 
     expect(proj.projectRoot).toBe(projRoot);
   });
 
-  it('fallback: a caller cwd with no .agenfk ancestor is used as-is (returns the raw cwd)', async () => {
+  it('REFUSES a cwd with no .agenfk ancestor: it does not become the project root', async () => {
     if (!VERIFY_TOKEN) return;
-    // A directory tree with NO .agenfk marker anywhere above it.
+    // A directory tree with NO .agenfk marker anywhere above it - which is
+    // what a WORKTREE looks like, because `.agenfk/` is gitignored and does
+    // not travel into one. findProjectRoot's walk finds nothing and returns
+    // its starting directory, and recording that repointed the whole project
+    // at a directory belonging to ONE card, permanently, with no message.
+    // The verify still runs there; the PROJECT ROOT is what must not move.
     const orphan = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-orphan-')));
     try {
       const { projectId, item } = await itemOnFinalStep('CWD4', 'true');
@@ -154,7 +159,8 @@ describe('CGLAB-13 — verifyCommand runs in the project working directory', () 
       await waitForRun(res.body.runId);
 
       const proj = (await agent().get(`/projects/${projectId}`)).body;
-      expect(proj.projectRoot).toBe(orphan);
+      expect(proj.projectRoot, 'a directory with no .agenfk marker was recorded as the project root').not.toBe(orphan);
+      expect(proj.projectRoot ?? null).toBeNull();
     } finally {
       fs.rmSync(orphan, { recursive: true, force: true });
     }

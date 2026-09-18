@@ -1904,19 +1904,39 @@ describe('GET /projects/:id/flow', () => {
 describe('POST /items/:id/validate — cwd persisted as project.projectRoot', () => {
   beforeEach(async () => { await initStorage(); });
 
+  /*
+   * A REAL directory, with the `.agenfk` marker that makes it a project root.
+   *
+   * These tests used fake strings like '/home/user/my-project'. They passed
+   * because the route recorded whatever findProjectRoot returned, and a walk
+   * that finds nothing returns its STARTING directory - so a WORKTREE (which
+   * has no `.agenfk`, it is gitignored) repointed the whole project at one
+   * card's directory. The marker is what makes the value a root rather than a
+   * fallback, so the tests act out the real shape (BUG 957513e9).
+   */
+  const realRoot = (): string => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-supp-root-')));
+    fs.mkdirSync(path.join(dir, '.agenfk'), { recursive: true });
+    return dir;
+  };
+  const roots: string[] = [];
+  const makeRoot = (): string => { const d = realRoot(); roots.push(d); return d; };
+  afterEach(() => { for (const d of roots.splice(0)) fs.rmSync(d, { recursive: true, force: true }); });
+
   it('persists cwd on the project when validate is called with cwd in body', async () => {
     if (!VERIFY_TOKEN) return;
     const p = await makeProject(app, 'CWD1');
     const item = await makeItem(app, { type: 'TASK', title: 'CWD1', projectId: p.id });
     await agent().put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    const root = makeRoot();
 
     await agent()
       .post(`/items/${item.id}/validate`)
       .set('x-agenfk-internal', VERIFY_TOKEN)
-      .send({ cwd: '/home/user/my-project' });
+      .send({ cwd: root });
 
     const updatedProject = (await agent().get(`/projects/${p.id}`)).body;
-    expect(updatedProject.projectRoot).toBe('/home/user/my-project');
+    expect(updatedProject.projectRoot).toBe(root);
   });
 
   it('does not overwrite an existing projectRoot when cwd is absent', async () => {
@@ -1924,13 +1944,14 @@ describe('POST /items/:id/validate — cwd persisted as project.projectRoot', ()
     const p = await makeProject(app, 'CWD2');
     const item = await makeItem(app, { type: 'TASK', title: 'CWD2', projectId: p.id });
     await agent().put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    const stored = makeRoot();
 
-    // Establish projectRoot the legitimate way — a validate that carries cwd
-    // (projectRoot is no longer mass-assignable via PUT /projects/:id).
+    // Establish projectRoot the legitimate way — a validate that carries a cwd
+    // with a marker (projectRoot is no longer mass-assignable via PUT).
     await agent()
       .post(`/items/${item.id}/validate`)
       .set('x-agenfk-internal', VERIFY_TOKEN)
-      .send({ cwd: '/stored/root' });
+      .send({ cwd: stored });
 
     // A later validate with no cwd must not clobber the stored projectRoot.
     await agent()
@@ -1939,23 +1960,23 @@ describe('POST /items/:id/validate — cwd persisted as project.projectRoot', ()
       .send({});  // no cwd
 
     const updatedProject = (await agent().get(`/projects/${p.id}`)).body;
-    expect(updatedProject.projectRoot).toBe('/stored/root');
+    expect(updatedProject.projectRoot).toBe(stored);
   });
 
   it('updates projectRoot when a new cwd is provided', async () => {
     if (!VERIFY_TOKEN) return;
     const p = (await agent().post('/projects').send({ name: 'CWD3' })).body;
-    await agent().put(`/projects/${p.id}`).send({ projectRoot: '/old/root' });
     const item = (await agent().post('/items').send({ type: 'TASK', title: 'CWD3', projectId: p.id })).body;
     await agent().put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    const fresh = makeRoot();
 
     await agent()
       .post(`/items/${item.id}/validate`)
       .set('x-agenfk-internal', VERIFY_TOKEN)
-      .send({ cwd: '/new/root' });
+      .send({ cwd: fresh });
 
     const updatedProject = (await agent().get(`/projects/${p.id}`)).body;
-    expect(updatedProject.projectRoot).toBe('/new/root');
+    expect(updatedProject.projectRoot).toBe(fresh);
   });
 });
 
