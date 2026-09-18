@@ -77,6 +77,16 @@ const APP_ICON_SET = 'build/icons';
 module.exports = {
   appId: 'com.cglab.agenfk.desktop',
   productName: 'AgEnFK',
+  /*
+   * NOT derived from the package name.
+   *
+   * `@agenfk/desktop` sanitises to `@agenfkdesktop`, and Linux refuses it:
+   * "executableName contains characters that cannot be safely used in file
+   * paths". The AppImage and the deb both die on it, so every Linux build
+   * failed while macOS and Windows built fine - the platform-specific failure
+   * that looks like a runner problem and is a name.
+   */
+  executableName: 'agenfk',
   // Stable across builds: macOS keys permissions, the keychain entry and the
   // saved window position off it, so changing it silently resets all three.
   copyright: 'CG/lab',

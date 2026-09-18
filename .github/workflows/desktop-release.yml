@@ -50,6 +50,14 @@ jobs:
           # Signing is opt-in: without the secrets the build still produces
           # installers, they simply warn on first launch. Failing the build
           # instead would block every fork and every contributor.
+          #
+          # AUTO-DISCOVERY HAS TO BE OFF, and that is the half that broke every
+          # macOS release. On a runner with no certs electron-builder still
+          # finds whatever identity the image ships and tries to sign with an
+          # EMPTY password - then dies with the unhelpful "⨯ <project dir> not a
+          # file". The flag is set from the secrets so adding both cert and
+          # password turns signing back on by itself.
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.MAC_CERT_P12 != '' && secrets.MAC_CERT_PASSWORD != '' && 'true' || 'false' }}
           CSC_LINK: ${{ secrets.MAC_CERT_P12 }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
