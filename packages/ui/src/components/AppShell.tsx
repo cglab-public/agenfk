@@ -22,7 +22,7 @@ import React from 'react';
 import { clsx } from 'clsx';
 import { agentLabel } from '../agentLabels';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, Book, Check, ChevronDown, ChevronRight, Folder, FolderOpen, GitBranch, LayoutGrid, ListFilter, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, Settings, type LucideIcon } from 'lucide-react';
+import { Activity, Book, Check, ChevronDown, ChevronRight, Folder, FolderOpen, GitBranch, LayoutGrid, ListFilter, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, Settings, SquareTerminal, type LucideIcon } from 'lucide-react';
 import { useSocketEvent, useSocket } from '../SocketContext';
 import { AgenfkWordmark } from './AgenfkWordmark';
 import { desktopInfo } from '../desktop';
@@ -37,6 +37,7 @@ import {
 } from '../sidebarPrefs';
 import { NewProjectButton } from './NewProjectButton';
 import { api } from '../api';
+import { HerdrPanes } from './HerdrPanes';
 import type { AgEnFKItem, Project } from '../types';
 import { TerminalTab, type TerminalSession } from './TerminalTab';
 import { treeForDrop, treeForToggle, pruneTree, treeForFocus } from '../paneLayout';
@@ -94,7 +95,7 @@ import { clampSidebarWidth, sidebarIsResizable, SIDEBAR_MIN_PX, SIDEBAR_MAX_PX, 
  * Every view here is reached from the sidebar or from a session, and each one
  * is a panel that stays mounted and is hidden rather than unmounted.
  */
-type ViewId = 'kanban' | 'terminal' | 'settings' | 'agents';
+type ViewId = 'kanban' | 'terminal' | 'settings' | 'agents' | 'herdr';
 
 /**
  * The WORK group at the top of the sidebar (CGLAB-164).
@@ -133,6 +134,13 @@ const WORK_ROWS: WorkRow[] = [
   // two routes to it, and a second glyph would read as a second feature.
   { kind: 'action', id: 'flows', label: 'Flows', Icon: GitBranch },
   { kind: 'view', id: 'agents', label: 'Agents', Icon: Activity },
+  /*
+   * Sessions this product did NOT start. Its own row rather than a filter on
+   * Agents, because the two answer different questions: Agents is "what did we
+   * run", this is "what is running". On the machine this was built for the
+   * second list held twenty-four panes and the first could show none of them.
+   */
+  { kind: 'view', id: 'herdr', label: 'Sessions', Icon: SquareTerminal },
 ];
 
 type Connection = 'connecting' | 'connected' | 'offline';
@@ -1545,6 +1553,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             row that opens it is an ordinary button, and a tabpanel with no
             owning tab reports a tablist with nothing selected.
           */}
+          <div
+            role="region"
+            id="panel-herdr"
+            aria-label="herdr sessions"
+            tabIndex={0}
+            hidden={active !== 'herdr'}
+            className="flex min-h-0 flex-1 flex-col"
+          >
+            <header className="flex shrink-0 items-center gap-2 border-b border-border-soft px-4 py-2">
+              <h2 className="font-mono text-[10px] font-bold uppercase tracking-wide text-ink-tertiary">
+                Sessions
+              </h2>
+              <span className="text-[11px] text-ink-tertiary">already open in herdr</span>
+            </header>
+            {/* Mounted only while shown: the listing opens a unix socket per
+                session, and a hidden panel polling somebody's multiplexer is
+                load they never asked for. */}
+            {active === 'herdr' && <HerdrPanes />}
+          </div>
+
           <div
             role="region"
             id="panel-agents"
