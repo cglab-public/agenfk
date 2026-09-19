@@ -33,7 +33,7 @@ import { useActiveProject } from '../ActiveProject';
 import {
   readPinned, togglePinned, sortProjectsByPin,
   readExpanded, toggleExpanded, writeExpanded,
-  readProjectSort, writeProjectSort, orderProjects, type ProjectSort,
+  readProjectSort, writeProjectSort, readAgentFilter, writeAgentFilter, orderProjects, type ProjectSort,
 } from '../sidebarPrefs';
 import { NewProjectButton } from './NewProjectButton';
 import { api } from '../api';
@@ -84,6 +84,11 @@ import { CardStateDot } from './CardStateDot';
 import { CardProcessRow } from './CardProcessRow';
 import { RunsPanel } from './RunsPanel';
 import { ORDER, SessionStateIndicator } from './sessionPresentation';
+import { AgentIcon } from './AgentIcon';
+import {
+  availableAgentFilters, collectAgentIds, projectMatchesAgentFilter,
+  pruneAgentFilter, matchesAgentFilter, type AgentFilterOption,
+} from '../agentFilter';
 import { cardState, itemsNeedingAPerson, NEEDS_A_PERSON } from '../cardState';
 import { AttentionAlerts } from './AttentionAlerts';
 import { clampSidebarWidth, sidebarIsResizable, SIDEBAR_MIN_PX, SIDEBAR_MAX_PX, SIDEBAR_COLLAPSED_PX } from '../sidebarWidth';
@@ -2138,6 +2143,36 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
   const [pinned, setPinned] = React.useState<string[]>(() => readPinned());
   const [expanded, setExpanded] = React.useState<string[]>(() => readExpanded());
   const [sort, setSort] = React.useState<ProjectSort>(() => readProjectSort());
+  const [agentFilter, setAgentFilter] = React.useState<string[]>(() => readAgentFilter());
+
+  /*
+   * The agents ACTUALLY in the tree, from both sources. Offering every agent
+   * the product supports would put rows in the menu that can only empty the
+   * list; five are installed and a machine rarely runs two at once.
+   */
+  const agentOptions = React.useMemo(
+    () => availableAgentFilters(collectAgentIds(sessionRows, herdrProject)),
+    [sessionRows, herdrProject],
+  );
+
+  /*
+   * A selection whose agent has since stopped is dropped.
+   *
+   * Its row leaves the menu when the last session of that kind ends, and the
+   * selection would survive in storage behind it - a filter still narrowing
+   * the list with no visible way to turn it off, which reads as the app having
+   * lost the projects.
+   */
+  React.useEffect(() => {
+    const live = pruneAgentFilter(agentFilter, agentOptions);
+    if (live.length !== agentFilter.length) setAgentFilter(writeAgentFilter(live));
+  }, [agentOptions, agentFilter]);
+
+  const toggleAgentFilter = React.useCallback((agentId: string): void => {
+    setAgentFilter(prev => writeAgentFilter(
+      prev.includes(agentId) ? prev.filter(id => id !== agentId) : [...prev, agentId],
+    ));
+  }, []);
 
   // One request for every project's in-flight work. The server answers this
   // per project against that project's own flow, so there is no second copy
@@ -2190,6 +2225,28 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
     () => sortProjectsByPin(orderProjects(projects as Project[], sort), pinned),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [projects, pinned, sort, activeProjectId],
+  );
+
+  /*
+   * Narrowed AFTER ordering, never instead of it.
+   *
+   * Pinning and last-used still decide the sequence; the filter only removes.
+   * Doing it the other way round would let a filter quietly reorder what is
+   * left, so turning one on and off again would not return the list to where
+   * it was.
+   *
+   * A project with no agent of the chosen kind goes entirely, because that is
+   * what the filter is FOR: "where is pi running" is answered by a shorter
+   * list of projects, not the same list with emptier branches.
+   */
+  const visible = React.useMemo(
+    () => (agentFilter.length === 0
+      ? ordered
+      : ordered.filter(p => projectMatchesAgentFilter(
+          collectAgentIds(sessionRows, herdrProject, { id: p.id, name: p.name }),
+          agentFilter,
+        ))),
+    [ordered, agentFilter, sessionRows, herdrProject],
   );
 
   // Collapsed is a rail, not nothing. A toggle that vanishes with the panel it
@@ -2429,7 +2486,14 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
       <div className="flex shrink-0 items-center pr-1">
         <SidebarLabel>Projects</SidebarLabel>
         <div className="ml-auto flex items-center">
-          <SortMenu value={sort} onChange={next => setSort(writeProjectSort(next))} />
+          <SortMenu
+            value={sort}
+            onChange={next => setSort(writeProjectSort(next))}
+            agentOptions={agentOptions}
+            selectedAgents={agentFilter}
+            onToggleAgent={toggleAgentFilter}
+            onClearAgents={() => setAgentFilter(writeAgentFilter([]))}
+          />
           <NewProjectButton onCreated={id => setActiveProjectId(id)} />
         </div>
       </div>
@@ -2523,7 +2587,25 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
         data-testid="project-list"
         className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-slim"
       >
-        {ordered.map((project: Project) => {
+        {/*
+          * A filter that empties the list must SAY SO, and offer the way out.
+          * A blank tree with the projects still in the database reads as data
+          * loss, and the only clue would be a tinted icon in the corner.
+          */}
+        {visible.length === 0 && agentFilter.length > 0 && (
+          <li data-testid="agent-filter-empty" className="px-3 py-4 text-[11px] text-ink-tertiary">
+            No project is running{' '}
+            {agentFilter.map(id => agentLabel(id)).join(' or ')}.{' '}
+            <button
+              type="button"
+              onClick={() => setAgentFilter(writeAgentFilter([]))}
+              className="underline decoration-dotted underline-offset-2 transition-colors hover:text-ink"
+            >
+              Show all projects
+            </button>
+          </li>
+        )}
+        {visible.map((project: Project) => {
           const isActive = project.id === activeProjectId;
           const isPinned = pinned.includes(project.id);
           const work = inFlightByProject.get(project.id) ?? [];
@@ -2684,7 +2766,13 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                     * and cannot act on. A row that looked like ours would invite
                     * a STOP aimed at somebody else's terminal.
                     */}
-                  {herdrProject.filter(r => r.projectName === project.name).map(r => (
+                  {herdrProject
+                    .filter(r => r.projectName === project.name)
+                    // The project survived the filter; its rows still have to
+                    // match it, or picking Pi would show a project BECAUSE pi
+                    // is there and then list the claude panes beside it.
+                    .filter(r => matchesAgentFilter(r.agentId, agentFilter))
+                    .map(r => (
                     <li key={r.paneId} data-testid={`herdr-project-row-${r.paneId}`}>
                       <button
                         type="button"
@@ -3091,8 +3179,30 @@ const SORT_LABELS: Array<{ value: ProjectSort; label: string }> = [
   { value: 'last-used', label: 'Last used' },
 ];
 
-function SortMenu({ value, onChange }: { value: ProjectSort; onChange: (v: ProjectSort) => void }) {
+function SortMenu({
+  value,
+  onChange,
+  agentOptions,
+  selectedAgents,
+  onToggleAgent,
+  onClearAgents,
+}: {
+  value: ProjectSort;
+  onChange: (v: ProjectSort) => void;
+  readonly agentOptions: readonly AgentFilterOption[];
+  readonly selectedAgents: readonly string[];
+  onToggleAgent: (agentId: string) => void;
+  onClearAgents: () => void;
+}) {
   const [open, setOpen] = React.useState(false);
+  /*
+   * Hidden below two options, because there is nothing to narrow TO: with one
+   * kind of agent running, filtering to it leaves the list exactly as it was.
+   * An offered control that cannot change anything teaches people the menu is
+   * not worth opening.
+   */
+  const canFilter = agentOptions.length > 1;
+  const filtering = selectedAgents.length > 0;
 
   // Escape closes it, and so does clicking anywhere else — a menu that can
   // only be dismissed by choosing something forces a choice you may not want.
@@ -3112,11 +3222,21 @@ function SortMenu({ value, onChange }: { value: ProjectSort; onChange: (v: Proje
     <div className="relative" onMouseDown={e => e.stopPropagation()}>
       <button
         onClick={() => setOpen(o => !o)}
-        aria-label="Sort projects"
+        aria-label={filtering ? `Sort and filter projects, ${selectedAgents.length} filter on` : 'Sort and filter projects'}
         aria-haspopup="menu"
         aria-expanded={open}
-        title="Sort projects"
-        className="flex items-center rounded p-1 text-ink-tertiary transition-colors hover:bg-canvas hover:text-ink-secondary"
+        title={filtering ? 'Filtered by agent' : 'Sort and filter projects'}
+        /*
+         * The active state is not decoration. A filter narrows the list and
+         * then closes, so without a mark on the button the next person to look
+         * sees a short project list and no cause - which reads as the app
+         * having lost them.
+         */
+        data-filtering={filtering || undefined}
+        className={clsx(
+          'flex items-center rounded p-1 transition-colors hover:bg-canvas',
+          filtering ? 'text-brand' : 'text-ink-tertiary hover:text-ink-secondary',
+        )}
       >
         <ListFilter size={13} />
       </button>
@@ -3145,6 +3265,60 @@ function SortMenu({ value, onChange }: { value: ProjectSort; onChange: (v: Proje
               {value === option.value && <Check size={12} className="text-brand" />}
             </button>
           ))}
+
+          {canFilter && (
+            <>
+              <div className="my-1 border-t border-border-soft" />
+              <p className="px-2.5 pb-1 text-[10px] font-bold uppercase tracking-wider text-ink-tertiary">
+                Agent
+              </p>
+              {/*
+                * "All" first and always present. Unticking the last box lands
+                * on "no selection", which MEANS everything - but a person who
+                * turned three on does not want to turn three off one at a
+                * time to get back, and without a way back a filter is a trap.
+                */}
+              <button
+                role="menuitemradio"
+                aria-checked={!filtering}
+                onClick={() => onClearAgents()}
+                className={clsx(
+                  'flex w-full items-center justify-between px-2.5 py-1 text-left text-xs transition-colors',
+                  !filtering ? 'text-ink' : 'text-ink-secondary hover:text-ink',
+                )}
+              >
+                All
+                {!filtering && <Check size={12} className="text-brand" />}
+              </button>
+              {agentOptions.map(option => {
+                const on = selectedAgents.includes(option.agentId);
+                return (
+                  <button
+                    key={option.agentId}
+                    role="menuitemcheckbox"
+                    aria-checked={on}
+                    data-testid={`agent-filter-${option.agentId}`}
+                    /*
+                     * The menu STAYS OPEN. This is a multi-select, and closing
+                     * on each tick would make picking two agents a two-trip
+                     * job - which is most of why anybody opens it.
+                     */
+                    onClick={() => onToggleAgent(option.agentId)}
+                    className={clsx(
+                      'flex w-full items-center gap-2 px-2.5 py-1 text-left text-xs transition-colors',
+                      on ? 'text-ink' : 'text-ink-secondary hover:text-ink',
+                    )}
+                  >
+                    <AgentIcon agentId={option.agentId} size={12} />
+                    <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                    {/* The count answers the question without opening it twice. */}
+                    <span className="shrink-0 font-mono text-[10px] text-ink-tertiary">{option.count}</span>
+                    {on && <Check size={12} className="shrink-0 text-brand" />}
+                  </button>
+                );
+              })}
+            </>
+          )}
         </div>
       )}
     </div>
