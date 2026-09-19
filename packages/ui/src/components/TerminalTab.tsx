@@ -34,6 +34,7 @@ import { WorktreePanel } from './WorktreePanel';
 import { useGitStatus, type WorktreeView } from '../gitStatus';
 import { Columns2, X, Plus, GitBranch, FileDiff, Activity } from 'lucide-react';
 import { TerminalPane } from './TerminalPane';
+import { HERDR_AGENT_ID } from '../herdrTreeRows';
 import { EmptyState } from './EmptyState';
 import { AgentIcon } from './AgentIcon';
 import { EditorIcon } from './EditorIcon';
@@ -454,6 +455,17 @@ export function TerminalTab({
   const anyNarrow = layout.panes.some(p => p.narrow);
   const rectFor = new Map(layout.panes.map(p => [p.sessionId, p]));
   const current = sessions.find(s => s.id === activeId);
+
+  /*
+   * A herdr attach hides this bar entirely, for a stronger reason than the
+   * split panes above hide it: there is no card behind it. Every control on it
+   * answers a question about one worktree - which branch, what changed, what is
+   * staged, open WHERE in the editor - and an attach resolves no worktree at
+   * all. Left showing, the row announces "no branch yet" about a session that
+   * can never have one, which is a fact stated wrongly rather than a fact
+   * missing.
+   */
+  const attachedToHerdr = current?.agentId === HERDR_AGENT_ID;
   /*
    * Asked even with the panel CLOSED, which is what makes moving the counts
    * out of the panel worth anything: shut, these two numbers are the only
@@ -505,7 +517,7 @@ export function TerminalTab({
        * command to the wrong branch is exactly the expensive mistake this bar
        * was added to prevent. It also gives the split panes the row back.
        */}
-      {paneIds.size <= 1 && (
+      {paneIds.size <= 1 && !attachedToHerdr && (
       <div data-testid="terminal-header" className="flex shrink-0 items-center gap-2 border-b border-border-soft bg-nav-surface px-3 py-1.5 text-xs">
         <span className="truncate text-ink-secondary">
           {current?.projectName && <span className="text-ink-tertiary">{current.projectName} / </span>}
