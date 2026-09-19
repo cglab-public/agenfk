@@ -37,7 +37,8 @@ import {
 } from '../sidebarPrefs';
 import { NewProjectButton } from './NewProjectButton';
 import { api } from '../api';
-import { herdrSessionRows, herdrProjectRows, type OwnedPane } from '../herdrTreeRows';
+import { herdrSessionRows, herdrProjectRows, type OwnedPane, type ProjectPaneRow } from '../herdrTreeRows';
+import { HerdrMark } from './HerdrMark';
 import { API_URL } from '../apiUrl';
 import type { AgEnFKItem, Project } from '../types';
 import { TerminalTab, type TerminalSession } from './TerminalTab';
@@ -1377,6 +1378,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           isMac={isMac}
           requestTerminal={requestTerminal}
           sessionRows={sessionRows}
+          herdrProject={herdrProject}
           liveItems={liveItems}
           openSession={openSession}
           openSettings={() => { setSettingsOpened(true); setActive('settings'); }}
@@ -1975,6 +1977,7 @@ interface SidebarProps {
   onToggle: () => void;
   isMac: boolean;
   sessionRows: SessionRow[];
+  herdrProject: ProjectPaneRow[];
   /** Cards an agent has touched inside the live window. */
   liveItems: ReadonlySet<string>;
   openSession: (row: SessionRow) => void;
@@ -2006,7 +2009,7 @@ interface SidebarProps {
   onOpenFlows: () => void;
 }
 
-function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResizeStart, onNudge, requestTerminal, sessionRows, liveItems, openSession, openSettings, revealOnBoard, activeView, onSelectView, onOpenFlows, onOpenFleet }: SidebarProps) {
+function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResizeStart, onNudge, requestTerminal, sessionRows, herdrProject, liveItems, openSession, openSettings, revealOnBoard, activeView, onSelectView, onOpenFlows, onOpenFleet }: SidebarProps) {
   /*
    * EVERY item, only for the claim chips (CGLAB-190).
    *
@@ -2592,6 +2595,32 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                   aria-hidden={!isOpen}
                   className="mb-1 ml-2 overflow-hidden border-l border-border-soft pl-2 transition-[grid-template-rows] motion-reduce:transition-none"
                 >
+                  {/*
+                    * Panes herdr is holding in this project's checkout, but in no
+                    * card's worktree - which is where nearly all of them are,
+                    * because AgEnFK does not launch into herdr yet. They sit
+                    * after the cards, marked with herdr's own logo, because they
+                    * are work in this project that this product did not start
+                    * and cannot act on. A row that looked like ours would invite
+                    * a STOP aimed at somebody else's terminal.
+                    */}
+                  {herdrProject.filter(r => r.projectName === project.name).map(r => (
+                    <li key={r.paneId} data-testid={`herdr-project-row-${r.paneId}`}>
+                      <div className="flex items-center gap-2 py-0.5 pl-1 text-[11px] text-ink-tertiary">
+                        <HerdrMark className="h-3 w-3 shrink-0" />
+                        <span className="shrink-0 font-mono">{r.agentId}</span>
+                        <span
+                          className={clsx(
+                            'shrink-0',
+                            r.needsAPerson && 'text-amber-600 dark:text-amber-400',
+                          )}
+                        >
+                          {r.state === 'unverifiable' ? 'unknown' : r.state}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate" title={r.title}>{r.title}</span>
+                      </div>
+                    </li>
+                  ))}
                   {work.map(item => (
                     <li key={item.id}>
                       {/* Clicking opens a terminal on the card, in that card's

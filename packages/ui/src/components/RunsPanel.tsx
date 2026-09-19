@@ -4,7 +4,7 @@ import { useSocketEvent } from '../SocketContext';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { api } from '../api';
-import { stripAnsi } from '../utils';
+import { stripAnsi, prettyModel } from '../utils';
 import { appendEvent } from '../runEvents';
 
 export interface AgentRun {
@@ -66,18 +66,6 @@ function fmtTimestamp(ts?: string): { date?: string; time?: string } {
     date: d.toLocaleDateString(),
     time: d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
   };
-}
-
-// Short, human display name for a model id: the first meaningful alphabetic
-// family token (>=3 letters, so version bits like "v1"/"27b" are skipped),
-// title-cased. "qwen3.6:27b" -> "Qwen", "claude-opus-4-8" -> "Claude",
-// "3.5-sonnet" -> "Sonnet". Falls back to the raw id if no such token exists,
-// so it never emits a meaningless single letter.
-function prettyModel(model?: string): string {
-  if (!model) return '';
-  const family = model.match(/[a-zA-Z]{3,}/)?.[0];
-  if (!family) return model;
-  return family.charAt(0).toUpperCase() + family.slice(1);
 }
 
 // Markdown emphasis rewrites literal text, and these transcripts are full of
