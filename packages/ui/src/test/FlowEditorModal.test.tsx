@@ -54,7 +54,7 @@ const DEFAULT_FLOW: Flow = {
   description: 'Built-in default flow',
   steps: [
     { id: 'd1', name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
-    { id: 'd2', name: 'in_progress', label: 'In Progress', order: 1, exitCriteria: '' },
+    { id: 'd2', name: 'IN_PROGRESS', label: 'In Progress', order: 1, exitCriteria: '' },
     { id: 'd3', name: 'DONE', label: 'Done', order: 2, exitCriteria: '', isAnchor: true },
   ],
   createdAt: '2026-01-01T00:00:00.000Z',
@@ -80,7 +80,7 @@ const SAMPLE_FLOW_2: Flow = {
   description: '',
   steps: [
     { id: 's4', name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
-    { id: 's5', name: 'in_progress', label: 'In Progress', order: 1, exitCriteria: '' },
+    { id: 's5', name: 'IN_PROGRESS', label: 'In Progress', order: 1, exitCriteria: '' },
     { id: 's6', name: 'DONE', label: 'Done', order: 2, exitCriteria: '', isAnchor: true },
   ],
   createdAt: '2026-01-01T00:00:00.000Z',
@@ -351,7 +351,7 @@ describe('FlowEditorModal', () => {
     fireEvent.click(screen.getByTestId('flow-item-flow-1'));
     // index 1 is the middle step (in_review)
     await waitFor(() => screen.getByTestId('step-name-1'));
-    expect((screen.getByTestId('step-name-1') as HTMLInputElement).value).toBe('in_review');
+    expect(screen.getByTestId('step-name-1').textContent).toBe('in_review');
     expect((screen.getByTestId('step-label-1') as HTMLInputElement).value).toBe('In Review');
     // CGLAB-109: the inline field is now a summary trigger (button) showing the
     // current criteria; the popup is the only editor. The value check moved to
@@ -436,7 +436,6 @@ describe('FlowEditorModal', () => {
 
     fireEvent.change(screen.getByTestId('flow-name-input'), { target: { value: 'Sprint Flow' } });
     // Index 0 is the TODO anchor (no editable name); the middle step is at index 1
-    fireEvent.change(screen.getByTestId('step-name-1'), { target: { value: 'in_progress' } });
     fireEvent.change(screen.getByTestId('step-label-1'), { target: { value: 'In Progress' } });
 
     fireEvent.click(screen.getByTestId('save-flow-btn'));
@@ -512,7 +511,7 @@ describe('FlowEditorModal', () => {
     // is no longer a saveable definition (the Hub rejects it, and "" is not a
     // usable workflow status). Name it so this test still exercises what it is
     // about — that Use this Flow creates then selects.
-    fireEvent.change(screen.getByTestId('step-name-1'), { target: { value: 'in_progress' } });
+    fireEvent.change(screen.getByTestId('step-label-1'), { target: { value: 'In Progress' } });
     fireEvent.click(screen.getByTestId('use-flow-btn'));
 
     await waitFor(() => expect(api.createFlow).toHaveBeenCalledTimes(1));
@@ -565,7 +564,31 @@ describe('FlowEditorModal', () => {
 
   // ── Step field editing ────────────────────────────────────────────────────
 
-  it('updates step name field when user types a non-reserved name', async () => {
+  it('derives a NEW step\u2019s key from the label typed into it', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('flow-item-flow-1'));
+    fireEvent.click(screen.getByTestId('flow-item-flow-1'));
+    await waitFor(() => screen.getByTestId('add-step-btn'));
+    fireEvent.click(screen.getByTestId('add-step-btn'));
+    // A blank step has no key of its own, so the label writes it.
+    const blankField = await waitFor(() => {
+      const empty = (screen.getAllByTestId(/^step-label-\d+$/) as HTMLInputElement[]).find(i => i.value === '');
+      if (!empty) throw new Error('no blank step was added');
+      return empty;
+    });
+    const at = blankField.getAttribute('data-testid')!.replace('step-label-', '');
+    fireEvent.change(blankField, { target: { value: 'QA review' } });
+    expect(screen.getByTestId(`step-name-${at}`).textContent).toBe('QA_REVIEW');
+    expect(screen.queryByTestId(`step-reserved-error-${at}`)).toBeNull();
+  });
+
+  // The other half, and the one that protects a live flow: a key somebody set
+  // by hand is a decision. `in_review` is not what "In Review" derives to, so
+  // renaming the label must not move every item off that status.
+  it('leaves a hand-set key alone when the label changes', async () => {
     render(
       <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
       { wrapper: wrapper(makeQueryClient()) }
@@ -574,10 +597,9 @@ describe('FlowEditorModal', () => {
     fireEvent.click(screen.getByTestId('flow-item-flow-1'));
     // index 1 is the middle (non-anchor) step
     await waitFor(() => screen.getByTestId('step-name-1'));
-    const nameInput = screen.getByTestId('step-name-1') as HTMLInputElement;
-    fireEvent.change(nameInput, { target: { value: 'qa_review' } });
-    expect(nameInput.value).toBe('qa_review');
-    // No reserved name error
+    const nameKey = screen.getByTestId('step-name-1');
+    fireEvent.change(screen.getByTestId('step-label-1'), { target: { value: 'QA review' } });
+    expect(nameKey.textContent).toBe('in_review');
     expect(screen.queryByTestId('step-reserved-error-1')).toBeNull();
   });
 
@@ -588,11 +610,19 @@ describe('FlowEditorModal', () => {
     );
     await waitFor(() => screen.getByTestId('flow-item-flow-1'));
     fireEvent.click(screen.getByTestId('flow-item-flow-1'));
-    await waitFor(() => screen.getByTestId('step-name-1'));
-    const nameInput = screen.getByTestId('step-name-1') as HTMLInputElement;
-    fireEvent.change(nameInput, { target: { value: 'BLOCKED' } });
-    await waitFor(() => screen.getByTestId('step-reserved-error-1'));
-    expect(screen.getByTestId('step-reserved-error-1').textContent).toBe('Reserved name');
+    await waitFor(() => screen.getByTestId('add-step-btn'));
+    // A blank step, because a key already set by hand does not follow its
+    // label — which is the whole point of nextStepName.
+    fireEvent.click(screen.getByTestId('add-step-btn'));
+    const blankField = await waitFor(() => {
+      const empty = (screen.getAllByTestId(/^step-label-\d+$/) as HTMLInputElement[]).find(i => i.value === '');
+      if (!empty) throw new Error('no blank step was added');
+      return empty;
+    });
+    const blank = blankField.getAttribute('data-testid')!.replace('step-label-', '');
+    fireEvent.change(blankField, { target: { value: 'Blocked' } });
+    await waitFor(() => screen.getByTestId(`step-reserved-error-${blank}`));
+    expect(screen.getByTestId(`step-reserved-error-${blank}`).textContent).toBe('Reserved name');
     // Save button should be disabled
     const saveBtn = screen.getByTestId('save-flow-btn') as HTMLButtonElement;
     expect(saveBtn.disabled).toBe(true);
@@ -694,7 +724,6 @@ describe('FlowEditorModal', () => {
 
     fireEvent.change(screen.getByTestId('flow-name-input'), { target: { value: 'Colored Flow' } });
     // Index 0 is the TODO anchor (no editable name/color); the middle step is at index 1
-    fireEvent.change(screen.getByTestId('step-name-1'), { target: { value: 'in_progress' } });
     fireEvent.change(screen.getByTestId('step-label-1'), { target: { value: 'In Progress' } });
     fireEvent.change(screen.getByTestId('step-color-1'), { target: { value: '#ff0000' } });
 
@@ -734,11 +763,19 @@ describe('FlowEditorModal', () => {
     );
     await waitFor(() => screen.getByTestId('flow-item-flow-1'));
     fireEvent.click(screen.getByTestId('flow-item-flow-1'));
-    await waitFor(() => screen.getByTestId('step-name-1'));
-    const nameInput = screen.getByTestId('step-name-1') as HTMLInputElement;
-    fireEvent.change(nameInput, { target: { value: 'blocked' } });
-    await waitFor(() => screen.getByTestId('step-reserved-error-1'));
-    expect(screen.getByTestId('step-reserved-error-1')).toBeDefined();
+    await waitFor(() => screen.getByTestId('add-step-btn'));
+    // A blank step, because a key already set by hand does not follow its
+    // label — which is the whole point of nextStepName.
+    fireEvent.click(screen.getByTestId('add-step-btn'));
+    const blankField = await waitFor(() => {
+      const empty = (screen.getAllByTestId(/^step-label-\d+$/) as HTMLInputElement[]).find(i => i.value === '');
+      if (!empty) throw new Error('no blank step was added');
+      return empty;
+    });
+    const blank = blankField.getAttribute('data-testid')!.replace('step-label-', '');
+    fireEvent.change(blankField, { target: { value: 'blocked' } });
+    await waitFor(() => screen.getByTestId(`step-reserved-error-${blank}`));
+    expect(screen.getByTestId(`step-reserved-error-${blank}`)).toBeDefined();
   });
 
   // ── Legacy props compatibility ────────────────────────────────────────────
@@ -782,9 +819,11 @@ describe('FlowEditorModal', () => {
       expect(screen.queryByTestId('flow-name-input')).toBeNull();
       expect(document.querySelector('h3')).toBeTruthy();
     });
-    // Middle step inputs should also be disabled (anchors have no editable name input)
-    const stepName = screen.getByTestId('step-name-1') as HTMLInputElement;
-    expect(stepName.disabled).toBe(true);
+    // The middle step's one editable field is disabled. The KEY is no longer
+    // a field to disable — it is derived text, in both panels — so the claim
+    // moves to the label, which is what read-only has to stop you changing.
+    expect((screen.getByTestId('step-label-1') as HTMLInputElement).disabled).toBe(true);
+    expect(screen.getByTestId('step-name-1').tagName).toBe('P');
     // Save button should NOT be visible in read-only mode
     expect(screen.queryByTestId('save-flow-btn')).toBeNull();
     // Clone to Edit button should be visible
@@ -984,7 +1023,7 @@ const INSTALLED_FLOW: Flow = {
   description: 'A standard engineering sprint flow',
   steps: [
     { id: 'i1', name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
-    { id: 'i2', name: 'in_progress', label: 'In Progress', order: 1, exitCriteria: '' },
+    { id: 'i2', name: 'IN_PROGRESS', label: 'In Progress', order: 1, exitCriteria: '' },
     { id: 'i3', name: 'DONE', label: 'Done', order: 4, exitCriteria: '', isAnchor: true },
   ],
   createdAt: '2026-01-01T00:00:00.000Z',
@@ -1507,7 +1546,7 @@ describe('FlowEditorModal — save failures surface the reason (BUG 269eeec8)', 
       await waitFor(() => screen.getByTestId('flow-name-input'));
 
       fireEvent.change(screen.getByTestId('flow-name-input'), { target: { value: 'Local Flow' } });
-      fireEvent.change(screen.getByTestId('step-name-1'), { target: { value: 'in_progress' } });
+      fireEvent.change(screen.getByTestId('step-label-1'), { target: { value: 'In Progress' } });
       fireEvent.click(screen.getByTestId('save-flow-btn'));
 
       await waitFor(() => expect(api.createFlow).toHaveBeenCalledTimes(1));
@@ -1554,7 +1593,7 @@ describe('FlowEditorModal — save failures surface the reason (BUG 269eeec8)', 
     fireEvent.click(screen.getByTestId('add-step-btn'));
     await waitFor(() => expect((screen.getByTestId('save-flow-btn') as HTMLButtonElement).disabled).toBe(true));
 
-    fireEvent.change(screen.getByTestId('step-name-3'), { target: { value: 'REFACTOR' } });
+    fireEvent.change(screen.getByTestId('step-label-3'), { target: { value: 'Refactor' } });
 
     await waitFor(() => {
       expect((screen.getByTestId('save-flow-btn') as HTMLButtonElement).disabled).toBe(false);
@@ -1667,7 +1706,7 @@ describe('flow editor footer CTAs', () => {
     fireEvent.click(screen.getByTestId('new-flow-btn'));
     await waitFor(() => screen.getByTestId('flow-name-input'));
     fireEvent.change(screen.getByTestId('flow-name-input'), { target: { value: 'Brand New' } });
-    fireEvent.change(screen.getByTestId('step-name-1'), { target: { value: 'in_progress' } });
+    fireEvent.change(screen.getByTestId('step-label-1'), { target: { value: 'In Progress' } });
   };
 
 /**
@@ -1937,7 +1976,7 @@ const saveSettled = async () => {
     await waitFor(() =>
       expect((screen.getByTestId('publish-flow-btn') as HTMLButtonElement).disabled).toBe(true));
 
-    fireEvent.change(screen.getByTestId('step-name-3'), { target: { value: 'REFACTOR' } });
+    fireEvent.change(screen.getByTestId('step-label-3'), { target: { value: 'Refactor' } });
 
     await waitFor(() =>
       expect((screen.getByTestId('publish-flow-btn') as HTMLButtonElement).disabled).toBe(false));
@@ -2037,7 +2076,7 @@ describe('Exit criteria popup editor (CGLAB-109)', () => {
     source: 'hub',
     steps: [
       { id: 'h1', name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
-      { id: 'h2', name: 'in_progress', label: 'In Progress', order: 1, exitCriteria: 'hub criteria' },
+      { id: 'h2', name: 'IN_PROGRESS', label: 'In Progress', order: 1, exitCriteria: 'hub criteria' },
       { id: 'h3', name: 'DONE', label: 'Done', order: 2, exitCriteria: '', isAnchor: true },
     ],
     createdAt: '2026-01-01T00:00:00.000Z',
@@ -2301,13 +2340,19 @@ describe('Flow editor — vertical step list (CGLAB-164)', () => {
     expect(screen.getByTestId('step-index-3').textContent).toBe('4');
   });
 
-  it('renders the step name as the key it is: monospace and uppercased, value untouched', async () => {
+  it('renders the step name as the key it is: monospace, and spelled as stored', async () => {
     await openFlow();
-    const nameInput = screen.getByTestId('step-name-1') as HTMLInputElement;
-    expect(nameInput.className).toContain('font-mono');
-    expect(nameInput.className).toContain('uppercase');
-    // Display-only: the stored key stays exactly as typed.
-    expect(nameInput.value).toBe('in_review');
+    const nameKey = screen.getByTestId('step-name-1');
+    expect(nameKey.className).toContain('font-mono');
+    // NOT `uppercase`. The derivation already upcases what it creates, and a
+    // legacy key stored as `in_review` displayed as IN_REVIEW is a lie: the
+    // server matches a status exactly, so `agenfk update --status IN_REVIEW`
+    // would be refused as a flow violation.
+    expect(nameKey.className).not.toContain('uppercase');
+    // Display-only IS the point now: the key is derived from the label and
+    // shown, never typed into. The stored key stays exactly as it was.
+    expect(nameKey.tagName).toBe('P');
+    expect(nameKey.textContent).toBe('in_review');
   });
 
   it('states "name · label · exit criteria" once as a column heading, not per step', async () => {
@@ -2519,8 +2564,8 @@ describe('Flow editor — vertical step list (CGLAB-164)', () => {
 
   it('still reorders by drag, and renumbers what it moved', async () => {
     await openFlow();
-    expect((screen.getByTestId('step-name-1') as HTMLInputElement).value).toBe('in_review');
-    expect((screen.getByTestId('step-name-2') as HTMLInputElement).value).toBe('apply_blocked');
+    expect(screen.getByTestId('step-name-1').textContent).toBe('in_review');
+    expect(screen.getByTestId('step-name-2').textContent).toBe('apply_blocked');
 
     const source = screen.getByTestId('step-row-1');
     const target = screen.getByTestId('step-row-2');
@@ -2530,8 +2575,8 @@ describe('Flow editor — vertical step list (CGLAB-164)', () => {
     fireEvent.dragEnd(source);
 
     // The two working steps have swapped, and the numbers followed them.
-    expect((screen.getByTestId('step-name-1') as HTMLInputElement).value).toBe('apply_blocked');
-    expect((screen.getByTestId('step-name-2') as HTMLInputElement).value).toBe('in_review');
+    expect(screen.getByTestId('step-name-1').textContent).toBe('apply_blocked');
+    expect(screen.getByTestId('step-name-2').textContent).toBe('in_review');
     // (No assertion on step-index here: it renders `index + 1` straight off
     // the map, so it is true of any two-element list and proves nothing.)
     // The anchors did not move.
@@ -2775,5 +2820,107 @@ describe('Flow editor — no hardcoded neutral surface colour (aca414c7 §04)', 
     fireEvent.click(screen.getByTestId('delete-flow-btn-flow-1'));
     await waitFor(() => screen.getByTestId('delete-confirm-no'));
     expect(deadHoverClasses(root)).toEqual([]);
+  });
+});
+
+// ── The three paths that carry the risk, through the screen ────────────────
+// A derived key made two of these easy to reach and removed the field that
+// used to be the escape hatch, so each gets a component test rather than only
+// a unit one.
+describe('Flow editor — a derived key cannot corrupt a flow', () => {
+  const LIVE_FLOW: Flow = {
+    id: 'flow-1',
+    name: 'Terraform Flow',
+    description: '',
+    steps: [
+      { id: 'l1', name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
+      { id: 'l2', name: 'in_review', label: 'In Review', order: 1, exitCriteria: 'Ticket refined' },
+      { id: 'l3', name: 'apply_blocked', label: 'Never apply', order: 2, exitCriteria: '' },
+      { id: 'l4', name: 'DONE', label: 'Done', order: 3, exitCriteria: '', isAnchor: true },
+    ],
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.listFlows).mockResolvedValue([LIVE_FLOW, SAMPLE_FLOW_2]);
+    vi.mocked(api.getDefaultFlow).mockResolvedValue(DEFAULT_FLOW);
+    vi.mocked(api.getOrgAvailableFlows).mockResolvedValue({ flows: [], defaultFlowId: null, hubEnabled: false });
+    vi.mocked(api.updateFlow).mockResolvedValue(LIVE_FLOW);
+  });
+
+  afterEach(() => { cleanup(); });
+
+  const openFlow = async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('flow-item-flow-1'));
+    fireEvent.click(screen.getByTestId('flow-item-flow-1'));
+    await waitFor(() => screen.getByTestId('steps-columns'));
+  };
+
+  /**
+   * The blank row, addressed by what makes it blank rather than by arithmetic:
+   * Add Step appends AFTER the DONE anchor (bug bfe45d3b) and anchors render
+   * no label field, so no index derived from either count is stable.
+   */
+  const addBlankStep = async (): Promise<string> => {
+    fireEvent.click(screen.getByTestId('add-step-btn'));
+    const field = await waitFor(() => {
+      const empty = (screen.getAllByTestId(/^step-label-\d+$/) as HTMLInputElement[]).find(i => i.value === '');
+      if (!empty) throw new Error('Add Step rendered no empty label field');
+      return empty;
+    });
+    return field.getAttribute('data-testid')!.replace('step-label-', '');
+  };
+
+  // Two steps, one key: the server finds the FIRST match for an item's status
+  // and advances to index+1, which is the same key — so the item verifies
+  // into the status it is already in and DONE is unreachable.
+  it('refuses a second step whose label derives to an existing key', async () => {
+    await openFlow();
+    const at = await addBlankStep();
+    // Derives to IN_REVIEW, which collides with the stored `in_review`.
+    fireEvent.change(screen.getByTestId(`step-label-${at}`), { target: { value: 'In review' } });
+
+    expect((screen.getByTestId('save-flow-btn') as HTMLButtonElement).disabled).toBe(true);
+    // Pinned to the offending step, not to the flow-level list: the editor
+    // routes an issue that names a step to that step's own message.
+    expect(screen.getByTestId(`step-name-error-${at}`).textContent).toMatch(/repeats step/i);
+  });
+
+  // A label with no letters or digits at all. This is now the ONLY way to
+  // reach an empty key, and there is no key field left to repair it in.
+  it('blocks Save when the label derives to nothing', async () => {
+    await openFlow();
+    const at = await addBlankStep();
+    fireEvent.change(screen.getByTestId(`step-label-${at}`), { target: { value: '!!!' } });
+
+    expect(screen.getByTestId(`step-name-${at}`).textContent).toBe('from the label');
+    expect((screen.getByTestId('save-flow-btn') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  // THE MIGRATION QUESTION, asserted rather than assumed: a round trip through
+  // this editor must not upcase the keys of a flow authored before it.
+  it('sends a saved flow back with its keys untouched', async () => {
+    await openFlow();
+    fireEvent.change(screen.getByTestId('flow-name-input'), { target: { value: 'Terraform Flow v2' } });
+    fireEvent.click(screen.getByTestId('save-flow-btn'));
+
+    await waitFor(() => expect(api.updateFlow).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(api.updateFlow).mock.calls[0][1] as Partial<Flow>;
+    expect(payload.steps!.map(s => s.name)).toEqual(['TODO', 'in_review', 'apply_blocked', 'DONE']);
+  });
+
+  // And the rename that started all this: retitling a saved step leaves the
+  // status alone, so the items sitting on it stay inside the flow.
+  it('keeps a saved key when its label is retitled', async () => {
+    await openFlow();
+    fireEvent.change(screen.getByTestId('step-label-1'), { target: { value: 'Peer review' } });
+
+    expect(screen.getByTestId('step-name-1').textContent).toBe('in_review');
   });
 });

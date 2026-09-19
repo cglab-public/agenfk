@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import mermaid from 'mermaid';
 import type { Flow, FlowStep, RegistryFlow, FlowClient, RegistryClient } from './types';
 import { extractApiError } from './apiError';
-import { flowDefinitionIssues, stepIssue, withStepIds } from './flowDefinition';
+import { flowDefinitionIssues, nextStepName, stepIssue, withStepIds } from './flowDefinition';
 import { ExitCriteriaEditorModal } from './ExitCriteriaEditorModal';
 import { estimateTokenCount } from './estimateTokens';
 
@@ -381,6 +381,8 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [steps, setSteps] = useState<FlowStep[]>([]);
+  /** Step ids whose key is already on the server. See the load effect. */
+  const [savedKeys, setSavedKeys] = useState<Set<string>>(new Set());
   const [saved, setSaved] = useState(false);
   // The definition as last persisted, as the editor serialises it. `saved`
   // alone cannot answer "is there an unsaved edit?": it is a badge flag that
@@ -420,6 +422,14 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
         })
         .sort((a, b) => a.order - b.order);
       setSteps(flowSteps);
+      /*
+       * The keys that already exist OUT THERE. A step loaded from the server
+       * has a status items may already hold, and `PUT /flows/:id` does not
+       * migrate anything across a rename — so nothing typed into a label may
+       * move it. A step added in this session is not in this set, and its key
+       * is simply the spelling of its label until it is saved.
+       */
+      setSavedKeys(new Set(flowSteps.map(s => s.id)));
       // Baseline the dirty check on the SAME canonical shape the save mutation
       // sends, so a round-trip through the editor is not itself a change.
       setPersisted(serializeDefinition(flow.name, flow.description ?? '', flowSteps));
@@ -513,9 +523,13 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       // satisfies the Hub's id rule.
       steps: withStepIds(steps, generateUUID).map((s, i) => ({ ...s, order: i })),
     };
-    return flow?.id
-      ? flowClient.updateFlow(flow.id, payload)
-      : flowClient.createFlow(payload);
+    const saved = flow?.id
+      ? await flowClient.updateFlow(flow.id, payload)
+      : await flowClient.createFlow(payload);
+    // What was typed this session is now a status on the server, so it stops
+    // following its label from here on.
+    setSavedKeys(new Set(steps.map(st => st.id)));
+    return saved;
   }, [flow?.id, name, description, steps, flowClient]);
 
   /**
@@ -990,28 +1004,41 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                         </>
                       ) : (
                         <>
-                          <input
+                          {/* The key is DERIVED, and shown the way the anchors
+                              show theirs — one cell, key over label, which is
+                              how the artifact draws it (aca414c7 §01). It was
+                              a second bordered input, stacked on the label's,
+                              and that made a spelling of the label look like a
+                              separate thing to invent. It stays visible
+                              because it is the value `agenfk update --status`
+                              takes: derived is not the same as hidden. */}
+                          {/* Announced as it is written: a screen-reader user
+                              typing the label would otherwise never learn what
+                              key they just created. No `uppercase` class — the
+                              derivation already upcases, and a legacy key like
+                              `in_review` displayed as IN_REVIEW is a lie the
+                              server will not honour, since transitions match
+                              the status exactly. */}
+                          <p
                             data-testid={`step-name-${index}`}
-                            type="text"
-                            value={step.name}
-                            onChange={e => updateStep(index, { name: e.target.value })}
-                            placeholder="e.g. in_progress"
-                            disabled={isStepLocked}
-                            aria-label={`Step ${index + 1} name (key)`}
+                            aria-live="polite"
+                            aria-label={step.name
+                              ? `Step ${index + 1} key: ${step.name}`
+                              : `Step ${index + 1} key, derived from the label`}
                             className={clsx(
-                              'w-full px-2 py-1 rounded-md border text-xs font-mono uppercase tracking-wide focus:outline-none focus:ring-1 disabled:opacity-60',
-                              hasReservedName
-                                ? 'border-red-400 focus:ring-red-400 bg-red-50 dark:bg-red-900/20 text-ink'
-                                : 'border-border-soft bg-surface text-ink focus:ring-brand'
+                              'text-xs font-mono tracking-wide truncate px-2 py-1',
+                              hasReservedName ? 'text-danger-text' : 'text-ink-secondary',
                             )}
-                          />
+                          >
+                            {step.name || <span className="text-ink-tertiary">from the label</span>}
+                          </p>
                           {shapeIssue && (
-                            <p data-testid={`step-name-error-${index}`} className="text-xs text-red-600 dark:text-red-400 mt-0.5">
+                            <p id={`step-name-error-${index}`} data-testid={`step-name-error-${index}`} className="text-xs text-danger-text mt-0.5 px-2">
                               {shapeIssue.message}
                             </p>
                           )}
                           {hasReservedName && (
-                            <p data-testid={`step-reserved-error-${index}`} className="text-xs text-red-600 dark:text-red-400 mt-0.5">
+                            <p id={`step-reserved-error-${index}`} data-testid={`step-reserved-error-${index}`} className="text-xs text-danger-text mt-0.5 px-2">
                               Reserved name
                             </p>
                           )}
@@ -1019,7 +1046,22 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                             data-testid={`step-label-${index}`}
                             type="text"
                             value={step.label}
-                            onChange={e => updateStep(index, { label: e.target.value })}
+                            onChange={e => updateStep(index, {
+                              label: e.target.value,
+                              name: nextStepName({
+                                storedName: step.name,
+                                nextLabel: e.target.value,
+                                keyIsPersisted: savedKeys.has(step.id),
+                              }),
+                            })}
+                            aria-invalid={hasReservedName || !!shapeIssue || undefined}
+                            // Both messages sit ABOVE the field, so tabbing
+                            // into it announced nothing about the error it
+                            // caused.
+                            aria-describedby={clsx(
+                              shapeIssue && `step-name-error-${index}`,
+                              hasReservedName && `step-reserved-error-${index}`,
+                            ) || undefined}
                             placeholder="e.g. In Progress"
                             disabled={isStepLocked}
                             aria-label={`Step ${index + 1} label (display)`}
