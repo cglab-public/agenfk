@@ -6,11 +6,18 @@
  * cards and four agents, and the question a person arrives with is usually
  * "where is pi running", not "what happened most recently".
  *
- * THE IDS DO NOT AGREE, and that is the substance of this file. herdr reports
- * `claude` and this app spawns `claude-code`; both are Claude, and filtering on
- * the raw strings would put two entries called Claude in the menu, each hiding
- * half the answer. So the ids are canonicalised before anything is counted or
- * matched.
+ * THE IDS DO NOT AGREE, and that is half the substance of this file. herdr
+ * reports `claude` and this app spawns `claude-code`; both are Claude, and
+ * filtering on the raw strings would put two entries called Claude in the menu,
+ * each hiding half the answer. So the ids are canonicalised first.
+ *
+ * AND herdr IS NOT AN AGENT. It is a SOURCE - a multiplexer holding somebody
+ * else's agents - and its panes report `claude` and `pi`, never `herdr`. The
+ * first version of this file treated it as one more agent id, so the herdr row
+ * only appeared when an attached terminal happened to be open, and choosing it
+ * hid everything. A row therefore carries TAGS, not an id: a pi pane inside
+ * herdr answers to Pi and to herdr both, which is what "show me what herdr is
+ * holding" has to mean.
  */
 import { HERDR_AGENT_ID } from './herdrTreeRows';
 import { agentLabel } from './agentLabels';
@@ -37,6 +44,46 @@ export function canonicalAgent(agentId: string): string {
   return CANONICAL[id] ?? id;
 }
 
+/**
+ * The tag that means "this came from herdr", whatever is running inside it.
+ *
+ * Shares the attach's agent id on purpose: an attached terminal and the panes
+ * it is a view onto are the same answer to "what is in herdr", and two tags
+ * would split that answer in the menu.
+ */
+export const HERDR_SOURCE_TAG = HERDR_AGENT_ID;
+
+/** What one row answers to. */
+export interface FilterableRow {
+  readonly agentId: string;
+  /** True for anything herdr is holding, whatever agent is inside it. */
+  readonly fromHerdr?: boolean;
+}
+
+/**
+ * Every name a row can be found under.
+ *
+ * The attach itself gets ONLY the herdr tag - its "agent" is the multiplexer,
+ * and listing it under an agent name would claim a Claude or a Pi that this
+ * row is not.
+ */
+export function agentTags(row: FilterableRow): string[] {
+  const id = canonicalAgent(row.agentId);
+  const tags = id ? [id] : [];
+  if (row.fromHerdr) tags.push(HERDR_SOURCE_TAG);
+  /*
+   * Deduped, which is not decoration: the ATTACH is a row whose agent id IS
+   * the herdr tag, and it also comes from herdr, so it earns the same tag
+   * twice. Left doubled it would count itself twice in the menu, and "herdr
+   * 3" for two panes is a number somebody would try to reconcile.
+   *
+   * An early return for that case was here first. It was dead - the id alone
+   * already produced the right single tag - and a mutation proved it by
+   * surviving its removal.
+   */
+  return [...new Set(tags)];
+}
+
 export interface AgentFilterOption {
   readonly agentId: string;
   readonly label: string;
@@ -52,13 +99,13 @@ export interface AgentFilterOption {
  * menu answers the question without being opened twice.
  */
 export function availableAgentFilters(
-  agentIds: readonly string[],
+  rows: readonly FilterableRow[],
 ): AgentFilterOption[] {
   const counts = new Map<string, number>();
-  for (const raw of agentIds) {
-    if (!raw?.trim()) continue;
-    const id = canonicalAgent(raw);
-    counts.set(id, (counts.get(id) ?? 0) + 1);
+  for (const row of rows) {
+    // Counted under EVERY tag it answers to, so herdr's count is "how much
+    // herdr is holding" rather than "how many attached terminals are open".
+    for (const tag of agentTags(row)) counts.set(tag, (counts.get(tag) ?? 0) + 1);
   }
   return [...counts.entries()]
     .map(([agentId, count]) => ({ agentId, label: agentLabel(agentId), count }))
@@ -75,9 +122,9 @@ export function availableAgentFilters(
  * person, and only one of them is a sane thing to land on by unticking the
  * last box.
  */
-export function matchesAgentFilter(agentId: string, selected: readonly string[]): boolean {
+export function matchesAgentFilter(row: FilterableRow, selected: readonly string[]): boolean {
   if (selected.length === 0) return true;
-  return selected.includes(canonicalAgent(agentId));
+  return agentTags(row).some(tag => selected.includes(tag));
 }
 
 /**
@@ -91,11 +138,30 @@ export function matchesAgentFilter(agentId: string, selected: readonly string[])
  * same reason and no other: it cannot answer the question being asked.
  */
 export function projectMatchesAgentFilter(
-  projectAgentIds: readonly string[],
+  rows: readonly FilterableRow[],
   selected: readonly string[],
 ): boolean {
   if (selected.length === 0) return true;
-  return projectAgentIds.some(id => matchesAgentFilter(id, selected));
+  return rows.some(row => matchesAgentFilter(row, selected));
+}
+
+/**
+ * Should this card still be shown?
+ *
+ * The filter has to reach the CARDS, not stop at the project. Narrowing to Pi
+ * and then listing a project's twenty-nine cards under it answers "which
+ * project" and leaves the actual question - which work - exactly where it was.
+ *
+ * A card with no session at all goes while a filter is on, for the same reason
+ * a project with none does: it cannot answer what is being asked.
+ */
+export function cardMatchesAgentFilter(
+  itemId: string,
+  rows: readonly (FilterableRow & { readonly itemId: string })[],
+  selected: readonly string[],
+): boolean {
+  if (selected.length === 0) return true;
+  return rows.some(row => row.itemId === itemId && matchesAgentFilter(row, selected));
 }
 
 /**
@@ -122,19 +188,25 @@ export function pruneAgentFilter(
  * else. Matching on the wrong one silently returns an empty list, which the
  * filter would then read as "this project has no agents" and hide it.
  */
-export function collectAgentIds(
-  sessionRows: readonly { readonly projectId?: string; readonly agentId: string }[],
+export function collectFilterableRows(
+  sessionRows: readonly {
+    readonly projectId?: string; readonly agentId: string; readonly source?: string;
+  }[],
   herdrRows: readonly { readonly projectName: string; readonly agentId: string }[],
   project?: { readonly id: string; readonly name: string },
-): string[] {
-  const out: string[] = [];
+): FilterableRow[] {
+  const out: FilterableRow[] = [];
   for (const r of sessionRows) {
     if (project && r.projectId !== project.id) continue;
-    if (r.agentId) out.push(r.agentId);
+    if (!r.agentId?.trim()) continue;
+    // `source` is what the tree rows already set for a pane herdr is holding.
+    out.push({ agentId: r.agentId, fromHerdr: r.source === 'herdr' });
   }
   for (const r of herdrRows) {
     if (project && r.projectName !== project.name) continue;
-    if (r.agentId) out.push(r.agentId);
+    if (!r.agentId?.trim()) continue;
+    // Every one of these came from herdr by construction.
+    out.push({ agentId: r.agentId, fromHerdr: true });
   }
   return out;
 }

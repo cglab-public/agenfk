@@ -8,7 +8,10 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  collectAgentIds,
+  collectFilterableRows,
+  agentTags,
+  cardMatchesAgentFilter,
+  HERDR_SOURCE_TAG,
   availableAgentFilters,
   canonicalAgent,
   matchesAgentFilter,
@@ -47,7 +50,7 @@ describe('one name per agent, whoever reported it', () => {
 
 describe('the options', () => {
   it('counts the folded ids together', () => {
-    const [claude] = availableAgentFilters(['claude', 'claude-code', 'claude']);
+    const [claude] = availableAgentFilters([{agentId:'claude'},{agentId:'claude-code'},{agentId:'claude'}]);
     // Folded INTO our id, so the name comes from agentLabels rather than from
     // a second map beside it.
     expect(claude.agentId).toBe('claude-code');
@@ -61,7 +64,7 @@ describe('the options', () => {
      * that can only ever empty the list: five are installed and a machine
      * rarely runs two at once.
      */
-    const ids = availableAgentFilters(['pi', 'herdr']).map(o => o.agentId);
+    const ids = availableAgentFilters([{agentId:'pi'},{agentId:'herdr'}]).map(o => o.agentId);
     expect(ids.sort()).toEqual(['herdr', 'pi']);
     expect(ids).not.toContain('gemini');
   });
@@ -69,16 +72,16 @@ describe('the options', () => {
   it('sorts by name, so the rows do not move as work starts and stops', () => {
     // A menu you have to re-read each time it opens is worse than an unsorted
     // one, because it looks stable.
-    const labels = availableAgentFilters(['pi', 'claude', 'codex']).map(o => o.label);
+    const labels = availableAgentFilters([{agentId:'pi'},{agentId:'claude'},{agentId:'codex'}]).map(o => o.label);
     expect(labels).toEqual([...labels].sort((a, b) => a.localeCompare(b)));
   });
 
   it('ignores blanks rather than inventing an unnamed agent', () => {
-    expect(availableAgentFilters(['', '   ', 'pi'])).toHaveLength(1);
+    expect(availableAgentFilters([{agentId:''},{agentId:'   '},{agentId:'pi'}])).toHaveLength(1);
   });
 
   it('writes herdr the way herdr writes it', () => {
-    const [herdr] = availableAgentFilters(['herdr']);
+    const [herdr] = availableAgentFilters([{agentId:'herdr'}]);
     expect(herdr.label).toBe('herdr');
   });
 });
@@ -92,7 +95,7 @@ describe('no selection', () => {
      * and opposite states to a person. Unticking the last box must land on the
      * sane one.
      */
-    expect(matchesAgentFilter('pi', [])).toBe(true);
+    expect(matchesAgentFilter({agentId:'pi'}, [])).toBe(true);
     expect(projectMatchesAgentFilter([], [])).toBe(true);
   });
 });
@@ -100,12 +103,12 @@ describe('no selection', () => {
 describe('a selection', () => {
   it('matches across the differing ids', () => {
     // Picking Claude must find herdr's panes too, or the fold was pointless.
-    expect(matchesAgentFilter('claude', ['claude-code'])).toBe(true);
-    expect(matchesAgentFilter('claude-code', ['claude-code'])).toBe(true);
+    expect(matchesAgentFilter({agentId:'claude'}, ['claude-code'])).toBe(true);
+    expect(matchesAgentFilter({agentId:'claude-code'}, ['claude-code'])).toBe(true);
   });
 
   it('excludes what was not picked', () => {
-    expect(matchesAgentFilter('pi', ['claude-code'])).toBe(false);
+    expect(matchesAgentFilter({agentId:'pi'}, ['claude-code'])).toBe(false);
   });
 });
 
@@ -113,7 +116,7 @@ describe('a selection', () => {
 
 describe('a project', () => {
   it('survives when it has one agent of the chosen kind', () => {
-    expect(projectMatchesAgentFilter(['pi', 'claude-code'], ['pi'])).toBe(true);
+    expect(projectMatchesAgentFilter([{agentId:'pi'},{agentId:'claude-code'}], ['pi'])).toBe(true);
   });
 
   it('is hidden when it has none', () => {
@@ -121,7 +124,7 @@ describe('a project', () => {
      * The point of the filter: "where is pi running" is answered by a SHORTER
      * LIST OF PROJECTS, not the same list with emptier branches.
      */
-    expect(projectMatchesAgentFilter(['claude-code'], ['pi'])).toBe(false);
+    expect(projectMatchesAgentFilter([{agentId:'claude-code'}], ['pi'])).toBe(false);
   });
 
   it('is hidden when it has no agents at all and a filter is on', () => {
@@ -139,12 +142,12 @@ describe('when an agent stops', () => {
      * storage, leaving a filter on with no visible way to clear it. That reads
      * as "the app lost my projects".
      */
-    const available = availableAgentFilters(['pi']);
+    const available = availableAgentFilters([{agentId:'pi'}]);
     expect(pruneAgentFilter(['pi', 'claude-code'], available)).toEqual(['pi']);
   });
 
   it('leaves a live selection alone', () => {
-    const available = availableAgentFilters(['pi', 'claude-code']);
+    const available = availableAgentFilters([{agentId:'pi'},{agentId:'claude-code'}]);
     expect(pruneAgentFilter(['pi'], available)).toEqual(['pi']);
   });
 });
@@ -162,7 +165,7 @@ describe('gathering the ids', () => {
   ];
 
   it('takes from both sources', () => {
-    expect(collectAgentIds(ours, herdr).sort()).toEqual(['claude', 'claude-code', 'codex', 'pi']);
+    expect(collectFilterableRows(ours, herdr).map(r => r.agentId).sort()).toEqual(['claude', 'claude-code', 'codex', 'pi']);
   });
 
   it('matches OUR rows by project id and herdr\'s by project NAME', () => {
@@ -172,16 +175,16 @@ describe('gathering the ids', () => {
      * is in. Matching on the wrong one returns an empty list, which the filter
      * would read as "no agents here" and hide the project.
      */
-    const got = collectAgentIds(ours, herdr, { id: 'p1', name: 'alpha' });
+    const got = collectFilterableRows(ours, herdr, { id: 'p1', name: 'alpha' }).map(r => r.agentId);
     expect(got.sort()).toEqual(['claude-code', 'pi']);
   });
 
   it('does not let a project id match a herdr row by accident', () => {
-    expect(collectAgentIds([], herdr, { id: 'alpha', name: 'nope' })).toEqual([]);
+    expect(collectFilterableRows([], herdr, { id: 'alpha', name: 'nope' })).toEqual([]);
   });
 
   it('skips rows with no agent rather than counting an empty one', () => {
-    expect(collectAgentIds([{ projectId: 'p1', agentId: '' }], [])).toEqual([]);
+    expect(collectFilterableRows([{ projectId: 'p1', agentId: '' }], [])).toEqual([]);
   });
 });
 
@@ -193,7 +196,120 @@ describe('one map for names, not a second one here', () => {
      * the picker beside it showed `Claude Code`. A labels map in this file
      * would have been the fourth.
      */
-    expect(availableAgentFilters(['pi'])[0].label).toBe('Pi');
-    expect(availableAgentFilters(['gemini'])[0].label).toBe('Gemini CLI');
+    expect(availableAgentFilters([{agentId:'pi'}])[0].label).toBe('Pi');
+    expect(availableAgentFilters([{agentId:'gemini'}])[0].label).toBe('Gemini CLI');
+  });
+});
+
+/* ── herdr is a SOURCE, not an agent ───────────────────────────────────── */
+
+describe('what herdr means in this menu', () => {
+  it('tags a pane by its agent AND by herdr', () => {
+    /*
+     * THE BUG THIS FIXES. herdr's panes report `claude` and `pi`, never
+     * `herdr` - so treating it as one more agent id made the herdr row appear
+     * only when an attached terminal happened to be open, and choosing it hid
+     * everything. "Show me what herdr is holding" has to find a pi pane.
+     */
+    expect(agentTags({ agentId: 'pi', fromHerdr: true }).sort())
+      .toEqual([HERDR_SOURCE_TAG, 'pi']);
+  });
+
+  it('finds a herdr pane under Pi as well', () => {
+    // Both directions, or the tag has replaced the agent rather than joined it.
+    expect(matchesAgentFilter({ agentId: 'pi', fromHerdr: true }, ['pi'])).toBe(true);
+    expect(matchesAgentFilter({ agentId: 'pi', fromHerdr: true }, [HERDR_SOURCE_TAG])).toBe(true);
+  });
+
+  it('does not tag one of our own terminals as herdr', () => {
+    expect(matchesAgentFilter({ agentId: 'pi' }, [HERDR_SOURCE_TAG])).toBe(false);
+  });
+
+  it('gives the ATTACH only the herdr tag, not an agent it is not', () => {
+    /*
+     * The attached terminal's "agent" is the multiplexer. Listing it under
+     * Claude or Pi would claim a session it is not - it is a view onto all of
+     * them.
+     */
+    expect(agentTags({ agentId: 'herdr' })).toEqual([HERDR_SOURCE_TAG]);
+  });
+
+  it('does not tag the attach TWICE for being herdr from herdr', () => {
+    /*
+     * Its agent id IS the source tag, and it also comes from herdr, so it
+     * earns the same tag by both routes. Counted twice, the menu would read
+     * "herdr 3" for two panes - a number somebody would try to reconcile.
+     */
+    expect(agentTags({ agentId: 'herdr', fromHerdr: true })).toEqual([HERDR_SOURCE_TAG]);
+    const opts = availableAgentFilters([{ agentId: 'herdr', fromHerdr: true }]);
+    expect(opts.find(o => o.agentId === HERDR_SOURCE_TAG)?.count).toBe(1);
+  });
+
+  it('counts herdr as how much it is HOLDING, not how many tabs are open', () => {
+    const opts = availableAgentFilters([
+      { agentId: 'pi', fromHerdr: true },
+      { agentId: 'claude', fromHerdr: true },
+      { agentId: 'claude-code' },
+    ]);
+    expect(opts.find(o => o.agentId === HERDR_SOURCE_TAG)?.count).toBe(2);
+    expect(opts.find(o => o.agentId === 'claude-code')?.count).toBe(2);
+  });
+
+  it('marks a herdr row as such when gathering, so the tag survives', () => {
+    const rows = collectFilterableRows([], [{ projectName: 'x', agentId: 'pi' }]);
+    expect(rows[0].fromHerdr).toBe(true);
+  });
+
+  it('reads `source` on our own rows, which is where the tree already put it', () => {
+    /*
+     * A pane herdr is holding also appears as a session row, carrying
+     * `source: 'herdr'`. Dropping it there would make a CARD whose only
+     * session is a herdr pane invisible to the herdr filter - and because the
+     * field is optional, nothing would have complained.
+     */
+    const rows = collectFilterableRows([{ projectId: 'p', agentId: 'pi', source: 'herdr' }], []);
+    expect(rows[0].fromHerdr).toBe(true);
+  });
+});
+
+/* ── the filter has to reach the cards ─────────────────────────────────── */
+
+describe('a card', () => {
+  const rows = [
+    { itemId: 'c1', agentId: 'pi' },
+    { itemId: 'c2', agentId: 'claude-code' },
+    { itemId: 'c3', agentId: 'claude', fromHerdr: true },
+  ];
+
+  it('survives when ITS session matches', () => {
+    expect(cardMatchesAgentFilter('c1', rows, ['pi'])).toBe(true);
+  });
+
+  it('goes when its session is a different agent', () => {
+    /*
+     * Stopping at the project answers "which project" and leaves the real
+     * question where it was: one project here holds twenty-nine cards, and
+     * showing all of them under a Pi filter is not an answer.
+     */
+    expect(cardMatchesAgentFilter('c2', rows, ['pi'])).toBe(false);
+  });
+
+  it('is not matched by ANOTHER card\'s session', () => {
+    // The itemId has to be part of the test, or the filter degenerates into
+    // "does this project have one anywhere".
+    expect(cardMatchesAgentFilter('c2', rows, ['pi'])).toBe(false);
+  });
+
+  it('answers the herdr filter through its herdr session', () => {
+    expect(cardMatchesAgentFilter('c3', rows, [HERDR_SOURCE_TAG])).toBe(true);
+  });
+
+  it('with no session at all goes while a filter is on', () => {
+    expect(cardMatchesAgentFilter('nope', rows, ['pi'])).toBe(false);
+  });
+
+  it('with no session STAYS when no filter is on', () => {
+    // Empty means everything, here too.
+    expect(cardMatchesAgentFilter('nope', rows, [])).toBe(true);
   });
 });

@@ -86,7 +86,7 @@ import { RunsPanel } from './RunsPanel';
 import { ORDER, SessionStateIndicator } from './sessionPresentation';
 import { AgentIcon } from './AgentIcon';
 import {
-  availableAgentFilters, collectAgentIds, projectMatchesAgentFilter,
+  availableAgentFilters, collectFilterableRows, projectMatchesAgentFilter, cardMatchesAgentFilter,
   pruneAgentFilter, matchesAgentFilter, type AgentFilterOption,
 } from '../agentFilter';
 import { cardState, itemsNeedingAPerson, NEEDS_A_PERSON } from '../cardState';
@@ -2146,12 +2146,29 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
   const [agentFilter, setAgentFilter] = React.useState<string[]>(() => readAgentFilter());
 
   /*
+   * The session rows with their ORIGIN attached, derived once.
+   *
+   * `source` is set by the tree rows for a pane herdr is holding, and the
+   * filter needs it: a card whose only session is a herdr pane must answer to
+   * the herdr filter, and passing the raw rows through would silently drop
+   * that - the field is optional, so nothing would have complained.
+   */
+  const filterableSessions = React.useMemo(
+    () => sessionRows.map(r => ({
+      itemId: r.itemId,
+      agentId: r.agentId,
+      fromHerdr: (r as { source?: string }).source === 'herdr',
+    })),
+    [sessionRows],
+  );
+
+  /*
    * The agents ACTUALLY in the tree, from both sources. Offering every agent
    * the product supports would put rows in the menu that can only empty the
    * list; five are installed and a machine rarely runs two at once.
    */
   const agentOptions = React.useMemo(
-    () => availableAgentFilters(collectAgentIds(sessionRows, herdrProject)),
+    () => availableAgentFilters(collectFilterableRows(sessionRows, herdrProject)),
     [sessionRows, herdrProject],
   );
 
@@ -2243,7 +2260,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
     () => (agentFilter.length === 0
       ? ordered
       : ordered.filter(p => projectMatchesAgentFilter(
-          collectAgentIds(sessionRows, herdrProject, { id: p.id, name: p.name }),
+          collectFilterableRows(sessionRows, herdrProject, { id: p.id, name: p.name }),
           agentFilter,
         ))),
     [ordered, agentFilter, sessionRows, herdrProject],
@@ -2608,7 +2625,20 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
         {visible.map((project: Project) => {
           const isActive = project.id === activeProjectId;
           const isPinned = pinned.includes(project.id);
-          const work = inFlightByProject.get(project.id) ?? [];
+          /*
+           * Narrowed to the cards running the chosen agent, not just the
+           * projects containing one.
+           *
+           * Stopping at the project answers "which project" and leaves the
+           * actual question - WHICH WORK - exactly where it was: a project
+           * here holds twenty-nine cards, and filtering to Pi and then listing
+           * all of them is not an answer.
+           *
+           * The count, the chevron and the expand control all read this, so
+           * they describe what the filter left rather than what it hid.
+           */
+          const work = (inFlightByProject.get(project.id) ?? [])
+            .filter(item => cardMatchesAgentFilter(item.id, filterableSessions, agentFilter));
           const isOpen = expanded.includes(project.id);
           return (
             <li key={project.id}>
@@ -2771,7 +2801,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                     // The project survived the filter; its rows still have to
                     // match it, or picking Pi would show a project BECAUSE pi
                     // is there and then list the claude panes beside it.
-                    .filter(r => matchesAgentFilter(r.agentId, agentFilter))
+                    .filter(r => matchesAgentFilter({ agentId: r.agentId, fromHerdr: true }, agentFilter))
                     .map(r => (
                     <li key={r.paneId} data-testid={`herdr-project-row-${r.paneId}`}>
                       <button
