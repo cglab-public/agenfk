@@ -86,7 +86,7 @@ import { RunsPanel } from './RunsPanel';
 import { ORDER, SessionStateIndicator } from './sessionPresentation';
 import { AgentIcon } from './AgentIcon';
 import {
-  availableAgentFilters, collectFilterableRows, projectMatchesAgentFilter, cardMatchesAgentFilter,
+  availableAgentFilters, collectFilterableRows, projectMatchesAgentFilter, cardMatchesAgentFilter, projectChildCount,
   pruneAgentFilter, matchesAgentFilter, type AgentFilterOption,
 } from '../agentFilter';
 import { cardState, itemsNeedingAPerson, NEEDS_A_PERSON } from '../cardState';
@@ -2142,6 +2142,18 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
   const [cardMenu, setCardMenu] = React.useState<{ item: AgEnFKItem; x: number; y: number } | null>(null);
   const [pinned, setPinned] = React.useState<string[]>(() => readPinned());
   const [expanded, setExpanded] = React.useState<string[]>(() => readExpanded());
+
+  /**
+   * Projects opened BY the filter, and not remembered.
+   *
+   * Separate from `expanded` deliberately. A filtered tree is short by
+   * definition, and leaving the results folded costs a click per project to
+   * see the thing you just asked for. But writing that to storage would
+   * discard the collapse a person chose - the same objection the "N running"
+   * control answers by only touching projects it has a claim on. This forgets
+   * on its own when the filter clears.
+   */
+  const [expandedByFilter, setExpandedByFilter] = React.useState<string[]>([]);
   const [sort, setSort] = React.useState<ProjectSort>(() => readProjectSort());
   const [agentFilter, setAgentFilter] = React.useState<string[]>(() => readAgentFilter());
 
@@ -2184,6 +2196,8 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
     const live = pruneAgentFilter(agentFilter, agentOptions);
     if (live.length !== agentFilter.length) setAgentFilter(writeAgentFilter(live));
   }, [agentOptions, agentFilter]);
+
+
 
   const toggleAgentFilter = React.useCallback((agentId: string): void => {
     setAgentFilter(prev => writeAgentFilter(
@@ -2265,6 +2279,17 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
         ))),
     [ordered, agentFilter, sessionRows, herdrProject],
   );
+
+  /*
+   * Open what the filter left. The chevron still works afterwards - a person
+   * can fold one away - which is why this seeds a state rather than forcing
+   * `isOpen` true for as long as the filter is on. A control that does
+   * nothing while a mode is active is worse than one that is absent.
+   */
+  React.useEffect(() => {
+    if (agentFilter.length === 0) { setExpandedByFilter([]); return; }
+    setExpandedByFilter(visible.map(p => p.id));
+  }, [agentFilter, visible]);
 
   // Collapsed is a rail, not nothing. A toggle that vanishes with the panel it
   // hides is a one-way door, and the control stays where the eye last saw it.
@@ -2639,13 +2664,49 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
            */
           const work = (inFlightByProject.get(project.id) ?? [])
             .filter(item => cardMatchesAgentFilter(item.id, filterableSessions, agentFilter));
-          const isOpen = expanded.includes(project.id);
+
+          /*
+           * The panes herdr is holding here, narrowed the same way.
+           *
+           * Hoisted out of the list below because everything in that list was
+           * gated on `work.length > 0` - so filtering to herdr, which removes
+           * every CARD (these panes belong to the project's own checkout and
+           * to no card at all), collapsed the branch and took the herdr rows
+           * down with it. Projects with a dozen panes rendered as empty
+           * folders that could not even be expanded.
+           */
+          const herdrRows = herdrProject
+            .filter(r => r.projectName === project.name)
+            .filter(r => matchesAgentFilter({ agentId: r.agentId, fromHerdr: true }, agentFilter));
+
+          /*
+           * What decides whether this project has a branch to open.
+           *
+           * Cards OR panes. Either is work under this project, and only one of
+           * them used to count.
+           */
+          const childCount = projectChildCount(work, herdrRows);
+          const isOpen = expanded.includes(project.id) || expandedByFilter.includes(project.id);
           return (
             <li key={project.id}>
               <div className="group relative flex items-center">
-              {work.length > 0 ? (
+              {childCount > 0 ? (
                 <button
-                  onClick={() => setExpanded(toggleExpanded(project.id))}
+                  onClick={() => {
+                    // Closing has to clear BOTH, or a project the filter
+                    // opened would spring back open the moment anything
+                    // re-rendered.
+                    if (isOpen) {
+                      setExpandedByFilter(prev => prev.filter(id => id !== project.id));
+                      setExpanded(prev => {
+                        const next = prev.filter(id => id !== project.id);
+                        writeExpanded(next);
+                        return next;
+                      });
+                      return;
+                    }
+                    setExpanded(toggleExpanded(project.id));
+                  }}
                   aria-label={`${isOpen ? 'Collapse' : 'Expand'} ${project.name}`}
                   // The label names the ACTION; these name the STATE and the
                   // thing acted on. Without them a screen reader announces a
@@ -2678,12 +2739,12 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                 {/* Decorative: the row already has an accessible name, and a
                     second label here would make screen readers say it twice. */}
                 <span data-folder-icon aria-hidden="true" className="shrink-0 text-ink-tertiary">
-                  {isOpen && work.length > 0
+                  {isOpen && childCount > 0
                     /* The SAME size as its closed twin. They were 13 and 15,
                        so the row shifted by two pixels every time a project was
                        expanded - a wobble nobody can name and everybody sees. */
                     ? <FolderOpen size={15} />
-                    : <Folder size={15} className={work.length === 0 ? 'opacity-50' : undefined} />}
+                    : <Folder size={15} className={childCount === 0 ? 'opacity-50' : undefined} />}
                 </span>
                 {/* flex-1, or `justify-between` above shares the free space between all
                     four children and the name floats in the middle of the row -
@@ -2691,15 +2752,20 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                     hard to scan down. Taking the space itself keeps the name
                     against its folder icon and pushes the count and age right. */}
                 <span data-testid="project-name" className="min-w-0 flex-1 truncate text-left">{project.name}</span>
-                {work.length > 0 && (
+                {childCount > 0 && (
                   // Visible without expanding: the whole point of a folder is
                   // to say how much is inside before you open it.
                   <span
                     data-testid="in-flight-count"
-                    title={`${work.length} in flight`}
+                    /*
+                     * Cards AND panes, because both are on the row below it.
+                     * Counting only cards made a project holding a dozen herdr
+                     * panes and no card of its own read as empty.
+                     */
+                    title={`${childCount} in flight`}
                     className="shrink-0 rounded-full bg-canvas px-1.5 font-mono text-[11px] text-ink-tertiary"
                   >
-                    {work.length}
+                    {childCount}
                   </span>
                 )}
                 <span
@@ -2753,7 +2819,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
               </button>
               </div>
 
-              {work.length > 0 && (
+              {childCount > 0 && (
                 // grid-template-rows 0fr→1fr animates to the content's own
                 // height without measuring it, and needs no max-height guess
                 // that would clip a long list or stall a short one. The inner
@@ -2796,13 +2862,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                     * and cannot act on. A row that looked like ours would invite
                     * a STOP aimed at somebody else's terminal.
                     */}
-                  {herdrProject
-                    .filter(r => r.projectName === project.name)
-                    // The project survived the filter; its rows still have to
-                    // match it, or picking Pi would show a project BECAUSE pi
-                    // is there and then list the claude panes beside it.
-                    .filter(r => matchesAgentFilter({ agentId: r.agentId, fromHerdr: true }, agentFilter))
-                    .map(r => (
+                  {herdrRows.map(r => (
                     <li key={r.paneId} data-testid={`herdr-project-row-${r.paneId}`}>
                       <button
                         type="button"

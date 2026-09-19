@@ -210,3 +210,23 @@ export function collectFilterableRows(
   }
   return out;
 }
+
+/**
+ * How much a project has to show: cards AND panes.
+ *
+ * Named rather than added inline because getting it wrong is invisible. The
+ * branch under a project - the chevron, the count, the whole expandable list -
+ * was gated on the CARD count alone, and the herdr rows lived inside that
+ * list. Filtering to herdr removes every card, since those panes belong to the
+ * project's own checkout and to no card at all, so projects holding a dozen
+ * panes collapsed to empty folders that could not even be opened.
+ *
+ * Nothing threw and no test failed: the list was correct, it was simply never
+ * rendered.
+ */
+export function projectChildCount(
+  cards: readonly unknown[],
+  herdrRows: readonly unknown[],
+): number {
+  return cards.length + herdrRows.length;
+}
