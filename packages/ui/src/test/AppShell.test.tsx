@@ -678,17 +678,25 @@ describe('AppShell — folders of in-flight work (CGLAB-172)', () => {
   });
 });
 
+/*
+ * The button's accessible name was widened here, not the assertion's intent.
+ *
+ * It used to read "Sort projects"; the same control now also filters by agent,
+ * so it says so. These four tests are about the SORT, and pinning the literal
+ * wording made them fail on a change that did not touch sorting at all - so
+ * the selector matches a sort control rather than one particular sentence.
+ */
 describe('AppShell — sort order (CGLAB-172)', () => {
   it('offers a sort control in the Projects header', async () => {
     renderShell();
     await screen.findByRole('button', { name: 'horizon-lab' });
-    expect(screen.getByRole('button', { name: /sort projects/i })).toBeDefined();
+    expect(screen.getByRole('button', { name: /sort.*projects/i })).toBeDefined();
   });
 
   it('opens a menu with both orders and marks the current one', async () => {
     renderShell();
     await screen.findByRole('button', { name: 'horizon-lab' });
-    fireEvent.click(screen.getByRole('button', { name: /sort projects/i }));
+    fireEvent.click(screen.getByRole('button', { name: /sort.*projects/i }));
 
     const lastUsed = screen.getByRole('menuitemradio', { name: /last used/i });
     expect(screen.getByRole('menuitemradio', { name: /created/i })).toBeDefined();
@@ -711,7 +719,7 @@ describe('AppShell — sort order (CGLAB-172)', () => {
     // and agenfk (Sept) leads.
     expect(renderedProjectNames()).toEqual(['agenfk', 'horizon-lab']);
 
-    fireEvent.click(screen.getByRole('button', { name: /sort projects/i }));
+    fireEvent.click(screen.getByRole('button', { name: /sort.*projects/i }));
     fireEvent.click(screen.getByRole('menuitemradio', { name: /created/i }));
 
     // By creation date horizon-lab (June) leads — the opposite order.
@@ -724,7 +732,7 @@ describe('AppShell — sort order (CGLAB-172)', () => {
   it('closes on Escape without changing anything', async () => {
     renderShell();
     await screen.findByRole('button', { name: 'horizon-lab' });
-    fireEvent.click(screen.getByRole('button', { name: /sort projects/i }));
+    fireEvent.click(screen.getByRole('button', { name: /sort.*projects/i }));
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('menuitemradio', { name: /created/i })).toBeNull();
     expect(localStorage.getItem('agenfk_project_sort')).toBeNull();

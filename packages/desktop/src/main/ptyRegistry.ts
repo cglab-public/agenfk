@@ -16,9 +16,11 @@
  * nor the reaping need real processes to test.
  */
 import { randomUUID } from 'crypto';
-import { resolveAgentCommand, canDictateSessionId } from './agents.js';
+import { resolveAgentCommand, canDictateSessionId, HERDR_AGENT_ID } from './agents.js';
 import { TitleReader, activityFromTitle } from './agentState.js';
 import { buildPtyEnv } from './ptyEnv.js';
+import { envWithoutHerdr, herdrAttachCommand } from './herdrAttach.js';
+import { homedir } from 'node:os';
 import { buildTmuxShellCommand, tmuxSessionName } from './tmux.js';
 import { FlowControl } from './flowControl.js';
 import { killProcessTree } from './processTree.js';
@@ -272,15 +274,33 @@ export class PtyRegistry {
     const agentSessionId = req.agentSessionId
       ?? (canDictateSessionId(req.agentId) ? randomUUID() : undefined);
 
-    const command = resolveAgentCommand(req.agentId, {
-      autoApprove: req.autoApprove === true,
-      agentSessionId,
-      resume: req.resume === true,
-    });
+    const attaching = req.agentId === HERDR_AGENT_ID;
+
+    /*
+     * Two sources, one variable. An attach cannot come from `resolveAgentCommand`
+     * because its id is deliberately absent from the agent table; it gets its
+     * own closed set of one, gated by the equality above.
+     */
+    const command = attaching
+      ? herdrAttachCommand()
+      : resolveAgentCommand(req.agentId, {
+          autoApprove: req.autoApprove === true,
+          agentSessionId,
+          resume: req.resume === true,
+        });
+    /*
+     * An ATTACH resolves nothing.
+     *
+     * herdr is already running and already owns the panes; opening a view onto
+     * it needs no card, no branch and no worktree - which is the whole reason
+     * an adopted session works in its own directory rather than being dragged
+     * into one of ours. The cwd below is only what a NEW pane would inherit if
+     * somebody made one from inside; the session itself is unaffected by it.
+     */
     // Resolve BEFORE spawning: a failure here must leave no half-registered
     // session behind, or later write/kill calls report an ownership problem
     // when the real problem was that the worktree could not be made.
-    const { cwd } = await this.deps.resolveCwd(req.itemId);
+    const { cwd } = attaching ? { cwd: homedir() } : await this.deps.resolveCwd(req.itemId);
 
     // Inside tmux when we can. The session name is derived from the card and
     // the agent, so reopening ATTACHES to the one still running rather than
@@ -293,13 +313,20 @@ export class PtyRegistry {
      * the modes are argv TEMPLATES, not a base plus a switch — codex's resume
      * is a SUBCOMMAND (`codex resume <id>`), so there is no flag to remove.
      */
-    const freshCommand = resolveAgentCommand(req.agentId, {
-      autoApprove: req.autoApprove === true,
-      agentSessionId,
-      resume: false,
-    });
+    const freshCommand = attaching
+      // There is no "fresh" attach. The session exists or it does not, and a
+      // retry that started something new would be the opposite of attaching.
+      ? command
+      : resolveAgentCommand(req.agentId, {
+          autoApprove: req.autoApprove === true,
+          agentSessionId,
+          resume: false,
+        });
 
-    const useTmux = this.deps.tmux?.available === true && req.persist === true;
+    // Never for an attach: herdr IS the multiplexer that makes the session
+    // outlive this app, so wrapping it in tmux would nest one inside the other
+    // to buy something it already provides.
+    const useTmux = !attaching && this.deps.tmux?.available === true && req.persist === true;
     const file = useTmux ? '/bin/sh' : command.file;
     const args = useTmux
       ? ['-c', buildTmuxShellCommand(
@@ -314,7 +341,17 @@ export class PtyRegistry {
         )]
       : command.args;
 
-    const env = buildPtyEnv(process.env, (await this.deps.loginPath?.()) ?? null);
+    /*
+     * Stripped AFTER the login-PATH capture, not instead of it: the capture is
+     * what lets `herdr` be found at all.
+     *
+     * MEASURED: herdr launched from inside a herdr pane answers "nested herdr
+     * is disabled by default" and exits. If this app was itself started from
+     * such a terminal it inherits HERDR_PANE_ID, and every attach would die on
+     * startup with a message nobody would trace back to here.
+     */
+    const baseEnv = buildPtyEnv(process.env, (await this.deps.loginPath?.()) ?? null);
+    const env = attaching ? envWithoutHerdr(baseEnv) : baseEnv;
 
     // Opaque and unguessable, and deliberately not derived from the item id:
     // a session id travels to the renderer, and one built from a card id would
@@ -364,7 +401,18 @@ export class PtyRegistry {
       // The run exists from the moment the process does, so the tailer has
       // something to follow. The AGENT's id, not this registry's handle: the
       // transcript is named after the id the agent was given.
-      this.deps.registerRun?.({ itemId: req.itemId, agentId: req.agentId, agentSessionId });
+      /*
+       * An attach registers NOTHING.
+       *
+       * `registerRun` means "this app dispatched an agent", and it did not -
+       * the pane was already running, started by somebody else, possibly before
+       * this app was open. Recording it would put a run in the feed that no
+       * transcript backs, which is the same lie the tree rows refuse when they
+       * carry a `herdr:` id instead of a real one.
+       */
+      if (!attaching) {
+        this.deps.registerRun?.({ itemId: req.itemId, agentId: req.agentId, agentSessionId });
+      }
       const startedAt = Date.now();
 
       /*

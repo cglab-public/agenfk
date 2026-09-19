@@ -33,13 +33,12 @@ import { useActiveProject } from '../ActiveProject';
 import {
   readPinned, togglePinned, sortProjectsByPin,
   readExpanded, toggleExpanded, writeExpanded,
-  readProjectSort, writeProjectSort, orderProjects, type ProjectSort,
+  readProjectSort, writeProjectSort, readAgentFilter, writeAgentFilter, orderProjects, type ProjectSort,
 } from '../sidebarPrefs';
 import { NewProjectButton } from './NewProjectButton';
 import { api } from '../api';
-import { herdrSessionRows, herdrProjectRows, type OwnedPane, type ProjectPaneRow } from '../herdrTreeRows';
+import { herdrAttachSession, shouldFocusOnAttach, herdrSessionRows, herdrProjectRows, type OwnedPane, type ProjectPaneRow } from '../herdrTreeRows';
 import { HerdrMark } from './HerdrMark';
-import { HerdrPaneView } from './HerdrPaneView';
 import { API_URL } from '../apiUrl';
 import type { AgEnFKItem, Project } from '../types';
 import { TerminalTab, type TerminalSession } from './TerminalTab';
@@ -84,7 +83,12 @@ import { CardPicker } from './CardPicker';
 import { CardStateDot } from './CardStateDot';
 import { CardProcessRow } from './CardProcessRow';
 import { RunsPanel } from './RunsPanel';
-import { ORDER } from './sessionPresentation';
+import { ORDER, SessionStateIndicator } from './sessionPresentation';
+import { AgentIcon } from './AgentIcon';
+import {
+  availableAgentFilters, collectFilterableRows, projectMatchesAgentFilter, cardMatchesAgentFilter,
+  pruneAgentFilter, matchesAgentFilter, type AgentFilterOption,
+} from '../agentFilter';
 import { cardState, itemsNeedingAPerson, NEEDS_A_PERSON } from '../cardState';
 import { AttentionAlerts } from './AttentionAlerts';
 import { clampSidebarWidth, sidebarIsResizable, SIDEBAR_MIN_PX, SIDEBAR_MAX_PX, SIDEBAR_COLLAPSED_PX } from '../sidebarWidth';
@@ -478,6 +482,58 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [setActiveProjectId, sessions, enqueuePending]);
 
   /**
+   * Steer herdr to the pane that was clicked.
+   *
+   * Fired alongside the attach, not instead of it: the terminal is the thing
+   * being opened, and this decides WHAT IS ON IT. Clicking a row means "take
+   * me to that agent", the same thing clicking a card means everywhere else
+   * here.
+   *
+   * It is the one call in this feature that reaches outside our own window.
+   * herdr's clients are not separate views - MEASURED: a second client gets
+   * the first's byte stream exactly - so focusing moves the pane, the tab and
+   * the workspace on the operator's real screen too. Skipped when herdr is
+   * already showing it, and failure is swallowed: the terminal opening is the
+   * promise, and landing on the right pane is the courtesy.
+   */
+  const steerHerdr = React.useCallback((row: ProjectPaneRow): void => {
+    if (!shouldFocusOnAttach(row)) return;
+    void fetch(`${API_URL}/herdr/panes/${encodeURIComponent(row.paneId)}/focus`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ socket: row.socketPath }),
+    }).catch(() => {});
+  }, []);
+
+  /**
+   * Open a herdr session in the terminal this app already has.
+   *
+   * No dialog, because there is nothing to choose: the session exists, started
+   * by somebody else, and the only question a dialog could ask - which agent -
+   * was answered before this app was open.
+   *
+   * DEDUPED BY SOCKET, not by pane. Attaching shows the whole herdr workspace,
+   * so two rows from the same session are the same terminal; opening one per
+   * row would stack identical clients on one daemon and reflow its layout once
+   * per click.
+   */
+  const attachHerdr = React.useCallback((row: ProjectPaneRow | null): void => {
+    if (!row) { setHerdrAttachedFrom(null); return; }
+    const session = herdrAttachSession(row, new Date().toISOString());
+    steerHerdr(row);
+    setHerdrAttachedFrom(row.paneId);
+    setTerminalOpened(true);
+    setActive('terminal');
+    // Already attached? Go to it. A second client on the same daemon buys
+    // nothing and costs the operator's own window a resize.
+    if (sessions.some(s => s.id === session.id)) { setActiveSession(session.id); return; }
+    setSessions(prev => [...prev, session]);
+    setActiveSession(session.id);
+  }, [sessions, steerHerdr]);
+
+
+
+  /**
    * The board asked for a terminal on a card.
    *
    * Through a ref, and the NONCE is the only dependency. `requestTerminal`
@@ -616,7 +672,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   /** Panes that belong to a project but to no card. Most of them, today. */
   /** The herdr pane the tree has open, if any. */
-  const [openHerdrPane, setOpenHerdrPane] = React.useState<ProjectPaneRow | null>(null);
+  /**
+   * Which herdr row opened the terminal we are attached through.
+   *
+   * Kept only so the tree can show WHERE you are. There is no second surface
+   * any more: clicking a herdr row opens a terminal, and the terminal runs
+   * herdr.
+   */
+  const [herdrAttachedFrom, setHerdrAttachedFrom] = React.useState<string | null>(null);
 
   const herdrProject = React.useMemo(() => {
     const socketOf = new Map<string, string>();
@@ -1389,13 +1452,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           requestTerminal={requestTerminal}
           sessionRows={sessionRows}
           herdrProject={herdrProject}
-          openPane={openHerdrPane?.paneId ?? null}
-          onOpenPane={(row: ProjectPaneRow | null) => {
-            setOpenHerdrPane(row);
-            // The mirror takes the terminal column, because that is where a
-            // person already looks for "what is this agent doing".
-            if (row) setActive('terminal');
-          }}
+          openPane={herdrAttachedFrom}
+          onOpenPane={attachHerdr}
           liveItems={liveItems}
           openSession={openSession}
           openSettings={() => { setSettingsOpened(true); setActive('settings'); }}
@@ -1521,31 +1579,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             hidden={active !== 'terminal'}
             className="min-h-0 flex-1"
           >
-            {openHerdrPane && (
-              /*
-               * A herdr pane takes the column while it is open, and closing it
-               * hands the column straight back.
-               */
-              <div className="flex min-h-0 flex-1 flex-col">
-                <div className="flex shrink-0 items-center border-b border-border-soft px-4 py-1">
-                  <button
-                    type="button"
-                    onClick={() => setOpenHerdrPane(null)}
-                    className="rounded px-2 py-1 font-mono text-[10px] text-ink-tertiary transition-colors hover:text-ink"
-                  >
-                    ← back to terminals
-                  </button>
-                </div>
-                <HerdrPaneView pane={openHerdrPane} />
-              </div>
-            )}
             {/*
-              * HIDDEN, never unmounted, while a herdr pane is open. `TerminalTab`
-              * holds live ptys and xterm instances; tearing those down to show a
-              * read-only mirror would kill work in order to display work.
+              * ONE surface. A herdr session opens as a terminal tab beside the
+              * others, because that is what it is - the previous version put a
+              * read-only mirror in front of this column and hid the terminals
+              * behind it, which was a second place to look at the same work.
               */}
             {terminalOpened && (
-              <div className={clsx('flex min-h-0 flex-1 flex-col', openHerdrPane && 'hidden')}>
+              <div className="flex min-h-0 flex-1 flex-col">
               <TerminalTab
                 sessions={sessions}
                 sessionStates={sessionStates}
@@ -2102,6 +2143,53 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
   const [pinned, setPinned] = React.useState<string[]>(() => readPinned());
   const [expanded, setExpanded] = React.useState<string[]>(() => readExpanded());
   const [sort, setSort] = React.useState<ProjectSort>(() => readProjectSort());
+  const [agentFilter, setAgentFilter] = React.useState<string[]>(() => readAgentFilter());
+
+  /*
+   * The session rows with their ORIGIN attached, derived once.
+   *
+   * `source` is set by the tree rows for a pane herdr is holding, and the
+   * filter needs it: a card whose only session is a herdr pane must answer to
+   * the herdr filter, and passing the raw rows through would silently drop
+   * that - the field is optional, so nothing would have complained.
+   */
+  const filterableSessions = React.useMemo(
+    () => sessionRows.map(r => ({
+      itemId: r.itemId,
+      agentId: r.agentId,
+      fromHerdr: (r as { source?: string }).source === 'herdr',
+    })),
+    [sessionRows],
+  );
+
+  /*
+   * The agents ACTUALLY in the tree, from both sources. Offering every agent
+   * the product supports would put rows in the menu that can only empty the
+   * list; five are installed and a machine rarely runs two at once.
+   */
+  const agentOptions = React.useMemo(
+    () => availableAgentFilters(collectFilterableRows(sessionRows, herdrProject)),
+    [sessionRows, herdrProject],
+  );
+
+  /*
+   * A selection whose agent has since stopped is dropped.
+   *
+   * Its row leaves the menu when the last session of that kind ends, and the
+   * selection would survive in storage behind it - a filter still narrowing
+   * the list with no visible way to turn it off, which reads as the app having
+   * lost the projects.
+   */
+  React.useEffect(() => {
+    const live = pruneAgentFilter(agentFilter, agentOptions);
+    if (live.length !== agentFilter.length) setAgentFilter(writeAgentFilter(live));
+  }, [agentOptions, agentFilter]);
+
+  const toggleAgentFilter = React.useCallback((agentId: string): void => {
+    setAgentFilter(prev => writeAgentFilter(
+      prev.includes(agentId) ? prev.filter(id => id !== agentId) : [...prev, agentId],
+    ));
+  }, []);
 
   // One request for every project's in-flight work. The server answers this
   // per project against that project's own flow, so there is no second copy
@@ -2154,6 +2242,28 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
     () => sortProjectsByPin(orderProjects(projects as Project[], sort), pinned),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [projects, pinned, sort, activeProjectId],
+  );
+
+  /*
+   * Narrowed AFTER ordering, never instead of it.
+   *
+   * Pinning and last-used still decide the sequence; the filter only removes.
+   * Doing it the other way round would let a filter quietly reorder what is
+   * left, so turning one on and off again would not return the list to where
+   * it was.
+   *
+   * A project with no agent of the chosen kind goes entirely, because that is
+   * what the filter is FOR: "where is pi running" is answered by a shorter
+   * list of projects, not the same list with emptier branches.
+   */
+  const visible = React.useMemo(
+    () => (agentFilter.length === 0
+      ? ordered
+      : ordered.filter(p => projectMatchesAgentFilter(
+          collectFilterableRows(sessionRows, herdrProject, { id: p.id, name: p.name }),
+          agentFilter,
+        ))),
+    [ordered, agentFilter, sessionRows, herdrProject],
   );
 
   // Collapsed is a rail, not nothing. A toggle that vanishes with the panel it
@@ -2393,7 +2503,14 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
       <div className="flex shrink-0 items-center pr-1">
         <SidebarLabel>Projects</SidebarLabel>
         <div className="ml-auto flex items-center">
-          <SortMenu value={sort} onChange={next => setSort(writeProjectSort(next))} />
+          <SortMenu
+            value={sort}
+            onChange={next => setSort(writeProjectSort(next))}
+            agentOptions={agentOptions}
+            selectedAgents={agentFilter}
+            onToggleAgent={toggleAgentFilter}
+            onClearAgents={() => setAgentFilter(writeAgentFilter([]))}
+          />
           <NewProjectButton onCreated={id => setActiveProjectId(id)} />
         </div>
       </div>
@@ -2487,10 +2604,41 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
         data-testid="project-list"
         className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-slim"
       >
-        {ordered.map((project: Project) => {
+        {/*
+          * A filter that empties the list must SAY SO, and offer the way out.
+          * A blank tree with the projects still in the database reads as data
+          * loss, and the only clue would be a tinted icon in the corner.
+          */}
+        {visible.length === 0 && agentFilter.length > 0 && (
+          <li data-testid="agent-filter-empty" className="px-3 py-4 text-[11px] text-ink-tertiary">
+            No project is running{' '}
+            {agentFilter.map(id => agentLabel(id)).join(' or ')}.{' '}
+            <button
+              type="button"
+              onClick={() => setAgentFilter(writeAgentFilter([]))}
+              className="underline decoration-dotted underline-offset-2 transition-colors hover:text-ink"
+            >
+              Show all projects
+            </button>
+          </li>
+        )}
+        {visible.map((project: Project) => {
           const isActive = project.id === activeProjectId;
           const isPinned = pinned.includes(project.id);
-          const work = inFlightByProject.get(project.id) ?? [];
+          /*
+           * Narrowed to the cards running the chosen agent, not just the
+           * projects containing one.
+           *
+           * Stopping at the project answers "which project" and leaves the
+           * actual question - WHICH WORK - exactly where it was: a project
+           * here holds twenty-nine cards, and filtering to Pi and then listing
+           * all of them is not an answer.
+           *
+           * The count, the chevron and the expand control all read this, so
+           * they describe what the filter left rather than what it hid.
+           */
+          const work = (inFlightByProject.get(project.id) ?? [])
+            .filter(item => cardMatchesAgentFilter(item.id, filterableSessions, agentFilter));
           const isOpen = expanded.includes(project.id);
           return (
             <li key={project.id}>
@@ -2648,7 +2796,13 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                     * and cannot act on. A row that looked like ours would invite
                     * a STOP aimed at somebody else's terminal.
                     */}
-                  {herdrProject.filter(r => r.projectName === project.name).map(r => (
+                  {herdrProject
+                    .filter(r => r.projectName === project.name)
+                    // The project survived the filter; its rows still have to
+                    // match it, or picking Pi would show a project BECAUSE pi
+                    // is there and then list the claude panes beside it.
+                    .filter(r => matchesAgentFilter({ agentId: r.agentId, fromHerdr: true }, agentFilter))
+                    .map(r => (
                     <li key={r.paneId} data-testid={`herdr-project-row-${r.paneId}`}>
                       <button
                         type="button"
@@ -2660,6 +2814,14 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                           openPane === r.paneId && 'bg-nav-surface',
                         )}
                       >
+                        {/*
+                          * The SAME indicator the rest of the app uses, not a
+                          * lookalike. A herdr agent that is running is running
+                          * in exactly the sense ours are, and it sat perfectly
+                          * still beside an animated row doing the same work -
+                          * which reads as "that one is stuck".
+                          */}
+                        <SessionStateIndicator state={r.state} />
                         <HerdrMark className="h-3 w-3 shrink-0" />
                         <span className="shrink-0 font-mono">{r.agentId}</span>
                         <span
@@ -3047,8 +3209,30 @@ const SORT_LABELS: Array<{ value: ProjectSort; label: string }> = [
   { value: 'last-used', label: 'Last used' },
 ];
 
-function SortMenu({ value, onChange }: { value: ProjectSort; onChange: (v: ProjectSort) => void }) {
+function SortMenu({
+  value,
+  onChange,
+  agentOptions,
+  selectedAgents,
+  onToggleAgent,
+  onClearAgents,
+}: {
+  value: ProjectSort;
+  onChange: (v: ProjectSort) => void;
+  readonly agentOptions: readonly AgentFilterOption[];
+  readonly selectedAgents: readonly string[];
+  onToggleAgent: (agentId: string) => void;
+  onClearAgents: () => void;
+}) {
   const [open, setOpen] = React.useState(false);
+  /*
+   * Hidden below two options, because there is nothing to narrow TO: with one
+   * kind of agent running, filtering to it leaves the list exactly as it was.
+   * An offered control that cannot change anything teaches people the menu is
+   * not worth opening.
+   */
+  const canFilter = agentOptions.length > 1;
+  const filtering = selectedAgents.length > 0;
 
   // Escape closes it, and so does clicking anywhere else — a menu that can
   // only be dismissed by choosing something forces a choice you may not want.
@@ -3068,11 +3252,21 @@ function SortMenu({ value, onChange }: { value: ProjectSort; onChange: (v: Proje
     <div className="relative" onMouseDown={e => e.stopPropagation()}>
       <button
         onClick={() => setOpen(o => !o)}
-        aria-label="Sort projects"
+        aria-label={filtering ? `Sort and filter projects, ${selectedAgents.length} filter on` : 'Sort and filter projects'}
         aria-haspopup="menu"
         aria-expanded={open}
-        title="Sort projects"
-        className="flex items-center rounded p-1 text-ink-tertiary transition-colors hover:bg-canvas hover:text-ink-secondary"
+        title={filtering ? 'Filtered by agent' : 'Sort and filter projects'}
+        /*
+         * The active state is not decoration. A filter narrows the list and
+         * then closes, so without a mark on the button the next person to look
+         * sees a short project list and no cause - which reads as the app
+         * having lost them.
+         */
+        data-filtering={filtering || undefined}
+        className={clsx(
+          'flex items-center rounded p-1 transition-colors hover:bg-canvas',
+          filtering ? 'text-brand' : 'text-ink-tertiary hover:text-ink-secondary',
+        )}
       >
         <ListFilter size={13} />
       </button>
@@ -3101,6 +3295,60 @@ function SortMenu({ value, onChange }: { value: ProjectSort; onChange: (v: Proje
               {value === option.value && <Check size={12} className="text-brand" />}
             </button>
           ))}
+
+          {canFilter && (
+            <>
+              <div className="my-1 border-t border-border-soft" />
+              <p className="px-2.5 pb-1 text-[10px] font-bold uppercase tracking-wider text-ink-tertiary">
+                Agent
+              </p>
+              {/*
+                * "All" first and always present. Unticking the last box lands
+                * on "no selection", which MEANS everything - but a person who
+                * turned three on does not want to turn three off one at a
+                * time to get back, and without a way back a filter is a trap.
+                */}
+              <button
+                role="menuitemradio"
+                aria-checked={!filtering}
+                onClick={() => onClearAgents()}
+                className={clsx(
+                  'flex w-full items-center justify-between px-2.5 py-1 text-left text-xs transition-colors',
+                  !filtering ? 'text-ink' : 'text-ink-secondary hover:text-ink',
+                )}
+              >
+                All
+                {!filtering && <Check size={12} className="text-brand" />}
+              </button>
+              {agentOptions.map(option => {
+                const on = selectedAgents.includes(option.agentId);
+                return (
+                  <button
+                    key={option.agentId}
+                    role="menuitemcheckbox"
+                    aria-checked={on}
+                    data-testid={`agent-filter-${option.agentId}`}
+                    /*
+                     * The menu STAYS OPEN. This is a multi-select, and closing
+                     * on each tick would make picking two agents a two-trip
+                     * job - which is most of why anybody opens it.
+                     */
+                    onClick={() => onToggleAgent(option.agentId)}
+                    className={clsx(
+                      'flex w-full items-center gap-2 px-2.5 py-1 text-left text-xs transition-colors',
+                      on ? 'text-ink' : 'text-ink-secondary hover:text-ink',
+                    )}
+                  >
+                    <AgentIcon agentId={option.agentId} size={12} />
+                    <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                    {/* The count answers the question without opening it twice. */}
+                    <span className="shrink-0 font-mono text-[10px] text-ink-tertiary">{option.count}</span>
+                    {on && <Check size={12} className="shrink-0 text-brand" />}
+                  </button>
+                );
+              })}
+            </>
+          )}
         </div>
       )}
     </div>

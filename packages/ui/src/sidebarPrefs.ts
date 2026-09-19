@@ -79,6 +79,7 @@ export function sortProjectsByPin<T extends { id: string }>(projects: T[], pinne
 }
 
 const SORT_KEY = 'agenfk_project_sort';
+const AGENT_FILTER_KEY = 'agenfk.sidebar.agentFilter';
 
 /** How the project list is ordered before pinning is applied. */
 export type ProjectSort = 'last-used' | 'created';
@@ -97,6 +98,37 @@ export function readProjectSort(): ProjectSort {
   } catch {
     return 'last-used';
   }
+}
+
+/**
+ * Which agents the tree is narrowed to. Empty is "all", not "none".
+ *
+ * Stored as a list rather than a single value because the useful question is
+ * often about two of them at once - the two that are blocked, say - and a
+ * radio would make answering it two passes.
+ */
+export function readAgentFilter(): string[] {
+  try {
+    const raw = localStorage.getItem(AGENT_FILTER_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    // Shape-checked, not trusted. This value is JSON in storage a user can
+    // edit, and a non-array here would throw inside a render.
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
+  } catch {
+    // Unparseable is the same as unset: show everything.
+    return [];
+  }
+}
+
+export function writeAgentFilter(ids: readonly string[]): string[] {
+  const next = [...ids];
+  try {
+    localStorage.setItem(AGENT_FILTER_KEY, JSON.stringify(next));
+  } catch {
+    // Losing the preference is a papercut; throwing would blank the sidebar.
+  }
+  return next;
 }
 
 export function writeProjectSort(sort: ProjectSort): ProjectSort {

@@ -30,6 +30,8 @@ export interface OwnedPane {
   readonly agent?: string;
   readonly agent_status?: string;
   readonly terminal_title_stripped?: string;
+  /** herdr's own word for "this is the pane on screen". */
+  readonly focused?: boolean;
   readonly owner?: PaneOwner;
   readonly [k: string]: unknown;
 }
@@ -51,6 +53,16 @@ export interface ProjectPaneRow {
   readonly title: string;
   readonly state: SessionState;
   readonly needsAPerson: boolean;
+  /**
+   * Where herdr is looking RIGHT NOW.
+   *
+   * Carried so attaching can skip a redundant focus. herdr's clients are not
+   * separate views - MEASURED: a second client receives the first's byte
+   * stream exactly, 3443 bytes for 3443 - so focusing is not "move my panel",
+   * it is "move the whole herdr", operator's own window included. Doing that
+   * when it is already there would be a jump nobody asked for.
+   */
+  readonly focused: boolean;
 }
 
 /**
@@ -145,7 +157,81 @@ export function herdrProjectRows(
       title: titleOf(p),
       state,
       needsAPerson: state === 'blocked',
+      focused: p.focused === true,
     });
   }
   return rows;
+}
+
+/**
+ * The agent id that means "attach to herdr" rather than "start an agent".
+ *
+ * Must match HERDR_AGENT_ID in the desktop main process, which branches on it
+ * to skip the worktree, the tmux wrapper and the run registration. It is
+ * duplicated rather than shared because the renderer and the main process do
+ * not share a module; a test in each package pins the literal so a rename in
+ * one cannot quietly stop matching the other.
+ */
+export const HERDR_AGENT_ID = 'herdr';
+
+/**
+ * The terminal session that attaching to a herdr row opens.
+ *
+ * KEYED BY SOCKET, not by pane. Attaching shows the whole herdr workspace, so
+ * every row from one session is the same terminal; a key per pane would stack
+ * identical clients on one daemon and reflow the operator's own window once
+ * per click - herdr shares one layout between all its clients, which is the
+ * tmux behaviour of clamping to the smallest.
+ */
+export function herdrAttachSessionId(row: ProjectPaneRow): string {
+  return `herdr:${row.socketPath || 'default'}`;
+}
+
+export interface HerdrAttachSession {
+  readonly id: string;
+  readonly itemId: string;
+  readonly title: string;
+  readonly agentId: string;
+  readonly autoApprove: false;
+  readonly persist: false;
+  readonly openedAt: string;
+  readonly branchName: null;
+}
+
+/** The descriptor the terminal list takes. `openedAt` is passed in so this stays pure. */
+export function herdrAttachSession(row: ProjectPaneRow, openedAt: string): HerdrAttachSession {
+  return {
+    id: herdrAttachSessionId(row),
+    /*
+     * There is no card, and nothing downstream looks for one: an attach
+     * resolves no worktree. The pane id travels only so the session has
+     * something stable behind it.
+     */
+    itemId: row.paneId,
+    title: `herdr — ${row.projectName || row.agentId}`,
+    agentId: HERDR_AGENT_ID,
+    /*
+     * Both meaningless here, and both stated rather than omitted: auto-approve
+     * appends flags to an agent we are not starting, and persistence is the
+     * one thing herdr already guarantees.
+     */
+    autoApprove: false,
+    persist: false,
+    openedAt,
+    branchName: null,
+  };
+}
+
+/**
+ * Should attaching also steer herdr to this pane?
+ *
+ * Only when it is not already there. This is the one call in the feature that
+ * reaches outside our own window: herdr's clients are byte-identical mirrors,
+ * so `pane.focus` moves the pane, the tab AND the workspace on the operator's
+ * real screen. Clicking a row means "take me to that agent" - the same thing
+ * clicking a card means everywhere else in this app - but a focus fired when
+ * herdr is already showing that pane would be a jump with no cause.
+ */
+export function shouldFocusOnAttach(row: ProjectPaneRow): boolean {
+  return Boolean(row.socketPath) && !row.focused;
 }
