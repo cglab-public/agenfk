@@ -37,9 +37,8 @@ import {
 } from '../sidebarPrefs';
 import { NewProjectButton } from './NewProjectButton';
 import { api } from '../api';
-import { herdrSessionRows, herdrProjectRows, type OwnedPane, type ProjectPaneRow } from '../herdrTreeRows';
+import { herdrAttachSession, herdrSessionRows, herdrProjectRows, type OwnedPane, type ProjectPaneRow } from '../herdrTreeRows';
 import { HerdrMark } from './HerdrMark';
-import { HerdrPaneView } from './HerdrPaneView';
 import { API_URL } from '../apiUrl';
 import type { AgEnFKItem, Project } from '../types';
 import { TerminalTab, type TerminalSession } from './TerminalTab';
@@ -478,6 +477,31 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [setActiveProjectId, sessions, enqueuePending]);
 
   /**
+   * Open a herdr session in the terminal this app already has.
+   *
+   * No dialog, because there is nothing to choose: the session exists, started
+   * by somebody else, and the only question a dialog could ask - which agent -
+   * was answered before this app was open.
+   *
+   * DEDUPED BY SOCKET, not by pane. Attaching shows the whole herdr workspace,
+   * so two rows from the same session are the same terminal; opening one per
+   * row would stack identical clients on one daemon and reflow its layout once
+   * per click.
+   */
+  const attachHerdr = React.useCallback((row: ProjectPaneRow | null): void => {
+    if (!row) { setHerdrAttachedFrom(null); return; }
+    const session = herdrAttachSession(row, new Date().toISOString());
+    setHerdrAttachedFrom(row.paneId);
+    setTerminalOpened(true);
+    setActive('terminal');
+    // Already attached? Go to it. A second client on the same daemon buys
+    // nothing and costs the operator's own window a resize.
+    if (sessions.some(s => s.id === session.id)) { setActiveSession(session.id); return; }
+    setSessions(prev => [...prev, session]);
+    setActiveSession(session.id);
+  }, [sessions]);
+
+  /**
    * The board asked for a terminal on a card.
    *
    * Through a ref, and the NONCE is the only dependency. `requestTerminal`
@@ -616,7 +640,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   /** Panes that belong to a project but to no card. Most of them, today. */
   /** The herdr pane the tree has open, if any. */
-  const [openHerdrPane, setOpenHerdrPane] = React.useState<ProjectPaneRow | null>(null);
+  /**
+   * Which herdr row opened the terminal we are attached through.
+   *
+   * Kept only so the tree can show WHERE you are. There is no second surface
+   * any more: clicking a herdr row opens a terminal, and the terminal runs
+   * herdr.
+   */
+  const [herdrAttachedFrom, setHerdrAttachedFrom] = React.useState<string | null>(null);
 
   const herdrProject = React.useMemo(() => {
     const socketOf = new Map<string, string>();
@@ -1389,13 +1420,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           requestTerminal={requestTerminal}
           sessionRows={sessionRows}
           herdrProject={herdrProject}
-          openPane={openHerdrPane?.paneId ?? null}
-          onOpenPane={(row: ProjectPaneRow | null) => {
-            setOpenHerdrPane(row);
-            // The mirror takes the terminal column, because that is where a
-            // person already looks for "what is this agent doing".
-            if (row) setActive('terminal');
-          }}
+          openPane={herdrAttachedFrom}
+          onOpenPane={attachHerdr}
           liveItems={liveItems}
           openSession={openSession}
           openSettings={() => { setSettingsOpened(true); setActive('settings'); }}
@@ -1521,31 +1547,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             hidden={active !== 'terminal'}
             className="min-h-0 flex-1"
           >
-            {openHerdrPane && (
-              /*
-               * A herdr pane takes the column while it is open, and closing it
-               * hands the column straight back.
-               */
-              <div className="flex min-h-0 flex-1 flex-col">
-                <div className="flex shrink-0 items-center border-b border-border-soft px-4 py-1">
-                  <button
-                    type="button"
-                    onClick={() => setOpenHerdrPane(null)}
-                    className="rounded px-2 py-1 font-mono text-[10px] text-ink-tertiary transition-colors hover:text-ink"
-                  >
-                    ← back to terminals
-                  </button>
-                </div>
-                <HerdrPaneView pane={openHerdrPane} />
-              </div>
-            )}
             {/*
-              * HIDDEN, never unmounted, while a herdr pane is open. `TerminalTab`
-              * holds live ptys and xterm instances; tearing those down to show a
-              * read-only mirror would kill work in order to display work.
+              * ONE surface. A herdr session opens as a terminal tab beside the
+              * others, because that is what it is - the previous version put a
+              * read-only mirror in front of this column and hid the terminals
+              * behind it, which was a second place to look at the same work.
               */}
             {terminalOpened && (
-              <div className={clsx('flex min-h-0 flex-1 flex-col', openHerdrPane && 'hidden')}>
+              <div className="flex min-h-0 flex-1 flex-col">
               <TerminalTab
                 sessions={sessions}
                 sessionStates={sessionStates}

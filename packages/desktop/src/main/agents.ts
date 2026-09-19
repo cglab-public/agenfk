@@ -103,6 +103,22 @@ interface AgentEntry {
 /** The shape of a conversation id we are willing to put in argv. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * Attaching to a herdr session that is already running.
+ *
+ * DELIBERATELY NOT IN `AGENTS`. That table is the picker's contents, and an
+ * attach is not something to start on a card - a test in this package refuses
+ * any entry there without a rules bundle, and it was right to: offering herdr
+ * beside Claude Code and codex would invite somebody to pick it for a card and
+ * get a multiplexer instead of an agent.
+ *
+ * So the id is a closed set of one, checked by equality at the spawn path,
+ * which skips the worktree, the tmux wrapper and the run registration for it.
+ * Named rather than spelled inline because four literals drifting apart is how
+ * one of those branches quietly stops matching.
+ */
+export const HERDR_AGENT_ID = 'herdr';
+
 const AGENTS: ReadonlyArray<AgentEntry> = [
   {
     // 'claude-code', not 'claude'. This is the SAME vocabulary the server's

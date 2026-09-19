@@ -149,3 +149,62 @@ export function herdrProjectRows(
   }
   return rows;
 }
+
+/**
+ * The agent id that means "attach to herdr" rather than "start an agent".
+ *
+ * Must match HERDR_AGENT_ID in the desktop main process, which branches on it
+ * to skip the worktree, the tmux wrapper and the run registration. It is
+ * duplicated rather than shared because the renderer and the main process do
+ * not share a module; a test in each package pins the literal so a rename in
+ * one cannot quietly stop matching the other.
+ */
+export const HERDR_AGENT_ID = 'herdr';
+
+/**
+ * The terminal session that attaching to a herdr row opens.
+ *
+ * KEYED BY SOCKET, not by pane. Attaching shows the whole herdr workspace, so
+ * every row from one session is the same terminal; a key per pane would stack
+ * identical clients on one daemon and reflow the operator's own window once
+ * per click - herdr shares one layout between all its clients, which is the
+ * tmux behaviour of clamping to the smallest.
+ */
+export function herdrAttachSessionId(row: ProjectPaneRow): string {
+  return `herdr:${row.socketPath || 'default'}`;
+}
+
+export interface HerdrAttachSession {
+  readonly id: string;
+  readonly itemId: string;
+  readonly title: string;
+  readonly agentId: string;
+  readonly autoApprove: false;
+  readonly persist: false;
+  readonly openedAt: string;
+  readonly branchName: null;
+}
+
+/** The descriptor the terminal list takes. `openedAt` is passed in so this stays pure. */
+export function herdrAttachSession(row: ProjectPaneRow, openedAt: string): HerdrAttachSession {
+  return {
+    id: herdrAttachSessionId(row),
+    /*
+     * There is no card, and nothing downstream looks for one: an attach
+     * resolves no worktree. The pane id travels only so the session has
+     * something stable behind it.
+     */
+    itemId: row.paneId,
+    title: `herdr — ${row.projectName || row.agentId}`,
+    agentId: HERDR_AGENT_ID,
+    /*
+     * Both meaningless here, and both stated rather than omitted: auto-approve
+     * appends flags to an agent we are not starting, and persistence is the
+     * one thing herdr already guarantees.
+     */
+    autoApprove: false,
+    persist: false,
+    openedAt,
+    branchName: null,
+  };
+}
