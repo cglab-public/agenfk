@@ -30,6 +30,8 @@ export interface OwnedPane {
   readonly agent?: string;
   readonly agent_status?: string;
   readonly terminal_title_stripped?: string;
+  /** herdr's own word for "this is the pane on screen". */
+  readonly focused?: boolean;
   readonly owner?: PaneOwner;
   readonly [k: string]: unknown;
 }
@@ -51,6 +53,16 @@ export interface ProjectPaneRow {
   readonly title: string;
   readonly state: SessionState;
   readonly needsAPerson: boolean;
+  /**
+   * Where herdr is looking RIGHT NOW.
+   *
+   * Carried so attaching can skip a redundant focus. herdr's clients are not
+   * separate views - MEASURED: a second client receives the first's byte
+   * stream exactly, 3443 bytes for 3443 - so focusing is not "move my panel",
+   * it is "move the whole herdr", operator's own window included. Doing that
+   * when it is already there would be a jump nobody asked for.
+   */
+  readonly focused: boolean;
 }
 
 /**
@@ -145,6 +157,7 @@ export function herdrProjectRows(
       title: titleOf(p),
       state,
       needsAPerson: state === 'blocked',
+      focused: p.focused === true,
     });
   }
   return rows;
@@ -207,4 +220,18 @@ export function herdrAttachSession(row: ProjectPaneRow, openedAt: string): Herdr
     openedAt,
     branchName: null,
   };
+}
+
+/**
+ * Should attaching also steer herdr to this pane?
+ *
+ * Only when it is not already there. This is the one call in the feature that
+ * reaches outside our own window: herdr's clients are byte-identical mirrors,
+ * so `pane.focus` moves the pane, the tab AND the workspace on the operator's
+ * real screen. Clicking a row means "take me to that agent" - the same thing
+ * clicking a card means everywhere else in this app - but a focus fired when
+ * herdr is already showing that pane would be a jump with no cause.
+ */
+export function shouldFocusOnAttach(row: ProjectPaneRow): boolean {
+  return Boolean(row.socketPath) && !row.focused;
 }

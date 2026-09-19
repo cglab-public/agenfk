@@ -158,3 +158,19 @@ describe('where a pane can be read from', () => {
     expect(herdrProjectRows([pane({ owner: { kind: 'project', projectName: 'x' } })])[0].socketPath).toBe('');
   });
 });
+
+describe('where herdr is looking', () => {
+  it('carries the focused pane through to the row', () => {
+    /*
+     * Needed so attaching can skip a redundant focus. Without it every click
+     * would re-focus, and because herdr clients mirror each other exactly,
+     * every click would jog the operator's own screen for no reason.
+     */
+    const rows = herdrProjectRows([
+      pane({ pane_id: 'a', owner: { kind: 'project', projectName: 'x' }, focused: true }),
+      pane({ pane_id: 'b', owner: { kind: 'project', projectName: 'x' } }),
+    ]);
+    expect(rows.find(r => r.paneId === 'a')?.focused).toBe(true);
+    expect(rows.find(r => r.paneId === 'b')?.focused).toBe(false);
+  });
+});

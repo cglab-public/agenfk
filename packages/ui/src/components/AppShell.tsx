@@ -37,7 +37,7 @@ import {
 } from '../sidebarPrefs';
 import { NewProjectButton } from './NewProjectButton';
 import { api } from '../api';
-import { herdrAttachSession, herdrSessionRows, herdrProjectRows, type OwnedPane, type ProjectPaneRow } from '../herdrTreeRows';
+import { herdrAttachSession, shouldFocusOnAttach, herdrSessionRows, herdrProjectRows, type OwnedPane, type ProjectPaneRow } from '../herdrTreeRows';
 import { HerdrMark } from './HerdrMark';
 import { API_URL } from '../apiUrl';
 import type { AgEnFKItem, Project } from '../types';
@@ -477,6 +477,30 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [setActiveProjectId, sessions, enqueuePending]);
 
   /**
+   * Steer herdr to the pane that was clicked.
+   *
+   * Fired alongside the attach, not instead of it: the terminal is the thing
+   * being opened, and this decides WHAT IS ON IT. Clicking a row means "take
+   * me to that agent", the same thing clicking a card means everywhere else
+   * here.
+   *
+   * It is the one call in this feature that reaches outside our own window.
+   * herdr's clients are not separate views - MEASURED: a second client gets
+   * the first's byte stream exactly - so focusing moves the pane, the tab and
+   * the workspace on the operator's real screen too. Skipped when herdr is
+   * already showing it, and failure is swallowed: the terminal opening is the
+   * promise, and landing on the right pane is the courtesy.
+   */
+  const steerHerdr = React.useCallback((row: ProjectPaneRow): void => {
+    if (!shouldFocusOnAttach(row)) return;
+    void fetch(`${API_URL}/herdr/panes/${encodeURIComponent(row.paneId)}/focus`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ socket: row.socketPath }),
+    }).catch(() => {});
+  }, []);
+
+  /**
    * Open a herdr session in the terminal this app already has.
    *
    * No dialog, because there is nothing to choose: the session exists, started
@@ -491,6 +515,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const attachHerdr = React.useCallback((row: ProjectPaneRow | null): void => {
     if (!row) { setHerdrAttachedFrom(null); return; }
     const session = herdrAttachSession(row, new Date().toISOString());
+    steerHerdr(row);
     setHerdrAttachedFrom(row.paneId);
     setTerminalOpened(true);
     setActive('terminal');
@@ -499,7 +524,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     if (sessions.some(s => s.id === session.id)) { setActiveSession(session.id); return; }
     setSessions(prev => [...prev, session]);
     setActiveSession(session.id);
-  }, [sessions]);
+  }, [sessions, steerHerdr]);
+
+
 
   /**
    * The board asked for a terminal on a card.

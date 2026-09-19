@@ -15,6 +15,7 @@ import { describe, it, expect } from 'vitest';
 import {
   herdrAttachSession,
   herdrAttachSessionId,
+  shouldFocusOnAttach,
   HERDR_AGENT_ID,
   type ProjectPaneRow,
 } from '../herdrTreeRows';
@@ -27,6 +28,7 @@ const row = (over: Partial<ProjectPaneRow> = {}): ProjectPaneRow => ({
   projectName: 'cglab-agentic-catalog',
   state: 'idle',
   needsAPerson: false,
+  focused: false,
   ...over,
 });
 
@@ -109,5 +111,34 @@ describe('the attach id', () => {
      * The matching pin lives in packages/desktop/src/test/herdrAttach.test.ts.
      */
     expect(HERDR_AGENT_ID).toBe('herdr');
+  });
+});
+
+/* ── steering herdr, which is not steering a panel ─────────────────────── */
+
+describe('whether attaching also moves herdr', () => {
+  it('goes to the pane that was clicked', () => {
+    // The same thing clicking a card means everywhere else in this app: take
+    // me to that work.
+    expect(shouldFocusOnAttach(row({ focused: false }))).toBe(true);
+  });
+
+  it('does NOT move herdr when it is already showing that pane', () => {
+    /*
+     * herdr's clients are not separate views. MEASURED on a throwaway session:
+     * the second client receives the first's byte stream exactly - 3443 bytes
+     * for 3443, identical - so a focus moves the pane, the tab AND the
+     * workspace on the operator's own screen. Firing one when herdr is already
+     * there would be a jump with no cause, on somebody else's monitor.
+     */
+    expect(shouldFocusOnAttach(row({ focused: true }))).toBe(false);
+  });
+
+  it('does not try when it does not know which session answers', () => {
+    /*
+     * A guessed socket is worse on a focus than on a read: the wrong session
+     * would be steered somewhere its operator did not ask to go.
+     */
+    expect(shouldFocusOnAttach(row({ socketPath: '', focused: false }))).toBe(false);
   });
 });
