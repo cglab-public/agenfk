@@ -38,6 +38,7 @@ import {
 import { NewProjectButton } from './NewProjectButton';
 import { api } from '../api';
 import { herdrSessionRows, herdrProjectRows, type OwnedPane } from '../herdrTreeRows';
+import { API_URL } from '../apiUrl';
 import type { AgEnFKItem, Project } from '../types';
 import { TerminalTab, type TerminalSession } from './TerminalTab';
 import { treeForDrop, treeForToggle, pruneTree, treeForFocus } from '../paneLayout';
