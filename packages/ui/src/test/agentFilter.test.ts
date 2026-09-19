@@ -9,6 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   projectChildCount,
+  settleIds,
   collectFilterableRows,
   agentTags,
   cardMatchesAgentFilter,
@@ -339,5 +340,41 @@ describe('a project branch', () => {
   it('still counts cards on their own', () => {
     // The fix must not have traded one omission for the other.
     expect(projectChildCount(['card'], [])).toBe(1);
+  });
+});
+
+/* ── settling a list of ids ────────────────────────────────────────────── */
+
+describe('settleIds', () => {
+  it('hands back the OLD array when the contents match', () => {
+    /*
+     * THE BUG, and the assertion is about identity rather than equality
+     * because identity is the whole mechanism: an equal-but-new array is a
+     * state change to React, so the effect that built one on every run kept
+     * scheduling renders and the suite stopped finishing.
+     */
+    const prev = ['a', 'b'];
+    expect(settleIds(prev, ['a', 'b'])).toBe(prev);
+  });
+
+  it('takes the new one when an id changed', () => {
+    const next = ['a', 'c'];
+    expect(settleIds(['a', 'b'], next)).toBe(next);
+  });
+
+  it('takes the new one when the length changed', () => {
+    const next = ['a', 'b', 'c'];
+    expect(settleIds(['a', 'b'], next)).toBe(next);
+  });
+
+  it('is order-sensitive: the tree renders in this order', () => {
+    const next = ['b', 'a'];
+    expect(settleIds(['a', 'b'], next)).toBe(next);
+  });
+
+  it('settles two empties on the old one, which is the unfiltered case', () => {
+    // The default state. Rebuilding [] on every run is what span the core.
+    const prev: string[] = [];
+    expect(settleIds(prev, [])).toBe(prev);
   });
 });

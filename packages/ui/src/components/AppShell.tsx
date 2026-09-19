@@ -87,6 +87,7 @@ import { ORDER, SessionStateIndicator } from './sessionPresentation';
 import { AgentIcon } from './AgentIcon';
 import {
   availableAgentFilters, collectFilterableRows, projectMatchesAgentFilter, cardMatchesAgentFilter, projectChildCount,
+  settleIds,
   pruneAgentFilter, matchesAgentFilter, type AgentFilterOption,
 } from '../agentFilter';
 import { cardState, itemsNeedingAPerson, NEEDS_A_PERSON } from '../cardState';
@@ -2287,8 +2288,17 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
    * nothing while a mode is active is worse than one that is absent.
    */
   React.useEffect(() => {
-    if (agentFilter.length === 0) { setExpandedByFilter([]); return; }
-    setExpandedByFilter(visible.map(p => p.id));
+    const next = agentFilter.length === 0 ? [] : visible.map(p => p.id);
+    /*
+     * Return `prev` when nothing moved, or this never settles.
+     *
+     * The effect ran with a fresh array every time and `[] !== []`, so each
+     * run scheduled a render and each render fed the next run. React does not
+     * catch it - the updates are not nested, they are a steady drip - and the
+     * whole AppShell tree re-rendered on every drop. The suite did not fail;
+     * it stopped finishing, at 100% of one core.
+     */
+    setExpandedByFilter(prev => settleIds(prev, next));
   }, [agentFilter, visible]);
 
   // Collapsed is a rail, not nothing. A toggle that vanishes with the panel it

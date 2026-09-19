@@ -230,3 +230,22 @@ export function projectChildCount(
 ): number {
   return cards.length + herdrRows.length;
 }
+
+/**
+ * The same list, or the old reference.
+ *
+ * `setState` compares with Object.is, so handing it a freshly built array that
+ * happens to hold the same ids is still a change and still schedules a render.
+ * The effect that opens filtered projects did exactly that: it rebuilt the list
+ * on every run, every run scheduled a render, and every render fed the next
+ * run. React never complained - the updates are a steady drip rather than a
+ * nested cascade - so the AppShell suite did not fail, it stopped finishing, at
+ * 100% of one core.
+ *
+ * Returning `prev` is what lets React bail out, which is why this compares
+ * CONTENTS and hands back the old array rather than a new equal one.
+ */
+export function settleIds(prev: string[], next: string[]): string[] {
+  if (prev.length !== next.length) return next;
+  return prev.every((id, i) => id === next[i]) ? prev : next;
+}
