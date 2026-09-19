@@ -10,6 +10,7 @@ import { api } from '../api';
 import { Flow, RegistryFlow } from '../types';
 import { ThemeProvider } from '../ThemeContext';
 import mermaid from 'mermaid';
+import { rawPaletteClasses, deadHoverClasses } from './rawPaletteClasses';
 
 vi.mock('mermaid', () => ({
   default: {
@@ -2650,5 +2651,129 @@ describe('Flow editor — vertical step list (CGLAB-164)', () => {
     expect(screen.getByTestId('step-label-1')).toBeDefined();
     expect(screen.getByTestId('step-exit-criteria-1')).toBeDefined();
     expect(screen.getByTestId('add-step-btn')).toBeDefined();
+  });
+});
+
+// ── No hardcoded neutral surface colour, on every surface this screen has ───
+// Artifact aca414c7 §04, first row: "slate -> tokens; each swap also deletes a
+// `dark:` variant". The brand palette is neutral near-black; `slate` is a BLUE
+// ramp, which is why this screen read blue beside the rest of the app. And
+// every `bg-white dark:bg-slate-900` pair is two fixed decisions the theme
+// toggle cannot reach.
+//
+// EVERY TEST HERE MOUNTS SOMETHING THE OTHERS DO NOT. The first version of
+// this block rendered the step list and nothing else, so the popovers, the
+// community tab, the delete confirmation and the read-only panel — which is
+// where the two brand CTAs live — were migrated without ever being drawn.
+// 201 passing tests were not evidence about surfaces no test rendered.
+describe('Flow editor — no hardcoded neutral surface colour (aca414c7 §04)', () => {
+  const PALETTE_FLOW: Flow = {
+    id: 'flow-1',
+    name: 'Terraform Flow',
+    description: 'A flow with a described purpose',
+    steps: [
+      { id: 'p1', name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
+      { id: 'p2', name: 'in_review', label: 'In Review', order: 1, exitCriteria: 'Ticket refined', color: '#3b82f6' },
+      { id: 'p3', name: 'apply_blocked', label: 'Never apply', order: 2, exitCriteria: '' },
+      { id: 'p4', name: 'DONE', label: 'Done', order: 3, exitCriteria: '', isAnchor: true },
+    ],
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.listFlows).mockResolvedValue([PALETTE_FLOW, SAMPLE_FLOW_2]);
+    vi.mocked(api.getDefaultFlow).mockResolvedValue(DEFAULT_FLOW);
+    vi.mocked(api.getOrgAvailableFlows).mockResolvedValue({ flows: [], defaultFlowId: null, hubEnabled: false });
+  });
+
+  afterEach(() => { cleanup(); });
+
+  const open = () => render(
+    <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+    { wrapper: wrapper(makeQueryClient()) }
+  ).baseElement;
+
+  const openFlow = async () => {
+    const root = open();
+    await waitFor(() => screen.getByTestId('flow-item-flow-1'));
+    fireEvent.click(screen.getByTestId('flow-item-flow-1'));
+    await waitFor(() => screen.getByTestId('steps-columns'));
+    return root;
+  };
+
+  // The whole screen in one assertion, listing what it found. A count would
+  // say "37 left" and send the reader back to grep; the names say where.
+  it('paints the flow list and the step rows from tokens', async () => {
+    expect(rawPaletteClasses(await openFlow())).toEqual([]);
+  });
+
+  it('paints the sidebar before any flow is selected', async () => {
+    const root = open();
+    await waitFor(() => screen.getByTestId('flow-item-flow-1'));
+    expect(rawPaletteClasses(root)).toEqual([]);
+  });
+
+  // Each of these is markup that only exists once something is clicked, and a
+  // sweep of the file that renders the row will not render any of them.
+  it('paints the exit-criteria editor', async () => {
+    const root = await openFlow();
+    fireEvent.click(screen.getByTestId('step-exit-criteria-1'));
+    await waitFor(() => screen.getByTestId('exit-criteria-editor'));
+    expect(rawPaletteClasses(root)).toEqual([]);
+  });
+
+  it('paints the icon picker popover', async () => {
+    const root = await openFlow();
+    fireEvent.click(screen.getByTestId('step-icon-btn-1'));
+    await waitFor(() => screen.getByTestId('step-icon-picker-1'));
+    expect(rawPaletteClasses(root)).toEqual([]);
+  });
+
+  it('paints the colour picker opened from the stripe', async () => {
+    const root = await openFlow();
+    fireEvent.click(screen.getByTestId('step-color-stripe-1'));
+    await waitFor(() => screen.getByTestId('step-color-1'));
+    expect(rawPaletteClasses(root)).toEqual([]);
+  });
+
+  // The confirmation belongs to the SIDEBAR's delete, not the step's — which
+  // is why no step-level click reaches it.
+  it('paints the delete confirmation', async () => {
+    const root = await openFlow();
+    fireEvent.click(screen.getByTestId('delete-flow-btn-flow-1'));
+    await waitFor(() => screen.getByTestId('delete-confirm-no'));
+    expect(rawPaletteClasses(root)).toEqual([]);
+  });
+
+  it('paints the community tab', async () => {
+    const root = open();
+    await waitFor(() => screen.getByTestId('tab-community'));
+    fireEvent.click(screen.getByTestId('tab-community'));
+    // The toolbar is a prop the host may not pass, so the branch is pinned by
+    // what it REPLACES: My Flows is gone once Community is showing.
+    await waitFor(() => expect(screen.queryByTestId('flow-list')).toBeNull());
+    expect(rawPaletteClasses(root)).toEqual([]);
+  });
+
+  // The read-only panel is where BOTH brand CTAs live, and neither was drawn
+  // by any test until this one.
+  it('paints the built-in flow panel, where the brand CTAs are', async () => {
+    const root = open();
+    await waitFor(() => screen.getByTestId('flow-item-__builtin__'));
+    fireEvent.click(screen.getByTestId('flow-item-__builtin__'));
+    await waitFor(() => screen.getByTestId('editor-panel'));
+    expect(rawPaletteClasses(root)).toEqual([]);
+  });
+
+  // A dead affordance renders perfectly and passes every assertion about
+  // colour. The delete confirmation's No button lost its hover this way,
+  // beside a Yes that kept one.
+  it('leaves no control whose hover is its own ground', async () => {
+    const root = await openFlow();
+    fireEvent.click(screen.getByTestId('delete-flow-btn-flow-1'));
+    await waitFor(() => screen.getByTestId('delete-confirm-no'));
+    expect(deadHoverClasses(root)).toEqual([]);
   });
 });

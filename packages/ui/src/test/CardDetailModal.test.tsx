@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ItemType, Status } from '../types';
 import { itemTypeHint, ITEM_TYPE_VISUAL } from '../components/ItemTypeSquare';
 import { api } from '../api';
+import { rawPaletteClasses, deadHoverClasses } from './rawPaletteClasses';
 
 // Mock window.matchMedia
 Object.defineProperty(window, 'matchMedia', {
@@ -996,5 +997,98 @@ describe('the create form is a draft, not a finished card', () => {
     return waitFor(() =>
       expect(onAddItem).toHaveBeenCalledWith('Still works', ItemType.TASK, Status.TODO, ''),
     );
+  });
+});
+
+// ── No hardcoded neutral surface colour, on every tab this modal has ────────
+// Same defect and same row of artifact aca414c7 §04 as the flow editor: 273
+// raw ramp classes, every `bg-white dark:bg-slate-900` a theme decision taken
+// twice and reachable by neither toggle.
+//
+// The tabs are the point. `activeTab` defaults to 'overview', so a test that
+// renders the modal and asserts once has never drawn the plan, the sub-items
+// table, the history timeline, the test-output well or the usage table —
+// which is exactly where a depth inversion and an invisible timeline rail
+// were found after the first pass.
+describe('CardDetailModal — no hardcoded neutral surface colour (aca414c7 §04)', () => {
+  const DRAFT = {
+    id: '',
+    projectId: 'p1',
+    type: ItemType.TASK,
+    title: '',
+    description: '',
+    status: Status.TODO,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  // Everything switched on at once, so every tab exists and every conditional
+  // surface inside it is drawn.
+  const FULL = {
+    id: 'i9',
+    projectId: 'p1',
+    type: ItemType.STORY,
+    title: 'A card with everything on it',
+    description: 'Body',
+    status: Status.TODO,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    tokenUsage: [{ model: 'gpt-4', input: 100, output: 50 }],
+    tests: [{ id: 'r1', command: 'npm test', output: 'ok', status: 'PASSED', executedAt: new Date() }],
+    implementationPlan: '# Plan\n- step 1',
+    history: [{ id: 'h1', fromStatus: Status.TODO, toStatus: Status.IN_PROGRESS, timestamp: new Date(), evidence: 'moved' }],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    queryClient.clear();
+  });
+
+  afterEach(() => { cleanup(); });
+
+  const renderIt = (item: Record<string, unknown>) => {
+    (api.getItem as any).mockResolvedValue(item);
+    return render(
+      <CardDetailModal
+        item={item as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper }
+    ).baseElement;
+  };
+
+  it('paints the new-card draft from tokens', async () => {
+    const root = renderIt(DRAFT);
+    await waitFor(() => screen.getByTestId('new-item-type-square'));
+    expect(rawPaletteClasses(root)).toEqual([]);
+  });
+
+  it('paints the detail view from tokens', async () => {
+    const root = renderIt(FULL);
+    await waitFor(() => screen.getByText('A card with everything on it'));
+    expect(rawPaletteClasses(root)).toEqual([]);
+  });
+
+  // One test per tab rather than one loop, so a failure names the tab instead
+  // of naming the loop.
+  for (const tab of ['Plan', 'History', 'Test Results', 'Usage']) {
+    it(`paints the ${tab} tab from tokens`, async () => {
+      const root = renderIt(FULL);
+      await waitFor(() => screen.getByText('A card with everything on it'));
+      const button = screen.getAllByRole('button').find(b => b.textContent?.trim().startsWith(tab));
+      expect(button, `the ${tab} tab is not rendered`).toBeDefined();
+      fireEvent.click(button!);
+      expect(rawPaletteClasses(root)).toEqual([]);
+    });
+  }
+
+  it('leaves no control whose hover is its own ground', async () => {
+    const root = renderIt(FULL);
+    await waitFor(() => screen.getByText('A card with everything on it'));
+    expect(deadHoverClasses(root)).toEqual([]);
   });
 });

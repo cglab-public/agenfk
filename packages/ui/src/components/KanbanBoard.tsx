@@ -1524,7 +1524,7 @@ export const KanbanBoard: React.FC = () => {
                */
               <div data-testid="create-project-form" className="space-y-6 text-left">
                 <div className="space-y-2">
-                  <label htmlFor="new-project-name" className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest block">Project Name</label>
+                  <label htmlFor="new-project-name" className="text-xs font-bold text-ink-tertiary uppercase tracking-widest block">Project Name</label>
                   <input
                     id="new-project-name"
                     autoFocus
@@ -1533,18 +1533,18 @@ export const KanbanBoard: React.FC = () => {
                     onChange={(e) => setNewProjectName(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && newProjectName.trim() && createProjectMutation.mutate(draftProject())}
                     placeholder="e.g. My Awesome App"
-                    className="w-full text-lg font-bold bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand"
+                    className="w-full text-lg font-bold bg-surface border border-border-soft rounded-xl px-4 py-2 text-ink focus:outline-none focus:ring-2 focus:ring-brand"
                   />
                 </div>
 
                 <div className="space-y-2">
-                  <label htmlFor="new-project-description" className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest block">Description</label>
+                  <label htmlFor="new-project-description" className="text-xs font-bold text-ink-tertiary uppercase tracking-widest block">Description</label>
                   <textarea
                     id="new-project-description"
                     value={newProjectDescription}
                     onChange={(e) => setNewProjectDescription(e.target.value)}
                     placeholder="What this project is for..."
-                    className="w-full bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand min-h-[120px]"
+                    className="w-full bg-surface border border-border-soft rounded-xl px-4 py-3 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-brand min-h-[120px]"
                   />
                 </div>
 
@@ -1560,16 +1560,16 @@ export const KanbanBoard: React.FC = () => {
                  * setting. What was missing was never the field; it was anybody
                  * saying what LEAVING them unset does, which is this.
                  */}
-                <div className="space-y-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-900/40 p-4">
-                  <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Commands · set from the CLI, later</h4>
-                  <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">
-                    With no <span className="font-semibold text-slate-600 dark:text-slate-300">verify command</span>, the move into the last step of
-                    the flow is refused with <code className="rounded bg-slate-200/70 dark:bg-slate-800 px-1 py-0.5 font-mono text-[11px] text-slate-600 dark:text-slate-300">NO_VERIFY_COMMAND</code> unless
-                    one is passed to that call. With no <span className="font-semibold text-slate-600 dark:text-slate-300">setup command</span>, a
+                <div className="space-y-2 rounded-xl border border-border-soft bg-canvas p-4">
+                  <h4 className="text-xs font-bold text-ink-tertiary uppercase tracking-widest">Commands · set from the CLI, later</h4>
+                  <p className="text-xs leading-relaxed text-ink-secondary">
+                    With no <span className="font-semibold text-ink-secondary">verify command</span>, the move into the last step of
+                    the flow is refused with <code className="rounded bg-chip px-1 py-0.5 font-mono text-[11px] text-ink-secondary">NO_VERIFY_COMMAND</code> unless
+                    one is passed to that call. With no <span className="font-semibold text-ink-secondary">setup command</span>, a
                     worktree cut for a repo that declares a dependency manifest arrives with those dependencies not installed and says
                     so — nothing is guessed from a lockfile, because a wrong install running for minutes costs more than none at all.
                   </p>
-                  <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                  <p className="text-xs leading-relaxed text-ink-secondary">
                     Both run a shell on this machine, so they are set from a terminal rather than a browser:
                   </p>
                   {/* tabIndex, because this scrolls sideways inside a max-w-md panel
@@ -1578,17 +1578,17 @@ export const KanbanBoard: React.FC = () => {
                     tabIndex={0}
                     role="region"
                     aria-label="Commands that set the verify and setup commands"
-                    className="overflow-x-auto rounded-lg bg-slate-100 dark:bg-slate-950 p-3 font-mono text-[11px] leading-relaxed text-slate-600 dark:text-slate-300"
+                    className="overflow-x-auto rounded-lg bg-canvas p-3 font-mono text-[11px] leading-relaxed text-ink-secondary"
                   >
 {`agenfk update-project <id> --verify-command "npm test"
 agenfk update-project <id> --setup-command "npm ci"`}
                   </pre>
                 </div>
 
-                <div className="flex justify-end gap-3 border-t border-slate-100 dark:border-slate-800 pt-4">
+                <div className="flex justify-end gap-3 border-t border-border-soft pt-4">
                   <button
                     onClick={() => setIsCreatingProject(false)}
-                    className="bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 px-4 py-2 rounded-lg font-medium text-sm transition-all shadow-sm active:scale-95"
+                    className="bg-surface hover:bg-chip text-ink border border-border-soft px-4 py-2 rounded-lg font-medium text-sm transition-all shadow-sm active:scale-95"
                   >
                     Cancel
                   </button>
