@@ -8,6 +8,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+  projectChildCount,
   collectFilterableRows,
   agentTags,
   cardMatchesAgentFilter,
@@ -311,5 +312,32 @@ describe('a card', () => {
   it('with no session STAYS when no filter is on', () => {
     // Empty means everything, here too.
     expect(cardMatchesAgentFilter('nope', rows, [])).toBe(true);
+  });
+});
+
+/* ── what a project has to show ────────────────────────────────────────── */
+
+describe('a project branch', () => {
+  it('counts panes as well as cards', () => {
+    /*
+     * THE BUG. The chevron, the count and the whole expandable list were gated
+     * on the CARD count, and the herdr rows lived inside that list. Filtering
+     * to herdr removes every card - those panes belong to the project's own
+     * checkout and to no card at all - so a project holding a dozen panes
+     * collapsed into an empty folder that could not even be opened.
+     *
+     * Nothing threw and no test failed. The list was correct; it was never
+     * rendered.
+     */
+    expect(projectChildCount([], ['pane', 'pane'])).toBe(2);
+  });
+
+  it('is empty only when BOTH are', () => {
+    expect(projectChildCount([], [])).toBe(0);
+  });
+
+  it('still counts cards on their own', () => {
+    // The fix must not have traded one omission for the other.
+    expect(projectChildCount(['card'], [])).toBe(1);
   });
 });
