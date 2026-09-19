@@ -10,15 +10,27 @@
  * never advances is worse than one that admits what it is, which is the warning
  * collie puts on its own page for the same reason.
  *
- * READ ONLY. The protocol can type into this pane and can move the operator's
- * real screen; neither is reachable from here. "Show in herdr" is the one
- * action offered, and it is a button somebody has to choose.
+ * IT CAN BE TYPED INTO, and that is the point: two agents on this machine sit
+ * `blocked` waiting for a person, and answering them is a single keystroke -
+ * `1` for a permission prompt, `2` for an option. Before this, seeing them was
+ * all you could do.
+ *
+ * TYPING AND SUBMITTING ARE TWO ACTS. `pane.send_text` never appends Enter, so
+ * Send does both on purpose and Type does only the first. collie draws the same
+ * line, and it is the difference between putting a command in somebody's
+ * terminal and running it.
+ *
+ * `pane.focus` is the one action that reaches outside this panel - it moves the
+ * operator's real screen - so it stays a button nobody presses by accident.
  */
 import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { API_URL } from '../apiUrl';
 import { HerdrMark } from './HerdrMark';
 import type { ProjectPaneRow } from '../herdrTreeRows';
+
+/** Keys worth one tap: answering a prompt, interrupting, getting out. */
+const QUICK_KEYS = ['1', '2', '3', 'Enter', 'Escape', 'ctrl+c'] as const;
 
 export function HerdrPaneView({
   pane,
@@ -28,6 +40,9 @@ export function HerdrPaneView({
   /** Bring it to the front in herdr. Absent means the action is not offered. */
   readonly onFocus?: (pane: ProjectPaneRow) => void;
 }): React.ReactElement {
+  const [draft, setDraft] = React.useState('');
+  const [sending, setSending] = React.useState(false);
+  const [sendError, setSendError] = React.useState<string | null>(null);
   const { data, isLoading, isError, error, dataUpdatedAt, refetch, isFetching } = useQuery<{
     text: string; truncated: boolean; revision?: number;
   }>({
@@ -46,6 +61,52 @@ export function HerdrPaneView({
     // taken and takes another.
     staleTime: Infinity,
   });
+
+  const post = async (path: string, body: Record<string, unknown>): Promise<void> => {
+    const r = await fetch(`${API_URL}/herdr/panes/${encodeURIComponent(pane.paneId)}/${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ socket: pane.socketPath, ...body }),
+    });
+    if (!r.ok) throw new Error(((await r.json().catch(() => ({}))) as { error?: string }).error ?? `HTTP ${r.status}`);
+  };
+
+  /**
+   * `submit` decides whether Enter follows the text.
+   *
+   * The keys go FIRST when there is no text, and the text is never typed if the
+   * submit cannot be delivered - half of an instruction sitting in somebody's
+   * terminal is worse than none of it.
+   */
+  const send = async (text: string, submit: boolean): Promise<void> => {
+    setSending(true);
+    setSendError(null);
+    try {
+      if (text) await post('text', { text });
+      if (submit) await post('keys', { keys: ['Enter'] });
+      setDraft('');
+      // Read straight back, so the screen shows what the keystroke did rather
+      // than what was there before it.
+      await refetch();
+    } catch (e) {
+      setSendError((e as Error).message);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const tap = async (key: string): Promise<void> => {
+    setSending(true);
+    setSendError(null);
+    try {
+      await post('keys', { keys: [key] });
+      await refetch();
+    } catch (e) {
+      setSendError((e as Error).message);
+    } finally {
+      setSending(false);
+    }
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -109,6 +170,66 @@ export function HerdrPaneView({
         <p className="shrink-0 px-4 pb-3 text-[11px] text-ink-tertiary">
           herdr had more than it sent; this is the tail.
         </p>
+      )}
+
+      {pane.socketPath && (
+        <div className="shrink-0 border-t border-border-soft px-4 py-2">
+          {sendError && (
+            <p data-testid="herdr-send-error" className="mb-1 text-[11px] text-amber-600 dark:text-amber-400">
+              {sendError}
+            </p>
+          )}
+          <div className="flex items-center gap-2">
+            <input
+              data-testid="herdr-input"
+              value={draft}
+              onChange={e => setDraft(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(draft, true); }
+              }}
+              placeholder={`Type into ${pane.agentId}…`}
+              disabled={sending}
+              className="min-w-0 flex-1 rounded border border-border-soft bg-sunken px-2 py-1 font-mono text-[11px] text-ink placeholder:text-ink-tertiary"
+            />
+            <button
+              type="button"
+              data-testid="herdr-send"
+              onClick={() => void send(draft, true)}
+              disabled={sending || !draft}
+              className="shrink-0 rounded bg-brand px-3 py-1 text-[11px] font-semibold text-white disabled:opacity-50"
+            >
+              {sending ? 'Sending…' : 'Send'}
+            </button>
+            <button
+              type="button"
+              data-testid="herdr-type"
+              onClick={() => void send(draft, false)}
+              disabled={sending || !draft}
+              title="Type it without pressing Enter"
+              className="shrink-0 rounded border border-border-soft px-2 py-1 text-[11px] text-ink-secondary disabled:opacity-50"
+            >
+              Type
+            </button>
+          </div>
+          <div className="mt-1.5 flex flex-wrap items-center gap-1">
+            {/* One tap each. A blocked agent is usually one of these away. */}
+            {QUICK_KEYS.map(k => (
+              <button
+                key={k}
+                type="button"
+                data-testid={`herdr-key-${k}`}
+                onClick={() => void tap(k)}
+                disabled={sending}
+                className="rounded border border-border-soft px-1.5 py-0.5 font-mono text-[10px] text-ink-tertiary transition-colors hover:text-ink disabled:opacity-50"
+              >
+                {k}
+              </button>
+            ))}
+            <span className="ml-1 text-[10px] text-ink-tertiary">
+              Enter sends · Shift+Enter types without sending
+            </span>
+          </div>
+        </div>
       )}
     </div>
   );
