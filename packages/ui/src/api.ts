@@ -75,8 +75,15 @@ export const api = {
    * Distinct from listAgentRuns, which is per card. The Sessions rail asks
    * "what is running anywhere", and asking that per project from here would be
    * one request per project on every socket event.
+   *
+   * `projectId` narrows it SERVER-SIDE, which matters more than it looks:
+   * the route caps the answer (25 by default, 200 max) and the cap is applied
+   * after the sort but before any filtering the client does. Fetching the
+   * newest 25 across every project and then keeping one project's rows can
+   * return almost nothing for a project that is busy but not the busiest — so
+   * a caller that shows ONE project must say so here rather than filter later.
    */
-  listRuns: async (params: { status?: string; limit?: number } = {}) => {
+  listRuns: async (params: { status?: string; limit?: number; projectId?: string } = {}) => {
     try {
       const { data } = await axios.get(`${API_URL}/agent-runs`, { params });
       return data;
