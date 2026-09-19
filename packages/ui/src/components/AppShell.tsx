@@ -83,7 +83,7 @@ import { CardPicker } from './CardPicker';
 import { CardStateDot } from './CardStateDot';
 import { CardProcessRow } from './CardProcessRow';
 import { RunsPanel } from './RunsPanel';
-import { ORDER } from './sessionPresentation';
+import { ORDER, SessionStateIndicator } from './sessionPresentation';
 import { cardState, itemsNeedingAPerson, NEEDS_A_PERSON } from '../cardState';
 import { AttentionAlerts } from './AttentionAlerts';
 import { clampSidebarWidth, sidebarIsResizable, SIDEBAR_MIN_PX, SIDEBAR_MAX_PX, SIDEBAR_COLLAPSED_PX } from '../sidebarWidth';
@@ -2696,6 +2696,14 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                           openPane === r.paneId && 'bg-nav-surface',
                         )}
                       >
+                        {/*
+                          * The SAME indicator the rest of the app uses, not a
+                          * lookalike. A herdr agent that is running is running
+                          * in exactly the sense ours are, and it sat perfectly
+                          * still beside an animated row doing the same work -
+                          * which reads as "that one is stuck".
+                          */}
+                        <SessionStateIndicator state={r.state} />
                         <HerdrMark className="h-3 w-3 shrink-0" />
                         <span className="shrink-0 font-mono">{r.agentId}</span>
                         <span
