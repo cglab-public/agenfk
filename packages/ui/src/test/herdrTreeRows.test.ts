@@ -138,3 +138,23 @@ describe('what these rows refuse to be', () => {
     expect(row.source).toBe('herdr');
   });
 });
+
+describe('where a pane can be read from', () => {
+  it('carries the socket its session answers on', () => {
+    /*
+     * herdr can hold several sessions, each its own socket. The pane id alone
+     * does not say which one answers for it, and asking the wrong socket gets
+     * `pane_not_found` for a pane that is very much alive.
+     */
+    const rows = herdrProjectRows(
+      [pane({ pane_id: 'w1:p9', owner: { kind: 'project', projectName: 'agenfk' } })],
+      id => (id === 'w1:p9' ? '/cfg/herdr/sessions/work/herdr.sock' : ''),
+    );
+    expect(rows[0].socketPath).toBe('/cfg/herdr/sessions/work/herdr.sock');
+  });
+
+  it('is empty rather than wrong when the caller does not say', () => {
+    // A guessed socket is worse than none: it would read somebody else's pane.
+    expect(herdrProjectRows([pane({ owner: { kind: 'project', projectName: 'x' } })])[0].socketPath).toBe('');
+  });
+});

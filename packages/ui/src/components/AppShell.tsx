@@ -39,6 +39,7 @@ import { NewProjectButton } from './NewProjectButton';
 import { api } from '../api';
 import { herdrSessionRows, herdrProjectRows, type OwnedPane, type ProjectPaneRow } from '../herdrTreeRows';
 import { HerdrMark } from './HerdrMark';
+import { HerdrPaneView } from './HerdrPaneView';
 import { API_URL } from '../apiUrl';
 import type { AgEnFKItem, Project } from '../types';
 import { TerminalTab, type TerminalSession } from './TerminalTab';
@@ -614,7 +615,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   );
 
   /** Panes that belong to a project but to no card. Most of them, today. */
-  const herdrProject = React.useMemo(() => herdrProjectRows(herdrPanes), [herdrPanes]);
+  /** The herdr pane the tree has open, if any. */
+  const [openHerdrPane, setOpenHerdrPane] = React.useState<ProjectPaneRow | null>(null);
+
+  const herdrProject = React.useMemo(() => {
+    const socketOf = new Map<string, string>();
+    for (const sess of herdrBody?.sessions ?? []) {
+      for (const p of sess.panes ?? []) socketOf.set(p.pane_id, (sess as { socketPath?: string }).socketPath ?? '');
+    }
+    return herdrProjectRows(herdrPanes, id => socketOf.get(id) ?? '');
+  }, [herdrPanes, herdrBody]);
 
   const sessionRows: SessionRow[] = React.useMemo(() => {
     // liveTick is a dependency on purpose: going dark is driven by a clock, not
@@ -1379,6 +1389,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           requestTerminal={requestTerminal}
           sessionRows={sessionRows}
           herdrProject={herdrProject}
+          openPane={openHerdrPane?.paneId ?? null}
+          onOpenPane={(row: ProjectPaneRow | null) => {
+            setOpenHerdrPane(row);
+            // The mirror takes the terminal column, because that is where a
+            // person already looks for "what is this agent doing".
+            if (row) setActive('terminal');
+          }}
           liveItems={liveItems}
           openSession={openSession}
           openSettings={() => { setSettingsOpened(true); setActive('settings'); }}
@@ -1504,7 +1521,31 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             hidden={active !== 'terminal'}
             className="min-h-0 flex-1"
           >
+            {openHerdrPane && (
+              /*
+               * A herdr pane takes the column while it is open, and closing it
+               * hands the column straight back.
+               */
+              <div className="flex min-h-0 flex-1 flex-col">
+                <div className="flex shrink-0 items-center border-b border-border-soft px-4 py-1">
+                  <button
+                    type="button"
+                    onClick={() => setOpenHerdrPane(null)}
+                    className="rounded px-2 py-1 font-mono text-[10px] text-ink-tertiary transition-colors hover:text-ink"
+                  >
+                    ← back to terminals
+                  </button>
+                </div>
+                <HerdrPaneView pane={openHerdrPane} />
+              </div>
+            )}
+            {/*
+              * HIDDEN, never unmounted, while a herdr pane is open. `TerminalTab`
+              * holds live ptys and xterm instances; tearing those down to show a
+              * read-only mirror would kill work in order to display work.
+              */}
             {terminalOpened && (
+              <div className={clsx('flex min-h-0 flex-1 flex-col', openHerdrPane && 'hidden')}>
               <TerminalTab
                 sessions={sessions}
                 sessionStates={sessionStates}
@@ -1581,6 +1622,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                  */
                 onNew={() => setPickingCard(true)}
               />
+              </div>
             )}
           </div>
 
@@ -1978,6 +2020,8 @@ interface SidebarProps {
   isMac: boolean;
   sessionRows: SessionRow[];
   herdrProject: ProjectPaneRow[];
+  openPane: string | null;
+  onOpenPane: (row: ProjectPaneRow | null) => void;
   /** Cards an agent has touched inside the live window. */
   liveItems: ReadonlySet<string>;
   openSession: (row: SessionRow) => void;
@@ -2009,7 +2053,7 @@ interface SidebarProps {
   onOpenFlows: () => void;
 }
 
-function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResizeStart, onNudge, requestTerminal, sessionRows, herdrProject, liveItems, openSession, openSettings, revealOnBoard, activeView, onSelectView, onOpenFlows, onOpenFleet }: SidebarProps) {
+function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResizeStart, onNudge, requestTerminal, sessionRows, herdrProject, openPane, onOpenPane, liveItems, openSession, openSettings, revealOnBoard, activeView, onSelectView, onOpenFlows, onOpenFleet }: SidebarProps) {
   /*
    * EVERY item, only for the claim chips (CGLAB-190).
    *
@@ -2606,7 +2650,16 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                     */}
                   {herdrProject.filter(r => r.projectName === project.name).map(r => (
                     <li key={r.paneId} data-testid={`herdr-project-row-${r.paneId}`}>
-                      <div className="flex items-center gap-2 py-0.5 pl-1 text-[11px] text-ink-tertiary">
+                      <button
+                        type="button"
+                        onClick={() => onOpenPane(openPane === r.paneId ? null : r)}
+                        aria-expanded={openPane === r.paneId}
+                        className={clsx(
+                          'flex w-full items-center gap-2 rounded py-0.5 pl-1 text-left text-[11px] text-ink-tertiary',
+                          'hover:bg-nav-surface focus-visible:outline focus-visible:outline-1',
+                          openPane === r.paneId && 'bg-nav-surface',
+                        )}
+                      >
                         <HerdrMark className="h-3 w-3 shrink-0" />
                         <span className="shrink-0 font-mono">{r.agentId}</span>
                         <span
@@ -2618,7 +2671,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                           {r.state === 'unverifiable' ? 'unknown' : r.state}
                         </span>
                         <span className="min-w-0 flex-1 truncate" title={r.title}>{r.title}</span>
-                      </div>
+                      </button>
                     </li>
                   ))}
                   {work.map(item => (

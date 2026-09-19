@@ -37,6 +37,15 @@ export interface OwnedPane {
 /** A pane that belongs to a project but to no card. */
 export interface ProjectPaneRow {
   readonly paneId: string;
+  /**
+   * The session this pane came from.
+   *
+   * Carried because reading a pane needs it: herdr can hold several sessions,
+   * each its own socket, and the pane id alone does not say which one answers
+   * for it. Asking the wrong socket gets `pane_not_found` for a pane that is
+   * very much alive.
+   */
+  readonly socketPath: string;
   readonly projectName: string;
   readonly agentId: string;
   readonly title: string;
@@ -120,13 +129,17 @@ export function herdrSessionRows(panes: readonly OwnedPane[]): (SessionRow & { s
  * runs in herdr yet — so a design that only handled cards would have hidden
  * almost everything the feature exists to show.
  */
-export function herdrProjectRows(panes: readonly OwnedPane[]): ProjectPaneRow[] {
+export function herdrProjectRows(
+  panes: readonly OwnedPane[],
+  socketOf: (paneId: string) => string = () => '',
+): ProjectPaneRow[] {
   const rows: ProjectPaneRow[] = [];
   for (const p of panes) {
     if (p.owner?.kind !== 'project' || !p.owner.projectName) continue;
     const state = herdrStateOf(p.agent_status);
     rows.push({
       paneId: p.pane_id,
+      socketPath: socketOf(p.pane_id),
       projectName: p.owner.projectName,
       agentId: agentOf(p),
       title: titleOf(p),
