@@ -5,7 +5,7 @@ import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
 import { commitStagedForCard, resolveCommitRoot } from './closeCommit';
 import { mayPropagate, readCleanTreeSha, readHead, readTreeStatus } from './propagation';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState } from "@agenfk/core";
+import { reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -1721,6 +1721,43 @@ app.post("/herdr/panes/:paneId/keys", limitExpensive, asyncHandler(async (req: a
   } catch (e: any) {
     return res.status(400).json({ error: e.message });
   }
+}));
+
+/**
+ * Read a proposed decomposition back, with its problems attached. WRITES NOTHING.
+ *
+ * This is the half that makes "proposes, does not create" real (artifact
+ * aca414c7 §06). Without it the only path from an agent's answer to the board
+ * is POST /items, so the cards would exist before anybody reviewed them — and
+ * a screen that reviews things which already exist is a confirmation dialog,
+ * not a gate.
+ *
+ * No storage call in this handler, deliberately and permanently: creation
+ * happens afterwards, item by item, through the route that already exists and
+ * already enforces the flow. A future edit that reaches for `storage` here has
+ * moved the design, not extended it.
+ *
+ * Rate-limited like the other expensive routes: the body is a tree from a
+ * model, so it arrives large and often.
+ */
+app.post("/decompositions/review", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const body = req.body ?? {};
+  // Reachable for an ARRAY only: express's strict JSON parser rejects a bare
+  // string, number or null with its own 400 before this handler runs, and
+  // `?? {}` covers a missing body. Kept because an array IS valid JSON and
+  // would otherwise be reviewed as an object with no fields at all.
+  if (Array.isArray(body) || typeof body !== 'object') {
+    return res.status(400).json({ error: 'Body must be a proposal object: { objective, items }.' });
+  }
+  const reviewed = reviewProposal({ objective: body.objective, items: Array.isArray(body.items) ? body.items : [] });
+  // A 200 WITH ISSUES, not a 4xx. The issues are what the screen draws beside
+  // each row; a 4xx would render a reviewable proposal as a failed request and
+  // leave the UI nothing to show but an error toast.
+  //
+  // `contractVersion` is echoed, not trusted: the contract asks the agent to
+  // stamp one, and a consumer that drops it makes the versioning dead on
+  // arrival for whoever has to parse an old answer later.
+  res.json({ ...reviewed, contractVersion: body.contractVersion ?? null });
 }));
 
 app.post("/herdr/panes/:paneId/focus", limitExpensive, asyncHandler(async (req: any, res: any) => {
@@ -6832,6 +6869,10 @@ export const API_PATH_PREFIXES = [
   '/api', '/version', '/db', '/backup', '/projects', '/flows', '/prs',
   '/token-events', '/registry', '/items', '/internal', '/jira', '/github',
   '/releases', '/agent-runs', '/settings', '/terminal-sessions', '/socket.io',
+  // `/decompositions` reviews a proposed tree and writes nothing. Same trap as
+  // `/herdr`: without the prefix the desktop answers it with index.html and a
+  // 200, so the caller's `r.ok` is true and the JSON parse is what fails.
+  '/decompositions',
 ];
 
 /**
