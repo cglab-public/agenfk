@@ -19,7 +19,7 @@ import { createApiClient } from "./apiClient.js";
 import { execSync, execFileSync, spawnSync, spawn } from "child_process";
 import { getActiveStepItems, resolveStepContract, renderStepContract } from "./gatekeeper-utils";
 import { resolveBranchHint } from './branchHint';
-import { dispatchDriftNotice, driftTargets } from '@agenfk/core';
+import { decompositionContract, decompositionRules, dispatchDriftNotice, driftTargets } from '@agenfk/core';
 import { buildUpgradeNotice } from "./mcpUpgradeNotice";
 
 // Load the install-time secret token — must match what the API server loaded.
@@ -454,10 +454,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "analyze_request",
-        description: "Analyze a user request to suggest the appropriate AgEnFK item type.",
+        // The description is the only text a host shows a model BEFORE it
+        // decides to call, so it has to say what actually comes back.
+        description: "Return AgEnFK's decomposition rules for a request (mode 'guidance', the default, which is what the standard flow uses), or the contract for proposing a decomposition as a reviewable tree without creating anything (mode 'proposal').",
         inputSchema: {
           type: "object",
-          properties: { request: { type: "string" } },
+          properties: {
+            request: { type: "string" },
+            mode: { type: "string", enum: ["guidance", "proposal"], description: "guidance (default) or proposal" },
+          },
           required: ["request"],
         },
       },
@@ -853,13 +858,24 @@ async function callToolHandler(request: any): Promise<any> {
         return { content: [{ type: "text", text: `✅ AUTHORIZED.\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${branchHint}${exitCriteriaHint}${driftNotice}` }] };
       }
       case "analyze_request": {
-        const { request: userRequest } = z.object({ request: z.string() }).parse(request.params.arguments);
-        return { 
-          content: [{ 
-            type: "text", 
-            text: `Complexity analysis for: "${userRequest}"\n\nREMINDER: All work MUST follow these decomposition and inspection rules:\n1. Minimum Decomposition: An EPIC must be decomposed into child STORIES before any of them starts — an EPIC is never worked directly. A STORY is decomposed into TASKs only when it is large (multiple deliverables, several packages, or more than one focused implementation pass) — the agent's judgement.\n2. Backlog Inspection: Only items in TODO status should be inspected when starting new work; IDEAs (drafts) must be ignored.\n3. When decomposing, create ALL sub-items (Stories/Tasks) in TODO status.\n4. PAUSE and ask the user for approval of a decomposition before moving any item to IN_PROGRESS.` 
-          }] 
-        };
+        const { request: userRequest, mode } = z.object({
+          request: z.string(),
+          mode: z.enum(["guidance", "proposal"]).optional(),
+        }).parse(request.params.arguments);
+        /*
+         * DEFAULT IS UNCHANGED, deliberately. SKILL.md step 2 sends the
+         * standard flow through this tool and then has the agent CREATE the
+         * items; a contract ending "do not create any item" would either break
+         * that flow or train agents to ignore the line it exists for. The
+         * proposal contract is for the Ask AgEnFK surface, which asks for it.
+         *
+         * No inner catch: the outer handler already formats a throw with the
+         * ❌ marker every other error return in this file carries.
+         */
+        const text = mode === "proposal"
+          ? decompositionContract(userRequest)
+          : decompositionRules(userRequest);
+        return { content: [{ type: "text", text }] };
       }
       case "get_flow": {
         const { projectId } = z.object({ projectId: z.string() }).parse(request.params.arguments);

@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import { resolveFromOptions } from './harnessModel.js';
 import figlet from 'figlet';
 import axios from 'axios';
-import { ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, isHubRelease, isUpgrade, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
+import { decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, isHubRelease, isUpgrade, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
 import { writeActiveWork } from './activeWork.js';
 import { resolveItemIdPrefix } from './resolveItemId.js';
 import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT, setTelemetryEnabled } from '@agenfk/telemetry';
@@ -2045,17 +2045,20 @@ program
 program
   .command('analyze <request>')
   .description('Get AgEnFK decomposition guidance for a user request (MCP fallback: analyze_request)')
-  .action((request) => {
-    console.log(chalk.blue(`\nComplexity analysis for: "${request}"\n`));
-    console.log('REMINDER: All work MUST follow these decomposition and inspection rules:');
-    console.log('  1. Minimum Decomposition: An EPIC must be decomposed into child STORIES before');
-    console.log('     any of them starts - an EPIC is never worked directly. A STORY is decomposed');
-    console.log('     into TASKs only when it is large (multiple deliverables, several packages, or');
-    console.log('     more than one focused implementation pass) - the agent\'s judgement.');
-    console.log('  2. Backlog Inspection: Only items in TODO status should be inspected when starting new');
-    console.log('     work; IDEAs (drafts) must be ignored.');
-    console.log('  3. Create ALL sub-items (Stories/Tasks) in TODO status.');
-    console.log('  4. PAUSE and ask the user for approval of the plan before moving any item to IN_PROGRESS.');
+  .option('--proposal', 'print the contract for proposing a decomposition as a reviewable tree, instead of the guidance')
+  .action((request, options) => {
+    // The text comes from core. It used to be ten console.log lines here and a
+    // template literal in the MCP tool — two hand-written copies of the same
+    // rules, free to disagree. The default output is unchanged.
+    try {
+      const text = options.proposal ? decompositionContract(request) : decompositionRules(request);
+      const [header, ...rest] = text.split('\n');
+      console.log('\n' + chalk.blue(header));
+      console.log(rest.join('\n') + '\n');
+    } catch (e: any) {
+      console.error(chalk.red(e.message));
+      process.exit(1);
+    }
   });
 
 program

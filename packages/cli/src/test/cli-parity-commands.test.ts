@@ -5,7 +5,7 @@
  *   - update_project -> agenfk update-project <id>  (PUT  /projects/:id)
  *   - add_context    -> agenfk add-context <id>     (PUT  /items/:id, append context[])
  *   - delete_flow    -> agenfk flow delete <id>     (DELETE /flows/:id)
- *   - analyze_request-> agenfk analyze <request>    (static guidance text)
+ *   - analyze_request-> agenfk analyze <request>    (guidance; --proposal for the contract)
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -307,5 +307,21 @@ describe('agenfk analyze <request>', () => {
     expect(printed).toMatch(/STORY|EPIC|TASK/);
     expect(mockedAxios.post).not.toHaveBeenCalled();
     expect(mockedAxios.get).not.toHaveBeenCalled();
+  });
+
+  // The default is what the shipped standard flow calls before it goes on to
+  // create the items, so it must not carry the proposal's closing directive.
+  it('does not tell the default caller to create nothing', async () => {
+    await program.parseAsync(['node', 'agenfk', 'analyze', 'add a login page']);
+    const printed = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+    expect(printed).not.toMatch(/not creat/i);
+  });
+
+  it('prints the proposal contract behind --proposal, and still calls nothing', async () => {
+    await program.parseAsync(['node', 'agenfk', 'analyze', 'add a login page', '--proposal']);
+    const printed = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+    expect(printed).toMatch(/PROPOSING IS NOT CREATING/);
+    expect(printed).toMatch(/"contractVersion"/);
+    expect(mockedAxios.post).not.toHaveBeenCalled();
   });
 });

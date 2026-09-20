@@ -18,3 +18,4 @@ export * from './baseDrift';
 export * from './dispatch';
 
 export * from './requestBudget.js';
+export * from './decompositionContract';
