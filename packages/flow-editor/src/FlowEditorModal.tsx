@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import mermaid from 'mermaid';
 import type { Flow, FlowStep, RegistryFlow, FlowClient, RegistryClient } from './types';
 import { extractApiError } from './apiError';
-import { flowDefinitionIssues, nextStepName, stepIssue, withStepIds } from './flowDefinition';
+import { deriveStepName, flowDefinitionIssues, nextStepName, stepIssue, withStepIds } from './flowDefinition';
 import { ExitCriteriaEditorModal } from './ExitCriteriaEditorModal';
 import { estimateTokenCount } from './estimateTokens';
 
@@ -843,7 +843,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             >
               <span className={clsx(STEP_COL_INDEX, 'shrink-0 text-right')}>#</span>
               <span className={clsx(STEP_COL_ICON, 'shrink-0')} aria-hidden="true" />
-              <span className={clsx(STEP_COL_NAME, 'shrink-0')}>name · label</span>
+              <span className={clsx(STEP_COL_NAME, 'shrink-0')}>label</span>
               <span className="flex-1 min-w-0">exit criteria</span>
               <span className={clsx(STEP_COL_ACTIONS, 'shrink-0')} aria-hidden="true" />
             </div>
@@ -853,6 +853,12 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               const isTodoAnchor = isAnchor && step.name.toUpperCase() === 'TODO';
               const isDoneAnchor = isAnchor && step.name.toUpperCase() === 'DONE';
               const isStepLocked = isReadOnly || isAnchor;
+              /*
+               * Whether the key adds anything. It does not when it is exactly
+               * what this label derives to — that is the common case and the
+               * one the column was deleted for.
+               */
+              const keyIsRedundant = !isReadOnly && step.name === deriveStepName(step.label);
               const stepNameUpper = step.name.toUpperCase();
               const hasReservedName = !isAnchor && RESERVED_NAMES.has(stepNameUpper);
               // A reserved name has its own dedicated message below, so only
@@ -991,16 +997,23 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                       </div>
                     )}
 
-                    {/* Name (the key) and label (what the board shows). */}
-                    <div className={clsx(STEP_COL_NAME, 'shrink-0 min-w-0')}>
+                    {/* Name (the key) and label (what the board shows).
+                        The tooltip hangs HERE, not on the control: Chromium
+                        dispatches no mouse events to a disabled input, so on a
+                        read-only flow — the Default, and every flow an admin
+                        distributes from the hub — the hover produced nothing
+                        at all. Those are the flows people open to READ. */}
+                    <div
+                      className={clsx(STEP_COL_NAME, 'shrink-0 min-w-0')}
+                      title={step.name ? `Key: ${step.name}` : 'The key is derived from this label'}
+                    >
                       {isAnchor ? (
                         <>
-                          <p className="text-xs font-mono uppercase tracking-wide text-ink-secondary truncate">
-                            {step.name}
-                          </p>
-                          <p className="text-xs text-ink-tertiary truncate">
-                            {step.label}
-                          </p>
+                          {/* Anchors follow the same grammar as the editable
+                              rows, or TODO and DONE would go on showing a key
+                              that every other row stopped showing. */}
+                          <p data-testid={`step-name-${index}`} className="sr-only">{step.name}</p>
+                          <p className="text-xs text-ink-secondary truncate">{step.label}</p>
                         </>
                       ) : (
                         <>
@@ -1012,25 +1025,41 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                               separate thing to invent. It stays visible
                               because it is the value `agenfk update --status`
                               takes: derived is not the same as hidden. */}
-                          {/* Announced as it is written: a screen-reader user
-                              typing the label would otherwise never learn what
-                              key they just created. No `uppercase` class — the
-                              derivation already upcases, and a legacy key like
-                              `in_review` displayed as IN_REVIEW is a lie the
-                              server will not honour, since transitions match
-                              the status exactly. */}
+                          {/* CARRIED, NOT DISPLAYED. The key stopped being
+                              editable when it became derived, and a column of
+                              text nobody can act on is just width. It stays in
+                              the DOM because it is the value `agenfk update
+                              --status` takes, it is what the reserved-name and
+                              duplicate messages are about, and a screen-reader
+                              user typing a label still has to be told what key
+                              they are creating — which is what aria-live is
+                              for. Sighted users reach it by hovering the field
+                              that writes it. */}
+                          {/* HIDDEN WHILE IT IS REDUNDANT, SHOWN WHEN IT IS NOT.
+                              A key that is just the label upcased says nothing
+                              the row does not already say, and that was the
+                              whole complaint. But a key that DIVERGES is the
+                              only thing explaining the row: a saved key is
+                              frozen against label edits on purpose, so
+                              retitling "Review" to "Refinement" leaves REVIEW
+                              behind with nothing on screen to say why — and
+                              the duplicate message then names a REVIEW the
+                              user cannot see. Same for a read-only flow, where
+                              there is no label edit to infer the key from.
+                              No aria-live: `name` is recomputed per keystroke,
+                              so it queued "I", "IN", "IN_" at a screen reader
+                              and stayed silent for the frozen case that
+                              actually needed a voice. The input points at this
+                              element instead. */}
                           <p
+                            id={`step-key-${index}`}
                             data-testid={`step-name-${index}`}
-                            aria-live="polite"
-                            aria-label={step.name
-                              ? `Step ${index + 1} key: ${step.name}`
-                              : `Step ${index + 1} key, derived from the label`}
                             className={clsx(
-                              'text-xs font-mono tracking-wide truncate px-2 py-1',
-                              hasReservedName ? 'text-danger-text' : 'text-ink-secondary',
+                              'text-xs font-mono tracking-wide truncate',
+                              keyIsRedundant ? 'sr-only' : 'px-2 pb-0.5 text-ink-tertiary',
                             )}
                           >
-                            {step.name || <span className="text-ink-tertiary">from the label</span>}
+                            {step.name}
                           </p>
                           {shapeIssue && (
                             <p id={`step-name-error-${index}`} data-testid={`step-name-error-${index}`} className="text-xs text-danger-text mt-0.5 px-2">
@@ -1058,14 +1087,17 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                             // Both messages sit ABOVE the field, so tabbing
                             // into it announced nothing about the error it
                             // caused.
+                            // The key first, so it survives the error state:
+                            // a description is replaced, not appended to.
                             aria-describedby={clsx(
+                              step.name && `step-key-${index}`,
                               shapeIssue && `step-name-error-${index}`,
                               hasReservedName && `step-reserved-error-${index}`,
                             ) || undefined}
                             placeholder="e.g. In Progress"
                             disabled={isStepLocked}
                             aria-label={`Step ${index + 1} label (display)`}
-                            className="w-full mt-1 px-2 py-1 rounded-md border border-border-soft bg-surface text-ink text-xs focus:outline-none focus:ring-1 focus:ring-brand disabled:opacity-60"
+                            className="w-full px-2 py-1 rounded-md border border-border-soft bg-surface text-ink text-xs focus:outline-none focus:ring-1 focus:ring-brand disabled:opacity-60"
                           />
                         </>
                       )}

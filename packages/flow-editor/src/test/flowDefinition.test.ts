@@ -52,7 +52,9 @@ describe('flowDefinitionIssues', () => {
     const issues = flowDefinitionIssues('My Flow', steps);
     expect(issues).toHaveLength(1);
     expect(issues[0].stepIndex).toBe(2);
-    expect(issues[0].message).toMatch(/name/i);
+    // The wording moved to the row's own vocabulary when the key column was
+    // removed: there is no "step name" field on screen to send anyone to.
+    expect(issues[0].message).toMatch(/no usable key/i);
   });
 
   it('treats a whitespace-only step name as blank', () => {

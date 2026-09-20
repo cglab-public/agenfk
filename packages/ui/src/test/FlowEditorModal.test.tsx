@@ -1634,8 +1634,10 @@ describe('FlowEditorModal — save failures surface the reason (BUG 269eeec8)', 
     await openFlow('flow-item-flow-broken');
 
     expect((screen.getByTestId('save-flow-btn') as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByTestId('flow-definition-issues').textContent).toMatch(/name/i);
-    // The anchor has no name input, so there is no per-step message to rely on.
+    // The wording is about the LABEL, because that is the only field a row
+    // has now — see flowDefinition.ts.
+    expect(screen.getByTestId('flow-definition-issues').textContent).toMatch(/no usable key/i);
+    // The anchor has no editable field, so there is no per-step message to rely on.
     expect(screen.queryByTestId('step-name-error-0')).toBeNull();
   });
 
@@ -2340,25 +2342,27 @@ describe('Flow editor — vertical step list (CGLAB-164)', () => {
     expect(screen.getByTestId('step-index-3').textContent).toBe('4');
   });
 
-  it('renders the step name as the key it is: monospace, and spelled as stored', async () => {
+  it('carries the step key spelled exactly as stored', async () => {
     await openFlow();
     const nameKey = screen.getByTestId('step-name-1');
-    expect(nameKey.className).toContain('font-mono');
-    // NOT `uppercase`. The derivation already upcases what it creates, and a
-    // legacy key stored as `in_review` displayed as IN_REVIEW is a lie: the
-    // server matches a status exactly, so `agenfk update --status IN_REVIEW`
-    // would be refused as a flow violation.
-    expect(nameKey.className).not.toContain('uppercase');
+    // The typography claims this test used to make went with the column. What
+    // survives is the one that matters, and it is asserted on the TEXT rather
+    // than on the class: `not.toContain('uppercase')` could never fail once
+    // the class list became the literal string `sr-only`. The server matches a
+    // status exactly, so rendering `in_review` as IN_REVIEW anywhere would
+    // send someone to `agenfk update --status IN_REVIEW` and a FLOW VIOLATION.
     // Display-only IS the point now: the key is derived from the label and
     // shown, never typed into. The stored key stays exactly as it was.
     expect(nameKey.tagName).toBe('P');
     expect(nameKey.textContent).toBe('in_review');
   });
 
-  it('states "name · label · exit criteria" once as a column heading, not per step', async () => {
+  it('states the columns once as a heading, not per step', async () => {
     await openFlow();
     const heading = screen.getByTestId('steps-header-row');
-    expect(heading.textContent).toMatch(/name/i);
+    // No "name": that column stopped being drawn when the key stopped being
+    // editable, and a heading over nothing is a promise the row does not keep.
+    expect(heading.textContent).not.toMatch(/name/i);
     expect(heading.textContent).toMatch(/label/i);
     expect(heading.textContent).toMatch(/exit criteria/i);
     // The per-step repetition is gone — it was the same two words six times.
@@ -2899,7 +2903,10 @@ describe('Flow editor — a derived key cannot corrupt a flow', () => {
     const at = await addBlankStep();
     fireEvent.change(screen.getByTestId(`step-label-${at}`), { target: { value: '!!!' } });
 
-    expect(screen.getByTestId(`step-name-${at}`).textContent).toBe('from the label');
+    // Empty key, and — since the key is no longer on screen — the reason has
+    // to be legible where the step is, not only in the disabled button.
+    expect(screen.getByTestId(`step-name-${at}`).textContent).toBe('');
+    expect(screen.getByTestId(`step-name-error-${at}`).textContent).toMatch(/no usable key/i);
     expect((screen.getByTestId('save-flow-btn') as HTMLButtonElement).disabled).toBe(true);
   });
 
@@ -2922,5 +2929,120 @@ describe('Flow editor — a derived key cannot corrupt a flow', () => {
     fireEvent.change(screen.getByTestId('step-label-1'), { target: { value: 'Peer review' } });
 
     expect(screen.getByTestId('step-name-1').textContent).toBe('in_review');
+  });
+});
+
+// ── The key is carried, not displayed ──────────────────────────────────────
+// It stopped being editable when it became derived, and a column of text
+// nobody can act on is just width. It does NOT leave the DOM: it is the value
+// `agenfk update --status` takes, it is what the reserved-name and duplicate
+// messages are about, and a screen-reader user typing a label still has to be
+// told what key they are creating. So it goes sr-only, and a hover on the
+// label field reveals it for everyone else.
+describe('Flow editor — the derived key is hidden, not removed', () => {
+  const HIDE_FLOW: Flow = {
+    id: 'flow-1',
+    name: 'Terraform Flow',
+    description: '',
+    steps: [
+      { id: 'h1', name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
+      // Diverges: "In Review" derives IN_REVIEW, and this key is in_review.
+      { id: 'h2', name: 'in_review', label: 'In Review', order: 1, exitCriteria: 'Ticket refined' },
+      // Redundant: exactly what its label derives to.
+      { id: 'h3', name: 'REFACTOR', label: 'Refactor', order: 2, exitCriteria: '' },
+      { id: 'h4', name: 'DONE', label: 'Done', order: 3, exitCriteria: '', isAnchor: true },
+    ],
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.listFlows).mockResolvedValue([HIDE_FLOW, SAMPLE_FLOW_2]);
+    vi.mocked(api.getDefaultFlow).mockResolvedValue(DEFAULT_FLOW);
+    vi.mocked(api.getOrgAvailableFlows).mockResolvedValue({ flows: [], defaultFlowId: null, hubEnabled: false });
+  });
+
+  afterEach(() => { cleanup(); });
+
+  const openFlow = async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('flow-item-flow-1'));
+    fireEvent.click(screen.getByTestId('flow-item-flow-1'));
+    await waitFor(() => screen.getByTestId('steps-columns'));
+  };
+
+  // HIDDEN WHILE REDUNDANT. `Refactor` derives exactly `REFACTOR`, so the key
+  // says nothing the row does not already say — which is the complaint this
+  // change answers.
+  it('keeps a redundant key out of the visible row', async () => {
+    await openFlow();
+    expect(screen.getByTestId('step-name-2').className).toContain('sr-only');
+  });
+
+  // SHOWN WHEN IT DIVERGES. `in_review` is not what "In Review" derives to: it
+  // is a saved key, frozen against label edits on purpose. Hiding it left the
+  // duplicate message quoting an IN_REVIEW that appeared nowhere, and left a
+  // retitled step with no explanation for the key it kept.
+  it('shows a key the label does not explain', async () => {
+    await openFlow();
+    expect(screen.getByTestId('step-name-1').className).not.toContain('sr-only');
+    expect(screen.getByTestId('step-name-1').textContent).toBe('in_review');
+  });
+
+  // Same grammar for both branches, or the anchors would go on showing a key
+  // the editable rows no longer show.
+  it('keeps the anchors’ keys out too', async () => {
+    await openFlow();
+    expect(screen.getByTestId('step-name-0').className).toContain('sr-only');
+    expect(screen.getByTestId('step-name-3').className).toContain('sr-only');
+  });
+
+  it('still carries the key, so the status stays readable and testable', async () => {
+    await openFlow();
+    expect(screen.getByTestId('step-name-1').textContent).toBe('in_review');
+  });
+
+  // The path for someone who needs the status string and cannot hear it. It
+  // hangs on the CELL, not on the input: Chromium dispatches no mouse events
+  // to a disabled control, so on a read-only flow the tooltip never fired —
+  // and those are the flows people open in order to read.
+  it('reveals the key by hovering the cell, which works even when disabled', async () => {
+    await openFlow();
+    const cell = screen.getByTestId('step-label-1').closest('[title]');
+    expect(cell?.getAttribute('title')).toContain('in_review');
+  });
+
+  // WHERE THE FIRST VERSION BROKE. A read-only flow has no label edit to infer
+  // the key from and a disabled input that swallows the hover, so the key was
+  // unreachable by any means. It is drawn there.
+  it('draws the key on a read-only flow, which has no other way to show it', async () => {
+    render(
+      <FlowEditorModal isOpen={true} onClose={() => {}} projectId={PROJECT_ID} />,
+      { wrapper: wrapper(makeQueryClient()) }
+    );
+    await waitFor(() => screen.getByTestId('flow-item-__builtin__'));
+    await waitFor(() => expect(api.getDefaultFlow).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId('flow-item-__builtin__'));
+    await waitFor(() => screen.getByTestId('editor-panel'));
+
+    const key = screen.getByTestId('step-name-1');
+    expect(key.className).not.toContain('sr-only');
+    // The built-in flow's own spelling, whatever it is — read back from the
+    // fixture rather than retyped, so this test says "the key is shown" and
+    // not "the key is IN_PROGRESS".
+    expect(key.textContent).toBe(DEFAULT_FLOW.steps[1].name);
+    // And the hover works, because it is not on the disabled control.
+    expect(screen.getByTestId('step-label-1').closest('[title]')?.getAttribute('title'))
+      .toContain(DEFAULT_FLOW.steps[1].name);
+  });
+
+  it('stops promising a key column in the heading', async () => {
+    await openFlow();
+    expect(screen.getByTestId('steps-header-row').textContent).not.toMatch(/name/i);
+    expect(screen.getByTestId('steps-header-row').textContent).toMatch(/label/i);
   });
 });

@@ -62,7 +62,13 @@ export function flowDefinitionIssues(name: string, steps: FlowStep[]): FlowDefin
   //    bad value in loaded data is repaired by the request itself.
   steps.forEach((step, stepIndex) => {
     if (typeof step?.name !== 'string' || !step.name.trim()) {
-      issues.push({ stepIndex, message: 'Step name is required.' });
+      /*
+       * Said in terms of the row, not of the model. There is no "step name"
+       * field on screen any more — the key is derived — so a user who typed
+       * "!!!" into the only field they can see was being told to fix
+       * something that is not there.
+       */
+      issues.push({ stepIndex, message: 'This label produces no usable key. Use at least one letter or digit.' });
       return;
     }
     // Case-insensitively, because the server matches a status exactly but a
@@ -72,7 +78,10 @@ export function flowDefinitionIssues(name: string, steps: FlowStep[]): FlowDefin
     const key = step.name.trim().toUpperCase();
     const first = seenNames.get(key);
     if (first !== undefined) {
-      issues.push({ stepIndex, message: `Step name "${step.name.trim()}" repeats step ${first + 1}. Two steps cannot share a key.` });
+      // Names the key AND the label's part in it: with the key column gone,
+      // a message quoting a REVIEW that appears nowhere on screen is
+      // unactionable — and a frozen key makes that the normal case.
+      issues.push({ stepIndex, message: `This label produces the key "${step.name.trim()}", which repeats step ${first + 1}. Two steps cannot share a key.` });
     } else {
       seenNames.set(key, stepIndex);
     }
