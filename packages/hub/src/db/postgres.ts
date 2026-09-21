@@ -651,7 +651,12 @@ async function bootstrap(adapter: HubDb): Promise<void> {
       "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1", [table],
     );
     if (cols.length > 0 && !new Set(cols.map(c => c.column_name)).has(column)) {
-      await adapter.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+      // IF NOT EXISTS, because probe-then-ALTER is not atomic and the hub runs
+      // more than one task. On a rolling deploy they boot together, both see
+      // the column missing, and the loser's ALTER used to abort its startup
+      // with 'column already exists' — a crash-looping deploy on the very
+      // release that introduces a column. Verified against Postgres 16.
+      await adapter.exec(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${ddl}`);
     }
   }
 
