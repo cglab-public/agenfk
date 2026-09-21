@@ -266,6 +266,31 @@ describe('signed-in user display name', () => {
       expect(me.body.role).toBe('admin');
     });
 
+    it('rate-limits per session, not per IP', async () => {
+      // The route is authenticated and now reads the database, so it is
+      // bounded. Two users behind one corporate egress share an IP, and the
+      // UI calls this on every page load — an IP bucket would cap the whole
+      // org. Different sessions must not drain each other's budget.
+      await createPasswordUser(ctx.db, 'org', 'ada@acme.com', 'rightpassword', 'admin');
+      await createPasswordUser(ctx.db, 'org', 'bob@acme.com', 'rightpassword', 'viewer');
+      const cookieFor = async (email: string) => {
+        const r = await supertest(app).post('/auth/login').send({ email, password: 'rightpassword' });
+        return r.headers['set-cookie']?.[0] as string;
+      };
+      const ada = await cookieFor('ada@acme.com');
+      const bob = await cookieFor('bob@acme.com');
+      expect(ada).not.toBe(bob);
+
+      // Same apparent IP for both callers throughout.
+      for (let i = 0; i < 30; i++) {
+        const r = await supertest(app).get('/auth/me').set('Cookie', ada).set('X-Forwarded-For', '10.0.0.1');
+        expect(r.status).toBe(200);
+      }
+      const other = await supertest(app).get('/auth/me').set('Cookie', bob).set('X-Forwarded-For', '10.0.0.1');
+      expect(other.status).toBe(200);
+      expect(other.body.email).toBe('bob@acme.com');
+    });
+
     it('returns a null name when the user has none, still exposing the email', async () => {
       await createPasswordUser(ctx.db, 'org', 'ada@acme.com', 'rightpassword', 'viewer');
       const me = await supertest(app).get('/auth/me').set('Cookie', (await login())!);

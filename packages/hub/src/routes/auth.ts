@@ -15,7 +15,7 @@ import {
   setSessionCookie,
   signSession,
 } from '../auth/session.js';
-import { rateLimit, FailedAttemptTracker } from '../util/rateLimit.js';
+import { rateLimit, clientIp, FailedAttemptTracker } from '../util/rateLimit.js';
 import { asyncRoute } from '../util/asyncRoute.js';
 
 // Brute-force defences for password login (Security: bug 210b3d34):
@@ -34,6 +34,19 @@ export function authRouter(ctx: HubServerContext): Router {
   // Per-hub-instance state (not module-level) so each process/app has its own
   // counters and tests stay isolated.
   const loginRateLimit = rateLimit({ windowMs: LOGIN_WINDOW_MS, max: 20, message: 'Too many login attempts, try again later.' });
+  // /auth/me is authenticated AND hits the database on every call, so it needs
+  // a bound. Deliberately NOT keyed by IP: the hub sits behind a corporate
+  // egress where every user shares one, and the UI calls this on each page
+  // load — an IP bucket would be an org-wide cap, not a per-caller one. Key on
+  // the session cookie instead. It is unverified at this point, which is fine:
+  // a forged cookie buys its own bucket but is rejected by requireSession
+  // below, so it never reaches the read this limit exists to protect.
+  const meRateLimit = rateLimit({
+    windowMs: LOGIN_WINDOW_MS,
+    max: 300,
+    keyFn: (req) => (req.cookies?.[SESSION_COOKIE] as string | undefined) || clientIp(req),
+    message: 'Too many requests, slow down.',
+  });
   const loginFailures = new FailedAttemptTracker(/* maxFailures */ 5, LOGIN_WINDOW_MS, /* lockMs */ LOGIN_WINDOW_MS);
 
   router.get('/providers', asyncRoute(async (_req: Request, res: Response) => {
@@ -87,7 +100,7 @@ export function authRouter(ctx: HubServerContext): Router {
     res.json({ ok: true });
   });
 
-  router.get('/me', requireSession(ctx.config.sessionSecret), asyncRoute(async (req: Request, res: Response) => {
+  router.get('/me', meRateLimit, requireSession(ctx.config.sessionSecret), asyncRoute(async (req: Request, res: Response) => {
     // The session cookie carries ids only. Who the user actually IS — their
     // name and email — lives in the row, and the identity provider can change
     // the name between sign-ins, so read it rather than bake it into the JWT.
