@@ -38,6 +38,17 @@ export function Layout({ children }: { children: React.ReactNode }) {
     mutationFn: () => api.post('/auth/logout'),
     onSuccess: () => { nav('/login'); window.location.reload(); },
   });
+  // Who is signed in, best available: the provider's display name, else the
+  // email, and only then the opaque id. `isOpaqueId` drives the monospace
+  // treatment: a UUID is meant to be compared character by character, while a
+  // name or an email is meant to be read.
+  const identity = (() => {
+    const name = me.data?.name?.trim();
+    if (name) return { label: name, isOpaqueId: false };
+    const email = me.data?.email?.trim();
+    if (email) return { label: email, isOpaqueId: false };
+    return { label: me.data?.userId ?? '—', isOpaqueId: true };
+  })();
   return (
     <div className="min-h-screen flex bg-canvas text-ink">
       <aside className="w-60 shrink-0 border-r border-border-brand bg-nav-surface backdrop-blur-sm p-4 flex flex-col gap-1">
@@ -51,7 +62,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
         )}
         <div data-testid="sidebar-footer" className="mt-auto px-2 py-2 rounded-lg border border-border-soft bg-card-glass">
           <div className="text-[10px] uppercase tracking-[0.16em] text-ink-tertiary">Signed in</div>
-          <div className="mt-0.5 text-[12px] font-mono text-ink truncate">{me.data?.userId ?? '—'}</div>
+          <div
+            className={`mt-0.5 text-[12px] text-ink truncate ${identity.isOpaqueId ? 'font-mono' : ''}`}
+            title={identity.label}
+          >
+            {identity.label}
+          </div>
           <div className="mt-0.5 text-[10px] uppercase tracking-[0.14em] text-accent-text">{me.data?.role}</div>
           <div className="mt-2 grid grid-cols-2 gap-1.5">
             <ThemeToggle />

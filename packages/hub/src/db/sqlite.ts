@@ -89,6 +89,9 @@ const SCHEMA_SQLITE = `
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL,
     email TEXT NOT NULL UNIQUE,
+    -- Display name as the identity provider reports it. Nullable: password
+    -- invites carry no name, and an IdP may withhold the claim.
+    name TEXT,
     password_hash TEXT,
     provider TEXT NOT NULL,
     provider_subject TEXT,
@@ -610,6 +613,15 @@ export async function openSqliteDb(dbPath: string): Promise<HubDb> {
   // delivered each event, so the admin Recent Events view can show "this
   // event was emitted by version X" and surface stuck-process drift.
   if (!have.has('reporting_version')) raw.exec("ALTER TABLE events ADD COLUMN reporting_version TEXT");
+
+  // users.name — every hub that predates the display-name fix has a users
+  // table without it. Without this backfill the sidebar keeps showing the
+  // raw UUID on exactly the deployments that already have users. (BUG
+  // f44b1128 / CGLAB-354.)
+  const userCols = raw.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
+  if (userCols.length > 0 && !new Set(userCols.map(c => c.name)).has('name')) {
+    raw.exec("ALTER TABLE users ADD COLUMN name TEXT");
+  }
 
   // Backfill: canonicalise remote_url forms (ssh / https / with-or-without-.git)
   // so /v1/projects shows one chip per repo. Idempotent — rows already at the

@@ -123,12 +123,17 @@ export function entraRouter(ctx: HubServerContext): Router {
 
     const subject = (claims.oid as string | undefined) || (claims.sub as string | undefined);
     const email = (claims.email as string | undefined) || (claims.preferred_username as string | undefined);
+    // `name` comes free with the `profile` scope we already request. It is
+    // optional: a tenant can withhold it, and sign-in must still succeed.
+    const name = (claims.name as string | undefined)
+      || [claims.given_name, claims.family_name].filter(Boolean).join(' ').trim()
+      || undefined;
     if (!subject || !email) return res.status(403).json({ error: 'Entra ID token missing sub/email' });
 
     const allow = checkEmailAllowlist(email, cfg.email_allowlist);
     if (!allow.allowed) return res.status(403).json({ error: allow.reason });
 
-    const user = await findInvitedSsoUser(ctx.db, ctx.config.defaultOrgId, { provider: 'entra', subject, email });
+    const user = await findInvitedSsoUser(ctx.db, ctx.config.defaultOrgId, { provider: 'entra', subject, email, name });
     if (!user) return res.status(403).json({ error: 'Account not invited — ask your admin to invite you first' });
     if (!user.active) return res.status(403).json({ error: 'Account is deactivated' });
     await completeSsoLogin(ctx.db, res, user, ctx.config.sessionSecret);

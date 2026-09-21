@@ -87,9 +87,18 @@ export function authRouter(ctx: HubServerContext): Router {
     res.json({ ok: true });
   });
 
-  router.get('/me', requireSession(ctx.config.sessionSecret), (req: Request, res: Response) => {
-    res.json(req.session);
-  });
+  router.get('/me', requireSession(ctx.config.sessionSecret), asyncRoute(async (req: Request, res: Response) => {
+    // The session cookie carries ids only. Who the user actually IS — their
+    // name and email — lives in the row, and the identity provider can change
+    // the name between sign-ins, so read it rather than bake it into the JWT.
+    // A missing row (user deleted while a cookie is still live) degrades to
+    // nulls; the session fields still answer, as every caller expects.
+    const row = await ctx.db.get<{ email: string; name: string | null }>(
+      'SELECT email, name FROM users WHERE id = ?',
+      [req.session!.userId],
+    );
+    res.json({ ...req.session, email: row?.email ?? null, name: row?.name ?? null });
+  }));
 
   return router;
 }
