@@ -14,6 +14,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import clsx from 'clsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, Pencil, Trash2, X, ChevronDown, ChevronRight, Send } from 'lucide-react';
+import { ChildHubPicker } from './childHubPicker';
 import { FlowEditorModal, type FlowClient, type RegistryClient, type Flow } from '@agenfk/flow-editor';
 import { api } from '../api';
 import { flattenAdminFlow } from './adminFlowShape';
@@ -616,44 +617,17 @@ function DispatchPicker({
     send.mutate(r.body);
   };
 
-  const pill = (active: boolean) =>
-    'text-[11px] px-2 py-0.5 rounded-full border transition-colors ' +
-    (active ? 'border-brand text-ink bg-chip font-semibold' : 'border-border-soft text-ink-tertiary hover:text-ink');
-
   return (
     <div className="bg-surface border border-border-soft rounded-md p-2 space-y-2" data-testid="flow-dispatch-picker">
-      <div className="flex items-center gap-1.5">
-        <button type="button" aria-pressed={mode === 'all'} className={pill(mode === 'all')} onClick={() => setMode('all')} data-testid="flow-dispatch-scope-all">
-          All child hubs ({childHubs.length})
-        </button>
-        <button type="button" aria-pressed={mode === 'selected'} className={pill(mode === 'selected')} onClick={() => setMode('selected')} data-testid="flow-dispatch-scope-selected">
-          Selected ({selected.size})
-        </button>
-        <span className="flex-1" />
-        <button type="button" onClick={onDone} className="text-ink-tertiary hover:text-ink" aria-label="Close">
-          <X className="w-3.5 h-3.5" />
-        </button>
-      </div>
-      {mode === 'selected' && (
-        <div className="space-y-1">
-          {childHubs.map(c => (
-            <label key={c.id} className="flex items-center gap-2 text-xs text-ink-secondary">
-              <input
-                type="checkbox"
-                checked={selected.has(c.id)}
-                onChange={() => toggle(c.id)}
-                data-testid={`flow-dispatch-child-${c.id}`}
-              />
-              {c.name}
-            </label>
-          ))}
-        </div>
-      )}
-      {mode === 'all' && (
-        <p className="text-[11px] text-ink-tertiary">
-          Every current child hub, and any that joins later.
-        </p>
-      )}
+      <ChildHubPicker
+        childHubs={childHubs}
+        mode={mode}
+        selected={selected}
+        onMode={setMode}
+        onToggle={toggle}
+        onClose={onDone}
+        testIdPrefix="flow-dispatch"
+      />
       {error && (
         <p className="text-xs text-rose-600 dark:text-rose-400" data-testid="flow-dispatch-error">{error}</p>
       )}
