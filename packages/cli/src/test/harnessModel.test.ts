@@ -273,8 +273,112 @@ describe('detectHarnessModel — the harness says which session it is (CGLAB-365
   it('resolveFromOptions reads the real process environment, so the PR commands get the fix without new flags', () => {
     claudeLog('/work/proj', 'mine', 'claude-fable-5-1', new Date(Date.now() - 60_000));
     claudeLog('/work/proj', 'other', 'claude-opus-5');
-    const r = resolveFromOptions({ model: 'claude-fable-5-1', harness: 'claude-code' }, { cwd: '/work/proj', home, env: { CLAUDE_CODE_SESSION_ID: 'mine' } });
+    // The production call sites pass no env at all; process.env must be the default.
+    process.env.CLAUDE_CODE_SESSION_ID = 'mine';
+    const r = resolveFromOptions({ model: 'claude-fable-5-1', harness: 'claude-code' }, { cwd: '/work/proj', home });
     expect(r).toEqual({ model: 'claude-fable-5-1', verified: true });
+  });
+
+  it('finds the id in whichever project directory holds it, not just the first', () => {
+    claudeLog('/work/a', 'a1', 'claude-opus-5');
+    claudeLog('/work/m', 'm1', 'claude-opus-5');
+    claudeLog('/work/z', 'mine', 'claude-fable-5-1');
+    expect(detectHarnessModel({ cwd: '/work/proj', home, env: { CLAUDE_CODE_SESSION_ID: 'mine' } })!.model).toBe('claude-fable-5-1');
+  });
+
+  it('honours CLAUDE_CONFIG_DIR for a relocated Claude Code config', () => {
+    const cfg = path.join(home, 'elsewhere', 'claude-cfg');
+    const dir = path.join(cfg, 'projects', '-work-proj');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'mine.jsonl'), JSON.stringify({ type: 'assistant', cwd: '/work/proj', message: { model: 'claude-fable-5-1' } }) + '\n');
+    expect(detectHarnessModel({ cwd: '/work/proj', home, env: { CLAUDE_CODE_SESSION_ID: 'mine', CLAUDE_CONFIG_DIR: cfg } })!.model).toBe('claude-fable-5-1');
+  });
+
+  describe('a named session with no usable answer is final — it never hands over to the sibling', () => {
+    it('Claude Code: the transcript exists but has no model yet → unverified, not the sibling', () => {
+      const dir = path.join(home, '.claude', 'projects', '-work-proj');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'mine.jsonl'), JSON.stringify({ type: 'user', cwd: '/work/proj' }) + '\n');
+      claudeLog('/work/proj', 'other', 'claude-opus-5');
+      expect(detectHarnessModel({ cwd: '/work/proj', home, env: { CLAUDE_CODE_SESSION_ID: 'mine' } })).toBeNull();
+    });
+
+    it('Claude Code: the named transcript is older than the freshness bound → the session is dead, not the sibling', () => {
+      claudeLog('/work/proj', 'mine', 'claude-fable-5-1', new Date(Date.now() - 2 * 24 * 60 * 60 * 1000));
+      claudeLog('/work/proj', 'other', 'claude-opus-5');
+      expect(detectHarnessModel({ cwd: '/work/proj', home, env: { CLAUDE_CODE_SESSION_ID: 'mine' } })).toBeNull();
+    });
+
+    it('Claude Code: a subagent writing right now shares the id and may run another model → ambiguous, unverified', () => {
+      // Verified on this machine: subagents inherit CLAUDE_CODE_SESSION_ID and
+      // their transcripts live under <id>/subagents/, all isSidechain.
+      claudeLog('/work/proj', 'mine', 'claude-opus-5');
+      const sub = path.join(home, '.claude', 'projects', '-work-proj', 'mine', 'subagents');
+      fs.mkdirSync(sub, { recursive: true });
+      fs.writeFileSync(path.join(sub, 'agent-abc.jsonl'), JSON.stringify({ type: 'assistant', isSidechain: true, cwd: '/work/proj', message: { model: 'claude-sonnet-5' } }) + '\n');
+      expect(detectHarnessModel({ cwd: '/work/proj', home, env: { CLAUDE_CODE_SESSION_ID: 'mine' } })).toBeNull();
+    });
+
+    it('Claude Code: a subagent that finished a while ago does not make the parent ambiguous', () => {
+      claudeLog('/work/proj', 'mine', 'claude-opus-5');
+      const sub = path.join(home, '.claude', 'projects', '-work-proj', 'mine', 'subagents');
+      fs.mkdirSync(sub, { recursive: true });
+      const f = path.join(sub, 'agent-abc.jsonl');
+      fs.writeFileSync(f, JSON.stringify({ type: 'assistant', isSidechain: true, cwd: '/work/proj', message: { model: 'claude-sonnet-5' } }) + '\n');
+      const old = new Date(Date.now() - 60 * 60 * 1000);
+      fs.utimesSync(f, old, old);
+      expect(detectHarnessModel({ cwd: '/work/proj', home, env: { CLAUDE_CODE_SESSION_ID: 'mine' } })!.model).toBe('claude-opus-5');
+    });
+
+    it('pi: the named log has no model_change and nothing else says → unverified, not the sibling', () => {
+      const mine = piSession('/work/proj', []);
+      piSession('/work/proj', [{ provider: 'openrouter', modelId: 'deepseek/deepseek-v4.1-flash' }]);
+      expect(detectHarnessModel({ cwd: '/work/proj', home, env: { PI_SESSION_FILE: mine } })).toBeNull();
+    });
+
+    it('pi: a named log older than the freshness bound is a dead session', () => {
+      const mine = piSession('/work/proj', [{ provider: 'coding4', modelId: 'qwen3.8:27b' }], { mtime: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) });
+      piSession('/work/proj', [{ provider: 'openrouter', modelId: 'deepseek/deepseek-v4.1-flash' }]);
+      expect(detectHarnessModel({ cwd: '/work/proj', home, env: { PI_SESSION_FILE: mine } })).toBeNull();
+    });
+  });
+
+  describe('pi also exports the model in force', () => {
+    it('PI_MODEL answers when the named log has no model_change yet', () => {
+      const mine = piSession('/work/proj', []);
+      const got = detectHarnessModel({ cwd: '/work/proj', home, env: { PI_SESSION_FILE: mine, PI_MODEL: 'qwen3.8:27b' } });
+      expect(got).toMatchObject({ model: 'qwen3.8:27b', harness: 'pi', source: 'env:PI_MODEL' });
+    });
+
+    it('PI_MODEL answers on its own for an in-memory session that has no file', () => {
+      piSession('/work/proj', [{ provider: 'openrouter', modelId: 'deepseek/deepseek-v4.1-flash' }]);
+      expect(detectHarnessModel({ cwd: '/work/proj', home, env: { PI_MODEL: 'qwen3.8:27b' } })!.model).toBe('qwen3.8:27b');
+    });
+
+    it('the log outranks PI_MODEL when both are present — the transcript is what actually answered', () => {
+      const mine = piSession('/work/proj', [{ provider: 'openrouter', modelId: 'moonshotai/kimi-k3' }]);
+      expect(detectHarnessModel({ cwd: '/work/proj', home, env: { PI_SESSION_FILE: mine, PI_MODEL: 'qwen3.8:27b' } })!.model).toBe('moonshotai/kimi-k3');
+    });
+  });
+
+  describe('the environment is not a trusted place to take a path from', () => {
+    it('PI_SESSION_FILE outside pi\'s own sessions directory is ignored', () => {
+      const rogue = path.join(home, 'rogue.jsonl');
+      fs.writeFileSync(rogue, JSON.stringify({ type: 'model_change', provider: 'x', modelId: 'evil' }) + '\n');
+      piSession('/work/proj', [{ provider: 'coding4', modelId: 'qwen3.8:27b' }]);
+      expect(detectHarnessModel({ cwd: '/work/proj', home, env: { PI_SESSION_FILE: rogue } })!.model).toBe('qwen3.8:27b');
+    });
+
+    it('a directory named as PI_SESSION_FILE is ignored', () => {
+      const dir = path.join(home, '.pi', 'agent', 'sessions', 'x.jsonl');
+      fs.mkdirSync(dir, { recursive: true });
+      piSession('/work/proj', [{ provider: 'coding4', modelId: 'qwen3.8:27b' }]);
+      expect(detectHarnessModel({ cwd: '/work/proj', home, env: { PI_SESSION_FILE: dir } })!.model).toBe('qwen3.8:27b');
+    });
+
+    it('an absurdly long model string never goes on the wire', () => {
+      expect(detectHarnessModel({ cwd: '/work/proj', home, env: { PI_MODEL: 'x'.repeat(300) } })).toBeNull();
+    });
   });
 });
 

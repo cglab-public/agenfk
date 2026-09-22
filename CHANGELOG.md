@@ -2,6 +2,31 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.21-beta.5] — 2026-09-22
+
+Beta, cumulative over `1.1.21-beta.4`. Two parent-hub controls whose API had shipped
+(CGLAB-182, CGLAB-183) but which nothing in the product could reach.
+
+### Dispatch a flow to child hubs from Admin > Flows (CGLAB-358)
+
+- Every org-owned flow gets a *Dispatch to child hubs* action with an all / selected child
+  picker; `all` covers hubs that enrol later. A board below the flows list shows each dispatch
+  with per-child pending / installed / failed state and a Cancel.
+- A flow received from a parent can be relayed onward. The directives feed serves a hub's
+  direct children only and a middle hub never re-dispatches what it installs, so relaying is
+  the only route to grandchild hubs.
+- A dispatch whose flow has since been deleted is labelled as unable to land and no longer
+  keeps the board polling.
+
+### Issue a group upgrade to child hubs from Admin > Upgrades (CGLAB-360)
+
+- The Group upgrades section now always renders for a parent, with an *Upgrade child hubs*
+  form: release list, the same child picker, and an explicit downgrade checkbox that travels
+  as `confirmDowngrade` and is applied per installation by each child.
+- `GET /v1/admin/upgrade/available-versions?unfiltered=1` skips the parent's own fleet floor,
+  which says nothing about a child's fleet.
+- `Flow.source` includes `'parent'` in the flow-editor and UI types.
+
 ## [1.1.21-beta.4] — 2026-09-18
 
 Beta, cumulative over `1.1.21-beta.3`. Closes out the CGLAB-275 incident: every piece of

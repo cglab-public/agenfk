@@ -249,8 +249,8 @@ function claudeModelOf(rs: any[]): string | null {
 }
 
 /** Claude Code: one directory per project, model recorded on each message. */
-function claudeCandidates(home: string, now: number): Candidate[] {
-  const root = path.join(home, '.claude', 'projects');
+function claudeCandidates(home: string, now: number, env: NodeJS.ProcessEnv): Candidate[] {
+  const root = claudeProjectsRoot(home, env);
   const candidates: Candidate[] = [];
   for (const { file, mtimeMs } of freshFiles(root, now)) {
     // The transcript records the real cwd, and it can change mid-session, so
@@ -269,42 +269,109 @@ function claudeCandidates(home: string, now: number): Candidate[] {
 }
 
 /**
+ * How recently a subagent must have written for the parent's identity to count
+ * as ambiguous. A subagent inherits the parent's CLAUDE_CODE_SESSION_ID and can
+ * run a different model, so while one is writing, "the session running now"
+ * has two candidates and the honest answer is none. Tight on purpose: the
+ * subagents directory keeps every past run.
+ */
+const SUBAGENT_ACTIVE_WINDOW_MS = 5 * 60_000;
+
+/** Model ids are short; anything longer is not one and must not go on the wire. */
+const MAX_MODEL_ID_LENGTH = 200;
+
+/** Where Claude Code keeps its transcripts, honouring a relocated config dir. */
+function claudeProjectsRoot(home: string, env: NodeJS.ProcessEnv): string {
+  const cfg = env.CLAUDE_CONFIG_DIR;
+  return path.join(typeof cfg === 'string' && cfg ? cfg : path.join(home, '.claude'), 'projects');
+}
+
+/**
+ * What the environment settled. `answer` is the model, or null for "the
+ * harness named a session and it has no usable answer" — which is final and
+ * must NOT fall through to the cwd heuristic, since that heuristic would pick
+ * the concurrent sibling this whole path exists to avoid. `undefined` means the
+ * environment named nothing usable, and the heuristic may run.
+ */
+type EnvVerdict = DetectedModel | null | undefined;
+
+/**
  * The session the harness itself says is running, from the environment it
  * gives every tool shell (CGLAB-365).
  *
- * The cwd heuristic below cannot tell two live sessions in ONE repo directory
- * apart, and its mtime tiebreak picks whichever wrote last: a Fable session was
+ * The cwd heuristic cannot tell two live sessions in ONE repo directory apart,
+ * and its mtime tiebreak picks whichever wrote last: a Fable session was
  * "corrected" to claude-opus-5 from a concurrent Opus session's transcript.
  * Both harnesses export the exact identity, so it is read first:
- *   - pi's bash tool sets PI_SESSION_FILE (and PI_SESSION_ID / PI_MODEL);
+ *   - pi's bash tool sets PI_SESSION_FILE and PI_MODEL (the model in force);
  *   - Claude Code sets CLAUDE_CODE_SESSION_ID, the transcript's basename under
- *     ~/.claude/projects/<slug>/.
- * Anything that does not resolve to a readable log with a model falls through
- * to the heuristic rather than returning nothing: a missed source is a weaker
- * answer, a refusal is no answer.
+ *     <config>/projects/<slug>/.
+ *
+ * Two things a named session can still get wrong, and how each is handled:
+ *   - It may be dead. The variable is inherited by everything spawned from a
+ *     tool shell (a tmux server, a detached worker), so a log older than the
+ *     freshness bound is a stale identity, not the session running now → null.
+ *   - Under Claude Code the SAME id names the parent and every subagent it
+ *     spawns, and a subagent may run another model. While a subagent has
+ *     written recently the identity is ambiguous → null.
  */
-function fromEnvironment(home: string, env: NodeJS.ProcessEnv): DetectedModel | null {
-  const piFile = env.PI_SESSION_FILE;
-  if (typeof piFile === 'string' && piFile && isFile(piFile)) {
-    const model = piModelOf(records(piFile));
-    if (model) return { model, harness: 'pi', source: piFile };
+function fromEnvironment(home: string, env: NodeJS.ProcessEnv, now: number): EnvVerdict {
+  const pi = fromPiEnvironment(home, env, now);
+  if (pi !== undefined) return pi;
+  return fromClaudeEnvironment(home, env, now);
+}
+
+function fromPiEnvironment(home: string, env: NodeJS.ProcessEnv, now: number): EnvVerdict {
+  const file = env.PI_SESSION_FILE;
+  const direct = typeof env.PI_MODEL === 'string' && env.PI_MODEL ? env.PI_MODEL : null;
+  // Only a log pi itself would have written: its own sessions directory, its
+  // own extension. The variable can be set by anything in the shell.
+  const sessionsRoot = path.join(home, '.pi', 'agent', 'sessions') + path.sep;
+  const named = typeof file === 'string' && file.endsWith('.jsonl') && file.startsWith(sessionsRoot) && isFile(file);
+  if (!named && !direct) return undefined;
+  if (named) {
+    if (now - mtime(file!) > MAX_SESSION_AGE_MS) return null;
+    const model = piModelOf(records(file!));
+    if (model) return bounded({ model, harness: 'pi', source: file! });
   }
-  const ccId = env.CLAUDE_CODE_SESSION_ID;
+  // The file has no model_change yet (or no file was named): pi also exports
+  // the model in force, which is the direct answer the file only derives.
+  if (direct) return bounded({ model: direct, harness: 'pi', source: 'env:PI_MODEL' });
+  return null;
+}
+
+function fromClaudeEnvironment(home: string, env: NodeJS.ProcessEnv, now: number): EnvVerdict {
+  const id = env.CLAUDE_CODE_SESSION_ID;
   // A plain id only: this value becomes a path component, and the environment
   // is not a trusted place to take one from.
-  if (typeof ccId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(ccId)) {
-    const projects = path.join(home, '.claude', 'projects');
-    let dirs: fs.Dirent[] = [];
-    try { dirs = fs.readdirSync(projects, { withFileTypes: true }); } catch { /* no Claude Code here */ }
-    for (const d of dirs) {
-      if (!d.isDirectory()) continue;
-      const file = path.join(projects, d.name, `${ccId}.jsonl`);
-      if (!isFile(file)) continue;
-      const model = claudeModelOf(records(file));
-      if (model) return { model, harness: 'claude-code', source: file };
-    }
+  if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) return undefined;
+  const projects = claudeProjectsRoot(home, env);
+  let dirs: fs.Dirent[] = [];
+  try { dirs = fs.readdirSync(projects, { withFileTypes: true }); } catch { /* no Claude Code here */ }
+  for (const d of dirs) {
+    if (!d.isDirectory()) continue;
+    const file = path.join(projects, d.name, `${id}.jsonl`);
+    if (!isFile(file)) continue;
+    if (now - mtime(file) > MAX_SESSION_AGE_MS) return null;
+    if (subagentActive(path.join(projects, d.name, id, 'subagents'), now)) return null;
+    const model = claudeModelOf(records(file));
+    return model ? bounded({ model, harness: 'claude-code', source: file }) : null;
   }
-  return null;
+  // No transcript by that name anywhere: a relocated or missing config dir,
+  // not a session with no answer. The heuristic may still find one.
+  return undefined;
+}
+
+/** Whether any subagent transcript under this session was written just now. */
+function subagentActive(dir: string, now: number): boolean {
+  for (const file of listFiles(dir)) {
+    if (now - mtime(file) <= SUBAGENT_ACTIVE_WINDOW_MS) return true;
+  }
+  return false;
+}
+
+function bounded(d: DetectedModel): DetectedModel | null {
+  return d.model.length <= MAX_MODEL_ID_LENGTH ? d : null;
 }
 
 function isFile(p: string): boolean {
@@ -323,9 +390,9 @@ export function detectHarnessModel(
   const now = opts.now ?? Date.now();
   const env = opts.env ?? process.env;
   try {
-    const exact = fromEnvironment(home, env);
-    if (exact) return exact;
-    const best = pick([...piCandidates(home, now), ...claudeCandidates(home, now)], canonicalPath(cwd), now);
+    const verdict = fromEnvironment(home, env, now);
+    if (verdict !== undefined) return verdict;
+    const best = pick([...piCandidates(home, now), ...claudeCandidates(home, now, env)], canonicalPath(cwd), now);
     if (!best) return null;
     const model = best.readModel(records(best.file));
     return model ? { model, harness: best.harness, source: best.file } : null;
@@ -369,7 +436,7 @@ export function reconcileModel(
       model: declared,
       verified: false,
       warning:
-        `a ${detected.harness} session log in this directory records ${detected.model}, but you `
+        `the ${detected.harness} session log records ${detected.model}, but you `
         + `declared --harness ${declaredHarness}. Keeping your --model ${declared}; the log is from `
         + `another harness. (source: ${detected.source})`,
     };
