@@ -10,8 +10,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
 import { api } from '../api';
-import { groupUpgradeBody, groupUpgradeRow, groupUpgradesLive } from './groupUpgradeState';
-import { ChildHubPicker } from './childHubPicker';
+import { groupUpgradeBody, groupUpgradeRow, groupUpgradesLive, type GroupUpgradeRequest } from './groupUpgradeState';
+import { ChildHubPicker, toggledSet } from './childHubPicker';
 import { dispatchRefusalMessage, liveChildHubs, type ChildHubRow, type DispatchScopeMode } from './flowDispatch';
 
 interface UpgradeTarget {
@@ -660,17 +660,13 @@ function GroupUpgradeIssue({ childHubs, onIssued }: { childHubs: ChildHubRow[]; 
   };
 
   const issue = useMutation({
-    mutationFn: (body: Record<string, unknown>) => api.post('/v1/admin/upgrade-dispatches', body),
+    mutationFn: (body: GroupUpgradeRequest) => api.post('/v1/admin/upgrade-dispatches', body),
     onMutate: () => setError(null),
     onSuccess: () => { reset(); onIssued(); },
     onError: (e: any) => setError(dispatchRefusalMessage(e?.response?.data, childHubs, 'Could not issue the group upgrade')),
   });
 
-  const toggle = (id: string) => setSelected(prev => {
-    const next = new Set(prev);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    return next;
-  });
+  const toggle = (id: string) => setSelected(prev => toggledSet(prev, id));
 
   const submit = () => {
     const r = groupUpgradeBody(targetVersion, mode, selected, confirmDowngrade);

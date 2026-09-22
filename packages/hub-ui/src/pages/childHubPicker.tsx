@@ -12,6 +12,13 @@
 import { X } from 'lucide-react';
 import type { ChildHubRow, DispatchScopeMode } from './flowDispatch';
 
+/** Functional-update toggle for the picker's `selected` set; both owners need it. */
+export function toggledSet(prev: ReadonlySet<string>, id: string): Set<string> {
+  const next = new Set(prev);
+  if (next.has(id)) next.delete(id); else next.add(id);
+  return next;
+}
+
 export function ChildHubPicker({
   childHubs, mode, selected, onMode, onToggle, onClose, testIdPrefix,
 }: {

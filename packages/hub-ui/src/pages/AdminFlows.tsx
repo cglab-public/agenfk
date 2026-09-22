@@ -14,7 +14,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import clsx from 'clsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, Pencil, Trash2, X, ChevronDown, ChevronRight, Send } from 'lucide-react';
-import { ChildHubPicker } from './childHubPicker';
+import { ChildHubPicker, toggledSet } from './childHubPicker';
 import { FlowEditorModal, type FlowClient, type RegistryClient, type Flow } from '@agenfk/flow-editor';
 import { api } from '../api';
 import { flattenAdminFlow } from './adminFlowShape';
@@ -605,11 +605,7 @@ function DispatchPicker({
     onError: (e: any) => setError(dispatchRefusalMessage(e?.response?.data, childHubs, 'Could not dispatch the flow')),
   });
 
-  const toggle = (id: string) => setSelected(prev => {
-    const next = new Set(prev);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    return next;
-  });
+  const toggle = (id: string) => setSelected(prev => toggledSet(prev, id));
 
   const submit = () => {
     const r = flowDispatchBody(flowId, mode, selected);
