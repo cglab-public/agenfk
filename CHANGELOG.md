@@ -2,6 +2,46 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.21-beta.9] — 2026-09-22
+
+Beta, cumulative over `1.1.21-beta.8`.
+
+### Federation: a parent hub is judged by the address it resolves to (CGLAB-371)
+
+- A child hub's calls to its parent (enrolment, release requests, and the background ping, directives
+  and delivery) now check the parent's **resolved** address as the connection is made, on the socket's
+  own lookup. A public name pointing at a private address - or changing its answer after a check
+  (DNS rebinding) - is refused before anything, the invite or the bearer token included, is sent.
+- Private addresses are judged by range rather than by spelling, covering CGNAT (100.64/10, where one
+  cloud's metadata service lives), NAT64 and 6to4 forms of private IPv4, and the other reserved ranges.
+  The same ranges now apply to a parent URL written as an IP literal.
+- **Behaviour change:** federation calls no longer go through `HTTP_PROXY`/`HTTPS_PROXY`. Behind a
+  proxy the proxy resolves the parent itself, which the check cannot see, so these calls always dial
+  directly. `AGENFK_HUB_ALLOW_PRIVATE_PARENT=1` still admits a parent on the private network.
+- A refusal tells the admin why, without echoing the internal address (that goes to the server log).
+
+### "Published by" names the GitHub login (CGLAB-372)
+
+- A flow published through the hub now credits the laptop's GitHub login (from `gh`, pinned to
+  github.com) when `gh` is signed in, falling back to the OS login. The lookup is bounded and never
+  holds up the publish.
+
+### Code-scanning fixes on the beta PR (CGLAB-371)
+
+- **Hub rate limiting runs on `express-rate-limit`.** Same limits, same 429 with a JSON `error` and
+  `Retry-After`; an IPv6 client is now bucketed by its /64, so rotating addresses no longer buys a
+  fresh budget. The hand-rolled limiter it replaces was invisible to code scanning.
+- **The JIRA OAuth routes are rate limited** on the local server (authorize and callback).
+- **Hub query endpoints refuse a repeated or nested single-value parameter** (`from`, `to`,
+  `limit`, `offset`, `bucket`) with a 400 naming it, instead of a 500. Repeated list filters are
+  still merged.
+- **`agenfk verify` no longer runs git inside the directory the caller reports.** The caller's path
+  is matched against git's own list of the tested repository's checkouts; a caller in another
+  checkout of the same repository is still refused, anything else is ignored.
+- **Fix:** a verify issued from another project's checkout no longer re-records it as this project's
+  root. The root is learned only when the recorded one is missing, is `$HOME`/`~/.agenfk`, or is a
+  linked worktree - and such a root is now corrected by the next verify from the real checkout.
+
 ## [1.1.21-beta.8] — 2026-09-22
 
 Beta, cumulative over `1.1.21-beta.7`.
