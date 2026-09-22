@@ -2,6 +2,29 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.21-beta.7] — 2026-09-22
+
+Beta, cumulative over `1.1.21-beta.6`.
+
+### Connect JIRA works again: no PKCE on the Atlassian OAuth flow (CGLAB-361)
+
+- "Connect JIRA" dead-ended on Atlassian's "Something went wrong" page for every user. Atlassian's
+  consent endpoint began returning HTTP 500 (`{"failedToLoad":true,"error":{"category":"generic"}}`)
+  for any authorize request carrying `code_challenge`. Our request had not changed since February.
+- Measured against live Atlassian by changing one variable: with only the PKCE parameters removed,
+  the consent screen renders, Accept issues a code, and the code exchanges for access and refresh
+  tokens without a `code_verifier`. The authorize redirect and the token exchange now carry no PKCE.
+- The `state` nonce stays as the callback's CSRF protection and is now pinned by tests: issued by
+  `/jira/oauth/authorize`, single-use, and refused once expired.
+- Atlassian still documents PKCE support for 3LO, so this is a workaround for a change on their
+  side; the code records the experiment so it is not restored blind.
+
+### Hub shows the signed-in user's name instead of their UUID (CGLAB-354, PR #193)
+
+- The hub's signed-in indicator displayed the account UUID; it now shows the user's name.
+- `/auth/me` is rate-limited per session.
+- The Postgres column migration behind the change is safe when several hub instances boot at once.
+
 ## [1.1.21-beta.6] — 2026-09-22
 
 Beta, cumulative over `1.1.21-beta.5`.
