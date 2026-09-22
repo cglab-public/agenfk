@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import { makeProject, makeItem } from './helpers/fixtures';
-import { app, initStorage, pkceStore, mapJiraTypeToAgEnFK, VERIFY_TOKEN, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl, setVerifyLogRootForTests } from '../server';
+import { app, initStorage, oauthStateStore, mapJiraTypeToAgEnFK, VERIFY_TOKEN, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl, setVerifyLogRootForTests } from '../server';
 import { Status, ItemType } from '@agenfk/core';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -908,19 +908,18 @@ describe('POST /jira/import (with token + mock axios)', () => {
   }));
 });
 
-describe('GET /jira/oauth/callback (with PKCE state)', () => {
+describe('GET /jira/oauth/callback (state issued by /authorize)', () => {
   it('exchanges code for token', withJiraToken(async () => {
     process.env.JIRA_CLIENT_ID = 'test-cid';
     process.env.JIRA_CLIENT_SECRET = 'test-cs';
 
-    // First set up a valid PKCE entry
+    // /authorize issues the state the callback must be given back.
     const authorizeRes = await agent().get('/jira/oauth/authorize');
-    // Extract state from redirect URL
     const location = authorizeRes.headers.location || '';
     const stateMatch = location.match(/state=([^&]+)/);
-    if (!stateMatch) return; // can't continue without state
+    expect(stateMatch).not.toBeNull();
 
-    const state = decodeURIComponent(stateMatch[1]);
+    const state = decodeURIComponent(stateMatch![1]);
     const axios = (await import('axios')).default as any;
     // mock token exchange
     axios.post.mockResolvedValueOnce({
@@ -936,6 +935,7 @@ describe('GET /jira/oauth/callback (with PKCE state)', () => {
     const res = await agent()
       .get(`/jira/oauth/callback?code=auth-code&state=${encodeURIComponent(state)}`);
     expect(res.status).toBe(302);
+    expect(res.headers.location).toContain('jira=connected');
 
     delete process.env.JIRA_CLIENT_ID;
     delete process.env.JIRA_CLIENT_SECRET;

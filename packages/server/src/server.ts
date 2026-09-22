@@ -5596,19 +5596,41 @@ interface JiraConfig {
   redirectUri?: string;
 }
 
-// In-memory PKCE state store: state → { codeVerifier, expiresAt }
-export const pkceStore = new Map<string, { codeVerifier: string; expiresAt: number }>();
+// CSRF state nonces for the JIRA OAuth flow: state -> { expiresAt }.
+// Single-use: the callback deletes an entry on lookup, and rejects one that is
+// unknown or expired. (Was `oauthStateStore` until CGLAB-361 removed the PKCE half.)
+export const oauthStateStore = new Map<string, { expiresAt: number }>();
 
 const base64url = (buf: Buffer): string =>
   buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 
-const generatePKCE = (): { codeVerifier: string; codeChallenge: string; state: string } => {
-  const codeVerifier = base64url(crypto.randomBytes(32));
-  const codeChallenge = base64url(
-    Buffer.from(crypto.createHash('sha256').update(codeVerifier).digest())
-  );
+/**
+ * A single-use CSRF nonce for the authorize round trip.
+ *
+ * CGLAB-361: this used to also mint a PKCE verifier/challenge pair. Atlassian's
+ * consent endpoint began returning HTTP 500
+ * ({"failedToLoad":true,"error":{"category":"generic"}}, atl-traceid
+ * 4477e8158284433a8af8ecf8974f56bc) for any authorize request carrying
+ * code_challenge, which dead-ended "Connect JIRA" on their "Something went
+ * wrong" page for every user.
+ *
+ * Measured 2026-09-22 by single-variable experiment against live Atlassian:
+ * same client_id, scopes, redirect_uri and prompt=consent, with ONLY the PKCE
+ * parameters removed, the consent screen returns 200 and renders, Accept issues
+ * a code, and that code exchanges for an access_token + refresh_token with no
+ * code_verifier sent. Our request shape had not changed since 456ed817
+ * (2026-02-23), and Atlassian's docs still document PKCE S256 support for 3LO
+ * alongside client authentication -- so this is a workaround for an
+ * unconfirmed regression on their side, not a judgement that PKCE was wrong.
+ *
+ * This client is confidential (it holds client_secret), so PKCE was defence in
+ * depth rather than load-bearing; the state nonce below is what actually
+ * protects the callback. Do not restore PKCE without re-running that
+ * experiment -- tests pin its absence so a silent restore fails loudly.
+ */
+const generateOAuthState = (): { state: string } => {
   const state = base64url(crypto.randomBytes(16));
-  return { codeVerifier, codeChallenge, state };
+  return { state };
 };
 
 const loadJiraConfig = (): JiraConfig => {
@@ -5768,8 +5790,8 @@ app.get("/jira/oauth/authorize", (req: any, res: any) => {
     });
   }
   const redirectUri = jiraConfig.redirectUri || `http://localhost:3000/jira/oauth/callback`;
-  const { codeVerifier, codeChallenge, state } = generatePKCE();
-  pkceStore.set(state, { codeVerifier, expiresAt: Date.now() + 10 * 60 * 1000 });
+  const { state } = generateOAuthState();
+  oauthStateStore.set(state, { expiresAt: Date.now() + 10 * 60 * 1000 });
   const params = new URLSearchParams({
     audience: 'api.atlassian.com',
     client_id: jiraConfig.clientId,
@@ -5778,8 +5800,6 @@ app.get("/jira/oauth/authorize", (req: any, res: any) => {
     state,
     response_type: 'code',
     prompt: 'consent',
-    code_challenge: codeChallenge,
-    code_challenge_method: 'S256',
   });
   res.redirect(`https://auth.atlassian.com/authorize?${params}`);
 });
@@ -5798,12 +5818,12 @@ app.get("/jira/oauth/callback", asyncHandler(async (req: any, res: any) => {
     return res.redirect(`${uiBase}?jira=error&reason=missing_params`);
   }
 
-  const pkceEntry = pkceStore.get(String(state));
-  if (!pkceEntry || Date.now() > pkceEntry.expiresAt) {
-    pkceStore.delete(String(state));
+  const stateEntry = oauthStateStore.get(String(state));
+  if (!stateEntry || Date.now() > stateEntry.expiresAt) {
+    oauthStateStore.delete(String(state));
     return res.redirect(`${uiBase}?jira=error&reason=invalid_state`);
   }
-  pkceStore.delete(String(state));
+  oauthStateStore.delete(String(state));
 
   const jiraConfig = loadJiraConfig();
   if (!jiraConfig.clientId || !jiraConfig.clientSecret) {
@@ -5818,7 +5838,6 @@ app.get("/jira/oauth/callback", asyncHandler(async (req: any, res: any) => {
       client_secret: jiraConfig.clientSecret,
       code,
       redirect_uri: redirectUri,
-      code_verifier: pkceEntry.codeVerifier,
     });
 
     const { data: resources } = await axios.get('https://api.atlassian.com/oauth/token/accessible-resources', {

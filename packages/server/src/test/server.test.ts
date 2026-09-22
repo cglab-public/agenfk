@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, beforeAll, afterEach, vi } from 'vitest';
 import request from 'supertest';
-import { app, initStorage, storage, pkceStore, mapJiraTypeToAgEnFK, clearJiraValidationCache, VERIFY_TOKEN } from '../server';
+import { app, initStorage, storage, oauthStateStore, mapJiraTypeToAgEnFK, clearJiraValidationCache, VERIFY_TOKEN } from '../server';
 import { Status, ItemType, AgEnFKItem } from '@agenfk/core';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -362,7 +362,7 @@ describe('JIRA Integration', () => {
     delete process.env.JIRA_CLIENT_ID;
     delete process.env.JIRA_CLIENT_SECRET;
     delete process.env.JIRA_REDIRECT_URI;
-    pkceStore.clear();
+    oauthStateStore.clear();
     clearJiraValidationCache();
     vi.resetAllMocks();
     // Re-arm: resetAllMocks reverted the homedir mock to its factory default.
@@ -467,8 +467,40 @@ describe('JIRA Integration', () => {
       expect(res.status).toBe(302);
       expect(res.headers.location).toContain('auth.atlassian.com/authorize');
       expect(res.headers.location).toContain('client_id=test-client-id');
-      expect(res.headers.location).toContain('code_challenge_method=S256');
-      expect(pkceStore.size).toBe(1);
+      // CGLAB-361: no PKCE on the wire. See the dedicated tests below.
+      expect(res.headers.location).not.toContain('code_challenge');
+      // The state entry survives: it is CSRF protection, not PKCE bookkeeping.
+      expect(oauthStateStore.size).toBe(1);
+    });
+
+    // ── CGLAB-361 ──────────────────────────────────────────────────────────
+    // Atlassian's consent endpoint began returning HTTP 500
+    // ({"failedToLoad":true,"error":{"category":"generic"}},
+    // atl-traceid 4477e8158284433a8af8ecf8974f56bc) for an authorize request
+    // carrying code_challenge. Measured 2026-09-22 by single-variable
+    // experiment against live Atlassian: same client_id, scopes, redirect_uri
+    // and prompt=consent, with ONLY the PKCE parameters removed, the consent
+    // screen returns 200 and renders, Accept issues a code, and that code
+    // exchanges for an access_token + refresh_token with no code_verifier.
+    //
+    // Atlassian's docs still say 3LO supports PKCE S256 alongside client
+    // authentication, so this is a workaround for an unconfirmed regression on
+    // their side, NOT a claim that PKCE was wrong here. Do not restore it
+    // without re-running that experiment; these tests exist so that a silent
+    // restore fails loudly.
+    it('sends no PKCE parameters to Atlassian (CGLAB-361)', async () => {
+      process.env.JIRA_CLIENT_ID = 'test-client-id';
+      process.env.JIRA_CLIENT_SECRET = 'test-secret';
+      const res = await agent().get('/jira/oauth/authorize');
+      expect(res.status).toBe(302);
+      const url = new URL(res.headers.location);
+      expect(`${url.origin}${url.pathname}`).toBe('https://auth.atlassian.com/authorize');
+      expect(url.searchParams.has('code_challenge')).toBe(false);
+      expect(url.searchParams.has('code_challenge_method')).toBe(false);
+      // Pin the whole request shape, so anything re-added shows up here.
+      expect([...url.searchParams.keys()].sort()).toEqual(
+        ['audience', 'client_id', 'prompt', 'redirect_uri', 'response_type', 'scope', 'state'],
+      );
     });
 
     it('reads config from ~/.agenfk/config.json jira key', async () => {
@@ -510,7 +542,7 @@ describe('JIRA Integration', () => {
       process.env.JIRA_CLIENT_SECRET = 'csec';
 
       // Populate pkce store with a known state
-      pkceStore.set('test-state', { codeVerifier: 'test-verifier', expiresAt: Date.now() + 60000 });
+      oauthStateStore.set('test-state', { expiresAt: Date.now() + 60000 });
 
       const axios = (await import('axios')).default as any;
       // Mock: token exchange
@@ -527,6 +559,66 @@ describe('JIRA Integration', () => {
       const saved = JSON.parse(fs.readFileSync(jiraTokenPath(), 'utf8'));
       expect(saved.cloudId).toBe('cloud-123');
       expect(saved.email).toBe('user@test.com');
+    });
+
+    // With PKCE gone, the state nonce is the callback's only protection, so
+    // each of its properties is pinned: issued by /authorize, single-use, and
+    // refused once expired.
+    it('accepts the state /authorize issued, exactly once (CGLAB-361)', async () => {
+      process.env.JIRA_CLIENT_ID = 'cid';
+      process.env.JIRA_CLIENT_SECRET = 'csec';
+      const auth = await agent().get('/jira/oauth/authorize');
+      const state = new URL(auth.headers.location).searchParams.get('state')!;
+
+      const axios = (await import('axios')).default as any;
+      axios.post.mockResolvedValueOnce({ data: { access_token: 'at', refresh_token: 'rt' } });
+      axios.get.mockResolvedValueOnce({ data: [{ id: 'cloud-123', url: 'https://test.atlassian.net', name: 'Test Cloud' }] });
+      axios.get.mockResolvedValueOnce({ data: { emailAddress: 'user@test.com' } });
+
+      const callback = `/jira/oauth/callback?code=auth-code&state=${encodeURIComponent(state)}`;
+      const first = await agent().get(callback);
+      expect(first.headers.location).toContain('jira=connected');
+
+      const replay = await agent().get(callback);
+      expect(replay.headers.location).toContain('invalid_state');
+      expect(axios.post).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects an expired state without exchanging the code (CGLAB-361)', async () => {
+      process.env.JIRA_CLIENT_ID = 'cid';
+      process.env.JIRA_CLIENT_SECRET = 'csec';
+      oauthStateStore.set('stale-state', { expiresAt: Date.now() - 1 });
+      const axios = (await import('axios')).default as any;
+
+      const res = await agent().get('/jira/oauth/callback?code=auth-code&state=stale-state');
+      expect(res.headers.location).toContain('invalid_state');
+      expect(oauthStateStore.has('stale-state')).toBe(false);
+      expect(axios.post).not.toHaveBeenCalled();
+    });
+
+    it('exchanges the code without a code_verifier (CGLAB-361)', async () => {
+      process.env.JIRA_CLIENT_ID = 'cid';
+      process.env.JIRA_CLIENT_SECRET = 'csec';
+      oauthStateStore.set('test-state', { expiresAt: Date.now() + 60000 });
+
+      const axios = (await import('axios')).default as any;
+      axios.post.mockResolvedValueOnce({ data: { access_token: 'at', refresh_token: 'rt' } });
+      axios.get.mockResolvedValueOnce({ data: [{ id: 'cloud-123', url: 'https://test.atlassian.net', name: 'Test Cloud' }] });
+      axios.get.mockResolvedValueOnce({ data: { emailAddress: 'user@test.com' } });
+
+      const res = await agent().get('/jira/oauth/callback?code=auth-code&state=test-state');
+      expect(res.headers.location).toContain('jira=connected');
+
+      const [url, body] = axios.post.mock.calls[0];
+      expect(url).toBe('https://auth.atlassian.com/oauth/token');
+      expect(body).not.toHaveProperty('code_verifier');
+      // The confidential-client exchange is otherwise unchanged.
+      expect(body).toMatchObject({
+        grant_type: 'authorization_code',
+        client_id: 'cid',
+        client_secret: 'csec',
+        code: 'auth-code',
+      });
     });
   });
 
