@@ -27,12 +27,23 @@ export interface WorktreeDeps {
    * Is this directory a git checkout? Asked before a worktree is attempted.
    *
    * A project can be an ordinary folder — the default one this app creates is
-   * exactly that — and `git worktree add` has nothing to add to it. Optional
-   * so callers that cannot look at the disk keep the old behaviour.
+   * exactly that — and `git worktree add` has nothing to add to it.
+   *
+   * IT MUST ASK GIT, not look for `.git`. A folder nested inside a repository
+   * has no `.git` of its own and is still a checkout — `packages/ui` in this
+   * very repo — and answering "no" there opens the card's terminal in the
+   * project root, on whatever branch the person happens to have out, with no
+   * worktree at all. That is the failure this module exists to prevent, and it
+   * would have been caused by the guard meant to soften it. `git rev-parse
+   * --git-dir` is the same question the server asks (server/worktrees.ts).
+   *
+   * Optional so callers that cannot look at the disk keep the old behaviour.
    */
   readonly isRepo?: (dir: string) => boolean;
   /** Where the project lives, for the case above. */
   readonly projectRoot?: (itemId: string) => Promise<string | null>;
+  /** Whether that directory is there at all. Absent means "do not check". */
+  readonly exists?: (dir: string) => boolean;
 }
 
 export interface ResolvedWorktree {
@@ -110,7 +121,14 @@ export async function resolveWorktree(itemId: string, deps: WorktreeDeps): Promi
    */
   if (deps.isRepo && deps.projectRoot) {
     const root = await deps.projectRoot(itemId);
-    if (root && !deps.isRepo(root)) {
+    /*
+     * A root that is not there is NOT the no-git case: opening a pty in a
+     * missing directory fails with a raw errno, where the server would have
+     * said "Project has no projectRoot" — the sentence `reasonFrom` exists to
+     * preserve. Anything but a directory git recognises falls through to the
+     * server, which is the side that decides.
+     */
+    if (root && deps.exists?.(root) !== false && !deps.isRepo(root)) {
       return { cwd: root, branchName: null };
     }
   }

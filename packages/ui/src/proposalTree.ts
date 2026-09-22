@@ -41,6 +41,13 @@ export interface ReviewedProposal {
  * rather than silently keeping rows that can no longer be created.
  */
 export function keptItems(items: readonly ReviewedItem[], dropped: ReadonlySet<string>): ReviewedItem[] {
+  /*
+   * Callers pass the refs they DROPPED. A ref that is merely blocked by an
+   * issue is skipped at creation time by the same rule, and its children were
+   * then POSTed with no parent — landing as loose cards at the root of the
+   * board. See `creatableItems` below, which is the version that knows about
+   * both reasons a row can fail to exist.
+   */
   const gone = new Set(dropped);
   let changed = true;
   // Repeat until stable: a grandchild only becomes unreachable once its
@@ -56,6 +63,29 @@ export function keptItems(items: readonly ReviewedItem[], dropped: ReadonlySet<s
     }
   }
   return items.filter(i => !gone.has(i.ref));
+}
+
+/**
+ * The rows that will actually be created, with their subtrees.
+ *
+ * TWO REASONS A ROW DOES NOT EXIST, and only one of them used to remove the
+ * rows underneath it. A row the person DROPPED took its children with it; a
+ * row BLOCKED by an issue was skipped silently and its children were created
+ * anyway — with `parentId: undefined`, which is a top-level card. So a story
+ * with a missing title turned its three tasks into three loose cards on the
+ * board, which is the outcome this module exists to prevent.
+ *
+ * `blocked` is asked per ref rather than passed as a set so the caller can
+ * keep using the issue list it already has.
+ */
+export function creatableItems(
+  items: readonly ReviewedItem[],
+  dropped: ReadonlySet<string>,
+  blocked: (ref: string) => boolean,
+): ReviewedItem[] {
+  const out = new Set(dropped);
+  for (const item of items) if (blocked(item.ref)) out.add(item.ref);
+  return keptItems(items, out);
 }
 
 /**

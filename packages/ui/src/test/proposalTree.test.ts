@@ -6,7 +6,7 @@
  * parent that was never created, or a child POSTed before its parent exists.
  */
 import { describe, it, expect } from 'vitest';
-import { keptItems, creationOrder, issuesFor, treeIssues, type ReviewedItem } from '../proposalTree';
+import { creatableItems, keptItems, creationOrder, issuesFor, treeIssues, type ReviewedItem } from '../proposalTree';
 
 const row = (ref: string, parentRef: string | null = null): ReviewedItem =>
   ({ ref, type: 'TASK', title: ref, parentRef, depth: 0 });
@@ -71,5 +71,48 @@ describe('where an issue is shown', () => {
 
   it('keeps the tree-level ones where no row can carry them', () => {
     expect(treeIssues(issues).map(i => i.message)).toEqual(['about the whole tree']);
+  });
+});
+
+
+/*
+ * Found by adversarial review of 85b807dd.
+ *
+ * A row can fail to exist for TWO reasons — dropped by the person, or blocked
+ * by an issue — and only the first took its children with it. The second
+ * skipped the parent and created its children anyway, with no parentId, which
+ * is a top-level card: a story with a missing title turned three tasks into
+ * three loose cards on the board.
+ */
+describe('creatableItems', () => {
+  const tree = [
+    { ref: 'e1', type: 'EPIC', title: 'Port the admin API', parentRef: null, depth: 0 },
+    { ref: 's1', type: 'STORY', title: '', parentRef: 'e1', depth: 1 },
+    { ref: 't1', type: 'TASK', title: 'terraform', parentRef: 's1', depth: 2 },
+    { ref: 't2', type: 'TASK', title: 'dashboards', parentRef: 's1', depth: 2 },
+  ] as never as ReviewedItem[];
+
+  it('takes the subtree of a BLOCKED row, not just of a dropped one', () => {
+    const out = creatableItems(tree, new Set(), ref => ref === 's1');
+    expect(out.map(i => i.ref)).toEqual(['e1']);
+  });
+
+  it('still takes the subtree of a dropped row', () => {
+    expect(creatableItems(tree, new Set(['e1']), () => false)).toEqual([]);
+  });
+
+  it('keeps everything when nothing is dropped or blocked', () => {
+    expect(creatableItems(tree, new Set(), () => false).map(i => i.ref))
+      .toEqual(['e1', 's1', 't1', 't2']);
+  });
+
+  it('treats a row with no ref as impossible to create', () => {
+    // creationOrder dedupes by ref, so several ref-less rows collapse into
+    // one — the button promised more cards than could ever be written.
+    const anonymous = [
+      { ref: '', type: 'TASK', title: 'one', parentRef: null, depth: 0 },
+      { ref: '', type: 'TASK', title: 'two', parentRef: null, depth: 0 },
+    ] as never as ReviewedItem[];
+    expect(creatableItems(anonymous, new Set(), ref => !ref)).toEqual([]);
   });
 });

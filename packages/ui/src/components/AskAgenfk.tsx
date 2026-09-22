@@ -3,7 +3,7 @@ import { api } from '../api';
 import { ItemTypeSquare } from './ItemTypeSquare';
 import { ItemType } from '../types';
 import {
-  creationOrder, issuesFor, keptItems, treeIssues,
+  creatableItems, creationOrder, issuesFor, keptItems, treeIssues,
   type ReviewedProposal,
 } from '../proposalTree';
 import { extractProposal } from '../agentAnswer';
@@ -79,15 +79,23 @@ export function AskAgenfk({ projectId, onCreated, onProjectAdded, onWriteByHand,
   const [target, setTarget] = React.useState(projectId);
   const [projects, setProjects] = React.useState<Array<{ id: string; name: string; projectRoot?: string }>>([]);
 
+  const [busy, setBusy] = React.useState(false);
   /* Escape, because a dialog that traps you until you find the X is the same
      complaint one layer down. */
   React.useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose?.(); };
+    /*
+     * NOT WHILE IT IS WRITING. `create` is a loop of POSTs that cannot be
+     * called back, so dismissing mid-loop did not cancel anything: the cards
+     * kept appearing and the app then navigated to them, seconds after the
+     * person had said no. A screen whose whole premise is "nothing has been
+     * written yet" cannot have a Cancel that means "carry on".
+     */
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !busy) onClose?.(); };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
     /* The dialog above stops the key before it reaches here, so Escape closes
        the innermost thing rather than both at once. */
-  }, [onClose]);
+  }, [onClose, busy]);
 
   React.useEffect(() => {
     // Kept to a tail: this is a window onto a long run, not a transcript, and
@@ -109,7 +117,6 @@ export function AskAgenfk({ projectId, onCreated, onProjectAdded, onWriteByHand,
   const [reviewed, setReviewed] = React.useState<ReviewedProposal | null>(null);
   const [dropped, setDropped] = React.useState<Set<string>>(new Set());
   const [error, setError] = React.useState<string | null>(null);
-  const [busy, setBusy] = React.useState(false);
   /** The text to hand the agent, once it has been asked for. */
   const [contract, setContract] = React.useState<string | null>(null);
   const [copied, setCopied] = React.useState(false);
@@ -156,10 +163,25 @@ export function AskAgenfk({ projectId, onCreated, onProjectAdded, onWriteByHand,
    * actually creatable rather than what is ticked. Saying "Create 5" and
    * creating 3 is the kind of number nobody reconciles afterwards.
    */
-  const blocked = reviewed
-    ? kept.filter(i => issuesFor(reviewed.issues, i.ref).length > 0).length
-    : 0;
-  const creatable = kept.length - blocked;
+  /*
+   * What will actually be created, and the number on the button is its length.
+   *
+   * Subtracting the blocked rows from `kept` was wrong twice over: it left the
+   * CHILDREN of a blocked row in the count (they were then created as loose
+   * cards at the root — see creatableItems), and it counted rows that
+   * `creationOrder` would never emit, because that step dedupes by ref and the
+   * agent can answer with rows that carry none. Both ways the promise on the
+   * button and the cards on the board disagreed, silently.
+   */
+  const willCreate = reviewed
+    ? creationOrder(creatableItems(
+      kept,
+      dropped,
+      ref => !ref || issuesFor(reviewed.issues, ref).length > 0,
+    ))
+    : [];
+  const creatable = willCreate.length;
+  const blocked = kept.length - creatable;
 
   const review = async (raw = answer) => {
     setError(null);
@@ -197,8 +219,9 @@ export function AskAgenfk({ projectId, onCreated, onProjectAdded, onWriteByHand,
     const idByRef = new Map<string, string>();
     let made = 0;
     try {
-      for (const item of creationOrder(kept)) {
-        if (issuesFor(reviewed.issues, item.ref).length > 0) continue;
+      // The same list the button counted. Skipping rows HERE was the bug: a
+      // skipped parent left its children pointing at nothing.
+      for (const item of willCreate) {
         const created = await api.createItem({
           projectId: target,
           type: item.type as ItemType,
@@ -232,8 +255,9 @@ export function AskAgenfk({ projectId, onCreated, onProjectAdded, onWriteByHand,
           type="button"
           data-testid="ask-close"
           aria-label="Close"
+          disabled={busy}
           onClick={() => onClose?.()}
-          className="shrink-0 rounded p-1 text-ink-tertiary transition-colors hover:text-ink"
+          className="shrink-0 rounded p-1 text-ink-tertiary transition-colors hover:text-ink disabled:opacity-40"
         >
           <X size={16} />
         </button>
@@ -281,9 +305,14 @@ export function AskAgenfk({ projectId, onCreated, onProjectAdded, onWriteByHand,
           // either way — the id is the thing that was asked for.
           setTarget(id);
           void api.listProjects().then(list => setProjects(list as never)).catch(() => {});
-          // And take them to it. A project that was just made and cannot be
-          // seen is indistinguishable from one that was not made.
-          onProjectAdded?.(id);
+          /*
+           * Take them to it — UNLESS there is a reviewed proposal on screen.
+           * Navigating closes this panel, and a person who realises mid-review
+           * that the cards belong in a new project would lose the objective,
+           * the answer and every keep/drop decision to the act of creating it.
+           * With nothing to lose, landing on the new project is the point.
+           */
+          if (!reviewed) onProjectAdded?.(id);
         }}
       />
 
@@ -530,8 +559,10 @@ export function AskAgenfk({ projectId, onCreated, onProjectAdded, onWriteByHand,
           </p>
 
           <div className="flex items-center gap-2">
-            <button type="button" data-testid="ask-cancel" onClick={() => onClose?.()}
-              className="rounded-lg border border-border-soft bg-surface px-3 py-1.5 text-xs font-semibold text-ink">
+            {/* Disabled while the loop runs, for the same reason as the X and
+                Escape: it cannot stop what it says it stops. */}
+            <button type="button" data-testid="ask-cancel" disabled={busy} onClick={() => onClose?.()}
+              className="rounded-lg border border-border-soft bg-surface px-3 py-1.5 text-xs font-semibold text-ink disabled:opacity-50">
               Cancel
             </button>
             <button

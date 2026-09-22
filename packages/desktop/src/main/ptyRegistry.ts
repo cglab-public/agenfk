@@ -320,7 +320,7 @@ export class PtyRegistry {
      * else started, possibly mid-edit, and a fresh prompt would interrupt work
      * already happening.
      */
-    const prompt = !attaching && req.itemId && this.deps.promptFor
+    const prompt = !attaching && req.resume !== true && req.itemId && this.deps.promptFor
       // A card that cannot be read still gets a terminal. Failing the spawn
       // over the convenience would be the worse trade.
       ? await this.deps.promptFor(req.itemId).catch(() => null)
@@ -635,8 +635,11 @@ export class PtyRegistry {
   }
 
   resize(sessionId: string, windowId: number, cols: number, rows: number): void {
+    // Ownership FIRST: a session id this window does not own is refused, and
+    // logging it before the check reports a resize that never happened.
+    const session = this.own(sessionId, windowId);
     console.log(`[PTY] ${sessionId} resized ${cols}x${rows}`);
-    this.own(sessionId, windowId).pty.resize(cols, rows);
+    session.pty.resize(cols, rows);
   }
 
   /**

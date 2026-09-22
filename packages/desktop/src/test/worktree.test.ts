@@ -185,6 +185,23 @@ describe('projects with no git', () => {
       cwd: '/Users/me/Documents/Default Project',
       branchName: null,
     });
+    // ASKED ABOUT THE ROOT, not about the item: a fake that answers false to
+    // anything let an implementation that asked the wrong question pass.
+    expect(d.isRepo).toHaveBeenCalledWith('/Users/me/Documents/Default Project');
+  });
+
+  it('leaves a MISSING root to the server, which has a sentence for it', async () => {
+    // Opening a pty in a directory that is not there fails with a raw errno,
+    // where the server says "Project has no projectRoot" — the sentence this
+    // module goes out of its way to carry.
+    const d = deps({
+      exists: vi.fn(() => false),
+      get: vi.fn(async () => ({
+        status: 400, contentType: 'application/json',
+        body: JSON.stringify({ error: 'Project has no projectRoot. Set it before creating a worktree.' }),
+      })),
+    });
+    await expect(resolveWorktree('i1', d as never)).rejects.toThrow(/has no projectRoot/);
   });
 
   it('does not ask the server to cut a worktree it cannot cut', async () => {

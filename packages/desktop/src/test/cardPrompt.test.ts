@@ -43,6 +43,34 @@ describe('the prompt a card becomes', () => {
     expect(line).toContain('first second third');
   });
 
+  it('strips the 8-bit C1 introducers too, not only ESC', () => {
+    // U+009B is the same escape introducer as ESC-[, in its one-character
+    // form, and terminals parse it. The first version of this test probed
+    // ESC alone — which is exactly why the hole existed.
+    const line = cardPrompt({ ...card, description: '\u009b2Jwiped \u009dtitle\u0007 here' })!;
+    expect(line).not.toMatch(/[\u0080-\u009f]/);
+    expect(line).toContain('wiped');
+  });
+
+  it('removes bidi overrides and zero-width characters', () => {
+    // They print as nothing and reverse or hide what follows, so a card can
+    // show the agent one sentence and a reader another.
+    const line = cardPrompt({ ...card, description: 'safe\u202e evil\u200b hidden' })!;
+    expect(line).not.toMatch(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/);
+  });
+
+  it('truncates on a code point, never inside a surrogate pair', () => {
+    // Iterating a string yields WHOLE code points, so a surviving surrogate
+    // can only be a lone one. (A regex over UTF-16 units cannot say this: the
+    // low half of a valid pair matches any surrogate class.)
+    const line = cardPrompt({ ...card, description: '\u{1f600}'.repeat(2000) })!;
+    const lone = [...line].filter(ch => {
+      const c = ch.codePointAt(0)!;
+      return c >= 0xd800 && c <= 0xdfff;
+    });
+    expect(lone).toEqual([]);
+  });
+
   it('strips the escape that starts an ANSI sequence', () => {
     // A description is text a person typed or an agent wrote. This is the one
     // place it stops being content and becomes input to a terminal.

@@ -49,6 +49,22 @@ export interface CreateRepoDeps {
 const REPO_NAME = /^[A-Za-z0-9._-]+$/;
 
 /**
+ * Who a repository may belong to: a login or an organisation.
+ *
+ * Validated for the same reason `repo` is, and then some — `owner` is the
+ * START of an argv element, so it decides whether `gh` reads that token as a
+ * positional or as a FLAG. An owner of `--source=/Users/me/work` turns
+ * `repo create` into "publish that local checkout", against a `--public` that
+ * is already fixed in the argv below. The UI offering only the accounts `gh`
+ * reported is not the control: this channel is reachable by anything that can
+ * speak to the preload, which is the threat this process exists to bound.
+ */
+const OWNER_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/;
+
+/** The closed set, next to the argv it becomes rather than only at the border. */
+const VISIBILITY = new Set(['private', 'public']);
+
+/**
  * Who this machine can create repositories as: the user, then their orgs.
  *
  * Failure is not an error here — a machine with no `gh`, or a `gh` that is
@@ -100,13 +116,29 @@ export async function createRepository(
   const repo = req.repo.trim();
   if (!owner) throw new Error('Choose who the repository belongs to.');
   if (!repo) throw new Error('A repository name is required.');
+  if (!OWNER_NAME.test(owner)) {
+    throw new Error('That is not a GitHub account name.');
+  }
+  /*
+   * Checked HERE as well as at the IPC border. The border's check is the one
+   * that runs today; this one is what keeps the guarantee when a second caller
+   * appears, because a TypeScript union is erased at runtime and `--${...}`
+   * would carry whatever it was handed straight into argv.
+   */
+  if (!VISIBILITY.has(req.visibility)) {
+    throw new Error('Visibility must be private or public.');
+  }
   /*
    * Checked here as well as by GitHub, because this value becomes a DIRECTORY
    * on the way back: a name carrying a slash or a `..` would place the clone
    * somewhere the person never chose. GitHub would refuse it too — but only
    * after the folder question is already decided.
    */
-  if (!REPO_NAME.test(repo)) {
+  if (!REPO_NAME.test(repo) || repo === '.' || repo === '..') {
+    // `..` matches the character class and would name the PARENT directory —
+    // and `existsSync('~/agenfk/..')` is false on a machine where ~/agenfk
+    // does not exist yet, so the guard below cannot catch it. Refused by name,
+    // like its sibling in cloneRepository.ts.
     throw new Error('A repository name can only contain letters, numbers, dot, dash and underscore.');
   }
 
@@ -130,7 +162,19 @@ export async function createRepository(
     );
   }
 
-  // 3. The project row, last, because it is the only step this app can redo
-  //    on its own.
-  return deps.addProject(target, (req.name ?? '').trim() || repo);
+  /*
+   * 3. The project row, last, because it is the only step this app can redo on
+   *    its own. Its failure is the most expensive half-state there is — a
+   *    repository on GitHub, a checkout on disk, and nothing on the board —
+   *    so the sentence has to carry BOTH facts, not just the one the inner
+   *    error knows about.
+   */
+  try {
+    return await deps.addProject(target, (req.name ?? '').trim() || repo);
+  } catch (e: any) {
+    throw new Error(
+      `${e?.message ?? e}\n${owner}/${repo} was created on GitHub and cloned to ${target}. `
+      + 'Add it as a project from that folder rather than creating it again.',
+    );
+  }
 }

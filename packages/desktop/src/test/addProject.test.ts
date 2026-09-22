@@ -40,7 +40,7 @@ it('answers null when the picker is cancelled, and creates nothing', async () =>
   expect(d.createProject).not.toHaveBeenCalled();
 });
 
-it('does not leave a rootless project behind when the repoint fails', async () => {
+it('fails loudly when the repoint fails, and says the project exists', async () => {
   /*
    * A project with no projectRoot cannot host an agent and cannot cut a
    * worktree — it is a row that looks like a project and is not one. If the

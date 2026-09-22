@@ -66,18 +66,28 @@ export function ProjectPicker({ value, projects, onChange, testId = 'project-pic
       if (buttonRef.current?.contains(target) || listRef.current?.contains(target)) return;
       setOpen(false);
     };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    /*
+     * Escape answers the innermost question, and stops there. The panel this
+     * sits in closes on Escape too, at document level — so without stopping
+     * the key, dismissing a dropdown also threw away the objective, the
+     * agent's answer and every kept/dropped row behind it.
+     */
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      setOpen(false);
+    };
     // Re-measured on scroll: a fixed menu keeping its first position detaches
     // from its button the moment anything moves.
     window.addEventListener('scroll', place, true);
     window.addEventListener('resize', place);
     document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onKey);
+    document.addEventListener('keydown', onKey, true);
     return () => {
       window.removeEventListener('scroll', place, true);
       window.removeEventListener('resize', place);
       document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('keydown', onKey, true);
     };
   }, [open, place]);
 

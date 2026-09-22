@@ -980,10 +980,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     queryFn: () => api.listItems({ projectId: pageProjectId as string }),
     enabled: Boolean(pageProjectId),
   });
-  /** Cards with a live session, so a row can say Open instead of Start. */
+  /*
+   * Cards this app has a TERMINAL for — not cards with activity.
+   *
+   * The row's button and the row's press have to answer the same question. A
+   * run started outside this app (the hook writes an AgentRun) or a herdr pane
+   * produces a `sessionRows` entry with no pty of ours, so labelling from
+   * "running" said "Open the running terminal" while the press fell through to
+   * "which agent?" and started a SECOND agent in the same worktree.
+   */
   const runningItemIds = React.useMemo(
-    () => sessionRows.filter(r => r.state === 'running').map(r => r.itemId).filter(Boolean) as string[],
-    [sessionRows],
+    // The set this shell already keeps for exactly this question.
+    () => [...itemsWithATerminal].filter(Boolean) as string[],
+    [itemsWithATerminal],
   );
   const pageAgents = React.useMemo(
     () => sessionRows.filter(r => r.state === 'running'
@@ -2366,6 +2375,14 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
   });
   useSocketEvent('items_updated', () => {
     queryClient.invalidateQueries({ queryKey: ['active-items'] });
+    /*
+     * The project page's own list, which is a DIFFERENT question — every card
+     * of one project, anchors included. Without this it never refetched: the
+     * page key does not change when cards are created into the project it is
+     * already showing, which is exactly the path this release built ("land on
+     * the result"). The result was not there.
+     */
+    queryClient.invalidateQueries({ queryKey: ['project-items'] });
     // The claim chips too: declaring a claim IS an item update, and without
     // this the chip waited for a window focus - stale at exactly the moment
     // the feature is for.

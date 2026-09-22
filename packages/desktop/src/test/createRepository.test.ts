@@ -138,3 +138,69 @@ describe('who this machine can create as', () => {
     expect(await listOwners(vi.fn(async () => { throw new Error('gh: command not found'); }))).toEqual([]);
   });
 });
+
+
+/*
+ * Argv, not text.
+ *
+ * Found by an adversarial review of this commit. `owner` is the START of an
+ * argv element, so it decides whether `gh` reads the token as a positional or
+ * as a FLAG — and `--public` is already fixed in that command line.
+ */
+describe('refusing an owner that is really a flag', () => {
+  it('refuses --source, which would publish a local checkout the user never chose', async () => {
+    // `gh repo create --source <path> --public` creates the remote FROM that
+    // directory. One injected token turns "make me a repo" into "publish that".
+    const d = deps();
+    await expect(createRepository(
+      { ...req, owner: '--source=/Users/victim/work/secrets' }, d,
+    )).rejects.toThrow(/not a GitHub account name/i);
+    expect(d.gh).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a slash', 'devleor/evil'],
+    ['a space and a second flag', 'devleor --public'],
+    ['a leading dash', '-devleor'],
+    ['a trailing dash', 'devleor-'],
+    ['a dot, which GitHub logins cannot contain', 'dev.leor'],
+  ])('refuses %s', async (_why, owner) => {
+    await expect(createRepository({ ...req, owner }, deps())).rejects.toThrow(/not a GitHub account name/i);
+  });
+
+  it('still accepts the shapes GitHub actually issues', async () => {
+    const d = deps();
+    await createRepository({ ...req, owner: 'cglab-PRIVATE' }, d);
+    expect(d.gh).toHaveBeenCalledWith(['repo', 'create', 'cglab-PRIVATE/horizon-ds', '--private']);
+  });
+
+  it('refuses a visibility outside the closed set, next to the argv it becomes', async () => {
+    // The border checks this too. This one keeps the guarantee when a second
+    // caller appears: a TypeScript union is erased at runtime.
+    const d = deps();
+    await expect(createRepository(
+      { ...req, visibility: 'public --delete-branch-on-merge' as never }, d,
+    )).rejects.toThrow(/private or public/i);
+    expect(d.gh).not.toHaveBeenCalled();
+  });
+
+  it('refuses .. as a repository name, which the existence check cannot catch', async () => {
+    // existsSync('/Users/me/agenfk/..') is FALSE on a machine where ~/agenfk
+    // does not exist yet, so only the name check stands between this and a
+    // clone into the parent directory.
+    await expect(createRepository({ ...req, repo: '..' }, deps())).rejects.toThrow(/letters, numbers/i);
+  });
+});
+
+describe('when only the project row fails', () => {
+  it('names BOTH the repository and the checkout, because both already exist', async () => {
+    // The most expensive half-state there is, and it used to produce the least
+    // informative message: the inner error knows about the checkout and says
+    // nothing about the repository that is now on GitHub.
+    const d = deps({
+      addProject: vi.fn(async () => { throw new Error('The server refused to create the project (500).'); }),
+    });
+    await expect(createRepository(req, d)).rejects.toThrow(/was created on GitHub and cloned to/);
+    await expect(createRepository(req, d)).rejects.toThrow(/refused to create the project/);
+  });
+});

@@ -1865,3 +1865,56 @@ describe('the terminal region', () => {
     expect(classes).toContain('overflow-hidden');
   });
 });
+
+
+/*
+ * Two findings from the adversarial review of 85b807dd, both in the WIRING —
+ * which is why the component tests were green through either of them.
+ */
+describe('the project page stays current', () => {
+  it('shows a card created while the page is already open', async () => {
+    /*
+     * Asserted on what the PERSON SEES, not on a call count — a count moves
+     * for reasons that have nothing to do with the fix, and this test passed
+     * with the invalidation deleted twice before it was written this way.
+     *
+     * ['project-items', id] was never invalidated, and its key does not change
+     * when cards are created into the project already on screen. So the panel
+     * closed onto the page it was told to land on, and the cards were not
+     * there — for the lifetime of the app.
+     */
+    vi.mocked(api.listProjects).mockResolvedValue(PROJECTS as never);
+    let cards: unknown[] = [];
+    (api as unknown as { listItems: unknown }).listItems = vi.fn(async () => cards);
+
+    renderShell();
+    fireEvent.click(await screen.findByLabelText('agenfk'));
+    await waitFor(() => expect(screen.getByTestId('project-page-empty')).toBeTruthy());
+
+    // Something created a card — the panel, the board, another window.
+    cards = [{ id: 'i1', projectId: 'p1', type: 'TASK', title: 'port the admin API', status: 'TODO' }];
+    act(() => { socketHandlers['items_updated']?.({}); });
+
+    await waitFor(() => expect(screen.getByTestId('project-card-i1')).toBeTruthy());
+  });
+});
+
+describe('the start button and the press agree', () => {
+  it('says Open only for cards this app actually has a terminal for', async () => {
+    // The label read "running" (an ACTIVITY state, which a run started outside
+    // this app also has) while the press branched on whether we own a pty. A
+    // card with an outside run said "Open the running terminal" and then
+    // started a SECOND agent in the same worktree.
+    vi.mocked(api.listProjects).mockResolvedValue(PROJECTS as never);
+    (api as unknown as { listItems: unknown }).listItems = vi.fn(async () => ([
+      { id: 'i1', projectId: 'p1', type: 'TASK', title: 'port the admin API', status: 'TODO' },
+    ]));
+
+    renderShell();
+    fireEvent.click(await screen.findByLabelText('agenfk'));
+    const start = await screen.findByTestId('project-card-start-i1');
+    // No terminal open in this app: the row must offer to START one.
+    expect(start.textContent).toContain('Start');
+    expect(screen.queryByTestId('project-card-live-i1')).toBeNull();
+  });
+});

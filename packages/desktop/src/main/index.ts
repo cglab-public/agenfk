@@ -12,7 +12,7 @@ import { app, BrowserWindow, dialog, ipcMain, Notification, shell, utilityProces
 import * as path from 'path';
 import * as os from 'os';
 import { readFileSync, existsSync, mkdirSync } from 'fs';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
 import { resolveServer, type ResolvedServer } from './serverLifecycle.js';
 import { resolveDesktopPaths } from './paths.js';
@@ -436,6 +436,22 @@ async function boot(): Promise<void> {
        */
       const emitToWindow = makeEmit(() => BrowserWindow.getAllWindows());
 
+      /*
+       * Git's own answer, not ours. `rev-parse --git-dir` resolves upwards, so
+       * it is true for a subdirectory of a checkout and for a bare repository,
+       * both of which `git worktree add` accepts and a `.git` lookup refuses.
+       */
+      const isGitCheckout = (dir: string): boolean => {
+        try {
+          execFileSync('git', ['rev-parse', '--git-dir'], {
+            cwd: dir, stdio: 'ignore', env: process.env,
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
       const port = new URL(server.url).port ? Number(new URL(server.url).port) : DEFAULT_API_PORT;
       ptyRegistry = new PtyRegistry({
         spawn: spawnPty as never,
@@ -455,9 +471,15 @@ async function boot(): Promise<void> {
         },
         resolveCwd: itemId => resolveWorktree(itemId, {
           port, get: httpGet, post: httpPost,
-          // Asked on disk rather than inferred from a refusal: matching on
-          // git's wording would break the day git rephrases it.
-          isRepo: dir => existsSync(path.join(dir, '.git')),
+          /*
+           * THE SAME QUESTION THE SERVER ASKS. Looking for a `.git` entry is a
+           * different, stricter predicate: a project root nested inside a
+           * repository — `packages/ui` in this repo — has none and is still a
+           * checkout, and answering "not a repository" there would open the
+           * card's terminal on the user's current branch with no worktree.
+           */
+          isRepo: isGitCheckout,
+          exists: dir => existsSync(dir),
           projectRoot: async id => {
             const res = await httpGet(port, `/items/${encodeURIComponent(id)}`);
             if (!res || res.status >= 300) return null;
@@ -683,9 +705,15 @@ async function boot(): Promise<void> {
         openExternal: async url => { openExternally(url); },
         resolveCwd: itemId => resolveWorktree(itemId, {
           port, get: httpGet, post: httpPost,
-          // Asked on disk rather than inferred from a refusal: matching on
-          // git's wording would break the day git rephrases it.
-          isRepo: dir => existsSync(path.join(dir, '.git')),
+          /*
+           * THE SAME QUESTION THE SERVER ASKS. Looking for a `.git` entry is a
+           * different, stricter predicate: a project root nested inside a
+           * repository — `packages/ui` in this repo — has none and is still a
+           * checkout, and answering "not a repository" there would open the
+           * card's terminal on the user's current branch with no worktree.
+           */
+          isRepo: isGitCheckout,
+          exists: dir => existsSync(dir),
           projectRoot: async id => {
             const res = await httpGet(port, `/items/${encodeURIComponent(id)}`);
             if (!res || res.status >= 300) return null;

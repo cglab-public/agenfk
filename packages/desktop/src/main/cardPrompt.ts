@@ -37,8 +37,18 @@ export const MAX_PROMPT_CHARS = 1500;
  * description is the one value on this path that somebody else wrote.
  */
 function oneLine(text: string): string {
-  // eslint-disable-next-line no-control-regex
-  return text.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return text
+    // C0 and DEL, and C1 TOO: U+009B is the 8-bit form of the same escape
+    // introducer as ESC-[, and terminals parse it. Stripping only the 7-bit
+    // form enforced half the rule this function states.
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ')
+    // Bidi overrides and zero-width characters: they print as nothing and
+    // reverse or hide what follows, so a description can show the agent one
+    // sentence and a reader another. Not a control character, same problem.
+    .replace(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 /**
@@ -61,14 +71,18 @@ export function cardPrompt(card: CardForPrompt): string | null {
    * agent told to "port the admin API" with no id has to go looking for which
    * card that is, and picking the wrong one is worse than asking.
    */
-  const head = `Work on AgEnFK ${kind} ${card.id}${title ? `: ${title}` : ''}`;
+  // The id through the same filter as everything else: the one-line promise
+  // should hold here rather than depend on the server only ever minting uuids.
+  const head = `Work on AgEnFK ${kind} ${oneLine(String(card.id))}${title ? `: ${title}` : ''}`;
   const status = oneLine(String(card.status ?? ''));
   const parts = [head];
   if (description) parts.push(description);
   if (status) parts.push(`It is in ${status}; follow the project's flow from there.`);
 
   const line = parts.join(' — ');
-  return line.length > MAX_PROMPT_CHARS
-    ? `${line.slice(0, MAX_PROMPT_CHARS)}… (truncated; read the card for the rest)`
-    : line;
+  if (line.length <= MAX_PROMPT_CHARS) return line;
+  // By CODE POINT, not by UTF-16 unit: cutting between a surrogate pair leaves
+  // a lone surrogate in argv, which becomes U+FFFD somewhere downstream.
+  const cut = [...line].slice(0, MAX_PROMPT_CHARS).join('');
+  return `${cut}… (truncated; read the card for the rest)`;
 }

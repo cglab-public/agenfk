@@ -567,3 +567,121 @@ describe('after something is created', () => {
     await waitFor(() => expect(onProjectAdded).toHaveBeenCalledWith('p9'));
   });
 });
+
+
+/*
+ * Everything below was found by an adversarial review of 85b807dd, and every
+ * one of them was a behaviour the existing tests had no opinion about.
+ */
+describe('the panel keeps its promises while it writes', () => {
+  const blockedProposal = {
+    objective: 'port the admin API',
+    contractVersion: 1,
+    items: [
+      { ref: 'e1', type: 'EPIC', title: 'Port the admin API', parentRef: null, depth: 0 },
+      { ref: 's1', type: 'STORY', title: '', parentRef: 'e1', depth: 1 },
+      { ref: 't1', type: 'TASK', title: 'terraform', parentRef: 's1', depth: 2 },
+      { ref: 't2', type: 'TASK', title: 'dashboards', parentRef: 's1', depth: 2 },
+    ],
+    // The issue sits on the PARENT, which is the case the old fixture avoided.
+    issues: [{ ref: 's1', message: 'This item has no title.' }],
+  };
+
+  const reviewWith = async (proposal: unknown) => {
+    (api.reviewProposal as any).mockResolvedValue(proposal);
+    render(<AskAgenfk projectId="p1" />);
+    await waitFor(() => screen.getByTestId('ask-objective'));
+    fireEvent.change(screen.getByTestId('ask-answer'), { target: { value: answer } });
+    fireEvent.click(screen.getByTestId('ask-review'));
+    return waitFor(() => screen.getByTestId('ask-create'));
+  };
+
+  it('never creates the children of a row it is skipping', async () => {
+    // They were POSTed with no parentId, which is a TOP-LEVEL card: a story
+    // with no title turned its two tasks into two loose cards on the board.
+    //
+    // Waited on the END of the loop, not on a count: `waitFor` with
+    // toHaveBeenCalledTimes(1) is satisfied by the FIRST call and returns
+    // while the rest are still being written — which is how this very test
+    // passed against the defect it was written for.
+    const onCreated = vi.fn();
+    (api.reviewProposal as any).mockResolvedValue(blockedProposal);
+    render(<AskAgenfk projectId="p1" onCreated={onCreated} />);
+    await waitFor(() => screen.getByTestId('ask-objective'));
+    fireEvent.change(screen.getByTestId('ask-answer'), { target: { value: answer } });
+    fireEvent.click(screen.getByTestId('ask-review'));
+    await waitFor(() => screen.getByTestId('ask-create'));
+    fireEvent.click(screen.getByTestId('ask-create'));
+    await waitFor(() => expect(onCreated).toHaveBeenCalled());
+    expect(api.createItem).toHaveBeenCalledTimes(1);
+    expect((api.createItem as any).mock.calls[0][0].title).toBe('Port the admin API');
+  });
+
+  it('counts on the button exactly what it will write', async () => {
+    await reviewWith(blockedProposal);
+    expect(screen.getByTestId('ask-create').textContent).toMatch(/create 1 card/i);
+  });
+
+  it('cannot be dismissed while it is writing, because dismissing does not stop it', async () => {
+    // create() is a loop of POSTs with no way back. Cancel used to close the
+    // panel and let the loop finish, then navigate to the cards the person
+    // had just refused.
+    let release: (v: unknown) => void = () => {};
+    (api.createItem as any).mockImplementation(() => new Promise(r => { release = r; }));
+    await reviewWith(PROPOSAL);
+    fireEvent.click(screen.getByTestId('ask-create'));
+    await waitFor(() => expect((screen.getByTestId('ask-cancel') as HTMLButtonElement).disabled).toBe(true));
+    expect((screen.getByTestId('ask-close') as HTMLButtonElement).disabled).toBe(true);
+    release({ id: 'x' });
+  });
+
+  it('keeps a reviewed proposal when a project is added from inside', async () => {
+    // Navigating away closes this panel. Somebody who realises mid-review that
+    // the cards belong in a new project would lose the objective, the answer
+    // and every keep/drop decision to the act of creating it.
+    const onProjectAdded = vi.fn();
+    (bridge.chooseProjectFolderFromBridge as any).mockImplementation(
+      () => Promise.resolve({ path: '/checkout/horizon-ds', name: 'horizon-ds' }),
+    );
+    (bridge.addChosenFolderFromBridge as any).mockImplementation(
+      () => Promise.resolve({ id: 'p9', name: 'horizon-ds' }),
+    );
+    (api.reviewProposal as any).mockResolvedValue(PROPOSAL);
+    // The refreshed list has to contain the new project, or the picker has
+    // nothing to name and the assertion below tests the fixture, not the code.
+    (api.listProjects as any).mockResolvedValue([
+      { id: 'p1', name: 'agenfk', projectRoot: '/checkout/agenfk' },
+      { id: 'p9', name: 'horizon-ds', projectRoot: '/checkout/horizon-ds' },
+    ]);
+    render(<AskAgenfk projectId="p1" onProjectAdded={onProjectAdded} />);
+    await waitFor(() => screen.getByTestId('ask-objective'));
+    fireEvent.change(screen.getByTestId('ask-answer'), { target: { value: answer } });
+    fireEvent.click(screen.getByTestId('ask-review'));
+    await waitFor(() => screen.getByTestId('ask-create'));
+
+    fireEvent.click(screen.getByTestId('ask-add-project'));
+    fireEvent.click(await screen.findByTestId('add-project-choose-folder'));
+    await waitFor(() => screen.getByTestId('add-project-name-from'));
+    fireEvent.click(screen.getByTestId('add-project-add'));
+
+    await waitFor(() => expect(screen.getByTestId('ask-project').textContent).toContain('horizon-ds'));
+    // Still here, with the tree intact.
+    expect(screen.getByTestId('ask-create')).toBeTruthy();
+    expect(onProjectAdded).not.toHaveBeenCalled();
+  });
+});
+
+describe('Escape with a dropdown open', () => {
+  it('closes the dropdown and leaves the panel standing', async () => {
+    // The panel listens on the same document node. Without stopping the key,
+    // dismissing a menu threw away the objective and the reviewed tree.
+    const onClose = vi.fn();
+    render(<AskAgenfk projectId="p1" onClose={onClose} />);
+    await waitFor(() => screen.getByTestId('ask-project'));
+    fireEvent.click(screen.getByTestId('ask-project'));
+    await waitFor(() => screen.getByTestId('ask-project-options'));
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByTestId('ask-project-options')).toBeNull());
+    expect(onClose).not.toHaveBeenCalled();
+  });
+});
