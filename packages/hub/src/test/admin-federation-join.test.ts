@@ -172,6 +172,28 @@ describe('child hub: join, request release, leave', () => {
       for (const s of ['', '-wal', '-shm']) { const f = TEST_DB + '2' + s; if (fs.existsSync(f)) fs.unlinkSync(f); }
     });
 
+    it('says WHY when the parent resolves to a private address, and stores nothing (CGLAB-371)', async () => {
+      // The connect-time DNS guard refuses before a byte is sent. Its reason is
+      // this hub's own text, so it can be shown - the generic "could not be
+      // reached" would send the admin looking at the network instead.
+      const refusal = 'refusing to connect to parent.example.test: it resolves to a private or loopback address (10.0.0.5). '
+        + 'Set AGENFK_HUB_ALLOW_PRIVATE_PARENT=1 if the parent hub really is on this network.';
+      const out = await createHubApp({
+        dbPath: TEST_DB + '-dns', secretKey: SECRET, sessionSecret: 's', defaultOrgId: 'org',
+        federationClient: { async enroll() { throw Object.assign(new Error(refusal), { code: 'EPRIVATEADDR' }); } },
+      } as any);
+      await createPasswordUser(out.ctx.db, 'org', 'a@x', 'longenough1', 'admin');
+      const cookie = (await supertest(out.app).post('/auth/login').send({ email: 'a@x', password: 'longenough1' })).headers['set-cookie']?.[0] ?? '';
+      const r = await supertest(out.app).post('/v1/admin/federation/join').set('Cookie', cookie).send({ inviteToken: joinToken(PARENT, 'dns') });
+      expect(r.status).toBe(400);
+      expect(r.body.error).toBe(refusal);
+      expect(await readParentBinding(out.ctx.db, SECRET)).toBeNull();
+      out.ctx.stopWorkers?.();
+      await drainApp(out.app);
+      await out.ctx.db.close();
+      for (const s of ['', '-wal', '-shm']) { const f = TEST_DB + '-dns' + s; if (fs.existsSync(f)) fs.unlinkSync(f); }
+    });
+
     it('takes the parent URL from the token and ignores one sent alongside it', async () => {
       // The whole point of signing the URL in: the admin pastes a token, not a
       // token AND a URL they could get wrong. A parentUrl in the body is not a

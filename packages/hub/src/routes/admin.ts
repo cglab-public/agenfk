@@ -2774,6 +2774,11 @@ export function adminRouter(ctx: HubServerContext): Router {
    * would turn this route into a readout for whatever it was pointed at.
    */
   const parentError = (err: unknown): { status: number; error: string } => {
+    // The DNS guard's refusal is this hub's own sentence, not upstream content,
+    // and it names the fix; "could not be reached" would hide it (CGLAB-371).
+    if ((err as any)?.code === 'EPRIVATEADDR' && typeof (err as any)?.message === 'string') {
+      return { status: 400, error: (err as any).message };
+    }
     const status = (err as any)?.response?.status;
     const fromParent = (err as any)?.response?.data?.error;
     const looksLikeHub = typeof fromParent === 'string' && fromParent.length > 0 && fromParent.length <= 200
