@@ -1410,6 +1410,42 @@ describe('FlowEditorModal — save failures surface the reason (BUG 269eeec8)', 
     await waitFor(() => expect(screen.getByTestId('publish-success-link')).toBeDefined());
   });
 
+  // CGLAB-367: a publish to the org's own registry must be visibly NOT the
+  // public one - "PR opened" alone reads the same whichever repo it went to.
+  it('names the repo the pull request was opened on', async () => {
+    vi.mocked(api.publishToRegistry).mockResolvedValue(
+      { url: 'https://github.com/acme-corp/agenfk-flows/pull/7', kind: 'pr', repo: 'acme-corp/agenfk-flows' } as any,
+    );
+    await openFlow('flow-item-flow-hub');
+    fireEvent.click(screen.getByTestId('publish-flow-btn'));
+    const link = await screen.findByTestId('publish-success-link');
+    expect(link.textContent).toContain('acme-corp/agenfk-flows');
+    expect(link.getAttribute('href')).toBe('https://github.com/acme-corp/agenfk-flows/pull/7');
+    expect(link.getAttribute('target')).toBe('_blank');
+  });
+
+  it('reports a repo owner\'s direct push as a publish, not as "already published"', async () => {
+    vi.mocked(api.publishToRegistry).mockResolvedValue(
+      { url: 'https://github.com/cglab-public/agenfk-flows/blob/main/flows/x.json', kind: 'direct', repo: 'cglab-public/agenfk-flows' } as any,
+    );
+    await openFlow('flow-item-flow-hub');
+    fireEvent.click(screen.getByTestId('publish-flow-btn'));
+    const link = await screen.findByTestId('publish-success-link');
+    expect(link.textContent).toMatch(/pushed to cglab-public\/agenfk-flows/i);
+    expect(link.textContent).not.toMatch(/already/i);
+  });
+
+  it('names the repo when the flow was already published there', async () => {
+    vi.mocked(api.publishToRegistry).mockResolvedValue(
+      { url: 'https://github.com/acme-corp/agenfk-flows/blob/main/flows/x.json', kind: 'existing', repo: 'acme-corp/agenfk-flows' } as any,
+    );
+    await openFlow('flow-item-flow-hub');
+    fireEvent.click(screen.getByTestId('publish-flow-btn'));
+    const link = await screen.findByTestId('publish-success-link');
+    expect(link.textContent).toMatch(/already/i);
+    expect(link.textContent).toContain('acme-corp/agenfk-flows');
+  });
+
   it('does not offer "Use this Flow" as a set-default action on a hub flow', async () => {
     await openFlow('flow-item-flow-hub');
 

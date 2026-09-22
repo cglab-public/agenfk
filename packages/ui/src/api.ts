@@ -562,7 +562,7 @@ export const api = {
       throw e;
     }
   },
-  publishToRegistry: async (flowId: string): Promise<{ url: string; kind: 'pr' | 'existing'; note?: string }> => {
+  publishToRegistry: async (flowId: string): Promise<{ url: string; kind: 'pr' | 'existing' | 'direct'; note?: string; repo?: string; version?: string }> => {
     try {
       const { data } = await axios.post(`${API_URL}/registry/flows/publish`, { flowId });
       return data;

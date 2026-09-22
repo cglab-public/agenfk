@@ -62,17 +62,26 @@ export interface RegistryClient {
   browseRegistry(): Promise<RegistryFlow[]>;
   installFromRegistry(filename: string): Promise<Flow>;
   /**
-   * Push a saved flow to the registry repo (fork + PR, or a direct push for a
-   * repo owner). **Optional because not every host can do it.**
+   * Push a saved flow to the registry. **Optional because not every host can
+   * do it.**
    *
-   * The standalone agenfk client can: its local server shells out to `gh` on
-   * the author's machine, where the credentials live. The Hub admin cannot —
-   * the org's `contents:write` PAT is held encrypted on the hub and is never
-   * copied to a laptop, and the hub exposes no publish route (only the
-   * one-time community copy used when an admin points the org at a private
-   * repo). Its client simply omits this method and the editor hides the
-   * button, rather than rendering a control wired to a function that can only
-   * reject.
+   * The agenfk client can. Standalone, or in an org on the public community
+   * registry, its local server shells out to `gh` on the author's machine
+   * (fork + PR, or a direct push for a repo owner). In a hub-connected org
+   * with its own registry, the local server forwards the flow to the hub,
+   * which opens the pull request on the org's repo with the token it holds
+   * (CGLAB-367) - and the result carries `repo`, so the editor can say which.
+   *
+   * The Hub ADMIN's own editor does not publish: an admin manages the org's
+   * flows directly, and review happens on the pull requests installations
+   * open. Its client simply omits this method and the editor hides the button,
+   * rather than rendering a control wired to a function that can only reject.
    */
-  publishToRegistry?(flowId: string): Promise<{ url: string; kind: 'pr' | 'existing' | 'direct'; note?: string }>;
+  publishToRegistry?(flowId: string): Promise<{
+    url: string;
+    kind: 'pr' | 'existing' | 'direct';
+    note?: string;
+    /** The registry repo it went to. A hub-connected org's own repo is not the public one, and the editor says which. */
+    repo?: string;
+  }>;
 }

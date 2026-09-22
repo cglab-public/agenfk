@@ -3383,6 +3383,113 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
   const flow = await storage.getFlow(flowId);
   if (!flow) return res.status(404).json({ error: 'Flow not found' });
 
+  /*
+   * A HUB-CONNECTED installation publishes through the hub (CGLAB-367), the way
+   * it already browses and installs (CGLAB-138): an org that moved to its own
+   * registry keeps that repo's token on the hub, so this machine cannot - and
+   * must not - push there itself. The hub opens (or updates) the pull request.
+   *
+   * The same no-fallback rule as browse: a hub that is unreachable or refuses
+   * is an ERROR here, never a quiet publish to the public registry the org
+   * moved away from. The one case that stays on this machine's gh path is the
+   * hub answering that the org itself uses the public registry.
+   */
+  if (hubClient.isEnabled && hubClient.hubConfig) {
+    const { url, token } = hubClient.hubConfig;
+    // Worst case the hub makes several sequential GitHub calls, each bounded
+    // at 15s; wait longer than that, or a slow success reads as a failure.
+    const HUB_PUBLISH_TIMEOUT_MS = 120_000;
+    // Reported, not verified: the hub labels it so and records the
+    // installation id as the attribution it can vouch for. os.userInfo()
+    // throws for a uid with no passwd entry (some containers).
+    let publisher = 'unknown';
+    try { publisher = os.userInfo().username || 'unknown'; } catch { /* keep 'unknown' */ }
+    let r: any;
+    try {
+      r = await (globalThis.fetch as any)(`${url.replace(/\/$/, '')}/v1/registry/flows/publish`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          flow: {
+            name: flow.name,
+            description: flow.description ?? '',
+            version: (flow as any).version || '1.0.0',
+            // The registry's fields only: local step ids and cosmetics stay here.
+            steps: [...flow.steps].sort((a: any, b: any) => a.order - b.order).map((st: any) => ({
+              name: st.name,
+              label: st.label,
+              order: st.order,
+              exitCriteria: st.exitCriteria,
+              isSpecial: st.isSpecial,
+              isAnchor: st.isAnchor,
+            })),
+          },
+          publisher,
+        }),
+        signal: AbortSignal.timeout(HUB_PUBLISH_TIMEOUT_MS),
+      });
+    } catch (e: any) {
+      if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
+        return res.status(504).json({
+          error: `The hub did not answer within ${HUB_PUBLISH_TIMEOUT_MS / 1000}s. It may still open the pull request; `
+            + 'publishing again is safe and updates the same pull request. Nothing was published to the public registry.',
+          hubEnabled: true,
+        });
+      }
+      return res.status(502).json({
+        error: `Hub unreachable (${e?.message ?? 'error'}); not publishing to the public registry instead`,
+        hubEnabled: true,
+      });
+    }
+    const body: any = await r.json().catch(() => null);
+    if (r.ok) {
+      // A success must carry something to show: a proxy's HTML page or an
+      // empty body is not a publish, and reporting it as one is a false
+      // "PR opened" with nothing behind it.
+      if (!body || typeof body.url !== 'string' || !/^https:\/\/github\.com\//.test(body.url)
+        || (body.kind !== 'pr' && body.kind !== 'existing')) {
+        return res.status(502).json({
+          error: 'The hub returned an unexpected publish response; not publishing to the public registry instead',
+          hubEnabled: true,
+        });
+      }
+      // The hub owns the version of what it published; keep the local flow in step.
+      // A failure to record it locally must not report a publish that DID
+      // happen as a failure - the pull request is open either way.
+      let warning: string | undefined;
+      if (typeof body.version === 'string' && body.version !== (flow as any).version) {
+        try {
+          await storage.updateFlow(flowId, { version: body.version } as any);
+        } catch (e: any) {
+          warning = `Published, but the local flow could not record version ${body.version}: ${e?.message ?? e}`;
+        }
+      }
+      return res.json({
+        url: body.url, kind: body.kind, repo: body.repo,
+        ...(body.branch ? { branch: body.branch } : {}),
+        ...(body.version ? { version: body.version } : {}),
+        ...(typeof body.note === 'string' ? { note: body.note } : {}),
+        ...(warning ? { warning } : {}),
+      });
+    }
+    // A hub that has the route always explains a refusal. A bare 404 is a hub
+    // too old to publish - say so rather than pass through a meaningless 404.
+    if (r.status === 404 && typeof body?.error !== 'string') {
+      return res.status(502).json({
+        error: 'This hub does not support publishing flows yet - upgrade the hub. Nothing was published to the public registry.',
+        hubEnabled: true,
+      });
+    }
+    if (!(r.status === 409 && body?.public === true)) {
+      return res.status(r.status >= 500 ? 502 : r.status).json({
+        error: body?.error ?? `Hub refused the publish (${r.status}); not publishing to the public registry instead`,
+        hubEnabled: true,
+        ...(body?.repo ? { repo: body.repo } : {}),
+      });
+    }
+    // The org is on the public community registry: publish from here, as before.
+  }
+
   // Require gh CLI
   try { execSync('gh --version', { stdio: 'pipe' }); } catch {
     return res.status(503).json({ error: 'gh CLI is not installed on the server.' });
@@ -3488,7 +3595,7 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
       if (isOwner) {
         execFileSync('git', ['-C', tmpDir, 'push', 'origin', 'main'], { stdio: 'pipe' });
         const fileUrl = `https://github.com/${registryOwner}/${registryRepo}/blob/main/flows/${filename}`;
-        return res.json({ url: fileUrl, kind: 'direct', version });
+        return res.json({ url: fileUrl, kind: 'direct', version, repo: `${registryOwner}/${registryRepo}` });
       } else {
         execFileSync('git', ['-C', tmpDir, 'push', 'origin', branchName!], { stdio: 'pipe' });
         const prBody = [`Published from AgEnFK Flow Editor.`, '', `**Flow**: ${flow.name}`, flow.description ? `**Description**: ${flow.description}` : ''].filter(Boolean).join('\n');
@@ -3500,7 +3607,7 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
           '--title', commitMsg,
           '--body', prBody,
         ], { stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim();
-        return res.json({ url: prUrl, kind: 'pr', version });
+        return res.json({ url: prUrl, kind: 'pr', version, repo: `${registryOwner}/${registryRepo}` });
       }
     }
 
@@ -3509,6 +3616,7 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
       kind: 'existing',
       note: 'Already published — no changes detected.',
       version,
+      repo: `${registryOwner}/${registryRepo}`,
     });
   } catch (e: any) {
     res.status(502).json({ error: 'Failed to publish flow', detail: e?.message });

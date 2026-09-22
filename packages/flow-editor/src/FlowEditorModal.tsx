@@ -557,7 +557,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   const isActive = flow?.id !== undefined && flow.id === activeFlowId;
 
   // ── Publish to registry ──────────────────────────────────────────────────
-  const [publishResult, setPublishResult] = useState<{ url: string; kind: 'pr' | 'existing' | 'direct' } | null>(null);
+  const [publishResult, setPublishResult] = useState<{ url: string; kind: 'pr' | 'existing' | 'direct'; repo?: string } | null>(null);
   const [publishError, setPublishError] = useState<string | null>(null);
 
   /**
@@ -584,9 +584,12 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       return registryClient.publishToRegistry!(id);
     },
     onSuccess: (data) => {
-      setPublishResult({ url: data.url, kind: data.kind ?? 'pr' });
+      setPublishResult({ url: data.url, kind: data.kind ?? 'pr', repo: data.repo });
       setPublishError(null);
       setSaved(true);
+      // A publish may assign the flow a new version (the gh path bumps it; the
+      // hub path returns the one it published). Refetch so the badge is current.
+      queryClient.invalidateQueries({ queryKey: ['flows'] });
     },
     onError: (e: unknown) => {
       setPublishError(extractApiError(e, 'Failed to publish.'));
@@ -606,7 +609,11 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
           className="flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400 font-semibold hover:underline"
         >
           <ExternalLink size={12} />
-          {publishResult.kind === 'pr' ? 'PR opened — view on GitHub' : 'Already published — view on registry'}
+          {publishResult.kind === 'pr'
+            ? `PR opened${publishResult.repo ? ` on ${publishResult.repo}` : ''} — view on GitHub`
+            : publishResult.kind === 'direct'
+              ? `Pushed${publishResult.repo ? ` to ${publishResult.repo}` : ''} — view on GitHub`
+              : `Already published${publishResult.repo ? ` in ${publishResult.repo}` : ''} — view on registry`}
         </a>
       )}
       {publishError && (
