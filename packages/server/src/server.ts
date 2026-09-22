@@ -3376,6 +3376,41 @@ app.post("/registry/flows/install", asyncHandler(async (req: any, res: any) => {
   }
 }));
 
+/**
+ * Who a hub-published flow names as its publisher (CGLAB-372): this machine's
+ * GitHub login when `gh` is signed in - what the old direct gh path showed -
+ * else the OS login. Best effort by design, and never allowed to hold up the
+ * publish: gh is asked with argv (no shell), and an answer that is late, empty
+ * or not shaped like a GitHub login falls back. os.userInfo() throws for a uid
+ * with no passwd entry (some containers).
+ */
+const GH_LOGIN_TIMEOUT_MS = 2_000;
+// Loose on purpose: Enterprise Managed User logins carry an underscore
+// (`handle_shortcode`), and the hub bounds and neutralises the value anyway.
+// What it must reject is not-a-login: a sentence, or jq's `null`.
+const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,98}[A-Za-z0-9])?$/;
+async function reportedPublisher(): Promise<string> {
+  const ghLogin = await Promise.race<string | null>([
+    new Promise<string | null>((resolve) => {
+      try {
+        // Pinned to github.com - the registry PR lives there - so a GH_HOST
+        // pointing at GitHub Enterprise does not credit a different identity.
+        execFile('gh', ['api', '--hostname', 'github.com', 'user', '--jq', '.login'], { timeout: GH_LOGIN_TIMEOUT_MS }, (err, stdout) => {
+          const login = err ? '' : String(stdout ?? '').trim();
+          resolve(login !== 'null' && GITHUB_LOGIN.test(login) ? login : null);
+        });
+      } catch {
+        resolve(null);
+      }
+    }),
+    // execFile's own timeout kills a real gh at the same 2s; this bound also
+    // covers a spawn that never calls back at all.
+    new Promise<null>((resolve) => { const t = setTimeout(() => resolve(null), GH_LOGIN_TIMEOUT_MS); t.unref?.(); }),
+  ]);
+  if (ghLogin) return ghLogin;
+  try { return os.userInfo().username || 'unknown'; } catch { return 'unknown'; }
+}
+
 app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
   const { flowId, registry } = req.body;
   if (!flowId) return res.status(400).json({ error: 'flowId is required' });
@@ -3400,10 +3435,8 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
     // at 15s; wait longer than that, or a slow success reads as a failure.
     const HUB_PUBLISH_TIMEOUT_MS = 120_000;
     // Reported, not verified: the hub labels it so and records the
-    // installation id as the attribution it can vouch for. os.userInfo()
-    // throws for a uid with no passwd entry (some containers).
-    let publisher = 'unknown';
-    try { publisher = os.userInfo().username || 'unknown'; } catch { /* keep 'unknown' */ }
+    // installation id as the attribution it can vouch for.
+    const publisher = await reportedPublisher();
     let r: any;
     try {
       r = await (globalThis.fetch as any)(`${url.replace(/\/$/, '')}/v1/registry/flows/publish`, {

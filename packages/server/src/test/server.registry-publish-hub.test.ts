@@ -20,6 +20,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import request from 'supertest';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 
 const TEST_DB = path.resolve('./server-registry-publish-hub-test-db.sqlite');
 const savedEnv: Record<string, string | undefined> = {};
@@ -36,10 +37,13 @@ const agent = () => request(__server);
 /** Every child_process call, so a test can see whether the laptop's gh ran. */
 const execSync = vi.fn();
 const execFileSync = vi.fn();
+/** Async execFile, callback last. Default: gh is not installed. */
+const execFile = vi.fn();
+const ghMissing = (...a: any[]) => { const cb = a[a.length - 1]; if (typeof cb === 'function') cb(Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' })); };
 vi.mock('child_process', () => ({
   execSync: (...a: unknown[]) => execSync(...a),
   execFileSync: (...a: unknown[]) => execFileSync(...a),
-  execFile: vi.fn(),
+  execFile: (...a: unknown[]) => execFile(...a),
   spawn: vi.fn(),
   spawnSync: vi.fn(),
 }));
@@ -124,6 +128,8 @@ describe('POST /registry/flows/publish with a hub connection (CGLAB-367)', () =>
     publishCalls.length = 0;
     execSync.mockReset();
     execFileSync.mockReset();
+    execFile.mockReset();
+    execFile.mockImplementation(ghMissing);
     publishReply = {
       status: 200,
       body: { kind: 'pr', url: 'https://github.com/acme-corp/agenfk-flows/pull/7', repo: 'acme-corp/agenfk-flows', branch: 'flow/review-heavy-flow-x', base: 'main' },
@@ -267,5 +273,66 @@ describe('POST /registry/flows/publish with a hub connection (CGLAB-367)', () =>
     expect(res.body.version).toBe('1.0.7');
     const flow = (await agent().get(`/flows/${flowId}`)).body;
     expect(flow.version).toBe('1.0.7');
+  });
+
+  // ── CGLAB-372: who "Published by" names ─────────────────────────────────
+
+  /** gh answers `api user --jq .login` with this; anything else is "not installed". */
+  const ghAnswers = (stdout: string) => (...a: any[]) => {
+    const cb = a[a.length - 1];
+    if (a[0] === 'gh' && Array.isArray(a[1]) && a[1].join(' ') === 'api --hostname github.com user --jq .login') cb(null, stdout, '');
+    else ghMissing(...a);
+  };
+
+  it('credits the GitHub login when gh is signed in (CGLAB-372)', async () => {
+    execFile.mockImplementation(ghAnswers('octo-dana\n'));
+    await agent().post('/registry/flows/publish').send({ flowId });
+    expect(publishCalls[0].body.publisher).toBe('octo-dana');
+    // argv, never a shell string
+    const call = execFile.mock.calls.find((c) => c[0] === 'gh');
+    // Pinned to github.com: a GH_HOST pointing at GitHub Enterprise would
+    // otherwise credit an identity from a different GitHub than the PR's.
+    expect(call?.[1]).toEqual(['api', '--hostname', 'github.com', 'user', '--jq', '.login']);
+  });
+
+  it('falls back to the OS login when gh is missing or signed out (CGLAB-372)', async () => {
+    await agent().post('/registry/flows/publish').send({ flowId });
+    expect(publishCalls[0].body.publisher).toBe(os.userInfo().username);
+  });
+
+  it('ignores an answer from gh that is not a GitHub login (CGLAB-372)', async () => {
+    execFile.mockImplementation(ghAnswers('You are not logged into any GitHub hosts!\n'));
+    await agent().post('/registry/flows/publish').send({ flowId });
+    expect(publishCalls[0].body.publisher).toBe(os.userInfo().username);
+  });
+
+  it('does not let a hung gh hold up the publish (CGLAB-372)', async () => {
+    execFile.mockImplementation(() => { /* never answers */ });
+    const started = Date.now();
+    const res = await agent().post('/registry/flows/publish').send({ flowId });
+    expect(res.status).toBe(200);
+    expect(Date.now() - started, 'the publish waited on gh').toBeLessThan(5000);
+    expect(publishCalls[0].body.publisher).toBe(os.userInfo().username);
+  }, 10_000);
+
+  it('accepts an Enterprise Managed User login, which carries an underscore (CGLAB-372 review)', async () => {
+    execFile.mockImplementation(ghAnswers('dana_acme\n'));
+    await agent().post('/registry/flows/publish').send({ flowId });
+    expect(publishCalls[0].body.publisher).toBe('dana_acme');
+  });
+
+  it('does not credit the literal "null" jq prints for a missing login (CGLAB-372 review)', async () => {
+    execFile.mockImplementation(ghAnswers('null\n'));
+    await agent().post('/registry/flows/publish').send({ flowId });
+    expect(publishCalls[0].body.publisher).toBe(os.userInfo().username);
+  });
+
+  it('ignores what gh printed when it exited with an error (CGLAB-372 review)', async () => {
+    execFile.mockImplementation((...a: any[]) => {
+      const cb = a[a.length - 1];
+      cb(Object.assign(new Error('Command failed: gh api user'), { code: 1 }), 'octo-dana\n', 'HTTP 401');
+    });
+    await agent().post('/registry/flows/publish').send({ flowId });
+    expect(publishCalls[0].body.publisher).toBe(os.userInfo().username);
   });
 });
