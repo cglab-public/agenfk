@@ -945,6 +945,110 @@ const git = (args: readonly string[], cwd: string): Promise<{ ok: boolean; out: 
 /** A merge, rebase, cherry-pick or revert the author has not finished. */
 const IN_PROGRESS_HEADS = ['MERGE_HEAD', 'REBASE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD'] as const;
 
+/**
+ * The worktree a card's work lives in: its own, else its nearest ancestor's.
+ *
+ * Branches and worktrees are tracked on top-level items only (`agenfk branch
+ * create` refuses a child), so a child never carries a worktreePath of its
+ * own. Resolving the tree from the item alone sent every child's verify and
+ * close commit to projectRoot - somebody else's checkout, in a shared repo
+ * (CGLAB-366). Bounded and cycle-safe: a hand-edited parent loop must not hang
+ * a request.
+ */
+export async function effectiveWorktreePath(
+  item: { parentId?: string | null; worktreePath?: string | null } | null | undefined,
+): Promise<string | undefined> {
+  const seen = new Set<string>();
+  let cur: any = item;
+  for (let depth = 0; cur && depth < 32; depth++) {
+    const wt = typeof cur.worktreePath === 'string' ? cur.worktreePath.trim() : '';
+    if (wt) return wt;
+    const parentId = cur.parentId;
+    if (!parentId || seen.has(parentId) || !storage) return undefined;
+    seen.add(parentId);
+    cur = await storage.getItem(parentId);
+  }
+  return undefined;
+}
+
+/** The item as resolveCommitRoot should see it: carrying its effective worktree. */
+async function withEffectiveWorktree<T extends object>(item: T): Promise<T> {
+  const wt = await effectiveWorktreePath(item as any);
+  return wt ? { ...item, worktreePath: wt } : item;
+}
+
+/** realpath that canonicalises case on macOS; the input unchanged when it fails. */
+const realDir = (p: string): string => { try { return fs.realpathSync.native(p); } catch { return p; } };
+
+/** Is there a `.git` entry (directory or worktree file) at `dir` or any ancestor? */
+function hasGitEntryAbove(dir: string): boolean {
+  let cur = path.resolve(dir);
+  for (;;) {
+    if (fs.existsSync(path.join(cur, '.git'))) return true;
+    const up = path.dirname(cur);
+    if (up === cur) return false;
+    cur = up;
+  }
+}
+
+/**
+ * What kind of checkout `dir` is in.
+ *
+ *  - 'main'    a repository's own checkout (git-dir IS the common dir), or a
+ *              checkout of a BARE repository - in that layout every checkout is
+ *              technically linked, and one of them has to be the project's root.
+ *  - 'linked'  a `git worktree add` checkout of a non-bare repository: one
+ *              card's tree, never the project's.
+ *  - 'none'    not inside any git repository (a project need not use git).
+ *  - 'unknown' git could not say (too old, safe.directory, not installed) and
+ *              the `.git` file did not settle it either.
+ *
+ * Deliberately avoids `--path-format` (git >= 2.31): an older git failing that
+ * flag used to read as "not linked", which is fail-OPEN on exactly the check
+ * that keeps a worktree from becoming the whole project's root.
+ */
+async function checkoutKind(dir: string): Promise<'main' | 'linked' | 'none' | 'unknown'> {
+  const [gitDir, common] = await Promise.all([
+    git(['rev-parse', '--absolute-git-dir'], dir),
+    git(['rev-parse', '--git-common-dir'], dir),
+  ]);
+  // Not in a repository at all is an ANSWER, not a failure: a project need not
+  // use git, and a directory outside every repository cannot be a worktree.
+  // Decided by looking for a `.git` entry on the way up, NOT by matching git's
+  // error text - that is translated on a localized git.
+  if (!gitDir.ok && !hasGitEntryAbove(dir)) return 'none';
+  if (gitDir.ok && common.ok) {
+    const g = realDir(gitDir.out.trim());
+    const c = realDir(path.resolve(dir, common.out.trim()));
+    if (g === c) return 'main';
+    const bare = await git(['--git-dir', c, 'rev-parse', '--is-bare-repository'], dir);
+    return bare.ok && bare.out.trim() === 'true' ? 'main' : 'linked';
+  }
+  // git could not answer. The `.git` entry still can: a directory is a main
+  // checkout, and a file pointing into `.../worktrees/<name>` is a linked one.
+  try {
+    const dotGit = path.join(dir, '.git');
+    const st = fs.statSync(dotGit);
+    if (st.isDirectory()) return 'main';
+    if (st.isFile() && /^gitdir:.*[\\/]worktrees[\\/]/m.test(fs.readFileSync(dotGit, 'utf8'))) return 'linked';
+  } catch { /* fall through */ }
+  return 'unknown';
+}
+
+/** The repository's shared git directory for the checkout containing `dir`, or null. */
+async function gitCommonDir(dir: string): Promise<string | null> {
+  const r = await git(['rev-parse', '--git-common-dir'], dir);
+  if (!r.ok || !r.out.trim()) return null;
+  return realDir(path.resolve(dir, r.out.trim()));
+}
+
+/** The top of the git checkout containing `dir`, or null when it is not in one. */
+async function gitTopLevel(dir: string): Promise<string | null> {
+  const r = await git(['rev-parse', '--show-toplevel'], dir);
+  if (!r.ok || !r.out.trim()) return null;
+  return realDir(r.out.trim());
+}
+
 export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null | undefined): Promise<AutoGitCommitResult> => {
   const message = `close(${item.type.toLowerCase()}): ${item.title} [${item.id}]`;
   const stamp = () => new Date().toISOString();
@@ -957,12 +1061,13 @@ export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null
     done({ outcome, success: outcome !== 'failed', committed: false, output: '', unstaged: [], detail, error: detail, ...extra });
 
   /*
-   * THE ITEM'S WORKTREE, not the project root: a linked worktree has its own
+   * THE ITEM'S WORKTREE (its own, else its top-level ancestor's - children
+   * carry none), not the project root: a linked worktree has its own
    * index, so committing from the primary checkout reads a different one. The
    * root is refused rather than guessed - a stale projectRoot used to report
    * every close as "nothing staged" forever.
    */
-  const resolved = resolveCommitRoot(item as any, projectRoot);
+  const resolved = resolveCommitRoot(await withEffectiveWorktree(item as any), projectRoot);
   if (resolved.root === null) return stop('failed', resolved.reason);
   const root = resolved.root;
 
@@ -4559,6 +4664,11 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   }
 
   const project = await storage.getProject(item.projectId);
+  // The tree this card's verify tests AND its close commit lands in: its own
+  // worktree, else its top-level ancestor's, else projectRoot. Computed once so
+  // the sibling gate, the spawn and the pre-run capture cannot drift apart
+  // (CGLAB-366).
+  const effectiveRoot = resolveCommitRoot(await withEffectiveWorktree(item), (project as any)?.projectRoot).root;
   const projectFlows = await storage.listFlows();
   const activeFlow = getActiveFlow((project as any)?.flowId, projectFlows);
   const sorted = sortedFlowSteps(activeFlow);
@@ -4700,14 +4810,15 @@ async function handleValidateProgress(itemId: string, command: string | undefine
        * A command run is cheap; a claim the tree cannot back is not.
        */
       /*
-       * THE ROOT THE COMMAND RUNS IN, which is `projectRoot`. A card with its
-       * own worktree runs its suite HERE but commits THERE (autoGitCommit
-       * resolves the worktree first), so a SHA from that checkout describes a
-       * tree the command never opened. Such a card does not propagate - one
-       * root or no claim.
+       * THE ROOT THE COMMAND RUNS IN, which is the card's effective worktree
+       * (its own, else its top-level ancestor's) and otherwise projectRoot. The
+       * command and the close commit resolve it the same way, so a SHA read
+       * here describes the tree the suite opened. A sibling's green transfers
+       * only when it resolves to this same root - one root or no claim
+       * (CGLAB-366).
        */
-      const gateRoot = (project as any)?.projectRoot;
-      const sharesRoot = !!gateRoot && resolveCommitRoot(item, gateRoot).root === gateRoot;
+      const gateRoot = effectiveRoot;
+      const sharesRoot = !!gateRoot;
       const treeSha = sharesRoot ? readCleanTreeSha(gateRoot, gitRun) : null;
       let pass: { sibling: any; test: any } | null = null;
       let refusal = treeSha
@@ -4716,7 +4827,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       for (const s of siblings) {
         if (pass || s.id === item.id || s.status !== Status.DONE) continue;
         // Same checkout as the one the command runs in, or nothing transfers.
-        if (!sharesRoot || resolveCommitRoot(s, gateRoot).root !== gateRoot) continue;
+        if (!sharesRoot || resolveCommitRoot(await withEffectiveWorktree(s), (project as any)?.projectRoot).root !== gateRoot) continue;
         // EVERY matching test, not the first: a sibling re-verified after a
         // rollback has an older record that must not shadow the current one.
         for (const test of s.tests || []) {
@@ -4776,6 +4887,21 @@ async function handleValidateProgress(itemId: string, command: string | undefine
 
   // See above: declining beats committing somewhere plausible.
   const projectRoot = (project as any)?.projectRoot;
+  // The tree the command runs in AND the close commit lands in: the card's
+  // effective worktree, else projectRoot. One root, so a green is recorded
+  // against the tree it actually tested. It used to be projectRoot always,
+  // which validated somebody else's checkout for any card with a worktree
+  // (CGLAB-366).
+  const runRoot: string | undefined = effectiveRoot ?? projectRoot;
+  // A worktree deleted by hand used to surface as `spawn /bin/sh ENOENT`,
+  // blaming the shell. Name the actual problem, and run nothing.
+  if (runRoot && !fs.existsSync(runRoot)) {
+    return res.status(409).json({
+      error: `The tree this card is verified in, ${runRoot}, no longer exists - its worktree was removed. `
+        + 'Recreate it with `agenfk worktree create <top-level item id>`, or clear the stale link with '
+        + '`agenfk worktree prune`. Nothing was run.',
+    });
+  }
 
   // Runs the command and applies the pass/fail side effects, reporting through
   // `res2` — the real HTTP response on the sync path, or a recorder that
@@ -4797,9 +4923,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // The commit and the working-tree state the command actually ran against,
   // captured BEFORE the spawn. A long run during which another agent commits
   // OR stages work must not let this green be recorded against a tree it never
-  // saw. Only a card that shares this root with its close commit can be
-  // recorded - see the gate above.
-  const gateRoot = projectRoot && resolveCommitRoot(item, projectRoot).root === projectRoot ? projectRoot : null;
+  // saw. The command and the close commit share runRoot, so it is the root to
+  // record against.
+  const gateRoot = runRoot ?? null;
   const headBeforeRun = gateRoot ? readHead(gateRoot, gitRun) : null;
   const statusBeforeRun = gateRoot ? readTreeStatus(gateRoot, gitRun) : null;
 
@@ -4815,7 +4941,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     return await new Promise<{
       captured: CapturedOutput; code: number | null; timedOut?: boolean; signal?: NodeJS.Signals | null; spawnError?: string;
     }>((resolve) => {
-    const child = spawn(resolvedCommand, { shell: true, cwd: projectRoot, env: { ...process.env, FORCE_COLOR: '1' } });
+    const child = spawn(resolvedCommand, { shell: true, cwd: runRoot, env: { ...process.env, FORCE_COLOR: '1' } });
     let killed = false;
     let settled = false;
     let grace: ReturnType<typeof setTimeout> | undefined;
@@ -5014,7 +5140,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       // exit code used to be computed and thrown away, so a red suite, a
       // cap-kill and a command that never started were indistinguishable
       // (BUG b233143b).
-      message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${projectRoot}\`\nResult: ${describeExit({ code, timedOut, signal, spawnError }, maxMs)}\n\nOutput: ${formatBytes(captured.totalBytes)}\n\nLast ${FAILURE_TAIL_LINES} lines of output:\n${tailLines(captured.tail, FAILURE_TAIL_LINES)}\n\n${describeLog(captured, logPath, logVanished)}${staysOn(failureStatus)}`,
+      message: `❌ Validation Failed!\n\nCommand: \`${resolvedCommand}\`\nRoot: \`${runRoot}\`\nResult: ${describeExit({ code, timedOut, signal, spawnError }, maxMs)}\n\nOutput: ${formatBytes(captured.totalBytes)}\n\nLast ${FAILURE_TAIL_LINES} lines of output:\n${tailLines(captured.tail, FAILURE_TAIL_LINES)}\n\n${describeLog(captured, logPath, logVanished)}${staysOn(failureStatus)}`,
       output: preview,
     });
   }
@@ -5315,13 +5441,67 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
      * reaching the filesystem root without a `.agenfk` marker, which is what a
      * buggy expression used to record as the project's root.
      */
-    if (item && resolvedRoot && isPersistableProjectRoot(resolvedRoot, os.homedir())) {
+    /*
+     * A LINKED WORKTREE IS NEVER THE PROJECT'S ROOT (CGLAB-366). "A worktree
+     * has no .agenfk" was the only thing keeping one out, and it is a
+     * convention rather than a check: `.agenfk/` is gitignored, and one
+     * hand-made marker inside a worktree recorded that card's tree as the
+     * root of the whole project - every other card's verify and close then
+     * aimed at it. Ask git, which knows.
+     */
+    const kind = resolvedRoot ? await checkoutKind(resolvedRoot) : 'unknown';
+    if (item && resolvedRoot && (kind === 'main' || kind === 'none') && isPersistableProjectRoot(resolvedRoot, os.homedir())) {
       await storage.updateProject(item.projectId, { projectRoot: resolvedRoot });
     } else if (item) {
       const why = resolvedRoot === null
         ? 'no .agenfk marker above it (a worktree has none) - it is not a project root'
-        : 'it is not a persistable project root';
+        : kind === 'linked'
+          ? 'it is a linked git worktree - one card\'s tree, never the project\'s root'
+          : kind === 'unknown'
+            ? 'git could not say whether it is a linked worktree, and guessing wrong repoints the whole project'
+            : 'it is not a persistable project root';
       console.warn(`[PROJECT_ROOT] Refusing to record ${resolvedRoot ?? cwd} as a project root (item ${item.id}): ${why}`);
+    }
+
+    /*
+     * REFUSE A VERIFY THAT WOULD TEST A DIFFERENT CHECKOUT (CGLAB-366). The
+     * tree a verify tests is the card's effective worktree (its own, else its
+     * top-level ancestor's), else projectRoot. When the caller is working in
+     * ANOTHER CHECKOUT OF THE SAME REPOSITORY, that run tests code the caller
+     * is not editing, and the close commit reads an index that is not theirs -
+     * in either direction: caller in a worktree while the card has none, or
+     * caller in the main checkout while the card's tree is a worktree.
+     *
+     * Deliberately narrow. Checkouts are compared by git TOP-LEVEL, never
+     * against projectRoot itself: a project's `.agenfk` may sit in a
+     * subdirectory of its repo. A different repository (a submodule, or a
+     * verify issued from some other project) shares no git common dir and is
+     * not refused. No cwd, or a cwd outside any checkout, is unaffected.
+     */
+    if (item) {
+      const projRoot = (await storage.getProject(item.projectId) as any)?.projectRoot as string | undefined;
+      const worktree = await effectiveWorktreePath(item);
+      const tested = worktree ?? projRoot;
+      if (tested && fs.existsSync(tested)) {
+        const [callerTop, testedTop] = await Promise.all([gitTopLevel(cwd), gitTopLevel(tested)]);
+        if (callerTop && testedTop && callerTop !== testedTop) {
+          const [callerCommon, testedCommon] = await Promise.all([gitCommonDir(cwd), gitCommonDir(tested)]);
+          if (callerCommon && testedCommon && callerCommon === testedCommon) {
+            const what = worktree
+              ? `its worktree ${worktree} (the card's own, or its top-level item's)`
+              : `projectRoot ${projRoot} - the card has no worktree, nor does its top-level item`;
+            return res.status(409).json({
+              error: `Refusing to verify: you are working in ${callerTop}, but card ${item.id} is verified in `
+                + `${what}. That is a different checkout of the same repository, so the run would test `
+                + 'code you are not editing and the close commit would read an index that is not yours. '
+                + `Run agenfk verify from ${testedTop}, with your changes there.`
+                + (worktree ? '' : ' To give the card a tree of its own, run `agenfk worktree create <top-level item id>` and work in the directory it prints.'),
+              callerRoot: callerTop,
+              testedRoot: testedTop,
+            });
+          }
+        }
+      }
     }
   }
   // One active run per item — a second verify while one runs is almost always
