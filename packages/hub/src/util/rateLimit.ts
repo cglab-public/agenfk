@@ -32,6 +32,8 @@ export interface RateLimitOptions {
   /** Bucket key; defaults to client IP. */
   keyFn?: (req: Request) => string;
   message?: string;
+  /** Count only responses below 400 as free: failures alone spend the budget. */
+  skipSuccessfulRequests?: boolean;
 }
 
 /** The default bucket: the client IP, with an IPv6 address reduced to its /64.
@@ -44,13 +46,14 @@ function clientKey(req: Request): string {
 /** Fixed-window per-key limiter. Returns 429 once `max` is exceeded within
  *  `windowMs`, with the JSON `error` and a Retry-After header. */
 export function rateLimit(opts: RateLimitOptions): RequestHandler {
-  const { windowMs, max, keyFn = clientKey, message = 'Too many requests, slow down.' } = opts;
+  const { windowMs, max, keyFn = clientKey, message = 'Too many requests, slow down.', skipSuccessfulRequests = false } = opts;
   // The casts cross a typings seam, nothing more: express-rate-limit is typed
   // against the root @types/express while the hub pins its own copy, and the
   // two Request types are structurally identical at runtime.
   const limiter = expressRateLimit({
     windowMs,
     limit: max,
+    skipSuccessfulRequests,
     keyGenerator: (req: any) => keyFn(req as Request),
     standardHeaders: false,
     legacyHeaders: false,
