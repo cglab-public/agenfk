@@ -84,6 +84,9 @@ const SCHEMA_PG = `
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL,
     email TEXT NOT NULL UNIQUE,
+    -- Display name as the identity provider reports it. Nullable: password
+    -- invites carry no name, and an IdP may withhold the claim.
+    name TEXT,
     password_hash TEXT,
     provider TEXT NOT NULL,
     provider_subject TEXT,
@@ -628,17 +631,32 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   // throws on every progress path — and on the parent that happens inside the
   // /deliver transaction, taking the child's whole delivery batch with it.
   for (const [table, column, ddl] of [
+    // users.name — hubs that predate the display-name fix have a users table
+    // without it, and those are precisely the ones with users already in them.
+    // (BUG f44b1128 / CGLAB-354.)
+    ['users', 'name', 'name TEXT'],
     ['flow_dispatches', 'definition_json', 'definition_json TEXT'],
     ['upgrade_dispatch_targets', 'seq', 'seq INTEGER NOT NULL DEFAULT 0'],
     ['upgrade_dispatch_targets', 'cancel_attempts', 'cancel_attempts INTEGER NOT NULL DEFAULT 0'],
     ['upgrade_dispatch_fanout', 'reported_seq', 'reported_seq INTEGER NOT NULL DEFAULT 0'],
     ['upgrade_dispatch_fanout', 'reported_json', 'reported_json TEXT'],
   ] as const) {
+    // Scope the probe to `public`. information_schema.columns spans every
+    // schema the role can see, so an unrelated application's `users.name`
+    // living in another schema of the same database would satisfy this check
+    // and silently skip the ALTER — leaving /auth/me querying a column that
+    // does not exist. `users` is the most collision-prone table name there is,
+    // and the rest of this file already filters by schema.
     const cols = await adapter.all<{ column_name: string }>(
-      'SELECT column_name FROM information_schema.columns WHERE table_name = $1', [table],
+      "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1", [table],
     );
     if (cols.length > 0 && !new Set(cols.map(c => c.column_name)).has(column)) {
-      await adapter.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+      // IF NOT EXISTS, because probe-then-ALTER is not atomic and the hub runs
+      // more than one task. On a rolling deploy they boot together, both see
+      // the column missing, and the loser's ALTER used to abort its startup
+      // with 'column already exists' — a crash-looping deploy on the very
+      // release that introduces a column. Verified against Postgres 16.
+      await adapter.exec(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${ddl}`);
     }
   }
 

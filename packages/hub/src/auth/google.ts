@@ -57,7 +57,9 @@ export function googleRouter(ctx: HubServerContext): Router {
     const code = req.query.code as string | undefined;
     if (!code) return res.status(400).json({ error: 'Missing authorization code' });
 
-    let userinfo: { sub: string; email: string; email_verified?: boolean };
+    // `name` comes free with the `profile` scope we already request, and is
+    // optional — sign-in must still succeed without it.
+    let userinfo: { sub: string; email: string; email_verified?: boolean; name?: string };
     try {
       const clientSecret = decryptSecret(cfg.google_client_secret_enc, ctx.config.secretKey);
       const tokenResp = await axios.post(GOOGLE_TOKEN, new URLSearchParams({
@@ -82,7 +84,7 @@ export function googleRouter(ctx: HubServerContext): Router {
     const allow = checkEmailAllowlist(userinfo.email, cfg.email_allowlist);
     if (!allow.allowed) return res.status(403).json({ error: allow.reason });
 
-    const user = await findInvitedSsoUser(ctx.db, ctx.config.defaultOrgId, { provider: 'google', subject: userinfo.sub, email: userinfo.email });
+    const user = await findInvitedSsoUser(ctx.db, ctx.config.defaultOrgId, { provider: 'google', subject: userinfo.sub, email: userinfo.email, name: userinfo.name });
     if (!user) return res.status(403).json({ error: 'Account not invited — ask your admin to invite you first' });
     if (!user.active) return res.status(403).json({ error: 'Account is deactivated' });
     await completeSsoLogin(ctx.db, res, user, ctx.config.sessionSecret);
