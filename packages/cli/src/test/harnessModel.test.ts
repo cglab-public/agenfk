@@ -15,11 +15,26 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { detectHarnessModel, reconcileModel, resolveModelForReport } from '../harnessModel';
+import { detectHarnessModel, reconcileModel, resolveModelForReport, resolveFromOptions } from '../harnessModel';
 
 let home: string;
-beforeEach(() => { home = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-hm-')); });
-afterEach(() => { fs.rmSync(home, { recursive: true, force: true }); });
+// The detector reads the REAL environment by default, and this suite runs
+// inside a harness: under Claude Code CLAUDE_CODE_SESSION_ID is set, under pi
+// PI_SESSION_FILE points at a live log. Left in place they would answer for
+// every heuristic test below. Cleared per test and restored after.
+const HARNESS_VARS = ['CLAUDE_CODE_SESSION_ID', 'PI_SESSION_FILE'] as const;
+let savedEnv: Record<string, string | undefined> = {};
+beforeEach(() => {
+  home = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-hm-'));
+  savedEnv = Object.fromEntries(HARNESS_VARS.map(k => [k, process.env[k]]));
+  for (const k of HARNESS_VARS) delete process.env[k];
+});
+afterEach(() => {
+  fs.rmSync(home, { recursive: true, force: true });
+  for (const k of HARNESS_VARS) {
+    if (savedEnv[k] === undefined) delete process.env[k]; else process.env[k] = savedEnv[k];
+  }
+});
 
 /** Write a pi session log for `cwd`, with the given model_change sequence. */
 function piSession(cwd: string, changes: Array<{ provider: string; modelId: string }>, opts: { dir?: string; mtime?: Date } = {}) {
@@ -174,6 +189,92 @@ describe('detectHarnessModel — choosing between harnesses', () => {
     piSession('/work/proj', [{ provider: 'p', modelId: 'root-model' }], { mtime: new Date() });
     piSession('/work/proj/packages/cli', [{ provider: 'p', modelId: 'pkg-model' }], { mtime: new Date(Date.now() - 60_000) });
     expect(detectHarnessModel({ cwd: '/work/proj/packages/cli', home })!.model).toBe('pkg-model');
+  });
+});
+
+describe('detectHarnessModel — the harness says which session it is (CGLAB-365)', () => {
+  /*
+   * Two live sessions in ONE repo directory are indistinguishable by cwd, and
+   * the mtime tiebreak picks whichever wrote last. On 2026-09-22 a Fable
+   * session was "corrected" to claude-opus-5 from a concurrent Opus session's
+   * transcript. Both harnesses put the exact answer in the tool shell's
+   * environment; that beats every heuristic.
+   */
+  const claudeLog = (cwd: string, id: string, model: string, mtime?: Date) => {
+    const dir = path.join(home, '.claude', 'projects', cwd.replace(/\//g, '-'));
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${id}.jsonl`);
+    fs.writeFileSync(file, JSON.stringify({ type: 'assistant', cwd, message: { model } }) + '\n');
+    if (mtime) fs.utimesSync(file, mtime, mtime);
+    return file;
+  };
+
+  it('CLAUDE_CODE_SESSION_ID picks THIS session even when a sibling session in the same directory wrote more recently', () => {
+    claudeLog('/work/proj', 'mine', 'claude-fable-5-1', new Date(Date.now() - 60_000));
+    claudeLog('/work/proj', 'other', 'claude-opus-5');
+    const got = detectHarnessModel({ cwd: '/work/proj', home, env: { CLAUDE_CODE_SESSION_ID: 'mine' } });
+    expect(got).toMatchObject({ model: 'claude-fable-5-1', harness: 'claude-code' });
+    expect(got!.source).toMatch(/mine\.jsonl$/);
+  });
+
+  it('without the variable the heuristic still applies — and picks the more recent sibling, which is the bug being closed', () => {
+    claudeLog('/work/proj', 'mine', 'claude-fable-5-1', new Date(Date.now() - 60_000));
+    claudeLog('/work/proj', 'other', 'claude-opus-5');
+    expect(detectHarnessModel({ cwd: '/work/proj', home, env: {} })!.model).toBe('claude-opus-5');
+  });
+
+  it('CLAUDE_CODE_SESSION_ID wins even when the session log records a different cwd than the one agenfk runs from', () => {
+    // A session started in one worktree and running agenfk in another: the
+    // env var is the identity, the cwd was only ever a proxy for it.
+    claudeLog('/work/elsewhere', 'mine', 'claude-fable-5-1');
+    claudeLog('/work/proj', 'other', 'claude-opus-5');
+    expect(detectHarnessModel({ cwd: '/work/proj', home, env: { CLAUDE_CODE_SESSION_ID: 'mine' } })!.model).toBe('claude-fable-5-1');
+  });
+
+  it('a CLAUDE_CODE_SESSION_ID with no matching log falls back to the heuristic rather than returning nothing', () => {
+    claudeLog('/work/proj', 'other', 'claude-opus-5');
+    expect(detectHarnessModel({ cwd: '/work/proj', home, env: { CLAUDE_CODE_SESSION_ID: 'gone' } })!.model).toBe('claude-opus-5');
+  });
+
+  it('a CLAUDE_CODE_SESSION_ID that is not a plain id is ignored, not used as a path', () => {
+    claudeLog('/work/proj', 'other', 'claude-opus-5');
+    fs.writeFileSync(path.join(home, 'evil.jsonl'), JSON.stringify({ type: 'assistant', cwd: '/x', message: { model: 'evil' } }) + '\n');
+    const got = detectHarnessModel({ cwd: '/work/proj', home, env: { CLAUDE_CODE_SESSION_ID: '../../evil' } });
+    expect(got!.model).toBe('claude-opus-5');
+  });
+
+  it('PI_SESSION_FILE picks THIS pi session over a more recent one in the same directory', () => {
+    const mine = piSession('/work/proj', [{ provider: 'coding4', modelId: 'qwen3.8:27b' }], { mtime: new Date(Date.now() - 60_000) });
+    piSession('/work/proj', [{ provider: 'openrouter', modelId: 'deepseek/deepseek-v4.1-flash' }]);
+    const got = detectHarnessModel({ cwd: '/work/proj', home, env: { PI_SESSION_FILE: mine } });
+    expect(got).toMatchObject({ model: 'qwen3.8:27b', harness: 'pi', source: mine });
+  });
+
+  it('PI_SESSION_FILE still reports the LAST model_change of that session', () => {
+    const mine = piSession('/work/proj', [
+      { provider: 'coding4', modelId: 'qwen3.8:27b' },
+      { provider: 'openrouter', modelId: 'moonshotai/kimi-k3' },
+    ]);
+    expect(detectHarnessModel({ cwd: '/work/proj', home, env: { PI_SESSION_FILE: mine } })!.model).toBe('moonshotai/kimi-k3');
+  });
+
+  it('a PI_SESSION_FILE that does not exist falls back to the heuristic', () => {
+    piSession('/work/proj', [{ provider: 'coding4', modelId: 'qwen3.8:27b' }]);
+    expect(detectHarnessModel({ cwd: '/work/proj', home, env: { PI_SESSION_FILE: path.join(home, 'nope.jsonl') } })!.model).toBe('qwen3.8:27b');
+  });
+
+  it('the pi variable beats a Claude Code log in the same directory, and vice versa — the env names the harness', () => {
+    const mine = piSession('/work/proj', [{ provider: 'coding4', modelId: 'qwen3.8:27b' }]);
+    claudeLog('/work/proj', 'cc', 'claude-opus-5');
+    expect(detectHarnessModel({ cwd: '/work/proj', home, env: { PI_SESSION_FILE: mine } })!.harness).toBe('pi');
+    expect(detectHarnessModel({ cwd: '/work/proj', home, env: { CLAUDE_CODE_SESSION_ID: 'cc' } })!.harness).toBe('claude-code');
+  });
+
+  it('resolveFromOptions reads the real process environment, so the PR commands get the fix without new flags', () => {
+    claudeLog('/work/proj', 'mine', 'claude-fable-5-1', new Date(Date.now() - 60_000));
+    claudeLog('/work/proj', 'other', 'claude-opus-5');
+    const r = resolveFromOptions({ model: 'claude-fable-5-1', harness: 'claude-code' }, { cwd: '/work/proj', home, env: { CLAUDE_CODE_SESSION_ID: 'mine' } });
+    expect(r).toEqual({ model: 'claude-fable-5-1', verified: true });
   });
 });
 

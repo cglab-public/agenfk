@@ -217,16 +217,35 @@ function piCandidates(home: string, now: number): Candidate[] {
       // and the hub matches on the segment after the LAST slash — so prepending
       // `openrouter/` would push the vendor out of the match key and split the
       // model into its own dashboard group.
-      readModel: rs => {
-        let model: string | null = null;
-        for (const r of rs) {
-          if (r?.type === 'model_change' && typeof r.modelId === 'string' && r.modelId) model = r.modelId;
-        }
-        return model;
-      },
+      readModel: piModelOf,
     });
   }
   return candidates;
+}
+
+/** pi: the LAST model_change is the one in force. */
+function piModelOf(rs: any[]): string | null {
+  let model: string | null = null;
+  for (const r of rs) {
+    if (r?.type === 'model_change' && typeof r.modelId === 'string' && r.modelId) model = r.modelId;
+  }
+  return model;
+}
+
+/** Claude Code: the last real model on a non-sidechain assistant turn. */
+function claudeModelOf(rs: any[]): string | null {
+  let model: string | null = null;
+  for (const r of rs) {
+    // Assistant turns only, and never a subagent's: a subagent runs a
+    // different model from the session that spawned it.
+    if (r?.type !== 'assistant' || r?.isSidechain) continue;
+    const m = r?.message?.model ?? r?.model;
+    // `<synthetic>` is written on cancelled and errored turns. Taking it
+    // would replace a correct --model with a non-model string on an
+    // append-only event.
+    if (typeof m === 'string' && m && !/^<.*>$/.test(m)) model = m;
+  }
+  return model;
 }
 
 /** Claude Code: one directory per project, model recorded on each message. */
@@ -243,34 +262,69 @@ function claudeCandidates(home: string, now: number): Candidate[] {
     if (cwds.size === 0) continue;
     candidates.push({
       file, cwds: [...cwds], mtimeMs, harness: 'claude-code',
-      readModel: rs => {
-        let model: string | null = null;
-        for (const r of rs) {
-          // Assistant turns only, and never a subagent's: a subagent runs a
-          // different model from the session that spawned it.
-          if (r?.type !== 'assistant' || r?.isSidechain) continue;
-          const m = r?.message?.model ?? r?.model;
-          // `<synthetic>` is written on cancelled and errored turns. Taking it
-          // would replace a correct --model with a non-model string on an
-          // append-only event.
-          if (typeof m === 'string' && m && !/^<.*>$/.test(m)) model = m;
-        }
-        return model;
-      },
+      readModel: claudeModelOf,
     });
   }
   return candidates;
 }
 
 /**
+ * The session the harness itself says is running, from the environment it
+ * gives every tool shell (CGLAB-365).
+ *
+ * The cwd heuristic below cannot tell two live sessions in ONE repo directory
+ * apart, and its mtime tiebreak picks whichever wrote last: a Fable session was
+ * "corrected" to claude-opus-5 from a concurrent Opus session's transcript.
+ * Both harnesses export the exact identity, so it is read first:
+ *   - pi's bash tool sets PI_SESSION_FILE (and PI_SESSION_ID / PI_MODEL);
+ *   - Claude Code sets CLAUDE_CODE_SESSION_ID, the transcript's basename under
+ *     ~/.claude/projects/<slug>/.
+ * Anything that does not resolve to a readable log with a model falls through
+ * to the heuristic rather than returning nothing: a missed source is a weaker
+ * answer, a refusal is no answer.
+ */
+function fromEnvironment(home: string, env: NodeJS.ProcessEnv): DetectedModel | null {
+  const piFile = env.PI_SESSION_FILE;
+  if (typeof piFile === 'string' && piFile && isFile(piFile)) {
+    const model = piModelOf(records(piFile));
+    if (model) return { model, harness: 'pi', source: piFile };
+  }
+  const ccId = env.CLAUDE_CODE_SESSION_ID;
+  // A plain id only: this value becomes a path component, and the environment
+  // is not a trusted place to take one from.
+  if (typeof ccId === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(ccId)) {
+    const projects = path.join(home, '.claude', 'projects');
+    let dirs: fs.Dirent[] = [];
+    try { dirs = fs.readdirSync(projects, { withFileTypes: true }); } catch { /* no Claude Code here */ }
+    for (const d of dirs) {
+      if (!d.isDirectory()) continue;
+      const file = path.join(projects, d.name, `${ccId}.jsonl`);
+      if (!isFile(file)) continue;
+      const model = claudeModelOf(records(file));
+      if (model) return { model, harness: 'claude-code', source: file };
+    }
+  }
+  return null;
+}
+
+function isFile(p: string): boolean {
+  try { return fs.statSync(p).isFile(); } catch { return false; }
+}
+
+/**
  * The model the current session is actually running, or null when no harness
  * log can be matched to `cwd`.
  */
-export function detectHarnessModel(opts: { cwd?: string; home?: string; now?: number } = {}): DetectedModel | null {
+export function detectHarnessModel(
+  opts: { cwd?: string; home?: string; now?: number; env?: NodeJS.ProcessEnv } = {},
+): DetectedModel | null {
   const cwd = opts.cwd ?? process.cwd();
   const home = opts.home ?? os.homedir();
   const now = opts.now ?? Date.now();
+  const env = opts.env ?? process.env;
   try {
+    const exact = fromEnvironment(home, env);
+    if (exact) return exact;
     const best = pick([...piCandidates(home, now), ...claudeCandidates(home, now)], canonicalPath(cwd), now);
     if (!best) return null;
     const model = best.readModel(records(best.file));
@@ -336,10 +390,10 @@ export function reconcileModel(
  */
 export function resolveModelForReport(
   declared: string,
-  opts: { cwd?: string; home?: string; detect?: boolean; harness?: string } = {},
+  opts: { cwd?: string; home?: string; env?: NodeJS.ProcessEnv; detect?: boolean; harness?: string } = {},
 ): ReconciledModel {
   if (opts.detect === false) return { model: declared, verified: false };
-  return reconcileModel(declared, detectHarnessModel({ cwd: opts.cwd, home: opts.home }), opts.harness);
+  return reconcileModel(declared, detectHarnessModel({ cwd: opts.cwd, home: opts.home, env: opts.env }), opts.harness);
 }
 
 /** The option shape the three PR commands parse (commander negates --no-*). */
@@ -358,11 +412,12 @@ export interface PrModelOptions {
  */
 export function resolveFromOptions(
   options: PrModelOptions,
-  env: { cwd?: string; home?: string } = {},
+  env: { cwd?: string; home?: string; env?: NodeJS.ProcessEnv } = {},
 ): ReconciledModel {
   return resolveModelForReport(options.model, {
     cwd: env.cwd,
     home: env.home,
+    env: env.env,
     detect: options.detectModel,
     harness: options.harness,
   });
