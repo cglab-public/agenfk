@@ -75,6 +75,10 @@ const DISPATCHES = {
       id: 'd-3', flowId: 'f-deleted', flowVersion: 1, scope: 'all', createdByEmail: null,
       createdAt: '2026-09-20T10:00:00.000Z', cancelledAt: '2026-09-20T11:00:00.000Z', targets: [],
     },
+    {
+      id: 'd-4', flowId: 'f-deleted', flowVersion: 1, scope: 'all', createdByEmail: null,
+      createdAt: '2026-09-21T10:00:00.000Z', cancelledAt: null, targets: [],
+    },
   ],
 };
 
@@ -118,11 +122,12 @@ beforeEach(() => { get.mockReset(); post.mockReset(); post.mockResolvedValue({ d
 afterEach(() => { cleanup(); });
 
 describe('Admin → Flows: a standalone hub', () => {
-  it('is shown no dispatch control and no board — it has nobody to send to', async () => {
+  it('is shown no dispatch control and no board, and the board is not even fetched', async () => {
     routes({ '/v1/admin/child-hubs': STANDALONE });
     await expand('f-local');
     expect(screen.queryByTestId('admin-flow-dispatch-btn')).toBeNull();
     expect(screen.queryByTestId('flow-dispatches')).toBeNull();
+    expect(get).not.toHaveBeenCalledWith('/v1/admin/flow-dispatches');
   });
 });
 
@@ -134,19 +139,22 @@ describe('Admin → Flows: dispatching to child hubs', () => {
     expect(btn).toBeEnabled();
   });
 
-  it("disables Dispatch on a flow the parent sent, and says it is the parent's", async () => {
+  it('offers Dispatch on a flow the parent sent — relaying is the only way it reaches grandchildren', async () => {
     routes();
     await expand('f-parent');
-    const btn = await screen.findByTestId('admin-flow-dispatch-btn');
-    expect(btn).toBeDisabled();
-    expect(btn.getAttribute('title')).toMatch(/parent/i);
+    expect(await screen.findByTestId('admin-flow-dispatch-btn')).toBeEnabled();
+    expect(screen.queryByTestId('admin-flow-dispatch-reason')).toBeNull();
   });
 
   it("'all' posts the flow id and scope only — no ids, so future children are covered too", async () => {
     routes();
     await expand('f-local');
     fireEvent.click(await screen.findByTestId('admin-flow-dispatch-btn'));
-    fireEvent.click(await screen.findByTestId('flow-dispatch-scope-all'));
+    // Leave 'all' and come back, so a broken setMode('all') cannot pass by default.
+    fireEvent.click(await screen.findByTestId('flow-dispatch-scope-selected'));
+    fireEvent.click(screen.getByTestId('flow-dispatch-child-ch-1'));
+    fireEvent.click(screen.getByTestId('flow-dispatch-scope-all'));
+    expect(screen.getByTestId('flow-dispatch-scope-all').getAttribute('aria-pressed')).toBe('true');
     fireEvent.click(screen.getByTestId('flow-dispatch-send'));
     await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/flow-dispatches', { flowId: 'f-local', scope: 'all' }));
   });
@@ -193,6 +201,19 @@ describe('Admin → Flows: dispatching to child hubs', () => {
     expect(await screen.findByTestId('flow-dispatch-error')).toHaveTextContent(/not targetable/i);
   });
 
+  it("names the child the server refused, not its id — the admin unticks by name", async () => {
+    routes();
+    post.mockRejectedValueOnce({ response: { status: 404, data: { error: 'not in this group', missing: ['ch-2'] } } });
+    await expand('f-local');
+    fireEvent.click(await screen.findByTestId('admin-flow-dispatch-btn'));
+    fireEvent.click(await screen.findByTestId('flow-dispatch-scope-selected'));
+    fireEvent.click(screen.getByTestId('flow-dispatch-child-ch-2'));
+    fireEvent.click(screen.getByTestId('flow-dispatch-send'));
+    const err = await screen.findByTestId('flow-dispatch-error');
+    expect(err).toHaveTextContent('acme-latam');
+    expect(err).not.toHaveTextContent('ch-2');
+  });
+
   it('refreshes the board after a successful send', async () => {
     let served = 0;
     routes({ '/v1/admin/flow-dispatches': () => { served += 1; return { dispatches: [] }; } });
@@ -207,12 +228,11 @@ describe('Admin → Flows: dispatching to child hubs', () => {
 });
 
 describe('Admin → Flows: the dispatch board', () => {
-  it('renders nothing when a parent has never dispatched anything', async () => {
+  it('tells a parent that has never dispatched where the control is, instead of rendering nothing', async () => {
     routes();
     renderPage();
-    await waitFor(() => screen.getByTestId('admin-flow-row-f-local'));
-    await waitFor(() => expect(get).toHaveBeenCalledWith('/v1/admin/flow-dispatches'));
-    expect(screen.queryByTestId('flow-dispatches')).toBeNull();
+    expect(await screen.findByTestId('flow-dispatches-empty')).toHaveTextContent(/nothing dispatched yet/i);
+    expect(screen.queryByTestId(/^flow-dispatch-d-/)).toBeNull();
   });
 
   it("names the flow and its version, not the flow's id", async () => {
@@ -229,6 +249,16 @@ describe('Admin → Flows: the dispatch board', () => {
     renderPage();
     const row = await screen.findByTestId('flow-dispatch-d-3');
     expect(row).toHaveTextContent('f-deleted');
+  });
+
+  it("says a live dispatch of a deleted flow can never land, rather than 'nobody has picked it up yet'", async () => {
+    routes({ '/v1/admin/flow-dispatches': DISPATCHES });
+    renderPage();
+    const row = await screen.findByTestId('flow-dispatch-d-4');
+    expect(within(row).getByTestId('flow-dispatch-deleted-d-4')).toHaveTextContent(/deleted.*never land/i);
+    expect(within(row).queryByTestId('flow-dispatch-unpolled-d-4')).toBeNull();
+    // Still cancellable — that is the way out.
+    expect(within(row).getByTestId('flow-dispatch-cancel-d-4')).toBeInTheDocument();
   });
 
   it("shows each child's answer, with the failure's own explanation", async () => {
@@ -265,6 +295,28 @@ describe('Admin → Flows: the dispatch board', () => {
     const row = await screen.findByTestId('flow-dispatch-d-3');
     expect(within(row).getByTestId('flow-dispatch-cancelled-d-3')).toBeInTheDocument();
     expect(within(row).queryByTestId('flow-dispatch-cancel-d-3')).toBeNull();
+  });
+
+  it('a failed cancel is shown on the board instead of vanishing', async () => {
+    routes({ '/v1/admin/flow-dispatches': DISPATCHES });
+    post.mockRejectedValueOnce({ response: { status: 409, data: { error: 'already cancelled' } } });
+    renderPage();
+    const row = await screen.findByTestId('flow-dispatch-d-2');
+    fireEvent.click(within(row).getByTestId('flow-dispatch-cancel-d-2'));
+    expect(await screen.findByTestId('flow-dispatches-action-error')).toHaveTextContent(/already cancelled/);
+  });
+
+  it('greys out only the Cancel that is in flight, not every Cancel on the board', async () => {
+    routes({ '/v1/admin/flow-dispatches': DISPATCHES });
+    let settle: () => void = () => {};
+    post.mockImplementationOnce(() => new Promise<{ data: unknown }>(res => { settle = () => res({ data: {} }); }));
+    renderPage();
+    const row = await screen.findByTestId('flow-dispatch-d-2');
+    fireEvent.click(within(row).getByTestId('flow-dispatch-cancel-d-2'));
+    await waitFor(() => expect(screen.getByTestId('flow-dispatch-cancel-d-2')).toBeDisabled());
+    expect(screen.getByTestId('flow-dispatch-cancel-d-1')).toBeEnabled();
+    settle();
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/flow-dispatches/d-2/cancel', {}));
   });
 
   it('a failed load is visible — it must not look like "no dispatches"', async () => {

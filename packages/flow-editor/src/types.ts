@@ -24,8 +24,8 @@ export interface Flow {
   steps: FlowStep[];
   createdAt: string;
   updatedAt: string;
-  /** Origin of the flow row. 'local'/'hub'/'community'. */
-  source?: 'local' | 'hub' | 'community';
+  /** Origin of the flow row. 'parent' is a flow a parent hub dispatched to this hub (read-only here). */
+  source?: 'local' | 'hub' | 'community' | 'parent';
   hubFlowId?: string;
   hubVersion?: number;
   /** Hub-only: whether the flow is offered in the org-wide flow picker. */

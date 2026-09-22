@@ -41,24 +41,44 @@ export function liveChildHubs(rows: ChildHubRow[]): ChildHubRow[] {
   return rows.filter(r => !r.detached);
 }
 
-export const PARENT_FLOW_DISPATCH_REASON =
-  "This flow was sent by the parent hub. It is the parent's to dispatch, not ours to relay.";
 export const NO_CHILD_HUBS_REASON = 'No live child hub to send to.';
 
 /**
  * Whether a Dispatch control should be live for this flow.
  *
- * A flow of origin `parent` belongs upstream: relaying it downstream would let
- * a middle hub re-dispatch a definition it cannot edit, and the parent's own
- * dispatch already reaches every hub below it under scope 'all'.
+ * A flow the parent sent IS dispatchable onward. A dispatch reaches only the
+ * dispatching hub's direct children (the directives feed is scoped to the
+ * polled hub's own child_hubs), and a middle hub installs what it receives
+ * without re-dispatching it. In HQ → Regional → Team, relaying from Regional
+ * is therefore the only way the HQ standard reaches Team hubs. The copy is
+ * read-only here, but relaying does not edit it: the version it carries is
+ * the one Regional received, exactly as a re-dispatch of a newer version
+ * works one level up. The server checks org ownership only, so refusing here
+ * would be decorative anyway.
  */
 export function canDispatchFlow(
-  flow: { source?: string | null },
+  _flow: { source?: string | null },
   children: ChildHubRow[],
 ): { allowed: boolean; reason: string | null } {
-  if (flow.source === 'parent') return { allowed: false, reason: PARENT_FLOW_DISPATCH_REASON };
   if (liveChildHubs(children).length === 0) return { allowed: false, reason: NO_CHILD_HUBS_REASON };
   return { allowed: true, reason: null };
+}
+
+/**
+ * The server's refusal names the children it would not target as ids
+ * (`{ error, missing }`, 404 for unknown, 409 for detached mid-request). An
+ * admin unticks by name, so the names are appended when they resolve.
+ */
+export function dispatchRefusalMessage(
+  data: { error?: string; missing?: string[] } | undefined,
+  children: ChildHubRow[],
+  fallback: string,
+): string {
+  const base = data?.error ?? fallback;
+  const missing = Array.isArray(data?.missing) ? data.missing : [];
+  if (missing.length === 0) return base;
+  const names = missing.map(id => children.find(c => c.id === id)?.name ?? id);
+  return `${base}: ${names.join(', ')}`;
 }
 
 export type FlowDispatchRequest =
@@ -101,12 +121,31 @@ export function flowDispatchTargetRow(state: string, detail: string | null): Flo
 }
 
 /**
+ * A dispatch whose flow has since been deleted can never be served: the
+ * directives feed skips it and no target row is ever created, so it would sit
+ * at "no child hub has picked this up yet" forever. The board says so and the
+ * poll ignores it.
+ */
+export function dispatchFlowDeleted(d: FlowDispatchRow, knownFlowIds: Set<string>): boolean {
+  return !knownFlowIds.has(d.flowId);
+}
+
+/**
  * Whether the board still owes the admin an answer, i.e. should keep polling.
  * A live dispatch with no targets counts: under 'all' nobody has polled yet,
  * which is not the same as nobody being targeted. A cancelled dispatch never
- * resolves further, whatever its targets say.
+ * resolves further, whatever its targets say, and neither does one whose flow
+ * is gone.
  */
-export function flowDispatchesLive(rows: FlowDispatchRow[]): boolean {
+export function flowDispatchesLive(rows: FlowDispatchRow[], knownFlowIds?: Set<string>): boolean {
   return rows.some(d =>
-    !d.cancelledAt && (d.targets.length === 0 || d.targets.some(t => t.state === 'pending')));
+    !d.cancelledAt
+    && !(knownFlowIds && dispatchFlowDeleted(d, knownFlowIds))
+    && (d.targets.length === 0 || d.targets.some(t => t.state === 'pending')));
+}
+
+/** react-query's refetchInterval: poll every 5 s while something is owed, else stop. */
+export const FLOW_DISPATCH_POLL_MS = 5_000;
+export function flowDispatchPollInterval(rows: FlowDispatchRow[], knownFlowIds: Set<string>): number | false {
+  return flowDispatchesLive(rows, knownFlowIds) ? FLOW_DISPATCH_POLL_MS : false;
 }

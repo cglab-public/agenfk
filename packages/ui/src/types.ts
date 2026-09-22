@@ -96,7 +96,7 @@ export interface Flow {
   // Ownership. The server sets 'hub' for flows synced from the org's Hub and
   // refuses local mutation of them; the UI must present those as read-only
   // (BUG 269eeec8 (b)). Absent on older payloads, so treat undefined as local.
-  source?: 'local' | 'hub' | 'community';
+  source?: 'local' | 'hub' | 'community' | 'parent';
   hubFlowId?: string;
 }
 

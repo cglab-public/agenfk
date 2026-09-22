@@ -22,9 +22,11 @@ import { availabilityRowState } from './availabilityRowState';
 import { parentFlowLock } from './parentFlowLock';
 import {
   canDispatchFlow,
+  dispatchFlowDeleted,
+  dispatchRefusalMessage,
   flowDispatchBody,
+  flowDispatchPollInterval,
   flowDispatchTargetRow,
-  flowDispatchesLive,
   liveChildHubs,
   type ChildHubRow,
   type DispatchScopeMode,
@@ -174,6 +176,7 @@ export function AdminFlows() {
     queryFn: async () => (await api.get('/v1/admin/child-hubs')).data,
   });
   const childHubs = liveChildHubs(childHubsResp?.childHubs ?? []);
+  const isParent = childHubsResp?.isParent === true;
 
   // Read here as well as in RegistryRepoPanel: the editor's tab captions depend
   // on which repo the registry currently resolves to. Same queryKey, so react-
@@ -300,7 +303,7 @@ export function AdminFlows() {
         })}
       </div>
 
-      <FlowDispatches flows={flows} />
+      <FlowDispatches flows={flows} isParent={isParent} hasLiveChildren={childHubs.length > 0} />
 
       <RegistryRepoPanel />
 
@@ -411,7 +414,7 @@ function AssignmentsPanel({
   const availability = availabilityRowState(flow.orgAvailable === true, !!orgRow);
   // The definition belongs to the parent hub; the availability does not, so
   // this deliberately gates Edit alone. See parentFlowLock.
-  const lock = parentFlowLock((flow as { source?: string | null }).source);
+  const lock = parentFlowLock(flow.source);
 
   return (
     <div className="px-4 pb-4 pt-1 bg-chip border-t border-border-soft space-y-3">
@@ -546,7 +549,7 @@ function AssignmentsPanel({
  */
 function ChildHubsRow({ flow, childHubs }: { flow: Flow; childHubs: ChildHubRow[] }) {
   const [open, setOpen] = useState(false);
-  const gate = canDispatchFlow(flow as { source?: string | null }, childHubs);
+  const gate = canDispatchFlow(flow, childHubs);
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between">
@@ -564,6 +567,9 @@ function ChildHubsRow({ flow, childHubs }: { flow: Flow; childHubs: ChildHubRow[
           <Send className="w-3 h-3" /> Dispatch to child hubs
         </button>
       </div>
+      {!gate.allowed && gate.reason && (
+        <p className="text-[11px] text-ink-tertiary" data-testid="admin-flow-dispatch-reason">{gate.reason}</p>
+      )}
       {open && gate.allowed && (
         <DispatchPicker flowId={flow.id} childHubs={childHubs} onDone={() => setOpen(false)} />
       )}
@@ -595,7 +601,7 @@ function DispatchPicker({
       qc.invalidateQueries({ queryKey: ['admin-flow-dispatches'] });
       onDone();
     },
-    onError: (e: any) => setError(e?.response?.data?.error ?? 'Could not dispatch the flow'),
+    onError: (e: any) => setError(dispatchRefusalMessage(e?.response?.data, childHubs, 'Could not dispatch the flow')),
   });
 
   const toggle = (id: string) => setSelected(prev => {
@@ -617,10 +623,10 @@ function DispatchPicker({
   return (
     <div className="bg-surface border border-border-soft rounded-md p-2 space-y-2" data-testid="flow-dispatch-picker">
       <div className="flex items-center gap-1.5">
-        <button type="button" className={pill(mode === 'all')} onClick={() => setMode('all')} data-testid="flow-dispatch-scope-all">
+        <button type="button" aria-pressed={mode === 'all'} className={pill(mode === 'all')} onClick={() => setMode('all')} data-testid="flow-dispatch-scope-all">
           All child hubs ({childHubs.length})
         </button>
-        <button type="button" className={pill(mode === 'selected')} onClick={() => setMode('selected')} data-testid="flow-dispatch-scope-selected">
+        <button type="button" aria-pressed={mode === 'selected'} className={pill(mode === 'selected')} onClick={() => setMode('selected')} data-testid="flow-dispatch-scope-selected">
           Selected ({selected.size})
         </button>
         <span className="flex-1" />
@@ -672,16 +678,27 @@ function DispatchPicker({
  * dispatched has no board. Rendering null on a failed load would make a 500
  * indistinguishable from that, so the error is shown instead.
  */
-function FlowDispatches({ flows }: { flows: Flow[] }) {
+function FlowDispatches({
+  flows, isParent, hasLiveChildren,
+}: {
+  flows: Flow[];
+  isParent: boolean;
+  hasLiveChildren: boolean;
+}) {
   const qc = useQueryClient();
   const [error, setError] = useState<string | null>(null);
+  const knownFlowIds = useMemo(() => new Set(flows.map(f => f.id)), [flows]);
 
   const q = useQuery<{ dispatches: FlowDispatchRow[] }>({
     queryKey: ['admin-flow-dispatches'],
     queryFn: async () => (await api.get('/v1/admin/flow-dispatches')).data,
+    // A standalone hub has nothing here; do not even ask. `isParent` counts
+    // detached children too, so a parent whose last child left still sees
+    // the history of what it sent.
+    enabled: isParent,
     refetchInterval: (query) => {
       const rows = (query.state.data as { dispatches: FlowDispatchRow[] } | undefined)?.dispatches ?? [];
-      return flowDispatchesLive(rows) ? 5_000 : false;
+      return flowDispatchPollInterval(rows, knownFlowIds);
     },
   });
 
@@ -705,8 +722,20 @@ function FlowDispatches({ flows }: { flows: Flow[] }) {
       </section>
     );
   }
-  // A parent that has never dispatched, or a standalone hub, has no board.
-  if (q.isLoading || dispatches.length === 0) return null;
+  if (!isParent || q.isLoading) return null;
+  // A parent that has never dispatched gets one line, so the control above is
+  // discoverable; a standalone hub returned before this point.
+  if (dispatches.length === 0) {
+    if (!hasLiveChildren) return null;
+    return (
+      <section className="space-y-2" data-testid="flow-dispatches">
+        <h2 className="text-sm font-semibold text-ink">Dispatched to child hubs</h2>
+        <p className="text-xs text-ink-tertiary" data-testid="flow-dispatches-empty">
+          Nothing dispatched yet. Expand a flow and choose Dispatch to child hubs.
+        </p>
+      </section>
+    );
+  }
 
   const toneClass = (tone: string) =>
     tone === 'ok' ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300'
@@ -721,7 +750,9 @@ function FlowDispatches({ flows }: { flows: Flow[] }) {
         <p className="text-xs text-rose-600 dark:text-rose-400" data-testid="flow-dispatches-action-error">{error}</p>
       )}
       <div className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl divide-y divide-border-soft">
-        {dispatches.map(d => (
+        {dispatches.map(d => {
+          const deleted = dispatchFlowDeleted(d, knownFlowIds);
+          return (
           <div key={d.id} className="p-3" data-testid={`flow-dispatch-${d.id}`}>
             <div className="flex items-center gap-2 flex-wrap">
               <span className="font-semibold text-ink">{nameOf(d.flowId)}</span>
@@ -752,7 +783,11 @@ function FlowDispatches({ flows }: { flows: Flow[] }) {
                 </button>
               )}
             </div>
-            {d.targets.length === 0 ? (
+            {deleted && !d.cancelledAt ? (
+              <p className="mt-1 text-xs text-rose-600 dark:text-rose-400" data-testid={`flow-dispatch-deleted-${d.id}`}>
+                This flow has been deleted, so the dispatch can never land. Cancel it.
+              </p>
+            ) : d.targets.length === 0 ? (
               <p className="mt-1 text-xs text-ink-tertiary" data-testid={`flow-dispatch-unpolled-${d.id}`}>
                 No child hub has picked this up yet.
               </p>
@@ -768,14 +803,15 @@ function FlowDispatches({ flows }: { flows: Flow[] }) {
                     >
                       <span className="font-medium text-ink">{t.name}</span>
                       <span className={'px-1.5 py-0.5 rounded text-[10px] font-bold ' + toneClass(row.tone)}>{row.label}</span>
-                      {row.detail && <span className="truncate" title={row.detail}>{row.detail}</span>}
+                      {row.detail && <span className="truncate min-w-0" title={row.detail}>{row.detail}</span>}
                     </div>
                   );
                 })}
               </div>
             )}
           </div>
-        ))}
+          );
+        })}
       </div>
     </section>
   );

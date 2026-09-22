@@ -8,8 +8,12 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+  FLOW_DISPATCH_POLL_MS,
   canDispatchFlow,
+  dispatchFlowDeleted,
+  dispatchRefusalMessage,
   flowDispatchBody,
+  flowDispatchPollInterval,
   flowDispatchTargetRow,
   flowDispatchesLive,
   liveChildHubs,
@@ -42,10 +46,11 @@ describe('canDispatchFlow', () => {
     expect(canDispatchFlow({ source: 'community' }, [child()]).allowed).toBe(true);
   });
 
-  it("refuses a flow the parent sent — it is the parent's to dispatch, not ours to relay", () => {
-    const r = canDispatchFlow({ source: 'parent' }, [child()]);
-    expect(r.allowed).toBe(false);
-    expect(r.reason).toMatch(/parent/i);
+  it('allows a flow the parent sent — a dispatch reaches direct children only, so relaying is how grandchildren get it', () => {
+    // The directives feed is scoped to the polled hub's own child_hubs and a
+    // middle hub never re-dispatches what it installs. Refusing here stranded
+    // every hub two levels down, and the server checks ownership only.
+    expect(canDispatchFlow({ source: 'parent' }, [child()])).toEqual({ allowed: true, reason: null });
   });
 
   it('refuses when there is no live child to send to, and says so', () => {
@@ -72,6 +77,24 @@ describe('flowDispatchBody', () => {
     const r = flowDispatchBody('f-1', 'selected', new Set());
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toMatch(/pick at least one/i);
+  });
+});
+
+describe('dispatchRefusalMessage', () => {
+  const kids = [child(), child({ id: 'ch-2', name: 'acme-latam' })];
+
+  it('names the children the server would not target, so the admin knows what to untick', () => {
+    const msg = dispatchRefusalMessage({ error: 'not in this group', missing: ['ch-2'] }, kids, 'fallback');
+    expect(msg).toBe('not in this group: acme-latam');
+  });
+
+  it('keeps an id it cannot resolve rather than dropping it', () => {
+    expect(dispatchRefusalMessage({ error: 'gone', missing: ['ch-9'] }, kids, 'fallback')).toBe('gone: ch-9');
+  });
+
+  it('is just the error when nothing is missing, and the fallback when there is no error body', () => {
+    expect(dispatchRefusalMessage({ error: 'nope' }, kids, 'fallback')).toBe('nope');
+    expect(dispatchRefusalMessage(undefined, kids, 'fallback')).toBe('fallback');
   });
 });
 
@@ -129,5 +152,24 @@ describe('flowDispatchesLive — whether the board should keep polling', () => {
 
   it('an empty board does not poll', () => {
     expect(flowDispatchesLive([])).toBe(false);
+  });
+
+  it('a dispatch whose flow was deleted can never land, so it never keeps the board polling', () => {
+    const d = dispatch({ flowId: 'f-gone', targets: [] });
+    expect(dispatchFlowDeleted(d, new Set(['f-1']))).toBe(true);
+    expect(dispatchFlowDeleted(dispatch(), new Set(['f-1']))).toBe(false);
+    expect(flowDispatchesLive([d], new Set(['f-1']))).toBe(false);
+    // Without the known set the caller has not said, and the old answer stands.
+    expect(flowDispatchesLive([d])).toBe(true);
+  });
+});
+
+describe('flowDispatchPollInterval — what react-query is handed', () => {
+  it('polls every 5 s while something is owed, and stops with false otherwise', () => {
+    const live = [dispatch({ targets: [] })];
+    expect(flowDispatchPollInterval(live, new Set(['f-1']))).toBe(FLOW_DISPATCH_POLL_MS);
+    expect(FLOW_DISPATCH_POLL_MS).toBe(5_000);
+    expect(flowDispatchPollInterval(live, new Set(['other']))).toBe(false);
+    expect(flowDispatchPollInterval([], new Set(['f-1']))).toBe(false);
   });
 });
