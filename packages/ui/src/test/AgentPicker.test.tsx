@@ -281,3 +281,62 @@ describe('agent marks', () => {
     expect(claude.querySelector('path')?.getAttribute('d')?.length ?? 0).toBeGreaterThan(200);
   });
 });
+
+
+/*
+ * Dismissal, which this menu did not have.
+ *
+ * It was `absolute z-20` inside its own wrapper — clipped by the panel, and
+ * any click elsewhere landed on something that took focus. Becoming a portal
+ * at z-60 put it ABOVE the modal it belongs to, so "click somewhere else"
+ * stopped being a way out: you could open this, click the project picker, and
+ * end up with two listboxes open at once.
+ */
+describe('pressing outside the menu', () => {
+  it('closes it', async () => {
+    renderPicker();
+    await openMenu();
+    fireEvent.mouseDown(document.body);
+    await waitFor(() => expect(screen.queryByRole('listbox')).toBeNull());
+  });
+
+  it('does not close on a press inside its own list', async () => {
+    // The portal is outside the button in the DOM and inside this control in
+    // every sense that matters; closing on the way down over an option would
+    // unmount it before the click could land — the same defect the project
+    // picker had.
+    renderPicker();
+    const menu = await openMenu();
+    fireEvent.mouseDown(menu);
+    expect(screen.getByRole('listbox')).toBeTruthy();
+  });
+
+  it('chooses the agent when the whole gesture lands on an option', async () => {
+    const onChange = vi.fn();
+    renderPicker({ onChange });
+    await openMenu();
+    // An INSTALLED one: the picker refuses the others by design, so choosing
+    // codex here would have tested that refusal and called it a regression.
+    const option = screen.getByRole('option', { name: /gemini/i });
+    fireEvent.mouseDown(option);
+    fireEvent.mouseUp(option);
+    fireEvent.click(option);
+    expect(onChange).toHaveBeenCalledWith('gemini');
+  });
+
+  it('Escape closes the menu without reaching the screen behind it', async () => {
+    // The old handler was a React keydown on the menu: it only fired with
+    // focus inside, and it could not stop the panel's own document listener.
+    const behind = vi.fn();
+    document.addEventListener('keydown', behind);
+    try {
+      renderPicker();
+      await openMenu();
+      fireEvent.keyDown(document, { key: 'Escape' });
+      await waitFor(() => expect(screen.queryByRole('listbox')).toBeNull());
+      expect(behind).not.toHaveBeenCalled();
+    } finally {
+      document.removeEventListener('keydown', behind);
+    }
+  });
+});

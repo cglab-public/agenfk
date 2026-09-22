@@ -101,8 +101,6 @@ export interface AgenfkTerminalApi {
    * looking identical from the outside.
    */
   onProposeOutput(cb: (e: { stream: 'stdout' | 'stderr'; line: string }) => void): () => void;
-  /** Open the native folder picker and turn the choice into a project. */
-  addProjectFromDirectory(): Promise<{ id: string; name: string } | null>;
   /**
    * The same door in two steps, which is what the screen needs: choose the
    * folder (the path comes back only to be SHOWN, with the name it suggests),
@@ -249,7 +247,6 @@ const terminal: AgenfkTerminalApi = {
   propose: req => ipcRenderer.invoke('agents:propose', req),
   onProposeOutput: cb => subscribe('agents:proposeOutput', cb),
   // No arguments in, a project out. The path stays in the main process.
-  addProjectFromDirectory: () => ipcRenderer.invoke('projects:addFromDirectory'),
   chooseProjectFolder: () => ipcRenderer.invoke('projects:chooseFolder'),
   addChosenFolder: (name: string) => ipcRenderer.invoke('projects:addChosenFolder', { name }),
   cloneDir: () => ipcRenderer.invoke('projects:cloneDir'),

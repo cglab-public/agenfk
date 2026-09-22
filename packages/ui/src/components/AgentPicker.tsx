@@ -91,22 +91,59 @@ export function AgentPicker({ value, onChange, listAgents }: AgentPickerProps): 
     setAnchor({ top: rect.bottom + 6, left: rect.left, width: rect.width });
   }, []);
 
+  const menuRef = React.useRef<HTMLDivElement>(null);
+
   // Re-measured on scroll and resize: a fixed menu that keeps its first
   // position detaches from its button the moment anything moves.
   React.useEffect(() => {
     if (!open) return;
     place();
+
+    /*
+     * DISMISSAL, which a portal needs and an absolutely-positioned menu got
+     * away without.
+     *
+     * While this menu lived inside its own wrapper it was clipped by the
+     * panel, and clicking anywhere else landed on something that took focus.
+     * As a portal at z-60 it paints ABOVE the modal it belongs to, so without
+     * this you could open it, click the project picker, and stand there with
+     * two listboxes open — the only ways out being to re-click this button,
+     * choose an agent, or press Escape with focus inside the menu.
+     *
+     * The button AND the menu count as inside: the menu is a portal in the
+     * DOM, not in the idea of this control.
+     */
+    const onDown = (e: MouseEvent): void => {
+      const target = e.target as Node;
+      if (buttonRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    /*
+     * Escape at the document, in CAPTURE, and stopped here. The React handler
+     * on the menu only fires when focus is inside it, and it cannot stop the
+     * panel's own document listener — so Escape either did nothing or closed
+     * the whole screen behind the menu.
+     */
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      setOpen(false);
+    };
+
     window.addEventListener('scroll', place, true);
     window.addEventListener('resize', place);
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey, true);
     return () => {
       window.removeEventListener('scroll', place, true);
       window.removeEventListener('resize', place);
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey, true);
     };
   }, [open, place]);
   const [agents, setAgents] = React.useState<AgentInfo[] | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [query, setQuery] = React.useState('');
-  const menuRef = React.useRef<HTMLDivElement>(null);
 
   // On mount, not on open: the trigger shows the chosen agent's label, and
   // waiting for the first click to find out what it is means the button reads

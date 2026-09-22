@@ -55,28 +55,3 @@ export function folderDoor(deps: AddProjectDeps): {
     },
   };
 }
-
-/**
- * Ask for a folder and turn it into a project, or answer null if the person
- * changed their mind.
- *
- * @throws when the project was created but could not be pointed at the folder.
- * A project with no root cannot host an agent or cut a worktree; failing loudly
- * is better than leaving a row that looks like a project and is not one.
- */
-export async function addProjectFromDirectory(
-  deps: AddProjectDeps,
-): Promise<{ id: string; name: string } | null> {
-  const chosen = await deps.chooseDirectory();
-  // Cancelling a dialog is not an error, and a project created for a cancelled
-  // dialog is a row somebody has to find and delete.
-  if (!chosen) return null;
-
-  // Some pickers hand back a trailing separator, and `basename` on that is ''.
-  const root = chosen.replace(/[/\\]+$/, '');
-  const name = path.basename(root) || root;
-
-  const project = await deps.createProject(name);
-  await deps.setProjectRoot(project.id, root);
-  return project;
-}

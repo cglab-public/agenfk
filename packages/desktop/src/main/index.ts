@@ -22,7 +22,7 @@ import { isAgenfkServer, servesUiBundle, httpGet } from './probes.js';
 import { agentRunSourcePath } from './agentRunSource.js';
 import { PtyRegistry } from './ptyRegistry.js';
 import { proposeDecomposition } from './propose.js';
-import { addProjectFromDirectory, folderDoor, type AddProjectDeps } from './addProject.js';
+import { folderDoor, type AddProjectDeps } from './addProject.js';
 import { cloneRepository } from './cloneRepository.js';
 import { createRepository, listOwners } from './createRepository.js';
 import { cloneDirOrDefault, readPrefs, writePref } from './prefs.js';
@@ -839,8 +839,9 @@ async function boot(): Promise<void> {
           child.stderr?.on('data', forward('stderr'));
         }),
       }),
-      // The folder picker, and the two calls only this process may make.
-      () => addProjectFromDirectory(folderDeps),
+      // No one-shot door any more: choosing a folder must not BE the
+      // decision. See folderDoor below.
+      undefined,
       /*
        * The same three capabilities as the TWO-STEP door: the screen shows
        * the folder and offers the name between choosing and creating, so

@@ -2,6 +2,102 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [Unreleased] — Electron desktop (CGLAB-164), continued
+
+### ⚠️ BREAKING — one origin: the API and the Kanban UI share a port (CGLAB-165)
+
+The server serves the built UI itself, and `agenfk up` no longer starts `vite preview`
+beside it. **The dashboard is on the API's port — `http://localhost:3000` by default — and
+nothing listens on `5173` any more.**
+
+What this breaks, and what to do:
+
+- **Bookmarks, scripts and `open http://localhost:5173`.** Use `agenfk ui`, which resolves
+  the port rather than assuming one: the vite log wins when a dev server IS running, and
+  otherwise it reads `~/.agenfk/server-port`. A hard-coded 5173 opens a dead URL.
+- **Anything that assumed two origins.** The browser now talks to one, so a reverse proxy,
+  a CSP, or a CORS allowlist written for `5173` → `3000` describes a topology that no longer
+  exists. This is the point of the change: the desktop shell loads REST, Socket.io and the
+  assets from a single origin.
+- **`AGENFK_SERVE_UI`** selects the bundle. Unset, the server probes the shipped layout;
+  set it to a path and that path must be a BUILD OUTPUT — a directory containing `src/` or
+  `node_modules/` is refused, because `packages/ui/index.html` exists and the near-miss typo
+  would otherwise publish the source tree.
+- **`agenfk down` / `agenfk kill` still free 5173**, so a dev server someone starts by hand
+  is still cleaned up.
+
+Development note, found the hard way: the server reads `index.html` ONCE into memory
+(deliberately — serving it from disk risks a 500 when the directory is swapped underneath a
+running process), while assets are read per request. So rebuilding the UI with the server up
+leaves it serving a shell that points at hashed files Vite has just deleted, and the page
+renders black. `agenfk restart` after a UI build. Tracked as `2c8e4b64`.
+
+### Add Project: three doors, and none of them decides for you
+
+A dialog with tabs that TRADE the fields — **Pick a folder**, **Clone**, **Create on
+GitHub** — with the project name above them, because all three end in a project.
+
+- Picking a folder is two steps: choosing fills the folder and suggests a name from it, and
+  a separate press creates. The picker used to BE the decision, so a project existed the
+  moment it closed, under a name nobody was offered. That one-shot door is now gone from the
+  IPC surface entirely rather than left reachable.
+- Clone names its destination before it runs and remembers it, and refuses a "URL" that is
+  not an address: a leading dash is an argument to git, `ext::` is a transport that runs
+  commands (and the clone passes `-c protocol.ext.allow=never`, so the guarantee is ours
+  rather than the user's gitconfig), and a name carrying a path separator would land the
+  checkout outside the chosen folder.
+- Create on GitHub goes **remote first, then clone, then the project row** — any other order
+  leaves rubbish behind when the far end refuses — names the account it is acting as, and
+  defaults to private with both states visible. Owner and repository name are validated
+  before they reach `gh`: an owner is the START of an argv element, and `--source=/path`
+  would turn "create my repository" into "publish that local checkout".
+- Where clones land defaults to `~/agenfk`, shown in the field and changeable. It is created
+  when a clone actually runs, and the proposal is never written to preferences — otherwise
+  "remembered" and "suggested" stop being different things.
+
+### The project page, and starting work from it
+
+The page lists **the project's own cards** — it was reading the "which card?" list, which
+excludes TODO by design, so a project whose cards had just been created looked empty — and
+each row can start the agent on that card: `Start`, or `Open` when this app already has a
+terminal for it.
+
+Creating cards or adding a project now lands you on that page instead of closing onto the
+screen you started from.
+
+### Terminals begin on their card
+
+Pressing Start hands the agent the card — id, title, description — as a positional
+ARGUMENT at launch (`claude [prompt]`, `codex [PROMPT]`, `pi -- <message>`, each verified
+against the real CLI). Typing it into the terminal afterwards was a race nobody wins: these
+CLIs paint, load their servers, and only then take the terminal into raw mode.
+
+A project that is not a git repository opens the terminal in the project root instead of
+refusing, and the server's own sentence survives the trip — "HTTP 400" used to replace
+"fatal: not a git repository". Whether a directory IS a repository is now `git rev-parse
+--git-dir`, the same question the server asks: looking for a `.git` entry calls a project
+root nested inside a checkout "not a repository", and would have opened the card's terminal
+on whatever branch you had out, with no worktree.
+
+### Fixes found by using it, and by three independent reviews
+
+- The project dropdown did nothing: a `mousedown` guard closed the portal list before the
+  click could complete. Every test passed, because `fireEvent.click` sends only the click.
+- The terminal never showed its input line. The region holding it was a flex ITEM and not a
+  flex CONTAINER, so the pane grew to its content and xterm measured 64 rows where ~36 were
+  visible — the agent drew its box thirty rows below the window's edge, with nothing
+  overflowing to scroll.
+- A BLOCKED row was skipped at creation while its children were created anyway, with no
+  parent: a story with a missing title turned its tasks into loose cards at the board root.
+- The project page never refetched, so the flow that lands you on it landed you on a stale
+  list.
+- `Cancel`, the X and Escape did not stop the creation loop they appeared to stop.
+- The agent and project menus became portals and needed real dismissal: two dropdowns could
+  be open at once, over the modal.
+- What an agent prints while it is asked for a decomposition is now on screen, stderr
+  marked — "out of tokens" arrived on a stream nobody displayed — and its stdin is closed at
+  launch, which is why `pi` appeared to hang forever.
+
 ## [1.1.21-beta.1] — 2026-09-18
 
 Beta, cumulative over `1.1.20` (the merged stable line) — this branch carries the Electron

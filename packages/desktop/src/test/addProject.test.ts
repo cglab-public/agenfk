@@ -10,7 +10,7 @@
  * crosses that border in either direction.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { addProjectFromDirectory, folderDoor } from '../main/addProject';
+import { folderDoor } from '../main/addProject';
 
 const deps = (over: Record<string, unknown> = {}) => ({
   chooseDirectory: vi.fn(async () => '/Users/me/GitHub/horizon-lab'),
@@ -19,46 +19,12 @@ const deps = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-it('names the project after the folder, rather than asking twice', async () => {
-  const d = deps();
-  const project = await addProjectFromDirectory(d as never);
-  expect(d.createProject).toHaveBeenCalledWith('horizon-lab');
-  expect(project).toMatchObject({ id: 'p9', name: 'horizon-lab' });
-});
-
-it('points the new project at the chosen folder', async () => {
-  const d = deps();
-  await addProjectFromDirectory(d as never);
-  expect(d.setProjectRoot).toHaveBeenCalledWith('p9', '/Users/me/GitHub/horizon-lab');
-});
-
-it('answers null when the picker is cancelled, and creates nothing', async () => {
-  // Cancelling a file dialog is not an error, and a project created for a
-  // cancelled dialog is a row somebody has to find and delete.
-  const d = deps({ chooseDirectory: async () => null });
-  await expect(addProjectFromDirectory(d as never)).resolves.toBeNull();
-  expect(d.createProject).not.toHaveBeenCalled();
-});
-
-it('fails loudly when the repoint fails, and says the project exists', async () => {
-  /*
-   * A project with no projectRoot cannot host an agent and cannot cut a
-   * worktree — it is a row that looks like a project and is not one. If the
-   * second call fails, the first has to be undone or the failure has to say
-   * so; silence is what produced the four $HOME-rooted projects on this
-   * machine.
-   */
-  const d = deps({ setProjectRoot: async () => { throw new Error('refused'); } });
-  await expect(addProjectFromDirectory(d as never)).rejects.toThrow(/refused/);
-});
-
-it('trims a trailing separator before taking the name', async () => {
-  // Some pickers hand back "/path/to/repo/" and basename on that is empty.
-  const d = deps({ chooseDirectory: async () => '/Users/me/GitHub/horizon-lab/' });
-  await addProjectFromDirectory(d as never);
-  expect(d.createProject).toHaveBeenCalledWith('horizon-lab');
-});
-
+/*
+ * THE TWO-STEP DOOR. The one-shot version above is still used by the older
+ * channel; this is the one the screen drives, and the gap between choosing and
+ * creating is the whole point — it is where the folder is shown and the name
+ * is offered.
+ */
 /*
  * THE TWO-STEP DOOR. The one-shot version above is still used by the older
  * channel; this is the one the screen drives, and the gap between choosing and

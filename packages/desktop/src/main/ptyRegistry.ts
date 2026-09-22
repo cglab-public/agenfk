@@ -399,6 +399,18 @@ export class PtyRegistry {
      */
     const useTmux = !attaching && !onObjective
       && this.deps.tmux?.available === true && req.persist === true;
+    /*
+     * Under tmux the agent line only appears inside `new-session`, which
+     * `has-session` short-circuits — so pressing Start on a card whose session
+     * is STILL ALIVE reattaches to it and the card prompt is never delivered.
+     * That is the right thing to do (the conversation is mid-flight; typing
+     * into it would interrupt work), but doing it silently is not: the person
+     * pressed a button that promised to hand the agent this card. Said once,
+     * in the log, where the geometry lines already are.
+     */
+    if (useTmux && prompt) {
+      console.log(`[PTY] tmux: an existing session for ${req.itemId} keeps its own prompt; the card was not re-sent`);
+    }
     const file = useTmux ? '/bin/sh' : command.file;
     const args = useTmux
       ? ['-c', buildTmuxShellCommand(

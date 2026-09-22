@@ -40,7 +40,6 @@ interface TerminalBridgeApi {
   propose?(req: { projectId: string; agentId: string; objective: string }): Promise<{ stdout: string }>;
   onProposeOutput?(cb: (e: { stream: 'stdout' | 'stderr'; line: string }) => void): () => void;
   /** Open the native folder picker and turn the choice into a project. */
-  addProjectFromDirectory?(): Promise<{ id: string; name: string } | null>;
   /** Choose the folder; the project is created afterwards, under a name. */
   chooseProjectFolder?(): Promise<{ path: string; name: string } | null>;
   addChosenFolder?(name: string): Promise<{ id: string; name: string }>;
@@ -137,13 +136,6 @@ export const proposeFromBridge = (
 ): Promise<{ stdout: string }> | null => bridge()?.propose?.(req) ?? null;
 
 /**
- * Ask for a folder and get back the project it became.
- *
- * No argument and no path in the answer: `projectRoot` is a CWD behind an
- * internal token, so the main process owns both the picker and the write.
- * Null means the person cancelled; missing means this build cannot do it.
- */
-/**
  * Subscribe to what the agent prints while it is being asked.
  *
  * Returns the unsubscribe, or null where this build cannot report it — the
@@ -153,11 +145,8 @@ export const onProposeOutputFromBridge = (
   cb: (e: { stream: 'stdout' | 'stderr'; line: string }) => void,
 ): (() => void) | null => bridge()?.onProposeOutput?.(cb) ?? null;
 
-export const addProjectFromDirectory = (): Promise<{ id: string; name: string } | null> | null =>
-  bridge()?.addProjectFromDirectory?.() ?? null;
-
 /**
- * The same door in two steps, which is the one the screen uses.
+ * The folder door, in two steps.
  *
  * `choose` answers with the folder and the name it suggests — both only to be
  * SHOWN — and `add` creates under whatever name survived the edit. What goes

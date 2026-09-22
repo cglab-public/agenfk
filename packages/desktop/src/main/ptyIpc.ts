@@ -125,7 +125,13 @@ export function registerPtyIpc(
    * Turn a folder into a project. Injected and optional, like everything else
    * here: a build without it answers with an error the screen can print.
    */
-  addProject?: () => Promise<{ id: string; name: string } | null>,
+  /**
+   * Retired. The one-shot door made the native picker the whole decision — a
+   * project existed the moment it closed, under a name nobody was offered —
+   * which is what `folder` below replaces. Kept as a parameter so the argument
+   * positions after it do not shift under callers that pass positionally.
+   */
+  addProject?: undefined,
   /**
    * The same door, in two steps: choose the folder, then create with a name.
    *
@@ -275,10 +281,6 @@ export function registerPtyIpc(
    * that field is a CWD behind an internal token (bug e60e20aa). It asks for a
    * project and gets the project.
    */
-  ipc.handle('projects:addFromDirectory', async () => {
-    if (!addProject) throw new Error('This build cannot add a project from a folder.');
-    return addProject();
-  });
 
   /*
    * Choosing is not adding. The picker answers with the folder and the name it

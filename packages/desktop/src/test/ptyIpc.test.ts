@@ -154,7 +154,6 @@ describe('the channels that exist', () => {
       // anything that becomes a command — see the clamp in the handler.
       // A folder becomes a project, resolved entirely in main.
       'projects:addChosenFolder',
-      'projects:addFromDirectory',
       'projects:chooseCloneDir',
       'projects:chooseFolder',
       'projects:cloneDir',
@@ -295,5 +294,94 @@ describe('the ack from the renderer', () => {
     // The guard must not be so keen that it breaks the feature.
     await ack(4_096);
     expect(vi.mocked(registry.ack).mock.calls.at(-1)![2]).toBe(4_096);
+  });
+});
+
+
+/*
+ * The channels that reach `gh`, `git` and the filesystem.
+ *
+ * An adversarial review measured this file's coverage of them at zero: the
+ * test above lists their NAMES, and nothing invoked a handler — so deleting
+ * `asString` or the visibility allowlist broke no test, in the one package
+ * that spawns processes.
+ */
+describe('the project and github channels', () => {
+  let calls: Array<[string, unknown]>;
+  let doors: Record<string, Handler>;
+
+  beforeEach(() => {
+    calls = [];
+    doors = {};
+    registerPtyIpc(
+      registry,
+      { handle: (channel, listener) => {
+        doors[channel] = (event, ...args) => Promise.resolve().then(() => (listener as Handler)(event, ...args));
+      } },
+      () => ({ available: false }),
+      () => prefsDir,
+      undefined, // editors
+      undefined, // alerts
+      undefined, // propose
+      undefined, // addProject
+      undefined, // folder
+      {
+        where: () => '/Users/me/agenfk',
+        choose: async () => '/elsewhere',
+        clone: async (url: string, name: string) => {
+          calls.push(['clone', { url, name }]);
+          return { id: 'p9', name };
+        },
+      },
+      {
+        owners: async () => [{ login: 'devleor', avatarUrl: null, self: true }],
+        create: async (req: unknown) => { calls.push(['create', req]); return { id: 'p9', name: 'x' }; },
+      },
+    );
+  });
+
+  it('passes the url and the name through, and nothing else', async () => {
+    await doors['projects:cloneRepository'](fakeEvent(1), {
+      url: 'git@github.com:team/repo.git', name: 'Repo', into: '/etc', root: '/etc',
+    });
+    // `into` and `root` are ignored: where a clone lands is main's decision.
+    expect(calls).toEqual([['clone', { url: 'git@github.com:team/repo.git', name: 'Repo' }]]);
+  });
+
+  it('refuses a clone whose url is not a string', async () => {
+    await expect(doors['projects:cloneRepository'](fakeEvent(1), { url: { toString: () => 'x' } }))
+      .rejects.toThrow(/url/);
+  });
+
+  it('refuses a visibility outside the closed set, before gh is reached', async () => {
+    await expect(doors['github:createRepository'](fakeEvent(1), {
+      owner: 'devleor', repo: 'x', visibility: 'public --delete-branch-on-merge', name: 'x',
+    })).rejects.toThrow(/private or public/i);
+    expect(calls).toEqual([]);
+  });
+
+  it('carries owner, repo, visibility and name to the door', async () => {
+    await doors['github:createRepository'](fakeEvent(1), {
+      owner: 'cglab-PRIVATE', repo: 'horizon-ds', visibility: 'private', name: 'Horizon DS',
+    });
+    expect(calls).toEqual([['create', {
+      owner: 'cglab-PRIVATE', repo: 'horizon-ds', visibility: 'private', name: 'Horizon DS',
+    }]]);
+  });
+
+  it('answers with nobody when this build has no github door', async () => {
+    // Not signed in and not built are different states; the empty list is the
+    // one the screen turns into an instruction.
+    expect(await handlers['github:owners'](fakeEvent(1))).toEqual([]);
+  });
+
+  it('refuses the doors a build does not have, instead of failing deeper', async () => {
+    await expect(handlers['projects:cloneRepository'](fakeEvent(1), { url: 'x', name: 'y' }))
+      .rejects.toThrow(/cannot clone/i);
+    await expect(handlers['github:createRepository'](fakeEvent(1), {
+      owner: 'a', repo: 'b', visibility: 'private', name: 'c',
+    })).rejects.toThrow(/cannot create a repository/i);
+    await expect(handlers['projects:chooseFolder'](fakeEvent(1)))
+      .rejects.toThrow(/cannot choose a folder/i);
   });
 });
