@@ -13,13 +13,23 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import clsx from 'clsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, Pencil, Trash2, X, ChevronDown, ChevronRight } from 'lucide-react';
+import { Plus, Pencil, Trash2, X, ChevronDown, ChevronRight, Send } from 'lucide-react';
 import { FlowEditorModal, type FlowClient, type RegistryClient, type Flow } from '@agenfk/flow-editor';
 import { api } from '../api';
 import { flattenAdminFlow } from './adminFlowShape';
 import { repoOverrideOptions } from './repoOverrideOptions';
 import { availabilityRowState } from './availabilityRowState';
 import { parentFlowLock } from './parentFlowLock';
+import {
+  canDispatchFlow,
+  flowDispatchBody,
+  flowDispatchTargetRow,
+  flowDispatchesLive,
+  liveChildHubs,
+  type ChildHubRow,
+  type DispatchScopeMode,
+  type FlowDispatchRow,
+} from './flowDispatch';
 import { useTheme } from '../ThemeContext';
 import {
   PUBLIC_REGISTRY_REPO,
@@ -155,6 +165,15 @@ export function AdminFlows() {
     queryFn: async () => (await api.get('/v1/admin/flow-assignments')).data,
   });
 
+  // Who this hub could dispatch a flow to (CGLAB-358). A standalone hub gets
+  // an empty list and is shown none of the dispatch controls — a button it
+  // can never use is noise, and the board has nothing to report.
+  const { data: childHubsResp } = useQuery<{ isParent: boolean; childHubs: ChildHubRow[] }>({
+    queryKey: ['admin-child-hubs'],
+    queryFn: async () => (await api.get('/v1/admin/child-hubs')).data,
+  });
+  const childHubs = liveChildHubs(childHubsResp?.childHubs ?? []);
+
   // Read here as well as in RegistryRepoPanel: the editor's tab captions depend
   // on which repo the registry currently resolves to. Same queryKey, so react-
   // query shares the one request — this is not a second fetch.
@@ -271,6 +290,7 @@ export function AdminFlows() {
                 <AssignmentsPanel
                   flow={f}
                   assignments={flowAssignments}
+                  childHubs={childHubs}
                   onEdit={() => openEditor(f.id)}
                 />
               )}
@@ -278,6 +298,8 @@ export function AdminFlows() {
           );
         })}
       </div>
+
+      <FlowDispatches flows={flows} />
 
       <RegistryRepoPanel />
 
@@ -339,14 +361,16 @@ export function AdminFlows() {
 // ── Assignments panel ──────────────────────────────────────────────────────
 
 function AssignmentsPanel({
-  flow, assignments, onEdit,
+  flow, assignments, childHubs, onEdit,
 }: {
   flow: Flow;
   assignments: Assignment[];
+  childHubs: ChildHubRow[];
   onEdit: () => void;
 }) {
   const qc = useQueryClient();
   const [adding, setAdding] = useState<'repo' | 'installation' | null>(null);
+  const [dispatching, setDispatching] = useState(false);
 
   // Assignment changes can move org_available server-side (setting the org
   // default forces the flow available), so refresh the flows list too — that's
@@ -497,6 +521,38 @@ function AssignmentsPanel({
         onAdd={() => setAdding('installation')}
       />
 
+      {/* Child hubs (CGLAB-358). Only a parent sees this: the list is empty
+          on a standalone hub and the row is not rendered at all. */}
+      {childHubs.length > 0 && (() => {
+        const gate = canDispatchFlow(flow as { source?: string | null }, childHubs);
+        return (
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-semibold text-ink-secondary">Child hubs</span>
+              <button
+                onClick={() => setDispatching(v => !v)}
+                disabled={!gate.allowed}
+                title={gate.reason ?? undefined}
+                className={
+                  'text-[11px] inline-flex items-center gap-1 ' +
+                  (gate.allowed ? 'text-accent-text hover:underline' : 'text-ink-tertiary opacity-60 cursor-not-allowed')
+                }
+                data-testid="admin-flow-dispatch-btn"
+              >
+                <Send className="w-3 h-3" /> Dispatch to child hubs
+              </button>
+            </div>
+            {dispatching && gate.allowed && (
+              <DispatchPicker
+                flowId={flow.id}
+                childHubs={childHubs}
+                onDone={() => setDispatching(false)}
+              />
+            )}
+          </div>
+        );
+      })()}
+
       {adding && (
         <AddOverridePicker
           scope={adding}
@@ -506,6 +562,218 @@ function AssignmentsPanel({
         />
       )}
     </div>
+  );
+}
+
+// ── Dispatch to child hubs (CGLAB-358) ─────────────────────────────────────
+
+/**
+ * Picks the children a flow goes to and sends the dispatch. 'all' posts no ids
+ * on purpose: the server resolves it against current AND future children, so
+ * a hub that enrols tomorrow still gets the flow. See flowDispatch.ts.
+ */
+function DispatchPicker({
+  flowId, childHubs, onDone,
+}: {
+  flowId: string;
+  childHubs: ChildHubRow[];
+  onDone: () => void;
+}) {
+  const qc = useQueryClient();
+  const [mode, setMode] = useState<DispatchScopeMode>('all');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [error, setError] = useState<string | null>(null);
+
+  const send = useMutation({
+    mutationFn: (body: Record<string, unknown>) => api.post('/v1/admin/flow-dispatches', body),
+    onMutate: () => setError(null),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['admin-flow-dispatches'] });
+      onDone();
+    },
+    onError: (e: any) => setError(e?.response?.data?.error ?? 'Could not dispatch the flow'),
+  });
+
+  const toggle = (id: string) => setSelected(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  const submit = () => {
+    const r = flowDispatchBody(flowId, mode, selected);
+    if (!r.ok) { setError(r.error); return; }
+    send.mutate(r.body);
+  };
+
+  const pill = (active: boolean) =>
+    'text-[11px] px-2 py-0.5 rounded-full border transition-colors ' +
+    (active ? 'border-brand text-ink bg-chip font-semibold' : 'border-border-soft text-ink-tertiary hover:text-ink');
+
+  return (
+    <div className="bg-surface border border-border-soft rounded-md p-2 space-y-2" data-testid="flow-dispatch-picker">
+      <div className="flex items-center gap-1.5">
+        <button type="button" className={pill(mode === 'all')} onClick={() => setMode('all')} data-testid="flow-dispatch-scope-all">
+          All child hubs ({childHubs.length})
+        </button>
+        <button type="button" className={pill(mode === 'selected')} onClick={() => setMode('selected')} data-testid="flow-dispatch-scope-selected">
+          Selected ({selected.size})
+        </button>
+        <span className="flex-1" />
+        <button type="button" onClick={onDone} className="text-ink-tertiary hover:text-ink" aria-label="Close">
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </div>
+      {mode === 'selected' && (
+        <div className="space-y-1">
+          {childHubs.map(c => (
+            <label key={c.id} className="flex items-center gap-2 text-xs text-ink-secondary">
+              <input
+                type="checkbox"
+                checked={selected.has(c.id)}
+                onChange={() => toggle(c.id)}
+                data-testid={`flow-dispatch-child-${c.id}`}
+              />
+              {c.name}
+            </label>
+          ))}
+        </div>
+      )}
+      {mode === 'all' && (
+        <p className="text-[11px] text-ink-tertiary">
+          Every current child hub, and any that joins later.
+        </p>
+      )}
+      {error && (
+        <p className="text-xs text-rose-600 dark:text-rose-400" data-testid="flow-dispatch-error">{error}</p>
+      )}
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={submit}
+          disabled={send.isPending}
+          className="px-2.5 py-1 rounded-md bg-[image:var(--gradient-accent)] text-navy text-[11px] font-bold disabled:opacity-40"
+          data-testid="flow-dispatch-send"
+        >
+          {send.isPending ? 'Sending…' : 'Send'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * What happened after Send. A section of the flows page rather than its own,
+ * and absent entirely when there is nothing to report: a hub that has never
+ * dispatched has no board. Rendering null on a failed load would make a 500
+ * indistinguishable from that, so the error is shown instead.
+ */
+function FlowDispatches({ flows }: { flows: Flow[] }) {
+  const qc = useQueryClient();
+  const [error, setError] = useState<string | null>(null);
+
+  const q = useQuery<{ dispatches: FlowDispatchRow[] }>({
+    queryKey: ['admin-flow-dispatches'],
+    queryFn: async () => (await api.get('/v1/admin/flow-dispatches')).data,
+    refetchInterval: (query) => {
+      const rows = (query.state.data as { dispatches: FlowDispatchRow[] } | undefined)?.dispatches ?? [];
+      return flowDispatchesLive(rows) ? 5_000 : false;
+    },
+  });
+
+  const cancel = useMutation({
+    mutationFn: (id: string) => api.post(`/v1/admin/flow-dispatches/${id}/cancel`, {}),
+    onMutate: () => setError(null),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-flow-dispatches'] }),
+    onError: (e: any) => setError(e?.response?.data?.error ?? 'Could not cancel the dispatch'),
+  });
+
+  const nameOf = (flowId: string) => flows.find(f => f.id === flowId)?.name ?? flowId;
+  const dispatches = q.data?.dispatches ?? [];
+
+  if (q.isError) {
+    return (
+      <section className="space-y-2" data-testid="flow-dispatches">
+        <h2 className="text-sm font-semibold text-ink">Dispatched to child hubs</h2>
+        <p className="text-xs text-rose-600 dark:text-rose-400" data-testid="flow-dispatches-error">
+          Could not load flow dispatches. Reload to try again.
+        </p>
+      </section>
+    );
+  }
+  // A parent that has never dispatched, or a standalone hub, has no board.
+  if (q.isLoading || dispatches.length === 0) return null;
+
+  const toneClass = (tone: string) =>
+    tone === 'ok' ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300'
+    : tone === 'error' ? 'bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300'
+    : tone === 'waiting' ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300'
+    : 'bg-chip text-ink-secondary';
+
+  return (
+    <section className="space-y-2" data-testid="flow-dispatches">
+      <h2 className="text-sm font-semibold text-ink">Dispatched to child hubs</h2>
+      {error && (
+        <p className="text-xs text-rose-600 dark:text-rose-400" data-testid="flow-dispatches-action-error">{error}</p>
+      )}
+      <div className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl divide-y divide-border-soft">
+        {dispatches.map(d => (
+          <div key={d.id} className="p-3" data-testid={`flow-dispatch-${d.id}`}>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-semibold text-ink">{nameOf(d.flowId)}</span>
+              <span className="text-[10px] text-ink-tertiary">v{d.flowVersion}</span>
+              <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-chip text-ink-secondary">
+                {d.scope}
+              </span>
+              {d.cancelledAt && (
+                <span
+                  className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-chip text-ink-tertiary"
+                  data-testid={`flow-dispatch-cancelled-${d.id}`}
+                >
+                  cancelled
+                </span>
+              )}
+              {d.createdByEmail && (
+                <span className="text-[11px] text-ink-tertiary">by {d.createdByEmail}</span>
+              )}
+              <span className="flex-1" />
+              {!d.cancelledAt && (
+                <button
+                  onClick={() => cancel.mutate(d.id)}
+                  disabled={cancel.isPending && cancel.variables === d.id}
+                  className="text-[11px] text-rose-600 dark:text-rose-400 hover:underline"
+                  data-testid={`flow-dispatch-cancel-${d.id}`}
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
+            {d.targets.length === 0 ? (
+              <p className="mt-1 text-xs text-ink-tertiary" data-testid={`flow-dispatch-unpolled-${d.id}`}>
+                No child hub has picked this up yet.
+              </p>
+            ) : (
+              <div className="mt-2 space-y-1">
+                {d.targets.map(t => {
+                  const row = flowDispatchTargetRow(t.state, t.detail);
+                  return (
+                    <div
+                      key={t.childHubId}
+                      className={'flex items-center gap-2 text-xs ' + (row.settled ? 'text-ink-tertiary' : 'text-ink-secondary')}
+                      data-testid={`flow-dispatch-target-${d.id}-${t.childHubId}`}
+                    >
+                      <span className="font-medium text-ink">{t.name}</span>
+                      <span className={'px-1.5 py-0.5 rounded text-[10px] font-bold ' + toneClass(row.tone)}>{row.label}</span>
+                      {row.detail && <span className="truncate" title={row.detail}>{row.detail}</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
