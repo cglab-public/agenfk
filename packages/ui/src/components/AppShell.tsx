@@ -80,6 +80,8 @@ import { FlowEditorModal } from './FlowEditorModal';
 import { WhatsNewModal } from './WhatsNewModal';
 import { liveSessions } from '../liveSessions';
 import { CardPicker } from './CardPicker';
+import { ProjectPage } from './ProjectPage';
+import { AskAgenfk } from './AskAgenfk';
 import { CardStateDot } from './CardStateDot';
 import { CardProcessRow } from './CardProcessRow';
 import { RunsPanel } from './RunsPanel';
@@ -103,7 +105,7 @@ import { clampSidebarWidth, sidebarIsResizable, SIDEBAR_MIN_PX, SIDEBAR_MAX_PX, 
  * Every view here is reached from the sidebar or from a session, and each one
  * is a panel that stays mounted and is hidden rather than unmounted.
  */
-type ViewId = 'kanban' | 'terminal' | 'settings' | 'agents';
+type ViewId = 'kanban' | 'terminal' | 'settings' | 'agents' | 'project';
 
 /**
  * The WORK group at the top of the sidebar (CGLAB-164).
@@ -301,6 +303,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
    * it having already decided which card they mean.
    */
   const [pickingCard, setPickingCard] = React.useState(false);
+  /** The project the Ask AgEnFK panel is open for, or null when it is shut. */
+  const [asking, setAsking] = React.useState<string | null>(null);
+  /** The project whose page is open, or null when no page has been opened. */
+  const [pageProjectId, setPageProjectId] = React.useState<string | null>(null);
+
   /** The card a terminal is being opened FOR, while the dialog is up. */
   /**
    * Cards waiting for their agent to be picked - A QUEUE, not one.
@@ -945,6 +952,45 @@ export function AppShell({ children }: { children: React.ReactNode }) {
    * scroll-to-and-highlight unreachable. This gives it one back without taking
    * the row's click away from the terminal.
    */
+  /*
+   * What the project page shows. Derived here rather than fetched: the
+   * projects, the work in flight and the running sessions are all already in
+   * this component, and a second source for any of them would be a second
+   * truth to reconcile.
+   */
+  const pageProject = React.useMemo(
+    () => (allProjects as Project[]).find(p => p.id === pageProjectId) ?? null,
+    [allProjects, pageProjectId],
+  );
+  /*
+   * THE PROJECT'S CARDS — all of them, which is what the tab is called.
+   *
+   * This was derived from `activeWork` to avoid a second request, and that
+   * quietly changed the question: `listActiveItems` is the "which card?"
+   * picker's list, and the server excludes TODO and DONE from it by design.
+   * So a project whose cards were all still in TODO — including every project
+   * whose cards had JUST been created — showed an empty page while the board
+   * beside it showed them.
+   *
+   * Fetched per project, and only for the page that is open. "In flight" is
+   * still worth counting; it is a statistic about this list, not the list.
+   */
+  const { data: pageCards = [] } = useQuery<AgEnFKItem[]>({
+    queryKey: ['project-items', pageProjectId],
+    queryFn: () => api.listItems({ projectId: pageProjectId as string }),
+    enabled: Boolean(pageProjectId),
+  });
+  /** Cards with a live session, so a row can say Open instead of Start. */
+  const runningItemIds = React.useMemo(
+    () => sessionRows.filter(r => r.state === 'running').map(r => r.itemId).filter(Boolean) as string[],
+    [sessionRows],
+  );
+  const pageAgents = React.useMemo(
+    () => sessionRows.filter(r => r.state === 'running'
+      && pageCards.some(card => card.id === r.itemId)).length,
+    [sessionRows, pageCards],
+  );
+
   const revealOnBoard = React.useCallback((row: { itemId: string; projectId?: string }): void => {
     focusItem(row.itemId, row.projectId);
     setActive('kanban');
@@ -1461,6 +1507,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           revealOnBoard={revealOnBoard}
           activeView={active}
           onSelectView={setActive}
+          onOpenProject={projectId => { setPageProjectId(projectId); setActive('project'); }}
           onOpenFlows={() => setFlowsOpen(true)}
         onOpenFleet={setFleetParentId}
         />
@@ -1534,6 +1581,40 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             {children}
           </div>
 
+          {/*
+            * The project's own page. Mounted only once it has been opened:
+            * unlike the board and Settings there is nothing to preserve before
+            * somebody asks for it, and rendering one per project in the
+            * sidebar would hold a page in memory for every row.
+            */}
+          <div
+            role="region"
+            id="panel-project"
+            aria-label="Project"
+            tabIndex={0}
+            hidden={active !== 'project'}
+            className="min-h-0 flex-1 overflow-hidden"
+          >
+            {pageProject && (
+              <ProjectPage
+                project={pageProject}
+                cards={pageCards}
+                runningAgents={pageAgents}
+                onOpenBoard={projectId => { setActiveProjectId(projectId); setActive('kanban'); }}
+                onOpenCard={item => { setActiveProjectId(item.projectId); setActive('kanban'); revealOnBoard({ itemId: item.id, projectId: item.projectId }); }}
+                /*
+                 * The same call the board makes: resume the session if this
+                 * card already has one, otherwise ask WHICH AGENT. Both
+                 * decisions live there; the page only supplies the card.
+                 */
+                onStartAgent={requestTerminal}
+                runningItemIds={runningItemIds}
+                onAsk={projectId => setAsking(projectId)}
+                onNewCard={projectId => { setActive('kanban'); requestNewItem(projectId); }}
+              />
+            )}
+          </div>
+
           {/* Hidden, not unmounted, for the same reason as the board: coming
               back from Settings must not have thrown away scroll position or
               an edit in flight. It holds no process, so nothing worse than
@@ -1578,7 +1659,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             aria-label="Terminal"
             tabIndex={0}
             hidden={active !== 'terminal'}
-            className="min-h-0 flex-1"
+            /*
+             * A FLEX COLUMN, and that is the whole fix for the terminal that
+             * would not show its input line.
+             *
+             * The child below is `flex-1`, which means nothing unless its
+             * PARENT is a flex container — so it was never told to stop at the
+             * bottom of this region, and `h-full` inside it resolved against a
+             * height of `auto`. The pane therefore grew to whatever height its
+             * content wanted, and xterm's fit addon dutifully measured THAT:
+             * 64 rows where about 36 were visible. The agent drew its input
+             * box on the last row it believed in, nearly thirty rows below the
+             * window's edge, and no amount of scrolling could reach it —
+             * nothing had overflowed, the box simply was not on screen.
+             *
+             * `overflow-hidden` for the same reason the other regions have it:
+             * the pane manages its own scrollback, and a second scrollbar out
+             * here would scroll the terminal away from its own viewport.
+             */
+            className="flex min-h-0 flex-1 flex-col overflow-hidden"
           >
             {/*
               * ONE surface. A herdr session opens as a terminal tab beside the
@@ -1858,6 +1957,50 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       ) : null}
 
+      {/*
+        * The room behind the door (780182ff). Opened from the picker's empty
+        * state, into the same project a card would have been created in — the
+        * terminal's project first, the remembered one as fallback, exactly as
+        * `onCreateCard` above decides it. With no project there is nowhere to
+        * put the cards, so the door stays shut rather than opening onto a
+        * panel that cannot finish.
+        */}
+      {asking && (
+        <div
+          className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-8 backdrop-blur-sm"
+          onClick={e => { if (e.target === e.currentTarget) setAsking(null); }}
+        >
+          <div className="max-h-full w-full max-w-2xl overflow-auto rounded-2xl border border-border-soft bg-surface shadow-2xl">
+            <AskAgenfk
+              projectId={asking}
+              onWriteByHand={projectId => { setAsking(null); setActive('kanban'); requestNewItem(projectId); }}
+              /*
+               * LAND ON THE RESULT. Closing onto the screen they started from
+               * meant the cards they had just approved were somewhere else,
+               * and the only way to see them was to go looking. The project's
+               * page is where they are listed.
+               *
+               * The page, NOT a terminal. Cards appearing is cheap and
+               * reversible; an agent starting is neither, and the gate between
+               * those two is what that panel exists for (artifact aca414c7
+               * §06). Starting work stays a thing somebody presses.
+               */
+              onCreated={(_count, projectId) => {
+                setAsking(null);
+                setPageProjectId(projectId);
+                setActive('project');
+              }}
+              onProjectAdded={projectId => {
+                setAsking(null);
+                setPageProjectId(projectId);
+                setActive('project');
+              }}
+              onClose={() => setAsking(null)}
+            />
+          </div>
+        </div>
+      )}
+
       {pickingCard && (
         <CardPicker
           items={activeWork}
@@ -1903,6 +2046,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               setPickingCard(false);
               requestNewItem(intoProject, seedTitle);
             };
+          })()}
+          onAsk={(() => {
+            const intoProject = sessions.find(s => s.id === activeSession)?.projectId
+              || activeProjectId;
+            if (!intoProject) return undefined;
+            return () => { setPickingCard(false); setAsking(intoProject); };
           })()}
           onClose={() => setPickingCard(false)}
           onPick={item => {
@@ -2083,6 +2232,8 @@ interface SidebarProps {
   openSettings: () => void;
   /** Which view the main pane is showing, so WORK can mark it. */
   activeView: ViewId;
+  /** Open a project's own page. The sidebar knows which; the shell knows how. */
+  onOpenProject?: (projectId: string) => void;
   /** Picking a WORK row. The shell owns `active`; the sidebar only asks. */
   onSelectView: (view: ViewId) => void;
   /**
@@ -2095,7 +2246,7 @@ interface SidebarProps {
   onOpenFlows: () => void;
 }
 
-function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResizeStart, onNudge, requestTerminal, sessionRows, herdrProject, openPane, onOpenPane, liveItems, openSession, openSettings, revealOnBoard, activeView, onSelectView, onOpenFlows, onOpenFleet }: SidebarProps) {
+function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResizeStart, onNudge, requestTerminal, sessionRows, herdrProject, openPane, onOpenPane, liveItems, openSession, openSettings, revealOnBoard, activeView, onSelectView, onOpenProject, onOpenFlows, onOpenFleet }: SidebarProps) {
   /*
    * EVERY item, only for the claim chips (CGLAB-190).
    *
@@ -2733,7 +2884,14 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                 <span className="w-[17px] shrink-0" aria-hidden="true" />
               )}
               <button
-                onClick={() => setActiveProjectId(project.id)}
+                /*
+                 * TWO GESTURES ON ONE ROW, and they stay separate. The chevron
+                 * expands and collapses; the NAME opens the project's page.
+                 * Moving the expand onto the name would break the habit of
+                 * anyone who uses the tree, and the page is the thing that had
+                 * no way in at all.
+                 */
+                onClick={() => { setActiveProjectId(project.id); onOpenProject?.(project.id); }}
                 aria-current={isActive ? 'true' : undefined}
                 // Explicit, so the accessible name is the project and not
                 // "horizon-lab 3d" — the age is decoration, not identity.

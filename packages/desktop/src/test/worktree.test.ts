@@ -116,3 +116,112 @@ describe('resolving the directory a card’s terminal opens in', () => {
     expect(requestedPath).not.toContain('../');
   });
 });
+
+/*
+ * The server's words, kept.
+ *
+ * Every refusal here arrives as `{ error }`, and the sentence is the whole
+ * value: "Project has no projectRoot" and git's "not a git repository" are
+ * different problems with different fixes. This used to reduce both to
+ * "The server refused to create a worktree for the card (HTTP 400)", which is
+ * a number where there was an explanation.
+ */
+describe('why the server refused', () => {
+  const json = (status: number, body: string) =>
+    ({ status, contentType: 'application/json', body });
+
+  it('repeats the reason it was given', async () => {
+    await expect(resolveWorktree('i1', {
+      port: 3000,
+      get: async () => json(200, JSON.stringify({ path: null, branchName: null, exists: false })) as never,
+      post: async () => json(400, JSON.stringify({
+        error: "fatal: not a git repository (or any of the parent directories): .git",
+      })) as never,
+    })).rejects.toThrow(/not a git repository/);
+  });
+
+  it('names the project root case in the server’s own words', async () => {
+    await expect(resolveWorktree('i1', {
+      port: 3000,
+      get: async () => json(400, JSON.stringify({
+        error: 'Project has no projectRoot. Set it before creating a worktree.',
+      })) as never,
+      post: async () => null as never,
+    })).rejects.toThrow(/has no projectRoot/);
+  });
+
+  it('still says something useful when there is no reason to repeat', async () => {
+    // A refusal with an empty or non-JSON body is the case the old message was
+    // written for; it keeps it.
+    await expect(resolveWorktree('i1', {
+      port: 3000,
+      get: async () => ({ status: 500, contentType: 'text/plain', body: 'nope' }) as never,
+      post: async () => null as never,
+    })).rejects.toThrow(/HTTP 500/);
+  });
+});
+
+/*
+ * A project that is not a repository.
+ *
+ * The app's own default project is a plain folder in Documents, so this was
+ * the first thing a new install hit: press Start, get "The server refused to
+ * create a worktree for the card (HTTP 400)" — a failure about the card, for a
+ * reason that has nothing to do with the card.
+ */
+describe('projects with no git', () => {
+  const deps = (over: Record<string, unknown> = {}) => ({
+    port: 3000,
+    get: vi.fn(async () => { throw new Error('the server should not be asked'); }),
+    post: vi.fn(async () => { throw new Error('the server should not be asked'); }),
+    isRepo: vi.fn(() => false),
+    projectRoot: vi.fn(async () => '/Users/me/Documents/Default Project'),
+    ...over,
+  });
+
+  it('opens in the project root instead of failing', async () => {
+    const d = deps();
+    expect(await resolveWorktree('i1', d as never)).toEqual({
+      cwd: '/Users/me/Documents/Default Project',
+      branchName: null,
+    });
+  });
+
+  it('does not ask the server to cut a worktree it cannot cut', async () => {
+    const d = deps();
+    await resolveWorktree('i1', d as never);
+    expect(d.post).not.toHaveBeenCalled();
+  });
+
+  it('answers with no branch, because there is none', async () => {
+    // The branch is what the "never fall back" rule protects. With no git
+    // there is no branch to be wrong about, and claiming one would be the
+    // plausible wrong answer this file exists to refuse.
+    const { branchName } = await resolveWorktree('i1', deps() as never);
+    expect(branchName).toBeNull();
+  });
+
+  it('leaves a real repository on the worktree path', async () => {
+    const d = deps({
+      isRepo: vi.fn(() => true),
+      get: vi.fn(async () => ({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({ path: '/wt/card', branchName: 'feat/x', exists: true }),
+      })),
+    });
+    expect(await resolveWorktree('i1', d as never)).toEqual({ cwd: '/wt/card', branchName: 'feat/x' });
+  });
+
+  it('keeps the old behaviour when the caller cannot look at the disk', async () => {
+    // The browser has no fs. Without these deps nothing changes.
+    const d = {
+      port: 3000,
+      get: vi.fn(async () => ({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({ path: '/wt/card', branchName: 'feat/x', exists: true }),
+      })),
+      post: vi.fn(),
+    };
+    expect(await resolveWorktree('i1', d as never)).toEqual({ cwd: '/wt/card', branchName: 'feat/x' });
+  });
+});

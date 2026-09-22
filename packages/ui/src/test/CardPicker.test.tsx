@@ -252,11 +252,17 @@ describe('the picker with only a handful', () => {
  * the decomposer does not exist (`analyze_request` echoes the request and
  * prints four static rules), and it belongs to another card.
  */
+/*
+ * The door kept its job and changed its word. It was "Create a card" beside
+ * "Ask AgEnFK"; there is one door now, called New task, because describing the
+ * objective already covers the single-card case — the contract tells the agent
+ * to propose one item when the objective is one unit of work.
+ */
 describe('the way out of an empty picker', () => {
   it('offers to create a card when nothing is in flight', () => {
     const onCreateCard = vi.fn();
     render(<CardPicker items={[]} onPick={vi.fn()} onClose={vi.fn()} onCreateCard={onCreateCard} />);
-    fireEvent.click(screen.getByRole('button', { name: /create a card/i }));
+    fireEvent.click(screen.getByRole('button', { name: /new task/i }));
     expect(onCreateCard).toHaveBeenCalled();
   });
 
@@ -272,7 +278,7 @@ describe('the way out of an empty picker', () => {
     const MANY = Array.from({ length: 8 }, (_, i) => card(`i${i}`, `Card number ${i}`));
     render(<CardPicker items={MANY} onPick={vi.fn()} onClose={vi.fn()} onCreateCard={onCreateCard} />);
     fireEvent.change(screen.getByRole('searchbox', { name: /search cards/i }), { target: { value: '  fix the picker dismiss  ' } });
-    fireEvent.click(screen.getByRole('button', { name: /create a card/i }));
+    fireEvent.click(screen.getByRole('button', { name: /new task/i }));
     expect(onCreateCard).toHaveBeenCalledWith('fix the picker dismiss');
   });
 
@@ -292,7 +298,7 @@ describe('the way out of an empty picker', () => {
      */
     const onCreateCard = vi.fn();
     render(<CardPicker items={[]} onPick={vi.fn()} onClose={vi.fn()} onCreateCard={onCreateCard} />);
-    fireEvent.click(screen.getByRole('button', { name: /create a card/i }));
+    fireEvent.click(screen.getByRole('button', { name: /new task/i }));
     expect(onCreateCard).toHaveBeenCalled();
     // The ARGUMENT, not the arity: "called with no seed" and "called with an
     // explicit undefined" are the same fact to the caller, and the thing that
@@ -308,7 +314,7 @@ describe('the way out of an empty picker', () => {
     render(<CardPicker items={MANY} onPick={vi.fn()} onClose={vi.fn()} onCreateCard={vi.fn()} />);
     fireEvent.change(screen.getByRole('searchbox', { name: /search cards/i }), { target: { value: 'zzzz' } });
     expect(screen.getByText(/no card matches that/i)).toBeTruthy();
-    expect(screen.getByRole('button', { name: /create a card/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /new task/i })).toBeTruthy();
   });
 
   it('offers to clear the search before it offers to create anything', () => {
@@ -323,7 +329,7 @@ describe('the way out of an empty picker', () => {
     fireEvent.change(screen.getByRole('searchbox', { name: /search cards/i }), { target: { value: 'zzzz' } });
     const buttons = screen.getAllByRole('button').map(b => b.textContent ?? '');
     const clear = buttons.findIndex(t => /clear the search/i.test(t));
-    const create = buttons.findIndex(t => /create a card/i.test(t));
+    const create = buttons.findIndex(t => /new task/i.test(t));
     expect(clear).toBeGreaterThanOrEqual(0);
     expect(create).toBeGreaterThan(clear);
   });
@@ -342,7 +348,7 @@ describe('the way out of an empty picker', () => {
     // nothing is the defect this card exists to fix, not a smaller version
     // of it.
     render(<CardPicker items={[]} onPick={vi.fn()} onClose={vi.fn()} />);
-    expect(screen.queryByRole('button', { name: /create a card/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /new task/i })).toBeNull();
     expect(screen.getByText(/no work in flight/i)).toBeTruthy();
   });
 
@@ -388,7 +394,59 @@ describe('the way out of an empty picker', () => {
     // The picker's job is picking. The doors belong to the state where there
     // is nothing to pick.
     render(<CardPicker items={THREE} onPick={vi.fn()} onClose={vi.fn()} onCreateCard={vi.fn()} />);
-    expect(screen.queryByRole('button', { name: /create a card/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /new task/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /ask agenfk/i })).toBeNull();
+  });
+});
+
+// ── What the dialog was missing, found by using it ─────────────────────────
+describe('CardPicker — reading the list, and the door under it', () => {
+  const items = [
+    { id: 'a', projectId: 'p1', type: 'TASK', title: 'A task', status: 'IN_PROGRESS' },
+    { id: 'b', projectId: 'p1', type: 'BUG', title: 'A bug', status: 'REVIEW' },
+    { id: 'c', projectId: 'p1', type: 'EPIC', title: 'An epic', status: 'TODO' },
+  ] as never as AgEnFKItem[];
+
+  const open = (props: Partial<React.ComponentProps<typeof CardPicker>> = {}) => render(
+    <CardPicker items={items} onPick={() => {}} onClose={() => {}} {...props} />,
+  );
+
+  it('is opaque, because it sits over a terminal', () => {
+    // `bg-nav-surface` is rgba(…,.72) by definition, so the pane behind read
+    // through the list.
+    open();
+    expect(screen.getByRole('dialog').className).toContain('bg-surface');
+    expect(screen.getByRole('dialog').className).not.toContain('nav-surface');
+  });
+
+  it('shows what kind of work each row is', async () => {
+    open();
+    // One square per row: twenty titles say nothing about which is an epic to
+    // fan out and which is a bug to fix.
+    for (const id of ['a', 'b', 'c']) {
+      expect(await screen.findByTestId(`picker-row-type-${id}`)).toBeDefined();
+    }
+  });
+
+  it('filters by type', async () => {
+    open();
+    fireEvent.change(screen.getByTestId('picker-type-filter'), { target: { value: 'BUG' } });
+    expect(screen.getByText('A bug')).toBeDefined();
+    expect(screen.queryByText('A task')).toBeNull();
+  });
+
+  it('offers only the types that are actually there', () => {
+    render(<CardPicker items={[items[0]]} onPick={() => {}} onClose={() => {}} />);
+    // One type present means the filter can only ever empty the list.
+    expect(screen.queryByTestId('picker-type-filter')).toBeNull();
+  });
+
+  it('makes the whole Ask row clickable, not just the three words', () => {
+    // The sentence beside the label was inert text, and it is most of the
+    // target — so a click on it did nothing at all.
+    const onAsk = vi.fn();
+    open({ onAsk });
+    fireEvent.click(screen.getByText(/No card for this yet/i));
+    expect(onAsk).toHaveBeenCalled();
   });
 });

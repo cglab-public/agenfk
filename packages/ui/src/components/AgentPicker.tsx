@@ -14,6 +14,7 @@
 import React from 'react';
 import { clsx } from 'clsx';
 import { AGENT_LABELS } from '../agentLabels';
+import { createPortal } from 'react-dom';
 import { Check, ChevronDown, Search } from 'lucide-react';
 import { AgentIcon } from './AgentIcon';
 
@@ -60,8 +61,48 @@ const FALLBACK_LABELS = AGENT_LABELS;
 /** A machine where detection failed is not a machine with no terminal. */
 const SHELL_FALLBACK: AgentInfo[] = [{ id: 'shell', label: 'Shell', installed: true }];
 
+/**
+ * How many agents it takes before a list becomes a haystack.
+ *
+ * Above this the dropdown grows a search; at or below it, the list IS the
+ * answer. Chosen against the product rather than as a round number: five ship
+ * today, and a sixth would still fit on screen.
+ */
+export const SEARCHABLE_AT = 8;
+
 export function AgentPicker({ value, onChange, listAgents }: AgentPickerProps): React.ReactElement {
   const [open, setOpen] = React.useState(false);
+  /*
+   * Where the menu goes on SCREEN, because it no longer lives inside the
+   * panel that owns the button.
+   *
+   * Absolutely positioned inside its own wrapper, the menu was clipped by the
+   * first scrolling ancestor — in the Ask AgEnFK panel that is the dialog
+   * itself (`overflow-auto`), so the list was cut off mid-row. A portal is the
+   * only fix that does not depend on every future container agreeing to let it
+   * out.
+   */
+  const [anchor, setAnchor] = React.useState<{ top: number; left: number; width: number } | null>(null);
+  const buttonRef = React.useRef<HTMLButtonElement>(null);
+
+  const place = React.useCallback(() => {
+    const rect = buttonRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setAnchor({ top: rect.bottom + 6, left: rect.left, width: rect.width });
+  }, []);
+
+  // Re-measured on scroll and resize: a fixed menu that keeps its first
+  // position detaches from its button the moment anything moves.
+  React.useEffect(() => {
+    if (!open) return;
+    place();
+    window.addEventListener('scroll', place, true);
+    window.addEventListener('resize', place);
+    return () => {
+      window.removeEventListener('scroll', place, true);
+      window.removeEventListener('resize', place);
+    };
+  }, [open, place]);
   const [agents, setAgents] = React.useState<AgentInfo[] | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [query, setQuery] = React.useState('');
@@ -158,7 +199,8 @@ export function AgentPicker({ value, onChange, listAgents }: AgentPickerProps): 
     <div className="relative">
       <button
         type="button"
-        onClick={() => setOpen(o => !o)}
+        ref={buttonRef}
+        onClick={() => { place(); setOpen(o => !o); }}
         aria-haspopup="listbox"
         aria-expanded={open}
         className="flex w-full items-center gap-2.5 rounded-xl border border-border-soft bg-canvas px-3 py-2.5 text-sm text-ink transition-colors hover:border-border-brand"
@@ -168,13 +210,25 @@ export function AgentPicker({ value, onChange, listAgents }: AgentPickerProps): 
         <ChevronDown size={16} className="shrink-0 text-ink-tertiary" />
       </button>
 
-      {open && (
+      {open && anchor && createPortal(
         <div
           ref={menuRef}
           role="listbox"
           onKeyDown={onMenuKeyDown}
-          className="absolute z-20 mt-1.5 max-h-[22rem] w-full origin-top animate-[popIn_120ms_cubic-bezier(0.2,0,0,1)] overflow-y-auto rounded-xl border border-border-soft bg-nav-surface p-2 shadow-2xl scrollbar-slim motion-reduce:animate-none"
+          style={{ position: 'fixed', top: anchor.top, left: anchor.left, minWidth: Math.max(anchor.width, 224) }}
+          className="z-[60] max-h-[22rem] origin-top animate-[popIn_120ms_cubic-bezier(0.2,0,0,1)] overflow-y-auto rounded-xl border border-border-soft bg-surface p-2 shadow-2xl scrollbar-slim motion-reduce:animate-none"
         >
+          {/*
+            * A SEARCH ONLY WHEN THERE IS SOMETHING TO SEARCH THROUGH.
+            *
+            * The product ships a handful of agents — claude, codex, pi, gemini,
+            * a shell — and they all fit on screen at once. A search box over a
+            * list you can already read in full is a field between the person
+            * and the thing they came for: the first report of this was "it is
+            * only showing claude", from someone looking at a filter where a
+            * list was expected.
+            */}
+          {all.length > SEARCHABLE_AT && (
           <div className="relative mb-2">
             <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-tertiary" />
             <input
@@ -185,6 +239,7 @@ export function AgentPicker({ value, onChange, listAgents }: AgentPickerProps): 
               className="w-full rounded-lg border border-border-soft bg-canvas py-2 pl-8 pr-3 text-sm text-ink outline-none focus:border-border-brand"
             />
           </div>
+          )}
 
           {loading && !agents && (
             <div className="px-2.5 py-3 text-sm text-ink-tertiary">Looking for installed agents…</div>
@@ -212,7 +267,8 @@ export function AgentPicker({ value, onChange, listAgents }: AgentPickerProps): 
           {agents && installed.length === 0 && missing.length === 0 && (
             <div className="px-2.5 py-3 text-sm text-ink-tertiary">No agents match “{query}”.</div>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

@@ -30,7 +30,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { readPrefs, writePref, DEFAULT_PREFS, PREF_KEYS } from '../main/prefs';
+import { readPrefs, writePref, cloneDirOrDefault, DEFAULT_PREFS, PREF_KEYS } from '../main/prefs';
 
 let dir: string;
 const file = (): string => path.join(dir, 'prefs.json');
@@ -168,5 +168,33 @@ describe('the custom sound path', () => {
   it('falls back to the default when the file holds the wrong type', () => {
     fs.writeFileSync(file(), JSON.stringify({ autoApprove: false, customSoundPath: 42 }));
     expect(readPrefs(dir).customSoundPath).toBe('');
+  });
+});
+
+/*
+ * The proposal for where clones land. The interesting half is what it does
+ * NOT do: it never writes, so a machine that opens the dialog and closes it
+ * again has no new folder and no new preference.
+ */
+describe('cloneDirOrDefault', () => {
+  it('proposes ~/agenfk when nobody has chosen', () => {
+    expect(cloneDirOrDefault(DEFAULT_PREFS, '/Users/me')).toBe('/Users/me/agenfk');
+  });
+
+  it('yields to a choice that was actually made', () => {
+    expect(cloneDirOrDefault({ ...DEFAULT_PREFS, cloneDir: '/work/checkouts' }, '/Users/me'))
+      .toBe('/work/checkouts');
+  });
+
+  it('does not store the proposal, so "remembered" keeps meaning remembered', () => {
+    // Reading is not choosing. Asserted on the FILE, and against a prefs.json
+    // that exists — `dir` is the suite's own sandbox, removed by afterEach;
+    // a second one declared here would leak and, worse, would let this pass
+    // while the real file was being written.
+    writePref(dir, 'autoApprove', true);
+    cloneDirOrDefault(readPrefs(dir), '/Users/me');
+    const onDisk = JSON.parse(fs.readFileSync(path.join(dir, 'prefs.json'), 'utf8'));
+    expect(onDisk.cloneDir ?? '').toBe('');
+    expect(readPrefs(dir).cloneDir).toBe('');
   });
 });

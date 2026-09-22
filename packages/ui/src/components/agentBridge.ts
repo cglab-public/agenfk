@@ -22,6 +22,35 @@ interface TerminalBridgeApi {
    * `ipcSurface.test.ts` comparing the handler list to the preload.
    */
   sessionPersistence?(): Promise<{ available: boolean; hint?: string; warning?: string }>;
+  /**
+   * The pty surface, as much of it as a caller outside TerminalPane needs.
+   *
+   * Optional in the TYPE for the same reason `sessionPersistence` is: the
+   * renderer bundle and the preload are separate artifacts, and a desktop
+   * build made before `projectId` existed exposes `spawn` without it. Calling
+   * blind would take the screen down over a feature that is merely absent.
+   */
+  spawn?(req: {
+    itemId?: string; projectId?: string; agentId: string; cols: number; rows: number;
+  }): Promise<{ sessionId: string }>;
+  write?(sessionId: string, data: string): Promise<unknown>;
+  onData?(sessionId: string, cb: (e: { sessionId: string; data: string }) => void): () => void;
+  kill?(sessionId: string): Promise<unknown>;
+  /** One question to one agent; what it printed comes back. */
+  propose?(req: { projectId: string; agentId: string; objective: string }): Promise<{ stdout: string }>;
+  onProposeOutput?(cb: (e: { stream: 'stdout' | 'stderr'; line: string }) => void): () => void;
+  /** Open the native folder picker and turn the choice into a project. */
+  addProjectFromDirectory?(): Promise<{ id: string; name: string } | null>;
+  /** Choose the folder; the project is created afterwards, under a name. */
+  chooseProjectFolder?(): Promise<{ path: string; name: string } | null>;
+  addChosenFolder?(name: string): Promise<{ id: string; name: string }>;
+  cloneDir?(): Promise<{ path: string }>;
+  chooseCloneDir?(): Promise<{ path: string | null }>;
+  cloneRepository?(url: string, name: string): Promise<{ id: string; name: string }>;
+  githubOwners?(): Promise<{ login: string; avatarUrl: string | null; self: boolean }[]>;
+  createRepository?(req: {
+    owner: string; repo: string; visibility: 'private' | 'public'; name: string;
+  }): Promise<{ id: string; name: string }>;
 }
 
 const bridge = (): TerminalBridgeApi | null =>
@@ -68,6 +97,115 @@ export const setAutoApproveOnBridge = (value: boolean): Promise<{ autoApprove: b
 };
 
 /** Empty in a browser: there are no local CLIs to offer a page. */
+/**
+ * Open an agent on an OBJECTIVE, in a project, with no card.
+ *
+ * Returns null when this build cannot: an older main process has no such path,
+ * and the screen says so rather than opening a session somewhere arbitrary.
+ */
+export const openObjectiveSession = async (
+  req: { projectId: string; agentId: string; cols: number; rows: number },
+): Promise<{ sessionId: string } | null> => {
+  const api = bridge();
+  if (!api?.spawn) return null;
+  return api.spawn(req);
+};
+
+export const writeToSession = (sessionId: string, data: string): Promise<unknown> | null =>
+  bridge()?.write?.(sessionId, data) ?? null;
+
+export const onSessionData = (
+  sessionId: string,
+  cb: (data: string) => void,
+): (() => void) | null => {
+  const api = bridge();
+  if (!api?.onData) return null;
+  return api.onData(sessionId, ({ data }) => cb(data));
+};
+
+export const killSession = (sessionId: string): void => { void bridge()?.kill?.(sessionId); };
+
+/**
+ * Ask an agent for a decomposition and get back what it printed.
+ *
+ * Returns null when this build has no such path — an older packaged app, or a
+ * browser — so the screen can say which of those it is instead of appearing to
+ * do nothing.
+ */
+export const proposeFromBridge = (
+  req: { projectId: string; agentId: string; objective: string },
+): Promise<{ stdout: string }> | null => bridge()?.propose?.(req) ?? null;
+
+/**
+ * Ask for a folder and get back the project it became.
+ *
+ * No argument and no path in the answer: `projectRoot` is a CWD behind an
+ * internal token, so the main process owns both the picker and the write.
+ * Null means the person cancelled; missing means this build cannot do it.
+ */
+/**
+ * Subscribe to what the agent prints while it is being asked.
+ *
+ * Returns the unsubscribe, or null where this build cannot report it — the
+ * screen then keeps its old behaviour instead of pretending to stream.
+ */
+export const onProposeOutputFromBridge = (
+  cb: (e: { stream: 'stdout' | 'stderr'; line: string }) => void,
+): (() => void) | null => bridge()?.onProposeOutput?.(cb) ?? null;
+
+export const addProjectFromDirectory = (): Promise<{ id: string; name: string } | null> | null =>
+  bridge()?.addProjectFromDirectory?.() ?? null;
+
+/**
+ * The same door in two steps, which is the one the screen uses.
+ *
+ * `choose` answers with the folder and the name it suggests — both only to be
+ * SHOWN — and `add` creates under whatever name survived the edit. What goes
+ * back is text; the path stays where it was chosen.
+ */
+export const chooseProjectFolderFromBridge = ():
+  Promise<{ path: string; name: string } | null> | null =>
+  bridge()?.chooseProjectFolder?.() ?? null;
+
+export const addChosenFolderFromBridge = (name: string):
+  Promise<{ id: string; name: string }> | null =>
+  bridge()?.addChosenFolder?.(name) ?? null;
+
+/**
+ * Where a clone would land, and the picker that changes it.
+ *
+ * A path travels OUT so the screen can show where the clone will go before it
+ * runs — the rule is that the renderer never invents one, not that it may
+ * never see one.
+ */
+export const cloneDirFromBridge = (): Promise<{ path: string }> | null =>
+  bridge()?.cloneDir?.() ?? null;
+
+export const chooseCloneDirFromBridge = (): Promise<{ path: string | null }> | null =>
+  bridge()?.chooseCloneDir?.() ?? null;
+
+/** Clone a repository and get back the project it became. */
+export interface GitHubOwner { login: string; avatarUrl: string | null; self: boolean }
+
+/**
+ * Who this machine can create a repository as.
+ *
+ * An EMPTY list and a missing bridge are different answers: empty means gh is
+ * there and signed out (a state with an instruction), missing means this build
+ * cannot do it at all.
+ */
+export const githubOwnersFromBridge = (): Promise<GitHubOwner[]> | null =>
+  bridge()?.githubOwners?.() ?? null;
+
+export const createRepositoryFromBridge = (req: {
+  owner: string; repo: string; visibility: 'private' | 'public'; name: string;
+}): Promise<{ id: string; name: string }> | null =>
+  bridge()?.createRepository?.(req) ?? null;
+
+export const cloneRepositoryFromBridge = (url: string, name: string):
+  Promise<{ id: string; name: string }> | null =>
+  bridge()?.cloneRepository?.(url, name) ?? null;
+
 export const listAgentsFromBridge = (): Promise<AgentInfo[]> =>
   bridge()?.listAgents() ?? Promise.resolve([]);
 

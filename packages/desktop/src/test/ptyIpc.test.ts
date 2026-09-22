@@ -140,6 +140,11 @@ describe('the channels that exist', () => {
     // later "for convenience" would hand the renderer arbitrary execution.
     expect(Object.keys(handlers).sort()).toEqual([
       'agents:list',
+      // One question to one agent, answered from its non-interactive mode.
+      // Listed here on purpose: this suite is the closed list of what the
+      // renderer may reach, and a channel that appears without a line in it is
+      // the thing the test exists to catch.
+      'agents:propose',
       'agents:refresh',
       // Read-only, takes no renderer input: whether sessions survive quitting,
       // and why not when they do not.
@@ -147,6 +152,13 @@ describe('the channels that exist', () => {
       // The renderer reporting what it has drawn. It is the return path of the
       // flow control in flowControl.ts, and it carries a NUMBER rather than
       // anything that becomes a command — see the clamp in the handler.
+      // A folder becomes a project, resolved entirely in main.
+      'projects:addChosenFolder',
+      'projects:addFromDirectory',
+      'projects:chooseCloneDir',
+      'projects:chooseFolder',
+      'projects:cloneDir',
+      'projects:cloneRepository',
       'pty:ack',
       'pty:kill',
       'pty:resize',
@@ -175,6 +187,8 @@ describe('the channels that exist', () => {
       'sounds:read',
       // Asking for an OS banner. The renderer asks; this process decides,
       // because only it can see whether the window is actually in front.
+      'github:createRepository',
+      'github:owners',
       'notifications:attention',
     ].sort());
   });

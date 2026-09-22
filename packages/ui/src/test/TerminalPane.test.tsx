@@ -518,3 +518,65 @@ describe('the session id it routes on', () => {
     expect(keys).not.toContain('conversation-9');
   });
 });
+
+
+/*
+ * The size the pty is actually told.
+ *
+ * The pane spawns with whatever `fit()` could measure before the pane had been
+ * laid out — often the 80×24 fallback. The RIGHT measurement arrives almost
+ * immediately, because ResizeObserver fires as soon as it observes; but that
+ * is before the spawn promise resolves, and the resize is dropped when there
+ * is no session yet. So the correct number was computed and thrown away, and
+ * nothing measured again until somebody dragged a split.
+ *
+ * What the person sees: the agent draws into a 24-row terminal while the view
+ * shows fifty, so its input box sits in the middle of the pane with a black
+ * rectangle underneath — "I can read the agent, I cannot see where to type".
+ */
+describe('the size the session is told', () => {
+  it('sends the real geometry once the session exists', async () => {
+    /*
+     * FAKE TIMERS, deliberately. The debounce has a trailing edge, and in real
+     * time that edge fires while a test is still awaiting — so this passed
+     * with the defect present, which is the only thing worse than failing.
+     * A real spawn (worktree lookup, HTTP, git) takes far longer than 60ms, so
+     * both edges land before the session exists and both are dropped.
+     */
+    vi.useFakeTimers();
+    try {
+      let resolveSpawn: (v: { sessionId: string; agentSessionId?: string }) => void = () => {};
+      bridge.spawn = vi.fn(() => new Promise(r => { resolveSpawn = r; }));
+
+      renderPane();
+      await act(async () => {});
+      expect(bridge.spawn).toHaveBeenCalled();
+
+      // Measured while the spawn is still in flight, which is what actually
+      // happens: ResizeObserver fires as soon as it observes.
+      terms[0].cols = 143;
+      terms[0].rows = 46;
+      act(() => { fireResize(); });
+      // Both edges of the debounce, spent with no session to tell.
+      await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+      expect(bridge.resize).not.toHaveBeenCalled();
+
+      await act(async () => { resolveSpawn({ sessionId: 'sess-1', agentSessionId: undefined }); });
+      expect(bridge.resize).toHaveBeenCalledWith('sess-1', 143, 46);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not tell a session that was torn down while spawning', async () => {
+    // The pane is gone and the shell is being killed; a resize on the way out
+    // is noise at best.
+    let resolveSpawn: (v: { sessionId: string; agentSessionId?: string }) => void = () => {};
+    bridge.spawn = vi.fn(() => new Promise(r => { resolveSpawn = r; }));
+    const { unmount } = renderPane();
+    await waitFor(() => expect(bridge.spawn).toHaveBeenCalled());
+    unmount();
+    await act(async () => { resolveSpawn({ sessionId: 'sess-1', agentSessionId: undefined }); });
+    expect(bridge.resize).not.toHaveBeenCalled();
+  });
+});

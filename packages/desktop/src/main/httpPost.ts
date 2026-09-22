@@ -17,11 +17,19 @@ import type { HttpResponse } from './probes.js';
 
 const REQUEST_DEADLINE_MS = 5000;
 
+/**
+ * POST by default, and any method the caller names.
+ *
+ * `PUT` joined because pointing a project at its folder is a PUT behind the
+ * internal token — a second copy of this function to change one string would
+ * be the duplication this file exists to avoid.
+ */
 export const httpPost = (
   port: number,
   reqPath: string,
   headers: Record<string, string> = {},
   body = '',
+  method = 'POST',
 ): Promise<HttpResponse | null> =>
   new Promise(resolve => {
     let settled = false;
@@ -42,7 +50,7 @@ export const httpPost = (
         host: '127.0.0.1',
         port,
         path: reqPath,
-        method: 'POST',
+        method,
         headers: {
           'content-type': 'application/json',
           'content-length': Buffer.byteLength(body),

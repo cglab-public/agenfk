@@ -5,7 +5,7 @@ import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
 import { commitStagedForCard, resolveCommitRoot } from './closeCommit';
 import { mayPropagate, readCleanTreeSha, readHead, readTreeStatus } from './propagation';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState } from "@agenfk/core";
+import { describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -1740,6 +1740,50 @@ app.post("/herdr/panes/:paneId/keys", limitExpensive, asyncHandler(async (req: a
  * Rate-limited like the other expensive routes: the body is a tree from a
  * model, so it arrives large and often.
  */
+/**
+ * The contract for one objective, as text.
+ *
+ * The UI cannot render this itself: the words live in core, which is a Node
+ * package, and the browser bundle must not grow a copy — two hand-written
+ * copies of this contract is the defect the core module was written to end.
+ * So the screen asks for it and seeds the agent with what it gets.
+ *
+ * GET, because it computes nothing and stores nothing: the same objective
+ * always produces the same text.
+ */
+app.get("/decompositions/contract", asyncHandler(async (req: any, res: any) => {
+  try {
+    res.type('text/plain').send(decompositionContract(String(req.query.objective ?? '')));
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+}));
+
+/**
+ * A project's configuration, with the origin of every value. READ ONLY.
+ *
+ * It exists because an inferred value that is wrong is invisible: four
+ * projects on this machine have `projectRoot` pointing at $HOME. No write path
+ * changes here — several of these fields are deliberately unreachable from a
+ * browser, and the answer says so, with the command that does change them.
+ */
+app.get("/projects/:id/settings", asyncHandler(async (req: any, res: any) => {
+  const project = await storage.getProject(req.params.id);
+  if (!project) return res.status(404).json({ error: "Project not found" });
+  const flow = project.flowId ? await storage.getFlow(project.flowId) : null;
+  res.json({
+    projectId: project.id,
+    rows: describeProjectSettings(project, {
+      // The name of the flow actually in force — the default's name when the
+      // project has not chosen one, so the row reads as a value rather than as
+      // a blank with a badge.
+      flowName: flow?.name ?? DEFAULT_FLOW.name,
+      worktreeRoot: defaultWorktreeRoot(),
+      homeDir: os.homedir(),
+    }),
+  });
+}));
+
 app.post("/decompositions/review", limitExpensive, asyncHandler(async (req: any, res: any) => {
   const body = req.body ?? {};
   // Reachable for an ARRAY only: express's strict JSON parser rejects a bare

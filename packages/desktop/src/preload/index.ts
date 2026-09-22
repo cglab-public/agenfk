@@ -87,6 +87,42 @@ export interface AgenfkTerminalApi {
   listAgents(): Promise<AgentInfo[]>;
   refreshAgents(): Promise<AgentInfo[]>;
   /**
+   * Ask one agent for a decomposition and get back what it printed.
+   *
+   * Not a terminal: the question has one answer and no follow-up, so this runs
+   * the agent's own non-interactive mode and returns stdout.
+   */
+  propose(req: { projectId: string; agentId: string; objective: string }): Promise<{ stdout: string }>;
+  /**
+   * What the agent is printing WHILE it runs — both streams, line by line.
+   *
+   * The answer still arrives through `propose`; this is so a run that is
+   * thinking, a run that is asking for a login and a run that is wedged stop
+   * looking identical from the outside.
+   */
+  onProposeOutput(cb: (e: { stream: 'stdout' | 'stderr'; line: string }) => void): () => void;
+  /** Open the native folder picker and turn the choice into a project. */
+  addProjectFromDirectory(): Promise<{ id: string; name: string } | null>;
+  /**
+   * The same door in two steps, which is what the screen needs: choose the
+   * folder (the path comes back only to be SHOWN, with the name it suggests),
+   * then create with a name the person may have changed. The renderer never
+   * supplies a path — `projectRoot` stays behind the main process.
+   */
+  chooseProjectFolder(): Promise<{ path: string; name: string } | null>;
+  addChosenFolder(name: string): Promise<{ id: string; name: string }>;
+  /** Where a clone would land today, remembered between runs. */
+  cloneDir(): Promise<{ path: string }>;
+  /** Open the picker and remember the answer. */
+  chooseCloneDir(): Promise<{ path: string | null }>;
+  /** Clone a repository and return the project it became. */
+  cloneRepository(url: string, name: string): Promise<{ id: string; name: string }>;
+  /** Who this machine can create a repository as. Empty means not signed in. */
+  githubOwners(): Promise<{ login: string; avatarUrl: string | null; self: boolean }[]>;
+  createRepository(req: {
+    owner: string; repo: string; visibility: 'private' | 'public'; name: string;
+  }): Promise<{ id: string; name: string }>;
+  /**
    * Whether a session survives quitting, and why not when it does not.
    *
    * Surfaced rather than assumed. A persistence feature that quietly does
@@ -209,6 +245,18 @@ const terminal: AgenfkTerminalApi = {
   listAgents: () => ipcRenderer.invoke('agents:list'),
   sessionPersistence: () => ipcRenderer.invoke('sessions:persistence'),
   refreshAgents: () => ipcRenderer.invoke('agents:refresh'),
+  // One question to one agent. Ids and a sentence in, what it printed out.
+  propose: req => ipcRenderer.invoke('agents:propose', req),
+  onProposeOutput: cb => subscribe('agents:proposeOutput', cb),
+  // No arguments in, a project out. The path stays in the main process.
+  addProjectFromDirectory: () => ipcRenderer.invoke('projects:addFromDirectory'),
+  chooseProjectFolder: () => ipcRenderer.invoke('projects:chooseFolder'),
+  addChosenFolder: (name: string) => ipcRenderer.invoke('projects:addChosenFolder', { name }),
+  cloneDir: () => ipcRenderer.invoke('projects:cloneDir'),
+  chooseCloneDir: () => ipcRenderer.invoke('projects:chooseCloneDir'),
+  cloneRepository: (url, name) => ipcRenderer.invoke('projects:cloneRepository', { url, name }),
+  githubOwners: () => ipcRenderer.invoke('github:owners'),
+  createRepository: req => ipcRenderer.invoke('github:createRepository', req),
 };
 
 const prefs: AgenfkPrefsApi = {

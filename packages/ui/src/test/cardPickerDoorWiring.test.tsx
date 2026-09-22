@@ -149,6 +149,14 @@ const renderShell = () => render(
   </QueryClientProvider>,
 );
 
+/** The same picker, but with work in flight — the ordinary case. */
+const openThePickerWithCards = async () => {
+  vi.mocked(api.listActiveItems).mockResolvedValue([
+    { id: 'c1', projectId: 'p1', type: 'TASK', title: 'A card in flight', status: 'IN_PROGRESS' },
+  ] as never);
+  return openTheEmptyPicker();
+};
+
 const openTheEmptyPicker = async () => {
   renderShell();
   await waitFor(() => expect(spawnCalls.length).toBe(1));
@@ -163,7 +171,7 @@ describe('Create a card, from the empty picker', () => {
   it('asks the app for a new card in the project the shell is on', async () => {
     const picker = await openTheEmptyPicker();
     expect(picker.textContent).toMatch(/no work in flight/i);
-    fireEvent.click(await screen.findByRole('button', { name: /create a card/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /new task/i }));
     await waitFor(() =>
       expect(screen.getByTestId('probe').textContent).toMatch(/^p1#\d+\|p1$/));
   });
@@ -172,7 +180,7 @@ describe('Create a card, from the empty picker', () => {
     // The draft opens on the board. A dialog left on top of it is the same
     // dead-end the picker had before, with an extra step.
     await openTheEmptyPicker();
-    fireEvent.click(await screen.findByRole('button', { name: /create a card/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /new task/i }));
     await waitFor(() =>
       expect(screen.queryByRole('dialog', { name: /which card/i })).toBeNull());
   });
@@ -198,7 +206,7 @@ describe('Create a card, from the empty picker', () => {
       [{ ...restored[0], projectId: 'p2' }] as never,
     );
     await openTheEmptyPicker();
-    fireEvent.click(await screen.findByRole('button', { name: /create a card/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /new task/i }));
     await waitFor(() =>
       expect(screen.getByTestId('probe').textContent).toMatch(/^p2#\d+\|p2$/));
   });
@@ -216,7 +224,7 @@ describe('Create a card, from the empty picker', () => {
       [{ ...restored[0], projectId: '' }] as never,
     );
     await openTheEmptyPicker();
-    fireEvent.click(await screen.findByRole('button', { name: /create a card/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /new task/i }));
     await waitFor(() =>
       expect(screen.getByTestId('probe').textContent).toMatch(/^p1#\d+\|p1$/));
   });
@@ -232,7 +240,7 @@ describe('Create a card, from the empty picker', () => {
       [{ ...restored[0], projectId: undefined }] as never,
     );
     await openTheEmptyPicker();
-    fireEvent.click(await screen.findByRole('button', { name: /create a card/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /new task/i }));
     await waitFor(() =>
       expect(screen.getByTestId('probe').textContent).toMatch(/^p1#\d+\|p1$/));
   });
@@ -247,7 +255,7 @@ describe('Create a card, from the empty picker', () => {
      */
     localStorage.clear();
     await openTheEmptyPicker();
-    fireEvent.click(await screen.findByRole('button', { name: /create a card/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /new task/i }));
     await waitFor(() =>
       expect(screen.getByTestId('probe').textContent).toMatch(/^p1#\d+\|p1$/));
   });
@@ -265,7 +273,7 @@ describe('Create a card, from the empty picker', () => {
     );
     const picker = await openTheEmptyPicker();
     expect(picker.textContent).toMatch(/no work in flight/i);
-    expect(screen.queryByRole('button', { name: /create a card/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /new task/i })).toBeNull();
   });
 
   it('carries the phrase that was typed all the way to the draft', async () => {
@@ -287,18 +295,40 @@ describe('Create a card, from the empty picker', () => {
     fireEvent.change(await screen.findByRole('searchbox', { name: /search cards/i }), {
       target: { value: 'fix the picker dismiss' },
     });
-    fireEvent.click(await screen.findByRole('button', { name: /create a card/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /new task/i }));
     await waitFor(() =>
       expect(screen.getByTestId('probe-title').textContent).toBe('fix the picker dismiss'));
   });
 
-  it('leaves Ask AgEnFK inert, because nothing is behind it yet', async () => {
-    // Disabled in the shell too, not merely in the component's own test: this
-    // is the one control here that must not appear to work.
+  /*
+   * This assertion used to read "leaves Ask AgEnFK inert, because nothing is
+   * behind it yet", and it was right for three cards. There is a room behind
+   * the door now — the contract, the review route and the panel — so the claim
+   * moves to the thing that has to stay true either way: the door works or it
+   * explains itself, and never pretends.
+   */
+  /*
+   * WHERE THE DOOR HAD TO MOVE. It was drawn only in the empty state — which
+   * is where the artifact draws it — and that made it unreachable on any
+   * machine with work in flight, which is every machine that has been used.
+   * The person with twenty cards and a new objective is exactly who needs it.
+   */
+  it('offers Ask AgEnFK under a list that HAS cards', async () => {
+    await openThePickerWithCards();
+    const door = await screen.findByTestId('ask-agenfk-footer');
+    fireEvent.click(door);
+    expect(await screen.findByTestId('ask-agenfk')).toBeDefined();
+  });
+
+  it('opens the Ask AgEnFK panel from the shell, not just in the component test', async () => {
     await openTheEmptyPicker();
-    const ask = await screen.findByRole('button', { name: /ask agenfk/i }) as HTMLButtonElement;
-    expect(ask.disabled).toBe(true);
+    // By testid, not by name: the empty state and the footer BOTH offer the
+    // door now, so a name query finds two.
+    const ask = await screen.findByTestId('ask-agenfk-door') as HTMLButtonElement;
+    expect(ask.disabled).toBe(false);
     fireEvent.click(ask);
-    expect(screen.getByTestId('probe').textContent).toMatch(/^none\|/);
+    // The panel, and the picker gone from under it.
+    expect(await screen.findByTestId('ask-agenfk')).toBeDefined();
+    expect(screen.queryByRole('searchbox', { name: /search cards/i })).toBeNull();
   });
 });

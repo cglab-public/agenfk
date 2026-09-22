@@ -56,13 +56,42 @@ export interface Prefs {
    * about which of their three chimes is in use.
    */
   customSoundName: string;
+  /** Where a cloned repository lands, remembered between runs. */
+  cloneDir: string;
 }
 
 export const DEFAULT_PREFS: Prefs = {
   autoApprove: false,
   customSoundPath: '',
   customSoundName: '',
+  /*
+   * Empty means "nobody has chosen one" — see `cloneDirOrDefault`, which is
+   * where the proposal lives. It is NOT stored as the default here on purpose:
+   * a value written to disk is a decision the person made, and reading one back
+   * that they never made would make "remembered" and "suggested" the same
+   * thing on the next screen that consults this file.
+   */
+  cloneDir: '',
 };
+
+/**
+ * Where a clone should land: what they chose, or ~/agenfk proposed.
+ *
+ * PROPOSED, NOT IMPOSED. Answering "" would make choosing a directory a
+ * precondition of cloning — a question with an obvious answer that the person
+ * has to type anyway. Answering ~/agenfk is only safe because of what the
+ * screen does with it: it is written out in the field, changeable by the
+ * picker, and the folder is created when a clone actually runs rather than on
+ * the chance that one might. An app that invents a directory to write into
+ * WITHOUT SHOWING IT is the thing being avoided; the showing is the whole
+ * difference.
+ *
+ * Visible, not hidden: ~/.agenfk-worktrees and ~/.agenfk-system are dotted
+ * because they are ours to manage. A person's checkouts are theirs to find.
+ */
+export function cloneDirOrDefault(prefs: Prefs, home: string): string {
+  return prefs.cloneDir || path.join(home, 'agenfk');
+}
 
 /** The closed set. A write outside it is refused, not ignored. */
 export const PREF_KEYS = Object.keys(DEFAULT_PREFS) as ReadonlyArray<keyof Prefs>;

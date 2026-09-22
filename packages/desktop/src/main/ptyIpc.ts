@@ -33,6 +33,7 @@
  */
 import type { IpcMainInvokeEvent, WebContents } from 'electron';
 import { PtyRegistry } from './ptyRegistry.js';
+import type { ProposeRequest } from './propose.js';
 import { readPrefs, writePref, PREF_KEYS, DEFAULT_PREFS } from './prefs';
 import {
   SOUND_EXTENSIONS, storeCustomSound, readCustomSound, clearCustomSound,
@@ -112,11 +113,71 @@ export function registerPtyIpc(
     chooseSoundFile: () => Promise<string[] | null>;
     notify: (notice: { agentLabel: string; cardTitle?: string }) => boolean;
   },
+  /**
+   * Asking an agent for a decomposition, once.
+   *
+   * Injected like everything else here, and optional: a build that cannot do
+   * it answers with an error the screen can print, rather than exposing a
+   * channel that throws somewhere deeper.
+   */
+  propose?: (req: ProposeRequest) => Promise<{ stdout: string }>,
+  /**
+   * Turn a folder into a project. Injected and optional, like everything else
+   * here: a build without it answers with an error the screen can print.
+   */
+  addProject?: () => Promise<{ id: string; name: string } | null>,
+  /**
+   * The same door, in two steps: choose the folder, then create with a name.
+   *
+   * Separate from `addProject` because the screen needs the gap between them —
+   * that is where the folder is shown and the name is offered. The path lives
+   * on this side of the border; only a name comes back.
+   */
+  folder?: {
+    choose: () => Promise<{ path: string; name: string } | null>;
+    add: (name: string) => Promise<{ id: string; name: string }>;
+  },
+  /**
+   * Cloning a repository into a project.
+   *
+   * `where` reports the remembered destination so the screen can show it
+   * before anything runs; `choose` opens the picker and remembers the answer;
+   * `clone` takes the URL — text — and returns the project.
+   */
+  cloning?: {
+    where: () => string;
+    choose: () => Promise<string | null>;
+    clone: (url: string, name: string) => Promise<{ id: string; name: string }>;
+  },
+  /**
+   * Creating a repository on GitHub, which is the only door here that writes
+   * where other people can see. `owners` answers who this machine may create
+   * as — an empty list is "not signed in", a state the screen explains rather
+   * than an error it reports.
+   */
+  github?: {
+    owners: () => Promise<{ login: string; avatarUrl: string | null; self: boolean }[]>;
+    create: (req: { owner: string; repo: string; visibility: 'private' | 'public'; name: string })
+      => Promise<{ id: string; name: string }>;
+  },
 ): void {
   ipc.handle('pty:spawn', async (event, raw) => {
     const req = (raw ?? {}) as Record<string, unknown>;
+    /*
+     * A card OR an objective, never neither.
+     *
+     * `itemId` was required, and that is the boundary Ask AgEnFK had to cross:
+     * it opens an agent on a sentence, before any card exists. The rule the
+     * comment on this file states is unchanged — the renderer still sends ids
+     * and an agent, never a path and never a command.
+     */
+    const projectId = req.projectId === undefined ? '' : asString(req.projectId, 'projectId');
+    const itemId = req.itemId === undefined ? '' : asString(req.itemId, 'itemId');
+    if (!itemId && !projectId) throw new Error('itemId or projectId is required');
+    if (itemId && projectId) throw new Error('itemId and projectId are exclusive');
     return registry.spawn({
-      itemId: asString(req.itemId, 'itemId'),
+      itemId,
+      projectId: projectId || undefined,
       agentId: asString(req.agentId, 'agentId'),
       windowId: senderWindowId(event),
       cols: asSize(req.cols, 'cols'),
@@ -199,6 +260,88 @@ export function registerPtyIpc(
   // rather than silently assumed: a persistence feature that quietly does
   // nothing is the defect review caught in the auto-approve chain.
   ipc.handle('sessions:persistence', async () => tmuxStatus());
+
+  /*
+   * One question to one agent, and back with what it printed.
+   *
+   * The renderer sends ids and a sentence — which project, which agent, what
+   * the objective is. It does not send a command and it does not send a path,
+   * which is the same rule `pty:spawn` above states; the binary comes from the
+   * agent descriptors and the directory from the project.
+   */
+  /*
+   * A folder becomes a project. NO ARGUMENTS, deliberately: the renderer does
+   * not name the path, does not receive it, and cannot set `projectRoot` —
+   * that field is a CWD behind an internal token (bug e60e20aa). It asks for a
+   * project and gets the project.
+   */
+  ipc.handle('projects:addFromDirectory', async () => {
+    if (!addProject) throw new Error('This build cannot add a project from a folder.');
+    return addProject();
+  });
+
+  /*
+   * Choosing is not adding. The picker answers with the folder and the name it
+   * suggests, both only so the screen can show them; the path is kept in the
+   * main process and the create below takes a NAME, never a location.
+   */
+  ipc.handle('projects:chooseFolder', async () => {
+    if (!folder) throw new Error('This build cannot choose a folder.');
+    return folder.choose();
+  });
+
+  ipc.handle('projects:addChosenFolder', async (_event, raw) => {
+    if (!folder) throw new Error('This build cannot add a project from a folder.');
+    const req = (raw ?? {}) as Record<string, unknown>;
+    return folder.add(asString(req.name, 'name'));
+  });
+
+  /*
+   * The destination, and the picker that changes it. A path travels OUT so the
+   * screen can show where the clone will land — the rule is that the renderer
+   * never invents one, not that it may never see one.
+   */
+  ipc.handle('projects:cloneDir', async () => (cloning ? { path: cloning.where() } : { path: '' }));
+
+  ipc.handle('projects:chooseCloneDir', async () => {
+    if (!cloning) throw new Error('This build cannot choose a folder.');
+    return { path: await cloning.choose() };
+  });
+
+  ipc.handle('projects:cloneRepository', async (_event, raw) => {
+    if (!cloning) throw new Error('This build cannot clone a repository.');
+    const req = (raw ?? {}) as Record<string, unknown>;
+    return cloning.clone(asString(req.url, 'url'), asString(req.name, 'name'));
+  });
+
+  ipc.handle('github:owners', async () => (github ? github.owners() : []));
+
+  ipc.handle('github:createRepository', async (_event, raw) => {
+    if (!github) throw new Error('This build cannot create a repository on GitHub.');
+    const req = (raw ?? {}) as Record<string, unknown>;
+    const visibility = asString(req.visibility, 'visibility');
+    // The closed set, checked here: everything past this point becomes a gh
+    // argument, and "whatever the renderer sent" is not a visibility.
+    if (visibility !== 'private' && visibility !== 'public') {
+      throw new Error('Visibility must be private or public.');
+    }
+    return github.create({
+      owner: asString(req.owner, 'owner'),
+      repo: asString(req.repo, 'repo'),
+      visibility,
+      name: asString(req.name, 'name'),
+    });
+  });
+
+  ipc.handle('agents:propose', async (_event, raw) => {
+    if (!propose) throw new Error('This build cannot ask an agent for a proposal.');
+    const req = (raw ?? {}) as Record<string, unknown>;
+    return propose({
+      projectId: asString(req.projectId, 'projectId'),
+      agentId: asString(req.agentId, 'agentId'),
+      objective: asString(req.objective, 'objective'),
+    });
+  });
 
   /*
    * Preferences the desktop owns. Deliberately NOT on the server's /settings:

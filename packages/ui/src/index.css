@@ -94,3 +94,43 @@ body {
   box-shadow: inset 0 0 0 2px var(--brand);
   background-color: var(--chip-bg) !important;
 }
+
+/*
+ * An agent is thinking, and the field it will fill says so.
+ *
+ * A band of brand light sweeping across the answer box, rather than a spinner
+ * parked in a corner: the wait belongs to THAT field — it is the one about to
+ * be written into, and it is locked while the agent works. A spinner elsewhere
+ * would leave the box looking like an ordinary empty input somebody forgot to
+ * type in.
+ *
+ * `background-position` and not `transform`, so the band travels across the
+ * element without moving the element or anything it contains.
+ */
+@keyframes agent-sweep {
+  0%   { background-position: -40% 0; }
+  100% { background-position: 140% 0; }
+}
+
+.agent-sweep {
+  background-image: linear-gradient(
+    100deg,
+    transparent 20%,
+    var(--chip-bg) 40%,
+    rgba(4, 204, 152, 0.22) 50%,
+    var(--chip-bg) 60%,
+    transparent 80%
+  );
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
+  animation: agent-sweep 1.6s ease-in-out infinite;
+}
+
+/* Still says "working", without the motion. A wait with no indication at all
+   is worse than a still one for someone who asked not to be moved. */
+@media (prefers-reduced-motion: reduce) {
+  .agent-sweep {
+    animation: none;
+    background-position: 50% 0;
+  }
+}

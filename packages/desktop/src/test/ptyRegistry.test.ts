@@ -1162,3 +1162,86 @@ describe('registering the run when an agent starts', () => {
     expect(calls, 'a run was registered for an agent that never started').toHaveLength(0);
   });
 });
+
+
+/*
+ * Starting the agent ON the card.
+ *
+ * Pressing Start is the decision to work on this card; retyping what the card
+ * already says was the tax on it. The prompt is an ARGUMENT at launch, never
+ * keystrokes afterwards — typing was a race nobody wins, because every one of
+ * these CLIs paints a splash, loads its servers and only then takes the
+ * terminal into raw mode, and anything sent in that window is simply gone.
+ */
+describe('the card as the first prompt', () => {
+  const seeding = (over: Record<string, unknown> = {}) => new PtyRegistry({
+    spawn: spawner as never,
+    resolveCwd: async () => ({ cwd: '/tmp/wt/i1', branchName: 'feat/x' }),
+    emit: () => {},
+    promptFor: vi.fn(async () => 'Work on AgEnFK task a1: Port the admin API'),
+    ...over,
+  } as never);
+
+  const launched = () => spawned[0].args.join(' ');
+
+  it('hands the card to the agent as an argument, at launch', async () => {
+    const reg = seeding();
+    await reg.spawn({ itemId: 'a1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24 } as never);
+    expect(launched()).toContain('Work on AgEnFK task a1: Port the admin API');
+    // And nothing is typed: the keystroke path is what did not work.
+    expect(spawned[0].pty.written).toEqual([]);
+  });
+
+  it('puts it LAST, because a positional comes after every flag', async () => {
+    const reg = seeding();
+    await reg.spawn({
+      itemId: 'a1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24, autoApprove: true,
+    } as never);
+    const args = spawned[0].args;
+    expect(args[args.length - 1]).toContain('Work on AgEnFK');
+    expect(args).toContain('--dangerously-skip-permissions');
+  });
+
+  it('opens an empty session when the card has nothing to say', async () => {
+    const reg = seeding({ promptFor: vi.fn(async () => null) });
+    await reg.spawn({ itemId: 'a1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24 } as never);
+    expect(launched()).not.toContain('Work on AgEnFK');
+  });
+
+  it('still opens the terminal when the card cannot be read', async () => {
+    // Failing the spawn over a convenience would be the worse trade: the
+    // directory is resolved and the agent is ready to be typed at.
+    const reg = seeding({ promptFor: vi.fn(async () => { throw new Error('the server is down'); }) });
+    const { sessionId } = await reg.spawn({
+      itemId: 'a1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24,
+    } as never);
+    expect(sessionId).toBeTruthy();
+    expect(launched()).not.toContain('Work on AgEnFK');
+  });
+
+  it('leaves an ATTACHED session alone', async () => {
+    // Attaching joins a session somebody else started, possibly mid-edit.
+    const promptFor = vi.fn(async () => 'should not be used');
+    const reg = seeding({ promptFor });
+    await reg.spawn({ itemId: 'a1', agentId: 'herdr', windowId: 1, cols: 80, rows: 24 } as never);
+    expect(promptFor).not.toHaveBeenCalled();
+  });
+
+  it('does not re-start the conversation when resuming', async () => {
+    // Resume means the agent already has the card. Handing it over again would
+    // begin the whole thing a second time.
+    const reg = seeding();
+    await reg.spawn({
+      itemId: 'a1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24, resume: true,
+    } as never);
+    expect(launched()).not.toContain('Work on AgEnFK');
+  });
+
+  it('asks for nothing without a card', async () => {
+    // Ask AgEnFK opens an agent on an objective with no item yet.
+    const promptFor = vi.fn(async () => 'should not be used');
+    const reg = seeding({ promptFor, resolveProjectCwd: async () => ({ cwd: '/checkout/p1' }) });
+    await reg.spawn({ projectId: 'p1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24 } as never);
+    expect(promptFor).not.toHaveBeenCalled();
+  });
+});

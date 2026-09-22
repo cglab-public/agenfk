@@ -167,6 +167,49 @@ export const api = {
       throw e;
     }
   },
+  /**
+   * Read a proposed decomposition back, with its problems attached.
+   *
+   * WRITES NOTHING — that is the whole point of the route, and the reason the
+   * screen can show a tree before anything exists. Creation is a separate act,
+   * one `createItem` per accepted row.
+   */
+  /**
+   * The contract for one objective, as text.
+   *
+   * Fetched rather than rendered here: the words live in core, and a second
+   * copy in the browser bundle is the exact defect the core module exists to
+   * end.
+   */
+  decompositionContract: async (objective: string): Promise<string> => {
+    const { data } = await axios.get(`${API_URL}/decompositions/contract`, {
+      params: { objective },
+      responseType: 'text',
+    });
+    return String(data);
+  },
+  /**
+   * A project's configuration with the origin of every value. Read only —
+   * several of these fields are deliberately unreachable from a browser, and
+   * the answer says which, with the command that changes them.
+   */
+  projectSettings: async (projectId: string) => {
+    const { data } = await axios.get(`${API_URL}/projects/${projectId}/settings`);
+    return data as { projectId: string; rows: Array<{
+      key: string; label: string; description: string; value: string | null;
+      origin: 'set-here' | 'inherited' | 'inferred' | 'cli-only' | 'main-only';
+      from: string; how?: string; warning?: string;
+    }> };
+  },
+  reviewProposal: async (proposal: unknown) => {
+    try {
+      const { data } = await axios.post(`${API_URL}/decompositions/review`, proposal);
+      return data;
+    } catch (e) {
+      console.error("API Error reviewing a proposal:", e);
+      throw e;
+    }
+  },
   createItem: async (item: Partial<AgEnFKItem>) => {
     try {
       const { data } = await axios.post(`${API_URL}/items`, item);

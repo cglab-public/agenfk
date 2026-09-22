@@ -1799,3 +1799,69 @@ describe('the WORK group in the sidebar (CGLAB-164)', () => {
     expect(screen.getByRole('navigation', { name: /work/i }).textContent).toMatch(/tasks/i);
   });
 });
+
+/*
+ * The project page's Cards tab, wired to the right question.
+ *
+ * It was derived from `listActiveItems` — the "which card?" picker's list,
+ * which the server builds by excluding the anchors. A project whose cards were
+ * all still in TODO, which is EVERY project whose cards were just created,
+ * showed an empty page while the board beside it listed them.
+ */
+describe('the project page lists the project’s cards', () => {
+  it('shows cards that are still in TODO, which listActiveItems leaves out', async () => {
+    // Deliberately empty: this is the list the page used to read.
+    vi.mocked(api.listActiveItems).mockResolvedValue([] as never);
+    (api as unknown as { listItems: ReturnType<typeof vi.fn> }).listItems = vi.fn(async () => ([
+      { id: 'i1', projectId: 'p1', type: 'TASK', title: 'port the admin API', status: 'TODO' },
+    ]));
+
+    renderShell();
+    fireEvent.click(await screen.findByLabelText('agenfk'));
+    await waitFor(() => expect(screen.getByTestId('project-card-i1')).toBeTruthy());
+    expect(screen.queryByTestId('project-page-empty')).toBeNull();
+  });
+
+  it('asks for that project’s items, not for every item there is', async () => {
+    const listItems = vi.fn(async () => []);
+    (api as unknown as { listItems: ReturnType<typeof vi.fn> }).listItems = listItems;
+
+    renderShell();
+    fireEvent.click(await screen.findByLabelText('agenfk'));
+    await waitFor(() => expect(listItems).toHaveBeenCalledWith({ projectId: 'p1' }));
+  });
+});
+
+/*
+ * The terminal region has to BOUND the terminal.
+ *
+ * Asserted on the class list, which is unusual here and earns its place: the
+ * defect was pure layout and jsdom computes none of it. The region is a flex
+ * ITEM of the column above, and its child is `flex-1` — which means nothing
+ * unless this element is itself a flex container. Without that the pane grew
+ * to whatever height its content wanted, xterm's fit addon measured that
+ * (64 rows where ~36 were visible), and the agent drew its input box nearly
+ * thirty rows below the window's edge. Nothing had overflowed, so there was
+ * nothing to scroll: the box simply was not on screen.
+ */
+describe('the terminal region', () => {
+  it('is a flex column that cannot grow past the window', async () => {
+    renderShell();
+    // By id: the region is `hidden` until a terminal is opened, and a hidden
+    // element is outside the accessibility tree by design.
+    const region = await waitFor(() => {
+      const el = document.getElementById('panel-terminal');
+      if (!el) throw new Error('no terminal region');
+      return el;
+    });
+    const classes = region.className.split(/\s+/);
+    expect(classes).toContain('flex');
+    expect(classes).toContain('flex-col');
+    // The pair that makes a flex child shrinkable rather than content-sized.
+    expect(classes).toContain('flex-1');
+    expect(classes).toContain('min-h-0');
+    // The pane owns its own scrollback; a second scrollbar out here would
+    // scroll the terminal away from its own viewport.
+    expect(classes).toContain('overflow-hidden');
+  });
+});

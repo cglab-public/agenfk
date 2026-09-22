@@ -394,6 +394,24 @@ export function TerminalPane({
           return;
         }
         sessionRef.current = result.sessionId;
+        /*
+         * THE SIZE, NOW THAT THERE IS SOMEBODY TO TELL.
+         *
+         * The pty is spawned with whatever `fit()` could measure before the
+         * pane had been laid out — often the 80×24 fallback. The correct
+         * measurement DID arrive: ResizeObserver fires as soon as it observes.
+         * But that is before this promise resolves, and `applyResize` drops
+         * the call when there is no session yet — so the right number was
+         * computed and thrown away, and nothing measured again until somebody
+         * dragged a split.
+         *
+         * What that looks like: the agent draws into a terminal of 24 rows
+         * while the view shows fifty. Claude Code anchors its input box to the
+         * bottom of the terminal IT believes it has, so the box lands in the
+         * middle of the pane with a black rectangle underneath — and the
+         * person reports, correctly, that they cannot see where to type.
+         */
+        applyResize();
         // Now that the session has a name, start listening for its events.
         for (const subscribe of pending) cleanups.push(subscribe(result.sessionId));
         // After the handle is stored, so a throw in the shell's bookkeeping

@@ -20,3 +20,4 @@ export * from './dispatch';
 export * from './requestBudget.js';
 export * from './decompositionContract';
 export * from './reviewProposal';
+export * from './projectSettings';

@@ -15,6 +15,7 @@ import { stripAnsi, calculateCost, formatCost, calculateCycleTimeMs, formatDurat
 import { api } from '../api';
 import { RunsPanel, type AgentRun } from './RunsPanel';
 import { ItemTypeSquare, ItemTypeBadge, itemTypeHint } from './ItemTypeSquare';
+import { ItemTypePicker } from './ItemTypePicker';
 
 interface CardDetailModalProps {
   item: AgEnFKItem;
@@ -299,24 +300,16 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                * type" and what gets read before the word does.
                */
               <span className="flex items-center gap-1.5">
-                <ItemTypeSquare type={type} testId="new-item-type-square" />
-                <select
-                  value={type}
-                  onChange={(e) => setType(e.target.value as ItemType)}
-                  // One <label> served three inputs here; this was the
-                  // combobox announced with no name at all.
-                  aria-label="Type"
-                  // …and the sentence explaining what the chosen type means
-                  // is several elements away in the DOM, so without this it
-                  // is reachable only in browse mode — never on focus, which
-                  // is when it is needed.
-                  aria-describedby="new-item-type-hint"
-                  className="text-xs font-bold px-2 py-1 rounded-md border border-border-soft bg-surface text-ink focus:outline-none focus:ring-1 focus:ring-brand uppercase tracking-wider"
-                >
-                  {Object.values(ItemType).map(t => (
-                    <option key={t} value={t}>{t}</option>
-                  ))}
-                </select>
+                {/*
+                 * A picker, not a <select>. The options were four bare words:
+                 * an <option> cannot draw the coloured square that says "issue
+                 * type" before the word is read, and cannot carry the sentence
+                 * saying what choosing that type MEANS — so the difference
+                 * between an EPIC and a TASK was invisible at the moment of
+                 * choosing and visible only afterwards, for the one already
+                 * picked.
+                 */}
+                <ItemTypePicker value={type} onChange={setType} testId="new-item-type" describedBy="new-item-type-hint" />
               </span>
             )}
             {!isNew && (

@@ -11,17 +11,24 @@
 import { app, BrowserWindow, dialog, ipcMain, Notification, shell, utilityProcess, type UtilityProcess } from 'electron';
 import * as path from 'path';
 import * as os from 'os';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync, mkdirSync } from 'fs';
+import { execFile } from 'node:child_process';
 import { readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
 import { resolveServer, type ResolvedServer } from './serverLifecycle.js';
 import { resolveDesktopPaths } from './paths.js';
-import { listAgents, reopenNotice } from './agents.js';
+import { printCommandFor, listAgents, reopenNotice } from './agents.js';
 import { resolveDbPath } from './serverEnv.js';
 import { isAgenfkServer, servesUiBundle, httpGet } from './probes.js';
 import { agentRunSourcePath } from './agentRunSource.js';
 import { PtyRegistry } from './ptyRegistry.js';
+import { proposeDecomposition } from './propose.js';
+import { addProjectFromDirectory, folderDoor, type AddProjectDeps } from './addProject.js';
+import { cloneRepository } from './cloneRepository.js';
+import { createRepository, listOwners } from './createRepository.js';
+import { cloneDirOrDefault, readPrefs, writePref } from './prefs.js';
 import { registerPtyIpc } from './ptyIpc.js';
 import { resolveWorktree } from './worktree.js';
+import { cardPrompt } from './cardPrompt.js';
 import { httpPost } from './httpPost.js';
 import { captureLoginPath } from './ptyEnv.js';
 import { adoptFailureChoice, resolveBrowserUi } from './adoptFailure.js';
@@ -421,10 +428,68 @@ async function boot(): Promise<void> {
       }
 
       const { spawn: spawnPty } = await import('@lydell/node-pty');
+      /*
+       * To ONE window, never broadcast, and never to a destroyed one — see
+       * windowEmit.ts for why the guard matters more than it looks. Declared
+       * once because both the terminals and the one-shot agent question report
+       * through it.
+       */
+      const emitToWindow = makeEmit(() => BrowserWindow.getAllWindows());
+
       const port = new URL(server.url).port ? Number(new URL(server.url).port) : DEFAULT_API_PORT;
       ptyRegistry = new PtyRegistry({
         spawn: spawnPty as never,
-        resolveCwd: itemId => resolveWorktree(itemId, { port, get: httpGet, post: httpPost }),
+        /*
+         * The card, in its own words, as the first thing the agent is told.
+         * Read from the server here so the text is the CARD's — the renderer
+         * never supplies what gets typed into a terminal.
+         */
+        promptFor: async itemId => {
+          const res = await httpGet(port, `/items/${encodeURIComponent(itemId)}`);
+          if (!res || res.status >= 300) return null;
+          try {
+            return cardPrompt(JSON.parse(res.body || '{}'));
+          } catch {
+            return null;
+          }
+        },
+        resolveCwd: itemId => resolveWorktree(itemId, {
+          port, get: httpGet, post: httpPost,
+          // Asked on disk rather than inferred from a refusal: matching on
+          // git's wording would break the day git rephrases it.
+          isRepo: dir => existsSync(path.join(dir, '.git')),
+          projectRoot: async id => {
+            const res = await httpGet(port, `/items/${encodeURIComponent(id)}`);
+            if (!res || res.status >= 300) return null;
+            const projectId = JSON.parse(res.body || '{}')?.projectId;
+            if (!projectId) return null;
+            const proj = await httpGet(port, `/projects/${encodeURIComponent(String(projectId))}`);
+            if (!proj || proj.status >= 300) return null;
+            const root = JSON.parse(proj.body || '{}')?.projectRoot;
+            return typeof root === 'string' && root ? root : null;
+          },
+        }),
+        /*
+         * Where a session with no card runs: the project's own checkout.
+         *
+         * Not a worktree — cutting one would mean creating the card that Ask
+         * AgEnFK exists to propose rather than assume. An id in, a path out,
+         * resolved here in the main process like every other path in this app.
+         */
+        resolveProjectCwd: async projectId => {
+          // `.body`, not the response. httpGet resolves to
+          // { status, contentType, body }, so String()-ing it produced the
+          // literal "[object Object]" and JSON.parse said so on screen.
+          const res = await httpGet(port, `/projects/${encodeURIComponent(projectId)}`);
+          if (!res || res.status >= 300) {
+            throw new Error(`The server did not return this project (${res?.status ?? 'no answer'}).`);
+          }
+          const root = JSON.parse(res.body || '{}')?.projectRoot;
+          if (typeof root !== 'string' || !root) {
+            throw new Error('This project has no projectRoot, so there is nowhere to run an agent.');
+          }
+          return { cwd: root };
+        },
         /*
          * A RUN IS REGISTERED WHEN AN AGENT STARTS (BUG 53ed7163).
          *
@@ -488,11 +553,126 @@ async function boot(): Promise<void> {
         // To that window only, and never to a destroyed one. See windowEmit.ts
         // for why the guard matters more than it looks: this runs inside a
         // pty's data callback.
-        emit: makeEmit(() => BrowserWindow.getAllWindows()),
+        emit: emitToWindow,
       });
       // userData, not the AgEnFK database: the database is shared with the
       // CLI and the server, and these preferences exist precisely to be out of
       // reach of anything that talks to the server. See main/prefs.ts.
+      /*
+       * `git clone`, as the two doors that need it both run it.
+       *
+       * execFile, never a shell: the URL is text somebody typed, and it
+       * reaches argv as one argument rather than as something a shell gets to
+       * interpret. `protocol.ext.allow=never` on the command line because a
+       * transport that RUNS COMMANDS must not be re-enabled by the config this
+       * process inherits — -c comes before the subcommand.
+       */
+      const gitClone = (repo: string, target: string, into: string, onLine: (l: string) => void) =>
+        new Promise<void>((resolve, reject) => {
+          /*
+           * Created HERE, after every refusal has had its say: a mistyped URL
+           * must not leave a directory behind, and ~/agenfk is a proposal
+           * until a clone actually runs.
+           */
+          mkdirSync(into, { recursive: true });
+          const child = execFile('git', ['-c', 'protocol.ext.allow=never', 'clone', '--progress', repo, target], {
+            env: process.env,
+            maxBuffer: 16 * 1024 * 1024,
+          }, (err, _stdout, stderr) => {
+            if (err) reject(new Error(String(stderr ?? '').trim() || err.message));
+            else resolve();
+          });
+          // git writes progress to stderr, and a big repository takes minutes.
+          // It goes to the app log, NOT to the screen: showing it there needs
+          // an event channel of its own, and until that exists this is what
+          // turns "stuck?" into an answerable question.
+          child.stderr?.on('data', chunk => {
+            for (const line of String(chunk).split(/[\r\n]+/)) {
+              if (line.trim()) onLine(line.trim());
+            }
+          });
+        });
+
+      /*
+       * The project row, and the internal-token write that points it at the
+       * checkout. Shared by clone and create so the two cannot drift into
+       * telling the user different things about the same failure.
+       */
+      const addProjectAt = async (root: string, projectName: string) => {
+        const created = await httpPost(port, '/projects',
+          { 'Content-Type': 'application/json' }, JSON.stringify({ name: projectName }));
+        if (!created || created.status >= 300) {
+          throw new Error(`The checkout is on disk, but the server refused to create the project (${created?.status ?? 'no answer'}).`);
+        }
+        const project = JSON.parse(created.body);
+        const token = readFileSync(path.join(os.homedir(), '.agenfk', 'verify-token'), 'utf8').trim();
+        const pointed = await httpPost(port, `/projects/${encodeURIComponent(project.id)}/project-root`,
+          { 'Content-Type': 'application/json', 'x-agenfk-internal': token },
+          JSON.stringify({ projectRoot: root }), 'PUT');
+        if (!pointed || pointed.status >= 300) {
+          throw new Error(`The checkout is on disk, but the project could not be pointed at it (${pointed?.status ?? 'no answer'}).`);
+        }
+        return project as { id: string; name: string };
+      };
+
+      /*
+       * `gh`, with an ARGUMENT ARRAY. The one credential this machine has —
+       * see createRepository.ts for why there is no second one.
+       */
+      const runGh = (args: readonly string[]) => new Promise<string>((resolve, reject) => {
+        execFile('gh', [...args], { env: process.env, maxBuffer: 8 * 1024 * 1024 },
+          (err, stdout, stderr) => {
+            // gh explains itself on stderr — a taken name, a missing scope, a
+            // logged-out state. Its words travel; ours would only paraphrase.
+            if (err) reject(new Error(String(stderr ?? '').trim() || err.message));
+            else resolve(String(stdout ?? ''));
+          });
+      });
+
+      /*
+       * The three calls only this process may make: the native picker, the
+       * create, and the internal-token route that points a project at a
+       * folder. Shared by both doors below so they cannot drift apart.
+       */
+      const folderDeps: AddProjectDeps = {
+        chooseDirectory: async () => {
+          const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+          const options: Electron.OpenDialogOptions = {
+            title: 'Choose the project folder',
+            // `createDirectory` so a new project can start from a folder that
+            // does not exist yet, without leaving the dialog.
+            properties: ['openDirectory', 'createDirectory'],
+          };
+          const result = owner
+            ? await dialog.showOpenDialog(owner, options)
+            : await dialog.showOpenDialog(options);
+          return result.canceled ? null : (result.filePaths[0] ?? null);
+        },
+        createProject: async name => {
+          const res = await httpPost(port, '/projects',
+            { 'Content-Type': 'application/json' }, JSON.stringify({ name }));
+          if (!res || res.status >= 300) {
+            throw new Error(`The server refused to create the project (${res?.status ?? 'no answer'}).`);
+          }
+          return JSON.parse(res.body);
+        },
+        /*
+         * The internal-token route. `projectRoot` is a CWD — where the close
+         * commit runs and where worktrees are cut — so the server refuses it
+         * from anyone without this header, and the token is a file only a
+         * trusted process should read.
+         */
+        setProjectRoot: async (projectId, root) => {
+          const token = readFileSync(path.join(os.homedir(), '.agenfk', 'verify-token'), 'utf8').trim();
+          const res = await httpPost(port, `/projects/${encodeURIComponent(projectId)}/project-root`,
+            { 'Content-Type': 'application/json', 'x-agenfk-internal': token },
+            JSON.stringify({ projectRoot: root }), 'PUT');
+          if (!res || res.status >= 300) {
+            throw new Error(`The server refused to point the project at that folder (${res?.status ?? 'no answer'}).`);
+          }
+        },
+      };
+
       registerPtyIpc(ptyRegistry, ipcMain, () => tmuxStatus, () => app.getPath('userData'), {
         // whichOnPath answers with the resolved path or null; the editor
         // probe only asks whether it is there.
@@ -501,7 +681,22 @@ async function boot(): Promise<void> {
         // now permits the editor schemes from the closed list and nothing
         // else — see openExternally.
         openExternal: async url => { openExternally(url); },
-        resolveCwd: itemId => resolveWorktree(itemId, { port, get: httpGet, post: httpPost }),
+        resolveCwd: itemId => resolveWorktree(itemId, {
+          port, get: httpGet, post: httpPost,
+          // Asked on disk rather than inferred from a refusal: matching on
+          // git's wording would break the day git rephrases it.
+          isRepo: dir => existsSync(path.join(dir, '.git')),
+          projectRoot: async id => {
+            const res = await httpGet(port, `/items/${encodeURIComponent(id)}`);
+            if (!res || res.status >= 300) return null;
+            const projectId = JSON.parse(res.body || '{}')?.projectId;
+            if (!projectId) return null;
+            const proj = await httpGet(port, `/projects/${encodeURIComponent(String(projectId))}`);
+            if (!proj || proj.status >= 300) return null;
+            const root = JSON.parse(proj.body || '{}')?.projectRoot;
+            return typeof root === 'string' && root ? root : null;
+          },
+        }),
       }, {
         /*
          * The native picker, and the only way a sound file's path enters this
@@ -533,6 +728,148 @@ async function boot(): Promise<void> {
           supported: () => Notification.isSupported(),
           show: options => { new Notification(options).show(); },
         }),
+      },
+      /*
+       * One question to one agent, and back with what it printed.
+       *
+       * The three pieces it needs are resolved HERE, in the main process: the
+       * project's checkout, the contract (which lives in core and is served by
+       * the API), and the agent's own binary. The renderer sends ids and a
+       * sentence.
+       */
+      req => proposeDecomposition(req, {
+        resolveProjectCwd: async projectId => {
+          // `.body`, not the response. httpGet resolves to
+          // { status, contentType, body }, so String()-ing it produced the
+          // literal "[object Object]" and JSON.parse said so on screen.
+          const res = await httpGet(port, `/projects/${encodeURIComponent(projectId)}`);
+          if (!res || res.status >= 300) {
+            throw new Error(`The server did not return this project (${res?.status ?? 'no answer'}).`);
+          }
+          const root = JSON.parse(res.body || '{}')?.projectRoot;
+          if (typeof root !== 'string' || !root) {
+            throw new Error('This project has no projectRoot, so there is nowhere to run an agent.');
+          }
+          return { cwd: root };
+        },
+        fetchContract: async objective => {
+          const res = await httpGet(port, `/decompositions/contract?objective=${encodeURIComponent(objective)}`);
+          if (!res || res.status >= 300 || !res.body.trim()) {
+            throw new Error(`The server did not return a contract (${res?.status ?? 'no answer'}).`);
+          }
+          return res.body;
+        },
+        printCommand: printCommandFor,
+        run: (file, args, opts) => new Promise((resolve, reject) => {
+          // execFile, never a shell: the objective is a sentence a person
+          // typed, and it reaches argv as one argument rather than as
+          // something a shell gets to interpret.
+          const child = execFile(file, [...args], {
+            cwd: opts.cwd,
+            timeout: opts.timeoutMs,
+            maxBuffer: 16 * 1024 * 1024,
+            env: process.env,
+          }, (err: Error | null, stdout: string, stderr: string) => {
+            // A non-zero exit still carries output worth reading: the answer
+            // may be on stdout and the reason on stderr.
+            if (err && !String(stdout ?? '').trim()) {
+              reject(new Error(String(stderr ?? '').trim() || err.message));
+              return;
+            }
+            resolve({ stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
+          });
+
+          /*
+           * EOF ON STDIN, IMMEDIATELY. execFile opens a pipe and leaves it
+           * open, so a CLI that reads stdin before answering waits on input
+           * that is never coming — the run looks identical to a slow model
+           * until the timeout fires minutes later. A one-shot question has
+           * nothing to type; saying so is what lets the agent get on with it.
+           */
+          child.stdin?.end();
+
+          /*
+           * What it is saying WHILE it says it. The screen used to show a
+           * spinner and the word "working", which cannot distinguish thinking
+           * from stuck from a login prompt nobody can see.
+           */
+          const forward = (stream: 'stdout' | 'stderr') => (chunk: unknown) => {
+            for (const line of String(chunk).split(/[\r\n]+/)) {
+              if (!line.trim()) continue;
+              /*
+               * To the window that asked. There is exactly one for this
+               * question — the panel that started it — and if it has gone,
+               * nobody is waiting for these lines.
+               */
+              const target = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents.id : null;
+              if (target !== null) {
+                emitToWindow(target, 'agents:proposeOutput', { stream, line: line.trim() });
+              }
+            }
+          };
+          child.stdout?.on('data', forward('stdout'));
+          child.stderr?.on('data', forward('stderr'));
+        }),
+      }),
+      // The folder picker, and the two calls only this process may make.
+      () => addProjectFromDirectory(folderDeps),
+      /*
+       * The same three capabilities as the TWO-STEP door: the screen shows
+       * the folder and offers the name between choosing and creating, so
+       * those cannot be one call. Same deps, because it is the same door.
+       */
+      folderDoor(folderDeps),
+      /*
+       * Cloning. The destination lives in prefs so it survives a restart, and
+       * the picker is the only thing that writes it — a directory this app
+       * invented to write into is a directory you stop letting it write to.
+       */
+      {
+        /*
+         * A DEFAULT THAT IS PROPOSED, NOT IMPOSED. Empty prefs answer with
+         * ~/agenfk rather than with nothing: the screen shows it, the picker
+         * changes it, and the choice is remembered. Visible, because this is
+         * where a person's checkouts live — ~/.agenfk-worktrees and
+         * ~/.agenfk-system are hidden precisely because they are ours.
+         */
+        where: () => cloneDirOrDefault(readPrefs(app.getPath('userData')), os.homedir()),
+        choose: async () => {
+          const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+          const options: Electron.OpenDialogOptions = {
+            title: 'Choose where clones land',
+            properties: ['openDirectory', 'createDirectory'],
+          };
+          const result = owner
+            ? await dialog.showOpenDialog(owner, options)
+            : await dialog.showOpenDialog(options);
+          if (result.canceled || !result.filePaths[0]) return null;
+          writePref(app.getPath('userData'), 'cloneDir', result.filePaths[0]);
+          return result.filePaths[0];
+        },
+        clone: async (url, name) => {
+          const into = cloneDirOrDefault(readPrefs(app.getPath('userData')), os.homedir());
+          return cloneRepository({ url, into, name }, {
+            exists: target => existsSync(target),
+            clone: (repo, target, onLine) => gitClone(repo, target, into, onLine),
+            addProject: addProjectAt,
+          }, line => console.log(`[CLONE] ${line}`));
+        },
+      }, {
+        /*
+         * GitHub, through `gh` — the one credential this machine already has.
+         * A second OAuth token would give it two identities that can disagree,
+         * and `agenfk github setup` and this dialog would then tell the user
+         * opposite things about the same account (githubAccount.ts).
+         */
+        owners: () => listOwners(runGh),
+        create: req => createRepository(req, {
+          gh: runGh,
+          into: cloneDirOrDefault(readPrefs(app.getPath('userData')), os.homedir()),
+          exists: target => existsSync(target),
+          clone: (repo, target, onLine) => gitClone(repo, target,
+            cloneDirOrDefault(readPrefs(app.getPath('userData')), os.homedir()), onLine),
+          addProject: addProjectAt,
+        }, line => console.log(`[CREATE] ${line}`)),
       });
     } catch (e) {
       console.warn('[DESKTOP] Terminals unavailable:', (e as Error).message);

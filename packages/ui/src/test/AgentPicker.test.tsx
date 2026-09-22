@@ -16,7 +16,7 @@
 import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import React from 'react';
-import { AgentPicker } from '../components/AgentPicker';
+import { AgentPicker, SEARCHABLE_AT } from '../components/AgentPicker';
 
 // Both groups populated, because the grouping is what this file is about.
 const AGENTS = [
@@ -119,8 +119,28 @@ describe('choosing', () => {
 });
 
 describe('search', () => {
-  it('filters within both groups', async () => {
+  /*
+   * A ROSTER BIG ENOUGH TO NEED ONE. The dropdown only grows a search above
+   * SEARCHABLE_AT, because the product's five agents fit on screen and a
+   * filter over a list you can already read in full reads as "it is only
+   * showing claude" — which is how this was reported.
+   */
+  const MANY = Array.from({ length: SEARCHABLE_AT + 1 }, (_, i) => ({
+    id: `filler-${i}`, label: `Filler ${i}`, installed: true,
+  }));
+  const searchable = async () => [...AGENTS, ...MANY];
+
+  it('is absent when the whole list fits on screen', async () => {
     renderPicker();
+    const menu = await openMenu();
+    expect(within(menu).queryByPlaceholderText(/search agents/i)).toBeNull();
+    // And the agents themselves are what is shown instead.
+    expect(within(menu).getByRole('option', { name: /claude code/i })).toBeDefined();
+    expect(within(menu).getByRole('option', { name: /codex/i })).toBeDefined();
+  });
+
+  it('filters within both groups', async () => {
+    renderPicker({ listAgents: searchable });
     const menu = await openMenu();
     // 'co' matches "Claude Code" (installed) and "Codex" (not installed), so
     // the filter has to reach inside both sections rather than one.
@@ -131,7 +151,7 @@ describe('search', () => {
   });
 
   it('drops a group heading when the filter empties it', async () => {
-    renderPicker();
+    renderPicker({ listAgents: searchable });
     const menu = await openMenu();
     // Only a not-installed agent matches, so the Installed heading must go
     // rather than sit over an empty section.
@@ -141,7 +161,7 @@ describe('search', () => {
   });
 
   it('says nothing matched rather than showing an empty menu', async () => {
-    renderPicker();
+    renderPicker({ listAgents: searchable });
     const menu = await openMenu();
     fireEvent.change(within(menu).getByPlaceholderText(/search agents/i), { target: { value: 'zzzz' } });
     expect(within(menu).getByText(/no agents match/i)).toBeDefined();

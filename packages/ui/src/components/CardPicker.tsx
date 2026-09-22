@@ -24,6 +24,7 @@ import React from 'react';
 import { clsx } from 'clsx';
 import { X } from 'lucide-react';
 import type { AgEnFKItem } from '../types';
+import { ITEM_TYPES, ItemTypeSquare } from './ItemTypeSquare';
 
 export interface CardPickerProps {
   /** The cards on offer — work in flight, the same list the sidebar shows. */
@@ -61,6 +62,15 @@ export interface CardPickerProps {
    * exist yet, and the picker is the only place that still has it.
    */
   readonly onCreateCard?: (seedTitle?: string) => void;
+  /**
+   * Open the Ask AgEnFK panel.
+   *
+   * Optional, and its absence is what keeps the door honest: a host that
+   * cannot answer it leaves the button disabled with the reason on screen,
+   * which is what it did for the three cards it took to build the room behind
+   * it. The prop is the room.
+   */
+  readonly onAsk?: () => void;
 }
 
 /**
@@ -92,11 +102,12 @@ export function orderForPicker(
  */
 export function filterForPicker(
   items: readonly AgEnFKItem[],
-  opts: { projectId?: string; query?: string } = {},
+  opts: { projectId?: string; query?: string; type?: string } = {},
 ): AgEnFKItem[] {
   const needle = fold(opts.query ?? '');
   return items.filter(item => {
     if (opts.projectId && item.projectId !== opts.projectId) return false;
+    if (opts.type && item.type !== opts.type) return false;
     if (!needle) return true;
     return fold(item.title).includes(needle);
   });
@@ -116,7 +127,7 @@ function fold(value: string): string {
  * not a missing card — putting "create" first invites a duplicate of the card
  * you were looking for.
  */
-function EmptyDoors({ onCreateCard, onClearSearch }: { onCreateCard?: () => void; onClearSearch?: () => void }) {
+function EmptyDoors({ onCreateCard, onClearSearch, onAsk }: { onCreateCard?: () => void; onClearSearch?: () => void; onAsk?: () => void }) {
   return (
     <div className="flex flex-col gap-2 px-3 pb-2">
       {onClearSearch && (
@@ -142,7 +153,7 @@ function EmptyDoors({ onCreateCard, onClearSearch }: { onCreateCard?: () => void
           onClick={() => onCreateCard()}
           className="rounded-lg border border-border-brand bg-chip px-3 py-2 text-xs font-semibold text-accent-text transition-opacity hover:opacity-90"
         >
-          ＋ Create a card
+          ＋ New task
         </button>
       )}
       {/*
@@ -167,8 +178,12 @@ function EmptyDoors({ onCreateCard, onClearSearch }: { onCreateCard?: () => void
          */}
         <button
           type="button"
-          disabled
-          className="w-full cursor-not-allowed text-left text-xs font-semibold text-ink-secondary"
+          data-testid="ask-agenfk-door"
+          disabled={!onAsk}
+          onClick={() => onAsk?.()}
+          className={onAsk
+            ? 'w-full text-left text-xs font-semibold text-accent-text'
+            : 'w-full cursor-not-allowed text-left text-xs font-semibold text-ink-secondary'}
         >
           ✧ Ask AgEnFK
         </button>
@@ -180,18 +195,27 @@ function EmptyDoors({ onCreateCard, onClearSearch }: { onCreateCard?: () => void
          * it cannot be read, the door is back to being a dead button.
          */}
         <p data-testid="ask-agenfk-reason" className="mt-1 text-[11px] leading-snug text-ink-secondary">
-          Describe the objective and have the decomposition proposed for you. Not built yet:
-          nothing on the server decomposes anything, so this would be a button that promises and
-          does not deliver.
+          {onAsk
+            ? 'Describe the objective. An agent proposes the decomposition, and you keep, edit or drop each item before anything is created.'
+            /* Still said in full when the host cannot answer it: a door with
+               no room behind it must explain itself, not just go grey. */
+            : 'Describe the objective and have the decomposition proposed for you. Not built yet: nothing on the server decomposes anything, so this would be a button that promises and does not deliver.'}
         </p>
       </div>
     </div>
   );
 }
 
-export function CardPicker({ items, currentItemId, projectNames, onPick, onClose, onCreateCard }: CardPickerProps) {
+export function CardPicker({ items, currentItemId, projectNames, onPick, onClose, onCreateCard, onAsk }: CardPickerProps) {
   const [query, setQuery] = React.useState('');
   const [projectId, setProjectId] = React.useState<string>('');
+  const [typeFilter, setTypeFilter] = React.useState<string>('');
+
+  /** The types actually present, in the product's own order. */
+  const typeOptions = React.useMemo(
+    () => ITEM_TYPES.filter(t => items.some(i => i.type === t)),
+    [items],
+  );
 
   /*
    * Filter FIRST, then order. The other way round would sort a list that is
@@ -199,8 +223,8 @@ export function CardPicker({ items, currentItemId, projectNames, onPick, onClose
    * anything among the cards actually on offer.
    */
   const ordered = React.useMemo(
-    () => orderForPicker(filterForPicker(items, { projectId, query }), currentItemId),
-    [items, currentItemId, projectId, query],
+    () => orderForPicker(filterForPicker(items, { projectId, query, type: typeFilter }), currentItemId),
+    [items, currentItemId, projectId, query, typeFilter],
   );
 
   /*
@@ -231,7 +255,7 @@ export function CardPicker({ items, currentItemId, projectNames, onPick, onClose
         // at the dialog directly and so could not see that.
         tabIndex={-1}
         onKeyDown={e => { if (e.key === 'Escape') onClose(); }}
-        className="flex max-h-[70vh] w-full max-w-md animate-[popIn_140ms_cubic-bezier(0.2,0,0,1)] flex-col rounded-2xl border border-border-soft bg-nav-surface shadow-2xl motion-reduce:animate-none"
+        className="flex max-h-[70vh] w-full max-w-md animate-[popIn_140ms_cubic-bezier(0.2,0,0,1)] flex-col rounded-2xl border border-border-soft bg-surface shadow-2xl motion-reduce:animate-none"
       >
         <div className="flex items-start gap-3 border-b border-border-soft px-5 py-4">
           <div className="min-w-0 flex-1">
@@ -253,7 +277,7 @@ export function CardPicker({ items, currentItemId, projectNames, onPick, onClose
         {/* Only when there is something to narrow. A search box over three
             cards is furniture, and a project filter with one project in it can
             only ever do nothing. */}
-        {(items.length > 6 || projectOptions.length > 1) && (
+        {(items.length > 6 || projectOptions.length > 1 || typeOptions.length > 1) && (
           <div className="flex items-center gap-2 border-b border-border-soft px-3 py-2">
             <input
               type="search"
@@ -277,6 +301,25 @@ export function CardPicker({ items, currentItemId, projectNames, onPick, onClose
                 ))}
               </select>
             )}
+            {/* Type, beside project. The list is every kind of work at once —
+                an epic to fan out, a bug to fix — and "which card?" is usually
+                asked about one of them. Only the types actually present are
+                offered: a filter whose option can only ever empty the list is
+                a control that wastes a click to teach you nothing. */}
+            {typeOptions.length > 1 && (
+              <select
+                value={typeFilter}
+                onChange={e => setTypeFilter(e.target.value)}
+                aria-label="Filter by type"
+                data-testid="picker-type-filter"
+                className="shrink-0 rounded-md border border-border-soft bg-canvas px-2 py-1 text-[11px] text-ink-secondary focus:border-border-brand focus:outline-none"
+              >
+                <option value="">All types</option>
+                {typeOptions.map(t => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            )}
           </div>
         )}
 
@@ -297,6 +340,7 @@ export function CardPicker({ items, currentItemId, projectNames, onPick, onClose
                 // of the card that does not exist yet.
                 onCreateCard={onCreateCard && (() => onCreateCard(query.trim() || undefined))}
                 onClearSearch={() => { setQuery(''); setProjectId(''); }}
+                onAsk={onAsk}
               />
             </>
           ) : ordered.length === 0 ? (
@@ -314,7 +358,7 @@ export function CardPicker({ items, currentItemId, projectNames, onPick, onClose
                   chosen, so there is no seed to carry and the callback goes
                   through as it is. It is safe to pass directly because
                   `EmptyDoors` calls it with NO arguments — see the button. */}
-              <EmptyDoors onCreateCard={onCreateCard} />
+              <EmptyDoors onCreateCard={onCreateCard} onAsk={onAsk} />
             </>
           ) : (
             <ul>
@@ -329,6 +373,10 @@ export function CardPicker({ items, currentItemId, projectNames, onPick, onClose
                       item.id === currentItemId && 'bg-canvas/60',
                     )}
                   >
+                    {/* The type, as the square every tracker uses. Without it
+                        a list of twenty rows says nothing about which of them
+                        is an epic to fan out and which is a bug to fix. */}
+                    <ItemTypeSquare type={item.type} size="sm" testId={`picker-row-type-${item.id}`} />
                     <span className="flex min-w-0 flex-col">
                       <span className="truncate text-xs text-ink">{item.title}</span>
                       {projectNames?.get(item.projectId) && (
@@ -355,6 +403,43 @@ export function CardPicker({ items, currentItemId, projectNames, onPick, onClose
             </ul>
           )}
         </div>
+
+        {/*
+         * THE DOOR, WHERE IT CAN ACTUALLY BE FOUND.
+         *
+         * It was drawn only in the empty state, which is where the artifact
+         * puts it — and that was wrong in practice: the empty state means "no
+         * work in flight", so on any machine with cards open the door does not
+         * exist. The person who has twenty cards and a new objective is
+         * exactly who needs it, and they never saw it.
+         *
+         * "Which card?" and "I do not have one yet" are the same moment. So
+         * the offer sits under the list, always, and the empty state keeps its
+         * own copy because there the question is the whole screen.
+         */}
+        {/*
+          * ONCE, not twice. The empty state draws this door too, and when the
+          * list is empty both were on screen at the same time — the same words
+          * twice, three centimetres apart. The footer is for the case the
+          * empty state cannot cover: a list that HAS cards and still is not
+          * the one you came for.
+          */}
+        {onAsk && ordered.length > 0 && (
+          /* THE WHOLE ROW IS THE BUTTON. It was the three words only, with the
+             sentence beside it as inert text — so a click on the sentence,
+             which is most of the target, did nothing at all. */
+          <button
+            type="button"
+            data-testid="ask-agenfk-footer"
+            onClick={() => onAsk()}
+            className="w-full border-t border-border-soft px-3 py-2 text-left hover:bg-chip"
+          >
+            <span className="text-xs font-semibold text-accent-text">✧ New task</span>
+            <span className="ml-2 text-[11px] text-ink-tertiary">
+              No card for this yet? Describe the objective and review the proposed decomposition.
+            </span>
+          </button>
+        )}
       </div>
     </div>
   );

@@ -23,6 +23,16 @@ export interface WorktreeDeps {
   readonly port: number;
   readonly get: (port: number, path: string, headers?: Record<string, string>) => Promise<HttpResponse | null>;
   readonly post: (port: number, path: string, headers?: Record<string, string>) => Promise<HttpResponse | null>;
+  /**
+   * Is this directory a git checkout? Asked before a worktree is attempted.
+   *
+   * A project can be an ordinary folder — the default one this app creates is
+   * exactly that — and `git worktree add` has nothing to add to it. Optional
+   * so callers that cannot look at the disk keep the old behaviour.
+   */
+  readonly isRepo?: (dir: string) => boolean;
+  /** Where the project lives, for the case above. */
+  readonly projectRoot?: (itemId: string) => Promise<string | null>;
 }
 
 export interface ResolvedWorktree {
@@ -37,10 +47,33 @@ interface WorktreeAnswer {
   exists: boolean;
 }
 
+/**
+ * The server's own sentence, when it sent one.
+ *
+ * Every refusal on this path arrives as `{ error: "<why>" }`, and that text is
+ * the only part worth reading: "Project has no projectRoot" and git's own
+ * "not a git repository" are different problems with different fixes. Reducing
+ * both to "HTTP 400" hands the person a number and sends them to the logs.
+ */
+function reasonFrom(res: HttpResponse): string | null {
+  if (!res.contentType.includes('json')) return null;
+  try {
+    const said = (JSON.parse(res.body) as { error?: unknown })?.error;
+    return typeof said === 'string' && said.trim() ? said.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 function parseJson(res: HttpResponse | null, what: string): unknown {
   if (!res) throw new Error(`Could not reach the AgEnFK server to ${what}.`);
   if (res.status === 404) throw new Error(`Item not found while trying to ${what}.`);
-  if (res.status >= 400) throw new Error(`The server refused to ${what} (HTTP ${res.status}).`);
+  if (res.status >= 400) {
+    const why = reasonFrom(res);
+    throw new Error(why
+      ? `Could not ${what}: ${why}`
+      : `The server refused to ${what} (HTTP ${res.status}).`);
+  }
   if (!res.contentType.includes('json')) {
     throw new Error(`Expected JSON while trying to ${what}, got ${res.contentType || 'no content type'}.`);
   }
@@ -61,6 +94,27 @@ function parseJson(res: HttpResponse | null, what: string): unknown {
  * failure. That is the exact shape of BUG b68254ec.
  */
 export async function resolveWorktree(itemId: string, deps: WorktreeDeps): Promise<ResolvedWorktree> {
+  /*
+   * NOT EVERY PROJECT IS A REPOSITORY, and that is not a failure.
+   *
+   * A folder with no `.git` cannot have a worktree cut from it: git refuses,
+   * the server answers 400, and the person is told their card could not start
+   * — for a reason that has nothing to do with the card. The app's own default
+   * project is such a folder, so this was the first thing a new install hit.
+   *
+   * Opening in the project root is not the "plausible wrong answer" this file
+   * refuses elsewhere. That rule protects the BRANCH: a guessed directory
+   * means an agent committing on somebody else's. Here there is no branch to
+   * be wrong about — there is no git at all — and the root is the only
+   * directory this card could ever mean.
+   */
+  if (deps.isRepo && deps.projectRoot) {
+    const root = await deps.projectRoot(itemId);
+    if (root && !deps.isRepo(root)) {
+      return { cwd: root, branchName: null };
+    }
+  }
+
   // The item id is the renderer's only input on this path. encodeURIComponent
   // keeps it a single path segment, so it can never change which endpoint is
   // called — only which item is asked about.

@@ -815,13 +815,14 @@ describe('the create form is a draft, not a finished card', () => {
   it('hands the type hint to whoever focuses the type control', () => {
     /*
      * Not just on screen — reachable from the control it describes. A sighted
-     * user reads the line under the dropdown; someone tabbing into the
-     * combobox hears "Type, combobox, TASK" and would never reach the
-     * sentence, which sits several elements away in the DOM.
+     * user reads the line under the picker; someone tabbing into it hears
+     * "Type, button, TASK" and would never reach the sentence, which sits
+     * several elements away in the DOM. Every OPTION carries its own hint now,
+     * but the closed control still has to describe itself.
      */
     openDraft();
-    const select = screen.getByRole('combobox', { name: /type/i });
-    const describedBy = select.getAttribute('aria-describedby');
+    const control = screen.getByRole('button', { name: /type/i });
+    const describedBy = control.getAttribute('aria-describedby');
     expect(describedBy).toBeTruthy();
     expect(document.getElementById(describedBy!)?.textContent).toBe(itemTypeHint(ItemType.TASK));
   });
@@ -856,7 +857,10 @@ describe('the create form is a draft, not a finished card', () => {
     // One <label> served three inputs. The type <select> had none, so it was
     // announced as "combobox" and nothing else.
     openDraft();
-    expect(screen.getByRole('combobox', { name: /type/i })).toBeDefined();
+    // A button that opens a listbox, not a combobox: an <option> cannot draw
+    // the type's square or carry what the type means, which is the whole
+    // reason the native select was replaced.
+    expect(screen.getByRole('button', { name: /type/i })).toBeDefined();
   });
 
   it('names the description box, which was an unlabelled textbox', () => {
@@ -878,7 +882,8 @@ describe('the create form is a draft, not a finished card', () => {
     openDraft();
     const square = screen.getByTestId('new-item-type-square');
     expect(square.className).toMatch(/bg-blue-\d{3}/); // TASK
-    fireEvent.change(screen.getByRole('combobox', { name: /type/i }), { target: { value: ItemType.EPIC } });
+    fireEvent.click(screen.getByRole('button', { name: /type/i }));
+    fireEvent.click(screen.getByTestId(`new-item-type-option-${ItemType.EPIC}`));
     expect(screen.getByTestId('new-item-type-square').className).toMatch(/bg-violet-\d{3}/);
   });
 
@@ -892,7 +897,8 @@ describe('the create form is a draft, not a finished card', () => {
      */
     openDraft();
     expect(screen.getByTestId('new-item-type-hint').textContent).toBe(itemTypeHint(ItemType.TASK));
-    fireEvent.change(screen.getByRole('combobox', { name: /type/i }), { target: { value: ItemType.EPIC } });
+    fireEvent.click(screen.getByRole('button', { name: /type/i }));
+    fireEvent.click(screen.getByTestId(`new-item-type-option-${ItemType.EPIC}`));
     expect(screen.getByTestId('new-item-type-hint').textContent).toBe(itemTypeHint(ItemType.EPIC));
     expect(itemTypeHint(ItemType.EPIC)).not.toBe(itemTypeHint(ItemType.TASK));
   });
