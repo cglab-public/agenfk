@@ -44,6 +44,7 @@ import {
   ghHeaders,
   listRegistryFiles,
 } from '../services/flowRegistry.js';
+import { listRegistryPulls } from '../services/registryPulls.js';
 
 /**
  * Hosts a repoint campaign may never target. Every installation in the org
@@ -1699,6 +1700,44 @@ export function adminRouter(ctx: HubServerContext): Router {
     });
     res.json({ copied: copy.copied, skipped: copy.skipped, failed: copy.failed, truncated: copy.truncated });
   }));
+
+  // ── Open pull requests on the org's registry (CGLAB-368) ─────────────
+  // What installations have published (CGLAB-367) and is waiting for review.
+  // Read-only here: every entry links to GitHub, where review and merge
+  // happen. An org still on the public community registry has no repo of its
+  // own to review, so it is told so rather than shown every community PR.
+  router.get('/registry/pulls', guard, asyncRoute(async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const cfg = await getRegistryConfig(ctx.db, orgId);
+    if (cfg.isPublic) {
+      res.json({ repo: cfg.repo, branch: cfg.branch, isPublic: true, pulls: [] });
+      return;
+    }
+    let token: string | null;
+    try {
+      token = await registryToken(ctx.db, orgId, ctx.config.secretKey);
+    } catch {
+      // A rotated hub secret leaves a stored token that cannot be read.
+      res.status(409).json({ error: `the stored GitHub token for ${cfg.repo} cannot be decrypted; re-enter it in Admin > Flows`, repo: cfg.repo });
+      return;
+    }
+    if (!token) {
+      res.status(409).json({ error: `no GitHub token is stored for the org registry ${cfg.repo}`, repo: cfg.repo });
+      return;
+    }
+    const listed = await listRegistryPulls(fetch, cfg.repo, cfg.branch, token);
+    if (!listed.ok) {
+      // Never 200-with-empty: "nothing to review" is a claim, and a failure
+      // must not make it.
+      res.status(502).json({ error: listed.error, repo: cfg.repo });
+      return;
+    }
+    res.json({
+      repo: cfg.repo, branch: cfg.branch, isPublic: false, pulls: listed.pulls,
+      truncated: listed.truncated, allUrl: `https://github.com/${cfg.repo}/pulls`,
+    });
+  }));
+
 
   router.get('/registry/flows', guard, asyncRoute(async (req: Request, res: Response) => {
     const resolved = await resolveRegistrySource(

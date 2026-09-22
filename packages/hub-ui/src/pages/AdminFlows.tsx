@@ -17,6 +17,7 @@ import { Plus, Pencil, Trash2, X, ChevronDown, ChevronRight, Send } from 'lucide
 import { ChildHubPicker, toggledSet } from './childHubPicker';
 import { FlowEditorModal, type FlowClient, type RegistryClient, type Flow } from '@agenfk/flow-editor';
 import { api } from '../api';
+import { RegistryPullsPanel } from './RegistryPullsPanel';
 import { flattenAdminFlow } from './adminFlowShape';
 import { repoOverrideOptions } from './repoOverrideOptions';
 import { availabilityRowState } from './availabilityRowState';
@@ -307,6 +308,7 @@ export function AdminFlows() {
       <FlowDispatches flows={flows} isParent={isParent} hasLiveChildren={childHubs.length > 0} />
 
       <RegistryRepoPanel />
+      <RegistryPullsPanel />
 
       <FlowEditorModal
         isOpen={editorOpen}
@@ -947,6 +949,8 @@ function RegistryRepoPanel() {
       setToken('');
       qc.invalidateQueries({ queryKey: ['admin-registry-config'] });
       qc.invalidateQueries({ queryKey: ['admin-registry-flows'] });
+      // A different repo has different pull requests.
+      qc.invalidateQueries({ queryKey: ['admin-registry-pulls'] });
     },
   });
 
