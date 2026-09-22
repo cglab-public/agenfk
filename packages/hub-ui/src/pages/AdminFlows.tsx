@@ -28,6 +28,7 @@ import {
   liveChildHubs,
   type ChildHubRow,
   type DispatchScopeMode,
+  type FlowDispatchRequest,
   type FlowDispatchRow,
 } from './flowDispatch';
 import { useTheme } from '../ThemeContext';
@@ -370,7 +371,6 @@ function AssignmentsPanel({
 }) {
   const qc = useQueryClient();
   const [adding, setAdding] = useState<'repo' | 'installation' | null>(null);
-  const [dispatching, setDispatching] = useState(false);
 
   // Assignment changes can move org_available server-side (setting the org
   // default forces the flow available), so refresh the flows list too — that's
@@ -523,35 +523,7 @@ function AssignmentsPanel({
 
       {/* Child hubs (CGLAB-358). Only a parent sees this: the list is empty
           on a standalone hub and the row is not rendered at all. */}
-      {childHubs.length > 0 && (() => {
-        const gate = canDispatchFlow(flow as { source?: string | null }, childHubs);
-        return (
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-semibold text-ink-secondary">Child hubs</span>
-              <button
-                onClick={() => setDispatching(v => !v)}
-                disabled={!gate.allowed}
-                title={gate.reason ?? undefined}
-                className={
-                  'text-[11px] inline-flex items-center gap-1 ' +
-                  (gate.allowed ? 'text-accent-text hover:underline' : 'text-ink-tertiary opacity-60 cursor-not-allowed')
-                }
-                data-testid="admin-flow-dispatch-btn"
-              >
-                <Send className="w-3 h-3" /> Dispatch to child hubs
-              </button>
-            </div>
-            {dispatching && gate.allowed && (
-              <DispatchPicker
-                flowId={flow.id}
-                childHubs={childHubs}
-                onDone={() => setDispatching(false)}
-              />
-            )}
-          </div>
-        );
-      })()}
+      {childHubs.length > 0 && <ChildHubsRow flow={flow} childHubs={childHubs} />}
 
       {adding && (
         <AddOverridePicker
@@ -566,6 +538,38 @@ function AssignmentsPanel({
 }
 
 // ── Dispatch to child hubs (CGLAB-358) ─────────────────────────────────────
+
+/**
+ * The 'Child hubs' row of a flow's panel: the Dispatch control and, once
+ * pressed, the picker beneath it. Gated by canDispatchFlow, so a flow the
+ * parent sent shows the control disabled with the reason, not hidden.
+ */
+function ChildHubsRow({ flow, childHubs }: { flow: Flow; childHubs: ChildHubRow[] }) {
+  const [open, setOpen] = useState(false);
+  const gate = canDispatchFlow(flow as { source?: string | null }, childHubs);
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] font-semibold text-ink-secondary">Child hubs</span>
+        <button
+          onClick={() => setOpen(v => !v)}
+          disabled={!gate.allowed}
+          title={gate.reason ?? undefined}
+          className={
+            'text-[11px] inline-flex items-center gap-1 ' +
+            (gate.allowed ? 'text-accent-text hover:underline' : 'text-ink-tertiary opacity-60 cursor-not-allowed')
+          }
+          data-testid="admin-flow-dispatch-btn"
+        >
+          <Send className="w-3 h-3" /> Dispatch to child hubs
+        </button>
+      </div>
+      {open && gate.allowed && (
+        <DispatchPicker flowId={flow.id} childHubs={childHubs} onDone={() => setOpen(false)} />
+      )}
+    </div>
+  );
+}
 
 /**
  * Picks the children a flow goes to and sends the dispatch. 'all' posts no ids
@@ -585,7 +589,7 @@ function DispatchPicker({
   const [error, setError] = useState<string | null>(null);
 
   const send = useMutation({
-    mutationFn: (body: Record<string, unknown>) => api.post('/v1/admin/flow-dispatches', body),
+    mutationFn: (body: FlowDispatchRequest) => api.post('/v1/admin/flow-dispatches', body),
     onMutate: () => setError(null),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['admin-flow-dispatches'] });

@@ -61,8 +61,12 @@ export function canDispatchFlow(
   return { allowed: true, reason: null };
 }
 
+export type FlowDispatchRequest =
+  | { flowId: string; scope: 'all' }
+  | { flowId: string; scope: 'selected'; childHubIds: string[] };
+
 export type FlowDispatchBody =
-  | { ok: true; body: { flowId: string; scope: 'all' } | { flowId: string; scope: 'selected'; childHubIds: string[] } }
+  | { ok: true; body: FlowDispatchRequest }
   | { ok: false; error: string };
 
 /**
