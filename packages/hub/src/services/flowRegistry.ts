@@ -350,6 +350,296 @@ export async function writeRegistryFile(
   return resp.ok;
 }
 
+/** What a publish produced. `error` carries the HTTP status to answer with. */
+export type PublishResult =
+  | { kind: 'pr'; url: string; repo: string; branch: string; base: string; version: string }
+  | { kind: 'existing'; url: string; repo: string; version: string; note?: string }
+  | { kind: 'error'; status: number; error: string };
+
+/** JSON with object keys sorted, so two documents compare by content, not by key order. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value as object).sort()
+      .map((k) => `${JSON.stringify(k)}:${canonicalJson((value as any)[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * Do two registry documents describe the same flow? `author` and `version`
+ * are ignored. The author records who published, and a second person
+ * re-publishing an unchanged flow must not open a PR whose only change
+ * overwrites the first one's credit. The version is assigned BY the publish,
+ * so against the REGISTRY a version-only difference is not a change; against
+ * an open pull request it is (the PR must carry the version being reported).
+ */
+function sameRegistryFlow(onGitHub: string, ours: string, opts: { ignoreVersion: boolean }): boolean {
+  try {
+    const a = JSON.parse(onGitHub);
+    const b = JSON.parse(ours);
+    for (const d of [a, b]) {
+      if (d && typeof d === 'object') {
+        delete d.author;
+        if (opts.ignoreVersion) delete d.version;
+      }
+    }
+    return canonicalJson(a) === canonicalJson(b);
+  } catch {
+    return onGitHub.trim() === ours.trim();
+  }
+}
+
+const BACKTICK = '`';
+const FENCE = BACKTICK.repeat(3);
+/** Inline-code a value from an installation, so no mention, link or image can render. */
+const inertInline = (v: unknown) =>
+  BACKTICK + String(v).replace(/[\u0000-\u001f\u007f`]/g, ' ').trim() + BACKTICK;
+/** Fence a multi-line value from an installation, with no way to close the fence early. */
+const inertBlock = (v: unknown) =>
+  `${FENCE}text\n${String(v).replace(/`{3,}/g, "'''")}\n${FENCE}`;
+
+/**
+ * The numeric core of a version (`2.0.0` of `2.0.0-rc.1`), and whether it had a
+ * prerelease/build suffix. Null for anything without an x.y.z core.
+ */
+const semver = (v: unknown): { core: [number, number, number]; suffixed: boolean } | null => {
+  const m = /^(\d+)\.(\d+)\.(\d+)([-+].*)?$/.exec(String(v ?? '').trim());
+  return m ? { core: [Number(m[1]), Number(m[2]), Number(m[3])], suffixed: !!m[4] } : null;
+};
+const coreAfter = (a: [number, number, number], b: [number, number, number]) =>
+  a[0] !== b[0] ? a[0] > b[0] : a[1] !== b[1] ? a[1] > b[1] : a[2] > b[2];
+
+/**
+ * The version to publish a CHANGED flow at: one patch past what the registry
+ * holds - as the laptop's gh path does - unless the author's version is
+ * already past that. Never BELOW the registry's, prereleases included.
+ */
+function nextRegistryVersion(ours: string, onRegistry: unknown): string {
+  const base = semver(onRegistry);
+  if (!base) return ours;
+  const bumped: [number, number, number] = [base.core[0], base.core[1], base.core[2] + 1];
+  const mine = semver(ours);
+  if (!mine) return bumped.join('.');
+  // Mine is kept when its core is past the bump, or equal to it (a prerelease
+  // of exactly the next version is still "the next version").
+  return coreAfter(bumped, mine.core) ? bumped.join('.') : ours;
+}
+
+/** Every GitHub call gets a bound: several sequential calls must not hold a request forever. */
+const GH_TIMEOUT_MS = 15_000;
+/** A pull request link the hub may hand on. */
+const GITHUB_LINK = /^https:\/\/github\.com\//;
+
+/**
+ * Publish one flow to an org registry as a PULL REQUEST (CGLAB-367).
+ *
+ * The flow is committed on the branch `flow/<slug>` - one branch per flow, so
+ * re-publishing while its PR is open updates THAT PR rather than stacking a
+ * second one that conflicts with it. Nothing is ever written onto the registry
+ * branch itself.
+ *
+ * The branch is only ever moved when that cannot lose work: an open PR into a
+ * DIFFERENT base is refused, and a branch with commits of its own is reset
+ * only once those commits are on the registry branch or in a MERGED pull
+ * request (a squash merge gives new SHAs, so ancestry alone would lock the
+ * flow out). A branch this call created is deleted again if the write fails.
+ *
+ * The registry branch's head is read FIRST and the file is read AT that
+ * commit, so the comparison, the blob sha and the branch point all describe one
+ * tree. The branch goes in the Contents-API body: GitHub's create-or-update
+ * endpoint reads `branch` there and defaults to the repo's default branch.
+ */
+export async function publishFlowPullRequest(
+  fetchImpl: typeof fetch,
+  opts: { repo: string; branch: string; token: string; flow: any; publisher: string; installationId: string | null },
+): Promise<PublishResult> {
+  const { repo, branch, token, flow, publisher, installationId } = opts;
+  const slug = slugify(String(flow?.name ?? ''));
+  const filename = `${slug}.json`;
+  const filePath = `flows/${encodeURIComponent(filename)}`;
+  const api = `${GITHUB_API}/repos/${repo}`;
+  const headers = ghHeaders(token);
+  const headBranch = `flow/${slug}`;
+  const flowVersion = typeof flow?.version === 'string' && flow.version.trim() ? flow.version.trim() : '1.0.0';
+  const call = (url: string, init: { method?: string; body?: unknown } = {}) => fetchImpl(url, {
+    method: init.method ?? 'GET',
+    headers,
+    ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
+    signal: AbortSignal.timeout(GH_TIMEOUT_MS),
+  });
+  const fail = (status: number, error: string): PublishResult => ({ kind: 'error', status, error });
+  // GitHub answers 403 - or 404, for a repo the token may not act on - when
+  // the token lacks a permission. Say which one, instead of a bare status.
+  const refused = (status: number, permissionError: string, otherwise: string): PublishResult =>
+    status === 403 || status === 404 ? fail(403, permissionError) : fail(502, otherwise);
+  const readFile = async (ref: string) => {
+    const r = await call(`${api}/contents/${filePath}?ref=${encodeURIComponent(ref)}`);
+    if (r.status === 404) return { ok: true as const, file: null };
+    if (!r.ok) return { ok: false as const, status: r.status };
+    const f: any = await r.json();
+    return {
+      ok: true as const,
+      file: {
+        sha: typeof f?.sha === 'string' ? f.sha : undefined,
+        text: Buffer.from(String(f?.content ?? ''), 'base64').toString('utf8'),
+      },
+    };
+  };
+  const writeFile = (content: string, sha: string | undefined, message: string) =>
+    call(`${api}/contents/${filePath}`, {
+      method: 'PUT',
+      body: {
+        message,
+        content: Buffer.from(content, 'utf8').toString('base64'),
+        branch: headBranch,
+        ...(sha ? { sha } : {}),
+      },
+    });
+  /** The open pull request FROM flow/<slug>, whatever it targets. */
+  const findOpenPr = async (): Promise<{ ok: true; pr: { url: string; base: string } | null } | { ok: false; status: number }> => {
+    const owner = repo.split('/')[0];
+    const r = await call(`${api}/pulls?state=open&head=${encodeURIComponent(`${owner}:${headBranch}`)}`);
+    if (!r.ok) return { ok: false, status: r.status };
+    const list: any = await r.json();
+    const first = (Array.isArray(list) ? list : [])
+      .find((p: any) => typeof p?.html_url === 'string' && GITHUB_LINK.test(p.html_url));
+    return { ok: true, pr: first ? { url: first.html_url, base: String(first.base?.ref ?? '') } : null };
+  };
+
+  // 1. The registry branch: its head, and the file at exactly that commit.
+  const head = await call(`${api}/git/ref/heads/${branch}`);
+  if (head.status === 404) {
+    return fail(409, `branch ${branch} of ${repo} is not visible to the org registry token - it does not exist, `
+      + 'or the token cannot see the repository. An admin can check the registry settings in Admin > Flows.');
+  }
+  if (!head.ok) return fail(502, `could not read branch ${branch} of ${repo} (GitHub returned ${head.status})`);
+  const baseSha = (await head.json() as any)?.object?.sha;
+  if (typeof baseSha !== 'string') return fail(502, `GitHub did not report a commit for branch ${branch} of ${repo}`);
+
+  const onBase = await readFile(baseSha);
+  if (!onBase.ok) return fail(502, `GitHub returned ${onBase.status} reading flows/${filename} on ${repo}`);
+  let registryVersion: unknown;
+  try { registryVersion = onBase.file ? JSON.parse(onBase.file.text)?.version : undefined; } catch { /* unreadable */ }
+
+  // 2. The flow's own branch, and any pull request open FROM it.
+  const branchRef = await call(`${api}/git/ref/heads/${headBranch}`);
+  const branchExists = branchRef.ok;
+  if (!branchExists && branchRef.status !== 404) {
+    return fail(502, `could not read branch ${headBranch} of ${repo} (GitHub returned ${branchRef.status})`);
+  }
+  const tipSha: string | undefined = branchExists ? (await branchRef.json() as any)?.object?.sha : undefined;
+  let openPr: { url: string; base: string } | null = null;
+  if (branchExists) {
+    const found = await findOpenPr();
+    if (!found.ok) {
+      return refused(found.status, `the org registry token cannot read pull requests on ${repo} (it needs pull-requests: read)`,
+        `could not list pull requests on ${repo} (GitHub returned ${found.status})`);
+    }
+    openPr = found.pr;
+  }
+  if (openPr && openPr.base !== branch) {
+    return fail(409, `${headBranch} already has an open pull request into ${openPr.base || 'another branch'} (${openPr.url}), `
+      + `but the registry branch is now ${branch}. Merge or close that pull request, then publish again.`);
+  }
+
+  // 3. Already on the registry? Then there is nothing to propose - but an open
+  //    PR still proposing something else must not be hidden behind "done".
+  const regDoc = serializeRegistryFlow(flow, publisher);
+  if (onBase.file && sameRegistryFlow(onBase.file.text, regDoc, { ignoreVersion: true })) {
+    return {
+      kind: 'existing', url: `https://github.com/${repo}/blob/${branch}/flows/${filename}`, repo,
+      version: typeof registryVersion === 'string' ? registryVersion : flowVersion,
+      ...(openPr ? { note: `The registry already has this flow, but ${openPr.url} is still open and proposes a different version of it.` } : {}),
+    };
+  }
+
+  // A changed flow gets a version past the registry's; a new one keeps its own.
+  const version = onBase.file ? nextRegistryVersion(flowVersion, registryVersion) : flowVersion;
+  const content = serializeRegistryFlow({ ...flow, version }, publisher);
+  const verb = onBase.file ? 'Update' : 'Add';
+  // A title renders no markdown, but an @ in it still reads as a mention.
+  const title = `${verb} flow: ${String(flow.name).replace(/@/g, '@​')}`;
+
+  // 4a. An open PR already carries this flow: commit onto it, and point at it.
+  //     Compared INCLUDING the version, so a version change reaches the PR.
+  if (openPr) {
+    const onHead = await readFile(headBranch);
+    if (!onHead.ok) return fail(502, `GitHub returned ${onHead.status} reading flows/${filename} on ${headBranch}`);
+    if (!(onHead.file && sameRegistryFlow(onHead.file.text, content, { ignoreVersion: false }))) {
+      const put = await writeFile(content, onHead.file?.sha, title);
+      if (!put.ok) {
+        return refused(put.status, `the org registry token cannot write to ${repo} (it needs contents: write)`,
+          `could not update flows/${filename} on ${headBranch} (GitHub returned ${put.status})`);
+      }
+    }
+    return { kind: 'pr', url: openPr.url, repo, branch: headBranch, base: branch, version };
+  }
+
+  // 4b. No open PR. A leftover flow/<slug> is moved only if that loses nothing.
+  if (branchExists) {
+    const cmp = await call(`${api}/compare/${baseSha}...${encodeURIComponent(headBranch)}`);
+    if (!cmp.ok) return fail(502, `could not compare ${headBranch} with ${branch} on ${repo} (GitHub returned ${cmp.status})`);
+    const aheadBy = Number((await cmp.json() as any)?.ahead_by ?? 0);
+    if (aheadBy > 0) {
+      const tipPrs = tipSha ? await call(`${api}/commits/${tipSha}/pulls`) : null;
+      const merged = tipPrs?.ok ? ((await tipPrs.json()) as any[]).some?.((p: any) => !!p?.merged_at) : false;
+      if (!merged) {
+        return fail(409, `${headBranch} on ${repo} has ${aheadBy} commit(s) that are not on ${branch} and belong to no `
+          + 'merged pull request, so publishing would overwrite them. Open, merge or delete that branch, then publish again.');
+      }
+    }
+  }
+  const moved = branchExists
+    ? await call(`${api}/git/refs/heads/${headBranch}`, { method: 'PATCH', body: { sha: baseSha, force: true } })
+    : await call(`${api}/git/refs`, { method: 'POST', body: { ref: `refs/heads/${headBranch}`, sha: baseSha } });
+  if (!moved.ok) {
+    if (moved.status === 422 && !branchExists) {
+      return fail(409, `another publish of this flow is in progress (${headBranch} appeared meanwhile). Publish again in a moment.`);
+    }
+    return refused(moved.status, `the org registry token cannot create branches on ${repo} (it needs contents: write)`,
+      `could not prepare branch ${headBranch} on ${repo} (GitHub returned ${moved.status})`);
+  }
+  const put = await writeFile(content, onBase.file?.sha, title);
+  if (!put.ok) {
+    // Best effort: a branch this call created must not be left behind empty.
+    if (!branchExists) {
+      await call(`${api}/git/refs/heads/${headBranch}`, { method: 'DELETE' }).catch(() => undefined);
+    }
+    return refused(put.status, `the org registry token cannot write to ${repo} (it needs contents: write)`,
+      `could not write flows/${filename} on ${headBranch} (GitHub returned ${put.status})`);
+  }
+
+  const body = [
+    'Published from the AgEnFK flow editor, through the org hub.',
+    '',
+    `**Flow**: ${inertInline(flow.name)} (file ${inertInline(`flows/${filename}`)})`,
+    ...(flow.description ? ['**Description**:', '', inertBlock(flow.description), ''] : []),
+    `**Published by**: ${inertInline(publisher)}, as reported by the installation`,
+    `**Installation**: ${inertInline(installationId ?? 'fleet key (no installation)')}`,
+  ].join('\n');
+  const pr = await call(`${api}/pulls`, { method: 'POST', body: { title, head: headBranch, base: branch, body } });
+  if (!pr.ok) {
+    // 422 is GitHub refusing a duplicate: a concurrent publish opened it first.
+    // The flow IS proposed - point at that pull request instead of failing.
+    if (pr.status === 422) {
+      const found = await findOpenPr();
+      if (found.ok && found.pr && found.pr.base === branch) {
+        return { kind: 'pr', url: found.pr.url, repo, branch: headBranch, base: branch, version };
+      }
+    }
+    return refused(pr.status,
+      `the org registry token cannot open pull requests on ${repo} (it needs pull-requests: write). `
+        + `The flow was pushed to branch ${headBranch}; grant the permission, or open the pull request by hand.`,
+      `could not open the pull request on ${repo} (GitHub returned ${pr.status}); the flow is on branch ${headBranch}`);
+  }
+  const url = (await pr.json() as any)?.html_url;
+  if (typeof url !== 'string' || !GITHUB_LINK.test(url)) {
+    return fail(502, `GitHub opened a pull request on ${repo} but returned no usable link to it`);
+  }
+  return { kind: 'pr', url, repo, branch: headBranch, base: branch, version };
+}
+
 export interface CopyResult {
   copied: number;
   skipped: number;
