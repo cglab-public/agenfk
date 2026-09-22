@@ -316,4 +316,100 @@ describe('verify runs against the card\'s own tree (CGLAB-366)', () => {
     await projectRootedAt(wt);
     expect(await projectRoot()).toBe(wt);
   });
+
+  // ── the caller's cwd is matched, never trusted (CodeQL #136-139) ─────────
+  //
+  // `cwd` comes off the request body. Once a card has a tree to test, the
+  // server asks git for every checkout of THAT tree's repository and matches
+  // the caller's path against the list; it no longer runs git or touches the
+  // filesystem inside whatever directory the caller named.
+
+  it('does not repoint projectRoot at ANOTHER project\'s checkout the caller verified from', async () => {
+    // A marked main checkout of a different repository: before, a verify
+    // issued from there re-recorded it as THIS project's root, and the run
+    // and every later close aimed at somebody else's repository.
+    const other = makeRepo();
+    const task = await newItem('TASK', 'verified from another project');
+    await step(task.id);
+
+    const res = await validate(task.id, { command: MARK, cwd: other });
+    expect(res.status, JSON.stringify(res.body)).toBeLessThan(300);
+    expect(await projectRoot()).toBe(repo);
+    expect(fs.existsSync(path.join(repo, 'ran-here.txt'))).toBe(true);
+    expect(fs.existsSync(path.join(other, 'ran-here.txt')), 'ran in the other project').toBe(false);
+  });
+
+  it('refuses a cwd that is a link inside projectRoot pointing at another worktree of the repo', async () => {
+    // Textually inside projectRoot, really inside a different checkout. The
+    // match has to be made on the resolved path as well, or one symlink turns
+    // "another checkout" into "this one".
+    const task = await newItem('TASK', 'caller behind a link');
+    const wt = linkedWorktree('feat/behind-link');
+    const link = path.join(repo, 'wt-link');
+    fs.symlinkSync(wt, link, 'dir');
+    await step(task.id);
+
+    const res = await validate(task.id, { command: MARK, cwd: link });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain(wt);
+    expect(fs.existsSync(path.join(repo, 'ran-here.txt'))).toBe(false);
+    expect(fs.existsSync(path.join(wt, 'ran-here.txt'))).toBe(false);
+  });
+
+  it('refuses a caller in a worktree NESTED inside projectRoot: the deepest checkout wins', async () => {
+    // repo/.worktrees/x is a prefix-match for BOTH repo and the worktree. The
+    // caller is in the worktree, so it is the other checkout that counts.
+    const task = await newItem('TASK', 'caller in a nested worktree');
+    const nested = path.join(repo, '.worktrees', 'x');
+    git(repo, 'worktree', 'add', '-q', '-b', 'feat/nested', nested);
+    await step(task.id);
+
+    const res = await validate(task.id, { command: MARK, cwd: nested });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain(nested);
+    expect(fs.existsSync(path.join(repo, 'ran-here.txt'))).toBe(false);
+  });
+
+  it('runs in the card\'s worktree for a caller in a subdirectory of it', async () => {
+    const task = await newItem('TASK', 'caller deep in the card tree');
+    const wt = await cardWorktree(task.id);
+    const sub = path.join(wt, 'packages', 'deep');
+    fs.mkdirSync(sub, { recursive: true });
+    await step(task.id);
+
+    const res = await validate(task.id, { command: MARK, cwd: sub });
+    expect(res.status, JSON.stringify(res.body)).toBeLessThan(300);
+    expect(fs.existsSync(path.join(wt, 'ran-here.txt'))).toBe(true);
+    expect(await projectRoot()).toBe(repo);
+  });
+
+  it('corrects a recorded projectRoot that is a linked worktree, from a verify in the main checkout', async () => {
+    // A root recorded before CGLAB-366 (or set by hand) exists on disk, so
+    // "learn only when there is no root" would keep it for good. The STORED
+    // value's own validity decides whether it may be replaced.
+    const wt = linkedWorktree('feat/was-recorded');
+    const set = await internal(agent().put(`/projects/${projectId}/project-root`)).send({ projectRoot: wt });
+    expect(set.status, JSON.stringify(set.body)).toBe(200);
+    const task = await newItem('TASK', 'verified from the real root');
+
+    await validate(task.id, { cwd: repo });
+    expect(await projectRoot()).toBe(repo);
+  });
+
+  it('does not refuse a caller sitting in the directory of a BARE repository', async () => {
+    // `git worktree list` names the bare directory first, flagged `bare`. It
+    // is not a checkout: nothing there can be "a different checkout".
+    const bare = path.join(tmp('agenfk-vwr-bare2-'), 'repo.git');
+    git(repo, 'clone', '-q', '--bare', repo, bare);
+    const wt = path.join(tmp('agenfk-vwr-bare2-wt-'), 'main');
+    execFileSync('git', ['--git-dir', bare, 'worktree', 'add', '-q', wt, 'main'], { stdio: 'pipe' });
+    fs.mkdirSync(path.join(wt, '.agenfk'), { recursive: true });
+    await projectRootedAt(wt);
+    const task = await newItem('TASK', 'caller in the bare dir');
+    await step(task.id);
+
+    const res = await validate(task.id, { command: MARK, cwd: bare });
+    expect(res.status, JSON.stringify(res.body)).toBeLessThan(300);
+    expect(fs.existsSync(path.join(wt, 'ran-here.txt'))).toBe(true);
+  });
 });

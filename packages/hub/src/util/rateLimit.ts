@@ -1,9 +1,17 @@
-import { Request, Response, NextFunction } from 'express';
+import { Request, RequestHandler } from 'express';
+import expressRateLimit, { ipKeyGenerator } from 'express-rate-limit';
 
-// Dependency-free, in-memory rate limiting + brute-force lockout for the hub.
-// The hub is a single Node process backed by SQLite, so a per-process fixed
-// window is sufficient and avoids pulling a new package into a security PR.
+// In-memory rate limiting + brute-force lockout for the hub. The hub is a
+// single Node process, so a per-process fixed window is sufficient.
 // (Security: bugs 210b3d34, 72f8da10.)
+//
+// The limiter is express-rate-limit, not the hand-rolled window this file used
+// to carry. Behaviour is the same - `max` per window per key, then a 429 with a
+// JSON error and Retry-After - but a home-made middleware is invisible to code
+// scanning, which reported every hub route as unlimited (CodeQL
+// js/missing-rate-limiting, 20 alerts on PR #194) and taught reviewers to
+// dismiss that rule wholesale. The package was already in the tree: the local
+// server has used it since its own migration.
 
 /** Best-effort client IP. Honours the first x-forwarded-for hop (the hub runs
  *  behind a reverse proxy in production) and falls back to the socket.
@@ -26,35 +34,38 @@ export interface RateLimitOptions {
   message?: string;
 }
 
-interface Window { count: number; resetAt: number; }
+/** The default bucket: the client IP, with an IPv6 address reduced to its /64.
+ *  A v6 client takes a fresh address out of its /64 whenever it likes, so a
+ *  key on the exact address hands each one a private budget. */
+function clientKey(req: Request): string {
+  return ipKeyGenerator(clientIp(req), 64);
+}
 
 /** Fixed-window per-key limiter. Returns 429 once `max` is exceeded within
- *  `windowMs`. Stale windows are pruned lazily on each hit. */
-export function rateLimit(opts: RateLimitOptions) {
-  const { windowMs, max, keyFn = clientIp, message = 'Too many requests, slow down.' } = opts;
-  const windows = new Map<string, Window>();
-
-  return (req: Request, res: Response, next: NextFunction): void => {
-    const now = Date.now();
-    const key = keyFn(req);
-    // Opportunistic prune so the map can't grow unbounded under churn.
-    if (windows.size > 10_000) {
-      for (const [k, w] of windows) if (w.resetAt <= now) windows.delete(k);
-    }
-    let w = windows.get(key);
-    if (!w || w.resetAt <= now) {
-      w = { count: 0, resetAt: now + windowMs };
-      windows.set(key, w);
-    }
-    w.count++;
-    if (w.count > max) {
-      const retryAfter = Math.max(1, Math.ceil((w.resetAt - now) / 1000));
+ *  `windowMs`, with the JSON `error` and a Retry-After header. */
+export function rateLimit(opts: RateLimitOptions): RequestHandler {
+  const { windowMs, max, keyFn = clientKey, message = 'Too many requests, slow down.' } = opts;
+  // The casts cross a typings seam, nothing more: express-rate-limit is typed
+  // against the root @types/express while the hub pins its own copy, and the
+  // two Request types are structurally identical at runtime.
+  const limiter = expressRateLimit({
+    windowMs,
+    limit: max,
+    keyGenerator: (req: any) => keyFn(req as Request),
+    standardHeaders: false,
+    legacyHeaders: false,
+    // clientIp reads X-Forwarded-For itself (see above), so the library's
+    // warning about an unexpected X-Forwarded-For without `trust proxy` would
+    // fire on every proxied request and describe a decision already made.
+    validate: { xForwardedForHeader: false },
+    handler: (req: any, res: any) => {
+      const resetTime = req.rateLimit?.resetTime as Date | undefined;
+      const retryAfter = resetTime ? Math.max(1, Math.ceil((resetTime.getTime() - Date.now()) / 1000)) : Math.ceil(windowMs / 1000);
       res.setHeader('Retry-After', String(retryAfter));
       res.status(429).json({ error: message });
-      return;
-    }
-    next();
-  };
+    },
+  });
+  return limiter as unknown as RequestHandler;
 }
 
 /** Per-account failed-attempt lockout. After `maxFailures` failures within

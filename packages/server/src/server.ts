@@ -1035,18 +1035,70 @@ async function checkoutKind(dir: string): Promise<'main' | 'linked' | 'none' | '
   return 'unknown';
 }
 
-/** The repository's shared git directory for the checkout containing `dir`, or null. */
-async function gitCommonDir(dir: string): Promise<string | null> {
-  const r = await git(['rev-parse', '--git-common-dir'], dir);
-  if (!r.ok || !r.out.trim()) return null;
-  return realDir(path.resolve(dir, r.out.trim()));
-}
-
 /** The top of the git checkout containing `dir`, or null when it is not in one. */
 async function gitTopLevel(dir: string): Promise<string | null> {
   const r = await git(['rev-parse', '--show-toplevel'], dir);
   if (!r.ok || !r.out.trim()) return null;
   return realDir(r.out.trim());
+}
+
+/** The deepest of `dirs` that is `p` or contains it, by whole path segments. */
+function deepestContaining(p: string, dirs: readonly string[]): string | null {
+  let best: string | null = null;
+  for (const d of dirs) {
+    if ((p === d || p.startsWith(d + path.sep)) && (!best || d.length > best.length)) best = d;
+  }
+  return best;
+}
+
+/**
+ * Where a verify's caller is, relative to the checkout the verify will test.
+ *
+ *  - 'tested'    inside that checkout.
+ *  - 'other'     inside ANOTHER checkout of the same repository (`checkout`).
+ *  - 'unrelated' anywhere else: another repository, no repository, or a path
+ *                that is not absolute.
+ *
+ * `rawCwd` comes off the request body, so it is MATCHED, never trusted (CodeQL
+ * #136-139). Git runs in `tested` - a directory the server already holds - to
+ * list every checkout of that repository; the caller's path is compared with
+ * the list as a string, and only once it lies inside one of them is it resolved
+ * on disk. Resolving is still required: a link inside one checkout can point
+ * into another, and that caller is in the other one. The deepest match wins,
+ * because a worktree may sit inside the main checkout's directory.
+ */
+async function placeCaller(
+  rawCwd: string,
+  tested: string,
+): Promise<{ kind: 'tested' } | { kind: 'other'; checkout: string; testedTop: string } | { kind: 'unrelated' }> {
+  if (!path.isAbsolute(rawCwd)) return { kind: 'unrelated' };
+  const [list, testedTop] = await Promise.all([
+    git(['worktree', 'list', '--porcelain'], tested),
+    gitTopLevel(tested),
+  ]);
+  if (!list.ok || !testedTop) return { kind: 'unrelated' };
+  // One record per checkout, separated by a blank line. A record flagged
+  // `bare` is the repository directory of a bare layout, not a checkout, so
+  // nothing inside it is "a different checkout". Paths are taken verbatim:
+  // trimming would turn a directory ending in a space into another one.
+  const listed = list.out.split(/\r?\n\r?\n/)
+    .map(rec => rec.split(/\r?\n/))
+    .filter(lines => !lines.includes('bare'))
+    .map(lines => lines.find(l => l.startsWith('worktree '))?.slice('worktree '.length) ?? '')
+    .filter(Boolean);
+  // As git recorded them, and resolved: the caller may report either spelling.
+  const checkouts = [...new Set([...listed, ...listed.map(realDir)])];
+  const resolved = checkouts.map(realDir);
+
+  const lexical = path.resolve(rawCwd);
+  let real: string | null = null;
+  for (const d of checkouts) {
+    if (lexical === d || lexical.startsWith(d + path.sep)) { real = realDir(lexical); break; }
+  }
+  if (real === null) return { kind: 'unrelated' };
+  const at = deepestContaining(real, resolved);
+  if (!at) return { kind: 'unrelated' };
+  return at === testedTop ? { kind: 'tested' } : { kind: 'other', checkout: at, testedTop };
 }
 
 export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null | undefined): Promise<AutoGitCommitResult> => {
@@ -5551,59 +5603,22 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
     return res.status(403).json({ error: "Forbidden: validate endpoint requires internal token." });
   }
   const cwd: string | undefined = typeof req.body.cwd === 'string' && req.body.cwd ? req.body.cwd : undefined;
-  if (cwd) {
-    // Resolve the caller's cwd UP to the project root (nearest `.agenfk` ancestor)
-    // so the verifyCommand always runs at the repo root — even when `agenfk verify`
-    // was invoked from a subdirectory — and never in the daemon's own dir (CGLAB-13).
-    const resolvedRoot = findProjectRoot(cwd);
-    const item = await storage.getItem(req.params.id);
-    // Refused, not corrected. findProjectRoot walks up for a `.agenfk`
-    // directory and `~/.agenfk` exists, so a verify run from anywhere under
-    // $HOME with no closer `.agenfk` resolves to the HOME DIRECTORY — which is
-    // how four projects on one machine came to share it. projectRoot is the
-    // directory a worktree is cut from and the cwd `git add -A && git commit`
-    // runs in, so recording $HOME points both at the user's private files.
-    // Keeping whatever was there is strictly better than overwriting it with
-    // that.
+  const cwdItem = cwd ? await storage.getItem(req.params.id) : null;
+  if (cwd && cwdItem) {
+    const item = cwdItem;
+    const projRoot = (await storage.getProject(item.projectId) as any)?.projectRoot as string | undefined;
+    const worktree = await effectiveWorktreePath(item);
     /*
-     * THE MARKER IS THE PROOF. findProjectRoot returns its STARTING directory
-     * when the walk finds no `.agenfk` ancestor - which is a FAILURE, not an
-     * answer, and the two are indistinguishable by looking at the string.
-     *
-     * It is not hypothetical: `.agenfk/` is gitignored, so a worktree has
-     * none, and a verify run from one used to record that worktree as the
-     * project's own root. Every later operation that resolves through
-     * projectRoot - autoGitCommit above all - then aimed at a directory
-     * belonging to ONE card, permanently, with no message. Checking for the
-     * marker is what tells a real found root from a fallback.
+     * Whether the RECORDED root can be trusted, judged from the stored value
+     * alone. One that is missing, is $HOME or ~/.agenfk, or is a linked
+     * worktree (recorded before CGLAB-366, or set by hand) is replaced from
+     * this caller below; anything else is kept, whatever directory the caller
+     * reports.
      */
-    /*
-     * `findProjectRoot` now ANSWER whether it found anything: null is the walk
-     * reaching the filesystem root without a `.agenfk` marker, which is what a
-     * buggy expression used to record as the project's root.
-     */
-    /*
-     * A LINKED WORKTREE IS NEVER THE PROJECT'S ROOT (CGLAB-366). "A worktree
-     * has no .agenfk" was the only thing keeping one out, and it is a
-     * convention rather than a check: `.agenfk/` is gitignored, and one
-     * hand-made marker inside a worktree recorded that card's tree as the
-     * root of the whole project - every other card's verify and close then
-     * aimed at it. Ask git, which knows.
-     */
-    const kind = resolvedRoot ? await checkoutKind(resolvedRoot) : 'unknown';
-    if (item && resolvedRoot && (kind === 'main' || kind === 'none') && isPersistableProjectRoot(resolvedRoot, os.homedir())) {
-      await storage.updateProject(item.projectId, { projectRoot: resolvedRoot });
-    } else if (item) {
-      const why = resolvedRoot === null
-        ? 'no .agenfk marker above it (a worktree has none) - it is not a project root'
-        : kind === 'linked'
-          ? 'it is a linked git worktree - one card\'s tree, never the project\'s root'
-          : kind === 'unknown'
-            ? 'git could not say whether it is a linked worktree, and guessing wrong repoints the whole project'
-            : 'it is not a persistable project root';
-      console.warn(`[PROJECT_ROOT] Refusing to record ${resolvedRoot ?? cwd} as a project root (item ${item.id}): ${why}`);
-    }
-
+    const rootUsable = !!projRoot && fs.existsSync(projRoot)
+      && isPersistableProjectRoot(projRoot, os.homedir())
+      && (await checkoutKind(projRoot)) !== 'linked';
+    const tested = worktree ?? (rootUsable ? projRoot : undefined);
     /*
      * REFUSE A VERIFY THAT WOULD TEST A DIFFERENT CHECKOUT (CGLAB-366). The
      * tree a verify tests is the card's effective worktree (its own, else its
@@ -5616,32 +5631,85 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
      * Deliberately narrow. Checkouts are compared by git TOP-LEVEL, never
      * against projectRoot itself: a project's `.agenfk` may sit in a
      * subdirectory of its repo. A different repository (a submodule, or a
-     * verify issued from some other project) shares no git common dir and is
-     * not refused. No cwd, or a cwd outside any checkout, is unaffected.
+     * verify issued from some other project) is not one of the tested
+     * repository's checkouts and is not refused. No cwd, or a cwd outside any
+     * checkout, is unaffected. See placeCaller for why the caller's path is
+     * matched against git's list rather than handed to git.
+     *
+     * NOTHING IS LEARNED FROM A CALLER ONCE THE PROJECT HAS A ROOT. Learning
+     * from any marked directory re-recorded ANOTHER project's checkout as this
+     * one's root whenever a verify came from there, and every later run and
+     * close aimed at somebody else's repository. The root is learned below
+     * only when the recorded one is absent or fails rootUsable.
      */
-    if (item) {
-      const projRoot = (await storage.getProject(item.projectId) as any)?.projectRoot as string | undefined;
-      const worktree = await effectiveWorktreePath(item);
-      const tested = worktree ?? projRoot;
-      if (tested && fs.existsSync(tested)) {
-        const [callerTop, testedTop] = await Promise.all([gitTopLevel(cwd), gitTopLevel(tested)]);
-        if (callerTop && testedTop && callerTop !== testedTop) {
-          const [callerCommon, testedCommon] = await Promise.all([gitCommonDir(cwd), gitCommonDir(tested)]);
-          if (callerCommon && testedCommon && callerCommon === testedCommon) {
-            const what = worktree
-              ? `its worktree ${worktree} (the card's own, or its top-level item's)`
-              : `projectRoot ${projRoot} - the card has no worktree, nor does its top-level item`;
-            return res.status(409).json({
-              error: `Refusing to verify: you are working in ${callerTop}, but card ${item.id} is verified in `
-                + `${what}. That is a different checkout of the same repository, so the run would test `
-                + 'code you are not editing and the close commit would read an index that is not yours. '
-                + `Run agenfk verify from ${testedTop}, with your changes there.`
-                + (worktree ? '' : ' To give the card a tree of its own, run `agenfk worktree create <top-level item id>` and work in the directory it prints.'),
-              callerRoot: callerTop,
-              testedRoot: testedTop,
-            });
-          }
-        }
+    if (tested && fs.existsSync(tested)) {
+      const place = await placeCaller(cwd, tested);
+      if (place.kind === 'other') {
+        const what = worktree
+          ? `its worktree ${worktree} (the card's own, or its top-level item's)`
+          : `projectRoot ${projRoot} - the card has no worktree, nor does its top-level item`;
+        return res.status(409).json({
+          error: `Refusing to verify: you are working in ${place.checkout}, but card ${item.id} is verified in `
+            + `${what}. That is a different checkout of the same repository, so the run would test `
+            + 'code you are not editing and the close commit would read an index that is not yours. '
+            + `Run agenfk verify from ${place.testedTop}, with your changes there.`
+            + (worktree ? '' : ' To give the card a tree of its own, run `agenfk worktree create <top-level item id>` and work in the directory it prints.'),
+          callerRoot: place.checkout,
+          testedRoot: place.testedTop,
+        });
+      }
+    }
+    if (!rootUsable) {
+      // No root yet, or the recorded one cannot be trusted: learn it.
+      // Resolve the caller's cwd UP to the project root (nearest `.agenfk` ancestor)
+      // so the verifyCommand always runs at the repo root — even when `agenfk verify`
+      // was invoked from a subdirectory — and never in the daemon's own dir (CGLAB-13).
+      const resolvedRoot = path.isAbsolute(cwd) ? findProjectRoot(cwd) : null;
+      // Refused, not corrected. findProjectRoot walks up for a `.agenfk`
+      // directory and `~/.agenfk` exists, so a verify run from anywhere under
+      // $HOME with no closer `.agenfk` resolves to the HOME DIRECTORY — which is
+      // how four projects on one machine came to share it. projectRoot is the
+      // directory a worktree is cut from and the cwd `git add -A && git commit`
+      // runs in, so recording $HOME points both at the user's private files.
+      // Keeping whatever was there is strictly better than overwriting it with
+      // that.
+      /*
+       * THE MARKER IS THE PROOF. findProjectRoot returns its STARTING directory
+       * when the walk finds no `.agenfk` ancestor - which is a FAILURE, not an
+       * answer, and the two are indistinguishable by looking at the string.
+       *
+       * It is not hypothetical: `.agenfk/` is gitignored, so a worktree has
+       * none, and a verify run from one used to record that worktree as the
+       * project's own root. Every later operation that resolves through
+       * projectRoot - autoGitCommit above all - then aimed at a directory
+       * belonging to ONE card, permanently, with no message. Checking for the
+       * marker is what tells a real found root from a fallback.
+       */
+      /*
+       * `findProjectRoot` now ANSWER whether it found anything: null is the walk
+       * reaching the filesystem root without a `.agenfk` marker, which is what a
+       * buggy expression used to record as the project's root.
+       */
+      /*
+       * A LINKED WORKTREE IS NEVER THE PROJECT'S ROOT (CGLAB-366). "A worktree
+       * has no .agenfk" was the only thing keeping one out, and it is a
+       * convention rather than a check: `.agenfk/` is gitignored, and one
+       * hand-made marker inside a worktree recorded that card's tree as the
+       * root of the whole project - every other card's verify and close then
+       * aimed at it. Ask git, which knows.
+       */
+      const kind = resolvedRoot ? await checkoutKind(resolvedRoot) : 'unknown';
+      if (resolvedRoot && (kind === 'main' || kind === 'none') && isPersistableProjectRoot(resolvedRoot, os.homedir())) {
+        await storage.updateProject(item.projectId, { projectRoot: resolvedRoot });
+      } else {
+        const why = resolvedRoot === null
+          ? 'no .agenfk marker above it (a worktree has none) - it is not a project root'
+          : kind === 'linked'
+            ? 'it is a linked git worktree - one card\'s tree, never the project\'s root'
+            : kind === 'unknown'
+              ? 'git could not say whether it is a linked worktree, and guessing wrong repoints the whole project'
+              : 'it is not a persistable project root';
+        console.warn(`[PROJECT_ROOT] Refusing to record ${resolvedRoot ?? cwd} as a project root (item ${item.id}): ${why}`);
       }
     }
   }
@@ -6100,7 +6168,10 @@ const adfToText = (node: any): string => {
 
 // JIRA Routes
 
-app.get("/jira/oauth/authorize", (req: any, res: any) => {
+// Both OAuth legs are bounded by the same per-route budget as the other routes
+// that do real work per call: authorize reads the stored client config and
+// mints state, callback exchanges a code with Atlassian (CodeQL #135).
+app.get("/jira/oauth/authorize", limitExpensive, (req: any, res: any) => {
   const jiraConfig = loadJiraConfig();
   if (!jiraConfig.clientId || !jiraConfig.clientSecret) {
     return res.status(503).json({
@@ -6125,7 +6196,7 @@ app.get("/jira/oauth/authorize", (req: any, res: any) => {
   res.redirect(`https://auth.atlassian.com/authorize?${params}`);
 });
 
-app.get("/jira/oauth/callback", asyncHandler(async (req: any, res: any) => {
+app.get("/jira/oauth/callback", limitExpensive, asyncHandler(async (req: any, res: any) => {
   const { code, state, error } = req.query;
   // When we serve the UI ourselves there is nothing on 5173, so redirecting
   // there would dump the user on a connection-refused page *after* the token
