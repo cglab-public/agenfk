@@ -2,6 +2,25 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.21-beta.6] — 2026-09-22
+
+Beta, cumulative over `1.1.21-beta.5`.
+
+### PR model detection reads the harness's own session identity (CGLAB-365)
+
+- `agenfk pr create` / `pr-register` / `pr-resize` matched session logs on cwd and then on
+  most-recent mtime, so two live sessions in one repo directory were indistinguishable: a
+  Fable session's `--model` was "corrected" to `claude-opus-5` from a concurrent Opus
+  session's transcript. The environment every tool shell receives names the session exactly —
+  `CLAUDE_CODE_SESSION_ID` under Claude Code, `PI_SESSION_FILE` / `PI_MODEL` under pi — and
+  is now read first; the cwd heuristic is only the fallback when nothing is named.
+- A named session with no usable answer is final: a transcript with no model yet, a log
+  older than the freshness bound (a dead session whose variable outlived it), or a Claude
+  Code subagent writing concurrently (it shares the parent's id and may run another model)
+  all leave the declared model in place as unverified rather than handing over to a sibling.
+- `PI_SESSION_FILE` is honoured only under `~/.pi/agent/sessions/*.jsonl`; model ids are
+  length-capped; `CLAUDE_CONFIG_DIR` is honoured on both paths.
+
 ## [1.1.21-beta.5] — 2026-09-22
 
 Beta, cumulative over `1.1.21-beta.4`. Two parent-hub controls whose API had shipped
