@@ -14,6 +14,10 @@ const { mockExecSync, mockExecFileSync } = vi.hoisted(() => ({ mockExecSync: vi.
 vi.mock('child_process', () => ({
   execSync: mockExecSync,
   execFileSync: mockExecFileSync,
+  // Needed since the worktree status read went async: `promisify(execFile)`
+  // runs at import time, and promisify throws on undefined. Nothing in these
+  // tests calls it; it only has to exist.
+  execFile: vi.fn(),
   spawn: vi.fn(),
   spawnSync: vi.fn(),
 }));
@@ -62,7 +66,7 @@ describe('POST /registry/flows/publish', () => {
     if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
     await initStorage();
 
-    const res = await request(app).post('/flows').send({
+    const res = await agent().post('/flows').send({
       name: 'Community Test Flow',
       description: 'A flow for testing publish',
       steps: [
@@ -88,7 +92,7 @@ describe('POST /registry/flows/publish', () => {
     mockExecSync.mockImplementation(makeExecMock('cglab-public'));
     mockExecFileSync.mockImplementation(makeExecFileMock());
 
-    const res = await request(app).post('/registry/flows/publish').send({ flowId });
+    const res = await agent().post('/registry/flows/publish').send({ flowId });
 
     expect(res.status).toBe(200);
     expect(res.body.kind).toBe('direct');
@@ -110,7 +114,7 @@ describe('POST /registry/flows/publish', () => {
     mockExecSync.mockImplementation(makeExecMock('external-user'));
     mockExecFileSync.mockImplementation(makeExecFileMock());
 
-    const res = await request(app).post('/registry/flows/publish').send({ flowId });
+    const res = await agent().post('/registry/flows/publish').send({ flowId });
 
     expect(res.status).toBe(200);
     expect(res.body.kind).toBe('pr');
@@ -128,7 +132,7 @@ describe('POST /registry/flows/publish', () => {
   });
 
   it('returns 400 when flowId is missing', async () => {
-    const res = await request(app).post('/registry/flows/publish').send({});
+    const res = await agent().post('/registry/flows/publish').send({});
     expect(res.status).toBe(400);
   });
 
@@ -138,7 +142,7 @@ describe('POST /registry/flows/publish', () => {
       return '';
     });
 
-    const res = await request(app).post('/registry/flows/publish').send({ flowId });
+    const res = await agent().post('/registry/flows/publish').send({ flowId });
     expect(res.status).toBe(503);
     expect(res.body.error).toContain('gh CLI');
   });
@@ -147,6 +151,23 @@ describe('POST /registry/flows/publish', () => {
 // ── POST /registry/flows/install ─────────────────────────────────────────────
 
 import axios from 'axios';
+
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. That
+ * churn produced `Error: Parse Error: Expected HTTP/, RTSP/ or ICE/` — a
+ * transport failure, not an assertion about anything under test. It hands the
+ * test an empty body, so `res.body.id` is undefined and the next call goes to
+ * `/items/undefined`; one bad socket then surfaces as `expected 404 to be 400`
+ * in whichever test happened to be running. Different test every run, green
+ * when run alone.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
 
 const INSTALL_DB = path.resolve('./server-registry-install-test-db.sqlite');
 
@@ -184,7 +205,7 @@ describe('POST /registry/flows/install — anchor handling', () => {
       },
     });
 
-    const res = await request(app)
+    const res = await agent()
       .post('/registry/flows/install')
       .send({ filename: 'community-flow.json' });
 
@@ -222,7 +243,7 @@ describe('POST /registry/flows/install — anchor handling', () => {
       },
     });
 
-    const res = await request(app)
+    const res = await agent()
       .post('/registry/flows/install')
       .send({ filename: 'design-flow.json' });
 

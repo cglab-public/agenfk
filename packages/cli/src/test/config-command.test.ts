@@ -1,14 +1,31 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Hoist mock vars so they're available inside vi.mock factories
-const { mockExistsSync, mockReadFileSync, mockWriteFileSync } = vi.hoisted(() => ({
+const { mockExistsSync, mockReadFileSync, mockWriteFileSync, mockMkdirSync } = vi.hoisted(() => ({
   mockExistsSync: vi.fn(),
   mockReadFileSync: vi.fn(),
   mockWriteFileSync: vi.fn(),
+  // The shared writer creates ~/.agenfk before writing into it, because the
+  // settings screen is reachable on a machine where no command has ever run.
+  mockMkdirSync: vi.fn(),
 }));
 
 const { mockCapture } = vi.hoisted(() => ({ mockCapture: vi.fn() }));
-vi.mock('@agenfk/telemetry', () => ({
+/*
+ * PARTIAL, and the partiality is the point.
+ *
+ * `agenfk config set telemetry` used to write ~/.agenfk/config.json inline in
+ * the command; it now calls `setTelemetryEnabled` in @agenfk/telemetry, which
+ * the settings screen's route calls too. A fully hand-written mock would stub
+ * that away and leave this file asserting that the CLI called a function -
+ * which is a much weaker claim than the one it makes below, that the FILE ends
+ * up with the flag set and every other key still in it.
+ *
+ * So the real writer runs, against the mocked `fs` above. What stays stubbed is
+ * only the network client and the port discovery.
+ */
+vi.mock('@agenfk/telemetry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@agenfk/telemetry')>()),
   TelemetryClient: vi.fn(function (this: any) {
     this.capture = mockCapture;
     this.shutdown = vi.fn().mockResolvedValue(undefined);
@@ -26,10 +43,12 @@ vi.mock('fs', () => ({
   existsSync: mockExistsSync,
   readFileSync: mockReadFileSync,
   writeFileSync: mockWriteFileSync,
+  mkdirSync: mockMkdirSync,
   default: {
     existsSync: mockExistsSync,
     readFileSync: mockReadFileSync,
     writeFileSync: mockWriteFileSync,
+    mkdirSync: mockMkdirSync,
   },
 }));
 

@@ -4,6 +4,7 @@ import { api } from '../api';
 import { Rocket, AlertTriangle, X, ExternalLink, ArrowUpCircle, Loader2, CheckCircle, XCircle, RefreshCw } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { isNewerVersion } from '../versionCompare';
 
 const stripAnsi = (str: string) =>
   str.replace(/\x1B\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1B[()][AB012]/g, '');
@@ -25,23 +26,10 @@ type UpdateState =
   | { phase: 'success'; output: string }
   | { phase: 'error'; output: string };
 
-const isNewerVersion = (latest: string, current: string): boolean => {
-  if (!latest || !current) return false;
-  
-  const clean = (v: string) => v.replace(/^v/, '').split('-')[0].split('.').map(Number);
-  const l = clean(latest);
-  const c = clean(current);
-  
-  for (let i = 0; i < Math.max(l.length, c.length); i++) {
-    const lv = l[i] || 0;
-    const cv = c[i] || 0;
-    if (lv > cv) return true;
-    /* v8 ignore start */
-    if (lv < cv) return false;
-  }
-  return false;
-  /* v8 ignore stop */
-};
+// Moved out of this file rather than copied beside the settings screen's own
+// row. Two comparators agreeing until they do not shows up as this rocket
+// lighting the corner while Settings says "You're up to date".
+
 
 export const ReleaseReminder: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);

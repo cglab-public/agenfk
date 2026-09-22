@@ -11,8 +11,18 @@ import * as os from 'os';
 import * as path from 'path';
 import supertest from 'supertest';
 import { createHubApp } from '../server';
+import { drainApp } from './helpers/drainApp';
 import { openPgMemDb } from '../db/postgres';
 import type { HubDb } from '../db/types';
+
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * drainApp calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and createHubApp returns an Express
+ * app, so with `?.` those calls vanished silently.
+ */
+let __server: any;
 
 const SECRET = '0'.repeat(64);
 const UUID_V4 = /\b[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i;
@@ -45,6 +55,8 @@ const sqliteHarness: BackendHarness = {
           sessionSecret: 'test-session-secret-min-32-bytes-please',
           defaultOrgId: 'org',
         });
+        if (__server) await new Promise<void>(r => __server.close(() => r()));
+        __server = out.app.listen(0);
         return { app: out.app, db: out.ctx.db, close: () => out.ctx.db.close() };
       },
       teardown: async () => { cleanup(dbPath); },
@@ -87,6 +99,9 @@ for (const harness of [sqliteHarness, pgHarness]) {
     });
 
     afterEach(async () => {
+      // Drain in-flight responses before closing the DB — see helpers/drainApp.ts.
+      // The harness owns the app here, so drain the one it built.
+      if (h?.app) await drainApp(h.app);
       logSpy.mockRestore();
       await h.teardown();
     });

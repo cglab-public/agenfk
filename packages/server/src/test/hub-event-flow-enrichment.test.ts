@@ -21,6 +21,20 @@ import { app, initStorage } from '../server';
 import * as fs from 'fs';
 import * as path from 'path';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. The
+ * churn produced `Error: Parse Error: Expected HTTP/` — a transport failure
+ * that hands the test an empty body, so one bad socket surfaces as a confident
+ * wrong assertion in whichever test happened to be running.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 const TEST_DB = path.resolve('./hub-flow-enrichment-test-db.sqlite');
 
 // recordHubEvent enqueues into hub_outbox without awaiting the HTTP response, and
@@ -48,10 +62,10 @@ describe('hub events are enriched with flow { name, install_source }', () => {
   });
 
   it('a projectId-bearing event (pr.opened) carries flow.name + flow.install_source', async () => {
-    const project = (await request(app).post('/projects').send({ name: 'FlowEnrich' })).body;
-    const item = (await request(app).post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
+    const project = (await agent().post('/projects').send({ name: 'FlowEnrich' })).body;
+    const item = (await agent().post('/items').send({ projectId: project.id, type: 'TASK', title: 'T' })).body;
 
-    const res = await request(app).post('/prs').send({
+    const res = await agent().post('/prs').send({
       itemId: item.id, prNumber: 8801, repo: 'org/enrich',
       sizing: { epic: 0, story: 0, task: 1, bug: 0 },
       model: 'claude-opus-4-8', harness: 'claude-code',

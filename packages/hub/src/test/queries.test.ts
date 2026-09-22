@@ -9,6 +9,17 @@ import { issueApiKey } from '../auth/apiKey';
 import { recomputeRollups } from '../rollup';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-queries-test-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
 const cleanup = () => {
@@ -45,15 +56,17 @@ describe('hub query endpoints', () => {
       defaultOrgId: 'org',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org', 'admin@x', 'longenough1', 'admin');
-    const login = await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
+    const login = await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
     cookie = login.headers['set-cookie']?.[0] ?? '';
 
     // Seed a few events directly via the ingest endpoint.
     const token = await issueApiKey(ctx.db, 'org', 'test');
     const send = (events: any[]) =>
-      supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
+      supertest(__server).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
 
     await send([
       sample({ eventId: 'a1', occurredAt: '2026-05-03T08:00:00Z', type: 'item.created',
@@ -76,32 +89,32 @@ describe('hub query endpoints', () => {
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
   it('GET /v1/users requires session', async () => {
-    const r = await supertest(app).get('/v1/users');
+    const r = await supertest(__server).get('/v1/users');
     expect(r.status).toBe(401);
   });
 
   it('GET /v1/users returns distinct user_keys with last_seen', async () => {
-    const r = await supertest(app).get('/v1/users').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/users').set('Cookie', cookie);
     expect(r.status).toBe(200);
     expect(r.body.length).toBe(2);
     expect(r.body.map((u: any) => u.user_key).sort()).toEqual(['alice@acme.com', 'bob@acme.com']);
   });
 
   it('GET /v1/timeline filters by user and type', async () => {
-    const r = await supertest(app).get('/v1/timeline?users=alice@acme.com&types=item.created').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/timeline?users=alice@acme.com&types=item.created').set('Cookie', cookie);
     expect(r.status).toBe(200);
     expect(r.body.events.length).toBe(1);
     expect(r.body.events[0].type).toBe('item.created');
   });
 
   it('GET /v1/timeline filters by date range', async () => {
-    const r = await supertest(app).get('/v1/timeline?from=2026-05-04T00:00:00Z').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/timeline?from=2026-05-04T00:00:00Z').set('Cookie', cookie);
     expect(r.body.events.length).toBe(1);
     expect(r.body.events[0].user_key).toBe('bob@acme.com');
   });
@@ -120,19 +133,19 @@ describe('hub query endpoints', () => {
   });
 
   it('GET /v1/metrics returns rollup series', async () => {
-    const r = await supertest(app).get('/v1/metrics').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/metrics').set('Cookie', cookie);
     expect(r.status).toBe(200);
     expect(r.body.bucket).toBe('day');
     expect(r.body.series.length).toBeGreaterThan(0);
   });
 
   it('GET /v1/histogram requires session', async () => {
-    const r = await supertest(app).get('/v1/histogram');
+    const r = await supertest(__server).get('/v1/histogram');
     expect(r.status).toBe(401);
   });
 
   it('GET /v1/histogram defaults to day bucket and aggregates by type', async () => {
-    const r = await supertest(app).get('/v1/histogram').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/histogram').set('Cookie', cookie);
     expect(r.status).toBe(200);
     expect(r.body.bucket).toBe('day');
     expect(Array.isArray(r.body.buckets)).toBe(true);
@@ -147,7 +160,7 @@ describe('hub query endpoints', () => {
   });
 
   it('GET /v1/histogram filters by user and type', async () => {
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .get('/v1/histogram?users=alice@acme.com&types=item.created')
       .set('Cookie', cookie);
     expect(r.status).toBe(200);
@@ -160,17 +173,17 @@ describe('hub query endpoints', () => {
     // Seeded a1/a2/a3 occurred on 2026-05-03 UTC; b1 on 2026-05-04 UTC.
     // With tzOffsetMin=-1440 (1-day shift back) every event must land in a
     // bucket one day earlier than its UTC date.
-    const noShift = await supertest(app).get('/v1/histogram?tzOffsetMin=0').set('Cookie', cookie);
+    const noShift = await supertest(__server).get('/v1/histogram?tzOffsetMin=0').set('Cookie', cookie);
     expect(noShift.body.buckets.find((b: any) => b.time === '2026-05-03')?.total).toBe(3);
 
-    const r = await supertest(app).get('/v1/histogram?tzOffsetMin=-1440').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/histogram?tzOffsetMin=-1440').set('Cookie', cookie);
     expect(r.status).toBe(200);
     expect(r.body.buckets.find((b: any) => b.time === '2026-05-02')?.total).toBe(3);
     expect(r.body.buckets.find((b: any) => b.time === '2026-05-03')?.total).toBe(1); // b1 shifted from 05-04
   });
 
   it('GET /v1/histogram supports hour bucket', async () => {
-    const r = await supertest(app).get('/v1/histogram?bucket=hour').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/histogram?bucket=hour').set('Cookie', cookie);
     expect(r.status).toBe(200);
     expect(r.body.bucket).toBe('hour');
     const slot = r.body.buckets.find((b: any) => b.time === '2026-05-03T08:00');
@@ -179,7 +192,7 @@ describe('hub query endpoints', () => {
   });
 
   it('GET /v1/histogram filters by date range', async () => {
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .get('/v1/histogram?from=2026-05-04T00:00:00Z')
       .set('Cookie', cookie);
     expect(r.status).toBe(200);
@@ -189,17 +202,17 @@ describe('hub query endpoints', () => {
   });
 
   it('GET /v1/histogram rejects invalid bucket value', async () => {
-    const r = await supertest(app).get('/v1/histogram?bucket=year').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/histogram?bucket=year').set('Cookie', cookie);
     expect(r.status).toBe(400);
   });
 
   it('GET /v1/event-types requires session', async () => {
-    const r = await supertest(app).get('/v1/event-types');
+    const r = await supertest(__server).get('/v1/event-types');
     expect(r.status).toBe(401);
   });
 
   it('GET /v1/event-types returns distinct types observed in the org', async () => {
-    const r = await supertest(app).get('/v1/event-types').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/event-types').set('Cookie', cookie);
     expect(r.status).toBe(200);
     expect(Array.isArray(r.body.types)).toBe(true);
     // Seeded events: item.created, step.transitioned, validate.passed, pr.opened
@@ -209,7 +222,7 @@ describe('hub query endpoints', () => {
   });
 
   it('GET /v1/projects returns distinct remoteUrls observed in the org', async () => {
-    const r = await supertest(app).get('/v1/projects').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/projects').set('Cookie', cookie);
     expect(r.status).toBe(200);
     expect(r.body.projects).toEqual([
       'git@github.com:acme/api.git',
@@ -218,25 +231,25 @@ describe('hub query endpoints', () => {
   });
 
   it('GET /v1/projects requires session', async () => {
-    const r = await supertest(app).get('/v1/projects');
+    const r = await supertest(__server).get('/v1/projects');
     expect(r.status).toBe(401);
   });
 
   it('GET /v1/item-types returns distinct EPIC/STORY/TASK/BUG values', async () => {
-    const r = await supertest(app).get('/v1/item-types').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/item-types').set('Cookie', cookie);
     expect(r.status).toBe(200);
     expect(r.body.itemTypes).toEqual(['BUG', 'STORY', 'TASK']);
   });
 
   it('GET /v1/item-types returns counts respecting current filters', async () => {
     // No filters: org-wide totals.
-    const all = await supertest(app).get('/v1/item-types').set('Cookie', cookie);
+    const all = await supertest(__server).get('/v1/item-types').set('Cookie', cookie);
     expect(all.status).toBe(200);
     // Seeded events: 2 TASK (a1,a2), 1 BUG (a3), 1 STORY (b1)
     expect(all.body.counts).toEqual({ TASK: 2, BUG: 1, STORY: 1 });
 
     // Project filter narrows to web.git → only TASK and BUG remain visible.
-    const byProject = await supertest(app)
+    const byProject = await supertest(__server)
       .get('/v1/item-types?projects=git@github.com:acme/web.git')
       .set('Cookie', cookie);
     expect(byProject.status).toBe(200);
@@ -245,7 +258,7 @@ describe('hub query endpoints', () => {
     expect(byProject.body.itemTypes).toEqual(['BUG', 'STORY', 'TASK']);
 
     // Event-type filter: only validate.passed → BUG=1.
-    const byType = await supertest(app)
+    const byType = await supertest(__server)
       .get('/v1/item-types?types=validate.passed')
       .set('Cookie', cookie);
     expect(byType.status).toBe(200);
@@ -253,7 +266,7 @@ describe('hub query endpoints', () => {
 
     // The current itemTypes filter must NOT constrain its own counts —
     // chips still show the totals you would get if you toggled them on.
-    const ignoresOwnFilter = await supertest(app)
+    const ignoresOwnFilter = await supertest(__server)
       .get('/v1/item-types?itemTypes=BUG')
       .set('Cookie', cookie);
     expect(ignoresOwnFilter.status).toBe(200);
@@ -261,7 +274,7 @@ describe('hub query endpoints', () => {
   });
 
   it('GET /v1/timeline filters by remoteUrl (projects=)', async () => {
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .get('/v1/timeline?projects=git@github.com:acme/api.git')
       .set('Cookie', cookie);
     expect(r.status).toBe(200);
@@ -270,7 +283,7 @@ describe('hub query endpoints', () => {
   });
 
   it('GET /v1/timeline filters by itemType (itemTypes=)', async () => {
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .get('/v1/timeline?itemTypes=BUG')
       .set('Cookie', cookie);
     expect(r.status).toBe(200);
@@ -279,7 +292,7 @@ describe('hub query endpoints', () => {
   });
 
   it('GET /v1/timeline rows expose item_type and remote_url', async () => {
-    const r = await supertest(app).get('/v1/timeline').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/timeline').set('Cookie', cookie);
     expect(r.status).toBe(200);
     const a1 = r.body.events.find((e: any) => e.event_id === 'a1');
     expect(a1.item_type).toBe('TASK');
@@ -287,7 +300,7 @@ describe('hub query endpoints', () => {
   });
 
   it('GET /v1/timeline rows expose item_title and external_id (Jira key)', async () => {
-    const r = await supertest(app).get('/v1/timeline').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/timeline').set('Cookie', cookie);
     expect(r.status).toBe(200);
     const a1 = r.body.events.find((e: any) => e.event_id === 'a1');
     expect(a1.item_title).toBe('Refactor login flow');
@@ -298,7 +311,7 @@ describe('hub query endpoints', () => {
   });
 
   it('GET /v1/histogram filters by projects+itemTypes', async () => {
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .get('/v1/histogram?projects=git@github.com:acme/web.git&itemTypes=TASK')
       .set('Cookie', cookie);
     expect(r.status).toBe(200);
@@ -307,7 +320,7 @@ describe('hub query endpoints', () => {
   });
 
   it('GET /v1/users filters by remoteUrl', async () => {
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .get('/v1/users?projects=git@github.com:acme/api.git')
       .set('Cookie', cookie);
     expect(r.status).toBe(200);
@@ -317,7 +330,7 @@ describe('hub query endpoints', () => {
 
   it('rollup counts pr.opened events in prs_opened', async () => {
     const token = await issueApiKey(ctx.db, 'org', 'test2');
-    await supertest(app).post('/v1/events')
+    await supertest(__server).post('/v1/events')
       .set('Authorization', `Bearer ${token}`)
       .send({ events: [
         sample({ eventId: 'pr1', occurredAt: '2026-05-03T11:00:00Z', type: 'pr.opened',
@@ -333,13 +346,13 @@ describe('hub query endpoints', () => {
 
   it('GET /v1/metrics includes prs_opened in each series row', async () => {
     const token = await issueApiKey(ctx.db, 'org', 'test3');
-    await supertest(app).post('/v1/events')
+    await supertest(__server).post('/v1/events')
       .set('Authorization', `Bearer ${token}`)
       .send({ events: [
         sample({ eventId: 'pr3', occurredAt: '2026-05-03T11:30:00Z', type: 'pr.opened',
           payload: { prNumber: 20, repo: 'acme/web' } }),
       ]});
-    const r = await supertest(app).get('/v1/metrics').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/metrics').set('Cookie', cookie);
     expect(r.status).toBe(200);
     const row = r.body.series.find((s: any) => s.day === '2026-05-03' && s.user_key === 'alice@acme.com');
     expect(row).toBeDefined();
@@ -348,7 +361,7 @@ describe('hub query endpoints', () => {
   });
 
   it('GET /v1/metrics filters by user (used by UserDetail page)', async () => {
-    const r = await supertest(app).get('/v1/metrics?users=bob@acme.com').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/metrics?users=bob@acme.com').set('Cookie', cookie);
     expect(r.status).toBe(200);
     const keys = r.body.series.map((s: any) => s.user_key);
     expect(keys.every((k: string) => k === 'bob@acme.com')).toBe(true);
@@ -356,7 +369,7 @@ describe('hub query endpoints', () => {
   });
 
   it('GET /v1/metrics with projects= filter reports zero token consumption', async () => {
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .get('/v1/metrics?projects=git@github.com:acme/api.git')
       .set('Cookie', cookie);
     expect(r.status).toBe(200);
@@ -436,7 +449,7 @@ describe('hub query endpoints', () => {
 
   it('rollup ignores tokens.logged events', async () => {
     const token = await issueApiKey(ctx.db, 'org', 'cached-test');
-    const ingest = await supertest(app).post('/v1/events')
+    const ingest = await supertest(__server).post('/v1/events')
       .set('Authorization', `Bearer ${token}`)
       .send({ events: [
         sample({ eventId: 'c1', occurredAt: '2026-05-05T10:00:00Z', type: 'tokens.logged',
@@ -454,7 +467,7 @@ describe('hub query endpoints', () => {
 
   it('GET /v1/metrics with projects= ignores tokens.logged events in the direct query path', async () => {
     const token = await issueApiKey(ctx.db, 'org', 'cached-test2');
-    const ingest = await supertest(app).post('/v1/events')
+    const ingest = await supertest(__server).post('/v1/events')
       .set('Authorization', `Bearer ${token}`)
       .send({ events: [
         sample({ eventId: 'd1', occurredAt: '2026-05-06T10:00:00Z', type: 'tokens.logged',
@@ -463,7 +476,7 @@ describe('hub query endpoints', () => {
           payload: { input: 300, cachedInput: 7000, output: 120, model: 'claude-sonnet-4-6', client: 'claude-code' } }),
       ]});
     expect(ingest.body).toEqual(expect.objectContaining({ ingested: 0, skipped: 1, rejected: 0 }));
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .get('/v1/metrics?projects=git@github.com:acme/api.git&users=dave@acme.com')
       .set('Cookie', cookie);
     expect(r.status).toBe(200);
@@ -511,14 +524,16 @@ describe('GET /v1/prs/overview', () => {
       defaultOrgId: 'org',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org', 'admin@x', 'longenough1', 'admin');
-    const login = await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
+    const login = await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
     cookie = login.headers['set-cookie']?.[0] ?? '';
 
     const token = await issueApiKey(ctx.db, 'org', 'test');
     const send = (events: any[]) =>
-      supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
+      supertest(__server).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
 
     const pr = (over: any) => sample({
       type: 'pr.opened',
@@ -549,18 +564,18 @@ describe('GET /v1/prs/overview', () => {
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
   it('requires a session', async () => {
-    const r = await supertest(app).get('/v1/prs/overview');
+    const r = await supertest(__server).get('/v1/prs/overview');
     expect(r.status).toBe(401);
   });
 
   it('returns totals, per-developer, per-model, daily and resize breakdowns', async () => {
-    const r = await supertest(app).get('/v1/prs/overview').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/prs/overview').set('Cookie', cookie);
     expect(r.status).toBe(200);
     expect(r.body.buckets).toEqual(['xs', 's', 'm', 'l', 'xl']);
     // 3 distinct PRs (the pr.updated must NOT add a 4th)
@@ -577,7 +592,7 @@ describe('GET /v1/prs/overview', () => {
   });
 
   it('filters by model', async () => {
-    const r = await supertest(app).get('/v1/prs/overview?model=claude-sonnet-4-6').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/prs/overview?model=claude-sonnet-4-6').set('Cookie', cookie);
     expect(r.status).toBe(200);
     expect(r.body.totals.prs).toBe(1);
     expect(r.body.byModel).toHaveLength(1);
@@ -585,7 +600,7 @@ describe('GET /v1/prs/overview', () => {
   });
 
   it('accepts a CSV of models (multi-select) and matches any', async () => {
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .get('/v1/prs/overview?model=claude-opus-4-8,claude-sonnet-4-6')
       .set('Cookie', cookie);
     expect(r.status).toBe(200);
@@ -595,7 +610,7 @@ describe('GET /v1/prs/overview', () => {
 
   it('trims whitespace and ignores empty entries in the model CSV', async () => {
     // %20 = space: " claude-opus-4-8 , ,claude-sonnet-4-6 "
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .get('/v1/prs/overview?model=%20claude-opus-4-8%20,%20,claude-sonnet-4-6%20')
       .set('Cookie', cookie);
     expect(r.status).toBe(200);
@@ -603,7 +618,7 @@ describe('GET /v1/prs/overview', () => {
   });
 
   it('an unknown model in the CSV matches nothing extra', async () => {
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .get('/v1/prs/overview?model=claude-sonnet-4-6,no-such-model')
       .set('Cookie', cookie);
     expect(r.status).toBe(200);
@@ -611,20 +626,20 @@ describe('GET /v1/prs/overview', () => {
   });
 
   it('a model CSV that resolves to nothing returns zero PRs (no fallback to all)', async () => {
-    const r = await supertest(app).get('/v1/prs/overview?model=no-such-model').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/prs/overview?model=no-such-model').set('Cookie', cookie);
     expect(r.status).toBe(200);
     expect(r.body.totals.prs).toBe(0);
   });
 
   it('a model param with only empty entries applies no filter (all models)', async () => {
-    const r = await supertest(app).get('/v1/prs/overview?model=,').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/prs/overview?model=,').set('Cookie', cookie);
     expect(r.status).toBe(200);
     expect(r.body.totals.prs).toBe(3); // empty entries dropped → null → no filter
   });
 
   it('repeated model params (?model=a&model=b) are parsed, not a 500', async () => {
     // Express delivers repeated params as an array; parseList must normalize.
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .get('/v1/prs/overview?model=claude-opus-4-8&model=claude-sonnet-4-6')
       .set('Cookie', cookie);
     expect(r.status).toBe(200);
@@ -635,7 +650,7 @@ describe('GET /v1/prs/overview', () => {
     // Current window (from 05-04): only bob's sonnet PR#3. The previous
     // equal-length window holds alice's two opus PRs — with the model filter
     // they must be excluded from `previous` as well, not just the current totals.
-    const filtered = await supertest(app)
+    const filtered = await supertest(__server)
       .get('/v1/prs/overview?model=claude-sonnet-4-6&from=2026-05-04T00:00:00Z')
       .set('Cookie', cookie);
     expect(filtered.status).toBe(200);
@@ -643,14 +658,14 @@ describe('GET /v1/prs/overview', () => {
     expect(filtered.body.previous.prs).toBe(0);
 
     // Same window without the model filter: previous period holds alice's two PRs.
-    const unfiltered = await supertest(app)
+    const unfiltered = await supertest(__server)
       .get('/v1/prs/overview?from=2026-05-04T00:00:00Z')
       .set('Cookie', cookie);
     expect(unfiltered.body.previous.prs).toBe(2);
   });
 
   it('filters by date range', async () => {
-    const r = await supertest(app).get('/v1/prs/overview?from=2026-05-04T00:00:00Z').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/prs/overview?from=2026-05-04T00:00:00Z').set('Cookie', cookie);
     expect(r.status).toBe(200);
     // Only bob's PR#3 was opened on 05-04 (alice's PRs opened 05-03)
     expect(r.body.totals.prs).toBe(1);
@@ -659,7 +674,7 @@ describe('GET /v1/prs/overview', () => {
 
   it('filters by an explicit from/to date range', async () => {
     // Window covers only 05-03 → alice's two PRs, bob's 05-04 PR excluded.
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .get('/v1/prs/overview?from=2026-05-03T00:00:00Z&to=2026-05-03T23:59:59Z')
       .set('Cookie', cookie);
     expect(r.status).toBe(200);
@@ -668,7 +683,7 @@ describe('GET /v1/prs/overview', () => {
   });
 
   it('filters by developer (users param)', async () => {
-    const r = await supertest(app).get('/v1/prs/overview?users=bob@acme.com').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/prs/overview?users=bob@acme.com').set('Cookie', cookie);
     expect(r.status).toBe(200);
     expect(r.body.totals.prs).toBe(1); // only bob's PR#3
     expect(r.body.byDeveloper).toHaveLength(1);
@@ -676,7 +691,7 @@ describe('GET /v1/prs/overview', () => {
   });
 
   it('byDay slices carry a per-size developer breakdown', async () => {
-    const r = await supertest(app).get('/v1/prs/overview').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/prs/overview').set('Cookie', cookie);
     expect(r.status).toBe(200);
     const may3 = r.body.byDay.find((d: any) => d.day === '2026-05-03');
     // alice opened PR#1 (xs) and PR#2 (m, latest) on 05-03
@@ -685,7 +700,7 @@ describe('GET /v1/prs/overview', () => {
   });
 
   it('exposes the per-PR drill-down list with GitHub links (CGLAB-131)', async () => {
-    const r = await supertest(app).get('/v1/prs/overview').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/prs/overview').set('Cookie', cookie);
     expect(r.status).toBe(200);
     // the same 3 resolved PRs as the totals — nothing more, nothing less
     expect(r.body.prs).toHaveLength(3);
@@ -705,7 +720,7 @@ describe('GET /v1/prs/overview', () => {
   });
 
   it('applies the developer filter to the drill-down list (opener-based)', async () => {
-    const r = await supertest(app).get('/v1/prs/overview?users=bob@acme.com').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/prs/overview?users=bob@acme.com').set('Cookie', cookie);
     expect(r.status).toBe(200);
     expect(r.body.prs).toHaveLength(1);
     expect(r.body.prs[0].prNumber).toBe(3);

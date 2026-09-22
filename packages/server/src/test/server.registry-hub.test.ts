@@ -32,10 +32,15 @@ const ENV_KEYS = [
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let app: any, initStorage: any;
+let __server: any;
+const agent = () => request(__server);
 
 vi.mock('child_process', () => ({
   execSync: vi.fn(),
   execFileSync: vi.fn(),
+  // Needed since the worktree status read went async: promisify(execFile)
+  // runs at import time and throws on undefined. Nothing here calls it.
+  execFile: vi.fn(),
   spawn: vi.fn(),
   spawnSync: vi.fn(),
 }));
@@ -76,7 +81,18 @@ describe('GET /registry/flows with a hub connection (CGLAB-138)', () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
     stubHubFetch(); // stub before import so any startup fetch is intercepted
     if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+
+        /*
+     * The server is created right after the dynamic import, in the same hook
+     * (BUG 9de0c99c). This file cannot use a module-level `beforeAll` for it,
+     * because `app` does not exist until that import runs — but the reason for
+     * having ONE server is the same: `agent()` starts and tears down an
+     * ephemeral one per call, and that churn produced `Error: Parse Error:
+     * Expected HTTP/`, a transport failure that surfaces as a confident wrong
+     * assertion in whichever test was running.
+     */
     ({ app, initStorage } = await import('../server'));
+    __server = app.listen(0);
     await initStorage();
   });
 
@@ -105,7 +121,7 @@ describe('GET /registry/flows with a hub connection (CGLAB-138)', () => {
       ok: true, status: 200,
       body: { repo: 'acme-corp/agenfk-flows', flows: [{ filename: 'x.json', name: 'X', stepCount: 2 }] },
     };
-    const res = await request(app).get('/registry/flows');
+    const res = await agent().get('/registry/flows');
     expect(res.status).toBe(200);
     // The hub is the source of truth: its payload is passed through.
     expect(res.body).toHaveLength(1);
@@ -115,7 +131,7 @@ describe('GET /registry/flows with a hub connection (CGLAB-138)', () => {
 
   it('authenticates to the hub with the installation token, and never to GitHub directly', async () => {
     hubReply = { ok: true, status: 200, body: { repo: 'acme-corp/agenfk-flows', flows: [] } };
-    await request(app).get('/registry/flows');
+    await agent().get('/registry/flows');
     const call = hubCalls.find((c) => c.url.includes('/v1/registry/flows'));
     expect(call).toBeTruthy();
     expect(call!.auth).toBe('Bearer agk_test');
@@ -129,7 +145,7 @@ describe('GET /registry/flows with a hub connection (CGLAB-138)', () => {
     // 502, not 200-with-public-flows. A sealed org must never be shown the
     // community catalogue because the hub happened to be down.
     hubReply = { error: 'ECONNREFUSED' };
-    const res = await request(app).get('/registry/flows');
+    const res = await agent().get('/registry/flows');
     expect(res.status).toBe(502);
     expect(Array.isArray(res.body)).toBe(false);
     expect(res.body.hubEnabled).toBe(true);
@@ -139,7 +155,7 @@ describe('GET /registry/flows with a hub connection (CGLAB-138)', () => {
 
   it('surfaces a hub 4xx rather than masking it as an empty registry', async () => {
     hubReply = { ok: false, status: 403, body: { error: 'forbidden' } };
-    const res = await request(app).get('/registry/flows');
+    const res = await agent().get('/registry/flows');
     expect(res.status).toBe(502);
     expect(axiosGet).not.toHaveBeenCalled();
   });
@@ -163,7 +179,7 @@ describe('GET /registry/flows with a hub connection (CGLAB-138)', () => {
         },
       },
     };
-    const res = await request(app).post('/registry/flows/install').send({ filename: 'org-flow.json' });
+    const res = await agent().post('/registry/flows/install').send({ filename: 'org-flow.json' });
     expect(res.status).toBe(200);
     expect(res.body.name).toBe('Org Flow');
     expect(hubCalls.some((c) => c.url.includes('/v1/registry/flows/install'))).toBe(true);
@@ -172,7 +188,7 @@ describe('GET /registry/flows with a hub connection (CGLAB-138)', () => {
 
   it('refuses to install when the hub is unreachable', async () => {
     hubReply = { error: 'ECONNREFUSED' };
-    const res = await request(app).post('/registry/flows/install').send({ filename: 'x.json' });
+    const res = await agent().post('/registry/flows/install').send({ filename: 'x.json' });
     expect(res.status).toBe(502);
     expect(axiosGet).not.toHaveBeenCalled();
   });

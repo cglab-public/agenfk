@@ -69,21 +69,21 @@ export const ExitCriteriaEditorModal: React.FC<ExitCriteriaEditorModalProps> = (
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-[calc(100vw-2rem)] max-w-4xl h-[85vh] flex flex-col overflow-hidden">
+      <div className="bg-surface rounded-2xl shadow-2xl w-[calc(100vw-2rem)] max-w-4xl h-[85vh] flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="px-5 py-3.5 border-b border-slate-200 dark:border-slate-700 flex items-center gap-2.5 shrink-0">
+        <div className="px-5 py-3.5 border-b border-border-soft flex items-center gap-2.5 shrink-0">
           <ScrollText size={16} className="text-accent-text shrink-0" />
           <div className="min-w-0">
-            <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 truncate">
+            <h3 className="text-sm font-bold text-ink truncate">
               Exit Criteria
             </h3>
-            <p className="text-xs text-slate-400 dark:text-slate-500 truncate">{stepLabel}</p>
+            <p className="text-xs text-ink-tertiary truncate">{stepLabel}</p>
           </div>
           <button
             data-testid="exit-criteria-close"
             onClick={onClose}
             aria-label="Close"
-            className="ml-auto p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
+            className="ml-auto p-1 rounded-lg hover:bg-chip text-ink-tertiary hover:text-ink transition-colors"
           >
             <X size={16} />
           </button>
@@ -92,8 +92,8 @@ export const ExitCriteriaEditorModal: React.FC<ExitCriteriaEditorModalProps> = (
         {/* Body: editor | preview */}
         <div className="flex-1 min-h-0 grid grid-cols-2">
           {/* Editor column */}
-          <div className="flex flex-col min-h-0 border-r border-slate-200 dark:border-slate-700">
-            <label className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500 px-4 pt-3 shrink-0">
+          <div className="flex flex-col min-h-0 border-r border-border-soft">
+            <label className="text-xs font-semibold uppercase tracking-wide text-ink-tertiary px-4 pt-3 shrink-0">
               Markdown
             </label>
             <textarea
@@ -102,19 +102,19 @@ export const ExitCriteriaEditorModal: React.FC<ExitCriteriaEditorModalProps> = (
               onChange={e => setValue(e.target.value)}
               rows={14}
               placeholder={'What must be true before leaving this step?\n\nMarkdown is supported:\n- lists, **bold**, `code`, [links](…)'}
-              className="flex-1 min-h-0 mx-4 my-2 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-brand resize-none leading-relaxed"
+              className="flex-1 min-h-0 mx-4 my-2 px-3 py-2 rounded-lg border border-border-soft bg-canvas text-ink text-sm font-mono focus:outline-none focus:ring-1 focus:ring-brand resize-none leading-relaxed"
             />
             {/* Token estimate — under the editor, as specified */}
             <div
               data-testid="exit-criteria-token-count"
-              className="px-4 pb-3 shrink-0 text-xs text-slate-400 dark:text-slate-500 tabular-nums"
+              className="px-4 pb-3 shrink-0 text-xs text-ink-tertiary tabular-nums"
             >
               ~{tokens} {tokens === 1 ? 'token' : 'tokens'} (estimate)
             </div>
           </div>
           {/* Preview column */}
           <div className="flex flex-col min-h-0">
-            <span className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500 px-4 pt-3 shrink-0">
+            <span className="text-xs font-semibold uppercase tracking-wide text-ink-tertiary px-4 pt-3 shrink-0">
               Preview
             </span>
             <div
@@ -124,7 +124,7 @@ export const ExitCriteriaEditorModal: React.FC<ExitCriteriaEditorModalProps> = (
               {value.trim() ? (
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{value}</ReactMarkdown>
               ) : (
-                <span className="not-prose text-sm italic text-slate-400 dark:text-slate-600">
+                <span className="not-prose text-sm italic text-ink-tertiary">
                   Nothing to preview yet.
                 </span>
               )}
@@ -133,12 +133,12 @@ export const ExitCriteriaEditorModal: React.FC<ExitCriteriaEditorModalProps> = (
         </div>
 
         {/* Footer */}
-        <div className="px-5 py-3.5 border-t border-slate-200 dark:border-slate-700 flex items-center justify-end gap-2 shrink-0">
+        <div className="px-5 py-3.5 border-t border-border-soft flex items-center justify-end gap-2 shrink-0">
           <button
             data-testid="exit-criteria-cancel"
             type="button"
             onClick={onClose}
-            className="px-3.5 py-1.5 rounded-lg text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            className="px-3.5 py-1.5 rounded-lg text-sm font-medium text-ink-secondary hover:bg-chip transition-colors"
           >
             Cancel
           </button>

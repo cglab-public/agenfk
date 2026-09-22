@@ -26,6 +26,64 @@ body {
   font-family: var(--font-sans);
 }
 
+/* The DESKTOP shell is not a document, so it does not scroll (CGLAB-189).
+ *
+ * Scoped to the Electron shell, and that scope is the whole correction. The
+ * first version of this rule was global and broke the browser badly: measured
+ * in Chromium at 1440x900, 386px of the board sat below the fold with no
+ * scrollbar and no way to reach it, and at 600x800 it was 5174px - four of
+ * five columns unreachable. The browser branch in App.tsx is `min-h-screen`
+ * with AUTO height and was designed around the document scrolling; its board
+ * header is `sticky top-0`, which means nothing unless it does. One shell owns
+ * its window, the other is a page, and a rule about windows must not reach the
+ * page.
+ *
+ * In the shell, every pane owns its own scrollbar and nothing is meant to move
+ * the document. A few pixels of residual overflow made the WHOLE app draggable
+ * downward: the title bar and status bar slid off, leaving a black band.
+ * Measured before this rule: documentElement.scrollHeight 1203 against a 900px
+ * viewport.
+ *
+ * It is a ceiling rather than a repair of whichever descendant overflowed, and
+ * that is deliberate: the descendant has to be re-found every time a pane is
+ * added, and it fails silently, as a window that quietly starts sliding again.
+ * See AppShell for the other half - overflow:hidden stops the USER scrolling
+ * and not scrollIntoView, so the ceiling alone left the shell strandable. */
+:root[data-shell="desktop"],
+:root[data-shell="desktop"] body {
+  height: 100%;
+  overflow: hidden;
+  /* The gesture, not just the bars: without this an inertial two-finger swipe
+   * still translates the document on macOS even with nothing to scroll to. */
+  overscroll-behavior: none;
+}
+
+/* Desktop shell (CGLAB-168). Electron's titleBarStyle: 'hiddenInset' removes
+ * the OS title bar, so the window can only be moved by a region that declares
+ * itself draggable. A drag region also swallows pointer events, which is why
+ * anything clickable inside one has to opt back out. Inert in a browser. */
+[data-app-region="drag"] { -webkit-app-region: drag; app-region: drag; }
+[data-app-region="no-drag"] { -webkit-app-region: no-drag; app-region: no-drag; }
+
+/* Slim scrollbar for the shell's narrow panes. Chromium's default is ~15px
+ * with a painted track — in a 224px sidebar that reads as a second border and
+ * eats a tenth of the width. Overlay-style instead: no track, a thin thumb
+ * that stays quiet until you point at it. Colours come from the theme tokens
+ * so it follows light and dark without a second rule. */
+.scrollbar-slim {
+  scrollbar-width: thin;                                  /* Firefox / standard */
+  scrollbar-color: var(--border-soft) transparent;
+}
+.scrollbar-slim::-webkit-scrollbar { width: 6px; height: 6px; }
+.scrollbar-slim::-webkit-scrollbar-track { background: transparent; }
+.scrollbar-slim::-webkit-scrollbar-thumb {
+  background-color: var(--border-soft);
+  border-radius: 999px;
+}
+.scrollbar-slim::-webkit-scrollbar-thumb:hover { background-color: var(--brand); }
+/* The little square where the two bars meet is pure chrome — hide it. */
+.scrollbar-slim::-webkit-scrollbar-corner { background: transparent; }
+
 @keyframes search-highlight {
   0%, 100% { box-shadow: inset 0 0 0 2px var(--brand), 0 0 12px 2px rgba(4, 204, 152, 0.35); }
   50% { box-shadow: inset 0 0 0 2px var(--brand), 0 0 20px 4px rgba(4, 204, 152, 0.55); }
@@ -35,4 +93,44 @@ body {
   animation: search-highlight 1s ease-in-out 2;
   box-shadow: inset 0 0 0 2px var(--brand);
   background-color: var(--chip-bg) !important;
+}
+
+/*
+ * An agent is thinking, and the field it will fill says so.
+ *
+ * A band of brand light sweeping across the answer box, rather than a spinner
+ * parked in a corner: the wait belongs to THAT field — it is the one about to
+ * be written into, and it is locked while the agent works. A spinner elsewhere
+ * would leave the box looking like an ordinary empty input somebody forgot to
+ * type in.
+ *
+ * `background-position` and not `transform`, so the band travels across the
+ * element without moving the element or anything it contains.
+ */
+@keyframes agent-sweep {
+  0%   { background-position: -40% 0; }
+  100% { background-position: 140% 0; }
+}
+
+.agent-sweep {
+  background-image: linear-gradient(
+    100deg,
+    transparent 20%,
+    var(--chip-bg) 40%,
+    rgba(4, 204, 152, 0.22) 50%,
+    var(--chip-bg) 60%,
+    transparent 80%
+  );
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
+  animation: agent-sweep 1.6s ease-in-out infinite;
+}
+
+/* Still says "working", without the motion. A wait with no indication at all
+   is worse than a still one for someone who asked not to be moved. */
+@media (prefers-reduced-motion: reduce) {
+  .agent-sweep {
+    animation: none;
+    background-position: 50% 0;
+  }
 }

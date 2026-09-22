@@ -12,8 +12,20 @@ import * as os from 'os';
 import * as path from 'path';
 import supertest from 'supertest';
 import { createHubApp } from '../server';
+import { drainApp } from './helpers/drainApp';
 import { createPasswordUser } from '../auth/password';
 import { __resetAgenfkReleaseCache, __setReleaseFetcher } from '../services/githubReleases';
+
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-available-versions-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -62,13 +74,17 @@ describe('GET /v1/admin/upgrade/available-versions', () => {
       defaultOrgId: 'org-a',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
-    const login = await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
+    const login = await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
     cookieAdmin = login.headers['set-cookie']?.[0] ?? '';
   });
 
   afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
     __resetAgenfkReleaseCache();
@@ -77,7 +93,7 @@ describe('GET /v1/admin/upgrade/available-versions', () => {
 
   it('returns full release list (newest → oldest) with fleetFloor=null when no installation has reported a version', async () => {
     await seedInstallation(ctx.db, 'org-a', 'inst-1', null);
-    const r = await supertest(app).get('/v1/admin/upgrade/available-versions').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/admin/upgrade/available-versions').set('Cookie', cookieAdmin);
     expect(r.status).toBe(200);
     expect(r.body.fleetFloor).toBeNull();
     expect(r.body.versions).toEqual(['0.4.1', '0.4.0', '0.3.0-beta.23', '0.3.0-beta.22', '0.2.28', '0.2.10']);
@@ -89,7 +105,7 @@ describe('GET /v1/admin/upgrade/available-versions', () => {
     await seedInstallation(ctx.db, 'org-a', 'inst-2', '0.3.0-beta.22');
     await seedInstallation(ctx.db, 'org-a', 'inst-3', '0.4.1');
 
-    const r = await supertest(app).get('/v1/admin/upgrade/available-versions').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/admin/upgrade/available-versions').set('Cookie', cookieAdmin);
     expect(r.status).toBe(200);
     expect(r.body.fleetFloor).toBe('0.3.0-beta.22');
     // 0.2.28 and 0.2.10 are below the floor and excluded.
@@ -100,7 +116,7 @@ describe('GET /v1/admin/upgrade/available-versions', () => {
     await seedInstallation(ctx.db, 'org-a', 'inst-1', '0.4.0');
     await seedInstallation(ctx.db, 'org-b', 'inst-2', '0.2.10');
 
-    const r = await supertest(app).get('/v1/admin/upgrade/available-versions').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/admin/upgrade/available-versions').set('Cookie', cookieAdmin);
     expect(r.status).toBe(200);
     // Only org-a's floor matters — org-b's older version must not pull the floor down.
     expect(r.body.fleetFloor).toBe('0.4.0');
@@ -113,20 +129,20 @@ describe('GET /v1/admin/upgrade/available-versions', () => {
 
     await seedInstallation(ctx.db, 'org-a', 'inst-1', '0.3.0-beta.22');
 
-    const r = await supertest(app).get('/v1/admin/upgrade/available-versions').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/admin/upgrade/available-versions').set('Cookie', cookieAdmin);
     expect(r.status).toBe(503);
     expect(r.body.error).toBeTruthy();
   });
 
   it('rejects unauthenticated callers', async () => {
-    const r = await supertest(app).get('/v1/admin/upgrade/available-versions');
+    const r = await supertest(__server).get('/v1/admin/upgrade/available-versions');
     expect(r.status).toBe(401);
   });
 
   it('?refresh=1 invalidates the cache and fetches a fresh release list', async () => {
     // Cache is primed by beforeEach with the default FAKE_RELEASES.
     await seedInstallation(ctx.db, 'org-a', 'inst-1', null);
-    const before = await supertest(app).get('/v1/admin/upgrade/available-versions').set('Cookie', cookieAdmin);
+    const before = await supertest(__server).get('/v1/admin/upgrade/available-versions').set('Cookie', cookieAdmin);
     expect(before.body.versions).toContain('0.4.1');
     expect(before.body.versions).not.toContain('0.5.0');
 
@@ -134,10 +150,10 @@ describe('GET /v1/admin/upgrade/available-versions', () => {
     // serves the old list. With refresh=1, the route re-fetches.
     stubReleases([{ tag_name: 'v0.5.0' }, ...FAKE_RELEASES]);
 
-    const stale = await supertest(app).get('/v1/admin/upgrade/available-versions').set('Cookie', cookieAdmin);
+    const stale = await supertest(__server).get('/v1/admin/upgrade/available-versions').set('Cookie', cookieAdmin);
     expect(stale.body.versions).not.toContain('0.5.0'); // cache hit
 
-    const fresh = await supertest(app).get('/v1/admin/upgrade/available-versions?refresh=1').set('Cookie', cookieAdmin);
+    const fresh = await supertest(__server).get('/v1/admin/upgrade/available-versions?refresh=1').set('Cookie', cookieAdmin);
     expect(fresh.body.versions[0]).toBe('0.5.0');
   });
 });

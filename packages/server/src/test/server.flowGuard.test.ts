@@ -12,6 +12,23 @@ import { app, initStorage, storage } from '../server';
 import * as fs from 'fs';
 import * as path from 'path';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. That
+ * churn produced `Error: Parse Error: Expected HTTP/, RTSP/ or ICE/` — a
+ * transport failure, not an assertion about anything under test. It hands the
+ * test an empty body, so `res.body.id` is undefined and the next call goes to
+ * `/items/undefined`; one bad socket then surfaces as `expected 404 to be 400`
+ * in whichever test happened to be running. Different test every run, green
+ * when run alone.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 const TEST_DB = path.resolve('./flow-guard-test-db.sqlite');
 
 describe('local flow read-only guard', () => {
@@ -37,13 +54,13 @@ describe('local flow read-only guard', () => {
   ];
 
   it("POST /flows defaults source to 'local'", async () => {
-    const r = await request(app).post('/flows').send({ name: 'LF', steps: baseSteps });
+    const r = await agent().post('/flows').send({ name: 'LF', steps: baseSteps });
     expect(r.status).toBe(201);
     expect(r.body.source).toBe('local');
   });
 
   it("POST /flows refuses to honour a body-supplied source='hub'", async () => {
-    const r = await request(app).post('/flows').send({
+    const r = await agent().post('/flows').send({
       name: 'sneaky', steps: baseSteps, source: 'hub', hubFlowId: 'fake', hubVersion: 99,
     });
     expect(r.status).toBe(201);
@@ -53,15 +70,15 @@ describe('local flow read-only guard', () => {
   });
 
   it('PUT /flows/:id is allowed for source=local flows', async () => {
-    const created = (await request(app).post('/flows').send({ name: 'L', steps: baseSteps })).body;
-    const r = await request(app).put(`/flows/${created.id}`).send({ name: 'L2' });
+    const created = (await agent().post('/flows').send({ name: 'L', steps: baseSteps })).body;
+    const r = await agent().put(`/flows/${created.id}`).send({ name: 'L2' });
     expect(r.status).toBe(200);
     expect(r.body.name).toBe('L2');
   });
 
   it('DELETE /flows/:id is allowed for source=local flows', async () => {
-    const created = (await request(app).post('/flows').send({ name: 'L', steps: baseSteps })).body;
-    const r = await request(app).delete(`/flows/${created.id}`);
+    const created = (await agent().post('/flows').send({ name: 'L', steps: baseSteps })).body;
+    const r = await agent().delete(`/flows/${created.id}`);
     expect(r.status).toBe(204);
   });
 
@@ -82,7 +99,7 @@ describe('local flow read-only guard', () => {
     } as any);
     expect((hubFlow as any).source).toBe('hub');
 
-    const r = await request(app).put(`/flows/${hubFlow.id}`).send({ name: 'pwn' });
+    const r = await agent().put(`/flows/${hubFlow.id}`).send({ name: 'pwn' });
     expect(r.status).toBe(409);
     expect(r.body.error).toMatch(/managed by your organization's Hub/i);
   });
@@ -99,7 +116,7 @@ describe('local flow read-only guard', () => {
       source: 'hub' as any,
     } as any);
 
-    const r = await request(app).delete(`/flows/${hubFlow.id}`);
+    const r = await agent().delete(`/flows/${hubFlow.id}`);
     expect(r.status).toBe(409);
     expect(r.body.error).toMatch(/managed by your organization's Hub/i);
   });
@@ -117,7 +134,7 @@ describe('local flow read-only guard', () => {
       hubFlowId: 'remote-hub-3' as any,
       hubVersion: 7 as any,
     } as any);
-    const r = await request(app).get('/flows/hub-3');
+    const r = await agent().get('/flows/hub-3');
     expect(r.status).toBe(200);
     expect(r.body.source).toBe('hub');
     expect(r.body.hubFlowId).toBe('remote-hub-3');

@@ -36,6 +36,14 @@ export interface Project {
   id: string;
   name: string;
   description?: string;
+  /**
+   * The checkout this project lives in.
+   *
+   * Optional because a project can exist without one — and that is exactly the
+   * state worth showing: with no folder an agent has nowhere to run and no
+   * worktree can be cut. The server sets it; the browser cannot.
+   */
+  projectRoot?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -111,6 +119,8 @@ export interface RegistryFlow {
 }
 
 export interface AgEnFKItem {
+  /** Which agent works this card. Lives on the item, not in localStorage. */
+  agentId?: string;
   id: string;
   projectId: string;
   type: ItemType;

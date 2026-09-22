@@ -1,11 +1,11 @@
 import React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { io } from 'socket.io-client';
+import { useSocketEvent } from '../SocketContext';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { api } from '../api';
-import { API_URL } from '../apiUrl';
-import { stripAnsi } from '../utils';
+import { stripAnsi, prettyModel } from '../utils';
+import { appendEvent } from '../runEvents';
 
 export interface AgentRun {
   id: string;
@@ -66,18 +66,6 @@ function fmtTimestamp(ts?: string): { date?: string; time?: string } {
     date: d.toLocaleDateString(),
     time: d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
   };
-}
-
-// Short, human display name for a model id: the first meaningful alphabetic
-// family token (>=3 letters, so version bits like "v1"/"27b" are skipped),
-// title-cased. "qwen3.6:27b" -> "Qwen", "claude-opus-4-8" -> "Claude",
-// "3.5-sonnet" -> "Sonnet". Falls back to the raw id if no such token exists,
-// so it never emits a meaningless single letter.
-function prettyModel(model?: string): string {
-  if (!model) return '';
-  const family = model.match(/[a-zA-Z]{3,}/)?.[0];
-  if (!family) return model;
-  return family.charAt(0).toUpperCase() + family.slice(1);
 }
 
 // Markdown emphasis rewrites literal text, and these transcripts are full of
@@ -244,21 +232,23 @@ export const RunsPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
   const events = Array.isArray(eventsData) ? eventsData : [];
 
   // Live: append streamed events into the cache; refresh the run list on updates.
-  React.useEffect(() => {
-    const socket = io(API_URL || undefined);
-    socket.on('run:event', (b: { itemId: string; runId: string; event: RunEvent }) => {
-      if (b.itemId !== itemId) return;
-      queryClient.setQueryData<RunEvent[]>(['run-events', b.runId], (old) => {
-        const prev = Array.isArray(old) ? old : [];
-        return prev.some(e => e.seq === b.event.seq) ? prev : [...prev, b.event].sort((a, z) => a.seq - z.seq);
-      });
-      queryClient.invalidateQueries({ queryKey: ['agent-runs', itemId] });
-    });
-    socket.on('run:updated', (b: { itemId: string }) => {
-      if (b.itemId === itemId) queryClient.invalidateQueries({ queryKey: ['agent-runs', itemId] });
-    });
-    return () => { socket.disconnect(); };
-  }, [itemId, queryClient]);
+  // Shared connection (CGLAB-168). The desktop shell can show several of these
+  // panels at once, one per agent session, so a socket per panel would multiply
+  // with every open tab.
+  useSocketEvent('run:event', (b: { itemId: string; runId: string; event: RunEvent }) => {
+    if (b.itemId !== itemId) return;
+    // Constant-time on the ordinary path. This used to scan, copy and re-sort
+    // an already-sorted array on every event — work proportional to the SQUARE
+    // of the session's length. See runEvents.ts for why the slow path stays.
+    queryClient.setQueryData<RunEvent[]>(
+      ['run-events', b.runId],
+      old => appendEvent(old, b.event) as RunEvent[],
+    );
+    queryClient.invalidateQueries({ queryKey: ['agent-runs', itemId] });
+  });
+  useSocketEvent('run:updated', (b: { itemId: string }) => {
+    if (b.itemId === itemId) queryClient.invalidateQueries({ queryKey: ['agent-runs', itemId] });
+  });
 
   // Autoscroll the transcript as events arrive.
   React.useEffect(() => {
@@ -276,7 +266,18 @@ export const RunsPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
       {/* Run list */}
       <div className="w-56 shrink-0 space-y-2 overflow-y-auto">
         {runs.map(run => {
-          const lane = LANE[run.actor];
+          /*
+           * The same fallback the event row has used all along, which this
+           * line did not. An actor that is absent or unrecognised made
+           * `lane.tag` a read on undefined and took the WHOLE panel down - a
+           * white screen rather than a missing label.
+           *
+           * It mattered less while the panel was only reachable from the card
+           * detail modal. It is a top-level screen now (0d897a8c), so the
+           * surface is every run the server returns, including ones written by
+           * an older build or a client that did not set an actor.
+           */
+          const lane = LANE[run.actor as keyof typeof LANE] || LANE.worker;
           const isSel = run.id === selectedRunId;
           return (
             <button

@@ -5,6 +5,7 @@ import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/re
 import { KanbanBoard } from '../components/KanbanBoard';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../ThemeContext';
+import { ActiveProjectProvider } from '../ActiveProject';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api } from '../api';
 import { io } from 'socket.io-client';
@@ -12,6 +13,7 @@ import { io } from 'socket.io-client';
 // Mock socket.io-client
 vi.mock('socket.io-client', () => ({
   io: vi.fn(() => ({
+    connect: vi.fn(),
     on: vi.fn(),
     off: vi.fn(),
     emit: vi.fn(),
@@ -90,9 +92,11 @@ const queryClient = new QueryClient({
 
 const wrapper = ({ children }: { children: React.ReactNode }) => (
   <QueryClientProvider client={queryClient}>
+    <ActiveProjectProvider>
     <ThemeProvider>
       {children}
     </ThemeProvider>
+    </ActiveProjectProvider>
   </QueryClientProvider>
 );
 
@@ -263,3 +267,4 @@ describe('ProjectPickerDismiss', () => {
     expect(screen.getByText(/Delete "Beta"\?/i)).toBeDefined();
   });
 });
+

@@ -23,7 +23,16 @@ const Mermaid: React.FC<{ chart: string }> = ({ chart }) => {
       mermaid.initialize({
         startOnLoad: false,
         theme: theme === 'dark' ? 'dark' : 'default',
-        securityLevel: 'loose',
+        /*
+         * 'strict', NEVER 'loose' (CGLAB-187).
+         *
+         * A README is untrusted content. At 'loose', Mermaid's own formatUrl()
+         * skips sanitizeUrl(), so a `click X "javascript:..."` directive
+         * survives into the SVG this modal injects with innerHTML — and in the
+         * desktop build the renderer carries the preload bridge, so that is one
+         * click away from a shell. 'strict' is the sanitizing level.
+         */
+        securityLevel: 'strict',
       });
       mermaid.render(id, chart).then(({ svg }) => {
         if (ref.current) {

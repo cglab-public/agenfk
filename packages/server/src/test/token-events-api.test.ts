@@ -5,6 +5,20 @@ import * as path from 'path';
 import { app, initStorage } from '../server';
 import { connectMcpClient, listToolNames, type ConnectedMcpClient } from './helpers/mcpClient';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. The
+ * churn produced `Error: Parse Error: Expected HTTP/` — a transport failure
+ * that hands the test an empty body, so one bad socket surfaces as a confident
+ * wrong assertion in whichever test happened to be running.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
   mockAxios.get = vi.fn();
@@ -49,7 +63,7 @@ describe('GET /token-events REST', () => {
   beforeEach(async () => { await initStorage(); });
 
   it('returns an empty array when no events exist', async () => {
-    const res = await request(app).get('/token-events');
+    const res = await agent().get('/token-events');
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body)).toBe(true);
     expect(res.body).toEqual([]);
@@ -74,24 +88,24 @@ describe('GET /token-events REST', () => {
       itemId: 'item-Y', projectId: 'proj-2', sourcePath: '/p/c', sourceOffset: 0,
     });
 
-    const byItem = await request(app).get('/token-events').query({ itemId: 'item-X' });
+    const byItem = await agent().get('/token-events').query({ itemId: 'item-X' });
     expect(byItem.status).toBe(200);
     expect(byItem.body.map((e: any) => e.id).sort()).toEqual(['a', 'b']);
 
-    const byProject = await request(app).get('/token-events').query({ projectId: 'proj-1' });
+    const byProject = await agent().get('/token-events').query({ projectId: 'proj-1' });
     expect(byProject.body.map((e: any) => e.id).sort()).toEqual(['a', 'b']);
 
-    const byClient = await request(app).get('/token-events').query({ client: 'codex' });
+    const byClient = await agent().get('/token-events').query({ client: 'codex' });
     expect(byClient.body.map((e: any) => e.id).sort()).toEqual(['a', 'c']);
 
     // since/until are inclusive/exclusive window filters on ts.
-    const since = await request(app).get('/token-events').query({ since: '2026-05-11T00:00:00Z' });
+    const since = await agent().get('/token-events').query({ since: '2026-05-11T00:00:00Z' });
     expect(since.body.map((e: any) => e.id).sort()).toEqual(['b', 'c']);
 
-    const until = await request(app).get('/token-events').query({ until: '2026-05-10T12:00:00Z' });
+    const until = await agent().get('/token-events').query({ until: '2026-05-10T12:00:00Z' });
     expect(until.body.map((e: any) => e.id)).toEqual(['a']);
 
-    const limited = await request(app).get('/token-events').query({ limit: 1 });
+    const limited = await agent().get('/token-events').query({ limit: 1 });
     expect(limited.body).toHaveLength(1);
   });
 });

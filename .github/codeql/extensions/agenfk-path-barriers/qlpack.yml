@@ -1,0 +1,18 @@
+# Teaching CodeQL about this repository's path containment.
+#
+# WRITTEN AFTER THE REAL BUG WAS FIXED, and the order matters. Before, the
+# containment in worktrees.ts was a tautology - it resolved the CALLER'S root
+# and asked whether a path derived from that root sat inside it, which refused
+# 0 of 40 attacker-chosen pairs. A barrier model then would not have been a
+# model, it would have been a suppression of a live vulnerability.
+#
+# The escape is closed now (route-level resolve-then-compare that follows
+# symlinks) and pinned by a test that returns 201 when reverted. So this is a
+# statement about code that is actually safe.
+name: agenfk/path-barriers
+version: 0.0.1
+library: true
+extensionTargets:
+  codeql/javascript-all: '*'
+dataExtensions:
+  - ext/**/*.model.yml

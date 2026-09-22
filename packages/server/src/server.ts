@@ -2,13 +2,19 @@ import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
-import { StorageProvider, ItemType, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, computeSizingFromItems, SizingCounts, normalizeFlowSteps, isHubRelease } from "@agenfk/core";
-import { TelemetryClient, getInstallationId, isTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
+import { commitStagedForCard, resolveCommitRoot } from './closeCommit';
+import { mayPropagate, readCleanTreeSha, readHead, readTreeStatus } from './propagation';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
+import { describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState } from "@agenfk/core";
+import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
 import { startFlowSync, type FlowSyncHandle } from "./hub/flowSync.js";
 import { refreshProjectFlowFromHub } from "./hub/flowRefresh.js";
 import { startRunTailer } from "./agent-runs/tailer.js";
+import { createWorktree, removeWorktree } from "./worktrees.js";
+import { applySetupResult, SETUP_TIMEOUT_MS, type SetupDecision, type SetupRun } from "./worktreeSetup.js";
+import { readGitHubAccount, signOutGitHub } from "./githubAccount.js";
 import { createOutputCapture, formatBytes, type CapturedOutput } from "./verifyCapture.js";
 import { startUpgradeSync, replayPendingUpgradeOutcome, type UpgradeSyncHandle } from "./hub/upgradeSync.js";
 import { startRepointSync, type RepointSyncHandle } from "./hub/repointSync.js";
@@ -32,9 +38,13 @@ export const VERIFY_TOKEN = (() => {
     return ephemeral;
   }
 })();
-import { exec, execSync, execFileSync, spawn } from "child_process";
+import { exec, execFile, execSync, execFileSync, spawn } from "child_process";
 import { createServer } from "http";
 import { Server } from "socket.io";
+import { readGitStatus } from './gitStatus.js';
+import { buildHerdrSnapshot, realHerdrDeps } from './herdrRoutes.js';
+import { sendPaneText, sendPaneKeys, focusPane } from './herdrWrite.js';
+import { readPane } from './herdr.js';
 
 // The local API server is for this machine only. It binds to loopback by
 // default (override with AGENFK_HOST) and only accepts browser requests from
@@ -68,6 +78,17 @@ const REQUESTED_PORT = Number.parseInt(
   String(process.env.AGENFK_PORT || process.env.PORT || DEFAULT_API_PORT),
   10,
 );
+
+// Directory of the built UI bundle this server is also serving, or null when
+// the UI is somebody else's job (the `agenfk up` flow, where `vite preview`
+// owns port 5173). Set by mountStaticUI() at the bottom of the route table.
+let servedUiDir: string | null = null;
+
+// Does this caller want a page or data? A browser navigating to a URL asks for
+// html; the CLI, `agenfk health` and curl land on json. Both the "/" banner and
+// the SPA fallback branch on this, so they must agree on the answer.
+const wantsHtml = (req: express.Request): boolean =>
+  req.accepts(["json", "html"]) === "html";
 
 app.use(cors({
   origin: corsOriginFn,
@@ -781,17 +802,85 @@ const syncParentStatus = async (parentId: string) => {
   }
 };
 
-const findProjectRoot = (startDir: string): string => {
-  let currentDir = startDir;
-  while (currentDir !== path.parse(currentDir).root) {
-    if (fs.existsSync(path.join(currentDir, ".agenfk"))) {
+/**
+ * Where a path really lands, following symlinks as far as the filesystem knows.
+ *
+ * `path.resolve` collapses `..` and stops there, which is why a lexical
+ * containment check is defeated by a single link. The target usually does not
+ * exist yet, so this resolves the deepest ancestor that DOES and re-attaches
+ * the rest.
+ */
+function realBase(p: string): string {
+  // Same implementation as worktrees.canonical, because it IS the same
+  // question. It used to be a second copy with a comment explaining why the
+  // copy was justified; the explanation was a rationalisation.
+  return resolveThroughLinks(p, {
+    resolve: path.resolve, dirname: path.dirname, basename: path.basename,
+    join: path.join, exists: fs.existsSync, realpath: fs.realpathSync,
+  });
+}
+
+export const findProjectRoot = (startDir: string): string | null => {
+  const home = os.homedir();
+  /*
+   * RESOLVED FIRST, and this is not tidiness - it is what makes the loop below
+   * terminate.
+   *
+   * `path.parse('.').root` is '' and `path.dirname('.')` is '.', so the walk
+   * never moved and never ended. Node is single threaded, so ONE relative path
+   * stopped the whole server answering anything, for ever, with no error and no
+   * crash to point at. Every relative path reaches it, not only '.':
+   * 'relative/dir' walks to 'relative', then to '.', and sticks.
+   *
+   * It arrives from POST /items/:id/validate, which takes `cwd` off the request
+   * body - behind the internal token, so a local client can wedge the server,
+   * which is exactly the population this product runs agents from.
+   *
+   * Resolving also fixes the ANSWER: callers use the return value as a cwd for
+   * git, and handing back the caller's relative string would resolve it against
+   * the server's own working directory, which is the defect this whole area
+   * keeps producing.
+   */
+  let currentDir = path.resolve(startDir);
+  const stopAt = path.parse(currentDir).root;
+  /*
+   * A belt as well as braces. The walk is bounded by the path's own depth now,
+   * but a bound that does not depend on `path` behaving as expected is what
+   * turns "should terminate" into "does terminate" - and the cost of being
+   * wrong here is the whole process, not one request.
+   */
+  for (let guard = 0; guard < 256 && currentDir !== stopAt; guard++) {
+    // $HOME always contains ~/.agenfk, so without this guard any walk that
+    // reaches it "finds" a project there. The consequence is not cosmetic:
+    // projectRoot becomes the home directory, and `git add -A && git commit`
+    // then runs over the user's dotfiles, ~/.ssh and ~/.aws included.
+    if (currentDir !== home && fs.existsSync(path.join(currentDir, ".agenfk"))) {
       return currentDir;
     }
-    currentDir = path.dirname(currentDir);
+    const parent = path.dirname(currentDir);
+    // `dirname` of a root returns the root, so this is the other way the walk
+    // stops: it has stopped moving.
+    if (parent === currentDir) break;
+    currentDir = parent;
   }
-  return startDir;
+  /*
+   * NOT FOUND IS null, not the starting directory.
+   *
+   * Returning `path.resolve(startDir)` made a FAILURE indistinguishable from
+   * an answer: a caller could not tell "this is the project root" from "the
+   * walk reached the filesystem root and gave up". A worktree has no
+   * `.agenfk` (it is gitignored, so it does not travel into one), so a verify
+   * run from one recorded that worktree as the project's own root - and
+   * everything resolving through projectRoot, autoGitCommit above all, then
+   * aimed at one card's directory, permanently, with no message.
+   *
+   * The sink above stays where it is; this is the return value telling the
+   * truth about it.
+   */
+  return null;
 };
 
+/**
 /**
  * The commit the server makes when an item reaches its final flow step.
  *
@@ -818,6 +907,13 @@ const findProjectRoot = (startDir: string): string => {
  * author expected to land is the same defect as silently adding one they did
  * not.
  *
+ * THE ITEM'S OWN ROOT, and its CLAIMS. Two things this branch adds to the
+ * upstream result: the commit runs in `resolveCommitRoot` (a linked worktree
+ * has its OWN index, so committing from the primary checkout reads a different
+ * one), and when the card has declared claims the pathspec limits the commit to
+ * them — `.git/index` belongs to the WORKTREE, not to an agent, and several
+ * agents share one by design.
+ *
  * Exported for the test; nothing else outside this module should call it.
  */
 /** What the close commit actually did. Every state the agent must be told apart. */
@@ -831,18 +927,28 @@ export interface AutoGitCommitResult {
   output: string;
   /** Paths git can see changes in that the author did not stage. */
   unstaged: string[];
+  /** Staged paths this card never claimed, when it declared claims. */
+  outsideClaims?: string[];
   /** Why, for every outcome but 'committed'. */
   detail?: string;
+  /** The same reason under the name callers and older tests already use. */
+  error?: string;
 }
 
-const git = (cmd: string, cwd: string): Promise<{ ok: boolean; out: string; err: string }> =>
-  new Promise((resolve) => exec(cmd, { cwd }, (e, stdout, stderr) =>
+/*
+ * ARGUMENTS, never a shell string. These run against the USER's repository, and
+ * a shell adds quoting rules nobody here needs and a surface nobody here wants:
+ * the only interpolated value today is a constant, but "today" is the whole
+ * problem. execFile takes argv directly, like the rest of the server.
+ */
+const git = (args: readonly string[], cwd: string): Promise<{ ok: boolean; out: string; err: string }> =>
+  new Promise((resolve) => execFile('git', args as string[], { cwd }, (e, stdout, stderr) =>
     resolve({ ok: !e, out: stdout ?? '', err: (stderr || (e as any)?.message || '').trim() })));
 
 /** A merge, rebase, cherry-pick or revert the author has not finished. */
 const IN_PROGRESS_HEADS = ['MERGE_HEAD', 'REBASE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD'] as const;
 
-export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string): Promise<AutoGitCommitResult> => {
+export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null | undefined): Promise<AutoGitCommitResult> => {
   const message = `close(${item.type.toLowerCase()}): ${item.title} [${item.id}]`;
   const stamp = () => new Date().toISOString();
   const done = (r: AutoGitCommitResult): AutoGitCommitResult => {
@@ -850,64 +956,78 @@ export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string): Prom
     console.log(`[${stamp()}] [AUTO_GIT] ${line}`);
     return r;
   };
-  const no = (outcome: AutoGitCommitOutcome, detail: string, unstaged: string[] = []): AutoGitCommitResult =>
-    done({ outcome, success: outcome !== 'failed', committed: false, output: '', unstaged, detail });
+  const stop = (outcome: AutoGitCommitOutcome, detail: string, extra: Partial<AutoGitCommitResult> = {}): AutoGitCommitResult =>
+    done({ outcome, success: outcome !== 'failed', committed: false, output: '', unstaged: [], detail, error: detail, ...extra });
 
-  // A server started outside a repository, or pointed at one by a stale
-  // projectRoot, used to report every close as "nothing staged" forever.
-  // Swallowing git's own refusal is how that stayed invisible.
-  const repo = await git('git rev-parse --git-dir', projectRoot);
-  if (!repo.ok) return no('failed', `not a git repository: ${projectRoot}`);
+  /*
+   * THE ITEM'S WORKTREE, not the project root: a linked worktree has its own
+   * index, so committing from the primary checkout reads a different one. The
+   * root is refused rather than guessed - a stale projectRoot used to report
+   * every close as "nothing staged" forever.
+   */
+  const resolved = resolveCommitRoot(item as any, projectRoot);
+  if (resolved.root === null) return stop('failed', resolved.reason);
+  const root = resolved.root;
+
+  // Swallowing git's own refusal made a server started outside a repository —
+  // or pointed at one by a stale projectRoot — report every close as a clean
+  // "nothing staged", forever.
+  const repo = await git(['rev-parse', '--git-dir'], root);
+  if (!repo.ok) return stop('failed', `not a git repository: ${root}`);
 
   // An unfinished merge leaves MERGE_HEAD set and the index full of somebody
-  // else's resolution. Committing it produces a two-parent merge commit titled
-  // after this item — the same provenance theft this whole fix is about, in a
-  // shape no staging rule can catch.
+  // else's resolution; committing it produces a two-parent merge titled after
+  // this item.
   for (const head of IN_PROGRESS_HEADS) {
-    if ((await git(`git rev-parse -q --verify ${head}`, projectRoot)).ok) {
-      return no('declined', `a ${head.replace('_HEAD', '').toLowerCase().replace('_', ' ')} is in progress`);
+    if ((await git(['rev-parse', '-q', '--verify', head], root)).ok) {
+      return stop('declined', `a ${head.replace('_HEAD', '').toLowerCase().replace('_', ' ')} is in progress`);
     }
   }
 
-  // Porcelain v1 with -z: `XY PATH\0`, and for a rename or copy a second
-  // `\0OLDPATH` that must be consumed with it. X is the index status, Y the
-  // working-tree status; anything with a non-space Y, and every '??', is a
-  // change the author has not staged — not ours to commit, but ours to mention.
-  //
-  // -z is not a detail: without it git QUOTES any path containing a space or a
-  // non-ASCII byte, so `with space.txt` comes back wrapped in quotes and an
-  // accented filename as "uni-caf\303\251.txt" — an escape sequence presented
-  // to the reader as the name of their own file. It also collapses a rename to
-  // the single pseudo-path `old -> new`, which nobody can `git add`.
+  // Working-tree changes the author did NOT stage: not ours to commit, ours to
+  // mention. Porcelain v1 with -z (a quoted path is a name the reader cannot
+  // copy), consuming the second   a rename emits.
   const unstaged: string[] = [];
-  const status = await git('git status --porcelain -z', projectRoot);
+  const status = await git(['status', '--porcelain', '-z'], root);
   const entries = status.out.split('\0');
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i];
+  for (let k = 0; k < entries.length; k++) {
+    const entry = entries[k];
     if (entry.length < 4) continue;
     const [x, y] = [entry[0], entry[1]];
-    const path = entry.slice(3);
-    if (x === 'R' || x === 'C') i++; // consume the source path
-    if (entry.startsWith('??') || y !== ' ') unstaged.push(path);
+    if (x === 'R' || x === 'C') k++;
+    if (entry.startsWith('??') || y !== ' ') unstaged.push(entry.slice(3));
   }
 
-  const cached = await git('git diff --cached --name-only', projectRoot);
-  if (!cached.ok) return no('failed', cached.err || 'could not read the index', unstaged);
-  if (!cached.out.split('\n').some(l => l.trim())) {
-    // Not a failure, and it must not be logged as one: an author who committed
-    // their own work first is the well-behaved case, and crying wolf on every
-    // clean close teaches everyone to ignore the line that matters.
-    return no('nothing-staged', 'the index was empty', unstaged);
+  /*
+   * THE COMMIT ITSELF IS `commitStagedForCard`'s decision, not a second copy of
+   * it. That module owns "commit the INDEX", the claims pathspec, the
+   * staged-then-changed refusal and the reason strings; reimplementing any of
+   * it here is how the two would drift.
+   */
+  const result = commitStagedForCard(
+    item as any,
+    root,
+    { run: args => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) },
+    (item as any).claims,
+  );
+  if (result.committed) {
+    return done({
+      outcome: 'committed', success: true, committed: true,
+      output: result.output ?? '', unstaged, outsideClaims: result.outsideClaims ? [...result.outsideClaims] : undefined,
+    });
   }
-
-  const commit = await git(`git commit -m ${JSON.stringify(message)}`, projectRoot);
-  if (!commit.ok) {
-    // Conflicted files, a rejecting pre-commit hook, an unset user.email, a
-    // failing gpg sign. Reporting these as "nothing was staged" told the agent
-    // its work was never there and sent it off to push an empty branch.
-    return no('failed', commit.err || 'git commit refused', unstaged);
-  }
-  return done({ outcome: 'committed', success: true, committed: true, output: commit.out.trim(), unstaged });
+  const reason = result.reason ?? 'the close commit did not run';
+  /*
+   * An EMPTY index is a normal, well-behaved close (the author committed their
+   * own work first). Staged files that are not OURS is a different fact - the
+   * card's work is not in the index - and a refusal the agent must act on.
+   * `commitStagedForCard` reports both under the same "nothing was staged"
+   * wording, so `outsideClaims` is what tells them apart.
+   */
+  const nothingOfOurs = (result.outsideClaims?.length ?? 0) > 0;
+  const outcome: AutoGitCommitOutcome =
+    !nothingOfOurs && /nothing was staged/i.test(reason) ? 'nothing-staged' : 'failed';
+  return stop(outcome, reason, { unstaged, outsideClaims: result.outsideClaims ? [...result.outsideClaims] : undefined });
 };
 
 // ── Storage initialisation ───────────────────────────────────────────────────
@@ -925,7 +1045,7 @@ const initStorage = async () => {
       } catch { /* ignore malformed config */ }
     }
     if (!dbPath) {
-      const root = findProjectRoot(process.cwd());
+      const root = findProjectRoot(process.cwd()) ?? process.cwd();
       dbPath = path.join(root, ".agenfk", "db.sqlite");
     }
   }
@@ -1236,7 +1356,14 @@ function sortedFlowSteps(flow: { steps: FlowStepInfo[] }): FlowStepInfo[] {
  * In the default flow this is IN_PROGRESS. Custom flows may use any name.
  */
 function getCodingStep(sorted: FlowStepInfo[]): FlowStepInfo | undefined {
-  return sorted.find(s => !s.isAnchor);
+  // isBoundaryStep, not !isAnchor. A flow authored through `agenfk flow create`
+  // marks its boundary steps with isSpecial and never sets isAnchor, so the
+  // narrower test picked the HOLDING step as the place to send a failed verify
+  // back to. The item then sat on a step getActiveStepItems counts as finished,
+  // the gatekeeper reported "no active task", and the PreToolUse hook blocked
+  // every edit — the agent was sent back to fix a failure and simultaneously
+  // forbidden from touching the code.
+  return sorted.find(s => !isBoundaryStep(s));
 }
 
 /**
@@ -1251,19 +1378,23 @@ function findCurrentFlowStep(sorted: FlowStepInfo[], status: string): { step: Fl
 
 // ── Routes ───────────────────────────────────────────────────────────────────
 
-app.get("/", (req, res) => {
+app.get("/", (req, res, next) => {
+  // When we are also serving the UI bundle, a browser asking for "/" wants the
+  // app, not the API banner. Everything else — the CLI, `agenfk health`, curl —
+  // negotiates to JSON and keeps reading `.message` as it always has.
+  if (servedUiDir && wantsHtml(req)) return next();
   res.json({
     message: "AgEnFK Framework API is running",
     endpoints: {
       projects: "/projects",
       items: "/items",
-      ui: `http://localhost:${process.env.VITE_PORT || 5173}`
+      ui: servedUiDir ? "/" : `http://localhost:${process.env.VITE_PORT || 5173}`
     }
   });
 });
 
 app.get("/api/readme", asyncHandler(async (_req: any, res: any) => {
-  const root = findProjectRoot(process.cwd());
+  const root = findProjectRoot(process.cwd()) ?? process.cwd();
   const readmePath = path.join(root, "README.md");
   if (!fs.existsSync(readmePath)) {
     return res.status(404).json({ error: "README.md not found" });
@@ -1286,6 +1417,44 @@ app.get("/api/telemetry/config", (_req: any, res: any) => {
     // Never fail — UI treats errors as telemetry disabled
     res.json({ installationId: null, telemetryEnabled: false });
   }
+});
+
+/**
+ * Changing the telemetry choice from the settings screen.
+ *
+ * The flag stays in `~/.agenfk/config.json`, which is where `agenfk config set
+ * telemetry` has always kept it and where `isTelemetryEnabled` reads it.
+ * Copying it into the settings table would give one value two homes, and
+ * whichever the UI read, the other would silently disagree — the mistake
+ * tmuxByDefault already made once in the other direction. Both writers call the
+ * same function in @agenfk/telemetry, so there is one implementation of "keep
+ * the other keys" rather than two.
+ *
+ * The READ above is open and this write is not. Opting somebody IN to analytics
+ * is a privacy decision, and this server is unauthenticated on loopback with a
+ * CORS allowlist that trusts any localhost origin — so the same custom-header
+ * preflight that guards POST /releases/update guards this. (Security: bug
+ * 968259c4.)
+ */
+app.put("/api/telemetry/config", (req: any, res: any) => {
+  if (!req.headers['x-agenfk-ui']) {
+    return res.status(403).json({ error: "Forbidden: this route requires the x-agenfk-ui header." });
+  }
+  const enabled = req.body?.telemetryEnabled;
+  // Type-checked, never coerced. 'false' is a truthy string, and coercing it
+  // would opt in a user who was opting out.
+  if (typeof enabled !== 'boolean') {
+    return res.status(400).json({ error: 'telemetryEnabled must be a boolean' });
+  }
+  try {
+    setTelemetryEnabled(enabled);
+  } catch (err: any) {
+    // Unlike the read, this must not answer "fine" when nothing was written —
+    // the switch would show a choice the machine never made.
+    return res.status(500).json({ error: `Could not write the telemetry setting: ${err?.message ?? err}` });
+  }
+  // Read back rather than echoed, so the caller sees what is stored.
+  res.json({ installationId: getInstallationId(), telemetryEnabled: isTelemetryEnabled() });
 });
 
 // DB status & backup endpoints
@@ -1344,6 +1513,688 @@ app.post("/projects", asyncHandler(async (req: any, res: any) => {
   res.status(201).json(created);
 }));
 
+/**
+ * Installation-wide settings.
+ *
+ * Not project-scoped and not in ~/.agenfk/config.json. config.json is read and
+ * written directly by the CLI with no server in the path, so putting a value
+ * the UI also writes in there would give it two owners and no arbiter. The
+ * database is already one per installation, which makes a table here global
+ * across projects and reachable identically by the CLI, the UI and MCP.
+ */
+/**
+ * Terminals the user had open, so they can come back with their conversations.
+ *
+ * The agent's own conversation id is stored alongside, and it is the reason
+ * this is worth anything: without it "restore" puts empty shells on screen
+ * that look like the sessions the user left and are not.
+ *
+ * Unauthenticated like the rest of the board's routes, and that is defensible
+ * here in a way it was not for auto-approve: nothing recorded through these
+ * routes changes what a process is allowed to do. The agent id is checked
+ * against the closed launchable set, and the conversation id against a strict
+ * UUID shape, because both end up in the argv of a spawned process.
+ */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The state of a session's worktree (CGLAB-173).
+ *
+ * Thin on purpose. The CLI already knows how to do this (`agenfk branch
+ * status`); what was missing was a way for the desktop to ASK. So the route
+ * resolves the worktree, runs one git command and hands the bytes to core's
+ * parser — the parsing is where the hard cases live and it is unit-tested
+ * without a repository.
+ *
+ * execFile with an ARGUMENT ARRAY, never a shell string. Branch names and
+ * paths come from user data, and one `exec` with an interpolated value is the
+ * difference between a status panel and a shell.
+ *
+ * `--porcelain=v1 -z` because the human-readable output is localised and
+ * changes between versions, and because a filename may contain a newline —
+ * with newline-separated output one file reads as two.
+ */
+/**
+ * A ceiling on the routes that do real work per request (CodeQL js/missing-rate-limiting).
+ *
+ * Applied to the five that spawn a process, walk a directory, or reach the
+ * network: git-status, the file listing, worktree creation, the project-root
+ * setter and the PR import.
+ *
+ * THE NUMBER COMES FROM WHAT THIS APP DOES, not from the alert. The UI polls
+ * git-status every four seconds, so fifteen requests a minute is ordinary; a
+ * ceiling near that would break the product to satisfy a static check, which is
+ * an easy trade to make without looking. Sixty leaves normal use four times
+ * under the line and still stops a runaway loop.
+ *
+ * Keyed by CALLER AND ROUTE, so one client looping on git-status cannot lock
+ * another out of the PR import. Swept on write, because a map keyed by caller
+ * that is never evicted is a denial of service inside the fix for one.
+ */
+/**
+ * A ceiling on the routes that do real work per request (CodeQL js/missing-rate-limiting).
+ *
+ * Applied to the five that spawn a process, walk a directory, or reach the
+ * network: git-status, the file listing, worktree creation, the project-root
+ * setter and the PR import.
+ *
+ * THE NUMBER COMES FROM WHAT THIS APP DOES, not from the alert. The UI polls
+ * git-status every four seconds, so fifteen requests a minute is ordinary; a
+ * ceiling near that would break the product to satisfy a static check, which is
+ * an easy trade to make without looking. Sixty leaves normal use four times
+ * under the line and still stops a runaway loop.
+ *
+ * WHY THE LIBRARY AND NOT THE TWENTY LINES IT REPLACES. There was a hand-rolled
+ * version here, tested, with a per-item key and its own sweep - and CodeQL went
+ * on reporting all five routes, because the query recognises known middleware
+ * and cannot be argued with about a Map. That is a bad reason to choose a
+ * dependency and a good reason to look again at the one you wrote: this handles
+ * the standard RateLimit headers, the proxy cases and the clock properly, and
+ * express-rate-limit was ALREADY in the tree as a transitive dependency of the
+ * MCP SDK, so making it direct adds no supply-chain surface.
+ *
+ * The decision module it replaces (core/requestBudget) keeps the reasoning and
+ * the tests for the NUMBER, which is the part no library can choose.
+ */
+const limitExpensive = rateLimit({
+  windowMs: EXPENSIVE_ROUTE_WINDOW_MS,
+  limit: EXPENSIVE_ROUTE_LIMIT,
+  // Per route AND per id, not per route alone. Keyed by pattern only, every
+  // card shares one git-status budget, so two split panes polling two worktrees
+  // spend each other's allowance and the app throttles itself.
+  /*
+   * `ipKeyGenerator`, not `req.ip` raw.
+   *
+   * express-rate-limit REFUSES a custom key built from a bare `req.ip`, and it
+   * is right to: an IPv6 client takes a fresh address out of its /64 whenever
+   * it likes, so keying on the exact address hands every one of them a private
+   * budget and the limit stops limiting. The helper normalises to the prefix.
+   *
+   * It threw ERR_ERL_KEY_GEN_IPV6 at module load, which is before anything
+   * listens - so the desktop app waited sixty times for a server that was never
+   * going to answer. Every test was green, because the suite imports `app`
+   * rather than booting the process. serverBoots.test.ts now covers that gap.
+   */
+  keyGenerator: (req: any) => `${ipKeyGenerator(req.ip ?? '127.0.0.1')}\u0000${req.route?.path ?? req.path}\u0000${req.params?.id ?? ''}`,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  handler: (req: any, res: any) => {
+    /*
+     * The message names the ceiling and the likely cause. A bare 429 on a
+     * local-only server reads as a bug in the server, and the caller is almost
+     * always a loop in something the same person is writing.
+     */
+    res.status(429).json({
+      error: `Too many requests to ${req.path}. This route does real work per call - a process, `
+        + `a directory walk, or a network fetch - and is capped at ${EXPENSIVE_ROUTE_LIMIT} a minute. `
+        + 'If this was not a loop, say so on the card.',
+    });
+  },
+});
+
+/**
+ * The herdr sessions already open on this machine (CGLAB-266 / CGLAB-267).
+ *
+ * READ ONLY. The protocol can also type into a pane and move the operator's
+ * real screen; none of that is reachable from here.
+ *
+ * NEVER 500s ON ABSENCE. A machine with no herdr answers 200 with an empty list
+ * and a printable reason, because the setting that consumes this ships enabled
+ * and "not installed" is an ordinary answer, not a failure. Likewise a socket
+ * left behind by a crash: it is reported unreachable per session so one stale
+ * file cannot hide the sessions that are running.
+ * RATE LIMITED, and it had to move below the limiter to be: this walks a
+ * directory and then opens one unix socket per session. Written above the
+ * `const`, naming it throws ReferenceError at module load - and the suite
+ * imports `app` rather than booting it, so that would have been green too.
+ */
+app.get("/herdr/sessions", limitExpensive, asyncHandler(async (_req: any, res: any) => {
+  /*
+   * The cards and projects are what lets a pane be told apart from a session
+   * AgEnFK started. Handed in rather than read inside `buildHerdrSnapshot`, so
+   * the whole listing stays testable without a database - and so a caller that
+   * does not ask the ownership question cannot be given a guess.
+   */
+  const [projects, items] = await Promise.all([
+    storage.listProjects(),
+    storage.listItems({ limit: 1_000_000 }),
+  ]);
+  res.json(await buildHerdrSnapshot({
+    ...realHerdrDeps,
+    cards: (items as any[]).map(i => ({
+      id: i.id, title: i.title, status: i.status,
+      branchName: i.branchName, worktreePath: i.worktreePath, projectId: i.projectId,
+    })),
+    projects: (projects as any[]).map(p => ({ id: p.id, name: p.name, projectRoot: p.projectRoot })),
+  }));
+}));
+
+/**
+ * One pane's content, on demand.
+ *
+ * NOT part of the listing: dragging every pane's text into a directory view is
+ * a different amount of data and a different decision. This is what "open one"
+ * asks for.
+ */
+app.get("/herdr/panes/:paneId/content", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const socketPath = String(req.query.socket ?? '');
+  if (!socketPath) return res.status(400).json({ error: 'socket (query) required' });
+  const r = await readPane(socketPath, {
+    paneId: String(req.params.paneId),
+    source: (req.query.source as any) ?? 'recent',
+    lines: Number(req.query.lines ?? 200),
+  });
+  // A pane that is gone is 404, not empty text: empty would read as a live,
+  // blank terminal, which is the opposite of the truth.
+  if (!r.ok) return res.status(r.error.code === 'pane_not_found' ? 404 : 502).json(r.error);
+  return res.json(r.read);
+}));
+
+/**
+ * Typing into somebody else's terminal.
+ *
+ * THREE ROUTES, THREE ACTS, and none of them folds into another. `focus` in
+ * particular moves the operator's real screen - pane, tab and workspace at once
+ * - so it is its own call that a person has to choose, never a side effect of
+ * sending text.
+ */
+app.post("/herdr/panes/:paneId/text", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const { socket, text } = req.body ?? {};
+  if (typeof socket !== 'string' || !socket) return res.status(400).json({ error: 'socket (string) required' });
+  if (typeof text !== 'string') return res.status(400).json({ error: 'text (string) required' });
+  try {
+    const r = await sendPaneText(socket, String(req.params.paneId), text);
+    return r.ok ? res.json({ ok: true }) : res.status(502).json(r.error);
+  } catch (e: any) {
+    // A refusal from our own guards is the caller's mistake, not the server's.
+    return res.status(400).json({ error: e.message });
+  }
+}));
+
+app.post("/herdr/panes/:paneId/keys", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const { socket, keys } = req.body ?? {};
+  if (typeof socket !== 'string' || !socket) return res.status(400).json({ error: 'socket (string) required' });
+  if (!Array.isArray(keys)) return res.status(400).json({ error: 'keys (array) required' });
+  try {
+    const r = await sendPaneKeys(socket, String(req.params.paneId), keys.map(String));
+    return r.ok ? res.json({ ok: true }) : res.status(502).json(r.error);
+  } catch (e: any) {
+    return res.status(400).json({ error: e.message });
+  }
+}));
+
+/**
+ * Read a proposed decomposition back, with its problems attached. WRITES NOTHING.
+ *
+ * This is the half that makes "proposes, does not create" real (artifact
+ * aca414c7 §06). Without it the only path from an agent's answer to the board
+ * is POST /items, so the cards would exist before anybody reviewed them — and
+ * a screen that reviews things which already exist is a confirmation dialog,
+ * not a gate.
+ *
+ * No storage call in this handler, deliberately and permanently: creation
+ * happens afterwards, item by item, through the route that already exists and
+ * already enforces the flow. A future edit that reaches for `storage` here has
+ * moved the design, not extended it.
+ *
+ * Rate-limited like the other expensive routes: the body is a tree from a
+ * model, so it arrives large and often.
+ */
+/**
+ * The contract for one objective, as text.
+ *
+ * The UI cannot render this itself: the words live in core, which is a Node
+ * package, and the browser bundle must not grow a copy — two hand-written
+ * copies of this contract is the defect the core module was written to end.
+ * So the screen asks for it and seeds the agent with what it gets.
+ *
+ * GET, because it computes nothing and stores nothing: the same objective
+ * always produces the same text.
+ */
+app.get("/decompositions/contract", asyncHandler(async (req: any, res: any) => {
+  try {
+    res.type('text/plain').send(decompositionContract(String(req.query.objective ?? '')));
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+}));
+
+/**
+ * A project's configuration, with the origin of every value. READ ONLY.
+ *
+ * It exists because an inferred value that is wrong is invisible: four
+ * projects on this machine have `projectRoot` pointing at $HOME. No write path
+ * changes here — several of these fields are deliberately unreachable from a
+ * browser, and the answer says so, with the command that does change them.
+ */
+app.get("/projects/:id/settings", asyncHandler(async (req: any, res: any) => {
+  const project = await storage.getProject(req.params.id);
+  if (!project) return res.status(404).json({ error: "Project not found" });
+  const flow = project.flowId ? await storage.getFlow(project.flowId) : null;
+  res.json({
+    projectId: project.id,
+    rows: describeProjectSettings(project, {
+      // The name of the flow actually in force — the default's name when the
+      // project has not chosen one, so the row reads as a value rather than as
+      // a blank with a badge.
+      flowName: flow?.name ?? DEFAULT_FLOW.name,
+      worktreeRoot: defaultWorktreeRoot(),
+      homeDir: os.homedir(),
+    }),
+  });
+}));
+
+app.post("/decompositions/review", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const body = req.body ?? {};
+  // Reachable for an ARRAY only: express's strict JSON parser rejects a bare
+  // string, number or null with its own 400 before this handler runs, and
+  // `?? {}` covers a missing body. Kept because an array IS valid JSON and
+  // would otherwise be reviewed as an object with no fields at all.
+  if (Array.isArray(body) || typeof body !== 'object') {
+    return res.status(400).json({ error: 'Body must be a proposal object: { objective, items }.' });
+  }
+  const reviewed = reviewProposal({ objective: body.objective, items: Array.isArray(body.items) ? body.items : [] });
+  // A 200 WITH ISSUES, not a 4xx. The issues are what the screen draws beside
+  // each row; a 4xx would render a reviewable proposal as a failed request and
+  // leave the UI nothing to show but an error toast.
+  //
+  // `contractVersion` is echoed, not trusted: the contract asks the agent to
+  // stamp one, and a consumer that drops it makes the versioning dead on
+  // arrival for whoever has to parse an old answer later.
+  res.json({ ...reviewed, contractVersion: body.contractVersion ?? null });
+}));
+
+app.post("/herdr/panes/:paneId/focus", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const { socket } = req.body ?? {};
+  if (typeof socket !== 'string' || !socket) return res.status(400).json({ error: 'socket (string) required' });
+  const r = await focusPane(socket, String(req.params.paneId));
+  return r.ok ? res.json({ ok: true }) : res.status(502).json(r.error);
+}));
+
+app.get("/items/:id/git-status", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const item: any = await storage.getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: "Item not found" });
+
+  const cwd = item.worktreePath;
+  if (!cwd || !fs.existsSync(cwd)) {
+    // Never the server's own cwd: that would report the state of whatever
+    // repository the server happens to be running in — confidently, and about
+    // the wrong tree.
+    return res.status(409).json({ error: "This item has no worktree on disk yet." });
+  }
+
+  try {
+    /*
+     * ASYNC, and the comment this replaces is why. It said "the server is
+     * single-threaded and this runs on its event loop" and then ran
+     * `execFileSync` anyway — so each call held the entire server still for
+     * its duration. The panel refetches every four seconds and is always
+     * shown: around nine hundred forks an hour, during each of which there is
+     * no REST and no Socket.io, including the `resolveWorktree` calls that
+     * opening a terminal depends on.
+     *
+     * See gitStatus.ts; the exec is injectable there so the non-blocking
+     * property is something a test can actually observe.
+     */
+    res.json(await readGitStatus(cwd));
+  } catch (e: any) {
+    // An empty status would read as a clean tree, which is a lie about a
+    // directory that is not a repository at all.
+    res.status(409).json({ error: `Could not read the worktree: ${e?.message ?? 'git failed'}` });
+  }
+}));
+
+/**
+ * List a directory inside a session's worktree (CGLAB-175).
+ *
+ * The containment is the feature. This server listens on loopback with no
+ * authentication and its CORS allowlist trusts any localhost origin, so an
+ * endpoint that lists an arbitrary directory is filesystem read access for
+ * any page open in the user's browser.
+ *
+ * Checked against the RESOLVED path — realpath — not by looking for `..` in
+ * the string. A lexical check is defeated by a symlink, which git worktrees
+ * and node_modules are full of, and by an absolute path, which contains no
+ * `..` at all. Both the root and the candidate are resolved, because a
+ * worktree can itself sit behind a symlink (/tmp is one on macOS) and
+ * comparing a resolved path against an unresolved root refuses everything.
+ */
+app.get("/items/:id/files", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const item: any = await storage.getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: "Item not found" });
+  if (!item.worktreePath || !fs.existsSync(item.worktreePath)) {
+    return res.status(409).json({ error: "This item has no worktree on disk yet." });
+  }
+
+  let root: string;
+  let target: string;
+  try {
+    root = fs.realpathSync(item.worktreePath);
+    const asked = typeof req.query?.path === 'string' && req.query.path ? req.query.path : root;
+    // Resolved relative to the ROOT, never to the server's cwd.
+    target = fs.realpathSync(path.resolve(root, asked));
+  } catch {
+    // A path that cannot be resolved does not exist, and saying which of
+    // "missing" or "forbidden" it was would answer questions about the
+    // filesystem outside the worktree.
+    return res.status(403).json({ error: "Not a readable path inside this worktree." });
+  }
+
+  /*
+   * The CHECKED value is the one used from here on. `safe` and `target` hold
+   * the same string today; the point is that there is no longer a way to read
+   * the unchecked one by accident - a second `fs` call added below cannot
+   * silently skip the guard, because the only path in scope that is not `null`
+   * is the one that passed.
+   */
+  const safe = containedPath(root, target);
+  if (safe === null) {
+    return res.status(403).json({ error: "Refusing to read outside the worktree." });
+  }
+
+  try {
+    const entries = fs.readdirSync(safe, { withFileTypes: true })
+      // .git is machinery, not the user's work, and listing it invites
+      // walking into it.
+      .filter(e => e.name !== '.git')
+      .map(e => ({
+        name: e.name,
+        // A symlink is reported as what it IS, not as what it points at: a
+        // caller that treats it as a directory would ask to descend, and that
+        // request is refused by the check above rather than silently followed.
+        kind: e.isDirectory() ? 'directory' : e.isSymbolicLink() ? 'symlink' : 'file',
+      }))
+      .sort((a, b) => (a.kind === b.kind ? a.name.localeCompare(b.name) : a.kind === 'directory' ? -1 : 1));
+    res.json({ path: path.relative(root, safe), entries });
+  } catch (e: any) {
+    res.status(409).json({ error: `Could not read that directory: ${e?.message ?? 'failed'}` });
+  }
+}));
+
+/**
+ * The DIFF of one file in the item's worktree.
+ *
+ * The panel could say a file changed and never what changed, so answering
+ * "what did this agent just do" meant leaving the app and running git by hand -
+ * which is the thing the panel exists to avoid.
+ *
+ * CONTAINMENT, and it is lexical on purpose. `isInsideRoot` collapses `..`
+ * because the file may be DELETED, and a deleted path cannot be realpath'd;
+ * the resulting pathspec is handed to git as an ARGUMENT (execFile, never a
+ * shell), and git confines a pathspec to its own repository. Between the two,
+ * nothing here reads or runs outside the worktree.
+ */
+app.get("/items/:id/diff", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const item: any = await storage.getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: "Item not found" });
+  if (!item.worktreePath || !fs.existsSync(item.worktreePath)) {
+    return res.status(409).json({ error: "This item has no worktree on disk yet." });
+  }
+  const asked = typeof req.query?.path === 'string' ? req.query.path : '';
+  if (!asked) return res.status(400).json({ error: "path is required" });
+  const staged = req.query?.staged === 'true';
+
+  let root: string;
+  try { root = fs.realpathSync(item.worktreePath); }
+  catch { return res.status(409).json({ error: "This item's worktree is not readable." }); }
+
+  const safe = containedPath(root, path.resolve(root, asked));
+  if (safe === null) {
+    return res.status(403).json({ error: "Refusing to diff outside the worktree." });
+  }
+  const rel = path.relative(root, safe);
+
+  // A whole generated file can be megabytes; the reader wants the shape, not
+  // the payload. Truncated rather than refused, and SAID rather than silently.
+  const MAX = 400_000;
+  const run = (args: string[]): string => execFileSync('git', ['-C', root, ...args], {
+    encoding: 'utf8', maxBuffer: MAX * 2, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  try {
+    let diff = run(['diff', ...(staged ? ['--cached'] : []), '--', rel]);
+    if (!diff && !staged && fs.existsSync(safe)) {
+      // UNTRACKED: `git diff` ignores it, so show the whole file as added.
+      // --no-index exits 1 when there is a difference, so the output arrives
+      // on the throw.
+      try { diff = run(['diff', '--no-index', '--', '/dev/null', rel]); }
+      catch (e: any) { diff = e?.stdout ?? ''; }
+    }
+    if (diff.length > MAX) diff = `${diff.slice(0, MAX)}\n… diff truncated\n`;
+    res.json({ path: rel, staged, diff });
+  } catch (e: any) {
+    const why = (e?.stderr || e?.message || 'failed').toString();
+    res.status(409).json({ error: `Could not diff that file: ${why.slice(0, 300)}` });
+  }
+}));
+
+/**
+ * Start a task from a branch, in one action (CGLAB-179).
+ *
+ * A composition, not new machinery — the card's own reading and it is right:
+ * creating the item, naming the branch, cutting the worktree and recording
+ * which agent to use are four steps a person does by hand, and three of them
+ * are bookkeeping.
+ *
+ * What a composition has to get right is the failure in the middle. A card
+ * with a branch name and no worktree LOOKS finished, and the user has no way
+ * to tell which of the four steps did not happen — so if the worktree cannot
+ * be cut, the item is removed and the call fails. Half a task is worse than
+ * none.
+ */
+app.post("/projects/:id/tasks-from-branch", asyncHandler(async (req: any, res: any) => {
+  const project: any = await storage.getProject(req.params.id);
+  if (!project) return res.status(404).json({ error: "Project not found" });
+
+  const { title, branchName, agentId, type, description } = req.body ?? {};
+  if (typeof title !== 'string' || !title.trim()) {
+    return res.status(400).json({ error: "title (string) required" });
+  }
+  if (agentId !== undefined && !(TERMINAL_AGENT_IDS as readonly string[]).includes(agentId)) {
+    // The launchable set is a closed list and a security boundary: recording
+    // something outside it either fails at spawn or becomes a way to influence
+    // what runs.
+    return res.status(400).json({ error: `agentId must be one of: ${TERMINAL_AGENT_IDS.join(", ")}` });
+  }
+
+  const itemType = typeof type === 'string' && ['STORY', 'TASK', 'BUG'].includes(type) ? type : 'TASK';
+  // Derived from the title when not given, by the same rule the CLI uses, so
+  // the two do not produce different branches for the same card.
+  const branch = typeof branchName === 'string' && branchName.trim()
+    ? branchName.trim()
+    : buildBranchName(itemType as ItemType, title);
+
+  // Built the same way POST /items builds one, so a card made here is
+  // indistinguishable from a card made there — a composition that produces a
+  // subtly different item is how two code paths start disagreeing.
+  const created: any = await storage.createItem({
+    id: uuidv4(),
+    projectId: project.id,
+    type: itemType as ItemType,
+    title: title.trim(),
+    description: typeof description === 'string' ? description : "",
+    status: Status.TODO,
+    parentId: undefined,
+    implementationPlan: "",
+    branchName: branch,
+    ...(agentId ? { agentId } : {}),
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  } as any);
+
+  try {
+    if (!project.projectRoot) {
+      throw Object.assign(new Error('Project has no projectRoot. Set it before creating a worktree.'), { statusCode: 400 });
+    }
+    const result = createWorktree({
+      repoRoot: project.projectRoot,
+      root: defaultWorktreeRoot(),
+      branchName: branch,
+      setupCommand: project.setupCommand,
+    });
+    const withWorktree = await storage.updateItem(created.id, {
+      worktreePath: result.path,
+      branchName: branch,
+    } as any);
+    if (req.headers['x-agenfk-internal'] === VERIFY_TOKEN && result.created) {
+      startWorktreeSetup(withWorktree, result.setup, result.path);
+    } else if (!result.setup.ready) {
+      await noteOnItem(withWorktree.id, result.setup.notice);
+    }
+    io.emit('items_updated');
+    res.status(201).json({ item: withWorktree, worktree: result });
+  } catch (e: any) {
+    // Rolled back rather than left half-made. The item only exists to hold a
+    // worktree that does not exist, and leaving it would put a card on the
+    // board that silently is not what it appears to be.
+    await storage.deleteItem(created.id).catch(() => {});
+    res.status(e?.statusCode ?? 400).json({ error: e?.message ?? 'Could not create the worktree' });
+  }
+}));
+
+app.get("/terminal-sessions", asyncHandler(async (req: any, res: any) => {
+  const projectId = typeof req.query?.projectId === 'string' ? req.query.projectId : undefined;
+  const sessions = await storage.listTerminalSessions(projectId);
+  // Filtered here rather than cascaded on delete. `DELETE /items/:id` does not
+  // delete — it TRASHES — so a delete-time cascade simply never ran, and a
+  // trashed card can come back. Checking availability at read time covers
+  // every route by which a card can stop being available, including ones that
+  // do not exist yet, and it is the moment that actually matters: the caller
+  // is about to try to open these.
+  const alive = await Promise.all(sessions.map(async s => {
+    const item = await storage.getItem(s.itemId);
+    // TRASHED, not absent: deleting a card sets its status rather than removing
+    // the row, so checking existence alone would keep offering terminals for
+    // cards the user threw away. The row stays, so restoring the card from the
+    // trash brings its terminals back with it.
+    if (!item || item.status === Status.TRASHED) return null;
+    // The item is already loaded here, so its title costs nothing and saves the
+    // caller a second round trip. Without it the desktop had no name for a
+    // restored tab and fell back to the raw item id — a uuid where a card title
+    // belongs, on every tab and in the header.
+    return { ...s, itemTitle: item.title };
+  }));
+  res.json(alive.filter(Boolean));
+}));
+
+app.post("/terminal-sessions", asyncHandler(async (req: any, res: any) => {
+  const { itemId, projectId, agentId, agentSessionId, persist, autoApprove } = req.body ?? {};
+  if (typeof itemId !== 'string' || !itemId) {
+    return res.status(400).json({ error: "itemId (string) required" });
+  }
+  if (typeof agentId !== 'string' || !(TERMINAL_AGENT_IDS as readonly string[]).includes(agentId)) {
+    // The launchable set is a closed list and a security boundary. A row naming
+    // something outside it either fails at restore or becomes a way to
+    // influence what gets spawned.
+    return res.status(400).json({
+      error: `agentId must be one of: ${TERMINAL_AGENT_IDS.join(", ")}`,
+    });
+  }
+  if (agentSessionId !== undefined && agentSessionId !== null) {
+    // Refused, never escaped or coerced — the same posture tmuxSessionName
+    // takes with a session name, and for the same reason: this string is
+    // handed to a process as an argument.
+    if (typeof agentSessionId !== 'string' || !UUID_RE.test(agentSessionId)) {
+      return res.status(400).json({ error: "agentSessionId must be a UUID" });
+    }
+  }
+  const item = await storage.getItem(itemId);
+  if (!item) {
+    // Caught here rather than at restore, which would fail at the least
+    // helpful moment there is: app startup.
+    return res.status(404).json({ error: "Item not found" });
+  }
+  const session = await storage.recordTerminalSession({
+    id: crypto.randomUUID(),
+    itemId,
+    projectId: typeof projectId === 'string' ? projectId : item.projectId,
+    agentId,
+    agentSessionId: typeof agentSessionId === 'string' ? agentSessionId : undefined,
+    /*
+     * Both are part of the session's IDENTITY, not preferences (BUG 63fcf702).
+     *
+     * `persist` decides whether the terminal lives inside tmux at all, and
+     * `autoApprove` is baked into the tmux session NAME. A restore that does
+     * not know them puts the tab back outside tmux, orphaning the session that
+     * survived — or looks for the "ask" variant of a session created as "auto"
+     * and finds nothing.
+     *
+     * `=== true` rather than truthy: these reach a session name and a spawn
+     * decision, and the string "false" is truthy.
+     */
+    persist: persist === true,
+    autoApprove: autoApprove === true,
+    openedAt: new Date().toISOString(),
+  });
+  io.emit('items_updated');
+  res.status(201).json(session);
+}));
+
+app.delete("/terminal-sessions/:id", asyncHandler(async (req: any, res: any) => {
+  // Closing a tab is the user saying they are done with it. Restoring it on
+  // the next launch would be the app arguing.
+  await storage.forgetTerminalSession(req.params.id);
+  io.emit('items_updated');
+  res.status(204).end();
+}));
+
+app.get("/settings", asyncHandler(async (_req: any, res: any) => {
+  // Always 200 with the defaults. A fresh install has nothing stored, and a
+  // 404 would push every caller into inventing its own idea of the default.
+  res.json(await storage.getSettings());
+}));
+
+app.put("/settings", asyncHandler(async (req: any, res: any) => {
+  const body = req.body || {};
+  const allowed = Object.keys(DEFAULT_APP_SETTINGS);
+  const unknown = Object.keys(body).filter(k => !allowed.includes(k));
+  if (unknown.length > 0) {
+    // Refused rather than ignored. Silently dropping a key means a typo writes
+    // a setting nothing ever reads back, and the user is left believing they
+    // changed something. Naming the key is what makes it fixable.
+    return res.status(400).json({
+      error: `Unknown setting(s): ${unknown.join(", ")}. Known: ${allowed.join(", ")}`,
+    });
+  }
+  const patch: Record<string, unknown> = {};
+  for (const key of allowed) {
+    if (!(key in body)) continue;
+    // Type-checked, never coerced: 'false' is a truthy string, and coercing it
+    // would switch a feature ON for a client trying to switch it off.
+    if (typeof body[key] !== typeof (DEFAULT_APP_SETTINGS as any)[key]) {
+      return res.status(400).json({
+        error: `Setting "${key}" must be ${typeof (DEFAULT_APP_SETTINGS as any)[key]}, got ${typeof body[key]}`,
+      });
+    }
+    /*
+     * And for a setting with a fixed set of values, that the value is one of
+     * them. `typeof` alone is blind here: 'always' and 'whenever' are both
+     * strings, so without this the second is accepted, stored, read back, and
+     * then falls through every `=== 'always'` comparison in the UI to behave as
+     * the other option. A choice the user made that quietly means something
+     * else is worse than a rejected write.
+     *
+     * Checked for EVERY key before anything is written, so a rejected request
+     * cannot land the valid half of the batch — the storage write is one
+     * transaction, but the validation has to be too.
+     */
+    if (!isLegalSettingValue(key as keyof AppSettings, body[key])) {
+      return res.status(400).json({
+        error: `Setting "${key}" cannot be ${JSON.stringify(body[key])}.`,
+      });
+    }
+    patch[key] = body[key];
+  }
+  if (Object.keys(patch).length === 0) {
+    return res.status(400).json({ error: `Provide at least one of: ${allowed.join(", ")}` });
+  }
+  const settled = await storage.updateSettings(patch);
+  // The whole settled state, so a caller never has to re-read to find out what
+  // it now has.
+  io.emit("settings_updated", settled);
+  res.json(settled);
+}));
+
 app.get("/projects/:id", asyncHandler(async (req: any, res: any) => {
   const project = await storage.getProject(req.params.id);
   if (!project) return res.status(404).json({ error: "Project not found" });
@@ -1356,11 +2207,21 @@ app.put("/projects/:id", asyncHandler(async (req: any, res: any) => {
   // by validate_progress), projectRoot (its cwd) and flowId — mass assignment
   // → RCE. verifyCommand has its own internal-only endpoint below; flowId has
   // POST /projects/:id/flow. (Security: bug e60e20aa.)
-  const updates: Partial<{ name: string; description: string }> = {};
+  // autoWorktree joins the allowlist because it is a boolean preference with
+  // no execution semantics: the worst a caller can do is turn worktree
+  // creation on or off. projectRoot and verifyCommand stay out — those are a
+  // cwd and a shell string.
+  const updates: Partial<{ name: string; description: string; autoWorktree: boolean }> = {};
   if (typeof req.body?.name === 'string') updates.name = req.body.name;
   if (typeof req.body?.description === 'string') updates.description = req.body.description;
+  if (typeof req.body?.autoWorktree === 'boolean') updates.autoWorktree = req.body.autoWorktree;
+  // tmuxByDefault deliberately does NOT belong here. It was project-scoped for
+  // one commit; the decision changed to installation-wide, and it now lives at
+  // PUT /settings. Accepting it in both places would give one preference two
+  // sources of truth, so whichever the UI read, the other would silently
+  // disagree — worse than either home alone.
   if (Object.keys(updates).length === 0) {
-    return res.status(400).json({ error: "Provide at least one of: name, description. (verifyCommand: PUT /projects/:id/verify-command; flowId: POST /projects/:id/flow)" });
+    return res.status(400).json({ error: "Provide at least one of: name, description, autoWorktree. (verifyCommand: PUT /projects/:id/verify-command; flowId: POST /projects/:id/flow)" });
   }
   try {
     const updated = await storage.updateProject(req.params.id, updates);
@@ -1388,6 +2249,88 @@ app.put("/projects/:id/verify-command", asyncHandler(async (req: any, res: any) 
     io.emit('items_updated');
     res.json(updated);
   } catch (error) {
+    res.status(404).json({ error: "Project not found" });
+  }
+}));
+
+/**
+ * What to run in a newly cut worktree (CGLAB-203).
+ *
+ * Behind the internal token for exactly the reason `verify-command` is, and it
+ * would be easy to put on `PUT /projects/:id` instead because it FEELS like a
+ * preference: it is a shell string this machine later runs in a directory it
+ * just created. That is the same mass-assignment-to-RCE shape as bug e60e20aa,
+ * arriving under a friendlier name.
+ */
+app.put("/projects/:id/setup-command", asyncHandler(async (req: any, res: any) => {
+  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const { setupCommand } = req.body ?? {};
+  if (typeof setupCommand !== 'string') {
+    return res.status(400).json({ error: "setupCommand (string) required" });
+  }
+  try {
+    const updated = await storage.updateProject(req.params.id, { setupCommand } as any);
+    io.emit('items_updated');
+    res.json(updated);
+  } catch (error) {
+    res.status(404).json({ error: "Project not found" });
+  }
+}));
+
+/**
+ * Repoint a project at the repository it actually lives in (CGLAB-185).
+ *
+ * Behind the internal token for the same reason `verify-command` is, and the
+ * reason `PUT /projects/:id` deliberately refuses this field: `projectRoot` is a
+ * CWD. It is where `git add -A && git commit` runs and where worktrees are cut
+ * from, so an unauthenticated caller setting it is mass assignment with
+ * execution consequences — bug e60e20aa.
+ *
+ * It exists at all because there was NO way to correct a wrong one. The value is
+ * otherwise only ever written as a side effect of validating from inside a
+ * directory, which means a project that picked up the wrong root kept it. That
+ * is not hypothetical: four projects on this machine have `projectRoot` set to
+ * $HOME, so an auto-worktree would cut a branch from the user's home directory
+ * and an auto-commit would run `git add -A` over their dotfiles.
+ *
+ * `isPersistableProjectRoot` is the same guard the walk-up already uses. Worth
+ * saying that it was written for exactly this class of mistake and had no
+ * caller that could FIX one.
+ */
+app.put("/projects/:id/project-root", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const { projectRoot } = req.body ?? {};
+  if (typeof projectRoot !== 'string' || !projectRoot.trim()) {
+    return res.status(400).json({ error: "projectRoot (non-empty string) required" });
+  }
+  const candidate = projectRoot.trim();
+  // Absolute only. A relative path resolves against whatever cwd the SERVER
+  // happens to have, which is nobody's intent and is not even visible to the
+  // person typing it.
+  if (!path.isAbsolute(candidate)) {
+    return res.status(400).json({ error: `Refusing a path that is not absolute: ${candidate}` });
+  }
+  if (!isPersistableProjectRoot(candidate, os.homedir())) {
+    return res.status(400).json({
+      error: `Refusing ${candidate}: a project root must not be your home directory, ~/.agenfk, or /. Those are what a bad walk-up finds, and a worktree or an auto-commit there runs over your own files.`,
+    });
+  }
+  // It has to BE a directory, and one that is there. A path that does not exist
+  // fails later, at worktree time, with an error about git rather than about
+  // the setting that caused it.
+  if (!fs.existsSync(candidate) || !fs.statSync(candidate).isDirectory()) {
+    return res.status(400).json({ error: `Not a directory: ${candidate}` });
+  }
+  try {
+    const updated = await storage.updateProject(req.params.id, { projectRoot: candidate } as any);
+    if (!updated) return res.status(404).json({ error: "Project not found" });
+    io.emit('items_updated');
+    res.json(updated);
+  } catch {
     res.status(404).json({ error: "Project not found" });
   }
 }));
@@ -1776,13 +2719,75 @@ const RUN_EVENT_KINDS = new Set(['dispatch', 'think', 'tool', 'result', 'diff', 
 
 // Register a run when the orchestrator dispatches a worker (establishes the
 // session↔card link that heuristic attribution cannot).
+/**
+ * One git runner for the validate path.
+ *
+ * Captured stderr and a timeout, like the other call sites here: git's
+ * `fatal:` lines belong in the log rather than on the server's stderr, and a
+ * synchronous git on a stalled mount must not pin the event loop for the
+ * whole server.
+ */
+const runGitSync = (args: readonly string[]): string =>
+  execFileSync('git', args as string[], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5_000 });
+const gitRun = { run: runGitSync };
+
 app.post("/agent-runs", asyncHandler(async (req: any, res: any) => {
   const { itemId, projectId, step, actor, harness, model, sessionId, sourcePath } = req.body || {};
-  if (!itemId) return res.status(400).json({ error: "itemId is required" });
-  if (!step) return res.status(400).json({ error: "step is required" });
+  if (typeof itemId !== 'string' || !itemId) return res.status(400).json({ error: "itemId is required" });
+  if (typeof step !== 'string' || !step) return res.status(400).json({ error: "step is required" });
   if (actor && !RUN_ACTORS.has(actor)) {
     return res.status(400).json({ error: `Invalid actor '${actor}'. Must be one of: ${[...RUN_ACTORS].join(', ')}` });
   }
+  // Same 500 the PATCH route below just closed: a non-string reaches
+  // better-sqlite3's bind and throws there instead of naming the bad field.
+  for (const [field, value] of Object.entries({ projectId, harness, model, sessionId, sourcePath })) {
+    if (value !== undefined && typeof value !== 'string') {
+      return res.status(400).json({ error: `${field} must be a string` });
+    }
+  }
+  /*
+   * A re-registration of a session that is STILL RUNNING is the same dispatch
+   * seen again, not a second one.
+   *
+   * The desktop re-registers every restored terminal on launch, so a machine
+   * with four relaunches had four `running` rows for ONE conversation and the
+   * Runs panel showed four copies of it. Reuse the row and teach it the
+   * sourcePath this call carries (a later registration often has one the first
+   * did not). A different card, or a previous run that already ended, is a new
+   * dispatch and still gets its own row.
+   */
+  if (sessionId) {
+    const existing = await storage.getAgentRunBySession(sessionId);
+    if (existing && existing.status === 'running' && existing.itemId === itemId) {
+      const updated = sourcePath && sourcePath !== existing.sourcePath
+        ? await storage.updateAgentRun(existing.id, { sourcePath })
+        : existing;
+      io.emit('run:updated', { itemId: updated.itemId, runId: updated.id });
+      return res.status(200).json(updated);
+    }
+  } else {
+    /*
+     * NO SESSION ID: the card and the harness are the only stable identity
+     * there is. codex, gemini and shell cannot be handed a conversation id, so
+     * a restore has nothing else to key on - and with sessionId as the ONLY
+     * key, every relaunch of such a tab opened ANOTHER `running` row for the
+     * same terminal (four after three relaunches, measured).
+     *
+     * Same reuse, weaker key. The ceiling is stated rather than hidden: two
+     * codex panes on ONE card share a run, because nothing in the request can
+     * tell them apart - and a second `running` row for that pair is the thing
+     * this exists to stop.
+     */
+    const running = await storage.listAgentRuns({ itemId, status: 'running' });
+    const existing = running
+      .filter(r => (r.harness ?? 'pi') === (harness || 'pi') && !r.sessionId)
+      .at(-1);
+    if (existing) {
+      io.emit('run:updated', { itemId: existing.itemId, runId: existing.id });
+      return res.status(200).json(existing);
+    }
+  }
+
   const run = await storage.createAgentRun({
     id: uuidv4(),
     itemId,
@@ -1805,17 +2810,80 @@ app.patch("/agent-runs/:id", asyncHandler(async (req: any, res: any) => {
   const existing = await storage.getAgentRun(req.params.id);
   if (!existing) return res.status(404).json({ error: "Agent run not found" });
   const { status, verdict, endedAt, sourcePath } = req.body || {};
-  if (status && !RUN_STATUSES.has(status)) {
+  if (status !== undefined && !RUN_STATUSES.has(status)) {
     return res.status(400).json({ error: `Invalid status '${status}'. Must be one of: ${[...RUN_STATUSES].join(', ')}` });
   }
+  // Non-strings reach better-sqlite3's bind and throw there, which surfaces as
+  // a 500 instead of telling the caller what was wrong.
+  if (verdict !== undefined && typeof verdict !== 'string') {
+    return res.status(400).json({ error: 'verdict must be a string' });
+  }
+  if (sourcePath !== undefined && typeof sourcePath !== 'string') {
+    return res.status(400).json({ error: 'sourcePath must be a string' });
+  }
+  /*
+   * `endedAt` IS THE SERVER'S. It records when the server saw the run end, so
+   * a client cannot set it. Letting it through produced both halves of the
+   * incoherence: a finished run whose end time was rewritten, and a running
+   * run stamped as already ended - "running, finished at 14:02" (BUG
+   * 43ac6afe). A null is the same body serialised by another client.
+   *
+   * Ahead of the transition guard so shape errors (400) beat state errors
+   * (409), the way the other field checks above do.
+   */
+  if (endedAt !== undefined) {
+    return res.status(400).json({ error: 'endedAt is stamped by the server when a terminal status arrives; it cannot be set by the client.' });
+  }
+  /*
+   * A FINISHED RUN DOES NOT REOPEN (BUG 43ac6afe). RUN_STATUSES above limits
+   * the vocabulary - which words may be stored; `canTransition` limits the
+   * moves, and until now nothing asked it. So `done -> running` was accepted
+   * and the row went back to saying "running" with an endedAt still stamped.
+   *
+   * Skipped when the status is unchanged: a resend is a no-op, not an illegal
+   * move, and the hook retries after a dropped response.
+   */
+  if (status !== undefined && status !== existing.status) {
+    const move = canTransition(existing.status as DispatchState, status as DispatchState);
+    if (!move.allowed) return res.status(409).json({ error: move.reason });
+  }
+  // ponytail: check-then-write, not a transaction. Two PATCHes interleaving
+  // at the awaits below can both pass the guard above; every real caller sends
+  // a terminal status once, for a distinct run, so the ceiling is cosmetic.
+  // The failure count below has the same shape but a real ceiling: two runs
+  // for ONE card failing at once both read N and write N+1, so the breaker
+  // opens one late. Make it a conditional UPDATE ... WHERE status = ?, and
+  // count in storage, if a card ever gets two concurrent failing runs.
   const updated = await storage.updateAgentRun(req.params.id, {
     ...(status !== undefined ? { status } : {}),
     ...(verdict !== undefined ? { verdict } : {}),
     ...(sourcePath !== undefined ? { sourcePath } : {}),
-    // stamp endedAt when a terminal status arrives without an explicit one
-    ...(endedAt !== undefined ? { endedAt }
-        : (status && status !== 'running' && !existing.endedAt ? { endedAt: new Date().toISOString() } : {})),
+    // stamp endedAt on the transition INTO a terminal status, and only then.
+    // Asked via isTerminal rather than `!== 'running'` so adding a non-terminal
+    // word to RUN_STATUSES (blocked, say) cannot silently stamp the record.
+    ...(status !== undefined && isTerminal(status as DispatchState) && !existing.endedAt ? { endedAt: new Date().toISOString() } : {}),
   });
+  /*
+   * A failed attempt counts against the CARD, not the run (CGLAB-202). Three
+   * in a row and `mayDispatch` refuses it, which is the breaker: a repeated
+   * failure becomes a person looking rather than a fourth agent spent.
+   *
+   * Only the transition INTO `failed` counts - a resend is a no-op, and
+   * `done` clears nothing because SessionEnd is not success. The count lives
+   * on the item, so re-asking by another run answers the same.
+   */
+  if (status === 'failed' && existing.status !== 'failed') {
+    const item = await storage.getItem(existing.itemId);
+    if (item) {
+      const decision = recordFailure({ failureCount: item.failureCount ?? 0 });
+      await storage.updateItem(item.id, { failureCount: decision.failureCount });
+      // The board's item list is cached with a long staleTime and only
+      // refetches on `items_updated`; without this the sheet keeps the old
+      // count until some unrelated event, which is the moment the feature
+      // exists for.
+      io.emit('items_updated');
+    }
+  }
   io.emit('run:updated', { itemId: updated.itemId, runId: updated.id });
   res.json(updated);
 }));
@@ -1834,7 +2902,12 @@ app.post("/agent-runs/:id/events", asyncHandler(async (req: any, res: any) => {
     return res.status(400).json({ error: `Invalid lane '${lane}'. Must be one of: ${[...RUN_ACTORS].join(', ')}` });
   }
   // Caller may supply a deterministic seq (watcher re-parse dedup); else append.
-  const nextSeq = Number.isInteger(seq) ? seq : (await storage.listRunEvents(run.id)).length;
+  // Undefined when the caller did not give one, so the STORAGE assigns it
+  // inside the insert where it is atomic. Computing it here was a read, an
+  // await and then a write: two events in flight got the same number and the
+  // second was dropped silently against UNIQUE(run_id, seq), while the API
+  // answered 201 and the UI showed an event that vanished on refresh.
+  const nextSeq = Number.isInteger(seq) ? seq : undefined;
   const event = {
     id: uuidv4(),
     runId: run.id,
@@ -1847,14 +2920,224 @@ app.post("/agent-runs/:id/events", asyncHandler(async (req: any, res: any) => {
     payload: payload !== undefined ? (typeof payload === 'string' ? payload : JSON.stringify(payload)) : undefined,
     tokens: Number.isFinite(tokens) ? tokens : undefined,
   };
-  await storage.appendRunEvent(event);
-  io.emit('run:event', { itemId: run.itemId, runId: run.id, event });
-  res.status(201).json(event);
+  /*
+   * Emitted WITH the position it was actually given.
+   *
+   * The store assigns it inside the insert, so `event.seq` is still undefined
+   * here — and broadcasting that object is what broke the live transcript: every
+   * consumer orders and de-duplicates by `seq`, and a stream of undefineds
+   * compares equal to itself, so the second event and every one after it was
+   * discarded. A Claude Code session showed one line in the Runs panel and then
+   * nothing, for as long as it ran.
+   */
+  const writtenSeq = await storage.appendRunEvent(event);
+  const stored = { ...event, seq: writtenSeq ?? event.seq };
+  // Nothing was written — the row was already there. Telling every open panel
+  // about it would paint a duplicate.
+  if (writtenSeq !== null) io.emit('run:event', { itemId: run.itemId, runId: run.id, event: stored });
+  res.status(201).json(stored);
 }));
 
 app.get("/items/:id/agent-runs", asyncHandler(async (req: any, res: any) => {
   const runs = await storage.listAgentRuns({ itemId: req.params.id });
   res.json(runs);
+}));
+
+/**
+ * Runs across every project (CGLAB-170).
+ *
+ * The per-card route above answers "what happened on this card". The Sessions
+ * rail asks a different question — "what is running anywhere" — and answering
+ * it from the renderer would mean one request per project on every event.
+ *
+ * It deliberately does NOT decide what is live. AgentRun.status stays
+ * 'running' forever because the hook never issues the closing PATCH (BUG
+ * df4b3343), so a server-side liveness filter would report every run this
+ * machine has ever started. The server reports what it stored; the client
+ * derives liveness from the recency of `run:event`.
+ */
+// RUN_STATUSES is declared once, above with the other run constants — a second
+// copy here would be the same three strings until the day someone adds a
+// fourth to only one of them.
+const RUNS_DEFAULT_LIMIT = 25;
+const RUNS_MAX_LIMIT = 200;
+
+app.get("/agent-runs", asyncHandler(async (req: any, res: any) => {
+  const { status, projectId, itemId } = req.query ?? {};
+
+  // Validated, not passed through: the value reaches a storage query, and a
+  // filter that forwards arbitrary input is how one becomes an injection point.
+  if (status !== undefined && !RUN_STATUSES.has(String(status))) {
+    return res.status(400).json({
+      error: `Unknown run status "${status}". Expected one of: ${[...RUN_STATUSES].join(', ')}`,
+    });
+  }
+
+  let limit = RUNS_DEFAULT_LIMIT;
+  if (req.query?.limit !== undefined) {
+    const asked = Number(req.query.limit);
+    // Bounded on purpose. A machine that has been running agents for months
+    // would otherwise send its whole history to render a sidebar.
+    if (!Number.isInteger(asked) || asked < 1 || asked > RUNS_MAX_LIMIT) {
+      return res.status(400).json({ error: `limit must be an integer between 1 and ${RUNS_MAX_LIMIT}` });
+    }
+    limit = asked;
+  }
+
+  const runs = await storage.listAgentRuns({
+    ...(status !== undefined ? { status: String(status) as any } : {}),
+    ...(projectId !== undefined ? { projectId: String(projectId) } : {}),
+    ...(itemId !== undefined ? { itemId: String(itemId) } : {}),
+    limit,
+  });
+  res.json(runs);
+}));
+
+// ── Worktrees (CGLAB-166) ────────────────────────────────────────────────────
+// One git worktree per item, so several agents can work at once without
+// fighting over a single working tree.
+
+/**
+ * Where worktrees live unless a caller names somewhere else.
+ *
+ * Deliberately NOT under ~/.agenfk. findProjectRoot walks up looking for a
+ * `.agenfk` directory, so a worktree nested inside one resolves to $HOME —
+ * and `agenfk verify` run from that worktree would then persist projectRoot
+ * as the home directory, pointing the verifyCommand and `git add -A && git
+ * commit` at the user's private files.
+ */
+export const defaultWorktreeRoot = (): string =>
+  path.join(os.homedir(), '.agenfk-worktrees');
+
+/**
+ * Resolve the repository an item's worktree is cut from.
+ *
+ * Requires an explicit projectRoot. Falling back to process.cwd() would run
+ * git wherever the server happens to have been started — for the desktop app
+ * that is not even a repository, and "somewhere plausible" is a worse answer
+ * than a clear error.
+ */
+async function repoRootForItem(item: any): Promise<string> {
+  const project: any = await storage.getProject(item.projectId);
+  const repoRoot = project?.projectRoot;
+  if (!repoRoot) {
+    throw Object.assign(
+      new Error(`Project has no projectRoot. Set it before creating a worktree.`),
+      { statusCode: 400 },
+    );
+  }
+  return repoRoot;
+}
+
+app.post("/items/:id/worktree", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const item: any = await storage.getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: "Item not found" });
+
+  let repoRoot: string;
+  try {
+    repoRoot = await repoRootForItem(item);
+  } catch (e: any) {
+    return res.status(400).json({ error: e.message });
+  }
+
+  const branchName = item.branchName || buildBranchName(item.type, item.title);
+
+  // `root` is caller-supplied on an endpoint any local process can reach, and
+  // createWorktree will mkdir -p it and check out a whole repo there. Confine
+  // it to the worktree area so this cannot become arbitrary directory
+  // creation. (The CLI only ever forwards --root, which stays inside it.)
+  const requested = typeof req.body?.root === 'string' && req.body.root ? req.body.root : undefined;
+  const base = defaultWorktreeRoot();
+  /*
+   * RESOLVED, NOT COMPARED AS STRINGS, and checked BEFORE `root` exists.
+   *
+   * Two defects lived here. `const root = requested ?? base` ran ABOVE the
+   * guard, so the value that flowed onward was a different name from the one
+   * that was checked - check one thing, use another, a line apart.
+   *
+   * And `path.resolve(x).startsWith(base)` is LEXICAL: it collapses `..` and
+   * stops. It does not follow symlinks, so a path of innocent-looking segments
+   * under the worktree area, where one segment links out, passes it - and then
+   * `git worktree add` checks out a whole repository at the link's target. Not
+   * hypothetical in a workspace monorepo: `npm install` inside a worktree
+   * creates `node_modules/@scope/pkg` links that leave it, and this route has
+   * no token gate.
+   *
+   * `realBase` answers where the path actually LANDS, which is the only
+   * question worth asking.
+   */
+  let root = base;
+  if (requested !== undefined) {
+    if (containedPath(realBase(base), realBase(requested)) === null) {
+      return res.status(400).json({
+        error: `root must be inside ${base}. If it looks like it is, a directory on the way `
+          + 'there is a symlink pointing somewhere else.',
+      });
+    }
+    root = requested;
+  }
+
+  let result;
+  try {
+    const proj: any = await storage.getProject(item.projectId);
+    result = createWorktree({ repoRoot, root, branchName, setupCommand: proj?.setupCommand });
+  } catch (e: any) {
+    return res.status(400).json({ error: e.message });
+  }
+
+  await storage.updateItem(item.id, { worktreePath: result.path, branchName } as any);
+  /*
+   * Execution, not creation, is token-gated. Running an arbitrary project shell
+   * string is at least as privileged as `verifyCommand`, and this route has no
+   * token (by design - creating a directory is cheap). Without the token the
+   * caller gets the decision and the notice; with it, the install starts in the
+   * background and reports on the card.
+   */
+  if (req.headers['x-agenfk-internal'] === VERIFY_TOKEN && result.created) {
+    startWorktreeSetup(item, result.setup, result.path);
+  } else if (!result.setup.ready) {
+    await noteOnItem(item.id, result.setup.notice);
+  }
+  io.emit('items_updated');
+  res.status(result.created ? 201 : 200).json(result);
+}));
+
+app.get("/items/:id/worktree", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const item: any = await storage.getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: "Item not found" });
+  const worktreePath = item.worktreePath ?? null;
+  // `exists` is how a caller tells "never made" from "made, then deleted by
+  // hand" — the second needs recreating, not a plain cd.
+  res.json({
+    path: worktreePath,
+    branchName: item.branchName ?? null,
+    exists: worktreePath ? fs.existsSync(worktreePath) : false,
+  });
+}));
+
+app.delete("/items/:id/worktree", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  // Gated like every other destructive endpoint here: removal is --force, so
+  // it discards uncommitted work. Any local process could otherwise walk the
+  // item ids and wipe every running agent's in-flight changes.
+  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
+    return res.status(403).json({ error: "Forbidden: removing a worktree requires the internal token." });
+  }
+  const item: any = await storage.getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: "Item not found" });
+  if (!item.worktreePath) return res.json({ removed: false });
+
+  try {
+    const repoRoot = await repoRootForItem(item);
+    // Removal takes the checkout, never the branch: committed work always
+    // survives, which is what makes this safe to run automatically.
+    removeWorktree(repoRoot, item.worktreePath);
+  } catch (e: any) {
+    console.warn('[WORKTREE] remove failed, clearing the record anyway:', e.message);
+  }
+
+  await storage.updateItem(item.id, { worktreePath: undefined } as any);
+  io.emit('items_updated');
+  res.json({ removed: true });
 }));
 
 app.get("/agent-runs/:id/events", asyncHandler(async (req: any, res: any) => {
@@ -3003,7 +4286,10 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
       if (updated.status === Status.DONE && currentItem.status !== Status.DONE) {
         if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
           const proj = await storage.getProject(updated.projectId);
-          const projectRoot = (proj as any)?.projectRoot || findProjectRoot(process.cwd());
+          // No `|| findProjectRoot(process.cwd())`: that made a long-lived daemon
+          // commit into whatever repository it was launched from. autoGitCommit
+          // declines and says why.
+          const projectRoot = (proj as any)?.projectRoot;
           // These routes have no message field to carry it, so the outcome is
           // at least surfaced to the log rather than dropped on the floor.
           const r = await autoGitCommit(updated, projectRoot);
@@ -3015,7 +4301,9 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
     } catch (e) {
       // Previously swallowed entirely, so a failed write looked like a success
       // to the caller. Reported now that there is a channel for it.
-      console.error(`[API_BULK] Error updating ${id}:`, e);
+      // The id is user data; a format string built from it lets a caller plant
+      // console directives (`%s`, `%o`). Passed as an argument instead.
+      console.error('[API_BULK] Error updating %s:', id, e);
       skipped.push({ id, error: `Update failed: ${(e as any)?.message ?? 'unknown error'}` });
     }
   }
@@ -3041,11 +4329,48 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
 
 app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   console.log(`[API_DEBUG] PUT /items/${req.params.id} body keys: ${Object.keys(req.body).join(', ')}`);
-  const { title, description, status, type, parentId, context, implementationPlan, reviews, tests, comments, sortOrder, branchName, prUrl, prNumber, prStatus } = req.body;
+  const { title, description, status, type, parentId, context, implementationPlan, reviews, tests, comments, sortOrder, branchName, prUrl, prNumber, prStatus, claims, externalId, externalUrl } = req.body;
 
   const currentItem = await storage.getItem(req.params.id);
   if (!currentItem) {
     return res.status(404).json({ error: "Item not found" });
+  }
+
+  /*
+   * What this card says it owns (819e7192), checked BEFORE it is stored.
+   *
+   * A claim that cannot be checked is worse than none: claims.ts compares a
+   * glob as a literal, so a card believing it holds `packages/**` holds a file
+   * with that name, and every collision check it takes part in comes back
+   * clear. Storing one would hand out a guarantee nothing keeps.
+   *
+   * Refusing at DECLARATION rather than at every later edit is the point. A
+   * lead cutting a fan-out finds out while it can still re-cut the split;
+   * refusing later means each agent discovers the same overlap separately, one
+   * gatekeeper call at a time, after the work is already assigned.
+   */
+  if (claims !== undefined) {
+    if (!Array.isArray(claims)) {
+      return res.status(400).json({ error: "claims must be an array of paths." });
+    }
+    const malformed = claims.filter((c: unknown) => !isWellFormedClaim(c));
+    if (malformed.length) {
+      return res.status(400).json({
+        error: `Refusing these claims: ${malformed.map((c: unknown) => JSON.stringify(c)).join(', ')}. `
+          + `A claim is a directory or an exact file, repository-relative. Globs are refused rather than `
+          + `approximated, because whether two PATTERNS can ever match one path is a different and much `
+          + `harder question than whether a path matches one - and a claim that cannot be checked reports `
+          + `safety it has not established.`,
+      });
+    }
+    const siblings = await storage.listItems({ projectId: currentItem.projectId, limit: 1_000_000 });
+    const gate = gateOnClaims(
+      { id: currentItem.id, claims },
+      siblings.map((i: any) => ({ id: i.id, status: i.status, claims: i.claims })),
+    );
+    if (!gate.authorized) {
+      return res.status(409).json({ error: gate.message });
+    }
   }
 
   const isInternalVerify = req.headers['x-agenfk-internal'] === VERIFY_TOKEN;
@@ -3142,16 +4467,61 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   if (implementationPlan !== undefined) updates.implementationPlan = implementationPlan;
   if (reviews !== undefined) updates.reviews = reviews;
   if (tests !== undefined) updates.tests = tests;
+  // Which agent works this card. It belongs on the ITEM, not in a browser's
+  // localStorage: it is the same fact the hub already records as `--model` /
+  // `--harness` when a PR opens, it has to survive a machine change, and a
+  // per-machine key made opening card B inherit card A's agent.
+  //
+  // Stored as an opaque string on purpose — the server has no agent registry
+  // and should not grow one. A hostile value is inert: the desktop main process
+  // resolves it by exact match against a closed set at spawn time, so anything
+  // unknown is refused there rather than executed.
+  if (typeof req.body?.agentId === 'string' && req.body.agentId.length <= 64) {
+    updates.agentId = req.body.agentId;
+  }
   if (comments !== undefined) updates.comments = comments;
   if (sortOrder !== undefined) updates.sortOrder = sortOrder;
   if (branchName !== undefined) updates.branchName = branchName;
   if (prUrl !== undefined) updates.prUrl = prUrl;
   if (prNumber !== undefined) updates.prNumber = prNumber;
   if (prStatus !== undefined) updates.prStatus = prStatus;
+  if (claims !== undefined) updates.claims = claims;
+  // The JIRA link (main's mechanism, and it is the newer one).
   Object.assign(updates, externalRef.updates);
+  /*
+   * The link to an issue in another tracker (af47b248).
+   *
+   * Declared in types.ts since before this route existed and dropped by the
+   * destructure ever since, so not one item in the database carried one - the
+   * same shape as `claims`: a field complete at both ends with nothing joining
+   * them. Absence of a mention leaves it alone, because renaming a card must
+   * not unpair it.
+   */
+  if (externalId !== undefined) updates.externalId = externalId;
+  if (externalUrl !== undefined) updates.externalUrl = externalUrl;
 
   try {
     const updated = await storage.updateItem(req.params.id, updates);
+
+    /*
+     * A status change through this route is a route INTO WORK, and it had no
+     * worktree hook at all — only the validate paths did.
+     *
+     * The consequence was not subtle: turning autoWorktree on in a project
+     * whose items had already left TODO meant those items might never get one.
+     * The setting reads as enabled and does nothing, and the agent edits the
+     * main checkout believing it has its own tree.
+     *
+     * Only when the status actually MOVED and the new step is real work: TODO
+     * is not work, and cutting a tree for it would put one on every card the
+     * moment a project turns the setting on. shouldAutoWorktree still decides
+     * who qualifies, so EPICs and children are refused here exactly as they
+     * are everywhere else.
+     */
+    if (status !== undefined && updated.status !== currentItem.status && updated.status !== Status.TODO) {
+      await ensureWorktreeForItem(updated, isInternalVerify);
+    }
+
     const timestamp = new Date().toISOString();
     console.log(`[${timestamp}] [API_UPDATE] Item ${updated.id} status: ${updated.status}. Broadcasting refresh...`);
     io.emit('items_updated');
@@ -3208,7 +4578,10 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
         });
         if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
           const proj = await storage.getProject(updated.projectId);
-          const projectRoot = (proj as any)?.projectRoot || findProjectRoot(process.cwd());
+          // No `|| findProjectRoot(process.cwd())`: that made a long-lived daemon
+          // commit into whatever repository it was launched from. autoGitCommit
+          // declines and says why.
+          const projectRoot = (proj as any)?.projectRoot;
           // These routes have no message field to carry it, so the outcome is
           // at least surfaced to the log rather than dropped on the floor.
           const r = await autoGitCommit(updated, projectRoot);
@@ -3376,7 +4749,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const exitCriteria = (currentFlowStep.step as any).exitCriteria as string | undefined;
     const exitNote = exitCriteria ? `\n**Exit criteria acknowledged**: ${exitCriteria}` : '';
     const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED\n\n**Step**: ${item.status} → ${codingStep.name}${exitNote}`, timestamp: new Date() };
-    await storage.updateItem(itemId, { status: codingStep.name as Status, comments: [...(item.comments || []), comment] });
+    const movedToCoding = await storage.updateItem(itemId, { status: codingStep.name as Status, comments: [...(item.comments || []), comment] });
+    // Entering the first working step is where a worktree earns its keep.
+    await ensureWorktreeForItem(movedToCoding, true);
     io.emit('items_updated');
     const codingStepCriteria = (codingStep as any).exitCriteria as string | undefined;
     const mandatoryNote = codingStepCriteria ? `\n\n⚠️ MANDATORY EXIT CRITERIA — you MUST satisfy ALL of the following before calling validate_progress again:\n\n${codingStepCriteria}` : '';
@@ -3385,13 +4760,20 @@ async function handleValidateProgress(itemId: string, command: string | undefine
 
   const nextStep = sorted[currentFlowStep.index + 1];
   const nextStatus = (nextStep?.name ?? Status.DONE) as Status;
-  const failureStatus = (codingStep?.name ?? Status.IN_PROGRESS) as Status;
+  // Falling straight to the literal IN_PROGRESS puts the item on a status the
+  // flow may not contain, and that is a one-way door: findCurrentFlowStep then
+  // returns undefined so every later verify 400s, and buildAllowedTransitions
+  // takes its currentIdx === -1 recovery branch, which on a flow with no real
+  // steps offers nothing to come back to. Prefer the flow's own first step —
+  // staying inside the flow always leaves a route out.
+  const failureStatus = (codingStep?.name ?? sorted[0]?.name ?? Status.IN_PROGRESS) as Status;
   // Exit criteria of the step the item is moving INTO — returned as mandatory agent instructions
   const nextStepCriteria = (nextStep as any)?.exitCriteria as string | undefined;
   const mandatoryInstructions = (nextStatus !== Status.DONE && nextStepCriteria)
     ? `\n\n⚠️ MANDATORY EXIT CRITERIA — you MUST satisfy ALL of the following before calling validate_progress again:\n\n${nextStepCriteria}`
     : '';
   const branchRef = (item as any).branchName || 'HEAD';
+  /**
   /**
    * What to tell the agent after DONE.
    *
@@ -3423,9 +4805,40 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     return `${left}\n\n🚀 **Push your branch**: ${made} Run:\n\`\`\`\ngit push -u origin ${branchRef}\n\`\`\``;
   };
 
-  // A command is only required for the final step (→ DONE). For intermediate
-  // steps the command is optional — omitting it advances without running anything.
-  const isFinalStep = nextStatus === Status.DONE;
+  // A command is only required for the final step. For intermediate steps it is
+  // optional — omitting it advances without running anything.
+  //
+  // "Final" cannot be the literal name DONE. resolveStepContract tells the agent
+  // "Final step (omit the command on this one): X", and on a flow whose exit
+  // step is named anything else — which is every flow `agenfk flow create`
+  // produces — X is the last REAL step while this test said DONE. The agent
+  // dutifully omitted the command, this took the intermediate path, and the
+  // item advanced into the terminal step having run no verification at all.
+  // The two must agree, or the gate silently does not exist.
+  const isFinalStep = nextStatus === Status.DONE || !nextStep || isBoundaryStep(nextStep);
+  /*
+   * The EXIT step, which is not the same question as `isFinalStep`.
+   *
+   * `isFinalStep` also means "any boundary step", because that is the right
+   * predicate for whether a command is required. It is wrong for the breaker
+   * clear: a flow may hold at a mid-flow special step (BLOCKED, say), and
+   * clearing there would hand a card one failure from the open breaker a clean
+   * slate just for being parked. So the clear asks about the flow's LAST step
+   * by position, not about a word.
+   */
+  const exitStep = sorted[sorted.length - 1];
+  const isExitStep = nextStatus === Status.DONE || !nextStep || nextStep.name === exitStep?.name;
+  /*
+   * Does this transition END the flow? Not the same question as `isExitStep`,
+   * which is positional. `agenfk flow create` produces flows with no boundary
+   * step, and there the last step by position is not terminal - treating it as
+   * the end fires the close commit one transition early, committing a shared
+   * index while the card still has a step to work. Only a boundary last step,
+   * or no next step at all, ends the flow.
+   */
+  const endsFlow = !nextStep
+    || nextStatus === Status.DONE
+    || (nextStep.name === exitStep?.name && isBoundaryStep(nextStep));
   const resolvedCommand = command || ((isFinalStep ? (project as any)?.verifyCommand : undefined));
   if (isFinalStep && !resolvedCommand) {
     return res.status(400).json({
@@ -3439,25 +4852,65 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   if (item.parentId) {
     const siblings = await storage.listItems({ parentId: item.parentId });
     // For final step (→ DONE), check siblings already DONE with same verifyCommand
-    if (nextStatus === Status.DONE) {
-      const passedSibling = siblings.find(s =>
-        s.id !== item.id &&
-        s.status === Status.DONE &&
-        s.tests?.some((t: any) => t.status === 'PASSED' && t.command === resolvedCommand)
-      );
-      if (passedSibling) {
+    if (endsFlow) {
+      /*
+       * THE GREEN MUST BELONG TO THIS TREE (b29a8b3a). A sibling's suite ran
+       * against the shared tree at some commit, and other agents may have
+       * moved it since - committed OR edited - and propagating then spends a
+       * stale green as proof of work never run here. SDLC.md names the
+       * precondition ("same branch/workspace"); this is the first code to
+       * check it.
+       *
+       * EVERY candidate is asked, not just the first: a stale older sibling
+       * must not shadow a younger one still green at this commit.
+       *
+       * A refusal falls through to RUNNING the command - the whole direction.
+       * A command run is cheap; a claim the tree cannot back is not.
+       */
+      /*
+       * THE ROOT THE COMMAND RUNS IN, which is `projectRoot`. A card with its
+       * own worktree runs its suite HERE but commits THERE (autoGitCommit
+       * resolves the worktree first), so a SHA from that checkout describes a
+       * tree the command never opened. Such a card does not propagate - one
+       * root or no claim.
+       */
+      const gateRoot = (project as any)?.projectRoot;
+      const sharesRoot = !!gateRoot && resolveCommitRoot(item, gateRoot).root === gateRoot;
+      const treeSha = sharesRoot ? readCleanTreeSha(gateRoot, gitRun) : null;
+      let pass: { sibling: any; test: any } | null = null;
+      let refusal = treeSha
+        ? 'no sibling green is tied to this commit'
+        : 'this tree is not clean at a commit, so no sibling green can be tied to it';
+      for (const s of siblings) {
+        if (pass || s.id === item.id || s.status !== Status.DONE) continue;
+        // Same checkout as the one the command runs in, or nothing transfers.
+        if (!sharesRoot || resolveCommitRoot(s, gateRoot).root !== gateRoot) continue;
+        // EVERY matching test, not the first: a sibling re-verified after a
+        // rollback has an older record that must not shadow the current one.
+        for (const test of s.tests || []) {
+          if (pass || test.status !== 'PASSED' || test.command !== resolvedCommand) continue;
+          const gate = mayPropagate(treeSha, test);
+          if (gate.allowed) pass = { sibling: s, test };
+          else refusal = gate.reason ?? refusal;
+        }
+      }
+      if (pass) {
+        const { sibling: passedSibling, test: siblingTest } = pass;
         const sibComment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).`, timestamp: new Date() };
-        const updates: any = { status: Status.DONE, comments: [...(item.comments || []), sibComment], tests: [...(item.tests || []), { id: uuidv4(), command: resolvedCommand, output: `Sibling propagation: verified by ${passedSibling.id}`, status: 'PASSED', executedAt: new Date() }] };
+        const updates: any = { status: nextStatus, comments: [...(item.comments || []), sibComment], tests: [...(item.tests || []), { id: uuidv4(), command: resolvedCommand, output: `Sibling propagation: verified by ${passedSibling.id}`, status: 'PASSED', executedAt: new Date(), commit: siblingTest.commit }], ...(isExitStep ? { failureCount: 0 } : {}) };
         const updated = await storage.updateItem(itemId, updates);
         io.emit('items_updated');
         if (updated.parentId) await syncParentStatus(updated.parentId);
         // Awaited, unlike before: the response describes what the commit did,
-        // so it cannot be written before the commit has been attempted.
+        // so it cannot be written before the commit has been attempted. No
+        // `|| findProjectRoot(process.cwd())`: that made a long-lived daemon
+        // commit into whatever repository it was launched from.
         const gitResult = (process.env.NODE_ENV !== 'test' && !process.env.VITEST)
-          ? await autoGitCommit(updated, (project as any)?.projectRoot || findProjectRoot(process.cwd()))
+          ? await autoGitCommit(updated, (project as any)?.projectRoot)
           : undefined;
-        return res.json({ status: Status.DONE, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to DONE.${describePush(gitResult)}`, output: 'Sibling propagation' });
+        return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.${describePush(gitResult)}`, output: 'Sibling propagation' });
       }
+      console.warn(`[VALIDATE] Sibling propagation refused for ${itemId}: ${refusal}`);
     } else {
       const passedSibling = siblings.find(s => {
         if (s.id === item.id) return false;
@@ -3467,7 +4920,10 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       });
       if (passedSibling) {
         const sibComment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).`, timestamp: new Date() };
-        const updated = await storage.updateItem(itemId, { status: nextStatus, comments: [...(item.comments || []), sibComment] });
+        const updated = await storage.updateItem(itemId, { status: nextStatus, comments: [...(item.comments || []), sibComment], ...(isExitStep ? { failureCount: 0 } : {}) });
+        // Sibling propagation moves the item into a working step exactly like
+        // a verify does. It is the same transition; only the reason differs.
+        await ensureWorktreeForItem(updated, true);
         io.emit('items_updated');
         if (updated.parentId) await syncParentStatus(updated.parentId);
         return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}`, output: 'Sibling propagation' });
@@ -3480,12 +4936,14 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const exitNote = exitCriteria ? `\n**Exit criteria acknowledged**: ${exitCriteria}` : '';
     const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED\n\n**Step**: ${item.status} → ${nextStatus}${exitNote}`, timestamp: new Date() };
     const updated = await storage.updateItem(itemId, { status: nextStatus, comments: [...(item.comments || []), comment] });
+    await ensureWorktreeForItem(updated, true);
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId);
     return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}` });
   }
 
-  const projectRoot = (project as any)?.projectRoot || findProjectRoot(process.cwd());
+  // See above: declining beats committing somewhere plausible.
+  const projectRoot = (project as any)?.projectRoot;
 
   // Runs the command and applies the pass/fail side effects, reporting through
   // `res2` — the real HTTP response on the sync path, or a recorder that
@@ -3503,6 +4961,15 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   const storedItem = await storage.getItem(itemId);
   const logHandle = storedItem ? openValidationLog(storedItem.id, testId) : null;
   const capture = createOutputCapture({ fd: logHandle?.fd ?? null });
+
+  // The commit and the working-tree state the command actually ran against,
+  // captured BEFORE the spawn. A long run during which another agent commits
+  // OR stages work must not let this green be recorded against a tree it never
+  // saw. Only a card that shares this root with its close commit can be
+  // recorded - see the gate above.
+  const gateRoot = projectRoot && resolveCommitRoot(item, projectRoot).root === projectRoot ? projectRoot : null;
+  const headBeforeRun = gateRoot ? readHead(gateRoot, gitRun) : null;
+  const statusBeforeRun = gateRoot ? readTreeStatus(gateRoot, gitRun) : null;
 
   // try/finally around the spawn, not just the awaited result: spawn() throws
   // SYNCHRONOUSLY on a bad argument (a NUL byte in the command, a non-string
@@ -3597,22 +5064,67 @@ async function handleValidateProgress(itemId: string, command: string | undefine
 
     if (passed) {
       const updates: any = { status: nextStatus, comments };
-      if (nextStatus === Status.DONE) {
+      /*
+       * The flow's OWN exit step is rarely named DONE, so the storage clear
+       * keyed on the literal word misses every custom flow - leaving the count
+       * at three forever on a card that finished, breaker open with no route
+       * to reset it (review finding on CGLAB-202). Here the flow is resolved,
+       * so the clear can be about landing on the FINAL step, not a name.
+       */
+      if (isExitStep) updates.failureCount = 0;
+      if (endsFlow) {
+        // The commit is attached AFTER the close commit below - the state a
+        // later card inherits is the one the sibling LEFT BEHIND, not the one
+        // it started from.
         updates.tests = [...(item.tests || []), { id: testId, command: resolvedCommand, output: preview, status: 'PASSED', executedAt: new Date() }];
       }
       const updated = await storage.updateItem(itemId, updates);
       io.emit('items_updated');
       if (updated.parentId) await syncParentStatus(updated.parentId);
+      // HEAD just before our own close commit. If it moved during the run,
+      // another agent landed work this green never covered, so no commit is
+      // recorded and no card may inherit it.
+      const preCommitSha = endsFlow && gateRoot ? readHead(gateRoot, gitRun) : null;
+      const preCommitStatus = endsFlow && gateRoot ? readTreeStatus(gateRoot, gitRun) : null;
       let gitResult: AutoGitCommitResult | undefined;
-      if (nextStatus === Status.DONE && process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
+      if (endsFlow && process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
         // Advisory: a git-commit failure must not report a PASSED validation
         // (whose transition already landed) as failed to the run follower. The
         // catch is belt-and-braces — autoGitCommit resolves rather than throws,
         // reporting a refusal as outcome 'failed' — but exec's callback is not
         // the only way this can go wrong, and the transition must survive all
-        // of them.
+        // of them. The outcome is KEPT, not discarded: it is what the response
+        // reports, so the agent learns the commit declined or failed.
         try { gitResult = await autoGitCommit(updated, projectRoot); }
         catch (e: any) { console.error(`[validate] autoGitCommit failed after DONE: ${e?.message || e}`); }
+      }
+      /*
+       * Record WHERE this green was earned (b29a8b3a), now that the close
+       * commit has moved HEAD. Two guards, both fail closed:
+       *  - the run must not have outlived the tree it started on; and
+       *  - the tree must be CLEAN, because uncommitted work is content the
+       *    green never saw (see readCleanTreeSha).
+       * Where either fails, the record carries no commit and no card inherits
+       * this green - the honest direction is a command run, not a claim.
+       */
+      if (
+        endsFlow &&
+        gateRoot &&
+        preCommitSha === headBeforeRun &&
+        // A staged edit during the run would be swept into OUR close commit,
+        // stamping this green on content it never ran against. HEAD does not
+        // see that; the porcelain does.
+        preCommitStatus === statusBeforeRun
+      ) {
+        const verifiedSha = readCleanTreeSha(gateRoot, gitRun);
+        if (verifiedSha) {
+          const current = await storage.getItem(itemId);
+          const tests = (current?.tests || []).map((t: any) =>
+            t.id === testId ? { ...t, commit: verifiedSha } : t,
+          );
+          await storage.updateItem(itemId, { tests });
+          io.emit('items_updated');
+        }
       }
       recordHubEvent({
       type: 'validate.passed',
@@ -3725,7 +5237,215 @@ app.get("/items/validate-runs/:runId", asyncHandler(async (req: any, res: any) =
   return res.json(run);
 }));
 
-app.post("/items/:id/validate", asyncHandler(async (req: any, res: any) => {
+/**
+ * Give an item its own worktree as it enters a working step (CGLAB-166).
+ *
+ * Opt-in per project: creating directories on someone's disk because they
+ * advanced a card is not a reasonable default. Never throws — the transition
+ * is the user's intent and the worktree is a convenience on top of it, so a
+ * broken git setup must not block the workflow.
+ */
+/**
+ * Is this an item that should get its own worktree?
+ *
+ * Exported because the rule is the interesting part and it disagreed with
+ * `agenfk branch create`, which refuses children outright while this path
+ * happily made worktrees for them — and for EPICs.
+ *
+ * An EPIC is a container with no code of its own: a checkout for it is a full
+ * copy of the repository that nobody will ever type in, and one per epic is
+ * how ~/.agenfk-worktrees grows without anybody noticing. A child shares its
+ * parent's branch by design, which is exactly why the CLI refuses it.
+ */
+export function shouldAutoWorktree(item: any): boolean {
+  if (!item?.projectId || item.worktreePath) return false;
+  if (item.type === 'EPIC') return false;
+  if (item.parentId) return false;
+  return true;
+}
+
+/**
+ * Say on the ITEM that the worktree could not be made.
+ *
+ * The agent receives a 200 whatever happens here, so without a mark it assumes
+ * it has a worktree and edits the MAIN tree — the precise collision this
+ * feature exists to prevent. A console warning is somewhere the agent never
+ * looks; a comment on the item is somewhere it already reads.
+ */
+export async function noteOnItem(itemId: string, content: string): Promise<void> {
+  try {
+    const item: any = await storage.getItem(itemId);
+    if (!item) return;
+    /*
+     * `content` and `timestamp`, which is what CommentRecord declares and what
+     * CardDetailModal renders.
+     *
+     * This function exists because the worktree-failure note did NOT use them:
+     * it wrote `text` and `createdAt`, so the comment arrived with an empty
+     * body and the modal drew a blank. The docblock above says "somewhere it
+     * already reads" and that was true - the comment was there, saying nothing.
+     * Nothing failed: the write succeeded, the record was stored, and the one
+     * channel warning an agent that it has no worktree and is about to collide
+     * with whatever else is using the tree was silent.
+     *
+     * One writer now, so the next note cannot pick the wrong pair of names.
+     */
+    const comment = {
+      id: crypto.randomUUID(),
+      author: 'agenfk',
+      content,
+      timestamp: new Date(),
+    };
+    await storage.updateItem(itemId, { comments: [...(item.comments || []), comment] } as any);
+  } catch (e: any) {
+    // The comment is the signal; failing to write it must not also take down
+    // the request that was only trying to be helpful.
+    console.warn(`[WORKTREE] could not record a note on ${itemId}:`, e?.message);
+  }
+}
+
+export async function noteWorktreeFailure(itemId: string, error: unknown): Promise<void> {
+  const message = error instanceof Error ? error.message : String(error);
+  console.warn(`[WORKTREE] auto-create failed for ${itemId}:`, message);
+  await noteOnItem(
+    itemId,
+    `Worktree could not be created automatically: ${message}\n\n` +
+    `This item has NO worktree of its own, so work on it happens in the main ` +
+    `checkout. Create one with \`agenfk branch create ${itemId}\` before editing, ` +
+    `or expect to collide with whatever else is using that tree.`,
+  );
+}
+
+/**
+ * `refs/remotes/origin/<branch>` when the repository has it, otherwise nothing.
+ *
+ * Cheap and total: a repo with no origin, no such branch, or no git at all
+ * answers "no start point", which is the behaviour that existed before.
+ */
+function remoteRefFor(repoRoot: string, branchName: string): string | undefined {
+  const ref = `refs/remotes/origin/${branchName}`;
+  try {
+    execFileSync('git', ['-C', repoRoot, 'rev-parse', '--verify', '--quiet', ref],
+      { stdio: ['ignore', 'pipe', 'pipe'] });
+    return ref;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Start a worktree's dependency install in the BACKGROUND (712a4752).
+ *
+ * Orca runs `scripts.setup` in every new worktree and pays the install, and we
+ * do the same - but NOT inside the status transition that created the worktree.
+ * A dependency install takes minutes, and blocking the event loop for it would
+ * make the server serve nothing else: the same rule that runs `verify` behind a
+ * 202. So it is fire-and-forget, and the outcome is posted on the card when it
+ * lands, which is where an agent already looks.
+ *
+ * DETACHED, so the command is its own process-group leader: the shell is the
+ * direct child, and a compound setup (a bootstrap script plus the package
+ * manager, exactly what Orca's `scripts.setup` is) would otherwise survive the
+ * timeout in its children while the card says the install failed. The kill
+ * targets the group.
+ */
+function startWorktreeSetup(item: any, decision: SetupDecision, worktreePath: string): void {
+  if (!decision.command) {
+    if (!decision.ready) void noteOnItem(item.id, decision.notice);
+    return;
+  }
+  const child = spawn(decision.command, {
+    shell: true,
+    cwd: worktreePath,
+    detached: true,
+    env: { ...process.env, FORCE_COLOR: '0' },
+  });
+  let output = '';
+  let timedOut = false;
+  // A ROLLING TAIL, not a head. The diagnosis is at the END of an install log,
+  // and the notice quotes the tail - a head buffer would throw away exactly
+  // the part it shows. Bounded, so a verbose install cannot pin memory.
+  const collect = (d: Buffer): void => {
+    output += d.toString();
+    if (output.length > 16_000) output = output.slice(-16_000);
+  };
+  child.stdout?.on('data', collect);
+  child.stderr?.on('data', collect);
+  // A stream error with no listener is an uncaught exception in a long-lived
+  // server; the close handler still reports the outcome.
+  child.stdout?.on('error', () => { /* reported by the run's close */ });
+  child.stderr?.on('error', () => { /* reported by the run's close */ });
+  const killer = setTimeout(() => {
+    timedOut = true;
+    try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); else child.kill('SIGKILL'); }
+    catch { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
+  }, SETUP_TIMEOUT_MS);
+  if (typeof killer.unref === 'function') killer.unref();
+  let settled = false;
+  const settle = (result: SetupRun): void => {
+    // `error` and `close` both fire on a failed spawn; one note per attempt.
+    if (settled) return;
+    settled = true;
+    clearTimeout(killer);
+    void noteOnItem(item.id, applySetupResult(decision, result).notice);
+  };
+  child.on('error', err => settle({ ok: false, output: `${output}${err.message}`, timedOut: false }));
+  child.on('close', code => settle({ ok: code === 0 && !timedOut, output, timedOut }));
+}
+
+async function ensureWorktreeForItem(item: any, allowSetup = false): Promise<void> {
+  if (!shouldAutoWorktree(item)) return;
+  const project: any = await storage.getProject(item.projectId);
+  if (!project?.autoWorktree || !project.projectRoot) return;
+
+  const branchName = item.branchName || buildBranchName(item.type, item.title);
+  try {
+    const result = createWorktree({
+      repoRoot: project.projectRoot,
+      root: defaultWorktreeRoot(),
+      branchName,
+      /*
+       * If origin already has this branch, start there rather than at local
+       * HEAD. Raised by review against the PR import: a card whose branch
+       * exists on the remote but not locally got a directory named after that
+       * branch holding local main instead — so this route would quietly undo
+       * the import's own care a status change later. The rule is general
+       * enough to belong here rather than only on that one path: a branch name
+       * the remote already knows means the remote's commits.
+       */
+      startPoint: remoteRefFor(project.projectRoot, branchName),
+      setupCommand: project.setupCommand,
+    });
+    await storage.updateItem(item.id, { worktreePath: result.path, branchName } as any);
+    /*
+     * The setup notice goes on the CARD, next to the failure notice, and for
+     * the same reason (CGLAB-203): this path runs with nobody watching, so a
+     * decision returned to a caller that is a status-change handler is a
+     * decision nobody reads. An agent starting work in a worktree with no
+     * dependencies fails on an import and goes looking at its own change,
+     * which is the wrong afternoon.
+     *
+     * Only when it is NOT ready. A worktree that needs nothing is the common
+     * case, and a comment saying so on every transition is noise that teaches
+     * people to skim the comments where the real warnings live.
+     */
+    if (allowSetup && result.created) {
+      // The CALLER started this worktree on a token-gated path; running an
+      // arbitrary project shell string is at least as privileged as
+      // `verifyCommand`, which refuses without one. `created` because an
+      // ADOPTED worktree is never re-installed - the plan says so, and this
+      // must agree with it.
+      startWorktreeSetup(item, result.setup, result.path);
+    } else if (!result.setup.ready) {
+      await noteOnItem(item.id, result.setup.notice);
+    }
+  } catch (e: any) {
+    // Recorded where the agent will see it, not swallowed into the log.
+    await noteWorktreeFailure(item.id, e);
+  }
+}
+
+app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, res: any) => {
   if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
     return res.status(403).json({ error: "Forbidden: validate endpoint requires internal token." });
   }
@@ -3736,7 +5456,39 @@ app.post("/items/:id/validate", asyncHandler(async (req: any, res: any) => {
     // was invoked from a subdirectory — and never in the daemon's own dir (CGLAB-13).
     const resolvedRoot = findProjectRoot(cwd);
     const item = await storage.getItem(req.params.id);
-    if (item) await storage.updateProject(item.projectId, { projectRoot: resolvedRoot });
+    // Refused, not corrected. findProjectRoot walks up for a `.agenfk`
+    // directory and `~/.agenfk` exists, so a verify run from anywhere under
+    // $HOME with no closer `.agenfk` resolves to the HOME DIRECTORY — which is
+    // how four projects on one machine came to share it. projectRoot is the
+    // directory a worktree is cut from and the cwd `git add -A && git commit`
+    // runs in, so recording $HOME points both at the user's private files.
+    // Keeping whatever was there is strictly better than overwriting it with
+    // that.
+    /*
+     * THE MARKER IS THE PROOF. findProjectRoot returns its STARTING directory
+     * when the walk finds no `.agenfk` ancestor - which is a FAILURE, not an
+     * answer, and the two are indistinguishable by looking at the string.
+     *
+     * It is not hypothetical: `.agenfk/` is gitignored, so a worktree has
+     * none, and a verify run from one used to record that worktree as the
+     * project's own root. Every later operation that resolves through
+     * projectRoot - autoGitCommit above all - then aimed at a directory
+     * belonging to ONE card, permanently, with no message. Checking for the
+     * marker is what tells a real found root from a fallback.
+     */
+    /*
+     * `findProjectRoot` now ANSWER whether it found anything: null is the walk
+     * reaching the filesystem root without a `.agenfk` marker, which is what a
+     * buggy expression used to record as the project's root.
+     */
+    if (item && resolvedRoot && isPersistableProjectRoot(resolvedRoot, os.homedir())) {
+      await storage.updateProject(item.projectId, { projectRoot: resolvedRoot });
+    } else if (item) {
+      const why = resolvedRoot === null
+        ? 'no .agenfk marker above it (a worktree has none) - it is not a project root'
+        : 'it is not a persistable project root';
+      console.warn(`[PROJECT_ROOT] Refusing to record ${resolvedRoot ?? cwd} as a project root (item ${item.id}): ${why}`);
+    }
   }
   // One active run per item — a second verify while one runs is almost always
   // an agent misreading slowness as failure. Applies to sync requests too so
@@ -4200,7 +5952,10 @@ app.get("/jira/oauth/authorize", (req: any, res: any) => {
 
 app.get("/jira/oauth/callback", asyncHandler(async (req: any, res: any) => {
   const { code, state, error } = req.query;
-  const uiBase = process.env.JIRA_UI_URL || 'http://localhost:5173';
+  // When we serve the UI ourselves there is nothing on 5173, so redirecting
+  // there would dump the user on a connection-refused page *after* the token
+  // exchange already succeeded. Same origin means a relative redirect works.
+  const uiBase = process.env.JIRA_UI_URL || (servedUiDir ? '/' : 'http://localhost:5173');
 
   if (error) {
     return res.redirect(`${uiBase}?jira=error&reason=${encodeURIComponent(String(error))}`);
@@ -4386,11 +6141,21 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
   const errors: any[] = [];
 
   for (const { issueKey, type: requestedType } of items) {
+    /*
+     * The key goes into a PATH segment of a request this server makes, so it
+     * is validated as a JIRA key and then encoded. A fixed host does not make
+     * an unvalidated path safe: `../../` or a `?`/`#` in the value changes
+     * which resource is fetched, and CodeQL flags the URL as user-built.
+     */
+    if (typeof issueKey !== 'string' || !/^[A-Za-z][A-Za-z0-9_]*-\d+$/.test(issueKey)) {
+      errors.push({ issueKey, error: 'Invalid JIRA issue key.' });
+      continue;
+    }
     try {
       const { data: issue } = await jiraApiRequest(
         tokenData,
         'get',
-        `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/issue/${issueKey}?fields=summary,description,issuetype`
+        `https://api.atlassian.com/ex/jira/${encodeURIComponent(tokenData.cloudId)}/rest/api/3/issue/${encodeURIComponent(issueKey)}?fields=summary,description,issuetype`
       );
       const type = requestedType || mapJiraTypeToAgEnFK(issue.fields.issuetype?.name || 'Task');
       const description = adfToText(issue.fields.description);
@@ -4501,6 +6266,84 @@ function verifyGhCli(): boolean {
     return false;
   }
 }
+
+/**
+ * `gh`, run with an argument array and a deadline.
+ *
+ * argv rather than a shell string on principle: nothing interpolated from a
+ * request reaches these calls today, and passing argv anyway is what keeps that
+ * true after the next edit.
+ *
+ * The timeout is not decoration. `gh api user` goes to GitHub, and this is a
+ * synchronous exec on Node's single thread — without a deadline, one request to
+ * a settings screen behind a hanging proxy holds the entire server, board and
+ * terminals included, for as long as the socket stays open.
+ */
+const runGh = (args: readonly string[]): string =>
+  execFileSync('gh', args as string[], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 8000,
+  });
+
+/**
+ * The account the machine is signed in to GitHub as.
+ *
+ * Deliberately NOT project-scoped, unlike `/github/status` below. That route
+ * answers which repo a card maps to; this one answers who you are. Conflating
+ * them is how a settings screen reports "not connected" because no project
+ * happens to have a repo configured yet.
+ */
+app.get("/github/account", limitExpensive, (req: any, res: any) => {
+  /*
+   * Guarded like the WRITES below, which is unusual for a GET and deliberate.
+   *
+   * A simple GET is not gated by CORS: a foreign origin cannot READ the
+   * response, but the request is still issued and still executed. Without a
+   * header requirement, any page the user visits can drive this in a loop, and
+   * each call spawns a `gh` process that blocks Node's single thread for up to
+   * eight seconds on a round trip to GitHub - which wedges the board, the
+   * terminals and the sockets along with it.
+   *
+   * The payload is the second reason: this answers with a login, a display name
+   * and an EMAIL. The same sentence that justifies the guard on sign-out - "any
+   * page open on the machine" - applies at least as strongly to reading the
+   * user's identity out of the machine.
+   *
+   * The rate limit is belt and braces: the header stops a cross-origin caller,
+   * and the limiter stops a same-origin one (another dev server, a preview, a
+   * package that starts a localhost listener) doing the same thing.
+   */
+  if (!req.headers['x-agenfk-ui']) {
+    return res.status(403).json({ error: "Forbidden: this route requires the x-agenfk-ui header." });
+  }
+  // Always 200 past the guard. "gh is not installed" is an answer about the
+  // machine, not a server error, and the screen needs to read the reason to say
+  // anything useful about it.
+  res.json(readGitHubAccount(runGh));
+});
+
+/**
+ * Log the GitHub CLI out.
+ *
+ * Guarded by the same custom-header preflight as POST /releases/update, and for
+ * the same reason: this server is unauthenticated on loopback and its CORS
+ * allowlist trusts any localhost origin, so without it any page open on the
+ * machine could log the user out of `gh`. (Security: bug 968259c4.)
+ *
+ * The credential is the GitHub CLI's, shared with everything else on the
+ * machine that uses `gh` — the UI says so rather than calling this "sign out of
+ * AgEnFK", because it is not.
+ */
+app.post("/github/signout", limitExpensive, (req: any, res: any) => {
+  // Rate-limited as well as header-guarded: this runs `gh` TWICE in sequence
+  // (the account read, then the logout), so it can hold the event loop for
+  // twice the single-call ceiling.
+  if (!req.headers['x-agenfk-ui']) {
+    return res.status(403).json({ error: "Forbidden: this route requires the x-agenfk-ui header." });
+  }
+  res.json(signOutGitHub(runGh, process.env));
+});
 
 app.get("/github/status", async (req: any, res: any) => {
   const projectId = req.query.projectId;
@@ -4615,6 +6458,189 @@ app.post("/github/import", async (req: any, res: any) => {
   }
 });
 
+/**
+ * A card from an existing Pull Request (CGLAB-177).
+ *
+ * Sibling of `POST /projects/:id/tasks-from-branch`, and the differences
+ * between them are the whole content of this route. That one starts from a
+ * branch the user names; this one starts from a PR that already exists, which
+ * brings three problems it does not have: the branch is REMOTE, the PR may come
+ * from a fork, and a card for that branch may already be on the board.
+ *
+ * The decisions are in `planPrImport` in core, tested without a network or a
+ * GitHub credential. What is left here is the part that genuinely needs the
+ * outside world: asking `gh`, fetching the ref, making the worktree.
+ */
+app.post("/projects/:id/tasks-from-pr", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const project: any = await storage.getProject(req.params.id);
+  if (!project) return res.status(404).json({ error: "Project not found" });
+
+  const { prNumber, type, agentId } = req.body ?? {};
+  // Validated before it can reach argv. The issue importer carries a comment
+  // naming the bug this was (4c939916); the lesson is not that issues need it,
+  // it is that anything reaching a shellout does.
+  if (!isValidPrNumber(prNumber)) {
+    return res.status(400).json({ error: "prNumber must be a positive integer" });
+  }
+  if (agentId !== undefined && !(TERMINAL_AGENT_IDS as readonly string[]).includes(agentId)) {
+    return res.status(400).json({ error: `agentId must be one of: ${TERMINAL_AGENT_IDS.join(", ")}` });
+  }
+
+  const config = loadGitHubConfig(project.id);
+  if (!config) return res.status(400).json({ error: "GitHub not configured for this project. Run `agenfk github setup`." });
+  if (!verifyGhCli()) return res.status(400).json({ error: "GitHub CLI not authenticated. Run `gh auth login`." });
+
+  let pr: any;
+  try {
+    const out = execFileSync(
+      'gh',
+      ['pr', 'view', String(Number(prNumber)), '-R', `${config.owner}/${config.repo}`,
+       '--json', 'number,title,body,url,headRefName,state,isCrossRepository'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    pr = JSON.parse(out);
+  } catch (e: any) {
+    // A PR that is not there, or no access to the repo. Both are the user's to
+    // fix and neither is a server fault.
+    return res.status(404).json({ error: `Could not read PR #${prNumber} from ${config.owner}/${config.repo}: ${e?.message ?? String(e)}` });
+  }
+
+  /*
+   * A parse that succeeded is not a PR. `gh` answering with an object missing
+   * the fields asked for used to flow straight through: a titleless card, an
+   * externalId of the string "undefined", a prNumber of NaN — and, worst,
+   * `isCrossRepository` undefined, which is falsy, so the fork guard silently
+   * disengaged and a fork PR got a fetch that could never work.
+   */
+  if (!pr || typeof pr !== 'object'
+      || typeof pr.title !== 'string'
+      || !isValidPrNumber(pr.number)
+      || typeof pr.url !== 'string'
+      || typeof pr.headRefName !== 'string'
+      || typeof pr.isCrossRepository !== 'boolean') {
+    return res.status(502).json({ error: `GitHub returned a pull request this cannot read: ${JSON.stringify(pr).slice(0, 200)}` });
+  }
+
+  /*
+   * Only cards that are actually ON the board.
+   *
+   * `listItems` applies no status filter, and `DELETE /items/:id` does not
+   * delete — it TRASHES, and the update is a spread-merge, so branchName
+   * survives. Without this, importing a PR, deleting its card and importing
+   * again answered "reused" pointing at the trashed card: nothing on the
+   * board, no worktree, and no way to ever import that PR again.
+   */
+  const onTheBoard = (i: any) => i.status !== 'TRASHED' && i.status !== Status.ARCHIVED;
+  const existing = await storage.listItems({ projectId: project.id, limit: 1_000_000 });
+  const plan = planPrImport(pr, (existing as any[]).filter(onTheBoard).map(i => ({ id: i.id, title: i.title, branchName: i.branchName })));
+
+  // Reuse, never duplicate. Git allows one worktree per branch, so a second
+  // card on the same branch is a failure scheduled for later rather than a
+  // duplicate to tidy up.
+  if (plan.action === 'reuse') {
+    const item = await storage.getItem(plan.itemId);
+    // Gone between the read and now. Better a plain 404 than `{item: null}`
+    // with a 200, which the CLI reads as success and then dereferences.
+    if (!item) return res.status(404).json({ error: `Card ${plan.itemId} is no longer there.` });
+    return res.status(200).json({ item, reused: true, reason: plan.reason });
+  }
+
+  const created: any = await storage.createItem({
+    id: uuidv4(),
+    projectId: project.id,
+    type: (typeof type === 'string' && ['STORY', 'TASK', 'BUG'].includes(type) ? type : 'TASK') as ItemType,
+    title: plan.title,
+    description: plan.description,
+    status: Status.TODO,
+    parentId: undefined,
+    implementationPlan: "",
+    /*
+     * A fork's head branch is a name in SOMEBODY ELSE'S repository, and it is
+     * usually `patch-1` — GitHub names every web-UI edit that. Storing it here
+     * put two unrelated contributors' PRs on the same branch name, so the
+     * second import matched the first one's card and never got a card at all.
+     * Nothing local can check that branch out, so it is not recorded.
+     */
+    branchName: plan.worktree.attempt ? plan.branchName : undefined,
+    externalId: plan.externalId,
+    externalUrl: plan.externalUrl,
+    prUrl: plan.externalUrl,
+    prNumber: Number(pr.number),
+    ...(agentId ? { agentId } : {}),
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  } as any);
+
+  /**
+   * The worktree, and what happens when it cannot be made.
+   *
+   * Deliberately NOT the rollback `tasks-from-branch` does. There the item
+   * exists only to hold a worktree; here it represents a PR that exists whether
+   * or not this machine can reach the remote, and deleting the user's card
+   * because a fetch failed would be the tool arguing with them.
+   *
+   * What must not happen is SILENCE — a card that looks ready and has no
+   * worktree is the failure the rollback over there exists to prevent. So the
+   * reason is both returned and written onto the card, where it will still be
+   * when the response is long gone.
+   */
+  const noteOnCard = async (text: string) => {
+    // The WHOLE body, not just the write. The failure path calls this from
+    // inside a catch; a rejection from the READ escaped that catch, hit the
+    // async handler and answered 500 — losing both the explanation and the
+    // fact that a card had been created.
+    try {
+      const fresh: any = await storage.getItem(created.id);
+      await storage.updateItem(created.id, {
+        comments: [...(fresh?.comments ?? []), {
+          id: uuidv4(), author: 'agenfk', timestamp: new Date(), content: text,
+        }],
+      } as any);
+    } catch { /* a note is a nicety; failing to leave one must not fail the import */ }
+  };
+
+  if (!plan.worktree.attempt) {
+    await noteOnCard(plan.worktree.reason);
+    io.emit('items_updated');
+    return res.status(201).json({ item: await storage.getItem(created.id) ?? created, worktree: null, worktreeSkipped: plan.worktree.reason });
+  }
+
+  try {
+    if (!project.projectRoot) {
+      throw new Error('Project has no projectRoot. Set it before creating a worktree.');
+    }
+    // The branch is remote, so it has to be here before a worktree can sit on
+    // it. `--` and an argv array, because the ref came off an API rather than
+    // out of thin air and that is exactly where "it is ours" stops holding.
+    execFileSync('git', ['-C', project.projectRoot, 'fetch', 'origin', '--', `${plan.branchName}:refs/remotes/origin/${plan.branchName}`],
+      { stdio: ['ignore', 'pipe', 'pipe'] });
+    const result = createWorktree({
+      repoRoot: project.projectRoot,
+      root: defaultWorktreeRoot(),
+      branchName: plan.branchName,
+      // FROM THE FETCHED REF. Without this the branch is cut from local HEAD:
+      // a directory named after the PR, containing none of its commits, which
+      // an agent then works in and pushes. Found in review, reproduced against
+      // the test's own fixture.
+      startPoint: `refs/remotes/origin/${plan.branchName}`,
+      // Without this an imported PR whose project HAS a setup command was told
+      // to go and set one - naming a value the user had already set.
+      setupCommand: project.setupCommand,
+    });
+    const withWorktree = await storage.updateItem(created.id, { worktreePath: result.path } as any);
+    if (!result.setup.ready) await noteOnCard(result.setup.notice);
+    io.emit('items_updated');
+    res.status(201).json({ item: withWorktree, worktree: result });
+  } catch (e: any) {
+    const why = `Card created, but the worktree was not: ${e?.message ?? String(e)}. The branch may have been deleted when the PR was merged.`;
+    await noteOnCard(why);
+    io.emit('items_updated');
+    // 201: the card WAS created, which is what the caller asked for. A 4xx here
+    // would say nothing happened, and something did.
+    res.status(201).json({ item: await storage.getItem(created.id) ?? created, worktree: null, worktreeError: why });
+  }
+}));
+
 // ── Release Check ─────────────────────────────────────────────────────────────
 
 let releaseCache: { data: any; fetchedAt: number } | null = null;
@@ -4720,7 +6746,7 @@ app.post("/releases/update", asyncHandler(async (req: any, res: any) => {
       releaseCache = null; // Force fresh version read after update
       // Notify browser then restart server
       io.emit('server_restarting');
-      const serverBin = path.join(findProjectRoot(process.cwd()), 'packages/server/dist/server.js');
+      const serverBin = path.join(findProjectRoot(process.cwd()) ?? process.cwd(), 'packages/server/dist/server.js');
       // Spawn a detached shell that waits for current process to exit, then starts new server
       const restarter = spawn('sh', ['-c', `sleep 2 && node ${JSON.stringify(serverBin)}`], {
         detached: true,
@@ -4816,6 +6842,144 @@ app.get("/releases/latest", asyncHandler(async (_req: any, res: any) => {
     res.status(502).json({ error: 'Failed to fetch release info', currentVersion });
   }
 }));
+
+// ── Static UI bundle (desktop mode) ──────────────────────────────────────────
+// The `agenfk up` flow runs `vite preview` on its own port and this server
+// stays a pure JSON/WS API. The Electron shell has no use for a second process,
+// so it points AGENFK_SERVE_UI at packages/ui/dist and gets one origin for
+// assets, REST and Socket.io — which also means the loopback CORS allowlist
+// above never has to learn about app:// or file://.
+
+/**
+ * Does this directory look like a *built* bundle rather than a source tree?
+ *
+ * An index.html alone is not enough evidence, and the gap is dangerous:
+ * packages/ui/index.html is Vite's entry template, so the one-token typo
+ * `AGENFK_SERVE_UI=packages/ui` (for `packages/ui/dist`) would otherwise pass
+ * and hand out src/, package.json and the whole node_modules tree over an
+ * unauthenticated loopback port that trusts every localhost origin. A build
+ * output never contains node_modules or src, so their presence is a reliable
+ * "you pointed me at a source root" signal.
+ */
+const looksLikeUiBundle = (dir: string): boolean => {
+  try {
+    if (!fs.existsSync(path.join(dir, 'index.html'))) return false;
+    return !['node_modules', 'src'].some(d => fs.existsSync(path.join(dir, d)));
+  } catch {
+    // Unreadable candidate (permissions, broken symlink) — treat as absent.
+    return false;
+  }
+};
+
+/** AGENFK_SERVE_UI values meaning "find the bundle yourself" rather than a path. */
+const PROBE_SENTINELS = new Set(['1', 'true', 'auto', 'yes']);
+
+/**
+ * Locate a built UI bundle, or null when there isn't one — a bad path degrades
+ * to "API only" rather than booting a server that 404s every asset.
+ *
+ * An `explicit` path is honoured or rejected, never quietly swapped for
+ * another bundle: an operator who mistypes AGENFK_SERVE_UI must not end up
+ * silently served a different (possibly stale) build than the one they named.
+ * Probing the shipped layout happens only when no path is given, or when the
+ * value is a sentinel like "1" — which is what someone who read the variable
+ * as a boolean flag will actually set.
+ */
+export function resolveUiDir(explicit?: string | null): string | null {
+  if (explicit && !PROBE_SENTINELS.has(explicit.trim().toLowerCase())) {
+    return looksLikeUiBundle(explicit) ? explicit : null;
+  }
+  // One candidate, not two: in both real layouts — a source checkout and the
+  // extracted dist tarball — __dirname is <root>/packages/server/dist, so
+  // '../../ui/dist' and '../../../packages/ui/dist' name the same directory.
+  const shipped = path.resolve(__dirname, '../../ui/dist');
+  return looksLikeUiBundle(shipped) ? shipped : null;
+}
+
+/**
+ * Paths that belong to the API, never to the SPA. Mirrors the proxy list in
+ * packages/ui/vite.config.ts — keep the two in step when adding a namespace.
+ * This is the belt; the Accept check below is the braces, so a drifted entry
+ * costs a browser a JSON 404 rendered as the app shell, not a broken API.
+ *
+ * Exported so a test can assert it still covers every registered route.
+ */
+export const API_PATH_PREFIXES = [
+  // `/herdr` lists the sessions open in the multiplexer. Without it here, the
+  // desktop - which serves the UI from this same origin - answers the API call
+  // with index.html and a 200, so `r.ok` is true and the JSON parse is what
+  // fails. A guard test in serve-ui.test.ts catches exactly this.
+  '/herdr',
+  '/api', '/version', '/db', '/backup', '/projects', '/flows', '/prs',
+  '/token-events', '/registry', '/items', '/internal', '/jira', '/github',
+  '/releases', '/agent-runs', '/settings', '/terminal-sessions', '/socket.io',
+  // `/decompositions` reviews a proposed tree and writes nothing. Same trap as
+  // `/herdr`: without the prefix the desktop answers it with index.html and a
+  // 200, so the caller's `r.ok` is true and the JSON parse is what fails.
+  '/decompositions',
+];
+
+/**
+ * Serve `uiDir` as a static bundle with an SPA fallback. Must be called after
+ * every API route is registered: unmatched paths are what reach the fallback,
+ * so a route that already answered (including with its own 404) is never
+ * shadowed by index.html.
+ */
+export function mountStaticUI(targetApp: express.Express, uiDir: string): void {
+  // Read the shell once. Serving it from memory avoids res.sendFile()'s
+  // "Not Found" 500s if the directory is swapped underneath a running server.
+  // Done BEFORE anything is mounted: without a shell there is no SPA to serve,
+  // and claiming otherwise would leave GET / with the banner suppressed and no
+  // page to replace it — a permanent 404 on the app's front door.
+  let indexHtml = '';
+  try {
+    indexHtml = fs.readFileSync(path.join(uiDir, 'index.html'), 'utf8');
+  } catch (e) {
+    console.warn(`[UI] Failed to read index.html in ${uiDir} — serving API only:`, (e as Error).message);
+    return;
+  }
+
+  servedUiDir = uiDir;
+
+  targetApp.use(express.static(uiDir, {
+    // The shell is served from the snapshot below, on every path including "/".
+    // Letting express.static answer "/" off disk too would mean one bundle
+    // swap leaves "/" new and every other route old, pointing at deleted
+    // hashed assets.
+    index: false,
+    dotfiles: 'deny',
+    setHeaders: (res, filePath) => {
+      // Vite content-hashes everything under assets/, so those are safe to
+      // pin. Anything else (public/ favicons, manifests) may change in place.
+      if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+    },
+  }));
+
+  targetApp.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (res.headersSent) return next();
+    // HEAD too: express.static answers HEAD for real files, so rejecting it
+    // here would make HEAD and GET disagree on every SPA path.
+    if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+    if (API_PATH_PREFIXES.some(p => req.path === p || req.path.startsWith(p + '/'))) return next();
+    // Only a client that actually wants a page gets one. An API client on an
+    // unknown path still gets its 404 instead of a confusing blob of HTML.
+    if (!wantsHtml(req)) return next();
+    res.setHeader('Cache-Control', 'no-cache');
+    res.type('html').send(indexHtml);
+  });
+
+  console.log(`[UI] Serving UI bundle from ${uiDir}`);
+}
+
+/* v8 ignore start */
+if (process.env.AGENFK_SERVE_UI) {
+  const dir = resolveUiDir(process.env.AGENFK_SERVE_UI);
+  if (dir) mountStaticUI(app, dir);
+  else console.warn(`[UI] AGENFK_SERVE_UI is set but no index.html was found — serving API only.`);
+}
+/* v8 ignore stop */
 
 // ── WebSocket ────────────────────────────────────────────────────────────────
 /* v8 ignore start */

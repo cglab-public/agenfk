@@ -1,0 +1,446 @@
+/**
+ * Choosing which card a new terminal opens on (CGLAB-184).
+ *
+ * The `+` in the terminal strip used to reopen on the ACTIVE session's card and
+ * nothing else, so there was no way from the Terminal view to any other card —
+ * you had to go back to the sidebar. With one or two tabs that is a shrug; with
+ * ten it is the wrong shape.
+ *
+ * An earlier version of this file claimed the `+` also did nothing when there
+ * was no active session. Review checked and that state is unreachable:
+ * `TerminalTab` renders an EmptyState before the strip when there are no
+ * sessions, so the `+` does not exist, and with sessions present an active one
+ * is always set. The empty-list message below still earns its place — a card
+ * can leave the active-work list while its terminal survives — but the
+ * justification was invented and is corrected here rather than left standing.
+ *
+ * This sits BEFORE the agent dialog rather than inside it. That dialog's whole
+ * identity is "open a terminal on THIS card" — it is named after the card in
+ * its own aria-label — and three other callers already arrive at it having
+ * decided which card they mean. Folding a card selector in would have made
+ * every one of them carry a choice they had already made.
+ */
+import React from 'react';
+import { clsx } from 'clsx';
+import { X } from 'lucide-react';
+import type { AgEnFKItem } from '../types';
+import { ITEM_TYPES, ItemTypeSquare } from './ItemTypeSquare';
+
+export interface CardPickerProps {
+  /** The cards on offer — work in flight, the same list the sidebar shows. */
+  readonly items: readonly AgEnFKItem[];
+  /**
+   * Project id to name, for the row's second line.
+   *
+   * The list is CROSS-PROJECT — `listActiveItems` passes no project filter — and
+   * the sidebar only gets away with showing bare titles because it groups by
+   * project, which a flat dialog does not. Two cards called "Fix flaky test" in
+   * two repos were indistinguishable rows, and picking one re-points the board
+   * and reshuffles the sidebar's last-used order. Saying which project it is
+   * makes that a choice instead of a surprise.
+   */
+  readonly projectNames?: ReadonlyMap<string, string>;
+  /** The card the strip is currently on, listed first and marked. */
+  readonly currentItemId?: string;
+  readonly onPick: (item: AgEnFKItem) => void;
+  readonly onClose: () => void;
+  /**
+   * The way out when there is nothing to pick (CGLAB-164).
+   *
+   * Both empty branches were a sentence and nothing else, and the sentence
+   * told you to go somewhere else and do something you have to already know
+   * how to do — which is the question that opened this card: "I'm starting a
+   * task from nothing, where do I write it?"
+   *
+   * OPTIONAL on purpose. Creating a card needs a project to create it in, and
+   * a caller with no active project has nowhere to put one. Passing nothing
+   * hides the door rather than drawing one onto nothing, which is the defect
+   * this is fixing rather than a smaller helping of it.
+   *
+   * It receives whatever was typed into the search box, when something was: a
+   * phrase that matched no card is usually the title of the card that does not
+   * exist yet, and the picker is the only place that still has it.
+   */
+  readonly onCreateCard?: (seedTitle?: string) => void;
+  /**
+   * Open the Ask AgEnFK panel.
+   *
+   * Optional, and its absence is what keeps the door honest: a host that
+   * cannot answer it leaves the button disabled with the reason on screen,
+   * which is what it did for the three cards it took to build the room behind
+   * it. The prop is the room.
+   */
+  readonly onAsk?: () => void;
+}
+
+/**
+ * The current card first, then the rest in the order they arrived.
+ *
+ * Not sorted by title or by step: the overwhelmingly common reason to press `+`
+ * is a second agent on the card you are already looking at, and making that the
+ * first row costs the other cases nothing.
+ */
+export function orderForPicker(
+  items: readonly AgEnFKItem[],
+  currentItemId?: string,
+): AgEnFKItem[] {
+  const current = items.filter(i => i.id === currentItemId);
+  return [...current, ...items.filter(i => i.id !== currentItemId)];
+}
+
+/**
+ * Narrow the list by project and by what was typed.
+ *
+ * Pure and beside `orderForPicker` rather than inside the component, for the
+ * same reason that one is: it is a rule about two indices and a string, and it
+ * can be written down without a DOM.
+ *
+ * Matching is accent- and case-insensitive. Card titles here are written by
+ * people in Portuguese as often as in English — requiring someone to type
+ * "manutenção" exactly, accent and all, to find their own card is a search box
+ * that punishes you for using it.
+ */
+export function filterForPicker(
+  items: readonly AgEnFKItem[],
+  opts: { projectId?: string; query?: string; type?: string } = {},
+): AgEnFKItem[] {
+  const needle = fold(opts.query ?? '');
+  return items.filter(item => {
+    if (opts.projectId && item.projectId !== opts.projectId) return false;
+    if (opts.type && item.type !== opts.type) return false;
+    if (!needle) return true;
+    return fold(item.title).includes(needle);
+  });
+}
+
+/** Lowercase, accents stripped. `NFD` splits a letter from its mark so the mark can go. */
+function fold(value: string): string {
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+}
+
+/**
+ * The doors an empty picker offers, and the one it only shows.
+ *
+ * Kept beside the component and given its own props because both empty
+ * branches need it and they are not the same branch: a failed search offers
+ * the filter back FIRST, since the likely fix after typing "zzzz" is the typo,
+ * not a missing card — putting "create" first invites a duplicate of the card
+ * you were looking for.
+ */
+function EmptyDoors({ onCreateCard, onClearSearch, onAsk }: { onCreateCard?: () => void; onClearSearch?: () => void; onAsk?: () => void }) {
+  return (
+    <div className="flex flex-col gap-2 px-3 pb-2">
+      {onClearSearch && (
+        <button
+          type="button"
+          onClick={onClearSearch}
+          className="rounded-lg border border-border-soft px-3 py-2 text-xs text-ink transition-colors hover:bg-canvas"
+        >
+          {/* Named for both, because both can empty the list and the handler
+              resets both: a button named only for the search would leave a
+              project filter standing and look like it had done nothing. */}
+          Clear the search and filter
+        </button>
+      )}
+      {onCreateCard && (
+        <button
+          type="button"
+          // `() => onCreateCard()`, never `onClick={onCreateCard}`: React hands
+          // a click handler its mouse event, and the callback this ends up
+          // calling takes a seed TITLE as its first parameter. Passed straight
+          // through, the event object arrives where a string belongs and is
+          // handed to `.trim()`.
+          onClick={() => onCreateCard()}
+          className="rounded-lg border border-border-brand bg-chip px-3 py-2 text-xs font-semibold text-accent-text transition-opacity hover:opacity-90"
+        >
+          ＋ New task
+        </button>
+      )}
+      {/*
+       * The second door: describe the objective and let an agent propose the
+       * decomposition. DRAWN AND DISABLED, because there is nothing behind it
+       * — `analyze_request` echoes the request back and prints four static
+       * rules (packages/server/src/index.ts), and no endpoint decomposes
+       * anything. It belongs to its own card.
+       *
+       * Disabled with the reason ON SCREEN, not in a `title`: the terminal
+       * strip beside this had the same argument about its Split control and
+       * settled it the same way — a hover-only reason is the absent case
+       * wearing a tooltip.
+       */}
+      <div className="rounded-lg border border-dashed border-border-soft px-3 py-2">
+        {/*
+         * No `aria-describedby` here, deliberately. A `disabled` button is not
+         * focusable, so a description hung off it is never announced — it
+         * would be an attribute that looks like accessibility work and does
+         * none. The reason is delivered the way it actually reaches everyone:
+         * as visible text, immediately after the control, in reading order.
+         */}
+        <button
+          type="button"
+          data-testid="ask-agenfk-door"
+          disabled={!onAsk}
+          onClick={() => onAsk?.()}
+          className={onAsk
+            ? 'w-full text-left text-xs font-semibold text-accent-text'
+            : 'w-full cursor-not-allowed text-left text-xs font-semibold text-ink-secondary'}
+        >
+          ✧ Ask AgEnFK
+        </button>
+        {/*
+         * Readable ink, not decorative ink. This was `text-[10px]` in
+         * `ink-tertiary` on the translucent nav surface — around 2.5:1 in the
+         * light theme, under AA, which is the hidden version of "shown". The
+         * reason is the whole content of a control that does nothing else; if
+         * it cannot be read, the door is back to being a dead button.
+         */}
+        <p data-testid="ask-agenfk-reason" className="mt-1 text-[11px] leading-snug text-ink-secondary">
+          {onAsk
+            ? 'Describe the objective. An agent proposes the decomposition, and you keep, edit or drop each item before anything is created.'
+            /* Still said in full when the host cannot answer it: a door with
+               no room behind it must explain itself, not just go grey. */
+            : 'Describe the objective and have the decomposition proposed for you. Not built yet: nothing on the server decomposes anything, so this would be a button that promises and does not deliver.'}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+export function CardPicker({ items, currentItemId, projectNames, onPick, onClose, onCreateCard, onAsk }: CardPickerProps) {
+  const [query, setQuery] = React.useState('');
+  const [projectId, setProjectId] = React.useState<string>('');
+  const [typeFilter, setTypeFilter] = React.useState<string>('');
+
+  /** The types actually present, in the product's own order. */
+  const typeOptions = React.useMemo(
+    () => ITEM_TYPES.filter(t => items.some(i => i.type === t)),
+    [items],
+  );
+
+  /*
+   * Filter FIRST, then order. The other way round would sort a list that is
+   * about to shrink, and the current card's place at the top only means
+   * anything among the cards actually on offer.
+   */
+  const ordered = React.useMemo(
+    () => orderForPicker(filterForPicker(items, { projectId, query, type: typeFilter }), currentItemId),
+    [items, currentItemId, projectId, query, typeFilter],
+  );
+
+  /*
+   * Projects taken from the cards themselves, not from the full project list:
+   * offering a project with nothing in flight is a filter that can only ever
+   * empty the list.
+   */
+  const projectOptions = React.useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const item of items) {
+      if (!seen.has(item.projectId)) seen.set(item.projectId, projectNames?.get(item.projectId) ?? item.projectId);
+    }
+    return [...seen.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  }, [items, projectNames]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex animate-[fadeIn_120ms_ease-out] items-center justify-center bg-black/50 p-4 motion-reduce:animate-none">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Open a terminal on which card"
+        ref={el => el?.focus()}
+        // Focusable, or the handler below can never run: React dispatches
+        // keydown along the fiber tree from the EVENT TARGET, and after
+        // clicking `+` the focus is still on that button — which is not inside
+        // this dialog. The first version asserted the Escape win in a comment
+        // and shipped a handler nothing could reach; its test fired the event
+        // at the dialog directly and so could not see that.
+        tabIndex={-1}
+        onKeyDown={e => { if (e.key === 'Escape') onClose(); }}
+        className="flex max-h-[70vh] w-full max-w-md animate-[popIn_140ms_cubic-bezier(0.2,0,0,1)] flex-col rounded-2xl border border-border-soft bg-surface shadow-2xl motion-reduce:animate-none"
+      >
+        <div className="flex items-start gap-3 border-b border-border-soft px-5 py-4">
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-ink-tertiary">
+              New terminal
+            </p>
+            <p className="mt-1 text-sm font-semibold text-ink">Which card?</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="shrink-0 rounded p-1 text-ink-tertiary transition-colors hover:text-ink"
+          >
+            <X size={14} />
+          </button>
+        </div>
+
+        {/* Only when there is something to narrow. A search box over three
+            cards is furniture, and a project filter with one project in it can
+            only ever do nothing. */}
+        {(items.length > 6 || projectOptions.length > 1 || typeOptions.length > 1) && (
+          <div className="flex items-center gap-2 border-b border-border-soft px-3 py-2">
+            <input
+              type="search"
+              value={query}
+              autoFocus
+              onChange={e => setQuery(e.target.value)}
+              aria-label="Search cards by name"
+              placeholder="Search cards…"
+              className="min-w-0 flex-1 rounded-md border border-border-soft bg-canvas px-2 py-1 text-[11px] text-ink placeholder:text-ink-tertiary focus:border-border-brand focus:outline-none"
+            />
+            {projectOptions.length > 1 && (
+              <select
+                value={projectId}
+                onChange={e => setProjectId(e.target.value)}
+                aria-label="Filter by project"
+                className="shrink-0 rounded-md border border-border-soft bg-canvas px-2 py-1 text-[11px] text-ink-secondary focus:border-border-brand focus:outline-none"
+              >
+                <option value="">All projects</option>
+                {projectOptions.map(([id, name]) => (
+                  <option key={id} value={id}>{name}</option>
+                ))}
+              </select>
+            )}
+            {/* Type, beside project. The list is every kind of work at once —
+                an epic to fan out, a bug to fix — and "which card?" is usually
+                asked about one of them. Only the types actually present are
+                offered: a filter whose option can only ever empty the list is
+                a control that wastes a click to teach you nothing. */}
+            {typeOptions.length > 1 && (
+              <select
+                value={typeFilter}
+                onChange={e => setTypeFilter(e.target.value)}
+                aria-label="Filter by type"
+                data-testid="picker-type-filter"
+                className="shrink-0 rounded-md border border-border-soft bg-canvas px-2 py-1 text-[11px] text-ink-secondary focus:border-border-brand focus:outline-none"
+              >
+                <option value="">All types</option>
+                {typeOptions.map(t => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            )}
+          </div>
+        )}
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+          {ordered.length === 0 && (query || projectId) ? (
+            /*
+             * A search that found nothing is NOT "no work in flight". Saying
+             * the latter here would tell the user their board is empty when
+             * they simply mistyped, which is the kind of confident wrong
+             * answer that makes people stop trusting a filter.
+             */
+            <>
+              <p className="px-3 py-6 text-center text-xs text-ink-tertiary">
+                No card matches that. Clear the search or pick another project.
+              </p>
+              <EmptyDoors
+                // The phrase that matched nothing is handed over as the title
+                // of the card that does not exist yet.
+                onCreateCard={onCreateCard && (() => onCreateCard(query.trim() || undefined))}
+                onClearSearch={() => { setQuery(''); setProjectId(''); }}
+                onAsk={onAsk}
+              />
+            </>
+          ) : ordered.length === 0 ? (
+            /*
+             * A sentence, not an empty box. Reachable when every card has left
+             * the active-work list while a terminal outlives it, and "nothing
+             * is in flight" tells the user what to do next where a blank panel
+             * would not.
+             */
+            <>
+              <p className="px-3 py-6 text-center text-xs text-ink-tertiary">
+                No work in flight. Start a card on the board, then open a terminal on it.
+              </p>
+              {/* Reached only when nothing was typed and no project was
+                  chosen, so there is no seed to carry and the callback goes
+                  through as it is. It is safe to pass directly because
+                  `EmptyDoors` calls it with NO arguments — see the button. */}
+              <EmptyDoors onCreateCard={onCreateCard} onAsk={onAsk} />
+            </>
+          ) : (
+            <ul>
+              {ordered.map(item => (
+                <li key={item.id}>
+                  <button
+                    type="button"
+                    onClick={() => onPick(item)}
+                    title={item.title}
+                    className={clsx(
+                      'flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-canvas',
+                      item.id === currentItemId && 'bg-canvas/60',
+                    )}
+                  >
+                    {/* The type, as the square every tracker uses. Without it
+                        a list of twenty rows says nothing about which of them
+                        is an epic to fan out and which is a bug to fix. */}
+                    <ItemTypeSquare type={item.type} size="sm" testId={`picker-row-type-${item.id}`} />
+                    <span className="flex min-w-0 flex-col">
+                      <span className="truncate text-xs text-ink">{item.title}</span>
+                      {projectNames?.get(item.projectId) && (
+                        <span className="truncate text-[10px] text-ink-tertiary">
+                          {projectNames.get(item.projectId)}
+                        </span>
+                      )}
+                    </span>
+                    {item.id === currentItemId && (
+                      // Said in words, not only by the background tint: a
+                      // colour difference is not available to everyone.
+                      <span className="shrink-0 text-[9px] uppercase tracking-wide text-ink-tertiary">
+                        current
+                      </span>
+                    )}
+                    {/* The step, for the same reason the sidebar shows it: it
+                        is what says where the card is sitting. */}
+                    <span className="ml-auto shrink-0 font-mono text-[9px] uppercase tracking-wide text-ink-tertiary">
+                      {item.status}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        {/*
+         * THE DOOR, WHERE IT CAN ACTUALLY BE FOUND.
+         *
+         * It was drawn only in the empty state, which is where the artifact
+         * puts it — and that was wrong in practice: the empty state means "no
+         * work in flight", so on any machine with cards open the door does not
+         * exist. The person who has twenty cards and a new objective is
+         * exactly who needs it, and they never saw it.
+         *
+         * "Which card?" and "I do not have one yet" are the same moment. So
+         * the offer sits under the list, always, and the empty state keeps its
+         * own copy because there the question is the whole screen.
+         */}
+        {/*
+          * ONCE, not twice. The empty state draws this door too, and when the
+          * list is empty both were on screen at the same time — the same words
+          * twice, three centimetres apart. The footer is for the case the
+          * empty state cannot cover: a list that HAS cards and still is not
+          * the one you came for.
+          */}
+        {onAsk && ordered.length > 0 && (
+          /* THE WHOLE ROW IS THE BUTTON. It was the three words only, with the
+             sentence beside it as inert text — so a click on the sentence,
+             which is most of the target, did nothing at all. */
+          <button
+            type="button"
+            data-testid="ask-agenfk-footer"
+            onClick={() => onAsk()}
+            className="w-full border-t border-border-soft px-3 py-2 text-left hover:bg-chip"
+          >
+            <span className="text-xs font-semibold text-accent-text">✧ New task</span>
+            <span className="ml-2 text-[11px] text-ink-tertiary">
+              No card for this yet? Describe the objective and review the proposed decomposition.
+            </span>
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}

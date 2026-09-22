@@ -102,3 +102,26 @@ export const calculateCycleTimeMs = (item: any): number => {
 
   return totalMs;
 };
+
+/**
+ * Short, human display name for a model id.
+ *
+ * The first meaningful alphabetic family token (>=3 letters, so version bits
+ * like "v1" or "27b" are skipped), title-cased: "qwen3.6:27b" -> "Qwen",
+ * "claude-opus-5" -> "Claude", "3.5-sonnet" -> "Sonnet". Falls back to the raw
+ * id when no such token exists, so it never emits a meaningless single letter.
+ *
+ * Lives HERE, beside stripAnsi, rather than in either component that draws it.
+ * It was private to RunsPanel and got copied into the Agents screen while that
+ * screen was being built; two copies of one display rule are how "claude-code"
+ * and "claude" became two vocabularies for a single agent. Exporting it from a
+ * component file is not the fix either — eslint's react-refresh rule rejects
+ * that, and it is right: a module that exports both a component and a helper
+ * loses fast refresh.
+ */
+export function prettyModel(model?: string): string {
+  if (!model) return '';
+  const family = model.match(/[a-zA-Z]{3,}/)?.[0];
+  if (!family) return model;
+  return family.charAt(0).toUpperCase() + family.slice(1);
+}

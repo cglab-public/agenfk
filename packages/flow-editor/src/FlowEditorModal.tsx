@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import mermaid from 'mermaid';
 import type { Flow, FlowStep, RegistryFlow, FlowClient, RegistryClient } from './types';
 import { extractApiError } from './apiError';
-import { flowDefinitionIssues, stepIssue, withStepIds } from './flowDefinition';
+import { deriveStepName, flowDefinitionIssues, nextStepName, stepIssue, withStepIds } from './flowDefinition';
 import { ExitCriteriaEditorModal } from './ExitCriteriaEditorModal';
 import { estimateTokenCount } from './estimateTokens';
 
@@ -38,7 +38,7 @@ const useRegistryClient = (): RegistryClient => useHost().registryClient;
 const useEditorTheme = (): 'light' | 'dark' => useHost().theme;
 const useTabLabels = () => useHost().tabLabels;
 const useEditorLabels = (): FlowEditorLabels => useHost().labels;
-import { X, Plus, Trash2, GripVertical, Save, GitBranch, Check, CopyPlus, Lock, Search, Globe, Loader2, AlertCircle, Download, Upload, ExternalLink, Zap, FlaskConical, ShieldCheck, Clock, BookOpen, Briefcase, Eye, Code, Bug, Star, Lightbulb, Pause, Archive } from 'lucide-react';
+import { X, Plus, Trash2, GripVertical, Save, GitBranch, Check, CopyPlus, Lock, Search, Globe, Loader2, AlertCircle, AlertTriangle, ChevronRight, Download, Upload, ExternalLink, Zap, FlaskConical, ShieldCheck, Clock, BookOpen, Briefcase, Eye, Code, Bug, Star, Lightbulb, Pause, Archive } from 'lucide-react';
 
 // Available icons for flow steps — key stored in FlowStep.icon, value rendered in UI
 const STEP_ICON_OPTIONS: { key: string; label: string; node: React.ReactNode }[] = [
@@ -77,6 +77,45 @@ const RESERVED_NAMES = new Set([
 ]);
 
 const BUILTIN_ID = '__builtin__';
+
+/**
+ * CGLAB-164. The per-step colour is a stripe on the row's leading edge. Two
+ * variants render it — an anchor's is decorative, a working step's carries the
+ * colour input on top of it — and the whole point of the stripe is that it
+ * reads as one continuous rail down the list, which it stops doing the moment
+ * the two drift apart. Stated once so they cannot.
+ */
+const STEP_STRIPE_CLASS = 'shrink-0 self-stretch';
+const STEP_STRIPE_WIDTH = 4;
+
+/**
+ * The transparent `<input type="color">` that turns the rail into a control.
+ *
+ * Both dimensions are explicit on purpose. Given only `inset-y-0` and no
+ * height, a colour input falls back to its INTRINSIC size — Blink renders a
+ * ~50x27 colour-well — and the box becomes over-constrained, so `bottom` and
+ * `right` are dropped. Measured in Chrome, that left the lower half of a
+ * visible rail dead to the click and pushed the live area sideways over the
+ * step number, so clicking the number opened the colour picker. jsdom has no
+ * layout, so no test in this suite can see any of that: the guard has to be
+ * that the declaration itself cannot fall back to auto.
+ *
+ * 24px wide against a 4px rail is WCAG 2.2 SC 2.5.8 (24x24 minimum target).
+ * The extra 20px is hit area, not paint: it hangs off the row's left edge and
+ * stops 2px short of the step-number column.
+ */
+const STEP_COLOR_INPUT_CLASS =
+  'absolute top-0 -left-2.5 h-full w-6 opacity-0 cursor-pointer border-0 p-0 bg-transparent disabled:cursor-not-allowed';
+
+/**
+ * Column widths, shared by the rows and by the single heading above them. The
+ * heading only stays honest if it is the same width as the column it names, so
+ * neither side gets to hand-copy the number.
+ */
+const STEP_COL_INDEX = 'w-4';
+const STEP_COL_ICON = 'w-6';
+const STEP_COL_NAME = 'w-52';
+const STEP_COL_ACTIONS = 'w-[46px]';
 
 /**
  * Footer CTA captions. The editor's own wording is correct for the standalone
@@ -250,12 +289,22 @@ interface ExitCriteriaSummaryProps {
   value: string;
   disabled: boolean;
   onEdit: () => void;
+  /**
+   * CGLAB-164. A WORKING step with no exit criteria is a gate that does not
+   * close — the gatekeeper reads this field and `agenfk verify` refuses without
+   * it, so an empty one lets work through unchecked. That is legal, and worth
+   * seeing, so it is stated in amber rather than rendered as a blank field.
+   * Anchors pass `false`: TODO and DONE carry no criteria by design, and
+   * flagging them would only teach the reader to ignore the colour.
+   */
+  warnWhenEmpty?: boolean;
 }
 
-const ExitCriteriaSummary: React.FC<ExitCriteriaSummaryProps> = ({ index, value, disabled, onEdit }) => {
+const ExitCriteriaSummary: React.FC<ExitCriteriaSummaryProps> = ({ index, value, disabled, onEdit, warnWhenEmpty = false }) => {
   const trimmed = value.trim();
   const firstLine = trimmed.split('\n').find(l => l.trim()) ?? '';
   const tokens = estimateTokenCount(trimmed);
+  const warn = !trimmed && warnWhenEmpty;
   return (
     <button
       data-testid={`step-exit-criteria-${index}`}
@@ -263,17 +312,30 @@ const ExitCriteriaSummary: React.FC<ExitCriteriaSummaryProps> = ({ index, value,
       disabled={disabled}
       onClick={onEdit}
       title={disabled ? undefined : 'Edit exit criteria (markdown)'}
-      className="w-full text-left px-2 py-1.5 rounded-md border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 hover:border-slate-300 dark:hover:border-slate-500 transition-colors disabled:opacity-60 disabled:cursor-not-allowed min-h-[52px]"
+      className={clsx(
+        'w-full text-left px-2 py-1.5 rounded-md border transition-colors disabled:opacity-60 disabled:cursor-not-allowed',
+        warn
+          ? 'border-amber-300 dark:border-amber-500/50 bg-amber-50 dark:bg-amber-900/20 hover:border-amber-400 dark:hover:border-amber-400'
+          : 'border-border-soft bg-canvas hover:border-border-brand'
+      )}
     >
       {firstLine ? (
-        <span className="block text-xs text-slate-600 dark:text-slate-300 truncate">{firstLine}</span>
+        <span className="text-xs text-ink-secondary line-clamp-3">{firstLine}</span>
+      ) : warn ? (
+        <span
+          data-testid={`step-exit-criteria-empty-${index}`}
+          className="flex items-start gap-1 text-xs text-amber-700 dark:text-amber-400"
+        >
+          <AlertTriangle size={12} className="shrink-0 mt-0.5" />
+          <span>No exit criteria — this step lets work through unchecked.</span>
+        </span>
       ) : (
-        <span className="block text-xs italic text-slate-400 dark:text-slate-500">
+        <span className="block text-xs italic text-ink-tertiary">
           No exit criteria — click to add
         </span>
       )}
-      <span className="block text-[10px] tabular-nums text-slate-400 dark:text-slate-500 mt-0.5">
-        ~{tokens} {tokens === 1 ? 'token' : 'tokens'} (estimate){disabled ? '' : ' · edit'}
+      <span className="block text-[10px] tabular-nums text-ink-tertiary mt-0.5">
+        ~{tokens} {tokens === 1 ? 'token' : 'tokens'} (estimate){disabled ? '' : warn ? ' · add' : ' · edit'}
       </span>
     </button>
   );
@@ -319,6 +381,8 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [steps, setSteps] = useState<FlowStep[]>([]);
+  /** Step ids whose key is already on the server. See the load effect. */
+  const [savedKeys, setSavedKeys] = useState<Set<string>>(new Set());
   const [saved, setSaved] = useState(false);
   // The definition as last persisted, as the editor serialises it. `saved`
   // alone cannot answer "is there an unsaved edit?": it is a badge flag that
@@ -328,6 +392,13 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   // silently assigns the version that is already on the server.
   const [persisted, setPersisted] = useState<string | null>(null);
   const [openIconPickerIndex, setOpenIconPickerIndex] = useState<number | null>(null);
+  // CGLAB-164: the description is written once and rarely reopened, so it sits
+  // collapsed in the header meta line instead of taking a third of the height
+  // above the steps — which are what this screen is opened to change.
+  // Deliberately NOT reset when the selected flow changes (unlike name /
+  // description / steps below): whether the reader wants the description open
+  // is a preference about the view, not a property of the flow being viewed.
+  const [descriptionOpen, setDescriptionOpen] = useState(false);
   // CGLAB-109: which step's exit criteria are open in the popup editor.
   const [exitCriteriaEditIndex, setExitCriteriaEditIndex] = useState<number | null>(null);
 
@@ -351,6 +422,14 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
         })
         .sort((a, b) => a.order - b.order);
       setSteps(flowSteps);
+      /*
+       * The keys that already exist OUT THERE. A step loaded from the server
+       * has a status items may already hold, and `PUT /flows/:id` does not
+       * migrate anything across a rename — so nothing typed into a label may
+       * move it. A step added in this session is not in this set, and its key
+       * is simply the spelling of its label until it is saved.
+       */
+      setSavedKeys(new Set(flowSteps.map(s => s.id)));
       // Baseline the dirty check on the SAME canonical shape the save mutation
       // sends, so a round-trip through the editor is not itself a change.
       setPersisted(serializeDefinition(flow.name, flow.description ?? '', flowSteps));
@@ -444,9 +523,13 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       // satisfies the Hub's id rule.
       steps: withStepIds(steps, generateUUID).map((s, i) => ({ ...s, order: i })),
     };
-    return flow?.id
-      ? flowClient.updateFlow(flow.id, payload)
-      : flowClient.createFlow(payload);
+    const saved = flow?.id
+      ? await flowClient.updateFlow(flow.id, payload)
+      : await flowClient.createFlow(payload);
+    // What was typed this session is now a status on the server, so it stops
+    // following its label from here on.
+    setSavedKeys(new Set(steps.map(st => st.id)));
+    return saved;
   }, [flow?.id, name, description, steps, flowClient]);
 
   /**
@@ -620,8 +703,12 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
 
   return (
     <div className="flex flex-col h-full" data-testid="editor-panel">
-      {/* Right panel header — inline-editable flow name */}
-      <div className="px-6 pt-5 pb-3 shrink-0">
+      {/* Right panel header — inline-editable flow name, then a meta line
+          carrying the step count, the version and the description disclosure.
+          CGLAB-164: the description used to be the first block of the
+          scrollable body, between the name and the steps; it pushed the step
+          list — the reason the screen is open — below the fold. */}
+      <div className="px-6 pt-5 pb-3 shrink-0" data-testid="flow-editor-header">
         <div className="flex items-center gap-2 mb-1.5">
           {isHubManaged ? (
             <span
@@ -632,7 +719,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               Managed by Hub
             </span>
           ) : isBuiltinReadOnly ? (
-            <span className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400">
+            <span className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-chip text-ink-secondary">
               Default (read-only)
             </span>
           ) : (
@@ -640,7 +727,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               {isActive && (
                 <span
                   data-testid="active-badge"
-                  className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300"
+                  className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-chip text-accent-text"
                 >
                   Active
                 </span>
@@ -651,7 +738,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
         {isReadOnly ? (
           // Don't hardcode "Default Flow" — this branch now also renders
           // hub-managed flows, which have their own names.
-          <h3 data-testid="flow-name-heading" className="text-xl font-bold text-slate-800 dark:text-slate-100">
+          <h3 data-testid="flow-name-heading" className="text-xl font-bold text-ink">
             {isHubManaged ? name || flow?.name : 'Default Flow'}
           </h3>
         ) : (
@@ -661,7 +748,59 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             value={name}
             onChange={e => { setName(e.target.value); setSaved(false); }}
             placeholder="Flow name…"
-            className="w-full text-xl font-bold text-slate-800 dark:text-slate-100 bg-transparent border-b-2 border-transparent hover:border-slate-300 dark:hover:border-slate-600 focus:border-brand focus:outline-none placeholder-slate-400 dark:placeholder-slate-600 transition-colors pb-0.5"
+            className="w-full text-xl font-bold text-ink bg-transparent border-b-2 border-transparent hover:border-border-brand focus:border-brand focus:outline-none placeholder-ink-tertiary transition-colors pb-0.5"
+          />
+        )}
+
+        {/* Meta line: step count · version · description disclosure */}
+        <div className="flex items-center flex-wrap gap-2 mt-1.5 text-xs text-ink-secondary">
+          <span data-testid="flow-step-count">
+            {steps.length} {steps.length === 1 ? 'step' : 'steps'}
+          </span>
+          {flow?.version && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span
+                data-testid="flow-version-badge"
+                className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-canvas text-ink-secondary"
+              >
+                v{flow.version}
+              </span>
+            </>
+          )}
+          <span aria-hidden="true">·</span>
+          <button
+            data-testid="flow-description-toggle"
+            type="button"
+            aria-expanded={descriptionOpen}
+            aria-controls="flow-description-field"
+            onClick={() => setDescriptionOpen(open => !open)}
+            className="inline-flex items-center gap-0.5 rounded hover:text-ink focus:outline-none focus:ring-1 focus:ring-brand transition-colors"
+          >
+            <ChevronRight size={12} className={clsx('transition-transform', descriptionOpen && 'rotate-90')} />
+            description
+            {description.trim() !== '' && (
+              <>
+                <span
+                  data-testid="flow-description-indicator"
+                  aria-hidden="true"
+                  className="ml-0.5 w-1.5 h-1.5 rounded-full bg-ink-tertiary"
+                />
+                <span className="sr-only"> (this flow has one)</span>
+              </>
+            )}
+          </button>
+        </div>
+        {descriptionOpen && (
+          <textarea
+            data-testid="flow-description-input"
+            id="flow-description-field"
+            value={description}
+            onChange={e => { setDescription(e.target.value); setSaved(false); }}
+            rows={2}
+            placeholder="Optional description of this flow"
+            disabled={isReadOnly}
+            className="w-full mt-2 px-3 py-2 rounded-lg border border-border-soft bg-canvas text-ink text-sm focus:outline-none focus:ring-2 focus:ring-brand resize-none disabled:opacity-60 disabled:cursor-not-allowed"
           />
         )}
       </div>
@@ -669,39 +808,10 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       {/* Scrollable form body */}
       <div className="flex-1 overflow-y-auto px-6 pb-4 space-y-5 [&::-webkit-scrollbar]:hidden" style={{ msOverflowStyle: 'none', scrollbarWidth: 'none' } as React.CSSProperties}>
 
-        {/* Description */}
-        <div>
-          <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1 uppercase tracking-wide">
-            Description
-          </label>
-          <textarea
-            data-testid="flow-description-input"
-            value={description}
-            onChange={e => { setDescription(e.target.value); setSaved(false); }}
-            rows={2}
-            placeholder="Optional description of this flow"
-            disabled={isReadOnly}
-            className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-brand resize-none disabled:opacity-60 disabled:cursor-not-allowed"
-          />
-        </div>
-
-        {/* Version — read-only, auto-managed */}
-        {flow?.version && (
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Version</span>
-            <span
-              data-testid="flow-version-badge"
-              className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300"
-            >
-              v{flow.version}
-            </span>
-          </div>
-        )}
-
         {/* Steps */}
         <div>
           <div className="flex items-center justify-between mb-2">
-            <label className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
+            <label className="text-xs font-semibold text-ink-secondary uppercase tracking-wide">
               Steps
             </label>
             {!isReadOnly && (
@@ -717,13 +827,38 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             )}
           </div>
 
-          {/* Kanban-style: one column per step, horizontally scrollable */}
-          <div className="flex flex-row gap-3 overflow-x-auto pb-2 [&::-webkit-scrollbar]:hidden" style={{ msOverflowStyle: 'none', scrollbarWidth: 'none' } as React.CSSProperties} data-testid="steps-columns">
+          {/* CGLAB-164: one ROW per step, read top to bottom.
+
+              This was a horizontal kanban strip of w-52 columns, which put
+              664px of steps past the right edge and made drag-to-reorder a
+              drag across a scroll — one of the hardest interactions there is.
+              Vertical shows the whole flow at once, the numbers carry the
+              order, and "name (key)" / "label (display)" stop being repeated
+              once per step: they are a column heading now, stated once. */}
+          <div className="flex flex-col gap-2 pb-2" data-testid="steps-columns">
+            <div
+              data-testid="steps-header-row"
+              className="flex items-center gap-3 text-[10px] font-semibold uppercase tracking-wide text-ink-tertiary"
+              style={{ paddingLeft: `calc(0.75rem + ${STEP_STRIPE_WIDTH + 1}px)`, paddingRight: '0.75rem' }}
+            >
+              <span className={clsx(STEP_COL_INDEX, 'shrink-0 text-right')}>#</span>
+              <span className={clsx(STEP_COL_ICON, 'shrink-0')} aria-hidden="true" />
+              <span className={clsx(STEP_COL_NAME, 'shrink-0')}>label</span>
+              <span className="flex-1 min-w-0">exit criteria</span>
+              <span className={clsx(STEP_COL_ACTIONS, 'shrink-0')} aria-hidden="true" />
+            </div>
+
             {steps.map((step, index) => {
               const isAnchor = !!step.isAnchor;
               const isTodoAnchor = isAnchor && step.name.toUpperCase() === 'TODO';
               const isDoneAnchor = isAnchor && step.name.toUpperCase() === 'DONE';
               const isStepLocked = isReadOnly || isAnchor;
+              /*
+               * Whether the key adds anything. It does not when it is exactly
+               * what this label derives to — that is the common case and the
+               * one the column was deleted for.
+               */
+              const keyIsRedundant = !isReadOnly && step.name === deriveStepName(step.label);
               const stepNameUpper = step.name.toUpperCase();
               const hasReservedName = !isAnchor && RESERVED_NAMES.has(stepNameUpper);
               // A reserved name has its own dedicated message below, so only
@@ -731,6 +866,17 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               const shapeIssue = stepShowsOwnIssue(index) ? stepIssue(definitionIssues, index) : undefined;
               const stepColor = step.color ?? '#04cc98';
               const anchorColor = isDoneAnchor ? '#10b981' : '#94a3b8';
+              // Short flows always have room below; long ones do not, for the
+              // rows past the midpoint. This is a HEURISTIC, not a solution:
+              // the predicate is the row's index in the list, while the real
+              // constraint is where the scroller happens to be parked. Swept
+              // across every scroll position of a 16-step flow at 1280x720, it
+              // leaves the popover fully visible 85% of the time against 77%
+              // for always-below and 81% for always-above — better on every
+              // row and worse on none, but rows in the FIRST half still clip
+              // about a fifth of the time. Measuring the badge against the
+              // scroller's viewport is the real fix; see the card's follow-up.
+              const iconPickerAbove = steps.length > 5 && index > steps.length / 2;
 
               return (
                 <div
@@ -741,190 +887,282 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                   onDragOver={e => !isStepLocked && handleDragOver(e, index)}
                   onDrop={e => !isStepLocked && handleDrop(e, index)}
                   onDragEnd={handleDragEnd}
-                  style={isAnchor ? { borderTopColor: anchorColor, borderTopWidth: 3 } : { borderTopColor: stepColor, borderTopWidth: 3 }}
                   className={clsx(
-                    'rounded-xl border flex flex-col shrink-0 w-52 transition-all',
+                    // Left corners square so the colour rail can be flush
+                    // against them; see STEP_STRIPE_CLASS.
+                    'flex w-full items-stretch rounded-r-xl border transition-all',
+                    // Anchors are scaffolding, not work: dashed and dimmed so
+                    // the eye skips them on the way down the list.
                     isAnchor
-                      ? 'bg-slate-100 dark:bg-slate-700/60 border-slate-300 dark:border-slate-600 opacity-80'
+                      ? 'border-dashed bg-canvas border-border-soft opacity-70'
                       : dragOverIndex === index
-                      ? 'bg-slate-50 dark:bg-slate-800/50 border-border-brand shadow-md'
-                      : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700'
+                      ? 'bg-canvas border-border-brand shadow-md'
+                      : 'bg-canvas border-border-soft'
                   )}
                 >
-                  {/* Column header */}
-                  <div className="flex items-center gap-1.5 px-3 pt-3 pb-2">
-                    {isAnchor ? (
-                      <>
-                        <div
-                          data-testid={`step-anchor-lock-${index}`}
-                          className="text-slate-400 dark:text-slate-500 shrink-0"
-                          title="Anchor step — cannot be moved or deleted"
-                        >
-                          <Lock size={14} />
-                        </div>
-                        <div
-                          data-testid={`step-color-swatch-${index}`}
-                          className="w-4 h-4 rounded shrink-0 border border-white/30"
-                          style={{ backgroundColor: anchorColor }}
-                          title="Step color (fixed for anchor steps)"
-                        />
-                        <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 truncate flex-1">
-                          {step.label}
-                        </span>
-                        <span className="text-xs px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-600 text-slate-500 dark:text-slate-400 font-medium shrink-0">
-                          anchor
-                        </span>
-                      </>
-                    ) : (
-                      <>
-                        {/* Color picker */}
-                        <input
-                          data-testid={`step-color-${index}`}
-                          type="color"
-                          value={stepColor}
-                          onChange={e => updateStep(index, { color: e.target.value })}
-                          disabled={isReadOnly}
-                          title="Pick step color"
-                          className="w-5 h-5 rounded cursor-pointer border border-slate-300 dark:border-slate-600 p-0 bg-transparent shrink-0 disabled:cursor-not-allowed disabled:opacity-60"
-                        />
-                        {/* Icon picker */}
-                        <div className="relative shrink-0">
-                          <button
-                            data-testid={`step-icon-btn-${index}`}
-                            type="button"
-                            disabled={isReadOnly}
-                            onClick={() => setOpenIconPickerIndex(openIconPickerIndex === index ? null : index)}
-                            title="Pick step icon"
-                            className="w-6 h-6 flex items-center justify-center rounded border border-slate-300 dark:border-slate-600 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            {renderStepIcon(step.icon, <Zap size={12} />)}
-                          </button>
-                          {openIconPickerIndex === index && !isReadOnly && (
-                            <div className="absolute top-7 left-0 z-50 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg p-2 grid grid-cols-6 gap-1 w-44">
-                              {STEP_ICON_OPTIONS.map(opt => (
-                                <button
-                                  key={opt.key}
-                                  type="button"
-                                  title={opt.label}
-                                  onClick={() => { updateStep(index, { icon: opt.key }); setOpenIconPickerIndex(null); }}
-                                  className={clsx(
-                                    'w-6 h-6 flex items-center justify-center rounded transition-colors text-slate-600 dark:text-slate-300',
-                                    step.icon === opt.key
-                                      ? 'bg-chip text-accent-text'
-                                      : 'hover:bg-slate-100 dark:hover:bg-slate-700'
-                                  )}
-                                >
-                                  {opt.node}
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                        {/* Drag handle */}
-                        <div
-                          className={clsx(
-                            'shrink-0',
-                            isReadOnly
-                              ? 'text-slate-300 dark:text-slate-600'
-                              : 'cursor-grab active:cursor-grabbing text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
-                          )}
-                          title={isReadOnly ? undefined : 'Drag to reorder'}
-                        >
-                          <GripVertical size={16} />
-                        </div>
-                        {/* Delete button */}
-                        {!isReadOnly && (
-                          <button
-                            data-testid={`delete-step-${index}`}
-                            type="button"
-                            onClick={() => removeStep(index)}
-                            title="Remove step"
-                            className="ml-auto p-1 rounded-lg transition-colors shrink-0 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        )}
-                      </>
-                    )}
-                  </div>
+                  {/* The colour, as a 4px stripe on the leading edge. It used
+                      to be a 16px swatch sitting next to the icon badge, where
+                      the two competed for the same 40px and the coloured fill
+                      swallowed the glyph. On the edge it reads as a stripe down
+                      the whole list at a glance — which is what a per-step
+                      colour is FOR — and on a working step the stripe IS the
+                      picker: the native input lies transparent on top of it. */}
+                  {isAnchor ? (
+                    <div
+                      data-testid={`step-color-swatch-${index}`}
+                      className={STEP_STRIPE_CLASS}
+                      style={{ width: STEP_STRIPE_WIDTH, backgroundColor: anchorColor }}
+                      title="Step color (fixed for anchor steps)"
+                    />
+                  ) : (
+                    <div
+                      data-testid={`step-color-stripe-${index}`}
+                      className={clsx('relative focus-within:ring-2 focus-within:ring-brand', STEP_STRIPE_CLASS)}
+                      style={{ width: STEP_STRIPE_WIDTH, backgroundColor: stepColor }}
+                    >
+                      <input
+                        data-testid={`step-color-${index}`}
+                        type="color"
+                        value={stepColor}
+                        onChange={e => updateStep(index, { color: e.target.value })}
+                        disabled={isReadOnly}
+                        aria-label={`Step ${index + 1} color`}
+                        title={isReadOnly ? 'Step color' : 'Step color — click to pick'}
+                        className={STEP_COLOR_INPUT_CLASS}
+                      />
+                    </div>
+                  )}
 
-                  {/* Column body */}
-                  <div className="flex-1 space-y-2 px-3 pb-3">
-                    {isAnchor && isTodoAnchor && (
-                      <div>
-                        <label className="block text-xs text-slate-400 dark:text-slate-500 mb-0.5">
-                          Exit Criteria
-                        </label>
-                        <ExitCriteriaSummary
-                          index={index}
-                          value={step.exitCriteria ?? ''}
+                  <div className="flex-1 min-w-0 flex items-start gap-3 px-3 py-2.5">
+                    {/* Position in the flow — the order the strip used to carry
+                        by being horizontal. */}
+                    <span
+                      data-testid={`step-index-${index}`}
+                      className={clsx(STEP_COL_INDEX, 'shrink-0 pt-1 text-right text-xs font-mono tabular-nums text-ink-tertiary')}
+                    >
+                      {index + 1}
+                    </span>
+
+                    {/* Icon badge — still a button, still the same 17-icon
+                        popover; it just no longer carries the colour fill. */}
+                    {isAnchor ? (
+                      <div
+                        data-testid={`step-anchor-lock-${index}`}
+                        className={clsx(STEP_COL_ICON, 'h-6 shrink-0 flex items-center justify-center rounded border border-dashed border-border-soft text-ink-tertiary')}
+                        title="Anchor step — cannot be moved or deleted"
+                      >
+                        <Lock size={12} />
+                      </div>
+                    ) : (
+                      <div className="relative shrink-0">
+                        <button
+                          data-testid={`step-icon-btn-${index}`}
+                          type="button"
                           disabled={isReadOnly}
-                          onEdit={() => setExitCriteriaEditIndex(index)}
-                        />
+                          onClick={() => setOpenIconPickerIndex(openIconPickerIndex === index ? null : index)}
+                          title="Pick step icon"
+                          className={clsx(STEP_COL_ICON, 'h-6 flex items-center justify-center rounded border border-border-soft text-ink-secondary hover:bg-chip transition-colors disabled:opacity-50 disabled:cursor-not-allowed')}
+                        >
+                          {renderStepIcon(step.icon, <Zap size={12} />)}
+                        </button>
+                        {openIconPickerIndex === index && !isReadOnly && (
+                          <div
+                            data-testid={`step-icon-picker-${index}`}
+                            data-placement={iconPickerAbove ? 'above' : 'below'}
+                            className={clsx(
+                              'absolute left-0 z-50 bg-surface border border-border-soft rounded-lg shadow-lg p-2 grid grid-cols-6 gap-1 w-44',
+                              iconPickerAbove ? 'bottom-7' : 'top-7'
+                            )}
+                          >
+                            {STEP_ICON_OPTIONS.map(opt => (
+                              <button
+                                key={opt.key}
+                                data-testid={`step-icon-option-${index}-${opt.key}`}
+                                type="button"
+                                title={opt.label}
+                                aria-pressed={step.icon === opt.key}
+                                onClick={() => { updateStep(index, { icon: opt.key }); setOpenIconPickerIndex(null); }}
+                                className={clsx(
+                                  'w-6 h-6 flex items-center justify-center rounded transition-colors text-ink-secondary',
+                                  step.icon === opt.key
+                                    ? 'bg-chip text-accent-text'
+                                    : 'hover:bg-chip'
+                                )}
+                              >
+                                {opt.node}
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
-                    {!isAnchor && (
-                      <>
-                        {/* Name */}
-                        <div>
-                          <label className="block text-xs text-slate-400 dark:text-slate-500 mb-0.5">
-                            Name (key)
-                          </label>
-                          <input
+
+                    {/* Name (the key) and label (what the board shows).
+                        The tooltip hangs HERE, not on the control: Chromium
+                        dispatches no mouse events to a disabled input, so on a
+                        read-only flow — the Default, and every flow an admin
+                        distributes from the hub — the hover produced nothing
+                        at all. Those are the flows people open to READ. */}
+                    <div
+                      className={clsx(STEP_COL_NAME, 'shrink-0 min-w-0')}
+                      title={step.name ? `Key: ${step.name}` : 'The key is derived from this label'}
+                    >
+                      {isAnchor ? (
+                        <>
+                          {/* Anchors follow the same grammar as the editable
+                              rows, or TODO and DONE would go on showing a key
+                              that every other row stopped showing. */}
+                          <p data-testid={`step-name-${index}`} className="sr-only">{step.name}</p>
+                          <p className="text-xs text-ink-secondary truncate">{step.label}</p>
+                        </>
+                      ) : (
+                        <>
+                          {/* The key is DERIVED, and shown the way the anchors
+                              show theirs — one cell, key over label, which is
+                              how the artifact draws it (aca414c7 §01). It was
+                              a second bordered input, stacked on the label's,
+                              and that made a spelling of the label look like a
+                              separate thing to invent. It stays visible
+                              because it is the value `agenfk update --status`
+                              takes: derived is not the same as hidden. */}
+                          {/* CARRIED, NOT DISPLAYED. The key stopped being
+                              editable when it became derived, and a column of
+                              text nobody can act on is just width. It stays in
+                              the DOM because it is the value `agenfk update
+                              --status` takes, it is what the reserved-name and
+                              duplicate messages are about, and a screen-reader
+                              user typing a label still has to be told what key
+                              they are creating — which is what aria-live is
+                              for. Sighted users reach it by hovering the field
+                              that writes it. */}
+                          {/* HIDDEN WHILE IT IS REDUNDANT, SHOWN WHEN IT IS NOT.
+                              A key that is just the label upcased says nothing
+                              the row does not already say, and that was the
+                              whole complaint. But a key that DIVERGES is the
+                              only thing explaining the row: a saved key is
+                              frozen against label edits on purpose, so
+                              retitling "Review" to "Refinement" leaves REVIEW
+                              behind with nothing on screen to say why — and
+                              the duplicate message then names a REVIEW the
+                              user cannot see. Same for a read-only flow, where
+                              there is no label edit to infer the key from.
+                              No aria-live: `name` is recomputed per keystroke,
+                              so it queued "I", "IN", "IN_" at a screen reader
+                              and stayed silent for the frozen case that
+                              actually needed a voice. The input points at this
+                              element instead. */}
+                          <p
+                            id={`step-key-${index}`}
                             data-testid={`step-name-${index}`}
-                            type="text"
-                            value={step.name}
-                            onChange={e => updateStep(index, { name: e.target.value })}
-                            placeholder="e.g. in_progress"
-                            disabled={isStepLocked}
                             className={clsx(
-                              'w-full px-2 py-1 rounded-md border text-xs focus:outline-none focus:ring-1 disabled:opacity-60',
-                              hasReservedName
-                                ? 'border-red-400 focus:ring-red-400 bg-red-50 dark:bg-red-900/20 text-slate-800 dark:text-slate-100'
-                                : 'border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 focus:ring-brand'
+                              'text-xs font-mono tracking-wide truncate',
+                              keyIsRedundant ? 'sr-only' : 'px-2 pb-0.5 text-ink-tertiary',
                             )}
-                          />
+                          >
+                            {step.name}
+                          </p>
                           {shapeIssue && (
-                            <p data-testid={`step-name-error-${index}`} className="text-xs text-red-600 dark:text-red-400 mt-0.5">
+                            <p id={`step-name-error-${index}`} data-testid={`step-name-error-${index}`} className="text-xs text-danger-text mt-0.5 px-2">
                               {shapeIssue.message}
                             </p>
                           )}
                           {hasReservedName && (
-                            <p data-testid={`step-reserved-error-${index}`} className="text-xs text-red-600 dark:text-red-400 mt-0.5">
+                            <p id={`step-reserved-error-${index}`} data-testid={`step-reserved-error-${index}`} className="text-xs text-danger-text mt-0.5 px-2">
                               Reserved name
                             </p>
                           )}
-                        </div>
-                        {/* Label */}
-                        <div>
-                          <label className="block text-xs text-slate-400 dark:text-slate-500 mb-0.5">
-                            Label (display)
-                          </label>
                           <input
                             data-testid={`step-label-${index}`}
                             type="text"
                             value={step.label}
-                            onChange={e => updateStep(index, { label: e.target.value })}
+                            onChange={e => updateStep(index, {
+                              label: e.target.value,
+                              name: nextStepName({
+                                storedName: step.name,
+                                nextLabel: e.target.value,
+                                keyIsPersisted: savedKeys.has(step.id),
+                              }),
+                            })}
+                            aria-invalid={hasReservedName || !!shapeIssue || undefined}
+                            // Both messages sit ABOVE the field, so tabbing
+                            // into it announced nothing about the error it
+                            // caused.
+                            // The key first, so it survives the error state:
+                            // a description is replaced, not appended to.
+                            aria-describedby={clsx(
+                              step.name && `step-key-${index}`,
+                              shapeIssue && `step-name-error-${index}`,
+                              hasReservedName && `step-reserved-error-${index}`,
+                            ) || undefined}
                             placeholder="e.g. In Progress"
                             disabled={isStepLocked}
-                            className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-brand disabled:opacity-60"
+                            aria-label={`Step ${index + 1} label (display)`}
+                            className="w-full px-2 py-1 rounded-md border border-border-soft bg-surface text-ink text-xs focus:outline-none focus:ring-1 focus:ring-brand disabled:opacity-60"
                           />
-                        </div>
-                        {/* Exit criteria (CGLAB-109): compact summary — the
-                            popup is the full markdown editor. */}
-                        <div>
-                          <label className="block text-xs text-slate-400 dark:text-slate-500 mb-0.5">
-                            Exit Criteria
-                          </label>
-                          <ExitCriteriaSummary
-                            index={index}
-                            value={step.exitCriteria ?? ''}
-                            disabled={isStepLocked}
-                            onEdit={() => setExitCriteriaEditIndex(index)}
-                          />
-                        </div>
-                      </>
-                    )}
+                        </>
+                      )}
+                    </div>
+
+                    {/* Exit criteria — the most consequential field on the
+                        screen (the gatekeeper reads it and `agenfk verify`
+                        refuses without it), so it gets the width that is left
+                        rather than a truncated line. CGLAB-109 keeps the popup
+                        as the only place they are edited. */}
+                    <div className="flex-1 min-w-0">
+                      {isDoneAnchor ? (
+                        <p className="text-xs italic text-ink-tertiary pt-1">
+                          Anchor. Reachable only through <span className="font-mono not-italic">agenfk verify</span> on the final step.
+                        </p>
+                      ) : (
+                        <ExitCriteriaSummary
+                          index={index}
+                          value={step.exitCriteria ?? ''}
+                          disabled={isReadOnly}
+                          warnWhenEmpty={!isAnchor}
+                          onEdit={() => setExitCriteriaEditIndex(index)}
+                        />
+                      )}
+                      {isTodoAnchor && (
+                        <p className="text-[10px] text-ink-tertiary mt-0.5">
+                          Anchor. Not reorderable, not deletable.
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Reorder / delete, or the anchor badge that explains why
+                        neither is offered. */}
+                    <div className={clsx(STEP_COL_ACTIONS, 'shrink-0 flex items-center justify-end gap-1 pt-1')}>
+                      {isAnchor ? (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-chip text-ink-secondary font-medium">
+                          anchor
+                        </span>
+                      ) : (
+                        <>
+                          <div
+                            className={clsx(
+                              'shrink-0',
+                              isReadOnly
+                                ? 'text-ink-tertiary'
+                                : 'cursor-grab active:cursor-grabbing text-ink-tertiary hover:text-ink'
+                            )}
+                            title={isReadOnly ? undefined : 'Drag to reorder'}
+                          >
+                            <GripVertical size={16} />
+                          </div>
+                          {!isReadOnly && (
+                            <button
+                              data-testid={`delete-step-${index}`}
+                              type="button"
+                              onClick={() => removeStep(index)}
+                              title="Remove step"
+                              className="p-1 rounded-lg transition-colors text-ink-tertiary hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
               );
@@ -966,7 +1204,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
           Publish, which the read-only branch gated on `flow?.id`. Each control
           now renders iff the host can perform that action, and every control
           shares one row so a button's outcome always renders beside it. */}
-      <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-700 shrink-0 flex flex-col gap-3" data-testid="flow-footer">
+      <div className="px-6 py-4 border-t border-border-soft shrink-0 flex flex-col gap-3" data-testid="flow-footer">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2 flex-wrap">
             {canSave && (
@@ -1013,7 +1251,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                 data-testid="use-default-flow-btn"
                 type="button"
                 onClick={onUseDefault}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 text-white transition-colors shadow-sm"
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-brand hover:opacity-90 text-navy transition-colors shadow-sm"
               >
                 <GitBranch size={15} />
                 {labels.useFlow}
@@ -1025,7 +1263,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                 type="button"
                 disabled={isSaveDisabled}
                 onClick={() => useFlowMutation.mutate()}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-brand hover:opacity-90 text-navy disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
               >
                 <GitBranch size={15} />
                 {labels.useFlow}
@@ -1035,7 +1273,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               data-testid="cancel-panel-btn"
               type="button"
               onClick={onClose}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-border-soft text-ink-secondary hover:bg-chip transition-colors"
             >
               Close
             </button>
@@ -1073,7 +1311,7 @@ interface DeleteConfirmProps {
 
 const DeleteConfirm: React.FC<DeleteConfirmProps> = ({ onConfirm, onCancel }) => (
   <span className="inline-flex items-center gap-1 text-xs" data-testid="delete-confirm">
-    <span className="text-slate-600 dark:text-slate-300">Delete?</span>
+    <span className="text-ink-secondary">Delete?</span>
     <button
       data-testid="delete-confirm-yes"
       onClick={e => { e.stopPropagation(); onConfirm(); }}
@@ -1084,7 +1322,7 @@ const DeleteConfirm: React.FC<DeleteConfirmProps> = ({ onConfirm, onCancel }) =>
     <button
       data-testid="delete-confirm-no"
       onClick={e => { e.stopPropagation(); onCancel(); }}
-      className="px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-300 dark:hover:bg-slate-600 font-semibold"
+      className="px-1.5 py-0.5 rounded bg-canvas text-ink hover:bg-chip font-semibold"
     >
       No
     </button>
@@ -1101,10 +1339,25 @@ const FlowMermaid: React.FC<{ steps: { name: string; label: string }[] }> = ({ s
   useEffect(() => {
     if (!ref.current || steps.length === 0) return;
     const id = `mermaid-flow-${Math.random().toString(36).substring(2, 9)}`;
-    const nodes = steps.map((s, i) => `  ${i}["${s.label || s.name}"]`).join('\n');
+    /*
+     * Labels come from the community registry, so they are untrusted.
+     *
+     * An unescaped `"` terminated the quoted label and left a blank preview;
+     * a newline injected extra statements into the chart source. Neither can
+     * become script at 'strict' — the URL is sanitized and the final SVG goes
+     * through DOMPurify — but the diagram is data, not source, and is escaped
+     * as such (F1 from the CGLAB-187 adversarial review).
+     */
+    const escapeLabel = (raw: string): string =>
+      raw.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/[\r\n]+/g, ' ');
+    const nodes = steps.map((s, i) => `  ${i}["${escapeLabel(s.label || s.name)}"]`).join('\n');
     const edges = steps.slice(1).map((_, i) => `  ${i} --> ${i + 1}`).join('\n');
     const chart = `flowchart LR\n${nodes}\n${edges}`;
-    mermaid.initialize({ startOnLoad: false, theme: theme === 'dark' ? 'dark' : 'default', securityLevel: 'loose' });
+    // 'strict', NEVER 'loose' (CGLAB-187): a community flow is authored by
+    // someone else, and at 'loose' Mermaid skips its own URL sanitization, so a
+    // `javascript:` link in a step would survive into the SVG this injects with
+    // innerHTML. See ReadmeModal.tsx for the desktop-escalation detail.
+    mermaid.initialize({ startOnLoad: false, theme: theme === 'dark' ? 'dark' : 'default', securityLevel: 'strict' });
     mermaid.render(id, chart).then(({ svg }) => {
       if (ref.current) ref.current.innerHTML = svg;
     }).catch(() => {});
@@ -1149,44 +1402,44 @@ const CommunityPreviewPanel: React.FC<CommunityPreviewPanelProps> = ({
             Community
           </span>
         </div>
-        <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100">{flow.name}</h3>
+        <h3 className="text-xl font-bold text-ink">{flow.name}</h3>
       </div>
 
       <div className="flex-1 overflow-y-auto px-6 pb-4 space-y-4">
         <div className="grid grid-cols-2 gap-3">
           {flow.author && (
             <div>
-              <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-1">Author</p>
-              <p className="text-sm text-slate-700 dark:text-slate-200">{flow.author}</p>
+              <p className="text-xs font-semibold text-ink-secondary uppercase tracking-wide mb-1">Author</p>
+              <p className="text-sm text-ink">{flow.author}</p>
             </div>
           )}
           {flow.version && (
             <div>
-              <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-1">Version</p>
-              <p className="text-sm text-slate-700 dark:text-slate-200">{flow.version}</p>
+              <p className="text-xs font-semibold text-ink-secondary uppercase tracking-wide mb-1">Version</p>
+              <p className="text-sm text-ink">{flow.version}</p>
             </div>
           )}
           <div>
-            <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-1">Steps</p>
-            <p className="text-sm text-slate-700 dark:text-slate-200">{flow.stepCount}</p>
+            <p className="text-xs font-semibold text-ink-secondary uppercase tracking-wide mb-1">Steps</p>
+            <p className="text-sm text-ink">{flow.stepCount}</p>
           </div>
         </div>
 
         {flow.description && (
           <div>
-            <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-1">Description</p>
-            <p className="text-sm text-slate-600 dark:text-slate-400">{flow.description}</p>
+            <p className="text-xs font-semibold text-ink-secondary uppercase tracking-wide mb-1">Description</p>
+            <p className="text-sm text-ink-secondary">{flow.description}</p>
           </div>
         )}
 
         {flow.steps && flow.steps.length > 0 ? (
-          <div className="rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 p-3">
-            <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-2">Flow</p>
+          <div className="rounded-lg bg-canvas border border-border-soft p-3">
+            <p className="text-xs font-semibold text-ink-secondary uppercase tracking-wide mb-2">Flow</p>
             <FlowMermaid steps={flow.steps} />
           </div>
         ) : (
-          <div className="rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 p-3">
-            <p className="text-xs text-slate-500 italic">
+          <div className="rounded-lg bg-canvas border border-border-soft p-3">
+            <p className="text-xs text-ink-secondary italic">
               Step details will be available after installation.
             </p>
           </div>
@@ -1199,7 +1452,7 @@ const CommunityPreviewPanel: React.FC<CommunityPreviewPanelProps> = ({
         )}
       </div>
 
-      <div className="px-6 py-4 border-t border-slate-200 dark:border-slate-700 shrink-0 flex items-center gap-3">
+      <div className="px-6 py-4 border-t border-border-soft shrink-0 flex items-center gap-3">
         <button
           data-testid="community-install-btn"
           type="button"
@@ -1215,7 +1468,7 @@ const CommunityPreviewPanel: React.FC<CommunityPreviewPanelProps> = ({
           type="button"
           disabled={installMutation.isPending}
           onClick={() => { actionRef.current = 'clone'; installMutation.mutate(flow.filename); }}
-          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-border-soft text-ink-secondary hover:bg-chip transition-colors"
         >
           <CopyPlus size={15} />
           Clone to Edit
@@ -1435,32 +1688,32 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-[calc(100vw-2rem)] h-[90vh] flex flex-row overflow-hidden">
+      <div className="bg-surface rounded-2xl shadow-2xl w-[calc(100vw-2rem)] h-[90vh] flex flex-row overflow-hidden">
 
         {/* ── LEFT SIDEBAR ──────────────────────────────────────────────────── */}
         <div
           data-testid="flow-sidebar"
-          className="w-64 shrink-0 border-r border-slate-200 dark:border-slate-700 flex flex-col overflow-hidden"
+          className="w-64 shrink-0 border-r border-border-soft flex flex-col overflow-hidden"
         >
           {/* Sidebar header */}
           <div className="px-4 pt-5 pb-3 flex items-center justify-between shrink-0">
             <div className="flex items-center gap-2">
               <GitBranch size={16} className="text-accent-text" />
-              <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+              <span className="text-sm font-semibold text-ink">
                 Flows
               </span>
             </div>
             <button
               onClick={onClose}
               aria-label="Close"
-              className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
+              className="p-1 rounded-lg hover:bg-chip text-ink-tertiary hover:text-ink transition-colors"
             >
               <X size={16} />
             </button>
           </div>
 
           {/* Tab bar */}
-          <div className="flex border-b border-slate-200 dark:border-slate-700 shrink-0">
+          <div className="flex border-b border-border-soft shrink-0">
             <button
               data-testid="tab-my-flows"
               onClick={() => setActiveTab('my-flows')}
@@ -1468,7 +1721,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                 'flex-1 py-2 text-xs font-semibold transition-colors border-b-2 -mb-px',
                 activeTab === 'my-flows'
                   ? 'border-brand text-accent-text'
-                  : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+                  : 'border-transparent text-ink-secondary hover:text-ink'
               )}
             >
               {tabLabels.myFlows}
@@ -1480,7 +1733,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                 'flex-1 py-2 text-xs font-semibold transition-colors border-b-2 -mb-px',
                 activeTab === 'community'
                   ? 'border-brand text-accent-text'
-                  : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+                  : 'border-transparent text-ink-secondary hover:text-ink'
               )}
             >
               {tabLabels.registry}
@@ -1497,20 +1750,20 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               )}
               <div className="px-3 py-2 shrink-0">
                 <div className="relative">
-                  <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-tertiary" />
                   <input
                     data-testid="community-search-input"
                     type="text"
                     placeholder="Search by name or author…"
                     value={communitySearch}
                     onChange={e => setCommunitySearch(e.target.value)}
-                    className="w-full pl-7 pr-2 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-brand"
+                    className="w-full pl-7 pr-2 py-1.5 text-xs rounded-lg border border-border-soft bg-surface text-ink focus:outline-none focus:ring-1 focus:ring-brand"
                   />
                 </div>
               </div>
               <div className="flex-1 overflow-y-auto px-2 pb-2" data-testid="community-flow-list">
                 {isRegistryLoading ? (
-                  <div className="flex flex-col items-center justify-center py-8 gap-2 text-slate-500">
+                  <div className="flex flex-col items-center justify-center py-8 gap-2 text-ink-secondary">
                     <Loader2 size={20} className="animate-spin" />
                     <span className="text-xs">Loading…</span>
                   </div>
@@ -1520,7 +1773,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                     <p className="text-xs text-red-600 dark:text-red-400">Failed to load registry.</p>
                   </div>
                 ) : filteredRegistryFlows.length === 0 ? (
-                  <p className="text-xs text-slate-500 text-center py-8">
+                  <p className="text-xs text-ink-secondary text-center py-8">
                     {communitySearch ? 'No flows match.' : 'No community flows found.'}
                   </p>
                 ) : (
@@ -1533,11 +1786,11 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                         'w-full text-left px-3 py-2 rounded-lg mb-1 transition-colors cursor-pointer',
                         selectedRegistryFlow?.filename === rf.filename
                           ? 'bg-chip text-accent-text'
-                          : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                          : 'text-ink hover:bg-chip'
                       )}
                     >
                       <p className="text-sm font-medium truncate">{rf.name}</p>
-                      <p className="text-xs text-slate-400 dark:text-slate-500">
+                      <p className="text-xs text-ink-tertiary">
                         {rf.author ? `${rf.author} · ` : ''}{rf.stepCount} step{rf.stepCount !== 1 ? 's' : ''}
                       </p>
                     </div>
@@ -1560,7 +1813,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                 'w-full text-left px-3 py-2 rounded-lg mb-1 transition-colors group cursor-pointer',
                 selectedFlowId === BUILTIN_ID && !isNewFlow && !isEditingClone
                   ? 'bg-chip text-accent-text'
-                  : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                  : 'text-ink hover:bg-chip'
               )}
             >
               <div className="flex items-center justify-between gap-1">
@@ -1576,11 +1829,11 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                       }
                     }}
                     title="Clone flow"
-                    className="p-1 rounded transition-colors text-slate-300 hover:text-accent-text dark:text-slate-600 hover:bg-chip"
+                    className="p-1 rounded transition-colors text-ink-tertiary hover:text-accent-text hover:bg-chip"
                   >
                     <CopyPlus size={13} />
                   </button>
-                  <span className="text-xs font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400">
+                  <span className="text-xs font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-chip text-ink-secondary">
                     DEFAULT
                   </span>
                 </div>
@@ -1609,7 +1862,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                     'w-full text-left px-3 py-2 rounded-lg mb-1 transition-colors cursor-pointer',
                     isSelected
                       ? 'bg-chip text-accent-text'
-                      : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                      : 'text-ink hover:bg-chip'
                   )}
                   onClick={() => {
                     if (!isPendingDelete) {
@@ -1627,7 +1880,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                         {isActive && (
                           <span
                             data-testid={`flow-active-badge-${flow.id}`}
-                            className="text-xs font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 shrink-0"
+                            className="text-xs font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-chip text-accent-text shrink-0"
                           >
                             Active
                           </span>
@@ -1639,7 +1892,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                           onCancel={() => setConfirmDeleteId(null)}
                         />
                       ) : (
-                        <span className="text-xs text-slate-400 dark:text-slate-500">
+                        <span className="text-xs text-ink-tertiary">
                           {flow.steps.length} step{flow.steps.length !== 1 ? 's' : ''}
                         </span>
                       )}
@@ -1654,7 +1907,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                           handleClone(flow, flow.name);
                         }}
                         title="Clone flow"
-                        className="p-1 rounded transition-colors text-slate-300 hover:text-accent-text dark:text-slate-600 hover:bg-chip"
+                        className="p-1 rounded transition-colors text-ink-tertiary hover:text-accent-text hover:bg-chip"
                       >
                         <CopyPlus size={13} />
                       </button>
@@ -1674,8 +1927,8 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                         className={clsx(
                           'shrink-0 p-1 rounded transition-colors',
                           isActive || isRowHubManaged
-                            ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
-                            : 'text-slate-300 hover:text-red-500 dark:text-slate-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20'
+                            ? 'text-ink-tertiary cursor-not-allowed'
+                            : 'text-ink-tertiary hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20'
                         )}
                       >
                         <Trash2 size={13} />
@@ -1688,7 +1941,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
           </div>
 
           {/* + New Flow button at bottom */}
-          <div className="p-3 border-t border-slate-200 dark:border-slate-700 shrink-0">
+          <div className="p-3 border-t border-border-soft shrink-0">
             <button
               data-testid="new-flow-btn"
               onClick={() => {
@@ -1722,7 +1975,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                 onCloneToEdit={handleCommunityClone}
               />
             ) : (
-              <div className="flex flex-col items-center justify-center flex-1 text-slate-400 dark:text-slate-600 gap-3 p-8">
+              <div className="flex flex-col items-center justify-center flex-1 text-ink-tertiary gap-3 p-8">
                 <Globe size={40} className="opacity-30" />
                 <p className="text-sm">Select a community flow to preview it.</p>
               </div>
@@ -1754,7 +2007,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               canSelectFlow={canSelectFlow}
             />
           ) : (
-            <div className="flex flex-col items-center justify-center flex-1 text-slate-400 dark:text-slate-600 gap-3 p-8">
+            <div className="flex flex-col items-center justify-center flex-1 text-ink-tertiary gap-3 p-8">
               <GitBranch size={40} className="opacity-30" />
               <p className="text-sm">Select a flow from the sidebar or create a new one.</p>
               <button

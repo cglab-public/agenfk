@@ -3,9 +3,21 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import supertest from 'supertest';
+import { loginAs } from './helpers/loginAs';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { drainApp } from './helpers/drainApp';
+
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-fa-scopes-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -17,10 +29,6 @@ const cleanup = () => {
   }
 };
 
-const loginAs = async (app: any, email: string, password: string) => {
-  const r = await supertest(app).post('/auth/login').send({ email, password });
-  return r.headers['set-cookie']?.[0] ?? '';
-};
 
 const sampleDef = (name = 'F') => ({
   name,
@@ -47,6 +55,8 @@ describe('flow_assignments — multi-scope CRUD', () => {
       defaultOrgId: 'org-a',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await ctx.db.run('INSERT OR IGNORE INTO orgs (id, name) VALUES (?, ?)', ['org-b', 'org-b']);
     await ctx.db.run('INSERT OR IGNORE INTO auth_config (org_id, password_enabled) VALUES (?, 1)', ['org-b']);
@@ -69,14 +79,14 @@ describe('flow_assignments — multi-scope CRUD', () => {
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
   // ── GET shape ─────────────────────────────────────────────────────────────
   it('GET /flow-assignments returns an array for the new shape', async () => {
-    const r = await supertest(app).get('/v1/admin/flow-assignments').set('Cookie', cookieA);
+    const r = await supertest(__server).get('/v1/admin/flow-assignments').set('Cookie', cookieA);
     expect(r.status).toBe(200);
     expect(Array.isArray(r.body)).toBe(true);
     expect(r.body).toEqual([]);
@@ -84,119 +94,119 @@ describe('flow_assignments — multi-scope CRUD', () => {
 
   // ── PUT each scope ────────────────────────────────────────────────────────
   it('PUT scope=org sets the org default', async () => {
-    const f = (await supertest(app).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef('Org-F') })).body;
-    const r = await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
+    const f = (await supertest(__server).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef('Org-F') })).body;
+    const r = await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
       .send({ scope: 'org', flowId: f.id });
     expect(r.status).toBe(200);
 
-    const list = await supertest(app).get('/v1/admin/flow-assignments').set('Cookie', cookieA);
+    const list = await supertest(__server).get('/v1/admin/flow-assignments').set('Cookie', cookieA);
     expect(list.body).toHaveLength(1);
     expect(list.body[0]).toMatchObject({ scope: 'org', targetId: '', flowId: f.id });
   });
 
   it('PUT scope=project requires targetId', async () => {
-    const f = (await supertest(app).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef() })).body;
-    const r = await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
+    const f = (await supertest(__server).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef() })).body;
+    const r = await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
       .send({ scope: 'project', flowId: f.id });
     expect(r.status).toBe(400);
   });
 
   it('PUT scope=project sets a project override', async () => {
-    const f = (await supertest(app).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef('Proj-F') })).body;
-    const r = await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
+    const f = (await supertest(__server).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef('Proj-F') })).body;
+    const r = await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
       .send({ scope: 'project', targetId: 'project-xyz', flowId: f.id });
     expect(r.status).toBe(200);
 
-    const list = await supertest(app).get('/v1/admin/flow-assignments').set('Cookie', cookieA);
+    const list = await supertest(__server).get('/v1/admin/flow-assignments').set('Cookie', cookieA);
     const proj = list.body.find((a: any) => a.scope === 'project');
     expect(proj).toMatchObject({ scope: 'project', targetId: 'project-xyz', flowId: f.id });
   });
 
   it('PUT scope=installation validates targetId belongs to org', async () => {
-    const f = (await supertest(app).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef() })).body;
+    const f = (await supertest(__server).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef() })).body;
 
     // Valid for own org.
-    const ok = await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
+    const ok = await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
       .send({ scope: 'installation', targetId: 'install-a-1', flowId: f.id });
     expect(ok.status).toBe(200);
 
     // Foreign installation id -> 404.
-    const bad = await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
+    const bad = await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
       .send({ scope: 'installation', targetId: 'install-b-1', flowId: f.id });
     expect(bad.status).toBe(404);
   });
 
   // ── Multiple coexisting scopes ────────────────────────────────────────────
   it('coexisting org + project + installation rows', async () => {
-    const f = (await supertest(app).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef() })).body;
+    const f = (await supertest(__server).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef() })).body;
 
-    await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
+    await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
       .send({ scope: 'org', flowId: f.id });
-    await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
+    await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
       .send({ scope: 'project', targetId: 'p1', flowId: f.id });
-    await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
+    await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
       .send({ scope: 'installation', targetId: 'install-a-1', flowId: f.id });
 
-    const list = await supertest(app).get('/v1/admin/flow-assignments').set('Cookie', cookieA);
+    const list = await supertest(__server).get('/v1/admin/flow-assignments').set('Cookie', cookieA);
     expect(list.body).toHaveLength(3);
     const scopes = list.body.map((a: any) => a.scope).sort();
     expect(scopes).toEqual(['installation', 'org', 'project']);
   });
 
   it('upsert at same (scope, targetId) replaces, not appends', async () => {
-    const f1 = (await supertest(app).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef('F1') })).body;
-    const f2 = (await supertest(app).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef('F2') })).body;
+    const f1 = (await supertest(__server).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef('F1') })).body;
+    const f2 = (await supertest(__server).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef('F2') })).body;
 
-    await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
+    await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
       .send({ scope: 'project', targetId: 'p1', flowId: f1.id });
-    await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
+    await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
       .send({ scope: 'project', targetId: 'p1', flowId: f2.id });
 
-    const list = await supertest(app).get('/v1/admin/flow-assignments').set('Cookie', cookieA);
+    const list = await supertest(__server).get('/v1/admin/flow-assignments').set('Cookie', cookieA);
     expect(list.body).toHaveLength(1);
     expect(list.body[0].flowId).toBe(f2.id);
   });
 
   // ── Clearing ──────────────────────────────────────────────────────────────
   it('PUT { flowId: null } clears the targeted assignment', async () => {
-    const f = (await supertest(app).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef() })).body;
-    await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
+    const f = (await supertest(__server).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef() })).body;
+    await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
       .send({ scope: 'project', targetId: 'p1', flowId: f.id });
 
-    const cleared = await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
+    const cleared = await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
       .send({ scope: 'project', targetId: 'p1', flowId: null });
     expect(cleared.status).toBe(200);
 
-    const list = await supertest(app).get('/v1/admin/flow-assignments').set('Cookie', cookieA);
+    const list = await supertest(__server).get('/v1/admin/flow-assignments').set('Cookie', cookieA);
     expect(list.body).toHaveLength(0);
   });
 
   // ── Backwards compat ──────────────────────────────────────────────────────
   it('legacy body { flowId } is treated as scope=org', async () => {
-    const f = (await supertest(app).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef() })).body;
-    const r = await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
+    const f = (await supertest(__server).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef() })).body;
+    const r = await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
       .send({ flowId: f.id });
     expect(r.status).toBe(200);
-    const list = await supertest(app).get('/v1/admin/flow-assignments').set('Cookie', cookieA);
+    const list = await supertest(__server).get('/v1/admin/flow-assignments').set('Cookie', cookieA);
     expect(list.body[0]).toMatchObject({ scope: 'org', targetId: '', flowId: f.id });
   });
 
   it('legacy body { flowId: null } clears the org assignment', async () => {
-    const f = (await supertest(app).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef() })).body;
-    await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookieA).send({ flowId: f.id });
-    const cleared = await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookieA).send({ flowId: null });
+    const f = (await supertest(__server).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef() })).body;
+    await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookieA).send({ flowId: f.id });
+    const cleared = await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookieA).send({ flowId: null });
     expect(cleared.status).toBe(200);
-    const list = await supertest(app).get('/v1/admin/flow-assignments').set('Cookie', cookieA);
+    const list = await supertest(__server).get('/v1/admin/flow-assignments').set('Cookie', cookieA);
     expect(list.body).toHaveLength(0);
   });
 
   // ── Org isolation ─────────────────────────────────────────────────────────
   it('org A assignments invisible to org B', async () => {
-    const f = (await supertest(app).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef() })).body;
-    await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
+    const f = (await supertest(__server).post('/v1/admin/flows').set('Cookie', cookieA).send({ definition: sampleDef() })).body;
+    await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
       .send({ scope: 'project', targetId: 'p1', flowId: f.id });
 
-    const listB = await supertest(app).get('/v1/admin/flow-assignments').set('Cookie', cookieB);
+    const listB = await supertest(__server).get('/v1/admin/flow-assignments').set('Cookie', cookieB);
     expect(listB.body).toEqual([]);
   });
 });

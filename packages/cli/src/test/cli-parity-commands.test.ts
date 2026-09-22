@@ -5,7 +5,7 @@
  *   - update_project -> agenfk update-project <id>  (PUT  /projects/:id)
  *   - add_context    -> agenfk add-context <id>     (PUT  /items/:id, append context[])
  *   - delete_flow    -> agenfk flow delete <id>     (DELETE /flows/:id)
- *   - analyze_request-> agenfk analyze <request>    (static guidance text)
+ *   - analyze_request-> agenfk analyze <request>    (guidance; --proposal for the contract)
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -187,6 +187,46 @@ describe('agenfk update-project <id>', () => {
       { headers: { 'x-agenfk-internal': 'test-verify-token' } },
     );
   });
+
+  it('PUTs projectRoot on the gated route too, never on the open one', async () => {
+    /*
+     * Same reasoning as verifyCommand, and the same bug (e60e20aa): the project
+     * root is the CWD `git add -A && git commit` runs in and that worktrees are
+     * cut from, so the open route refuses it. Without the header this command
+     * would exist and never work, which is worse than not having it.
+     */
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue('test-verify-token');
+    mockedAxios.put.mockResolvedValue({ data: { id: 'proj-1' } });
+
+    await program.parseAsync([
+      'node', 'agenfk', 'update-project', 'proj-1', '--project-root', '/tmp/some-repo',
+    ]);
+
+    expect(mockedAxios.put).toHaveBeenCalledWith(
+      `${API}/projects/proj-1/project-root`,
+      { projectRoot: '/tmp/some-repo' },
+      { headers: { 'x-agenfk-internal': 'test-verify-token' } },
+    );
+    // Nothing went to the open route: there was nothing else to send.
+    expect(mockedAxios.put.mock.calls.every(c => !String(c[0]).endsWith('/projects/proj-1'))).toBe(true);
+  });
+
+  it('resolves a relative project root against the CALLER cwd', async () => {
+    // The server has a different cwd entirely, so a relative path sent as
+    // typed would land somewhere the person cannot see.
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue('test-verify-token');
+    mockedAxios.put.mockResolvedValue({ data: { id: 'proj-1' } });
+
+    await program.parseAsync([
+      'node', 'agenfk', 'update-project', 'proj-1', '--project-root', './here',
+    ]);
+
+    const sent = mockedAxios.put.mock.calls.find(c => String(c[0]).endsWith('/project-root'))?.[1] as { projectRoot: string };
+    expect(sent.projectRoot.startsWith('/')).toBe(true);
+    expect(sent.projectRoot).not.toBe('./here');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -267,5 +307,21 @@ describe('agenfk analyze <request>', () => {
     expect(printed).toMatch(/STORY|EPIC|TASK/);
     expect(mockedAxios.post).not.toHaveBeenCalled();
     expect(mockedAxios.get).not.toHaveBeenCalled();
+  });
+
+  // The default is what the shipped standard flow calls before it goes on to
+  // create the items, so it must not carry the proposal's closing directive.
+  it('does not tell the default caller to create nothing', async () => {
+    await program.parseAsync(['node', 'agenfk', 'analyze', 'add a login page']);
+    const printed = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+    expect(printed).not.toMatch(/not creat/i);
+  });
+
+  it('prints the proposal contract behind --proposal, and still calls nothing', async () => {
+    await program.parseAsync(['node', 'agenfk', 'analyze', 'add a login page', '--proposal']);
+    const printed = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+    expect(printed).toMatch(/PROPOSING IS NOT CREATING/);
+    expect(printed).toMatch(/"contractVersion"/);
+    expect(mockedAxios.post).not.toHaveBeenCalled();
   });
 });

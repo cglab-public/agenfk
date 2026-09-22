@@ -1,0 +1,593 @@
+/**
+ * Processes drawn under their card, and the SESSIONS section gone (1a1b8df6).
+ *
+ * The sidebar showed the same work twice: the projects tree listed the cards,
+ * and a flat SESSIONS list at the bottom listed the agents running on those
+ * same cards. Two places for one fact is what made the rail and the terminal
+ * disagree earlier in this epic, so the processes move under the card they
+ * belong to and the section goes away.
+ *
+ * THE RISK THIS FILE EXISTS FOR is the two dots. Putting a process directly
+ * under its card places the card's mark and the process's mark one line apart,
+ * so any disagreement that was survivable at three inches becomes obvious. The
+ * card's mark is a ROLL-UP: it shows the most demanding state beneath it, and
+ * it is a pure function of the rows drawn there, so the two agree by
+ * construction rather than by discipline.
+ */
+import { render, screen, fireEvent, waitFor, cleanup, within, act } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import React from 'react';
+import { AppShell } from '../components/AppShell';
+import { ActiveProjectProvider, useActiveProject } from '../ActiveProject';
+import { SocketProvider } from '../SocketContext';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { api } from '../api';
+
+vi.mock('../api', () => ({
+  api: {
+    listProjects: vi.fn(async () => [{ id: 'p1', name: 'agenfk', createdAt: new Date(), updatedAt: new Date() }]),
+    listActiveItems: vi.fn(async () => []),
+    listRuns: vi.fn(async () => []),
+    getVersion: vi.fn(async () => ({ version: '1.1.18' })),
+    getReadme: vi.fn(async () => ({ content: '' })),
+    getLatestRelease: vi.fn(async () => null),
+    updateItem: vi.fn(async () => ({})),
+    getSettings: vi.fn(async () => ({ tmuxByDefault: false })),
+    updateSettings: vi.fn(async () => ({ tmuxByDefault: false })),
+    listTerminalSessions: vi.fn(async () => []),
+    recordTerminalSession: vi.fn(async () => ({ id: 'row-1' })),
+    forgetTerminalSession: vi.fn(async () => {}),
+    getGitStatus: vi.fn(async () => ({ changed: 0, staged: 0, files: [] })),
+  },
+}));
+/*
+ * The handlers are captured, not discarded. `running` is NOT read off
+ * AgentRun.status - the hook never closes a run, so status would light every
+ * card that ever had one - it is recency of `run:event`. Without emitting one
+ * there is no way to produce the state at all, and a counter tested only on
+ * idle rows is a counter tested on the case that does not matter.
+ */
+const socketHandlers: Record<string, ((p: unknown) => void) | undefined> = {};
+vi.mock('socket.io-client', () => ({
+  io: vi.fn(() => ({
+    connected: true,
+    connect: vi.fn(),
+    on: vi.fn((event: string, cb: (p: unknown) => void) => { socketHandlers[event] = cb; }),
+    off: vi.fn(),
+    emit: vi.fn(),
+    disconnect: vi.fn(),
+  })),
+}));
+
+beforeEach(() => {
+  localStorage.clear();
+  vi.clearAllMocks();
+  vi.mocked(api.listProjects).mockResolvedValue([
+    { id: 'p1', name: 'agenfk', createdAt: new Date(), updatedAt: new Date() },
+  ] as never);
+  Object.defineProperty(window, 'matchMedia', {
+    writable: true,
+    value: vi.fn().mockImplementation(q => ({
+      matches: false, media: q, onchange: null,
+      addListener: vi.fn(), removeListener: vi.fn(),
+      addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn(),
+    })),
+  });
+});
+afterEach(cleanup);
+
+const renderShell = () => render(
+  <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <ActiveProjectProvider>
+      <SocketProvider>
+        <AppShell><div>board</div></AppShell>
+      </SocketProvider>
+    </ActiveProjectProvider>
+  </QueryClientProvider>,
+);
+
+/*
+ * DELETED: "the tabs the shell starts with", "remembering the order" and
+ * "rearranging" - eight tests, plus the `shellTabs` helper that found the
+ * tablist they all read.
+ *
+ * They held two rules. That a built-in tab could not be CLOSED, because a user
+ * who closed Kanban had no way back to the board. And that the ORDER was the
+ * user's: restored from `agenfk_shell_tabs`, repaired when a stored id named a
+ * tab this build does not have, rewritten whenever the move-left button was
+ * pressed.
+ *
+ * Both rules are about a bar, and there is no bar. Nothing can be closed out
+ * of a list that is not rendered, and one destination has no order. Kept as a
+ * description rather than as tests that pass because their subject is absent.
+ *
+ * Restore them if a tab strip ever comes back. The storage key and the reader
+ * that repaired it across versions were deleted with the bar - see the note in
+ * AppShell.tsx, which says what the machinery was.
+ */
+
+/**
+ * Where the Runs view lives (CGLAB-176, resettled here).
+ *
+ * It can still sit in two places, and the reason for the pair is unchanged:
+ * live logs are something you follow WHILE looking at the board, so a
+ * full-height screen makes that a choice between them - but a strip is too
+ * small to read a log in, so the full screen has to stay available.
+ *
+ * WHAT CHANGED is the first position's name and its route. It was `tab`,
+ * meaning a tab in the view strip. The strip is gone, and the same whole-column
+ * view is now the Agents screen, opened from the sidebar. `screen` is that
+ * position under an honest name, and a stored `"tab"` is read as it.
+ *
+ * Which makes the sidebar row load-bearing rather than convenient: with no tab
+ * to click it is the only way in, and the control that docks the feed away
+ * lives on the feed itself. A view whose only route is a button inside it
+ * cannot be opened at all.
+ *
+ * The constraint that shapes the implementation is the one it always was:
+ * moving it must not REMOUNT the board. The board is `children`, and moving a
+ * subtree to a different DOM parent unmounts and remounts it - losing scroll
+ * position, open menus and any edit in flight. So the board stays where it is
+ * and the strip appears beneath it, in the same column.
+ */
+const agentsRow = async () => screen.findByRole('button', { name: /^agents$/i });
+const runsScreen = () => document.getElementById('panel-agents')!;
+
+
+describe('the SESSIONS section', () => {
+  it('is gone from the sidebar', async () => {
+    /*
+     * THE change. Its contents are not lost - they are drawn under the cards
+     * they belong to - but the section itself must not survive alongside them,
+     * or the duplication this removes is simply doubled.
+     */
+    renderShell();
+    await waitFor(() => expect(screen.getByRole('heading', { name: /projects/i })).toBeInTheDocument());
+    expect(screen.queryByRole('heading', { name: /^sessions$/i })).toBeNull();
+  });
+
+  it('takes the open-terminal count with it', async () => {
+    // The count belonged to the section's header. Leaving it behind would
+    // strand a number with nothing to count.
+    renderShell();
+    await waitFor(() => expect(screen.getByRole('heading', { name: /projects/i })).toBeInTheDocument());
+    expect(screen.queryByTestId('open-terminal-count')).toBeNull();
+  });
+});
+
+describe('a process whose card is not in the tree', () => {
+  it('is still reachable, instead of disappearing with its card', async () => {
+    /*
+     * The hole this design opens, found by an existing test rather than by
+     * reasoning about it. The rail listed every session regardless of the
+     * tree; drawing processes UNDER their card means a process whose card is
+     * not in the tree has nowhere to be drawn - and the card leaves the tree
+     * for ordinary reasons, because the tree lists work in flight and a
+     * terminal outlives the card reaching DONE.
+     *
+     * Losing the row would mean a running agent with no route to it in the
+     * sidebar at all: still burning tokens, still holding a worktree, and
+     * invisible. So orphans keep a place of their own. It is not the old
+     * SESSIONS section returning - that listed EVERYTHING, duplicating the
+     * tree; this holds only what the tree cannot show, and is absent whenever
+     * there is nothing to hold.
+     */
+    vi.mocked(api.listActiveItems).mockResolvedValue([] as never);
+    // A run recorded by the hook, which needs no terminal of ours - the same
+    // orphan condition a restored terminal produces, reachable without a pty.
+    vi.mocked(api.listRuns).mockResolvedValue([
+      {
+        id: 'run-1', itemId: 'gone-from-the-list', harness: 'claude-code',
+        status: 'running', startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    ] as never);
+    renderShell();
+    expect(await screen.findByTestId('process-open')).toBeInTheDocument();
+  });
+
+  it('keeps no such section when every process has a card', async () => {
+    /*
+     * This could not fail, in two compounding ways, and review caught both.
+     *
+     * `vi.clearAllMocks()` clears CALLS but not implementations, so the
+     * previous test's `listRuns` - an orphaned run - was still in place. And
+     * the only await was on the Projects heading, which is synchronously
+     * present, so the assertion ran before any query resolved. It passed WITH
+     * the orphan data live, which means the mutation it claims to kill
+     * ("always render the section") survived it.
+     *
+     * Both halves are fixed here: the run is given a card that IS in the tree,
+     * and the wait is on that card's own process row - the thing whose
+     * presence proves the data arrived.
+     */
+    vi.mocked(api.listActiveItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p1', type: 'TASK', title: 'A card in the tree', status: 'IN_PROGRESS' },
+    ] as never);
+    vi.mocked(api.listRuns).mockResolvedValue([
+      {
+        id: 'run-1', itemId: 'i1', projectId: 'p1', harness: 'claude-code',
+        status: 'running', startedAt: new Date().toISOString(),
+      },
+    ] as never);
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+    await screen.findByTestId('process-row');
+    expect(screen.queryByTestId('orphan-processes')).toBeNull();
+  });
+});
+
+describe('the order the processes sit in', () => {
+  it('puts the one that needs a person above the ones that do not', async () => {
+    /*
+     * A failure buried under three busy agents is worse than not shown: the
+     * list implies it is showing you what needs you. The rail sorted this way
+     * and the sort came across with the rows, but nothing checked it - the
+     * mutation replacing the comparator with `() => 0` passed everything.
+     */
+    vi.mocked(api.listActiveItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p1', type: 'TASK', title: 'Busy card', status: 'IN_PROGRESS' },
+    ] as never);
+    vi.mocked(api.listRuns).mockResolvedValue([
+      {
+        id: 'run-ok', itemId: 'i1', projectId: 'p1', harness: 'claude-code',
+        status: 'running', startedAt: new Date().toISOString(),
+      },
+      {
+        id: 'run-bad', itemId: 'i1', projectId: 'p1', harness: 'codex',
+        status: 'failed', startedAt: new Date().toISOString(),
+      },
+    ] as never);
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+
+    await waitFor(async () => expect(await screen.findAllByTestId('process-row')).toHaveLength(2));
+    const states = screen.getAllByTestId('process-row').map(r => r.getAttribute('data-state'));
+    expect(states[0], 'the failure was not first').toBe('failed');
+  });
+});
+
+describe('which card a process is drawn under', () => {
+  it('goes under its own card, and under no other', async () => {
+    /*
+     * THE test for this change, and it was missing: a mutation replacing the
+     * per-card filter with `() => true` - drawing every process under every
+     * card - passed all 104 tests in the two shell files. The one property the
+     * whole redesign rests on was the one nothing checked.
+     *
+     * It matters more here than it would have in the rail. A row under the
+     * wrong card is not a cosmetic slip: it says a different agent is working
+     * on a different piece of work, and the card's own mark rolls up the rows
+     * beneath it, so a misplaced row also turns the card's dot the wrong
+     * colour.
+     */
+    vi.mocked(api.listActiveItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p1', type: 'TASK', title: 'The card with the agent', status: 'IN_PROGRESS' },
+      { id: 'i2', projectId: 'p1', type: 'TASK', title: 'The quiet card', status: 'IN_PROGRESS' },
+    ] as never);
+    vi.mocked(api.listRuns).mockResolvedValue([
+      {
+        id: 'run-1', itemId: 'i1', projectId: 'p1', harness: 'claude-code',
+        status: 'running', startedAt: new Date().toISOString(),
+      },
+    ] as never);
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+
+    const rows = await screen.findAllByTestId('process-row');
+    expect(rows, 'the one process was drawn more than once').toHaveLength(1);
+
+    // Walk UP from the row to the card that contains it, rather than trusting
+    // document order - which would pass just as happily on a flat list.
+    const owner = rows[0].closest('li')!;
+    expect(owner.textContent).toMatch(/The card with the agent/);
+    expect(owner.textContent).not.toMatch(/The quiet card/);
+  });
+});
+
+/**
+ * The totals on the PROJECTS header (1a1b8df6).
+ *
+ * The SESSIONS section carried two things the tree cannot: a count of what was
+ * running, and a list sorted so failures came first. Losing the sorted list is
+ * the real cost of drawing processes under their cards - a stuck agent is now
+ * wherever its card happens to sit, which may be inside a collapsed project.
+ *
+ * These counters are the deliberate replacement rather than decoration. The
+ * "need you" half is a BUTTON that jumps to the first stuck card, which is
+ * what the failures-first sort was actually for: not reading a list, but
+ * getting to the one thing that stopped.
+ */
+describe('the totals on the projects header', () => {
+  const twoCards = () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p1', type: 'TASK', title: 'Busy card', status: 'IN_PROGRESS' },
+      { id: 'i2', projectId: 'p1', type: 'TASK', title: 'Stuck card', status: 'IN_PROGRESS' },
+    ] as never);
+  };
+
+  it('counts what is running and what wants a person', async () => {
+    twoCards();
+    vi.mocked(api.listRuns).mockResolvedValue([
+      { id: 'a', itemId: 'i1', projectId: 'p1', harness: 'claude-code', status: 'running', startedAt: new Date().toISOString() },
+      { id: 'b', itemId: 'i2', projectId: 'p1', harness: 'codex', status: 'failed', startedAt: new Date().toISOString() },
+    ] as never);
+    renderShell();
+    expect(await screen.findByText(/1 need you/i)).toBeInTheDocument();
+    act(() => { socketHandlers['run:event']?.({ itemId: 'i1' }); });
+    await waitFor(async () => expect(await screen.findByText(/1 running/i)).toBeInTheDocument());
+  });
+
+  it('counts PROCESSES, not cards', async () => {
+    // Two agents on one card is two things running. Counting cards would
+    // under-report exactly when the most is happening.
+    twoCards();
+    vi.mocked(api.listRuns).mockResolvedValue([
+      { id: 'a', itemId: 'i1', projectId: 'p1', harness: 'claude-code', status: 'running', startedAt: new Date().toISOString() },
+      { id: 'b', itemId: 'i1', projectId: 'p1', harness: 'codex', status: 'running', startedAt: new Date().toISOString() },
+    ] as never);
+    renderShell();
+    await screen.findAllByTestId('process-row');
+    act(() => { socketHandlers['run:event']?.({ itemId: 'i1' }); });
+    await waitFor(async () => expect(await screen.findByText(/2 running/i)).toBeInTheDocument());
+  });
+
+  it('says nothing at all when nothing is happening', async () => {
+    // A row of zeroes above a quiet tree is noise, and it trains the eye to
+    // skip the one place that is supposed to catch it.
+    twoCards();
+    vi.mocked(api.listRuns).mockResolvedValue([] as never);
+    renderShell();
+    await waitFor(() => expect(screen.getByRole('heading', { name: /projects/i })).toBeInTheDocument());
+    expect(screen.queryByText(/running/i)).toBeNull();
+    expect(screen.queryByText(/need you/i)).toBeNull();
+  });
+
+  it('makes the stuck count a button, because reading it is not the point', async () => {
+    /*
+     * What the failures-first sort was FOR. Without a way through, this
+     * replaces a list that got you to the problem with a number that tells you
+     * one exists.
+     */
+    twoCards();
+    vi.mocked(api.listRuns).mockResolvedValue([
+      { id: 'b', itemId: 'i2', projectId: 'p1', harness: 'codex', status: 'failed', startedAt: new Date().toISOString() },
+    ] as never);
+    renderShell();
+    const jump = await screen.findByRole('button', { name: /need you/i });
+    expect(jump).toBeInTheDocument();
+  });
+
+  /*
+   * A test asserting the running count was NOT a button stood here, reasoning
+   * that there is nothing to do about an agent that is working. Half right:
+   * there is nothing to DO, but there is somewhere to GO, and on a fresh
+   * install that somewhere is unreachable - every project starts collapsed, so
+   * the count named work the screen offered no route to (44acf3a4).
+   *
+   * Reversed deliberately. The replacement is the block at the end of this file.
+   */
+});
+
+describe('how a card row is laid out', () => {
+  const oneCard = async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue([
+      {
+        id: 'i1', projectId: 'p1', type: 'TASK', status: 'CREATE_UNIT_TESTS',
+        title: 'agenfk integration list omite o pi, que tem a integracao mais profunda do repo',
+      },
+    ] as never);
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+    return screen.findByTestId('card-title');
+  };
+
+  it('gives the title the row, and puts the step with the branch', async () => {
+    /*
+     * The step used to sit in a content-sized column beside the title, and a
+     * flow may name a step CREATE_UNIT_TESTS - which left roughly 90px for a
+     * title in a 224px rail and cut real ones down to two words.
+     *
+     * Asserted structurally rather than by measuring: jsdom has no layout, so
+     * a width assertion here would be theatre. What is real is WHICH ELEMENTS
+     * SHARE A PARENT - the step next to the branch, and the title alone.
+     */
+    const title = await oneCard();
+    const step = screen.getByTestId('card-step');
+    const branch = screen.getByTestId('card-branch');
+
+    expect(step.parentElement, 'the step is not on the branch line').toBe(branch.parentElement);
+    expect(title.parentElement, 'the title still shares its line with the step')
+      .not.toBe(step.parentElement);
+  });
+
+  it('keeps the full title reachable even though the line truncates', async () => {
+    // Truncation is a display choice; the text itself has to stay whole, or a
+    // screen reader gets the two words the rail had room for.
+    const title = await oneCard();
+    expect(title.textContent).toBe(
+      'agenfk integration list omite o pi, que tem a integracao mais profunda do repo',
+    );
+  });
+});
+
+/**
+ * Nothing focusable hides inside an aria-hidden subtree (cd80783c).
+ *
+ * The collapsible list of a project's cards carried aria-hidden={!isOpen} while
+ * still containing buttons: the card itself, and - after processes moved under
+ * their cards - every process row's open control.
+ *
+ * That combination is a documented conflict rather than a style preference. The
+ * element stays in the tab order while being removed from the accessibility
+ * tree, so a keyboard user can land on a control that assistive tech will not
+ * announce: focus moves, nothing is read, and there is no way to tell what
+ * happened.
+ *
+ * Pre-existing for the card button. 3e658085 extended it to every process row,
+ * which is why it belongs to this batch rather than to whoever wrote the
+ * collapse.
+ */
+describe('a collapsed project hides its contents from everyone equally', () => {
+  const twoCardsOneRunning = () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p1', type: 'TASK', title: 'Busy card', status: 'IN_PROGRESS' },
+    ] as never);
+    vi.mocked(api.listRuns).mockResolvedValue([
+      {
+        id: 'run-1', itemId: 'i1', projectId: 'p1', harness: 'claude-code',
+        status: 'running', startedAt: new Date().toISOString(),
+      },
+    ] as never);
+  };
+
+  /** Everything the browser would let Tab reach, inside an aria-hidden subtree. */
+  const focusableInsideHidden = (): Element[] => {
+    const hidden = [...document.querySelectorAll('[aria-hidden="true"]')];
+    return hidden.flatMap(root => [
+      ...root.querySelectorAll('a[href], button, input, select, textarea, [tabindex]'),
+    ]).filter(el =>
+      el.getAttribute('tabindex') !== '-1'
+      // `inert` sits on the SUBTREE, not on each control, and it is what makes
+      // the contents unfocusable. Checking the element itself - which an
+      // earlier version did - looks like a guard and excludes nothing.
+      && el.closest('[inert]') === null);
+  };
+
+  it('traps no focusable control while collapsed', async () => {
+    /*
+     * Derived from the DOM rather than from a list of the controls we happen to
+     * know about. A guard naming `process-open` and the card button would pass
+     * the day somebody adds a third control, which is exactly how this one grew
+     * from one button to two.
+     */
+    twoCardsOneRunning();
+    renderShell();
+    // Wait for the COUNT, which only renders once the items have arrived. An
+    // earlier version waited on the Projects heading, which is synchronously
+    // present - so it asserted against an empty tree and could not fail.
+    await screen.findByTestId('in-flight-count');
+
+    const trapped = focusableInsideHidden();
+    expect(
+      trapped.map(el => el.textContent?.trim().slice(0, 40)),
+      'these are tabbable but invisible to assistive tech',
+    ).toEqual([]);
+  });
+
+  it('still hides the contents, rather than fixing it by showing them', async () => {
+    /*
+     * The lazy fix is to drop aria-hidden, which trades one defect for a
+     * collapsed list a screen reader reads out in full.
+     *
+     * Asked through a ROLE query, which respects aria-hidden. A testid query
+     * does not - the row is still in the DOM, collapsed by the grid animation -
+     * so asserting its absence there would have failed for the wrong reason
+     * and told us nothing about what is exposed.
+     */
+    twoCardsOneRunning();
+    renderShell();
+    await screen.findByTestId('in-flight-count');
+    expect(screen.queryByRole('button', { name: /claude code/i })).toBeNull();
+  });
+
+  it('gives them back when the project is expanded', async () => {
+    twoCardsOneRunning();
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+    await screen.findByTestId('process-row');
+    expect(focusableInsideHidden()).toEqual([]);
+  });
+});
+
+/**
+ * A running agent is always reachable from the count that mentions it (44acf3a4).
+ *
+ * `readExpanded()` returns [] on a fresh install, so every project starts
+ * collapsed and every process row with it. The cost was named when the counts
+ * were added and accepted on the grounds that the "N need you" jump reaches
+ * what matters - but that jump only goes to failed and blocked work.
+ *
+ * So a RUNNING agent inside a collapsed project was counted in "1 running" and
+ * had nothing leading to it: the number said something was happening and the
+ * screen offered no way there. The removed SESSIONS section had no such gap,
+ * because it listed everything regardless of the tree.
+ *
+ * The count EXPANDS what holds the work rather than jumping to one of it. With
+ * three agents running, "jump" has to pick, and picking is the part that has no
+ * good answer; expanding answers the question by not choosing. It is also an
+ * explicit action, so it does not fight a collapse the user chose.
+ */
+describe('reaching a running agent that the tree has collapsed', () => {
+  const runningInCollapsed = () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p1', type: 'TASK', title: 'Busy card', status: 'IN_PROGRESS' },
+    ] as never);
+    vi.mocked(api.listRuns).mockResolvedValue([
+      {
+        id: 'run-1', itemId: 'i1', projectId: 'p1', harness: 'claude-code',
+        status: 'running', startedAt: new Date().toISOString(),
+      },
+    ] as never);
+  };
+
+  it('offers a way to it, not just a number about it', async () => {
+    runningInCollapsed();
+    renderShell();
+    act(() => { socketHandlers['run:event']?.({ itemId: 'i1' }); });
+    const count = await screen.findByText(/1 running/i);
+    expect(count.closest('button'), 'the running count leads nowhere').not.toBeNull();
+  });
+
+  it('opens what holds the work, from a tree that starts collapsed', async () => {
+    /*
+     * THE test, and it starts where a new install starts: nothing expanded, so
+     * the row exists and is unreachable.
+     */
+    runningInCollapsed();
+    renderShell();
+    act(() => { socketHandlers['run:event']?.({ itemId: 'i1' }); });
+    await screen.findByText(/1 running/i);
+    expect(screen.queryByRole('button', { name: /claude code/i })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /1 running/i }));
+
+    expect(await screen.findByRole('button', { name: /claude code/i })).toBeInTheDocument();
+  });
+
+  it('leaves alone the projects with nothing running in them', async () => {
+    // Expanding everything would be a different feature, and a worse one: it
+    // discards a collapse the user chose for projects this has no claim on.
+    vi.mocked(api.listProjects).mockResolvedValue([
+      { id: 'p1', name: 'agenfk', createdAt: new Date(), updatedAt: new Date() },
+      { id: 'p2', name: 'horizon-lab', createdAt: new Date(), updatedAt: new Date() },
+    ] as never);
+    vi.mocked(api.listActiveItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p1', type: 'TASK', title: 'Busy card', status: 'IN_PROGRESS' },
+      { id: 'i2', projectId: 'p2', type: 'TASK', title: 'Quiet card', status: 'IN_PROGRESS' },
+    ] as never);
+    vi.mocked(api.listRuns).mockResolvedValue([
+      {
+        id: 'run-1', itemId: 'i1', projectId: 'p1', harness: 'claude-code',
+        status: 'running', startedAt: new Date().toISOString(),
+      },
+    ] as never);
+    renderShell();
+    act(() => { socketHandlers['run:event']?.({ itemId: 'i1' }); });
+    await screen.findByText(/1 running/i);
+
+    fireEvent.click(screen.getByRole('button', { name: /1 running/i }));
+
+    await screen.findByRole('button', { name: /claude code/i });
+    /*
+     * Asked through a ROLE query. A text query finds the quiet card either way
+     * - collapsed lists are rendered and hidden, not unmounted - so asserting
+     * on text would have failed while proving nothing. Roles respect
+     * aria-hidden, which is what "still collapsed" means here.
+     */
+    expect(
+      screen.queryByRole('button', { name: /quiet card/i }),
+      'a project with nothing running was opened too',
+    ).toBeNull();
+  });
+});

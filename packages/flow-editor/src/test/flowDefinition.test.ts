@@ -10,7 +10,7 @@
  * gains a case here too, or the editor silently drifts back out of sync.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
-import { flowDefinitionIssues, withStepIds } from '../flowDefinition';
+import { flowDefinitionIssues, withStepIds, deriveStepName, nextStepName } from '../flowDefinition';
 import type { FlowStep } from '../types';
 
 const step = (over: Partial<FlowStep> = {}): FlowStep => ({
@@ -52,7 +52,9 @@ describe('flowDefinitionIssues', () => {
     const issues = flowDefinitionIssues('My Flow', steps);
     expect(issues).toHaveLength(1);
     expect(issues[0].stepIndex).toBe(2);
-    expect(issues[0].message).toMatch(/name/i);
+    // The wording moved to the row's own vocabulary when the key column was
+    // removed: there is no "step name" field on screen to send anyone to.
+    expect(issues[0].message).toMatch(/no usable key/i);
   });
 
   it('treats a whitespace-only step name as blank', () => {
@@ -120,5 +122,144 @@ describe('withStepIds', () => {
     const steps = [step({ id: '', name: 'a', label: 'A', order: 3, exitCriteria: 'done when X' })];
     const [out] = withStepIds(steps, gen);
     expect(out).toMatchObject({ name: 'a', label: 'A', order: 3, exitCriteria: 'done when X' });
+  });
+});
+
+// ── The step name is derived, not typed ────────────────────────────────────
+// A flow row showed two bordered inputs: the key and the label. The artifact
+// (aca414c7 §01) draws them as ONE cell — `VALIDATE` over a small `Validate` —
+// and the read-only branch of the editor already rendered exactly that. The
+// key was always derivable: every step of the flow this was reported against
+// is its own label, uppercased with the punctuation turned into underscores.
+describe('deriveStepName', () => {
+  // Four of four, on the flow that was actually on screen. This is the
+  // evidence that the rule is not being invented here — it is being restored.
+  it.each([
+    ['Plan (local)', 'PLAN_LOCAL'],
+    ['Validate (local)', 'VALIDATE_LOCAL'],
+    ['Review', 'REVIEW'],
+    ['Docker (local)', 'DOCKER_LOCAL'],
+  ])('derives %s to %s', (label, name) => {
+    expect(deriveStepName(label)).toBe(name);
+  });
+
+  it('collapses a run of punctuation into one underscore', () => {
+    // "CODE___REVIEW" is a different status string from "CODE_REVIEW", and a
+    // person typing "Code -- review" means one separator, not three.
+    expect(deriveStepName('Code -- review')).toBe('CODE_REVIEW');
+  });
+
+  it('does not leave an underscore at either end', () => {
+    // A leading or trailing separator would be invisible in the UI and load-
+    // bearing in `agenfk update --status`.
+    expect(deriveStepName('  (review)  ')).toBe('REVIEW');
+  });
+
+  it('is empty for a label that carries no word characters', () => {
+    // Not "___". An empty name is already refused by flowDefinitionIssues
+    // with a message pinned to the step; a name of underscores would pass
+    // that check and be unusable.
+    expect(deriveStepName('!!!')).toBe('');
+    expect(deriveStepName('')).toBe('');
+  });
+
+  it('keeps digits, because a step may be numbered', () => {
+    expect(deriveStepName('Stage 2 review')).toBe('STAGE_2_REVIEW');
+  });
+});
+
+// ── Renaming a step is not a cosmetic act ──────────────────────────────────
+// The name IS the status: `agenfk update --status <name>` takes it, and items
+// already sitting on that step answer to it. So the derivation may only
+// overwrite a name that was still in sync with the label it came from. A name
+// somebody set by hand is a decision, and editing the label must not silently
+// undo it.
+describe('nextStepName', () => {
+  it('follows the label on a step still being written', () => {
+    expect(nextStepName({ storedName: 'CODE', nextLabel: 'Code review', keyIsPersisted: false }))
+      .toBe('CODE_REVIEW');
+  });
+
+  it('fills in a name that was never set', () => {
+    expect(nextStepName({ storedName: '', nextLabel: 'Plan (local)', keyIsPersisted: false }))
+      .toBe('PLAN_LOCAL');
+  });
+
+  it('LEAVES A SAVED KEY ALONE', () => {
+    // APPLY_BLOCKED shown as "Never apply". Retitling the label must not move
+    // every item off APPLY_BLOCKED.
+    expect(nextStepName({ storedName: 'APPLY_BLOCKED', nextLabel: 'Never apply, ever', keyIsPersisted: true }))
+      .toBe('APPLY_BLOCKED');
+  });
+
+  it('leaves a saved lower-case key alone', () => {
+    // `in_review` is a status the server accepts as it stands; upcasing it on
+    // the next keystroke would be a rename by another route.
+    expect(nextStepName({ storedName: 'in_review', nextLabel: 'In review now', keyIsPersisted: true }))
+      .toBe('in_review');
+  });
+});
+
+// ── What the first round of review found ───────────────────────────────────
+describe('deriveStepName, on labels that are not English', () => {
+  // The language this was reported in. The tilde is not alphanumeric, so an
+  // ASCII-only rule replaced the VOWEL IT SAT ON with a separator.
+  it.each([
+    ['Validação (local)', 'VALIDACAO_LOCAL'],
+    ['Revisão', 'REVISAO'],
+    ['Análise técnica', 'ANALISE_TECNICA'],
+    ['Étape', 'ETAPE'],
+  ])('folds the accent and keeps the letter: %s -> %s', (label, name) => {
+    expect(deriveStepName(label)).toBe(name);
+  });
+
+  // Not the empty string. With no key field left, an empty derivation means
+  // the flow cannot be authored at all — and hub-ui has no CLI to fall back to.
+  it('keeps letters from a script that has no ASCII form', () => {
+    expect(deriveStepName('Проверка')).toBe('ПРОВЕРКА');
+    expect(deriveStepName('レビュー')).toBe('レビュー');
+  });
+});
+
+describe('nextStepName, once a key has been saved', () => {
+  // THE REGRESSION THIS REPLACED. Every key the default flow ships is its own
+  // label derived — IN_PROGRESS over "In Progress" — so "still in sync" made
+  // the common case the unprotected one. Retitling a step of a live flow
+  // rewrote the status of every item sitting on it, and PUT /flows/:id does
+  // not migrate them.
+  it('never rewrites a persisted key, however in sync it looks', () => {
+    expect(nextStepName({ storedName: 'REVIEW', nextLabel: 'Peer review', keyIsPersisted: true }))
+      .toBe('REVIEW');
+  });
+
+  it('follows the label on a step that has never been saved', () => {
+    expect(nextStepName({ storedName: 'RE', nextLabel: 'Rev', keyIsPersisted: false }))
+      .toBe('REV');
+  });
+
+  it('fills a blank key even on a persisted step, because blank is not a status', () => {
+    expect(nextStepName({ storedName: '', nextLabel: 'Plan (local)', keyIsPersisted: true }))
+      .toBe('PLAN_LOCAL');
+  });
+});
+
+describe('two steps cannot share a key', () => {
+  const step = (name: string, order: number) => ({ id: `s${order}`, name, label: name, order, exitCriteria: '' });
+
+  it('reports the SECOND of a colliding pair', () => {
+    const issues = flowDefinitionIssues('F', [step('TODO', 0), step('REVIEW', 1), step('REVIEW', 2), step('DONE', 3)]);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].stepIndex).toBe(2);
+    expect(issues[0].message).toContain('repeats step 2');
+  });
+
+  it('catches a collision that differs only in case', () => {
+    // "Review" and "review" derive to the same key and look like two steps.
+    const issues = flowDefinitionIssues('F', [step('REVIEW', 0), step('review', 1)]);
+    expect(issues.map(i => i.stepIndex)).toEqual([1]);
+  });
+
+  it('says nothing when every key is distinct', () => {
+    expect(flowDefinitionIssues('F', [step('TODO', 0), step('REVIEW', 1), step('DONE', 2)])).toEqual([]);
   });
 });

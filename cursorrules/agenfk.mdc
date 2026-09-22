@@ -77,6 +77,70 @@ used to sweep the whole working tree, committing other tasks' work under your it
 The DONE response says what it committed, names anything left unstaged, and says so plainly
 if the commit FAILED or was declined because a merge is in progress — do not push on a failure.
 
+Before the `agenfk verify` that moves a card to its final step, `git add` the files **that card changed**.
+
+The server commits **what you staged**, and nothing else. It used to run `git add -A` itself and no longer does: several agents can share one worktree, and a sweep of the whole tree put their half-finished work inside somebody else's card.
+
+- Staging nothing means committing **nothing** — your work stays uncommitted and a later push sends a branch without it.
+- **Never `git add -A`.** In a shared worktree it takes other agents' work with it.
+- `git status` first if you are unsure what you touched.
+
+### Declaring what your card owns — MANDATORY when agents work in parallel
+
+Staging says what you touched, after the fact. A **claim** says what is yours
+*before* anyone touches it, and it is the only thing that stops two agents
+editing one file in a shared worktree — which is a **race, not a merge
+conflict**: nobody is told, and the loser's edit is simply gone.
+
+Declare before your first edit:
+
+```bash
+agenfk update <id> --claims "packages/ui/,packages/server/src/server.ts"
+```
+
+- A claim is a **directory or an exact file**, repository-relative. **Globs are
+  refused** — `packages/**` returns 400. Whether two patterns can ever match one
+  path is a different and much harder question than whether a path matches one,
+  and a claim that cannot be checked reports safety it has not established.
+- A path another active card already holds is **refused with 409, naming the
+  holder**. That is the mechanism working, not a bug: narrow your claim, or take
+  the work to the card that already owns it. Never work around it by editing
+  anyway.
+- Claims also **limit the close commit to your own files**. `.git/index` belongs
+  to the worktree rather than to an agent, so without them a close still takes
+  whatever any agent staged.
+- **No claims authorizes everything.** A card that declares nothing is refused
+  nothing, which is why declaring is what makes the mechanism real.
+- A **paused** card keeps its claims. Its files are half-edited in the shared
+  tree, and handing them to somebody else is exactly the race this prevents.
+
+### When you have no news — MANDATORY
+
+Two rules about the moment a supervising agent has to decide with nothing in
+front of it. They are the same failure twice: deciding anyway.
+
+**Absence never authorises stop, abandon, retry, or release.** Not hearing from
+an agent is not news that it died. A silent terminal, a run with no recent
+output, a session you cannot reach — every one of those is a *checkpoint*, not
+a verdict. Keep waiting, or go and look. Only positive proof that something
+exited authorises acting as though it did.
+
+The two tempting moves are both wrong for the same reason. **Releasing** its
+claims hands its files to another agent while it may still be writing them.
+**Relaunching** duplicates work that may still be running, and the second run
+usually fails on the state the first one left. Neither is recoverable by
+noticing later.
+
+**If a launch exits non-zero, do not relaunch it.** Read what the failure
+reported first. A partial launch leaves resources behind — a worktree, a
+branch, a half-written record — and launching again on top of that is how one
+failure becomes three and trips a circuit breaker nobody can explain
+afterwards.
+
+When you genuinely cannot tell, say so in those words rather than picking the
+optimistic reading. `unverifiable` is a real answer and a useful one; a
+confident wrong answer is neither.
+
 Token usage is captured automatically by the server-side ingestion worker — agents do not need to (and cannot) self-report tokens.
 
 ### PR sizing — MANDATORY
@@ -123,6 +187,7 @@ This is the full workflow surface. Each row notes the equivalent MCP tool (avail
 | Update / roll back status | `agenfk update <id> [--status <name>][--title <t>][--description <d>][--type <T>]` (status is backward/rollback only) | `update_item` |
 | Link a card to a JIRA item | `agenfk update <id> --jira-item <KEY>` — attach a JIRA reference to an EXISTING card (e.g. `CGLAB-163`); `--jira-item none` unlinks. Also available at creation time as `agenfk create ... --jira-item <KEY>`. | `update_item` (`jiraItem`) |
 | Re-parent an item | `agenfk update <id> --parent <parentId>` — move it under another item; `--parent none` detaches it to top level. The parent must be in the same project, and cannot be the item itself or one of its descendants. | `update_item` (`parentId`) |
+| Declare owned paths / link an external issue | `agenfk update <id> --claims "<path>,<path>"` — declare the paths this card owns before editing (a directory or an exact file; a glob is refused, and a path another card holds is refused naming the holder); `agenfk update <id> --external-id <key> [--external-url <url>]` — pair the card with an issue in another tracker. | `update_item` |
 | Advance a step (forward) | `agenfk verify <id> --evidence "<text>" ["<command>"]` | `validate_progress` |
 | Add a comment | `agenfk comment <id> "<text>" [--author <name>]` | `add_comment` |
 | Attach context | `agenfk add-context <id> --path <path> [--description <text>][--content <text>]` | `add_context` |

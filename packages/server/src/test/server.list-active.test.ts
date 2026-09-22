@@ -14,16 +14,33 @@ import { app, initStorage, storage } from '../server';
 import * as fs from 'fs';
 import * as path from 'path';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. That
+ * churn produced `Error: Parse Error: Expected HTTP/, RTSP/ or ICE/` — a
+ * transport failure, not an assertion about anything under test. It hands the
+ * test an empty body, so `res.body.id` is undefined and the next call goes to
+ * `/items/undefined`; one bad socket then surfaces as `expected 404 to be 400`
+ * in whichever test happened to be running. Different test every run, green
+ * when run alone.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 const TEST_DB = path.resolve('./server-list-active-test-db.sqlite');
 
 const idsByStatus = async (projectId: string, query: Record<string, string>) => {
-  const res = await request(app).get('/items').query({ projectId, ...query });
+  const res = await agent().get('/items').query({ projectId, ...query });
   expect(res.status).toBe(200);
   return res.body as Array<{ id: string; status: string }>;
 };
 
 async function makeItem(projectId: string, title: string, status: string): Promise<string> {
-  const created = (await request(app).post('/items').send({ projectId, type: 'TASK', title })).body;
+  const created = (await agent().post('/items').send({ projectId, type: 'TASK', title })).body;
   // Set the target status directly through storage to bypass the server's
   // forward-transition guards (we need items parked in DONE/PAUSED/etc.).
   await storage.updateItem(created.id, { status: status as any });
@@ -41,7 +58,7 @@ describe('GET /items?active=true', () => {
   });
 
   it('default flow: returns only working-step items (IN_PROGRESS/REVIEW/TEST)', async () => {
-    const projectId = (await request(app).post('/projects').send({ name: 'DefaultFlowActive' })).body.id;
+    const projectId = (await agent().post('/projects').send({ name: 'DefaultFlowActive' })).body.id;
     const todo = await makeItem(projectId, 'todo', 'TODO');
     const inprog = await makeItem(projectId, 'inprog', 'IN_PROGRESS');
     const review = await makeItem(projectId, 'review', 'REVIEW');
@@ -61,7 +78,7 @@ describe('GET /items?active=true', () => {
   });
 
   it('does not re-admit ARCHIVED/TRASHED under active (guard holds even though a filter is set)', async () => {
-    const projectId = (await request(app).post('/projects').send({ name: 'ActiveNoArchived' })).body.id;
+    const projectId = (await agent().post('/projects').send({ name: 'ActiveNoArchived' })).body.id;
     await makeItem(projectId, 'arch', 'ARCHIVED');
     await makeItem(projectId, 'trash', 'TRASHED');
     const inprog = await makeItem(projectId, 'inprog', 'IN_PROGRESS');
@@ -71,8 +88,8 @@ describe('GET /items?active=true', () => {
   });
 
   it('custom flow: excludes anchors, returns custom working steps (flow-aware)', async () => {
-    const projectId = (await request(app).post('/projects').send({ name: 'CustomFlowActive' })).body.id;
-    const flow = (await request(app).post('/flows').send({
+    const projectId = (await agent().post('/projects').send({ name: 'CustomFlowActive' })).body.id;
+    const flow = (await agent().post('/flows').send({
       name: 'TDD-active',
       steps: [
         { id: 'a', name: 'TODO', order: 1, isAnchor: true },
@@ -81,7 +98,7 @@ describe('GET /items?active=true', () => {
         { id: 'd', name: 'DONE', order: 4, isAnchor: true },
       ],
     })).body;
-    await request(app).post(`/projects/${projectId}/flow`).send({ flowId: flow.id });
+    await agent().post(`/projects/${projectId}/flow`).send({ flowId: flow.id });
 
     const todo = await makeItem(projectId, 'todo', 'TODO');
     const discovery = await makeItem(projectId, 'disc', 'DISCOVERY');
@@ -96,7 +113,7 @@ describe('GET /items?active=true', () => {
   });
 
   it('plain list (no active) still returns DONE — active is opt-in', async () => {
-    const projectId = (await request(app).post('/projects').send({ name: 'PlainListUnchanged' })).body.id;
+    const projectId = (await agent().post('/projects').send({ name: 'PlainListUnchanged' })).body.id;
     const done = await makeItem(projectId, 'done', 'DONE');
     const inprog = await makeItem(projectId, 'inprog', 'IN_PROGRESS');
     const all = await idsByStatus(projectId, {});

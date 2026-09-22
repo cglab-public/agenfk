@@ -2,12 +2,15 @@
  * @vitest-environment jsdom
  */
 import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react';
+import { SocketProvider } from '../SocketContext';
 import { CardDetailModal } from '../components/CardDetailModal';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../ThemeContext';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ItemType, Status } from '../types';
+import { itemTypeHint, ITEM_TYPE_VISUAL } from '../components/ItemTypeSquare';
 import { api } from '../api';
+import { rawPaletteClasses, deadHoverClasses } from './rawPaletteClasses';
 
 // Mock window.matchMedia
 Object.defineProperty(window, 'matchMedia', {
@@ -43,6 +46,7 @@ vi.mock('../api', () => ({
 const socketHandlers: Record<string, (...args: any[]) => void> = {};
 vi.mock('socket.io-client', () => ({
   io: vi.fn(() => ({
+    connect: vi.fn(),
     on: (ev: string, cb: (...args: any[]) => void) => { socketHandlers[ev] = cb; },
     off: vi.fn(),
     emit: vi.fn(),
@@ -56,11 +60,17 @@ const queryClient = new QueryClient({
   },
 });
 
+// SocketProvider owns the connection now (CGLAB-168), so the component only
+// subscribes — it needs the provider above it to receive anything. The io()
+// mock above still captures the handlers, so socketHandlers drives events
+// exactly as before.
 const wrapper = ({ children }: { children: React.ReactNode }) => (
   <QueryClientProvider client={queryClient}>
-    <ThemeProvider>
-      {children}
-    </ThemeProvider>
+    <SocketProvider>
+      <ThemeProvider>
+        {children}
+      </ThemeProvider>
+    </SocketProvider>
   </QueryClientProvider>
 );
 
@@ -667,5 +677,424 @@ describe('CardDetailModal', () => {
     expect(screen.getAllByText('TODO')).toHaveLength(1);
     // The old under-title "Status:" line is gone.
     expect(screen.queryByText(/^Status:/)).toBeNull();
+  });
+});
+
+/**
+ * Writing a card from nothing (CGLAB-164).
+ *
+ * Reported by a user who could not answer his own question: "I'm starting a
+ * new task from scratch — do I write it in agenfk?" The route exists, and
+ * what it opens is the same modal a finished card opens: 72rem wide, the full
+ * window height, a Metrics panel reading a cycle time of zero, a Hierarchy
+ * panel saying the parent is None, and an empty Progress Log — all of it
+ * describing a card that does not exist yet, wrapped around three inputs.
+ *
+ * Two changes, and neither is a redesign: the draft is sized to what a draft
+ * actually has, and the type control gets the grammar every tracker already
+ * uses. The dropdown itself stays exactly where it was.
+ */
+describe('the create form is a draft, not a finished card', () => {
+  const draft = { type: ItemType.TASK, status: Status.TODO, title: '', description: '', projectId: 'p1' };
+
+  const openDraft = (over: Record<string, unknown> = {}) =>
+    render(
+      <CardDetailModal
+        item={{ ...draft, ...over } as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper },
+    );
+
+  afterEach(cleanup);
+
+  it('drops the panels that can only describe a card that already exists', () => {
+    // Cycle time of a card created zero seconds ago, a parent of "None", and a
+    // progress log with nothing in it. Three panels, all of them answering
+    // questions nobody asked of a blank form.
+    openDraft();
+    expect(screen.queryByText(/cycle time/i)).toBeNull();
+    expect(screen.queryByText(/^Hierarchy$/i)).toBeNull();
+    expect(screen.queryByText(/progress log/i)).toBeNull();
+  });
+
+  it('keeps every one of those panels on a card that does exist', () => {
+    /*
+     * The half that makes the test above mean something. "Hide it" is one
+     * character away from "hide it always", and the detail view is the screen
+     * these panels were built for.
+     */
+    render(
+      <CardDetailModal
+        item={{ id: 'i9', projectId: 'p1', type: ItemType.TASK, title: 'Real card', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() } as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper },
+    );
+    expect(screen.getByText(/cycle time/i)).toBeDefined();
+    expect(screen.getByText(/^Hierarchy$/i)).toBeDefined();
+    expect(screen.getByText(/progress log/i)).toBeDefined();
+  });
+
+  it('draws no tab strip, because a draft has exactly one tab', () => {
+    // Plan, Subitems, History, Tests, Usage and Runs are all hidden on a card
+    // with no id, which leaves a tab bar with a single tab in it — a control
+    // that cannot be used for anything.
+    openDraft();
+    expect(screen.queryByRole('button', { name: /^overview$/i })).toBeNull();
+  });
+
+  it('keeps the tab strip on a card that has more than one tab', () => {
+    render(
+      <CardDetailModal
+        item={{ id: 'i9', projectId: 'p1', type: ItemType.STORY, title: 'Real card', status: Status.TODO, createdAt: new Date(), updatedAt: new Date(), implementationPlan: '# Plan' } as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper },
+    );
+    expect(screen.getByRole('button', { name: /^overview$/i })).toBeDefined();
+  });
+
+  it('is sized to its content instead of taking the whole window', () => {
+    // max-w-6xl h-[calc(100vh-2rem)] — 72rem wide and the full window height,
+    // for a title, a description and a type. It makes a small decision look
+    // like a large one and pushes Create a screen away from the field you
+    // just typed into.
+    const { container } = openDraft();
+    const panel = container.querySelector('[role="dialog"]') as HTMLElement;
+    expect(panel).toBeTruthy();
+    // Positive as well as negative: deleting the size branch entirely would
+    // satisfy both "not 6xl" and "not full height" while leaving the dialog
+    // with NO max-width at all — edge to edge, worse than what it replaced.
+    expect(panel.className).toMatch(/max-w-xl/);
+    expect(panel.className).not.toMatch(/max-w-6xl/);
+    // Anchored on the class boundary: `max-h-[calc(100vh-2rem)]` is a CEILING
+    // and is fine — an unanchored match would read it as the fixed height and
+    // fail a correct implementation.
+    expect(panel.className).not.toMatch(/(^|\s)h-\[calc\(100vh-2rem\)\]/);
+  });
+
+  it('keeps the detail view at the size it already was', () => {
+    // The card this fixes is about CREATING a card. A finished card has tabs,
+    // a run panel and a progress log, and it earns the room.
+    const { container } = render(
+      <CardDetailModal
+        item={{ id: 'i9', projectId: 'p1', type: ItemType.TASK, title: 'Real card', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() } as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper },
+    );
+    const panel = container.querySelector('[role="dialog"]') as HTMLElement;
+    expect(panel.className).toMatch(/max-w-6xl/);
+  });
+
+  it('is announced as a dialog with a name', () => {
+    // Before this it was an unnamed <div> over the app: a screen reader
+    // announced nothing at all when it opened.
+    openDraft();
+    const dialog = screen.getByRole('dialog', { name: /new item/i });
+    expect(dialog.getAttribute('aria-modal')).toBe('true');
+  });
+
+  it('hands the type hint to whoever focuses the type control', () => {
+    /*
+     * Not just on screen — reachable from the control it describes. A sighted
+     * user reads the line under the picker; someone tabbing into it hears
+     * "Type, button, TASK" and would never reach the sentence, which sits
+     * several elements away in the DOM. Every OPTION carries its own hint now,
+     * but the closed control still has to describe itself.
+     */
+    openDraft();
+    const control = screen.getByRole('button', { name: /type/i });
+    const describedBy = control.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy!)?.textContent).toBe(itemTypeHint(ItemType.TASK));
+  });
+
+  it('puts focus inside itself when it opens', () => {
+    /*
+     * `aria-modal="true"` tells assistive tech that everything behind this is
+     * inert. Opening it with focus still out there on the board contradicts
+     * that on the first Tab. The draft aims focus at the first field; the
+     * detail view has no field to aim at, so the panel takes it — the same
+     * shape the card picker already uses.
+     */
+    openDraft();
+    expect(document.activeElement).toBe(screen.getByLabelText('Title'));
+    cleanup();
+
+    render(
+      <CardDetailModal
+        item={{ id: 'i9', projectId: 'p1', type: ItemType.TASK, title: 'Real card', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() } as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper },
+    );
+    expect(document.activeElement).toBe(screen.getByRole('dialog', { name: 'Real card' }));
+  });
+
+  it('names the type control, which was an unlabelled combobox', () => {
+    // One <label> served three inputs. The type <select> had none, so it was
+    // announced as "combobox" and nothing else.
+    openDraft();
+    // A button that opens a listbox, not a combobox: an <option> cannot draw
+    // the type's square or carry what the type means, which is the whole
+    // reason the native select was replaced.
+    expect(screen.getByRole('button', { name: /type/i })).toBeDefined();
+  });
+
+  it('names the description box, which was an unlabelled textbox', () => {
+    openDraft();
+    expect(screen.getByRole('textbox', { name: /description/i })).toBeDefined();
+  });
+
+  it('says which step the card will land in, because the flow is configurable', () => {
+    // Nobody should have to know a project's first step by heart, and it is
+    // not always TODO — flows are per-project and their steps are renamed.
+    openDraft({ status: 'BACKLOG' });
+    expect(screen.getByText(/lands in/i).textContent).toMatch(/BACKLOG/);
+  });
+
+  it('shows the tracker square for the selected type, and changes it with the selection', () => {
+    // The grammar, attached to the control that was four bare words. The
+    // <select> is untouched; what changes is that you can now see which type
+    // you are on without reading it.
+    openDraft();
+    const square = screen.getByTestId('new-item-type-square');
+    expect(square.className).toMatch(/bg-blue-\d{3}/); // TASK
+    fireEvent.click(screen.getByRole('button', { name: /type/i }));
+    fireEvent.click(screen.getByTestId(`new-item-type-option-${ItemType.EPIC}`));
+    expect(screen.getByTestId('new-item-type-square').className).toMatch(/bg-violet-\d{3}/);
+  });
+
+  it('says what the chosen type means, and updates when it changes', () => {
+    /*
+     * The wiring, not the wording: that the line on screen is the one written
+     * for the type currently selected. What those sentences must and must not
+     * claim is pinned in ItemTypeSquare.test.tsx, next to the function that
+     * writes them — including the ban on promising a worktree, which nothing
+     * in the server gates on type.
+     */
+    openDraft();
+    expect(screen.getByTestId('new-item-type-hint').textContent).toBe(itemTypeHint(ItemType.TASK));
+    fireEvent.click(screen.getByRole('button', { name: /type/i }));
+    fireEvent.click(screen.getByTestId(`new-item-type-option-${ItemType.EPIC}`));
+    expect(screen.getByTestId('new-item-type-hint').textContent).toBe(itemTypeHint(ItemType.EPIC));
+    expect(itemTypeHint(ItemType.EPIC)).not.toBe(itemTypeHint(ItemType.TASK));
+  });
+
+  it('shows the card it creates in the SAME grammar it taught while creating it', () => {
+    /*
+     * This test used to assert the opposite — that a real card must keep its
+     * old tint and must NOT wear the create form's grammar — and in doing so
+     * it pinned the defect in place. Pick STORY in the draft, see green, press
+     * Create: the card arrived wearing blue, among TASKs wearing green. The
+     * one screen that teaches the colour→type mapping taught the reverse of
+     * every screen the card then appears on.
+     *
+     * The draft's square was the correct half (JIRA's grammar, asked for by
+     * name); the rest of the product was the outlier. The badge is now one
+     * component, and this asserts the agreement instead of the divergence.
+     */
+    render(
+      <CardDetailModal
+        item={{ id: 'i9', projectId: 'p1', type: ItemType.STORY, title: 'Real card', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() } as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper },
+    );
+    const badge = screen.getAllByTestId('item-type-badge')[0];
+    expect(badge.textContent).toContain('STORY');
+    expect((badge.firstElementChild as HTMLElement).className).toContain(ITEM_TYPE_VISUAL[ItemType.STORY].fill);
+    // No `not.toMatch(/story-blue/)` here: the badge is one shared component
+    // now, so that assertion would read a string this test's own dependency
+    // defines. The blanket rule lives in ItemTypeSquare.test.tsx, which reads
+    // the components directory and can see a surface this file never renders.
+    // The CONTROL stays exclusive to the draft: a settled type is shown, not chosen.
+    expect(screen.queryByTestId('new-item-type-square')).toBeNull();
+    expect(screen.queryByRole('combobox', { name: /type/i })).toBeNull();
+  });
+
+  it('uses that same grammar in the Subitems table, which had a third palette of its own', () => {
+    // STORY=`blue-50`, TASK=`emerald-50` lived here — a third mapping, on the
+    // one screen where a parent and its children are read side by side.
+    render(
+      <CardDetailModal
+        item={{ id: 'i9', projectId: 'p1', type: ItemType.EPIC, title: 'Parent', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() } as any}
+        allItems={[{ id: 'sub1', parentId: 'i9', projectId: 'p1', title: 'A child', type: ItemType.STORY, status: Status.TODO } as any]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper },
+    );
+    fireEvent.click(screen.getByRole('button', { name: /^subitems/i }));
+    const child = screen.getAllByTestId('item-type-badge').find(b => b.textContent?.includes('STORY'))!;
+    expect(child).toBeTruthy();
+    expect((child.firstElementChild as HTMLElement).className).toContain(ITEM_TYPE_VISUAL[ItemType.STORY].fill);
+  });
+
+  it('carries the description through to the card it creates', () => {
+    // The `id`/`htmlFor` pairing added for the label sits on a CONTROLLED
+    // input: getting it wrong breaks the binding silently, and the existing
+    // create test passes an empty description, which cannot see that.
+    const onAddItem = vi.fn().mockResolvedValue(undefined);
+    render(
+      <CardDetailModal
+        item={draft as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={onAddItem}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper },
+    );
+    fireEvent.change(screen.getByPlaceholderText(/Title of your new task/i), { target: { value: 'With a reason' } });
+    fireEvent.change(screen.getByRole('textbox', { name: /description/i }), { target: { value: 'The constraint you will forget' } });
+    fireEvent.click(screen.getByRole('button', { name: /Create task/i }));
+    return waitFor(() =>
+      expect(onAddItem).toHaveBeenCalledWith('With a reason', ItemType.TASK, Status.TODO, 'The constraint you will forget'),
+    );
+  });
+
+  it('still creates the card it was always able to create', () => {
+    // The regression this whole change must not cause: everything above is
+    // chrome around one button that has to keep working.
+    const onAddItem = vi.fn().mockResolvedValue(undefined);
+    render(
+      <CardDetailModal
+        item={draft as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={onAddItem}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper },
+    );
+    fireEvent.change(screen.getByPlaceholderText(/Title of your new task/i), { target: { value: 'Still works' } });
+    fireEvent.click(screen.getByRole('button', { name: /Create task/i }));
+    return waitFor(() =>
+      expect(onAddItem).toHaveBeenCalledWith('Still works', ItemType.TASK, Status.TODO, ''),
+    );
+  });
+});
+
+// ── No hardcoded neutral surface colour, on every tab this modal has ────────
+// Same defect and same row of artifact aca414c7 §04 as the flow editor: 273
+// raw ramp classes, every `bg-white dark:bg-slate-900` a theme decision taken
+// twice and reachable by neither toggle.
+//
+// The tabs are the point. `activeTab` defaults to 'overview', so a test that
+// renders the modal and asserts once has never drawn the plan, the sub-items
+// table, the history timeline, the test-output well or the usage table —
+// which is exactly where a depth inversion and an invisible timeline rail
+// were found after the first pass.
+describe('CardDetailModal — no hardcoded neutral surface colour (aca414c7 §04)', () => {
+  const DRAFT = {
+    id: '',
+    projectId: 'p1',
+    type: ItemType.TASK,
+    title: '',
+    description: '',
+    status: Status.TODO,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  // Everything switched on at once, so every tab exists and every conditional
+  // surface inside it is drawn.
+  const FULL = {
+    id: 'i9',
+    projectId: 'p1',
+    type: ItemType.STORY,
+    title: 'A card with everything on it',
+    description: 'Body',
+    status: Status.TODO,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    tokenUsage: [{ model: 'gpt-4', input: 100, output: 50 }],
+    tests: [{ id: 'r1', command: 'npm test', output: 'ok', status: 'PASSED', executedAt: new Date() }],
+    implementationPlan: '# Plan\n- step 1',
+    history: [{ id: 'h1', fromStatus: Status.TODO, toStatus: Status.IN_PROGRESS, timestamp: new Date(), evidence: 'moved' }],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    queryClient.clear();
+  });
+
+  afterEach(() => { cleanup(); });
+
+  const renderIt = (item: Record<string, unknown>) => {
+    (api.getItem as any).mockResolvedValue(item);
+    return render(
+      <CardDetailModal
+        item={item as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper }
+    ).baseElement;
+  };
+
+  it('paints the new-card draft from tokens', async () => {
+    const root = renderIt(DRAFT);
+    await waitFor(() => screen.getByTestId('new-item-type-square'));
+    expect(rawPaletteClasses(root)).toEqual([]);
+  });
+
+  it('paints the detail view from tokens', async () => {
+    const root = renderIt(FULL);
+    await waitFor(() => screen.getByText('A card with everything on it'));
+    expect(rawPaletteClasses(root)).toEqual([]);
+  });
+
+  // One test per tab rather than one loop, so a failure names the tab instead
+  // of naming the loop.
+  for (const tab of ['Plan', 'History', 'Test Results', 'Usage']) {
+    it(`paints the ${tab} tab from tokens`, async () => {
+      const root = renderIt(FULL);
+      await waitFor(() => screen.getByText('A card with everything on it'));
+      const button = screen.getAllByRole('button').find(b => b.textContent?.trim().startsWith(tab));
+      expect(button, `the ${tab} tab is not rendered`).toBeDefined();
+      fireEvent.click(button!);
+      expect(rawPaletteClasses(root)).toEqual([]);
+    });
+  }
+
+  it('leaves no control whose hover is its own ground', async () => {
+    const root = renderIt(FULL);
+    await waitFor(() => screen.getByText('A card with everything on it'));
+    expect(deadHoverClasses(root)).toEqual([]);
   });
 });

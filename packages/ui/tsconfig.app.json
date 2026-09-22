@@ -24,5 +24,18 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  /*
+   * TESTS ARE NOT SHIPPED, AND THEY MUST NOT BE ABLE TO BREAK WHAT IS. This
+   * config type-checks the bundle that goes to users, and it declares only
+   * `vite/client` - correctly, because browser code has no `process` and no
+   * `node:fs`. A guard test that reads source files off disk to enforce a
+   * convention is legitimate, but under `include: ["src"]` it failed THIS
+   * build, `dist/` silently kept a bundle from hours earlier, and the desktop
+   * packaged the stale one. `npm run build` still exited 0.
+   *
+   * Tests keep their own type-checking through vitest, which runs under the
+   * node config.
+   */
+  "exclude": ["src/test"]
 }

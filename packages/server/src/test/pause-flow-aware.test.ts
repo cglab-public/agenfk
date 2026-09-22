@@ -11,6 +11,23 @@ import { app, initStorage } from '../server';
 import * as fs from 'fs';
 import * as path from 'path';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. That
+ * churn produced `Error: Parse Error: Expected HTTP/, RTSP/ or ICE/` — a
+ * transport failure, not an assertion about anything under test. It hands the
+ * test an empty body, so `res.body.id` is undefined and the next call goes to
+ * `/items/undefined`; one bad socket then surfaces as `expected 404 to be 400`
+ * in whichever test happened to be running. Different test every run, green
+ * when run alone.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 const TEST_DB = path.resolve('./pause-flow-aware-test-db.sqlite');
 
 describe('POST /items/:id/pause is flow-aware', () => {
@@ -24,8 +41,8 @@ describe('POST /items/:id/pause is flow-aware', () => {
   });
 
   async function projectInTddFlow() {
-    const project = (await request(app).post('/projects').send({ name: 'PauseTdd' })).body;
-    const flow = (await request(app).post('/flows').send({
+    const project = (await agent().post('/projects').send({ name: 'PauseTdd' })).body;
+    const flow = (await agent().post('/flows').send({
       name: 'TDD-pause',
       steps: [
         { id: 'a', name: 'TODO', order: 1, isAnchor: true },
@@ -35,17 +52,17 @@ describe('POST /items/:id/pause is flow-aware', () => {
         { id: 'e', name: 'DONE', order: 5, isAnchor: true },
       ],
     })).body;
-    await request(app).post(`/projects/${project.id}/flow`).send({ flowId: flow.id });
+    await agent().post(`/projects/${project.id}/flow`).send({ flowId: flow.id });
     return project;
   }
 
   it('ALLOWS pausing an item parked in a custom working step (CREATE_UNIT_TESTS)', async () => {
     const project = await projectInTddFlow();
-    const item = (await request(app).post('/items').send({
+    const item = (await agent().post('/items').send({
       projectId: project.id, type: 'TASK', title: 'tdd task', status: 'CREATE_UNIT_TESTS',
     })).body;
 
-    const res = await request(app).post(`/items/${item.id}/pause`).send({
+    const res = await agent().post(`/items/${item.id}/pause`).send({
       summary: 'pausing mid-tests',
       resumeInstructions: 'resume the red tests',
     });
@@ -54,11 +71,11 @@ describe('POST /items/:id/pause is flow-aware', () => {
 
   it('REJECTS pausing an item in an anchor step (TODO)', async () => {
     const project = await projectInTddFlow();
-    const item = (await request(app).post('/items').send({
+    const item = (await agent().post('/items').send({
       projectId: project.id, type: 'TASK', title: 'todo task', status: 'TODO',
     })).body;
 
-    const res = await request(app).post(`/items/${item.id}/pause`).send({
+    const res = await agent().post(`/items/${item.id}/pause`).send({
       summary: 's', resumeInstructions: 'r',
     });
     expect(res.status).toBe(400);

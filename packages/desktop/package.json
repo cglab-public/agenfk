@@ -1,0 +1,31 @@
+{
+  "name": "@agenfk/desktop",
+  "version": "1.1.21-beta.2",
+  "private": true,
+  "description": "AgEnFK Desktop — run agent orchestration as a native app",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "build": "tsc && npm run bundle:preload",
+    "dev": "npm run build && electron dist/main/index.js",
+    "start": "electron dist/main/index.js",
+    "pack": "npm run build && npm run bundle:server && electron-builder --dir --config electron-builder.config.cjs",
+    "dist:mac": "npm run build && npm run bundle:server && electron-builder --mac --config electron-builder.config.cjs",
+    "dist:win": "npm run build && npm run bundle:server && electron-builder --win --config electron-builder.config.cjs",
+    "dist:linux": "npm run build && npm run bundle:server && electron-builder --linux --config electron-builder.config.cjs",
+    "bundle:server": "node scripts/bundle-server.mjs",
+    "bundle:preload": "node scripts/bundle-preload.mjs"
+  },
+  "dependencies": {
+    "@agenfk/core": "1.1.21-beta.2",
+    "@agenfk/telemetry": "1.1.21-beta.2",
+    "@lydell/node-pty": "1.2.0-beta.15"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "electron": "40.10.6",
+    "electron-builder": "^26.0.12",
+    "typescript": "~5.9.3"
+  },
+  "author": "CG/lab",
+  "homepage": "https://github.com/cglab-public/agenfk"
+}

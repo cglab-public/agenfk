@@ -10,6 +10,23 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. That
+ * churn produced `Error: Parse Error: Expected HTTP/, RTSP/ or ICE/` — a
+ * transport failure, not an assertion about anything under test. It hands the
+ * test an empty body, so `res.body.id` is undefined and the next call goes to
+ * `/items/undefined`; one bad socket then surfaces as `expected 404 to be 400`
+ * in whichever test happened to be running. Different test every run, green
+ * when run alone.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
   mockAxios.get = vi.fn();
@@ -49,7 +66,7 @@ describe('SQLite-only storage enforcement', () => {
     });
 
     it('GET /db/status should always report dbType=sqlite', async () => {
-      const res = await request(app).get('/db/status');
+      const res = await agent().get('/db/status');
       expect(res.status).toBe(200);
       // Must be sqlite even though env path ended in .json
       expect(res.body.dbType).toBe('sqlite');
@@ -66,7 +83,7 @@ describe('SQLite-only storage enforcement', () => {
     });
 
     it('should be fully functional with SQLite (projects endpoint)', async () => {
-      const res = await request(app).get('/projects');
+      const res = await agent().get('/projects');
       expect(res.status).toBe(200);
       expect(Array.isArray(res.body)).toBe(true);
     });
@@ -86,7 +103,7 @@ describe('SQLite-only storage enforcement', () => {
     });
 
     it('GET /db/status should report dbType=sqlite', async () => {
-      const res = await request(app).get('/db/status');
+      const res = await agent().get('/db/status');
       expect(res.status).toBe(200);
       expect(res.body.dbType).toBe('sqlite');
     });
@@ -141,7 +158,7 @@ describe('SQLite-only storage enforcement', () => {
     });
 
     it('should import projects from migration.json into SQLite on startup', async () => {
-      const res = await request(app).get('/projects');
+      const res = await agent().get('/projects');
       expect(res.status).toBe(200);
       const found = res.body.find((p: any) => p.id === testProject.id);
       expect(found).toBeDefined();

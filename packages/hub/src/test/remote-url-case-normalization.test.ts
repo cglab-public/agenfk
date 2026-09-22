@@ -15,6 +15,17 @@ import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-remote-case-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
 const cleanup = () => {
@@ -52,21 +63,23 @@ describe('Hub /v1/projects collapses casings of the same git remote', { hookTime
       defaultOrgId: 'org-a',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
-    const login = await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
+    const login = await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
     cookieAdmin = login.headers['set-cookie']?.[0] ?? '';
     token = await issueApiKey(ctx.db, 'org-a', 'inst-1');
   });
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
   it('lowercases remote_url at ingest', async () => {
-    await supertest(app)
+    await supertest(__server)
       .post('/v1/events').set('Authorization', `Bearer ${token}`)
       .send({ events: [sample({ remoteUrl: 'git@github.com:cglab-PRIVATE/horizon-lab.git' })] });
     const row = await ctx.db.get<{ remote_url: string }>('SELECT remote_url FROM events LIMIT 1');
@@ -74,7 +87,7 @@ describe('Hub /v1/projects collapses casings of the same git remote', { hookTime
   });
 
   it('strips whitespace and control chars at ingest', async () => {
-    await supertest(app)
+    await supertest(__server)
       .post('/v1/events').set('Authorization', `Bearer ${token}`)
       .send({ events: [sample({
         remoteUrl: '  git@github.com:cglab-public/agenfk.git\n\t',
@@ -84,14 +97,14 @@ describe('Hub /v1/projects collapses casings of the same git remote', { hookTime
   });
 
   it('GET /v1/projects returns one entry when two events differ only by case', async () => {
-    await supertest(app)
+    await supertest(__server)
       .post('/v1/events').set('Authorization', `Bearer ${token}`)
       .send({ events: [sample({ eventId: 'a', remoteUrl: 'git@github.com:cglab-PRIVATE/horizon-lab.git' })] });
-    await supertest(app)
+    await supertest(__server)
       .post('/v1/events').set('Authorization', `Bearer ${token}`)
       .send({ events: [sample({ eventId: 'b', remoteUrl: 'git@github.com:cglab-private/horizon-lab.git' })] });
 
-    const r = await supertest(app).get('/v1/projects').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/projects').set('Cookie', cookieAdmin);
     expect(r.status).toBe(200);
     expect(r.body.projects).toEqual(['git@github.com:cglab-private/horizon-lab.git']);
   });
@@ -121,12 +134,12 @@ describe('Hub /v1/projects collapses casings of the same git remote', { hookTime
   });
 
   it('filter parameter (?projects=...) matches case-insensitively', async () => {
-    await supertest(app)
+    await supertest(__server)
       .post('/v1/events').set('Authorization', `Bearer ${token}`)
       .send({ events: [sample({ remoteUrl: 'git@github.com:cglab-PRIVATE/horizon-lab.git' })] });
     // Filter using the upper-case form the user might still have selected;
     // events should still match (defense-in-depth).
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .get('/v1/timeline?projects=git@github.com:cglab-PRIVATE/horizon-lab.git')
       .set('Cookie', cookieAdmin);
     expect(r.status).toBe(200);
@@ -146,11 +159,11 @@ describe('Hub /v1/projects collapses casings of the same git remote', { hookTime
       'ssh://git@github.com/cglab-private/horizon-lab.git',
     ];
     for (const [i, url] of variants.entries()) {
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/events').set('Authorization', `Bearer ${token}`)
         .send({ events: [sample({ eventId: `v-${i}`, remoteUrl: url })] });
     }
-    const r = await supertest(app).get('/v1/projects').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/projects').set('Cookie', cookieAdmin);
     expect(r.status).toBe(200);
     expect(r.body.projects).toEqual(['git@github.com:cglab-private/horizon-lab.git']);
   });
@@ -188,7 +201,7 @@ describe('Hub /v1/projects collapses casings of the same git remote', { hookTime
   });
 
   it('preserves non-parseable remote_url values unchanged (apart from existing whitespace+lowercase rules)', async () => {
-    await supertest(app)
+    await supertest(__server)
       .post('/v1/events').set('Authorization', `Bearer ${token}`)
       .send({ events: [sample({ remoteUrl: '  Some-Weird-String  ' })] });
     const row = await ctx.db.get<{ remote_url: string }>('SELECT remote_url FROM events LIMIT 1');
@@ -196,12 +209,12 @@ describe('Hub /v1/projects collapses casings of the same git remote', { hookTime
   });
 
   it('?projects filter accepts any variant form of the canonical URL', async () => {
-    await supertest(app)
+    await supertest(__server)
       .post('/v1/events').set('Authorization', `Bearer ${token}`)
       .send({ events: [sample({ remoteUrl: 'git@github.com:cglab-private/horizon-lab.git' })] });
     // User's saved selection might be the https form — should still match the
     // canonical row stored in the DB.
-    const r = await supertest(app)
+    const r = await supertest(__server)
       .get('/v1/timeline?projects=https://github.com/cglab-private/horizon-lab')
       .set('Cookie', cookieAdmin);
     expect(r.status).toBe(200);
