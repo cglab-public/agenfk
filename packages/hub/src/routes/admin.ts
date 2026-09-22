@@ -1887,7 +1887,15 @@ export function adminRouter(ctx: HubServerContext): Router {
       return res.status(503).json({ error: `Could not fetch release list: ${e?.message ?? e}` });
     }
 
-    const versionRows = await ctx.db.all<{ agenfk_version: string }>(
+    // ?unfiltered=1 skips the fleet floor. The floor is the oldest version
+    // among THIS org's own installations, which is the right bound for the
+    // fleet form and the wrong one for a group upgrade: a parent never sees a
+    // child's installations, so its own floor says nothing about theirs, and
+    // a parent whose own fleet is on the newest release could otherwise not
+    // pin children to anything older (CGLAB-360). POST /upgrade-dispatches
+    // only requires the release to exist.
+    const unfiltered = req.query.unfiltered === '1' || req.query.unfiltered === 'true';
+    const versionRows = unfiltered ? [] : await ctx.db.all<{ agenfk_version: string }>(
       `SELECT agenfk_version FROM installations
         WHERE org_id = ? AND agenfk_version IS NOT NULL AND agenfk_version <> ''`,
       [orgId],

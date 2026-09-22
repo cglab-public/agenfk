@@ -12,7 +12,7 @@ import { Plus, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
 import { api } from '../api';
 import { groupUpgradeBody, groupUpgradeRow, groupUpgradesLive, type GroupUpgradeRequest } from './groupUpgradeState';
 import { ChildHubPicker, toggledSet } from './childHubPicker';
-import { dispatchRefusalMessage, liveChildHubs, type ChildHubRow, type DispatchScopeMode } from './flowDispatch';
+import { NO_CHILD_HUBS_REASON, dispatchRefusalMessage, liveChildHubs, type ChildHubRow, type DispatchScopeMode } from './flowDispatch';
 
 interface UpgradeTarget {
   installationId: string;
@@ -471,18 +471,18 @@ export function GroupUpgrades() {
   const [error, setError] = useState<string | null>(null);
 
   // Owned here rather than passed down: the board is also rendered on its own.
-  // A malformed shape (or a mock that returns something else) reads as
-  // "unknown", which keeps the board fetching — only an explicit
-  // `isParent: false` switches the whole section off.
+  // Only an explicit `isParent: false` switches the section off; any other
+  // resolved shape is treated as a parent so the board keeps fetching.
   const childHubsQ = useQuery<{ isParent?: boolean; childHubs?: ChildHubRow[] }>({
     queryKey: ['admin-child-hubs'],
     queryFn: async () => (await api.get('/v1/admin/child-hubs')).data,
   });
-  // Unknown while loading; a failed child-hubs lookup is treated as "maybe a
-  // parent" so the board's own error line can still show — hiding the whole
-  // section on one failed request is the blank this code exists to avoid.
+  // Unknown (null) while loading. A failed child-hubs lookup is treated as a
+  // parent so the section renders its error line below instead of vanishing.
   const isParent = childHubsQ.isError ? true : childHubsQ.data === undefined ? null : childHubsQ.data?.isParent !== false;
-  const childHubs = liveChildHubs(Array.isArray(childHubsQ.data?.childHubs) ? childHubsQ.data!.childHubs! : []);
+  const childHubRows = childHubsQ.data?.childHubs;
+  const childHubs = liveChildHubs(Array.isArray(childHubRows) ? childHubRows : []);
+  const [issuing, setIssuing] = useState(false);
 
   const q = useQuery<{ dispatches: GroupDispatch[] }>({
     queryKey: ['admin-upgrade-dispatches'],
@@ -515,13 +515,16 @@ export function GroupUpgrades() {
   if (isParent !== true) return null;
   // A failed load must not look like an empty group. Rendering null on error
   // made a 500 or an expired session indistinguishable from "this hub has no
-  // children" — no error, no retry, no sign the section existed.
-  if (q.isError) {
+  // children" — no error, no retry, no sign the section existed. The same
+  // holds for the child-hubs lookup the whole section hangs off.
+  if (q.isError || childHubsQ.isError) {
     return (
       <div className="mt-8" data-testid="group-upgrades">
         <h2 className="text-sm font-semibold text-ink mb-2">Group upgrades (child hubs)</h2>
         <p className="text-xs text-rose-600 dark:text-rose-400" data-testid="group-upgrades-error">
-          Could not load group upgrades. Reload to try again.
+          {childHubsQ.isError
+            ? 'Could not load this hub\'s child hubs. Reload to try again.'
+            : 'Could not load group upgrades. Reload to try again.'}
         </p>
       </div>
     );
@@ -536,13 +539,37 @@ export function GroupUpgrades() {
     <div className="mt-8" data-testid="group-upgrades">
       <div className="flex items-center justify-between mb-2">
         <h2 className="text-sm font-semibold text-ink">Group upgrades (child hubs)</h2>
-        {childHubs.length > 0 && (
-          <GroupUpgradeIssue
-            childHubs={childHubs}
-            onIssued={() => qc.invalidateQueries({ queryKey: ['admin-upgrade-dispatches'] })}
-          />
+        {!issuing && (
+          <button
+            onClick={() => setIssuing(true)}
+            disabled={childHubs.length === 0}
+            title={childHubs.length === 0 ? NO_CHILD_HUBS_REASON : undefined}
+            className={
+              'text-[12px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-border-soft ' +
+              (childHubs.length === 0 ? 'text-ink-tertiary opacity-60 cursor-not-allowed' : 'text-ink-secondary hover:bg-chip')
+            }
+            data-testid="group-upgrade-issue-btn"
+          >
+            <Plus className="w-3.5 h-3.5" /> Upgrade child hubs
+          </button>
         )}
       </div>
+      {childHubs.length === 0 && (
+        // History with nobody left to send to: say why the control is off,
+        // as the flows page does, instead of removing it silently.
+        <p className="text-[11px] text-ink-tertiary mb-2" data-testid="group-upgrade-issue-reason">{NO_CHILD_HUBS_REASON}</p>
+      )}
+      {issuing && (
+        // Below the header, not beside it: a five-row form as a flex sibling
+        // of the heading was squeezed into the space right of the h2.
+        <div className="mb-3">
+          <GroupUpgradeIssue
+            childHubs={childHubs}
+            onClose={() => setIssuing(false)}
+            onIssued={() => qc.invalidateQueries({ queryKey: ['admin-upgrade-dispatches'] })}
+          />
+        </div>
+      )}
       {error && (
         <p className="text-xs text-rose-600 dark:text-rose-400 mb-2" data-testid="group-upgrade-cancel-error">{error}</p>
       )}
@@ -633,30 +660,41 @@ export function GroupUpgrades() {
 }
 
 /**
- * The form that creates a group upgrade (CGLAB-360). The version list is the
- * same one the fleet form reads (same query key, one request). The parent
- * cannot see a child's installations, so it cannot warn about downgrades the
- * way the fleet form does — the admin says so up front with a checkbox, which
- * travels as `confirmDowngrade` and each child re-validates.
+ * The form that creates a group upgrade (CGLAB-360). The parent cannot see a
+ * child's installations, so it cannot warn about downgrades the way the fleet
+ * form does — the admin says so up front with a checkbox, which travels as
+ * `confirmDowngrade`. Each child applies it per installation: unticked, a
+ * machine already ahead of the target is skipped with reason 'downgrade' and
+ * the rest of that fleet still upgrades (upgradeFanout.ts).
  */
-function GroupUpgradeIssue({ childHubs, onIssued }: { childHubs: ChildHubRow[]; onIssued: () => void }) {
-  const [open, setOpen] = useState(false);
+function GroupUpgradeIssue({
+  childHubs, onClose, onIssued,
+}: {
+  childHubs: ChildHubRow[];
+  onClose: () => void;
+  onIssued: () => void;
+}) {
   const [targetVersion, setTargetVersion] = useState('');
   const [mode, setMode] = useState<DispatchScopeMode>('all');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [confirmDowngrade, setConfirmDowngrade] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // NOT the fleet form's list. That one is floored at the oldest version among
+  // this hub's own installations, which says nothing about the children's
+  // fleets — the parent never sees them. Every release is offered; the server
+  // still refuses a release that does not exist (422).
   const versionsQ = useQuery<AvailableVersionsResponse>({
-    queryKey: ['admin-available-versions'],
-    queryFn: async () => (await api.get('/v1/admin/upgrade/available-versions')).data,
+    queryKey: ['admin-available-versions', 'unfiltered'],
+    queryFn: async () => (await api.get('/v1/admin/upgrade/available-versions?unfiltered=1')).data,
     staleTime: 5 * 60 * 1000,
   });
   const versions = versionsQ.data?.versions ?? [];
   const canIssue = canIssueDirective({ targetVersion, versions, loading: versionsQ.isPending });
 
   const reset = () => {
-    setOpen(false); setTargetVersion(''); setMode('all'); setSelected(new Set()); setConfirmDowngrade(false); setError(null);
+    setTargetVersion(''); setMode('all'); setSelected(new Set()); setConfirmDowngrade(false); setError(null);
+    onClose();
   };
 
   const issue = useMutation({
@@ -673,18 +711,6 @@ function GroupUpgradeIssue({ childHubs, onIssued }: { childHubs: ChildHubRow[]; 
     if (!r.ok) { setError(r.error); return; }
     issue.mutate(r.body);
   };
-
-  if (!open) {
-    return (
-      <button
-        onClick={() => setOpen(true)}
-        className="text-[12px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-border-soft text-ink-secondary hover:bg-chip"
-        data-testid="group-upgrade-issue-btn"
-      >
-        <Plus className="w-3.5 h-3.5" /> Upgrade child hubs
-      </button>
-    );
-  }
 
   return (
     <div className="w-full rounded-lg border border-border-soft bg-surface p-3 space-y-3" data-testid="group-upgrade-form">
@@ -720,7 +746,7 @@ function GroupUpgradeIssue({ childHubs, onIssued }: { childHubs: ChildHubRow[]; 
           onChange={(e) => setConfirmDowngrade(e.target.checked)}
           data-testid="group-upgrade-downgrade"
         />
-        Allow this to be a downgrade on child hubs that are ahead of {targetVersion ? `v${targetVersion}` : 'the target'}
+        Also downgrade installations already ahead of {targetVersion ? `v${targetVersion}` : 'the target'}. Unticked, each child hub skips those machines and reports them as “downgrade” in its counts.
       </label>
       {error && (
         <p className="text-xs text-rose-600 dark:text-rose-400" data-testid="group-upgrade-error">{error}</p>

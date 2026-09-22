@@ -31,7 +31,10 @@ const CHILDREN = {
   ],
 };
 const STANDALONE = { isParent: false, childHubs: [] };
-const VERSIONS = { versions: ['1.1.21', '1.1.20'], fleetFloor: null };
+// The fleet form's list is floored at the parent's own oldest installation;
+// the group form must see every release.
+const FLOORED = { versions: ['1.1.21'], fleetFloor: '1.1.21' };
+const UNFILTERED = { versions: ['1.1.21', '1.1.20'], fleetFloor: null };
 
 type Routes = Record<string, unknown | (() => unknown)>;
 const routes = (over: Routes = {}): void => {
@@ -39,7 +42,8 @@ const routes = (over: Routes = {}): void => {
     '/v1/admin/upgrade': { directives: [] },
     '/v1/admin/api-keys': [],
     '/v1/admin/installations': [],
-    '/v1/admin/upgrade/available-versions': VERSIONS,
+    '/v1/admin/upgrade/available-versions': FLOORED,
+    '/v1/admin/upgrade/available-versions?unfiltered=1': UNFILTERED,
     '/v1/admin/child-hubs': CHILDREN,
     '/v1/admin/upgrade-dispatches': { dispatches: [] },
     ...over,
@@ -65,6 +69,8 @@ const openForm = async () => {
   renderPage();
   fireEvent.click(await screen.findByTestId('group-upgrade-issue-btn'));
   await screen.findByTestId('group-upgrade-send');
+  // The release list is the form's own query; wait until it has options.
+  await waitFor(() => expect((screen.getByTestId('group-upgrade-version') as HTMLSelectElement).options.length).toBeGreaterThan(1));
 };
 
 const pickVersion = (v: string) =>
@@ -95,13 +101,37 @@ describe('Admin → Upgrades: a parent with no group upgrades yet', () => {
   });
 });
 
+describe('Admin → Upgrades: a parent with history and no live children', () => {
+  it('keeps the board and shows the control disabled with the reason, instead of removing it', async () => {
+    routes({
+      '/v1/admin/child-hubs': { isParent: true, childHubs: [] },
+      '/v1/admin/upgrade-dispatches': { dispatches: [{ id: 'd-1', targetVersion: '1.1.20', scope: 'all', cancelledAt: null, targets: [] }] },
+    });
+    renderPage();
+    expect(await screen.findByTestId('group-dispatch-d-1')).toBeInTheDocument();
+    expect(screen.getByTestId('group-upgrade-issue-btn')).toBeDisabled();
+    expect(screen.getByTestId('group-upgrade-issue-reason')).toHaveTextContent(/no live child hub/i);
+  });
+});
+
+describe('Admin → Upgrades: when the child-hubs lookup fails', () => {
+  it('says so instead of hiding the whole section', async () => {
+    routes({ '/v1/admin/child-hubs': () => { throw new Error('boom'); } });
+    renderPage();
+    expect(await screen.findByTestId('group-upgrades-error')).toHaveTextContent(/child hubs/i);
+  });
+});
+
 describe('Admin → Upgrades: issuing a group upgrade', () => {
-  it('offers the same version list as the fleet form, and refuses to send without one', async () => {
+  it("offers every release, not the parent's fleet-floored list, and refuses to send without one", async () => {
     routes();
     await openForm();
     const select = screen.getByTestId('group-upgrade-version') as HTMLSelectElement;
     const values = Array.from(select.options).map(o => o.value).filter(Boolean);
+    // 1.1.20 is below the parent's own floor and must still be offered: the
+    // children's fleets are not the parent's.
     expect(values).toEqual(['1.1.21', '1.1.20']);
+    expect(get).toHaveBeenCalledWith('/v1/admin/upgrade/available-versions?unfiltered=1');
     expect(screen.getByTestId('group-upgrade-send')).toBeDisabled();
     pickVersion('1.1.21');
     expect(screen.getByTestId('group-upgrade-send')).toBeEnabled();
@@ -155,6 +185,11 @@ describe('Admin → Upgrades: issuing a group upgrade', () => {
     routes();
     await openForm();
     pickVersion('1.1.20');
+    // The label must describe what the child actually does: skip the machines
+    // that are ahead, per installation, and report them — not refuse the hub.
+    const label = screen.getByTestId('group-upgrade-downgrade').closest('label')!;
+    expect(label).toHaveTextContent(/installations already ahead of v1\.1\.20/);
+    expect(label).toHaveTextContent(/skips those machines/i);
     fireEvent.click(screen.getByTestId('group-upgrade-downgrade'));
     fireEvent.click(screen.getByTestId('group-upgrade-send'));
     await waitFor(() => expect(post).toHaveBeenCalledWith(
@@ -182,6 +217,59 @@ describe('Admin → Upgrades: issuing a group upgrade', () => {
     const err = await screen.findByTestId('group-upgrade-error');
     expect(err).toHaveTextContent('acme-latam');
     expect(err).not.toHaveTextContent('ch-2');
+  });
+
+  it('unticking a child removes it from the request', async () => {
+    routes();
+    await openForm();
+    pickVersion('1.1.21');
+    fireEvent.click(screen.getByTestId('group-upgrade-scope-selected'));
+    fireEvent.click(screen.getByTestId('group-upgrade-child-ch-1'));
+    fireEvent.click(screen.getByTestId('group-upgrade-child-ch-2'));
+    fireEvent.click(screen.getByTestId('group-upgrade-child-ch-1'));
+    fireEvent.click(screen.getByTestId('group-upgrade-send'));
+    await waitFor(() => expect(post).toHaveBeenCalledWith(
+      '/v1/admin/upgrade-dispatches', { targetVersion: '1.1.21', scope: 'selected', childHubIds: ['ch-2'] },
+    ));
+  });
+
+  it('Cancel clears the form, so reopening does not carry a stale downgrade tick or selection', async () => {
+    routes();
+    await openForm();
+    pickVersion('1.1.20');
+    fireEvent.click(screen.getByTestId('group-upgrade-downgrade'));
+    fireEvent.click(screen.getByTestId('group-upgrade-scope-selected'));
+    fireEvent.click(screen.getByTestId('group-upgrade-child-ch-2'));
+    fireEvent.click(screen.getByText('Cancel', { selector: 'button' }));
+    await waitFor(() => expect(screen.queryByTestId('group-upgrade-send')).toBeNull());
+    fireEvent.click(screen.getByTestId('group-upgrade-issue-btn'));
+    await screen.findByTestId('group-upgrade-send');
+    expect((screen.getByTestId('group-upgrade-version') as HTMLSelectElement).value).toBe('');
+    expect(screen.getByTestId('group-upgrade-downgrade')).not.toBeChecked();
+    expect(screen.getByTestId('group-upgrade-scope-all').getAttribute('aria-pressed')).toBe('true');
+    pickVersion('1.1.21');
+    fireEvent.click(screen.getByTestId('group-upgrade-send'));
+    await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/upgrade-dispatches', { targetVersion: '1.1.21', scope: 'all' }));
+  });
+
+  it('fetches the release list once, however often the form is opened', async () => {
+    routes();
+    await openForm();
+    fireEvent.click(screen.getByText('Cancel', { selector: 'button' }));
+    await waitFor(() => expect(screen.queryByTestId('group-upgrade-send')).toBeNull());
+    fireEvent.click(screen.getByTestId('group-upgrade-issue-btn'));
+    await screen.findByTestId('group-upgrade-send');
+    const calls = get.mock.calls.filter(c => c[0] === '/v1/admin/upgrade/available-versions?unfiltered=1');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('renders the form below the heading row, not beside it', async () => {
+    routes();
+    await openForm();
+    const form = screen.getByTestId('group-upgrade-form');
+    const heading = screen.getByText('Group upgrades (child hubs)');
+    expect(form.parentElement).not.toBe(heading.parentElement);
+    expect(screen.queryByTestId('group-upgrade-issue-btn')).toBeNull();
   });
 
   it('closes the form and refreshes the board after a successful send', async () => {
