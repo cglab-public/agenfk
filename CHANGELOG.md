@@ -2,6 +2,43 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.21-beta.8] — 2026-09-22
+
+Beta, cumulative over `1.1.21-beta.7`.
+
+### Publish goes to the org's own flow registry, as a pull request (CGLAB-367)
+
+- In a hub-connected org that points its flow registry at its own repository, the flow editor's
+  **Publish** now goes through the hub, which opens a pull request on that repository with the token
+  it holds (the token never reaches a laptop). It used to push to the public community registry with
+  the laptop's own `gh` login, whatever the org had chosen.
+- One branch per flow, `flow/<slug>`: publishing again while its pull request is open updates that
+  pull request instead of opening a second one. A changed flow is published one patch past the
+  registry's version.
+- The branch is only ever moved when that loses nothing: an open pull request into a different branch,
+  or commits that are in no merged pull request, make the publish refuse and say why.
+- No fallback to the public registry on any hub failure. An org on the public registry keeps
+  publishing from the laptop, as before.
+- The editor names the repository every publish went to.
+- Hub admins: installations in the org can now open pull requests on the org registry as the stored
+  token's GitHub account (rate-limited per installation and per org).
+
+### Hub admins see the flow registry's open pull requests (CGLAB-368)
+
+- Admin > Flows lists the open pull requests on the org's registry, marking the ones published from
+  installations. Each opens on GitHub in a new tab for review and merge. It loads once and refreshes
+  on request, because every fetch spends the org's token.
+
+### `agenfk verify` follows the card's worktree (CGLAB-366)
+
+- The verify command and the close commit now run in the card's worktree - its own, or its top-level
+  item's, since children have none - instead of always in the project's main checkout, where another
+  agent may be working.
+- A linked git worktree can no longer be recorded as the project's root. A `.agenfk` marker inside one
+  used to repoint every card in the project at that single worktree.
+- Verifying from a different checkout of the same repository than the one the card is tested in is
+  refused with an explanation, in both directions. A deleted worktree is reported as such.
+
 ## [1.1.21-beta.7] — 2026-09-22
 
 Beta, cumulative over `1.1.21-beta.6`.
