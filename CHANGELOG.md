@@ -2,6 +2,22 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.21-beta.11] — 2026-09-22
+
+Beta, cumulative over `1.1.21-beta.10`. Hub rate limits are per person where a person is known (CGLAB-371).
+
+- **Dashboard (`/v1`), admin (`/v1/admin`) and `/auth/me` limits are keyed by the signed-in user**, not
+  the client address. The hub is reached through shared corporate egress, so an address bucket was an
+  office-wide cap: everyone behind one NAT or VPN shared 300 requests a minute. A cookie that does not
+  verify (forged, expired, signed with an old secret) is charged to the address bucket, so it cannot buy
+  a fresh budget.
+- **`/auth/me` no longer mints a bucket per cookie value.** It keyed on the raw cookie string, so every
+  forged value created an in-memory bucket kept for 15 minutes and was never refused.
+- **The first refusal in each bucket's window is logged** as `[RATE_LIMIT] <method> <path> refused: over
+  <limit> per <window> for one user|client address` - no address, no token. The load balancer keeps no
+  access logs, so this is the only record that a limit is biting.
+- Sign-in, device-code, invite redemption and first-run setup stay per address: there is no session yet.
+
 ## [1.1.21-beta.10] — 2026-09-22
 
 Beta, cumulative over `1.1.21-beta.9`. Hub security hardening (CGLAB-371).
