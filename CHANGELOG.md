@@ -2,6 +2,47 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.21-beta.12] — 2026-09-22
+
+Beta, cumulative over `1.1.21-beta.11`. Proxy-derived URLs, and the flaky test suite fixed at its root (CGLAB-371).
+
+### Behaviour change for hubs that set `AGENFK_HUB_PUBLIC_URL`
+
+- **`AGENFK_HUB_PUBLIC_URL` now works.** It was documented (and set by the reference deployment) but read
+  nowhere. It is now the origin of every URL the hub hands to others: invite join commands, the device-code
+  approval link, `hubUrl` in join/redeem responses, a federation child's parent URL. A hub served on two
+  hostnames hands out the canonical one, whichever the admin browsed - and `agenfk hub join <other-name>`
+  saves the canonical name. Invalid values are refused at boot.
+- **OAuth callbacks deliberately do not use it**: sign-in returns to the host it started on, so every
+  hostname users browse must stay registered as a redirect URI at Google/Entra (unchanged).
+
+### The hub no longer believes client-written forwarding headers
+
+- **`X-Forwarded-Host` is not read at all.** The AWS ALB never sets it, so any value was written by the
+  client - which let a repoint report claim to have "arrived on" the target host. The arrival host is the
+  `Host` header (parsed properly, so IPv6 literals match). If your proxy rewrites `Host`, set
+  `AGENFK_HUB_PUBLIC_URL`.
+- The protocol (session cookie `Secure`, OAuth redirect) comes from Express's `req.secure`/`req.protocol`,
+  which honour `X-Forwarded-Proto` only from the hops `AGENFK_HUB_TRUST_PROXY` trusts.
+- The "cannot enrol with itself" guard recognises the hub under either of its names.
+
+### Verify logs
+
+- **A log that exactly filled `AGENFK_VERIFY_MAX_LOG_BYTES` was silently short.** The next chunk was dropped
+  without the truncation flag or notice. Under load a pipe delivers exact 64 KiB reads, so this happened in
+  practice; it now says it truncated.
+
+### Test suite (contributors)
+
+- **The wandering load-only failures are gone.** supertest bound the wildcard address but dialled
+  `127.0.0.1`; macOS let that port be shared with another process's `127.0.0.1` listener, which then
+  received the request (bare `ECONNRESET`, or a foreign 404/400). It now dials the loopback it bound.
+  Reproduced with 656 squatting listeners: 8 of 14 files failing before, none after.
+- **The UI suite no longer slows down as it runs.** jsdom 28.1 re-registers an unmounted `<style>`'s sheet
+  (fixed upstream in 30.1), and each xterm terminal left ~1,580 CSS rules behind that every later query paid
+  for - one AppShell spec hit the 20s timeout on CI. Orphaned sheets are dropped after each test:
+  `AppShell.test.tsx` went from 80s to 11s.
+
 ## [1.1.21-beta.11] — 2026-09-22
 
 Beta, cumulative over `1.1.21-beta.10`. Hub rate limits are per person where a person is known (CGLAB-371).
