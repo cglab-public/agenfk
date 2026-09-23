@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { requestOrigin } from '../util/publicUrl.js';
 import axios from 'axios';
 import jwt, { JwtHeader, SigningKeyCallback } from 'jsonwebtoken';
 import jwksClient, { JwksClient } from 'jwks-rsa';
@@ -44,9 +45,11 @@ async function getDiscovery(tenantId: string) {
   return entry;
 }
 
+// The host the user is browsing, never AGENFK_HUB_PUBLIC_URL: the state cookie
+// was set on this host, so the provider must send the user back to it. The
+// protocol honours X-Forwarded-Proto only from a trusted proxy.
 function callbackUrl(req: Request): string {
-  const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol;
-  return `${proto}://${req.get('host')}/auth/entra/callback`;
+  return `${requestOrigin(req)}/auth/entra/callback`;
 }
 
 function verifyIdToken(idToken: string, jwks: JwksClient, audience: string, issuer: string): Promise<jwt.JwtPayload> {

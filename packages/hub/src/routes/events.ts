@@ -12,21 +12,17 @@ import { isOnboardingKeyLabel } from '../util/keyLabel.js';
 
 
 /**
- * The hostname this request actually arrived on. Behind a proxy the real name
- * is in X-Forwarded-Host; req.headers.host is the internal one. Same precedence
- * as publicHubUrl in routes/connect.ts.
+ * The hostname this request actually arrived on: the Host header, which the
+ * proxy preserves. X-Forwarded-Host is NOT read - the production ALB never sets
+ * it, so every hop in it, first or last, was written by the client, and a
+ * repoint report could name the target host without having reached it.
  */
 function requestHost(req: Request): string | null {
-  // X-Forwarded-Host is client-controlled unless a proxy overwrites it, and a
-  // proxy APPENDS — so the leftmost element is whatever the caller supplied and
-  // the rightmost is the last hop that actually handled the request. Taking [0]
-  // would trust exactly the attacker-chosen value.
-  const fwdRaw = req.headers['x-forwarded-host'] as string | undefined;
-  const hops = fwdRaw ? fwdRaw.split(',').map(h => h.trim()).filter(Boolean) : [];
-  const host = (hops.length ? hops[hops.length - 1] : undefined)
-    || (req.headers.host as string | undefined)
-    || null;
-  return host ? host.split(':')[0].toLowerCase() : null;
+  const host = (req.headers.host as string | undefined) || null;
+  if (!host) return null;
+  // Parsed, not split on ':' - an IPv6 literal ("[::1]:4000") is all colons.
+  // Same normalisation as the campaign's allowed_host (URL.hostname).
+  try { return new URL(`http://${host}`).hostname.toLowerCase(); } catch { return null; }
 }
 
 export { sanitizeRemoteUrl } from '../util/remoteUrl.js';

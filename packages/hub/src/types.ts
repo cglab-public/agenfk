@@ -13,6 +13,12 @@ export interface HubServerConfig {
    */
   trustProxy?: number | string;
   /**
+   * AGENFK_HUB_PUBLIC_URL, reduced to an origin: the URL handed to others
+   * (invites, device-code links, hubUrl). OAuth callbacks deliberately do not
+   * use it - they return to the host the user is browsing.
+   */
+  publicUrl?: string;
+  /**
    * Validates that a given agenfk version actually exists as a published
    * release. Used by the fleet-upgrade-directive admin POST so we never fan
    * out a directive that no installation can resolve. Defaults to a GitHub

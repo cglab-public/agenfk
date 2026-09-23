@@ -28,7 +28,7 @@ import { outboxDepth } from '../services/federation/federationSync.js';
 import { releaseParentFlows } from '../services/federation/parentFlows.js';
 import { effectiveIdentityPolicy } from '../services/federation/forwarding.js';
 import { httpFederationClient, type FederationClient } from '../services/federation/federationClient.js';
-import { publicHubUrl } from '../util/publicUrl.js';
+import { publicHubUrl, requestOrigin } from '../util/publicUrl.js';
 import { loadModelMappings } from '../util/modelMapping.js';
 import { asyncRoute } from '../util/asyncRoute.js';
 import {
@@ -2825,11 +2825,14 @@ export function adminRouter(ctx: HubServerContext): Router {
         res.status(400).json({ error: (err as Error).message });
         return;
       }
-      // A footgun guard, not a control: publicHubUrl comes from proxy headers,
-      // so an admin typing a loopback address or a different scheme walks past
-      // it. It catches the obvious paste, which is what it is for.
+      // A footgun guard, not a control: an admin typing a loopback address or a
+      // different scheme walks past it. It catches the obvious paste, which is
+      // what it is for - including this hub's OTHER name: a hub served on two
+      // hostnames is the same hub under either, whichever one
+      // AGENFK_HUB_PUBLIC_URL calls canonical.
       try {
-        if (parentUrl === assertHttpUrl(publicHubUrl(req), { allowPrivate: true })) {
+        const selves = [publicHubUrl(req), requestOrigin(req)].map(u => assertHttpUrl(u, { allowPrivate: true }));
+        if (selves.includes(parentUrl)) {
           res.status(400).json({ error: 'a hub cannot enrol with itself as its own parent' });
           return;
         }

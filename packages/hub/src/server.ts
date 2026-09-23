@@ -189,6 +189,8 @@ export async function createHubApp(
   // Which X-Forwarded-For hop is the client. Every rate limit keys on req.ip,
   // and req.ip is only as honest as this setting: see configFromEnv.
   app.set('trust proxy', config.trustProxy ?? DEFAULT_TRUST_PROXY);
+  // Read by publicHubUrl for every URL the hub hands out.
+  app.locals.hubPublicUrl = config.publicUrl;
   app.use(express.json({ limit: '10mb' }));
   app.use(cookieParser());
 
@@ -394,6 +396,23 @@ export function parseTrustProxy(raw: string | undefined): number | string {
   return items.join(', ');
 }
 
+/**
+ * AGENFK_HUB_PUBLIC_URL: the hub's canonical origin, used for the URLs it hands
+ * out. Reduced to scheme://host[:port]; unset or blank means "the origin each
+ * request arrived on". Anything that is not an http(s) URL is refused at boot -
+ * a typo here would otherwise ship broken join commands to every new machine.
+ */
+export function parsePublicUrl(raw: string | undefined): string | undefined {
+  const v = raw?.trim();
+  if (!v) return undefined;
+  let url: URL;
+  try { url = new URL(v); } catch { url = undefined as any; }
+  if (!url || (url.protocol !== 'https:' && url.protocol !== 'http:') || !url.host) {
+    throw new Error(`AGENFK_HUB_PUBLIC_URL=${v} is not an http(s) URL. Set it to the address users and machines reach the hub on, e.g. https://hub.example.com.`);
+  }
+  return url.origin;
+}
+
 export function configFromEnv(): HubServerConfig & { backend?: HubBackend; pgUrl?: string } {
   const secretKey = process.env.AGENFK_HUB_SECRET_KEY;
   const sessionSecret = process.env.AGENFK_HUB_SESSION_SECRET;
@@ -408,6 +427,7 @@ export function configFromEnv(): HubServerConfig & { backend?: HubBackend; pgUrl
     sessionSecret,
     defaultOrgId: process.env.AGENFK_HUB_ORG_ID || 'default',
     trustProxy: parseTrustProxy(process.env.AGENFK_HUB_TRUST_PROXY),
+    publicUrl: parsePublicUrl(process.env.AGENFK_HUB_PUBLIC_URL),
     backend,
     pgUrl: process.env.AGENFK_HUB_PG_URL,
   };

@@ -152,7 +152,7 @@ describe('hub plug-and-play onboarding', () => {
         .post('/hub/invite/create')
         .set('Cookie', cookie)
         .set('x-forwarded-proto', 'https')
-        .set('x-forwarded-host', 'hub.example.com')
+        .set('Host', 'hub.example.com')
         .send({});
       expect(r.status).toBe(200);
       expect(typeof r.body.hubUrl).toBe('string');

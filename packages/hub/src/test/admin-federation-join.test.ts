@@ -143,6 +143,19 @@ describe('child hub: join, request release, leave', () => {
       expect(enrollCalls).toHaveLength(0);
     });
 
+    it('refuses its own browsed host too, when AGENFK_HUB_PUBLIC_URL names another', async () => {
+      // A hub with two names: the canonical one is the public URL, but an admin
+      // pasting the OTHER name (the one they are browsing) is still pasting
+      // this hub.
+      app.locals.hubPublicUrl = 'https://canonical.example.com';
+      const r = await supertest(app).post('/v1/admin/federation/join')
+        .set('Cookie', adminCookie).set('Host', 'self.example.com')
+        .send({ inviteToken: joinToken('http://self.example.com', 't') });
+      expect(r.status).toBe(400);
+      expect(r.body.error).toMatch(/itself|own/i);
+      expect(enrollCalls).toHaveLength(0);
+    });
+
     it('requires an invite token', async () => {
       expect((await join({ parentUrl: PARENT })).status).toBe(400);
       expect(enrollCalls).toHaveLength(0);

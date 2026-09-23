@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { requestOrigin } from '../util/publicUrl.js';
 import axios from 'axios';
 import { HubServerContext } from '../server.js';
 import { decryptSecret } from '../crypto.js';
@@ -19,9 +20,11 @@ async function readGoogleConfig(ctx: HubServerContext): Promise<GoogleCfg | unde
   );
 }
 
+// The host the user is browsing, never AGENFK_HUB_PUBLIC_URL: the state cookie
+// was set on this host, so the provider must send the user back to it. The
+// protocol honours X-Forwarded-Proto only from a trusted proxy.
 function callbackUrl(req: Request): string {
-  const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol;
-  return `${proto}://${req.get('host')}/auth/google/callback`;
+  return `${requestOrigin(req)}/auth/google/callback`;
 }
 
 export function googleRouter(ctx: HubServerContext): Router {
