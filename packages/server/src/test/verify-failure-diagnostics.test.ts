@@ -54,7 +54,7 @@ const LOG_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-verifytest-'));
 setVerifyLogRootForTests(LOG_ROOT);
 
 // Import AFTER the env var so storage lands in the test DB.
-import { app, initStorage, VERIFY_TOKEN, getVerifyLogRoot, setVerifyLogRootForTests } from '../server';
+import { app, initStorage, VERIFY_TOKEN, getVerifyLogRoot, setVerifyLogRootForTests, storage } from '../server';
 
 /** Item log dir for one item, under the temp root. */
 const itemLogDir = (itemId: string) => path.join(getVerifyLogRoot(), itemId);
@@ -71,7 +71,7 @@ const clearLogRoot = () => {
 const setupItem = async (name: string) => {
   const p = (await request(app).post('/projects').send({ name })).body;
   const item = (await request(app).post('/items').send({ type: 'TASK', title: name, projectId: p.id })).body;
-  await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+  await storage.updateItem(item.id, { status: 'IN_PROGRESS' } as any);
   return { p, item };
 };
 
@@ -473,7 +473,7 @@ describe('DELETE /projects/:id — purges verify logs with the project (BUG b233
     if (!VERIFY_TOKEN) return;
     const p = (await request(app).post('/projects').send({ name: 'PurgeProject' })).body;
     const item = (await request(app).post('/items').send({ type: 'TASK', title: 'x', projectId: p.id })).body;
-    await request(app).put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    await storage.updateItem(item.id, { status: 'IN_PROGRESS' } as any);
 
     await request(app)
       .post(`/items/${item.id}/validate`)

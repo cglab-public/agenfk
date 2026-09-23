@@ -1429,6 +1429,14 @@ const PLATFORM_STATUSES = new Set([
 ]);
 
 /**
+ * The platform statuses a card may come back from to the step it left
+ * (`previousStatus`). Only these: the server records that step when a card
+ * enters them, and clears it on every other status change, so on IDEAS or
+ * TRASHED (a deleted card) it is never a way back into the middle of a flow.
+ */
+const RETURNS_TO_PREVIOUS = new Set<Status>([Status.PAUSED, Status.BLOCKED, Status.ARCHIVED]);
+
+/**
  * Build the set of statuses reachable from `fromStatus` given the active Flow.
  * Rules:
  *  - PLATFORM_STATUSES (BLOCKED, PAUSED, ARCHIVED, TRASHED, IDEAS) are always reachable
@@ -1437,7 +1445,7 @@ const PLATFORM_STATUSES = new Set([
  *  - TODO (order 0, anchor) → first non-anchor step is always allowed.
  *  - Last non-anchor step → DONE (highest order, anchor) is always allowed.
  */
-export function buildAllowedTransitions(fromStatus: string, flow: { steps: Array<{ name: string; order: number; isSpecial?: boolean; isAnchor?: boolean }> }): Set<string> {
+export function buildAllowedTransitions(fromStatus: string, flow: { steps: Array<{ name: string; order: number; isSpecial?: boolean; isAnchor?: boolean }> }, previousStatus?: string): Set<string> {
   const allowed = new Set<string>();
 
   // Platform statuses are always reachable from any step
@@ -1450,9 +1458,11 @@ export function buildAllowedTransitions(fromStatus: string, flow: { steps: Array
   // Real workflow steps only. Older flows list the platform statuses AS steps
   // marked `isSpecial` and never set `isAnchor`, so anchors cannot be found by
   // that flag alone — treat the first and last real step as the entry and exit
-  // anchors when the flag is absent.
-  const realSteps = sorted.filter(st =>
-    !st.isSpecial && !PLATFORM_STATUSES.has(st.name as Status));
+  // anchors when the flag is absent. The same progression isForwardMove uses
+  // (CGLAB-377): boundary steps marked only `isSpecial`, as `agenfk flow
+  // create` makes them, stay in, or the two disagree on which step is the
+  // entry and a card parked on PAUSED has nowhere it may go back to.
+  const realSteps = flowProgression(flow);
   const entryStep = realSteps[0]?.name;
   // The step immediately AFTER the entry — positional on purpose. Using
   // `find(!isAnchor)` instead offered the first non-anchor step at ANY depth, so
@@ -1464,15 +1474,27 @@ export function buildAllowedTransitions(fromStatus: string, flow: { steps: Array
   const codingStep = (adjacent && adjacent !== exitStep) ? adjacent.name : undefined;
   const firstAnchor = entryStep;
 
+  // Where a card may go back to after a platform status: the step it left
+  // when it entered it (`previousStatus`, recorded by the server, never by the
+  // caller) or anywhere earlier — the user's decision, so that marking a card
+  // BLOCKED does not cost the progress it had verified (CGLAB-377).
+  const returnable = (): string[] => {
+    if (!RETURNS_TO_PREVIOUS.has(fromStatus as Status)) return [];
+    const i = previousStatus ? realSteps.findIndex(st => st.name === previousStatus) : -1;
+    return i === -1 ? [] : realSteps.slice(0, i + 1).map(st => st.name);
+  };
+
   // Coming FROM a platform status. This used to allow every step, which made
   // `--status PAUSED` then `--status <final step>` two legal writes that skipped
-  // every gate in between. Only offer somewhere workable: the entry anchor and
-  // the coding step. Genuine resumption goes through POST /items/:id/resume,
-  // which restores the snapshot status via storage directly and does not pass
-  // through this table.
+  // every gate in between. Only offer somewhere workable: the entry anchor, the
+  // coding step, and the steps the card had already reached. Genuine resumption
+  // goes through POST /items/:id/resume, which restores the snapshot status via
+  // storage directly; it consults this table only to check the snapshot's step,
+  // without a previousStatus, and clears the remembered step.
   if (PLATFORM_STATUSES.has(fromStatus as Status)) {
     if (firstAnchor) allowed.add(firstAnchor);
     if (codingStep) allowed.add(codingStep);
+    for (const name of returnable()) allowed.add(name);
     return allowed;
   }
 
@@ -1484,6 +1506,7 @@ export function buildAllowedTransitions(fromStatus: string, flow: { steps: Array
     // to the last one. Allow recovery only.
     if (firstAnchor) allowed.add(firstAnchor);
     if (codingStep) allowed.add(codingStep);
+    for (const name of returnable()) allowed.add(name);
     return allowed;
   }
 
@@ -1494,6 +1517,118 @@ export function buildAllowedTransitions(fromStatus: string, flow: { steps: Array
   allowed.add(fromStatus);
 
   return allowed;
+}
+
+type TransitionFlow = { steps: Array<{ name: string; order: number; isSpecial?: boolean; isAnchor?: boolean }> };
+
+/**
+ * The flow's own steps in order, the way validate walks them: every step that
+ * is not a platform status. Boundary steps stay in, including those marked
+ * only `isSpecial` - which is how `agenfk flow create` marks its entry and
+ * exit - and so does a step held mid-flow.
+ */
+function flowProgression(flow: TransitionFlow) {
+  return [...flow.steps]
+    .sort((a, b) => a.order - b.order)
+    .filter(st => !PLATFORM_STATUSES.has(st.name as Status));
+}
+
+/**
+ * CGLAB-377 — is `to` a step AFTER `from` in the flow's own progression?
+ *
+ * Forward moves are what `agenfk verify` exists to gate: it records evidence
+ * and runs the step's checks. PUT and bulk used to allow one step forward, so
+ * `agenfk update --status <next>` walked a card to the step before DONE with
+ * neither.
+ *
+ * From a platform status (PAUSED, ARCHIVED...) or a status the flow doesn't
+ * know, anything past the entry step counts as forward: otherwise parking on
+ * PAUSED and coming back to the second step skips the entry step's verify.
+ * Genuine resumption goes through POST /items/:id/resume, not this route.
+ */
+export function isForwardMove(fromStatus: string, toStatus: string, flow: TransitionFlow, previousStatus?: string): boolean {
+  const steps = flowProgression(flow);
+  const from = steps.findIndex(st => st.name === fromStatus);
+  const to = steps.findIndex(st => st.name === toStatus);
+  if (to === -1) return false;
+  if (from === -1) {
+    // Back to the step the card left for the platform status, or earlier, is
+    // a return, not an advance (see buildAllowedTransitions).
+    const left = previousStatus && RETURNS_TO_PREVIOUS.has(fromStatus as Status)
+      ? steps.findIndex(st => st.name === previousStatus) : -1;
+    return to > Math.max(0, left);
+  }
+  return to > from;
+}
+
+/**
+ * Does landing on `toStatus` finish the card? The literal DONE, or the flow's
+ * last step when it is a boundary - the same rule as validate's `endsFlow`.
+ * A last step that is not a boundary is still work: validate runs the final
+ * command from it, not into it.
+ */
+export function isCompletionStep(toStatus: string, flow: TransitionFlow): boolean {
+  if (toStatus === Status.DONE) return true;
+  const steps = flowProgression(flow);
+  const exit = steps[steps.length - 1];
+  return !!exit && exit.name === toStatus && isBoundaryStep(exit);
+}
+
+/**
+ * What `previousStatus` becomes after a status change through PUT/bulk. It is
+ * single-use: entering PAUSED or BLOCKED from a real flow step remembers that
+ * step, moving between PAUSED and BLOCKED keeps it, and EVERY other status
+ * change clears it - the return itself included - so it can never outlive the
+ * stay it was recorded for and be spent after a rollback (CGLAB-377 review).
+ * ARCHIVED records its own through archiveRecursively.
+ */
+function previousStatusAfter(fromStatus: string, toStatus: string, flow: TransitionFlow, current?: string): string | undefined {
+  if (toStatus !== Status.PAUSED && toStatus !== Status.BLOCKED) return undefined;
+  if (flowProgression(flow).some(st => st.name === fromStatus)) return fromStatus;
+  return fromStatus === Status.PAUSED || fromStatus === Status.BLOCKED ? current : undefined;
+}
+
+/** Refusal text for completing a card outside verify, whatever the exit step is called. */
+function completionRefusal(toStatus: string): string {
+  return `WORKFLOW VIOLATION: Cannot set status to '${toStatus}' directly: it completes the card. It is only reachable through \`agenfk verify\` on the flow's final step, which runs the project's verify command.`;
+}
+
+/** Refusal text for a forward move outside verify. Names the command that does it. */
+function forwardMoveRefusal(itemId: string, fromStatus: string, toStatus: string): string {
+  return `FORWARD MOVE REFUSED: '${fromStatus}' -> '${toStatus}' is a forward move. Forward moves go through \`agenfk verify ${itemId} --evidence "<how you met ${fromStatus}'s exit criteria>"\`, which records the evidence and runs the step's checks. \`agenfk update --status\` only moves a card back or to a platform status (PAUSED, BLOCKED).`;
+}
+
+/**
+ * The record a status move through PUT/bulk leaves on the card.
+ *
+ * A forward move here can only come from the board (x-agenfk-ui), and it skips
+ * verify, so it says so: no evidence, no checks. A backward move is a rollback,
+ * which later steps' records depend on (CGLAB-379), so it is never silent.
+ */
+function statusMoveComment(fromStatus: string, toStatus: string, forward: boolean, fromBoard: boolean) {
+  return forward
+    ? { id: uuidv4(), author: 'Board', timestamp: new Date(),
+        content: `### Moved forward by hand\n\n**Step**: ${fromStatus} -> ${toStatus}\n\nMoved on the board, without agenfk verify: no evidence was recorded and no checks ran.` }
+    : { id: uuidv4(), author: fromBoard ? 'Board' : 'Status change', timestamp: new Date(),
+        content: `### Moved back\n\n**Step**: ${fromStatus} -> ${toStatus}` };
+}
+
+/**
+ * The one rule PUT /items/:id and POST /items/bulk share for a status change
+ * the transition table has already allowed: a forward move is refused unless
+ * it is the board's, and any move along the flow is recorded on the card.
+ * A move to or from a platform status is neither, and passes unrecorded.
+ */
+function classifyStatusMove(
+  itemId: string, fromStatus: string, toStatus: string,
+  flow: TransitionFlow, fromBoard: boolean, previousStatus?: string,
+): { refusal: string } | { comment?: ReturnType<typeof statusMoveComment> } {
+  const forward = isForwardMove(fromStatus, toStatus, flow, previousStatus);
+  if (forward && !fromBoard) return { refusal: forwardMoveRefusal(itemId, fromStatus, toStatus) };
+  if (forward || isForwardMove(toStatus, fromStatus, flow)) {
+    return { comment: statusMoveComment(fromStatus, toStatus, forward, fromBoard) };
+  }
+  return {};
 }
 
 // ── Flow step helpers (used by review_changes / test_changes) ────────────────
@@ -4288,7 +4423,9 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
     return res.status(400).json({ error: "Expected items array" });
   }
 
-  const isInternalVerify = req.headers['x-agenfk-internal'] === VERIFY_TOKEN;
+  // Same rules as PUT /items/:id (CGLAB-377): the internal token exempts
+  // nothing, and a forward move is the board's alone, recorded on the card.
+  const fromBoard = req.headers['x-agenfk-ui'] === '1';
   const results = [];
   // Rejected entries are reported back rather than silently dropped — the route
   // already `continue`s past unknown ids, which hides mistakes.
@@ -4304,25 +4441,32 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
 
     const { title, description, status, parentId, context, implementationPlan, reviews, comments, sortOrder } = bodyUpdates;
 
-    if (!isInternalVerify && status === Status.DONE) {
-      skipped.push({ id, error: 'Cannot set DONE directly. Use validate_progress on the final step.' });
-      continue;
-    }
-
     // The bulk route applied NO flow validation, so it was a way around the
     // per-item gate: one request could move any number of items any distance
     // forward. Same rule as PUT /items/:id, reported per entry rather than
     // failing the whole batch.
-    if (!isInternalVerify && status !== undefined && status !== currentItem.status
-        && !PLATFORM_STATUSES.has(status as Status)) {
-      const bulkProject = await storage.getProject(currentItem.projectId);
-      const bulkFlows = await storage.listFlows();
-      const bulkFlow = getActiveFlow((bulkProject as any)?.flowId, bulkFlows);
-      const bulkAllowed = buildAllowedTransitions(currentItem.status, bulkFlow);
+    let bulkPreviousAfter: string | undefined;
+    let bulkMoveComment: ReturnType<typeof statusMoveComment> | undefined;
+    const bulkFlow = status !== undefined && status !== currentItem.status
+      ? getActiveFlow((await storage.getProject(currentItem.projectId) as any)?.flowId, await storage.listFlows())
+      : undefined;
+    if (bulkFlow) bulkPreviousAfter = previousStatusAfter(currentItem.status, status, bulkFlow, currentItem.previousStatus);
+    if (bulkFlow && !PLATFORM_STATUSES.has(status as Status)) {
+      if (isCompletionStep(status, bulkFlow)) {
+        skipped.push({ id, error: completionRefusal(status) });
+        continue;
+      }
+      const bulkAllowed = buildAllowedTransitions(currentItem.status, bulkFlow, currentItem.previousStatus);
       if (!bulkAllowed.has(status)) {
         skipped.push({ id, error: `FLOW VIOLATION: Cannot transition from '${currentItem.status}' to '${status}' in flow '${bulkFlow.name}'.` });
         continue;
       }
+      const move = classifyStatusMove(id, currentItem.status, status, bulkFlow, fromBoard, currentItem.previousStatus);
+      if ('refusal' in move) {
+        skipped.push({ id, error: move.refusal });
+        continue;
+      }
+      bulkMoveComment = move.comment;
     }
 
     // Resolved ABOVE the archive/unarchive `continue`s below. Those branches
@@ -4357,7 +4501,10 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
 
     if (status !== undefined && status !== Status.ARCHIVED && currentItem.status === Status.ARCHIVED) {
       await unarchiveRecursively(id);
-      await storage.updateItem(id, { status: status as Status, ...bulkRefUpdates });
+      await storage.updateItem(id, {
+        status: status as Status, ...bulkRefUpdates,
+        ...(bulkMoveComment ? { comments: [...(currentItem.comments ?? []), bulkMoveComment] } : {}),
+      });
       noteUnverifiedLink();
       continue;
     }
@@ -4379,6 +4526,8 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
     if (implementationPlan !== undefined) updates.implementationPlan = implementationPlan;
     if (reviews !== undefined) updates.reviews = reviews;
     if (comments !== undefined) updates.comments = comments;
+    if (bulkMoveComment) updates.comments = [...(comments ?? currentItem.comments ?? []), bulkMoveComment];
+    if (bulkFlow) updates.previousStatus = bulkPreviousAfter;
     if (sortOrder !== undefined) updates.sortOrder = sortOrder;
 
     Object.assign(updates, bulkRef.updates);
@@ -4397,22 +4546,6 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
       // it no longer has.
       if (currentItem.parentId && currentItem.parentId !== updated.parentId) {
         parentIdsToSync.add(currentItem.parentId);
-      }
-
-      if (updated.status === Status.DONE && currentItem.status !== Status.DONE) {
-        if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
-          const proj = await storage.getProject(updated.projectId);
-          // No `|| findProjectRoot(process.cwd())`: that made a long-lived daemon
-          // commit into whatever repository it was launched from. autoGitCommit
-          // declines and says why.
-          const projectRoot = (proj as any)?.projectRoot;
-          // These routes have no message field to carry it, so the outcome is
-          // at least surfaced to the log rather than dropped on the floor.
-          const r = await autoGitCommit(updated, projectRoot);
-          if (r.outcome !== 'committed') {
-            console.warn(`[AUTO_GIT] ${updated.id}: no close commit (${r.outcome}) — ${r.detail ?? ''}`);
-          }
-        }
       }
     } catch (e) {
       // Previously swallowed entirely, so a failed write looked like a success
@@ -4489,28 +4622,43 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
     }
   }
 
+  // The internal token no longer exempts a status change from anything below
+  // (CGLAB-377). It is a file any same-user agent can read, and nothing
+  // legitimate sends it here: validate writes its own result through storage.
+  // It still selects setup behaviour for the worktree hook further down.
   const isInternalVerify = req.headers['x-agenfk-internal'] === VERIFY_TOKEN;
-  if (!isInternalVerify && status === Status.DONE) {
-    return res.status(403).json({
-      error: "WORKFLOW VIOLATION: Cannot set status to DONE directly. Move the item to TEST, then call test_changes(itemId) to run the project's test suite."
-    });
-  }
+  const fromBoard = req.headers['x-agenfk-ui'] === '1';
 
   // Flow-aware transition validation. This runs for EVERY project, not only
   // those with a custom flow assigned: the previous `if (projectFlowId)` guard
   // meant a project on the shipped default flow — the majority — got no
   // validation at all, so `--status TEST` straight from TODO was accepted.
   // getActiveFlow falls back to DEFAULT_FLOW when no custom flow is set.
-  if (status !== undefined && status !== currentItem.status && !isInternalVerify) {
+  let moveComment: ReturnType<typeof statusMoveComment> | undefined;
+  let previousAfter: string | undefined;
+  let statusChanged = false;
+  if (status !== undefined && status !== currentItem.status) {
     const project = await storage.getProject(currentItem.projectId);
     const projectFlows = await storage.listFlows();
     const activeFlow = getActiveFlow((project as any)?.flowId, projectFlows);
-    const allowed = buildAllowedTransitions(currentItem.status, activeFlow);
+    if (isCompletionStep(status, activeFlow)) {
+      return res.status(403).json({ error: completionRefusal(status) });
+    }
+    const allowed = buildAllowedTransitions(currentItem.status, activeFlow, currentItem.previousStatus);
     if (!allowed.has(status)) {
       return res.status(400).json({
         error: `FLOW VIOLATION: Cannot transition from '${currentItem.status}' to '${status}' in the active flow '${activeFlow.name}'. Allowed targets: ${[...allowed].join(', ')}. Forward transitions go through validate_progress, which records evidence and checks the step's exit criteria.`
       });
     }
+    // Forward is the board's alone: the user chose to keep drag-and-drop, and
+    // every such move is recorded. The header is forgeable until CGLAB-383.
+    const move = classifyStatusMove(req.params.id, currentItem.status, status, activeFlow, fromBoard, currentItem.previousStatus);
+    if ('refusal' in move) {
+      return res.status(409).json({ error: move.refusal });
+    }
+    moveComment = move.comment;
+    previousAfter = previousStatusAfter(currentItem.status, status, activeFlow, currentItem.previousStatus);
+    statusChanged = true;
   }
 
   // Validate type change
@@ -4567,7 +4715,10 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
 
   if (status !== undefined && status !== Status.ARCHIVED && currentItem.status === Status.ARCHIVED) {
     await unarchiveRecursively(req.params.id);
-    await storage.updateItem(req.params.id, { status: status as Status, ...(externalRef.updates as any) });
+    await storage.updateItem(req.params.id, {
+      status: status as Status, ...(externalRef.updates as any),
+      ...(moveComment ? { comments: [...(currentItem.comments ?? []), moveComment] } : {}),
+    });
     io.emit('items_updated');
     return respondWithStoredItem();
   }
@@ -4596,6 +4747,8 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
     updates.agentId = req.body.agentId;
   }
   if (comments !== undefined) updates.comments = comments;
+  if (moveComment) updates.comments = [...(comments ?? currentItem.comments ?? []), moveComment];
+  if (statusChanged) updates.previousStatus = previousAfter;
   if (sortOrder !== undefined) updates.sortOrder = sortOrder;
   if (branchName !== undefined) updates.branchName = branchName;
   if (prUrl !== undefined) updates.prUrl = prUrl;
@@ -4708,6 +4861,7 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
           console.log(`[TEST_MODE] Skipping auto-git commit for item ${updated.id}`);
         }
       }
+
 
     res.json(withJiraWarning(updated, externalRef.warning));
   } catch (error) {
@@ -5894,7 +6048,9 @@ app.post("/items/:id/pause", asyncHandler(async (req: any, res: any) => {
     timestamp: new Date(),
   }];
 
-  await storage.updateItem(req.params.id, { status: Status.PAUSED, comments });
+  // The pause snapshot is how this card comes back; a remembered step from an
+  // earlier stay must not also be honoured (CGLAB-377).
+  await storage.updateItem(req.params.id, { status: Status.PAUSED, comments, previousStatus: undefined });
   io.emit('items_updated');
 
   res.json(snapshot);
@@ -5948,7 +6104,7 @@ app.post("/items/:id/resume", asyncHandler(async (req: any, res: any) => {
     timestamp: new Date(),
   }];
 
-  await storage.updateItem(req.params.id, { status: snapshot.status, comments });
+  await storage.updateItem(req.params.id, { status: snapshot.status, comments, previousStatus: undefined });
 
   // Mark the snapshot resumed AND spent. createSnapshot replaces the row for
   // this item, so writing resumedAt keeps the audit trail; the guard below is

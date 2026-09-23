@@ -13,7 +13,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
-import { app, initStorage } from '../server';
+import { app, initStorage, storage } from '../server';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -90,11 +90,11 @@ describe('workflow_gatekeeper MCP handler: a STORY is directly actionable (CGLAB
 
     const story = await agent().post('/items').send({ type: 'STORY', title: 'mirror story', projectId });
     storyId = story.body.id;
-    await agent().put(`/items/${storyId}`).send({ status: 'IN_PROGRESS' });
+    await storage.updateItem(storyId, { status: 'IN_PROGRESS' } as any);
 
     const epic = await agent().post('/items').send({ type: 'EPIC', title: 'mirror epic', projectId });
     epicId = epic.body.id;
-    await agent().put(`/items/${epicId}`).send({ status: 'IN_PROGRESS' });
+    await storage.updateItem(epicId, { status: 'IN_PROGRESS' } as any);
   });
 
   afterAll(async () => {

@@ -37,7 +37,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 // Import AFTER the env var is set so storage lands in the test DB.
-import { app, initStorage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, VERIFY_TOKEN, storage } from '../server';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -103,10 +103,7 @@ async function itemOnFinalStep(name: string, verifyCommand: string) {
     .send({ type: 'TASK', title: `${name}-item`, projectId: project.body.id });
   expect(created.status, `could not create the item: ${JSON.stringify(created.body)}`).toBe(201);
 
-  const moved = await agent().post('/items/bulk')
-    .set('x-agenfk-internal', VERIFY_TOKEN!)
-    .send({ items: [{ id: created.body.id, updates: { status: 'TEST' } }] });
-  expect(moved.status, `could not move the item to TEST: ${JSON.stringify(moved.body)}`).toBe(200);
+  await storage.updateItem(created.body.id, { status: 'TEST' } as any);
 
   // The state the test actually depends on, read back rather than assumed: a
   // validate only goes asynchronous when there is a command to run AND the item
@@ -231,7 +228,7 @@ describe('POST /items/:id/validate — async runs', () => {
     if (!VERIFY_TOKEN) return;
     const p = (await agent().post('/projects').send({ name: 'AV5' })).body;
     const item = (await agent().post('/items').send({ type: 'TASK', title: 'AV5-item', projectId: p.id })).body;
-    await agent().put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    await storage.updateItem(item.id, { status: 'IN_PROGRESS' } as any);
 
     const res = await agent()
       .post(`/items/${item.id}/validate`)

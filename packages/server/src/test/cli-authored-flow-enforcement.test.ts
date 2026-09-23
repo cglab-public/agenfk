@@ -27,7 +27,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
 import * as path from 'path';
-import { app, initStorage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, VERIFY_TOKEN, storage } from '../server';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -93,7 +93,7 @@ describe('a CLI-authored flow gets the same COMMAND GATE as the default one', ()
     // given, and the gate silently did not exist.
     const projectId = await projectOnCliFlow('cli-no-verify-cmd');
     const item = await agent().post('/items').set('x-agenfk-internal', VERIFY_TOKEN!).send({ type: 'TASK', title: 'probe', projectId });
-    await agent().put(`/items/${item.body.id}`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ status: 'CHECKING' });
+    await storage.updateItem(item.body.id, { status: 'CHECKING' } as any);
 
     const res = await agent()
       .post(`/items/${item.body.id}/validate`)
@@ -112,7 +112,7 @@ describe('a CLI-authored flow gets the same COMMAND GATE as the default one', ()
     // omitting the command must RUN it, not skip it.
     const projectId = await projectOnCliFlow('cli-with-verify-cmd', 'exit 1');
     const item = await agent().post('/items').set('x-agenfk-internal', VERIFY_TOKEN!).send({ type: 'TASK', title: 'probe', projectId });
-    await agent().put(`/items/${item.body.id}`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ status: 'CHECKING' });
+    await storage.updateItem(item.body.id, { status: 'CHECKING' } as any);
 
     const res = await agent()
       .post(`/items/${item.body.id}/validate`)
@@ -148,7 +148,7 @@ describe('a CLI-authored flow gets the same COMMAND GATE as the default one', ()
     await agent().put(`/projects/${projectId}/verify-command`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ verifyCommand: 'exit 1' });
 
     const item = await agent().post('/items').set('x-agenfk-internal', VERIFY_TOKEN!).send({ type: 'TASK', title: 'probe', projectId });
-    await agent().put(`/items/${item.body.id}`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ status: 'ONE' });
+    await storage.updateItem(item.body.id, { status: 'ONE' } as any);
 
     await agent().post(`/items/${item.body.id}/validate`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ evidence: 'will fail' });
 
@@ -164,7 +164,7 @@ describe('a CLI-authored flow gets the same COMMAND GATE as the default one', ()
     // agent sent to fix a failure must still be allowed to touch the code.
     const projectId = await projectOnCliFlow('cli-failure-rollback', 'exit 1');
     const item = await agent().post('/items').set('x-agenfk-internal', VERIFY_TOKEN!).send({ type: 'TASK', title: 'probe', projectId });
-    await agent().put(`/items/${item.body.id}`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ status: 'CHECKING' });
+    await storage.updateItem(item.body.id, { status: 'CHECKING' } as any);
 
     await agent().post(`/items/${item.body.id}/validate`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ evidence: 'will fail' });
 

@@ -23,7 +23,7 @@ Identify the user's request and follow the **Standard Mode** protocol below. You
 When child items of the same parent share the same source code (same branch/workspace), a single `agenfk verify` call validates the code for **all** siblings:
 
 - After `agenfk verify` passes on **one** sibling, advance each remaining sibling with its own `agenfk verify <id> --evidence "<text>"` call. The server's sibling propagation skips the build and test execution and passes immediately, so this is cheap — but it still records evidence and still goes through the gate.
-- Never shortcut a sibling forward with `agenfk update <id> --status <step>`. The server permits a one-step forward move, so that write succeeds and advances the item with no evidence and no exit-criteria check. `agenfk update --status` is for backward/rollback moves only.
+- Never try to shortcut a sibling forward with `agenfk update <id> --status <step>`. The server refuses forward moves there and names `agenfk verify`; `agenfk update --status` is for backward/rollback moves only.
 
 This avoids redundant build and test runs when the underlying code changes are shared.
 
@@ -163,8 +163,9 @@ defines none, so this is the common case — empty criteria never mean "no work"
 
 6. **Advance the gate.** Run `agenfk verify <itemId> --evidence "<how you satisfied THIS step's exit criteria>" ["<command>"]`.
    The evidence is mandatory and must be concrete. This is the only way to move forward —
-   never use `agenfk update --status` to advance, because the server permits a one-step forward
-   move, so that write succeeds and advances the item with no evidence and no criteria check.
+   `agenfk update --status` cannot advance: the server refuses forward moves there, and refuses
+   the flow's exit step to everyone. The only forward move outside verify is a person dragging a
+   card one step on the board, and each one is recorded on the card as made without evidence.
    - On the **final step** (identified in step 1), **omit the command** — this runs the
      project's `verifyCommand` and lands DONE. This is the *only* step where omitting the
      command substitutes `verifyCommand`.

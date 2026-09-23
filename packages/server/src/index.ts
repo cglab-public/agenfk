@@ -281,7 +281,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "update_item",
-        description: "Update an existing item's status, title, description, or parent. IMPORTANT: Cannot set status to DONE directly — use test_changes. For custom flows, call get_flow(projectId) for valid step names. Pass parentId to re-parent (null detaches to top level); the parent must be in the same project and cannot be the item itself or one of its descendants.",
+        description: "Update an existing item's status, title, description, or parent. IMPORTANT: status moves only BACKWARD or to a platform status (PAUSED, BLOCKED); a forward move is refused (409) — advance with validate_progress, the only route to the next step and to DONE. For custom flows, call get_flow(projectId) for valid step names. Pass parentId to re-parent (null detaches to top level); the parent must be in the same project and cannot be the item itself or one of its descendants.",
         inputSchema: {
           type: "object",
           properties: {

@@ -18,7 +18,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
 import * as path from 'path';
-import { app, initStorage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, VERIFY_TOKEN, storage } from '../server';
 
 const TEST_DB = path.resolve('./circuit-breaker-wiring-test-db.sqlite');
 
@@ -166,8 +166,8 @@ describe('the breaker clears on a flow whose exit is not named DONE', () => {
     }
     expect((await agent().get(`/items/${item}`)).body.failureCount).toBe(3);
 
-    await internal(agent().put(`/items/${item}`)).send({ status: 'SPEC' });
-    await internal(agent().put(`/items/${item}`)).send({ status: 'CODE' });
+    await storage.updateItem(item, { status: 'SPEC' } as any);
+    await storage.updateItem(item, { status: 'CODE' } as any);
     const res = await internal(agent().post(`/items/${item}/validate`)).send({ evidence: 'done', command: 'true' });
     expect(res.status).toBe(200);
 
@@ -204,7 +204,7 @@ describe('the breaker clears on a flow whose exit is not named DONE', () => {
     }
     expect((await agent().get(`/items/${item}`)).body.failureCount).toBe(2);
 
-    await internal(agent().put(`/items/${item}`)).send({ status: 'SPEC' });
+    await storage.updateItem(item, { status: 'SPEC' } as any);
     // SPEC -> HOLD is a boundary step, so a command is required and it passes.
     const res = await internal(agent().post(`/items/${item}/validate`)).send({ evidence: 'parked', command: 'true' });
     expect(res.status).toBe(200);

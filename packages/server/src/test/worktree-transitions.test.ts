@@ -76,11 +76,12 @@ describe('a status change through PUT /items/:id', () => {
   });
 
   it('gives the item a worktree, like the validate path already did', async () => {
-    // The path an agent takes when it parks an item in a working step
-    // directly, and the path an import takes. It had no worktree hook at all.
+    // The path the board takes when a person drags a card into a working step
+    // (the only forward move PUT still allows, CGLAB-377). It had no worktree
+    // hook at all.
     const item = await agent().post('/items')
       .send({ title: 'Moved by hand', type: 'TASK', projectId });
-    await internal(agent().put(`/items/${item.body.id}`)).send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${item.body.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
     const after = await agent().get(`/items/${item.body.id}`);
     expect(after.body.worktreePath, 'no worktree after moving into a working step').toBeTruthy();
   });
@@ -90,7 +91,7 @@ describe('a status change through PUT /items/:id', () => {
     // moment a project turns the setting on.
     const item = await agent().post('/items')
       .send({ title: 'Back to todo', type: 'TASK', projectId });
-    await internal(agent().put(`/items/${item.body.id}`)).send({ status: 'TODO' });
+    await agent().put(`/items/${item.body.id}`).set('x-agenfk-ui', '1').send({ status: 'TODO' });
     const after = await agent().get(`/items/${item.body.id}`);
     expect(after.body.worktreePath ?? null).toBeNull();
   });
@@ -98,9 +99,9 @@ describe('a status change through PUT /items/:id', () => {
   it('does not make a second one for an item that already has it', async () => {
     const item = await agent().post('/items')
       .send({ title: 'Twice', type: 'TASK', projectId });
-    await internal(agent().put(`/items/${item.body.id}`)).send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${item.body.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
     const first = (await agent().get(`/items/${item.body.id}`)).body.worktreePath;
-    await internal(agent().put(`/items/${item.body.id}`)).send({ status: 'REVIEW' });
+    await agent().put(`/items/${item.body.id}`).set('x-agenfk-ui', '1').send({ status: 'REVIEW' });
     const second = (await agent().get(`/items/${item.body.id}`)).body.worktreePath;
     expect(second).toBe(first);
   });
@@ -110,14 +111,14 @@ describe('a status change through PUT /items/:id', () => {
     // true on the paths somebody remembered.
     const epic = await agent().post('/items')
       .send({ title: 'An epic', type: 'EPIC', projectId });
-    await internal(agent().put(`/items/${epic.body.id}`)).send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${epic.body.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
     expect((await agent().get(`/items/${epic.body.id}`)).body.worktreePath ?? null).toBeNull();
 
     const parent = await agent().post('/items')
       .send({ title: 'Parent', type: 'STORY', projectId });
     const child = await agent().post('/items')
       .send({ title: 'Child', type: 'TASK', projectId, parentId: parent.body.id });
-    await internal(agent().put(`/items/${child.body.id}`)).send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${child.body.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
     expect((await agent().get(`/items/${child.body.id}`)).body.worktreePath ?? null).toBeNull();
   });
 
@@ -125,7 +126,7 @@ describe('a status change through PUT /items/:id', () => {
     const other = await internal(agent().post('/projects')).send({ name: 'no-auto' });
     const item = await agent().post('/items')
       .send({ title: 'No auto', type: 'TASK', projectId: other.body.id });
-    await internal(agent().put(`/items/${item.body.id}`)).send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${item.body.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
     expect((await agent().get(`/items/${item.body.id}`)).body.worktreePath ?? null).toBeNull();
   });
 });

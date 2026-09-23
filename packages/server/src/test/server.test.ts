@@ -120,18 +120,25 @@ describe('Server API', () => {
       expect(res.body.title).toBe('T1');
     });
 
-    it('should update an item status', async () => {
+    it('should move an item status back, and only let the board move it forward (CGLAB-377)', async () => {
       const createRes = await agent()
         .post('/items')
         .send({ projectId, type: ItemType.TASK, title: 'To Update', description: 'D' });
       const id = createRes.body.id;
 
+      const refused = await agent().put(`/items/${id}`).send({ status: Status.IN_PROGRESS });
+      expect(refused.status).toBe(409);
+
       const res = await agent()
         .put(`/items/${id}`)
+        .set('x-agenfk-ui', '1')
         .send({ status: Status.IN_PROGRESS });
-      
       expect(res.status).toBe(200);
       expect(res.body.status).toBe(Status.IN_PROGRESS);
+
+      const back = await agent().put(`/items/${id}`).send({ status: Status.TODO });
+      expect(back.status).toBe(200);
+      expect(back.body.status).toBe(Status.TODO);
     });
 
     it('should block direct transition to DONE', async () => {
@@ -148,7 +155,7 @@ describe('Server API', () => {
       expect(res.body.error).toContain('WORKFLOW VIOLATION');
     });
 
-    it('should allow transition to DONE with internal token', async () => {
+    it('should refuse DONE even with the internal token (CGLAB-377)', async () => {
       const createRes = await agent()
         .post('/items')
         .send({ projectId, type: ItemType.TASK, title: 'Verify Me', description: 'D' });
@@ -158,9 +165,9 @@ describe('Server API', () => {
         .put(`/items/${id}`)
         .set('x-agenfk-internal', VERIFY_TOKEN)
         .send({ status: Status.DONE });
-      
-      expect(res.status).toBe(200);
-      expect(res.body.status).toBe(Status.DONE);
+
+      expect(res.status).toBe(403);
+      expect((await agent().get(`/items/${id}`)).body.status).toBe(Status.TODO);
     });
 
     it('should propagate status to parent', async () => {
@@ -175,7 +182,7 @@ describe('Server API', () => {
       const taskId = taskRes.body.id;
 
       // Update child to IN_PROGRESS
-      await agent().put(`/items/${taskId}`).send({ status: Status.IN_PROGRESS });
+      await agent().put(`/items/${taskId}`).set('x-agenfk-ui', '1').send({ status: Status.IN_PROGRESS });
 
       // Check parent
       const parentRes = await agent().get(`/items/${storyId}`);
@@ -198,8 +205,9 @@ describe('Server API', () => {
         .send({ projectId, type: ItemType.TASK, title: 'Trashed Task', parentId: storyId });
       const task2Id = task2Res.body.id;
 
-      // Move active task to DONE (via internal token)
-      await agent().put(`/items/${task1Id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: Status.DONE });
+      // Seed the active task as DONE: no HTTP route sets DONE outside verify
+      // (CGLAB-377). The trash/archive below is what runs the parent sync.
+      await storage.updateItem(task1Id, { status: Status.DONE } as any);
 
       // Trash the second task
       await agent().delete(`/items/${task2Id}`);
@@ -225,11 +233,12 @@ describe('Server API', () => {
         .send({ projectId, type: ItemType.TASK, title: 'Archived Task', parentId: storyId });
       const task2Id = task2Res.body.id;
 
-      // Move active task to DONE (via internal token)
-      await agent().put(`/items/${task1Id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: Status.DONE });
+      // Seed the active task as DONE: no HTTP route sets DONE outside verify
+      // (CGLAB-377). The trash/archive below is what runs the parent sync.
+      await storage.updateItem(task1Id, { status: Status.DONE } as any);
 
       // Archive the second task
-      await agent().put(`/items/${task2Id}`).send({ status: Status.ARCHIVED });
+      await agent().put(`/items/${task2Id}`).set('x-agenfk-ui', '1').send({ status: Status.ARCHIVED });
 
       // Parent should be DONE — archived child should be ignored
       const parentRes = await agent().get(`/items/${storyId}`);
@@ -256,8 +265,8 @@ describe('Server API', () => {
         .send({ projectId, type: ItemType.TASK, title: 'Trashed Task 2', parentId: storyId });
       const task3Id = task3Res.body.id;
 
-      // Move task1 to DONE
-      await agent().put(`/items/${task1Id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: Status.DONE });
+      // Seed task1 as DONE (no HTTP route sets DONE outside verify, CGLAB-377)
+      await storage.updateItem(task1Id, { status: Status.DONE } as any);
 
       // Trash task3
       await agent().delete(`/items/${task3Id}`);

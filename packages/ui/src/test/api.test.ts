@@ -41,7 +41,11 @@ describe('UI API Client', () => {
   it('should update item', async () => {
     mockedAxios.put.mockResolvedValue({ data: {} });
     await api.updateItem('i1', { status: 'DONE' } as any);
-    expect(mockedAxios.put).toHaveBeenCalledWith(expect.stringContaining('/items/i1'), { status: 'DONE' });
+    expect(mockedAxios.put).toHaveBeenCalledWith(
+      expect.stringContaining('/items/i1'),
+      { status: 'DONE' },
+      expect.objectContaining({ headers: expect.objectContaining({ 'x-agenfk-ui': '1' }) }),
+    );
   });
 
   it('should delete item', async () => {
@@ -68,7 +72,11 @@ describe('UI API Client', () => {
     mockedAxios.post.mockResolvedValue({ data: { updated: 1 } });
     const result = await api.bulkUpdateItems([{ id: 'i1', updates: { status: 'DONE' as any } }]);
     expect(result.updated).toBe(1);
-    expect(mockedAxios.post).toHaveBeenCalledWith(expect.stringContaining('/items/bulk'), expect.any(Object));
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      expect.stringContaining('/items/bulk'),
+      { items: [{ id: 'i1', updates: { status: 'DONE' } }] },
+      expect.objectContaining({ headers: expect.objectContaining({ 'x-agenfk-ui': '1' }) }),
+    );
   });
 
   it('should delete project', async () => {

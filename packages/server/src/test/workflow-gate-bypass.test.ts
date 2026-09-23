@@ -10,7 +10,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
 import * as path from 'path';
-import { app, initStorage, buildAllowedTransitions } from '../server';
+import { app, initStorage, buildAllowedTransitions, storage } from '../server';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -98,11 +98,14 @@ describe('the HTTP surface enforces the gate (CGLAB-81)', () => {
     expect(JSON.stringify(res.body)).toMatch(/FLOW VIOLATION/i);
   });
 
-  it('still allows a legitimate one-step move on a default-flow project', async () => {
+  it('refuses an agent a one-step forward move, but lets the board drag it (CGLAB-377)', async () => {
     const id = await newItem();
-    const res = await agent().put(`/items/${id}`).send({ status: 'IN_PROGRESS' });
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe('IN_PROGRESS');
+    const agentMove = await agent().put(`/items/${id}`).send({ status: 'IN_PROGRESS' });
+    expect(agentMove.status).toBe(409);
+    expect(agentMove.body.error).toContain('agenfk verify');
+    const boardMove = await agent().put(`/items/${id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
+    expect(boardMove.status).toBe(200);
+    expect(boardMove.body.status).toBe('IN_PROGRESS');
   });
 
   it('refuses to reach DONE through a plain status write, from any step', async () => {
@@ -111,9 +114,9 @@ describe('the HTTP surface enforces the gate (CGLAB-81)', () => {
     // reachable without validate_progress — including the last one before it,
     // which used to be the sanctioned launderer.
     const id = await newItem();
-    for (const s of ['IN_PROGRESS', 'REVIEW', 'TEST']) {
-      await agent().put(`/items/${id}`).send({ status: s });
-    }
+    // Parked on the last step before DONE through storage: forward moves over
+    // HTTP are verify's alone now (CGLAB-377), and the walk is not under test.
+    await storage.updateItem(id, { status: 'TEST' } as any);
     const fromFinal = await agent().put(`/items/${id}`).send({ status: 'DONE' });
     expect(fromFinal.status).toBeGreaterThanOrEqual(400);
     expect((await agent().get(`/items/${id}`)).body.status).toBe('TEST');
@@ -121,7 +124,7 @@ describe('the HTTP surface enforces the gate (CGLAB-81)', () => {
 
   it('cannot launder a jump through PAUSED', async () => {
     const id = await newItem();
-    await agent().put(`/items/${id}`).send({ status: 'IN_PROGRESS' });
+    await storage.updateItem(id, { status: 'IN_PROGRESS' } as any);
     const paused = await agent().put(`/items/${id}`).send({ status: 'PAUSED' });
     expect(paused.status).toBe(200);
     const jump = await agent().put(`/items/${id}`).send({ status: 'TEST' });

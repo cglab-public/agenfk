@@ -48,7 +48,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 // Import AFTER the env var so storage lands in the test DB.
-import { app, initStorage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, VERIFY_TOKEN, storage } from '../server';
 
 // One listening server for the file (BUG 9de0c99c): per-call ephemeral servers
 // churn sockets and surface as confident wrong assertions elsewhere.
@@ -92,9 +92,7 @@ async function itemOnTddStep(name: string, status: string, verifyCommand?: strin
 
   const created = await agent().post('/items').send({ type: 'TASK', title: `${name}-item`, projectId });
   expect(created.status, `item: ${JSON.stringify(created.body)}`).toBe(201);
-  const moved = await agent().post('/items/bulk').set(internal())
-    .send({ items: [{ id: created.body.id, updates: { status } }] });
-  expect(moved.status, `move: ${JSON.stringify(moved.body)}`).toBe(200);
+  await storage.updateItem(created.body.id, { status } as any);
 
   const readBack = await agent().get(`/items/${created.body.id}`);
   expect(readBack.body.status, `the item is not on ${status}`).toBe(status);
@@ -109,9 +107,7 @@ async function itemOnDefaultFinalStep(name: string, verifyCommand: string) {
   expect(cmd.status).toBe(200);
   const created = await agent().post('/items').send({ type: 'TASK', title: `${name}-item`, projectId: project.body.id });
   expect(created.status).toBe(201);
-  const moved = await agent().post('/items/bulk').set(internal())
-    .send({ items: [{ id: created.body.id, updates: { status: 'TEST' } }] });
-  expect(moved.status).toBe(200);
+  await storage.updateItem(created.body.id, { status: 'TEST' } as any);
   const readBack = await agent().get(`/items/${created.body.id}`);
   expect(readBack.body.status).toBe('TEST');
   return readBack.body;
@@ -218,7 +214,7 @@ describe('POST /items/:id/validate — a failed command refuses, it does not rol
     expect((await agent().put(`/projects/${projectId}/verify-command`).set(internal()).send({ verifyCommand: 'exit 1' })).status).toBe(200);
     const created = await agent().post('/items').send({ type: 'TASK', title: 'RNR10-item', projectId });
     expect(created.status).toBe(201);
-    expect((await agent().post('/items/bulk').set(internal()).send({ items: [{ id: created.body.id, updates: { status: 'CHECKING' } }] })).status).toBe(200);
+    await storage.updateItem(created.body.id, { status: 'CHECKING' } as any);
 
     const res = await agent().post(`/items/${created.body.id}/validate`).set(internal()).send({ evidence: 'claiming green' });
     expect(res.status).toBe(422);

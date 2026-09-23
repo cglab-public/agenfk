@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import { makeProject, makeItem } from './helpers/fixtures';
-import { app, initStorage, oauthStateStore, mapJiraTypeToAgEnFK, VERIFY_TOKEN, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl, setVerifyLogRootForTests } from '../server';
+import { app, initStorage, oauthStateStore, mapJiraTypeToAgEnFK, VERIFY_TOKEN, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl, setVerifyLogRootForTests, storage } from '../server';
 import { Status, ItemType } from '@agenfk/core';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -25,6 +25,17 @@ import * as os from 'os';
  */
 let __server: import('http').Server;
 const agent = () => request(__server);
+/**
+ * Seed a card's status through storage, then make a harmless edit through
+ * PUT /items/:id, which is what runs the parent sync. No HTTP route moves a
+ * card several steps forward, or to DONE, outside verify (CGLAB-377); the
+ * sync is what these tests are about.
+ */
+const seedThenSync = async (id: string, status: string) => {
+  await storage.updateItem(id, { status } as any);
+  const r = await agent().put(`/items/${id}`).send({ description: `seeded ${status}` });
+  expect(r.status, `sync edit on ${id}: ${JSON.stringify(r.body)}`).toBe(200);
+};
 beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
@@ -274,8 +285,10 @@ describe('PUT /items/:id workflow guards', () => {
     const res = await agent().put(`/items/${item.id}`).send({ status: 'REVIEW' });
     expect(res.status).toBe(400);
     expect(JSON.stringify(res.body)).toMatch(/FLOW VIOLATION/i);
-    // The legitimate one-step move this test also used to cover still works.
-    const ok = await agent().put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    // A one-step forward move is verify's, or the board's (CGLAB-377).
+    const refused = await agent().put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    expect(refused.status).toBe(409);
+    const ok = await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
     expect(ok.status).toBe(200);
     expect(ok.body.status).toBe('IN_PROGRESS');
   });
@@ -559,8 +572,8 @@ describe('POST /items/:id/validate — command required only on final step', () 
     const p = (await agent().post('/projects').send({ name: 'PV1' })).body;
     // No verifyCommand set on project
     const item = (await agent().post('/items').send({ type: 'TASK', title: 'TV1', projectId: p.id })).body;
-    await agent().put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
-    await agent().put(`/items/${item.id}`).send({ status: 'REVIEW' });
+    await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'REVIEW' });
 
     const res = await agent()
       .post(`/items/${item.id}/validate`)
@@ -575,7 +588,7 @@ describe('POST /items/:id/validate — command required only on final step', () 
     if (!VERIFY_TOKEN) return;
     const p = await makeProject(app, 'PV2');
     const item = await makeItem(app, { type: 'TASK', title: 'TV2', projectId: p.id });
-    await agent().put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
 
     const res = await agent()
       .post(`/items/${item.id}/validate`)
@@ -639,7 +652,7 @@ describe('POST /items/:id/validate — evidence comment logging', () => {
     if (!VERIFY_TOKEN) return;
     const p = await makeProject(app, 'EV1');
     const item = await makeItem(app, { type: 'TASK', title: 'EV1', projectId: p.id });
-    await agent().put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
 
     const res = await agent()
       .post(`/items/${item.id}/validate`)
@@ -657,7 +670,7 @@ describe('POST /items/:id/validate — evidence comment logging', () => {
     if (!VERIFY_TOKEN) return;
     const p = await makeProject(app, 'EV2');
     const item = await makeItem(app, { type: 'TASK', title: 'EV2', projectId: p.id });
-    await agent().put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
 
     const res = await agent()
       .post(`/items/${item.id}/validate`)
@@ -678,8 +691,8 @@ describe('POST /items/:id/review success paths', () => {
     if (!VERIFY_TOKEN) return;
     const p = await makeProject(app, 'P');
     const item = await makeItem(app, { type: 'TASK', title: 'T', projectId: p.id });
-    await agent().put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
-    await agent().put(`/items/${item.id}`).send({ status: 'REVIEW' });
+    await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'REVIEW' });
 
     const res = await agent()
       .post(`/items/${item.id}/review`)
@@ -696,8 +709,8 @@ describe('POST /items/:id/review success paths', () => {
     if (!VERIFY_TOKEN) return;
     const p = await makeProject(app, 'P3');
     const item = await makeItem(app, { type: 'TASK', title: 'T3', projectId: p.id });
-    await agent().put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
-    await agent().put(`/items/${item.id}`).send({ status: 'REVIEW' });
+    await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'REVIEW' });
 
     const res = await agent()
       .post(`/items/${item.id}/review`)
@@ -947,7 +960,7 @@ describe('GET /jira/oauth/callback (state issued by /authorize)', () => {
 describe('PUT /items/:id with internal token', () => {
   beforeEach(async () => { await initStorage(); });
 
-  it('allows DONE with internal verify token', async () => {
+  it('refuses DONE even with the internal verify token (CGLAB-377)', async () => {
     if (!VERIFY_TOKEN) return;
     const p = await makeProject(app, 'P');
     const item = await makeItem(app, { type: 'TASK', title: 'T', projectId: p.id });
@@ -955,8 +968,8 @@ describe('PUT /items/:id with internal token', () => {
       .put(`/items/${item.id}`)
       .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ status: 'DONE' });
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe('DONE');
+    expect(res.status).toBe(403);
+    expect((await agent().get(`/items/${item.id}`)).body.status).toBe('TODO');
   });
 });
 
@@ -1137,7 +1150,7 @@ describe('GET /releases/latest with GITHUB_TOKEN', () => {
 describe('POST /items/bulk with internal token', () => {
   beforeEach(async () => { await initStorage(); });
 
-  it('allows DONE status with internal token', async () => {
+  it('skips DONE even with the internal token (CGLAB-377)', async () => {
     if (!VERIFY_TOKEN) return;
     const p = await makeProject(app, 'P');
     const item = await makeItem(app, { type: 'TASK', title: 'T', projectId: p.id });
@@ -1146,8 +1159,9 @@ describe('POST /items/bulk with internal token', () => {
       .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ items: [{ id: item.id, updates: { status: 'DONE' } }] });
     expect(res.status).toBe(200);
+    expect(res.body.skipped?.map((x: any) => x.id)).toContain(item.id);
     const updated = (await agent().get(`/items/${item.id}`)).body;
-    expect(updated.status).toBe('DONE');
+    expect(updated.status).toBe('TODO');
   });
 });
 
@@ -1227,7 +1241,7 @@ describe('syncParentStatus advanced scenarios', () => {
     const p = (await agent().post('/projects').send({ name: 'P' })).body;
     const parent = (await agent().post('/items').send({ type: 'STORY', title: 'Parent', projectId: p.id })).body;
     const child = (await agent().post('/items').send({ type: 'TASK', title: 'Child', projectId: p.id, parentId: parent.id })).body;
-    await agent().put(`/items/${child.id}`).send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${child.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
     const updated = (await agent().get(`/items/${parent.id}`)).body;
     expect(updated.status).toBe('IN_PROGRESS');
   });
@@ -1238,7 +1252,7 @@ describe('syncParentStatus advanced scenarios', () => {
     const parent = (await agent().post('/items').send({ type: 'STORY', title: 'Parent', projectId: p.id })).body;
     const child = (await agent().post('/items').send({ type: 'TASK', title: 'Child', projectId: p.id, parentId: parent.id })).body;
     // Set child to DONE via internal token
-    await agent().put(`/items/${child.id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: 'DONE' });
+    await seedThenSync(child.id, 'DONE');
     const updated = (await agent().get(`/items/${parent.id}`)).body;
     expect(updated.status).toBe('DONE');
   });
@@ -1249,7 +1263,7 @@ describe('syncParentStatus advanced scenarios', () => {
     const grandparent = (await agent().post('/items').send({ type: 'EPIC', title: 'GP', projectId: p.id })).body;
     const parent = (await agent().post('/items').send({ type: 'STORY', title: 'Parent', projectId: p.id, parentId: grandparent.id })).body;
     const child = (await agent().post('/items').send({ type: 'TASK', title: 'Child', projectId: p.id, parentId: parent.id })).body;
-    await agent().put(`/items/${child.id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: 'DONE' });
+    await seedThenSync(child.id, 'DONE');
     const updatedParent = (await agent().get(`/items/${parent.id}`)).body;
     expect(updatedParent.status).toBe('DONE');
   });
@@ -1259,7 +1273,7 @@ describe('syncParentStatus advanced scenarios', () => {
     const p = (await agent().post('/projects').send({ name: 'P' })).body;
     const parent = (await agent().post('/items').send({ type: 'STORY', title: 'Parent', projectId: p.id })).body;
     const child = (await agent().post('/items').send({ type: 'TASK', title: 'Child', projectId: p.id, parentId: parent.id })).body;
-    await agent().put(`/items/${child.id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: 'TEST' });
+    await seedThenSync(child.id, 'TEST');
     const updated = (await agent().get(`/items/${parent.id}`)).body;
     expect(updated.status).toBe('TEST');
   });
@@ -1362,9 +1376,14 @@ describe('POST /items/bulk - branch coverage', () => {
     expect(updated.status).not.toBe('REVIEW');
     expect(JSON.stringify(res.body)).toMatch(/FLOW VIOLATION/i);
 
-    // A legitimate one-step bulk move still applies, which is what this test
-    // was really guarding: that the route works without the internal token.
-    const ok = await agent().post('/items/bulk').send({
+    // A one-step forward bulk move is skipped for an agent, naming verify,
+    // and applied for the board (CGLAB-377).
+    const refused = await agent().post('/items/bulk').send({
+      items: [{ id: item.id, updates: { status: 'IN_PROGRESS' } }]
+    });
+    expect(JSON.stringify(refused.body)).toContain('agenfk verify');
+    expect((await agent().get(`/items/${item.id}`)).body.status).toBe('TODO');
+    const ok = await agent().post('/items/bulk').set('x-agenfk-ui', '1').send({
       items: [{ id: item.id, updates: { status: 'IN_PROGRESS' } }]
     });
     expect(ok.status).toBe(200);
@@ -1376,7 +1395,7 @@ describe('POST /items/bulk - branch coverage', () => {
     const parent = (await agent().post('/items').send({ type: 'STORY', title: 'Parent', projectId: p.id })).body;
     const child = (await agent().post('/items').send({ type: 'TASK', title: 'Child', projectId: p.id, parentId: parent.id })).body;
 
-    const res = await agent().post('/items/bulk').send({
+    const res = await agent().post('/items/bulk').set('x-agenfk-ui', '1').send({
       items: [{ id: child.id, updates: { status: 'IN_PROGRESS' } }]
     });
     expect(res.status).toBe(200);
@@ -1415,9 +1434,9 @@ describe('syncParentStatus - remaining branches', () => {
     const parent = (await agent().post('/items').send({ type: 'STORY', title: 'Parent', projectId: p.id })).body;
     const child = (await agent().post('/items').send({ type: 'TASK', title: 'Child', projectId: p.id, parentId: parent.id })).body;
     // Force parent to DONE first
-    await agent().put(`/items/${parent.id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: 'DONE' });
+    await seedThenSync(parent.id, 'DONE');
     // Now set child to DONE — sync triggers but parent is already DONE, no-op
-    await agent().put(`/items/${child.id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: 'DONE' });
+    await seedThenSync(child.id, 'DONE');
     const updated = (await agent().get(`/items/${parent.id}`)).body;
     expect(updated.status).toBe('DONE');
   });
@@ -1428,9 +1447,9 @@ describe('syncParentStatus - remaining branches', () => {
     const parent = (await agent().post('/items').send({ type: 'STORY', title: 'Parent', projectId: p.id })).body;
     const child = (await agent().post('/items').send({ type: 'TASK', title: 'Child', projectId: p.id, parentId: parent.id })).body;
     // Force parent to TEST first
-    await agent().put(`/items/${parent.id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: 'TEST' });
+    await seedThenSync(parent.id, 'TEST');
     // Now set child to TEST — sync triggers but parent already TEST, no-op
-    await agent().put(`/items/${child.id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: 'TEST' });
+    await seedThenSync(child.id, 'TEST');
     const updated = (await agent().get(`/items/${parent.id}`)).body;
     expect(updated.status).toBe('TEST');
   });
@@ -1440,7 +1459,7 @@ describe('syncParentStatus - remaining branches', () => {
     const p = (await agent().post('/projects').send({ name: 'P' })).body;
     const parent = (await agent().post('/items').send({ type: 'STORY', title: 'Parent', projectId: p.id })).body;
     const child = (await agent().post('/items').send({ type: 'TASK', title: 'Child', projectId: p.id, parentId: parent.id })).body;
-    await agent().put(`/items/${child.id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: 'REVIEW' });
+    await seedThenSync(child.id, 'REVIEW');
     const updated = (await agent().get(`/items/${parent.id}`)).body;
     expect(updated.status).toBe('REVIEW');
   });
@@ -1451,9 +1470,9 @@ describe('syncParentStatus - remaining branches', () => {
     const parent = (await agent().post('/items').send({ type: 'STORY', title: 'Parent', projectId: p.id })).body;
     const child = (await agent().post('/items').send({ type: 'TASK', title: 'Child', projectId: p.id, parentId: parent.id })).body;
     // Force parent to REVIEW first
-    await agent().put(`/items/${parent.id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: 'REVIEW' });
+    await seedThenSync(parent.id, 'REVIEW');
     // Now set child to REVIEW — sync: parent already REVIEW, no-op
-    await agent().put(`/items/${child.id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: 'REVIEW' });
+    await seedThenSync(child.id, 'REVIEW');
     const updated = (await agent().get(`/items/${parent.id}`)).body;
     expect(updated.status).toBe('REVIEW');
   });
@@ -1463,9 +1482,9 @@ describe('syncParentStatus - remaining branches', () => {
     const parent = (await agent().post('/items').send({ type: 'STORY', title: 'Parent', projectId: p.id })).body;
     const child = (await agent().post('/items').send({ type: 'TASK', title: 'Child', projectId: p.id, parentId: parent.id })).body;
     // Set parent to IN_PROGRESS first
-    await agent().put(`/items/${parent.id}`).send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${parent.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
     // Set child to IN_PROGRESS — parent already IN_PROGRESS, no further update
-    await agent().put(`/items/${child.id}`).send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${child.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
     const updated = (await agent().get(`/items/${parent.id}`)).body;
     expect(updated.status).toBe('IN_PROGRESS');
   });
@@ -1481,7 +1500,7 @@ describe('archive and unarchive edge cases', () => {
     const parent = (await agent().post('/items').send({ type: 'STORY', title: 'Parent', projectId: p.id })).body;
     const child = (await agent().post('/items').send({ type: 'TASK', title: 'Child', projectId: p.id, parentId: parent.id })).body;
     // Archive child first
-    await agent().put(`/items/${child.id}`).send({ status: 'ARCHIVED' });
+    await agent().put(`/items/${child.id}`).set('x-agenfk-ui', '1').send({ status: 'ARCHIVED' });
     // Archive parent — calls archiveRecursively(child) but child is already ARCHIVED → early return
     const res = await agent().put(`/items/${parent.id}`).send({ status: 'ARCHIVED' });
     expect(res.status).toBe(200);
@@ -1492,7 +1511,7 @@ describe('archive and unarchive edge cases', () => {
     const parent = (await agent().post('/items').send({ type: 'STORY', title: 'Parent', projectId: p.id })).body;
     const child = (await agent().post('/items').send({ type: 'TASK', title: 'Child', projectId: p.id, parentId: parent.id })).body;
     // Archive parent (archiveRecursively archives child too)
-    await agent().put(`/items/${parent.id}`).send({ status: 'ARCHIVED' });
+    await agent().put(`/items/${parent.id}`).set('x-agenfk-ui', '1').send({ status: 'ARCHIVED' });
     const archivedChild = (await agent().get(`/items/${child.id}?includeArchived=true`)).body;
     expect(archivedChild.status).toBe('ARCHIVED');
     // Unarchive parent — unarchiveRecursively recurses into child (line 118 arm 0)
@@ -1506,9 +1525,11 @@ describe('archive and unarchive edge cases', () => {
     const p = (await agent().post('/projects').send({ name: 'P' })).body;
     const parent = (await agent().post('/items').send({ type: 'STORY', title: 'Parent', projectId: p.id })).body;
     // Archive only the parent directly (no children)
-    await agent().put(`/items/${parent.id}`).send({ status: 'ARCHIVED' });
-    // Unarchive parent — no children, so child loop does nothing
-    const res = await agent().put(`/items/${parent.id}`).send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${parent.id}`).set('x-agenfk-ui', '1').send({ status: 'ARCHIVED' });
+    // Unarchive parent — no children, so child loop does nothing. Past the
+    // entry step it is a forward move, so it is the board's (CGLAB-377).
+    expect((await agent().put(`/items/${parent.id}`).send({ status: 'IN_PROGRESS' })).status).toBe(409);
+    const res = await agent().put(`/items/${parent.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('IN_PROGRESS');
   });
@@ -1766,12 +1787,13 @@ describe('Flow-aware status transition validation', () => {
     await agent().post(`/projects/${projectId}/flow`).send({ flowId });
   });
 
-  it('allows valid forward transition (TODO -> IN_PROGRESS)', async () => {
+  it('allows a valid forward transition (TODO -> IN_PROGRESS) from the board only (CGLAB-377)', async () => {
     const item = (await agent().post('/items').send({
       type: 'TASK', title: 'T1', projectId, status: 'TODO',
     })).body;
 
-    const res = await agent().put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    expect((await agent().put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' })).status).toBe(409);
+    const res = await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('IN_PROGRESS');
   });
@@ -1780,7 +1802,7 @@ describe('Flow-aware status transition validation', () => {
     const item = (await agent().post('/items').send({
       type: 'TASK', title: 'T2', projectId, status: 'TODO',
     })).body;
-    await agent().put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
 
     const res = await agent().put(`/items/${item.id}`).send({ status: 'TODO' });
     expect(res.status).toBe(200);
@@ -1797,13 +1819,14 @@ describe('Flow-aware status transition validation', () => {
     expect(res.body.status).toBe('BLOCKED');
   });
 
-  it('allows transition from special status BLOCKED to any step', async () => {
+  it('allows the board out of BLOCKED to the coding step; an agent is refused the detour (CGLAB-377)', async () => {
     const item = (await agent().post('/items').send({
       type: 'TASK', title: 'T4', projectId, status: 'TODO',
     })).body;
-    await agent().put(`/items/${item.id}`).send({ status: 'BLOCKED' });
+    await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'BLOCKED' });
 
-    const res = await agent().put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    expect((await agent().put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' })).status).toBe(409);
+    const res = await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('IN_PROGRESS');
   });
@@ -1818,21 +1841,20 @@ describe('Flow-aware status transition validation', () => {
     expect(res.body.error).toMatch(/FLOW VIOLATION/);
   });
 
-  it('allows DONE transition via internal token (bypasses flow validation)', async () => {
+  it('refuses a DONE transition via the internal token: it bypasses nothing (CGLAB-377)', async () => {
     const item = (await agent().post('/items').send({
       type: 'TASK', title: 'T6', projectId, status: 'TODO',
     })).body;
 
-    // Internal token bypasses both DONE guard and flow validation
     const res = await agent()
       .put(`/items/${item.id}`)
       .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ status: 'DONE' });
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe('DONE');
+    expect(res.status).toBe(403);
+    expect((await agent().get(`/items/${item.id}`)).body.status).toBe('TODO');
   });
 
-  it('project using DEFAULT_FLOW allows all standard transitions', async () => {
+  it('project using DEFAULT_FLOW allows all standard one-step transitions from the board', async () => {
     // Create a project without custom flow (uses DEFAULT_FLOW)
     const p2 = (await agent().post('/projects').send({ name: 'DefaultFlowProject' })).body;
     const item = (await agent().post('/items').send({
@@ -1840,15 +1862,15 @@ describe('Flow-aware status transition validation', () => {
     })).body;
 
     // TODO -> IN_PROGRESS allowed
-    let res = await agent().put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    let res = await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
     expect(res.status).toBe(200);
 
     // IN_PROGRESS -> REVIEW allowed
-    res = await agent().put(`/items/${item.id}`).send({ status: 'REVIEW' });
+    res = await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'REVIEW' });
     expect(res.status).toBe(200);
 
     // REVIEW -> TEST allowed
-    res = await agent().put(`/items/${item.id}`).send({ status: 'TEST' });
+    res = await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'TEST' });
     expect(res.status).toBe(200);
   });
 });
@@ -1930,7 +1952,7 @@ describe('POST /items/:id/validate — cwd persisted as project.projectRoot', ()
     if (!VERIFY_TOKEN) return;
     const p = await makeProject(app, 'CWD1');
     const item = await makeItem(app, { type: 'TASK', title: 'CWD1', projectId: p.id });
-    await agent().put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
     const root = makeRoot();
 
     await agent()
@@ -1946,7 +1968,7 @@ describe('POST /items/:id/validate — cwd persisted as project.projectRoot', ()
     if (!VERIFY_TOKEN) return;
     const p = await makeProject(app, 'CWD2');
     const item = await makeItem(app, { type: 'TASK', title: 'CWD2', projectId: p.id });
-    await agent().put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
     const stored = makeRoot();
 
     // Establish projectRoot the legitimate way — a validate that carries a cwd
@@ -1970,7 +1992,7 @@ describe('POST /items/:id/validate — cwd persisted as project.projectRoot', ()
     if (!VERIFY_TOKEN) return;
     const p = (await agent().post('/projects').send({ name: 'CWD3' })).body;
     const item = (await agent().post('/items').send({ type: 'TASK', title: 'CWD3', projectId: p.id })).body;
-    await agent().put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
     const fresh = makeRoot();
 
     await agent()
@@ -2076,7 +2098,7 @@ describe('POST /items/:id/validate — push instructions included in DONE messag
     if (!VERIFY_TOKEN) return;
     const p = await makeProject(app, 'PI4');
     const item = await makeItem(app, { type: 'TASK', title: 'PI4', projectId: p.id });
-    await agent().put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
 
     const res = await agent()
       .post(`/items/${item.id}/validate`)
@@ -2126,7 +2148,7 @@ describe('POST /items/:id/validate — full-output log persistence', () => {
   const setupItemInCoding = async (name: string) => {
     const p = (await agent().post('/projects').send({ name })).body;
     const item = (await agent().post('/items').send({ type: 'TASK', title: name, projectId: p.id })).body;
-    await agent().put(`/items/${item.id}`).send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
     return { p, item };
   };
 
@@ -2330,7 +2352,7 @@ describe('POST /items/:id/validate — full-output log persistence', () => {
     const p = (await agent().post('/projects').send({ name: 'LogPersist8' })).body;
     const parent = (await agent().post('/items').send({ type: 'STORY', title: 'parent', projectId: p.id })).body;
     const child = (await agent().post('/items').send({ type: 'TASK', title: 'child', projectId: p.id, parentId: parent.id })).body;
-    await agent().put(`/items/${child.id}`).send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${child.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
 
     await agent()
       .post(`/items/${child.id}/validate`)

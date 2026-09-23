@@ -287,7 +287,9 @@ export const api = {
 
   updateItem: async (id: string, updates: Partial<AgEnFKItem>) => {
     try {
-      const { data } = await axios.put(`${API_URL}/items/${id}`, updates);
+      // The board header: the server lets only the board move a card forward
+      // outside verify, and records each such move on the card (CGLAB-377).
+      const { data } = await axios.put(`${API_URL}/items/${id}`, updates, { headers: { 'x-agenfk-ui': '1' } });
       return data;
     } catch (e) {
       console.error('API Error updating item', id, e);
@@ -296,7 +298,7 @@ export const api = {
   },
   bulkUpdateItems: async (items: { id: string; updates: Partial<AgEnFKItem> }[]) => {
     try {
-      const { data } = await axios.post(`${API_URL}/items/bulk`, { items });
+      const { data } = await axios.post(`${API_URL}/items/bulk`, { items }, { headers: { 'x-agenfk-ui': '1' } });
       return data;
     } catch (e) {
       console.error(`API Error bulk updating items:`, e);

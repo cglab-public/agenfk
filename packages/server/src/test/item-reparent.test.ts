@@ -200,9 +200,9 @@ describe('item re-parenting', () => {
     const laggard = await makeItem('TASK', 'Laggard', { parentId: oldParent.id });
 
     // Children at REVIEW + IN_PROGRESS roll the parent up to IN_PROGRESS.
-    await agent().put(`/items/${ahead.id}`).send({ status: 'IN_PROGRESS' });
-    await agent().put(`/items/${ahead.id}`).send({ status: 'REVIEW' });
-    await agent().put(`/items/${laggard.id}`).send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${ahead.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${ahead.id}`).set('x-agenfk-ui', '1').send({ status: 'REVIEW' });
+    await agent().put(`/items/${laggard.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
 
     const before = await agent().get(`/items/${oldParent.id}`);
     expect(before.body.status).toBe('IN_PROGRESS');
@@ -221,7 +221,7 @@ describe('item re-parenting', () => {
     const oldParent = await makeItem('STORY', 'Old parent');
     const child = await makeItem('TASK', 'Child', { parentId: oldParent.id });
 
-    await agent().put(`/items/${child.id}`).send({ status: 'IN_PROGRESS' });
+    await agent().put(`/items/${child.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
     const parentNow = await agent().get(`/items/${oldParent.id}`);
     expect(parentNow.body.status).toBe('IN_PROGRESS');
 
@@ -305,9 +305,9 @@ describe('item re-parenting', () => {
       const ahead = await makeItem('TASK', 'Ahead', { parentId: oldParent.id });
       const laggard = await makeItem('TASK', 'Laggard', { parentId: oldParent.id });
 
-      await agent().put(`/items/${ahead.id}`).send({ status: 'IN_PROGRESS' });
-      await agent().put(`/items/${ahead.id}`).send({ status: 'REVIEW' });
-      await agent().put(`/items/${laggard.id}`).send({ status: 'IN_PROGRESS' });
+      await agent().put(`/items/${ahead.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
+      await agent().put(`/items/${ahead.id}`).set('x-agenfk-ui', '1').send({ status: 'REVIEW' });
+      await agent().put(`/items/${laggard.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
 
       const r = await agent().post('/items/bulk').send({
         items: [{ id: laggard.id, updates: { parentId: newParent.id } }],

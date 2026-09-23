@@ -63,10 +63,10 @@ const setup = async () => {
   return { p, make };
 };
 
-// Internal token skips the one-step rule, so a card can be parked on the step
-// before DONE without walking the whole flow.
+// Parked on the step before DONE through storage: no HTTP route moves a card
+// forward outside verify any more (CGLAB-377), and the walk is not under test.
 const toTest = async (id: string) =>
-  internal(agent().post('/items/bulk')).send({ items: [{ id, updates: { status: 'TEST' } }] });
+  storage.updateItem(id, { status: 'TEST' } as any);
 const validate = async (id: string) => internal(agent().post(`/items/${id}/validate`)).send({ evidence: 'ok' });
 
 /**
@@ -99,7 +99,7 @@ describe('the sibling gate on a custom flow terminal', () => {
       status: 'DONE',
       tests: [{ id: 'legacy', command: 'true', output: '', status: 'PASSED', executedAt: new Date() }],
     } as never);
-    await internal(agent().post('/items/bulk')).send({ items: [{ id: c2.id, updates: { status: 'CODE' } }] });
+    await storage.updateItem(c2.id, { status: 'CODE' } as any);
 
     const r = await validate(c2.id);
     expect(r.body.status).toBe('SHIPPED');
@@ -131,7 +131,7 @@ describe('which last steps end the flow', () => {
       { name: 'CODE', label: 'Code', order: 1 },
       { name: 'DONE', label: 'Done', order: 2 },
     ]);
-    await internal(agent().post('/items/bulk')).send({ items: [{ id: item.id, updates: { status: 'CODE' } }] });
+    await storage.updateItem(item.id, { status: 'CODE' } as any);
     const r = await validate(item.id);
     expect(r.body.status).toBe('DONE');
     const after = (await agent().get(`/items/${item.id}`)).body;
@@ -147,7 +147,7 @@ describe('which last steps end the flow', () => {
       { name: 'CODE', label: 'Code', order: 1 },
       { name: 'SHIP', label: 'Ship', order: 2 },
     ]);
-    await internal(agent().post('/items/bulk')).send({ items: [{ id: item.id, updates: { status: 'CODE' } }] });
+    await storage.updateItem(item.id, { status: 'CODE' } as any);
     // An EXPLICIT command, so the request reaches the endsFlow sites instead of
     // returning early with nothing to run - without it this test passes
     // whether or not the boundary conjunct exists.
