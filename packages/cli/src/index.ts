@@ -3748,7 +3748,7 @@ program
 
 program
   .command('verify <id> [command]')
-  .description('Log evidence and advance item to next flow step (MCP fallback: validate_progress)')
+  .description('Log evidence and advance item to next flow step (MCP fallback: validate_progress). [command] runs only on intermediate steps; on the final step the server runs the project verifyCommand.')
   .option('--evidence <text>', 'REQUIRED: How you satisfied the current step\'s exit criteria')
   .action(async (id, command, options) => {
     if (!options.evidence) {

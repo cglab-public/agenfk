@@ -156,6 +156,8 @@ describe('the breaker clears on a flow whose exit is not named DONE', () => {
       ],
     });
     await internal(agent().post(`/projects/${projectId}/flow`)).send({ flowId: f.body.id });
+    // The exit step runs the PROJECT's command, never the caller's (CGLAB-378).
+    await internal(agent().put(`/projects/${projectId}/verify-command`)).send({ verifyCommand: 'true' });
   });
 
   it('clears when the card lands on its own exit step', async () => {
@@ -196,6 +198,8 @@ describe('the breaker clears on a flow whose exit is not named DONE', () => {
       ],
     });
     await internal(agent().post(`/projects/${proj}/flow`)).send({ flowId: f.body.id });
+    // HOLD is a boundary, so it runs the PROJECT's command (CGLAB-378).
+    await internal(agent().put(`/projects/${proj}/verify-command`)).send({ verifyCommand: 'true' });
 
     const item = (await internal(agent().post('/items')).send({ type: 'TASK', title: 'parked', projectId: proj })).body.id;
     for (let i = 0; i < 2; i++) {

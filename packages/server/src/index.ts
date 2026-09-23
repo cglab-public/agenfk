@@ -463,13 +463,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "validate_progress",
-        description: "Step-completion gate: you MUST describe how you satisfied the current step's exit criteria before the step advances. Provide your evidence in the 'evidence' field — it will be logged as a comment tagged with the current step name, creating an audit trail. Optionally run a command; on intermediate steps it is not required — pass one only when the current step's exit criteria call for it, and only a command those criteria expect to succeed. On success, advances to the next flow step and returns the next step's exit criteria — treat those as your new mandatory work definition. If the command exits non-zero the advance is refused and the item stays on its current step (on the final step this is the hard gate that keeps a red suite out of DONE); nothing is rolled back.",
+        description: "Step-completion gate: you MUST describe how you satisfied the current step's exit criteria before the step advances. Provide your evidence in the 'evidence' field — it will be logged as a comment tagged with the current step name, creating an audit trail. Optionally run a command; on intermediate steps it is not required — pass one only when the current step's exit criteria call for it, and only a command those criteria expect to succeed. On success, advances to the next flow step and returns the next step's exit criteria — treat those as your new mandatory work definition. If the command exits non-zero the advance is refused and the item stays on its current step (on the final step this is the hard gate that keeps a red suite out of DONE); nothing is rolled back. On the final step (and any boundary step) the server runs the project's verifyCommand and ignores the 'command' field, with a warning in the reply.",
         inputSchema: {
           type: "object",
           properties: {
             itemId: { type: "string" },
             evidence: { type: "string", description: "REQUIRED: Describe how you satisfied the current step's exit criteria (e.g. 'Wrote failing tests in foo.test.ts covering cases X and Y'). This is logged as a comment and serves as your confirmation." },
-            command: { type: "string", description: "Optional command to run (e.g. 'npm run build'). If omitted, the project verifyCommand is used on the final step." },
+            command: { type: "string", description: "Optional command to run on an INTERMEDIATE step (e.g. 'npm run build'). Ignored on the final step and on any boundary step, where the server always runs the project verifyCommand." },
           },
           required: ["itemId", "evidence"],
         },

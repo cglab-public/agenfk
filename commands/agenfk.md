@@ -166,9 +166,9 @@ defines none, so this is the common case — empty criteria never mean "no work"
    `agenfk update --status` cannot advance: the server refuses forward moves there, and refuses
    the flow's exit step to everyone. The only forward move outside verify is a person dragging a
    card one step on the board, and each one is recorded on the card as made without evidence.
-   - On the **final step** (identified in step 1), **omit the command** — this runs the
-     project's `verifyCommand` and lands DONE. This is the *only* step where omitting the
-     command substitutes `verifyCommand`.
+   - On the **final step** (identified in step 1), **omit the command** — the server runs the
+     project's `verifyCommand` and lands DONE. A command you pass here is ignored (the reply
+     says so): on the final step, and on any boundary step, only the project's command runs.
    - On every **other** step the command is **optional**. Pass one only when the step's
      criteria call for it (a build or type-check is the usual fit on a compiled stack). Never
      pass the test runner on a step whose criteria expect red tests — a TDD "write the failing

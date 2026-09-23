@@ -2355,7 +2355,34 @@ app.put("/projects/:id/verify-command", asyncHandler(async (req: any, res: any) 
     return res.status(400).json({ error: "verifyCommand (string) required" });
   }
   try {
-    const updated = await storage.updateProject(req.params.id, { verifyCommand } as any);
+    const before: any = await storage.getProject(req.params.id);
+    const previous = before?.verifyCommand as string | undefined;
+    const changed = !!before && previous !== verifyCommand;
+    // Kept on the project as well as on cards: with no card in flight, a card
+    // note alone would leave no trace of the change at all.
+    const updated = await storage.updateProject(req.params.id, {
+      verifyCommand,
+      ...(changed ? { verifyCommandChanges: [...(before.verifyCommandChanges ?? []), { from: previous ?? null, to: verifyCommand, at: new Date().toISOString() }] } : {}),
+    } as any);
+    /*
+     * CGLAB-378: the final step runs this command and nothing else, so
+     * changing it changes what every card in flight will be held to. Anyone
+     * holding the internal token can change it - swapping in `true` is the
+     * obvious cheat - so the change is written on each of those cards, where
+     * the people reading the board will see it.
+     */
+    if (changed) {
+      const flow = getActiveFlow(before.flowId, await storage.listFlows());
+      const items: any[] = await storage.listItems({ projectId: req.params.id, limit: 1_000_000 } as any);
+      const shown = (c?: string) => (c ? `\`${c}\`` : '(none)');
+      // Cards in flight: in a working step, or parked on PAUSED/BLOCKED - the
+      // obvious way to dodge a note is to pause, swap the command, resume.
+      const active = new Set(getActiveStepItems(items as any, flow as any).map((i: any) => i.id));
+      const inFlight = items.filter(i => active.has(i.id) || i.status === Status.PAUSED || i.status === Status.BLOCKED);
+      for (const it of inFlight) {
+        await noteOnItem((it as any).id, `### Project verify command changed\n\nFrom ${shown(previous)} to ${shown(verifyCommand)}. This card's final step now runs the new command.`);
+      }
+    }
     io.emit('items_updated');
     res.json(updated);
   } catch (error) {
@@ -4733,7 +4760,7 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   if (context !== undefined) updates.context = context;
   if (implementationPlan !== undefined) updates.implementationPlan = implementationPlan;
   if (reviews !== undefined) updates.reviews = reviews;
-  if (tests !== undefined) updates.tests = tests;
+  if (tests !== undefined) updates.tests = sanitizeCallerTests(tests, currentItem.tests);
   // Which agent works this card. It belongs on the ITEM, not in a browser's
   // localStorage: it is the same fact the hub already records as `--model` /
   // `--harness` when a PR opens, it has to survive a machine change, and a
@@ -4972,7 +4999,61 @@ function pruneValidateRuns() {
 }
 
 // ── validate_progress: unified exit-criteria gate (flow-aware) ───────────────
-// command is optional; if omitted, project.verifyCommand is used.
+// On a step that needs a command (the final step, or any boundary step) the
+// server runs project.verifyCommand and ignores a caller's (CGLAB-378); on an
+// intermediate step a caller's command is optional and runs as an extra check.
+
+/**
+ * The `tests` array a caller sends through PUT /items/:id (log-test re-sends
+ * the whole list with one record appended). A record the SERVER wrote is kept
+ * exactly as stored, matched by id, so it can be neither lost nor rewritten; a
+ * new record loses `commit`, which is what makes a green spendable by sibling
+ * propagation. Without this, anyone could write a PASSED record for the
+ * project's command at HEAD onto a DONE sibling and land a red card on DONE
+ * (CGLAB-378 review).
+ */
+function sanitizeCallerTests(incoming: unknown, stored: any[] | undefined): any {
+  if (!Array.isArray(incoming)) return incoming;
+  const byId = new Map((stored ?? []).filter(t => t && t.id).map(t => [t.id, t]));
+  return incoming.map((t: any) => {
+    if (t && byId.has(t.id)) return byId.get(t.id);
+    if (!t || typeof t !== 'object') return t;
+    const { commit: _dropped, ...rest } = t;
+    return rest;
+  });
+}
+
+/** What a verify reply says when it ignored the caller's command (CGLAB-378). */
+function ignoredCommandNote(ignored: string, projectCommand?: string): string {
+  return `⚠️ The command you passed (\`${ignored}\`) was ignored: on this step the server runs the project's own verify command${projectCommand ? ` (\`${projectCommand}\`)` : ''}. If that command is wrong, change it with \`agenfk update-project <id> --verify-command "<cmd>"\`.`;
+}
+
+/**
+ * A response (or the async run's recorder) whose every JSON reply carries
+ * `note`: as a `warning` field, and at the head of `message`, which is what
+ * older CLIs print. One wrapper rather than an edit at each of validate's
+ * many reply sites, so a new reply cannot forget it.
+ */
+export function withNote<T extends { status: (code: number) => any; json: (body: any) => any }>(res: T, note: string): T {
+  // Clients print `message || error`, so a reply that only had an error gets a
+  // message too, or the note would travel in a field nobody shows.
+  const add = (body: any) => (body && typeof body === 'object')
+    ? {
+        ...body, warning: note,
+        message: typeof body.message === 'string' ? `${note}\n\n${body.message}`
+          : typeof body.error === 'string' ? `${note}\n\n${body.error}` : note,
+      }
+    : body;
+  const proxy: T = new Proxy(res, {
+    get(target, key) {
+      if (key === 'json') return (body: any) => target.json(add(body));
+      if (key === 'status') return (code: number) => { target.status(code); return proxy; };
+      const value = Reflect.get(target, key);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  return proxy;
+}
 /** Trailing line of every verify response that reports a step outcome. The
  *  transition line sits at the top and the next step's criteria banner pushes
  *  it out of a `| tail`; the LAST line must always say where the card is
@@ -5128,11 +5209,26 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   const endsFlow = !nextStep
     || nextStatus === Status.DONE
     || (nextStep.name === exitStep?.name && isBoundaryStep(nextStep));
-  const resolvedCommand = command || ((isFinalStep ? (project as any)?.verifyCommand : undefined));
+  /*
+   * CGLAB-378: where a command is required, it is the PROJECT's. A caller's
+   * command used to win here, so `agenfk verify <id> --evidence x "true"`
+   * landed DONE with a red suite. It is now ignored - with a warning on every
+   * reply, never a 400, because older skills still pass one - and it cannot
+   * stand in for a missing project command either. Intermediate steps keep
+   * the optional caller command: there it can only add a check.
+   */
+  const projectVerifyCommand = (project as any)?.verifyCommand as string | undefined;
+  const resolvedCommand = isFinalStep ? projectVerifyCommand : command;
+  const ignoredCommand = isFinalStep && command && command !== projectVerifyCommand ? command : undefined;
+  const commandNote = ignoredCommand ? ignoredCommandNote(ignoredCommand, projectVerifyCommand) : undefined;
+  // The async 202 is sent on the bare response: the run's outcome carries the
+  // note, and the CLI prints both.
+  const bareRes = res;
+  if (commandNote) res = withNote(res, commandNote);
   if (isFinalStep && !resolvedCommand) {
     return res.status(400).json({
       error: "NO_VERIFY_COMMAND",
-      message: "No command provided and no verifyCommand configured for this project. Provide a command or set one with update_project({ id, verifyCommand })."
+      message: "No verifyCommand is configured for this project, and on this step the server runs only the project's own. Set one with update_project({ id, verifyCommand }) or `agenfk update-project <id> --verify-command \"<cmd>\"`."
     });
   }
   const exitCriteria = (currentFlowStep.step as any).exitCriteria as string | undefined;
@@ -5186,7 +5282,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       }
       if (pass) {
         const { sibling: passedSibling, test: siblingTest } = pass;
-        const sibComment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).`, timestamp: new Date() };
+        const sibComment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).\n**Command**: \`${resolvedCommand}\` at \`${String(siblingTest.commit).slice(0, 12)}\``, timestamp: new Date() };
         const updates: any = { status: nextStatus, comments: [...(item.comments || []), sibComment], tests: [...(item.tests || []), { id: uuidv4(), command: resolvedCommand, output: `Sibling propagation: verified by ${passedSibling.id}`, status: 'PASSED', executedAt: new Date(), commit: siblingTest.commit }], ...(isExitStep ? { failureCount: 0 } : {}) };
         const updated = await storage.updateItem(itemId, updates);
         io.emit('items_updated');
@@ -5201,7 +5297,10 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.${describePush(gitResult)}${nowOn(nextStatus)}`, output: 'Sibling propagation' });
       }
       console.warn(`[VALIDATE] Sibling propagation refused for ${itemId}: ${refusal}`);
-    } else {
+    } else if (!isFinalStep) {
+      // "A sibling is further along" runs nothing, so it may only carry a step
+      // that needs no command. On a boundary step mid-flow the project's
+      // command is required, and it runs (CGLAB-378 review).
       const passedSibling = siblings.find(s => {
         if (s.id === item.id) return false;
         if (s.status === Status.DONE) return true;
@@ -5499,7 +5598,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     (run as any).started = true;
     // Answer immediately — the client follows the run instead of holding this
     // request open for the command's whole lifetime.
-    res.status(202).json({
+    bareRes.status(202).json({
       runId,
       command: resolvedCommand,
       message: `⏳ Validation running in background (run ${runId.slice(0, 8)}…). Follow with GET /items/validate-runs/${runId}.`,
@@ -5517,7 +5616,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         return this;
       },
     };
-    void runCommandAndFinalize(recorder, run)
+    void runCommandAndFinalize(commandNote ? withNote(recorder, commandNote) : recorder, run)
       .catch((err: any) => {
         run.status = 'failed';
         run.message = `Internal error during background validation: ${err?.message || err}`;
