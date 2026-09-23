@@ -407,11 +407,58 @@ export interface CommentRecord {
   step?: string;
 }
 
+/** One change to a setting that decides what a gate checks (CGLAB-378, CGLAB-379). */
+export interface GateSettingChange<T> {
+  from: T | null;
+  to: T | null;
+  at: string;
+}
+
+/** How the server gets per-test results for a project (CGLAB-379). */
+export interface TestReportSetting {
+  format: 'vitest-json' | 'junit-xml';
+  command: string;
+  /** Relative to the tree the command runs in. */
+  reportPath: string;
+  /** Extra files or directories the tests depend on (helpers, fixtures, setup), hashed into the surface. */
+  surface?: string[];
+}
+
+/**
+ * What a step left behind (CGLAB-379). `exit` is written on every forward
+ * verify; `capture` holds per-test results, taken only when a check needs them.
+ */
+export interface StepRecord {
+  step: string;
+  kind: 'exit' | 'capture';
+  at: string;
+  head: string | null;
+  clean: boolean;
+  format?: 'vitest-json' | 'junit-xml' | 'exit-code';
+  exitCode?: number | null;
+  /** False when per-test results could not be read: they are unavailable, never passed. */
+  available?: boolean;
+  tests?: Array<{ name: string; file: string; status: 'passed' | 'failed' | 'skipped'; failure?: 'assertion' | 'error' }>;
+  brokenFiles?: Array<{ file: string; message: string }>;
+  surface?: { files: Record<string, string> };
+  /** False when a file the report named could not be found: the surface cannot vouch for it. */
+  surfaceComplete?: boolean;
+  surfaceMissing?: string[];
+  /** Names two or more tests share: left out of `tests`, since a name cannot tell them apart. */
+  duplicateNames?: string[];
+  parseError?: string;
+}
+
 export interface Project {
   id: string;
   name: string;
   description?: string;
   verifyCommand?: string; // Project-level verification command (e.g. "npm run build && npm test")
+  /** Every change to verifyCommand, oldest first (CGLAB-378). */
+  verifyCommandChanges?: GateSettingChange<string>[];
+  testReport?: TestReportSetting;
+  /** Every change to testReport, oldest first (CGLAB-379). */
+  testReportChanges?: GateSettingChange<TestReportSetting>[];
   /**
    * What makes a freshly cut worktree usable (CGLAB-203).
    *
@@ -445,6 +492,8 @@ export interface BaseItem {
   context?: ContextItem[];
   reviews?: ReviewRecord[];
   tests?: TestRecord[];
+  /** Server-written only; PUT /items/:id never accepts it (CGLAB-379). */
+  stepRecords?: StepRecord[];
   history?: HistoryRecord[];
   comments?: CommentRecord[];
   createdAt: Date;

@@ -1933,21 +1933,42 @@ program
   .option('--verify-command <cmd>', 'Project-level verification command')
   .option('--setup-command <cmd>', 'What to run in a newly cut worktree to make it usable (e.g. "npm ci")')
   .option('--project-root <path>', 'Absolute path to the repository this project lives in')
+  .option('--test-report-format <format>', 'How per-test results are read: vitest-json | junit-xml (with --test-report-command and --test-report-path)')
+  .option('--test-report-command <cmd>', 'Command that runs the suite and writes the report')
+  .option('--test-report-path <path>', 'Where that command writes the report, relative to the project root')
+  .option('--test-report <none>', 'Pass "none" to clear the test report setting')
   .action(async (id, options) => {
     try {
       const updates: Record<string, unknown> = {};
+      const wantsTestReport = options.testReport !== undefined || options.testReportFormat !== undefined
+        || options.testReportCommand !== undefined || options.testReportPath !== undefined;
       if (options.name !== undefined) updates.name = options.name;
       if (options.description !== undefined) updates.description = options.description;
       if (options.verifyCommand === undefined && options.projectRoot === undefined
-          && options.setupCommand === undefined
+          && options.setupCommand === undefined && !wantsTestReport
           && Object.keys(updates).length === 0) {
-        console.error(chalk.yellow('Nothing to update. Pass at least one of --name, --description, --verify-command, --setup-command, --project-root.'));
+        console.error(chalk.yellow('Nothing to update. Pass at least one of --name, --description, --verify-command, --setup-command, --project-root, --test-report-*.'));
         process.exit(1);
         return;
       }
       let data: unknown;
       if (Object.keys(updates).length > 0) {
         ({ data } = await axios.put(`${API_URL}/projects/${id}`, updates));
+      }
+      // The test report command is a shell string the server runs, so it goes
+      // through the internal endpoint like verifyCommand (CGLAB-379).
+      if (wantsTestReport) {
+        const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
+        if (!fs.existsSync(tokenPath)) {
+          console.error(chalk.red('Error: ~/.agenfk/verify-token not found. Run npm run install:framework first.'));
+          process.exit(1);
+          return;
+        }
+        const token = fs.readFileSync(tokenPath, 'utf8').trim();
+        const body = options.testReport === 'none'
+          ? { testReport: null }
+          : { format: options.testReportFormat, command: options.testReportCommand, reportPath: options.testReportPath };
+        ({ data } = await axios.put(`${API_URL}/projects/${id}/test-report`, body, { headers: { 'x-agenfk-internal': token } }));
       }
       // verifyCommand is a privileged shell string — set it via the internal
       // endpoint with the install-time token (mirrors `agenfk backup`).
