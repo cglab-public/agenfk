@@ -2,6 +2,32 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [1.1.21-beta.10] — 2026-09-22
+
+Beta, cumulative over `1.1.21-beta.9`. Hub security hardening (CGLAB-371).
+
+### The hub decides the client IP from how many proxies it trusts
+
+- **New `AGENFK_HUB_TRUST_PROXY`**, default `1`. Behind a load balancer or reverse proxy the proxy
+  *appends* the address it saw to `X-Forwarded-For`; the hub used to key every rate limit on the
+  **first** entry - the part the client writes - so a fresh header per request bought a fresh budget
+  (login, device-code, invite redemption). The client is now the hop the trusted proxy appended.
+- `0` for a hub exposed directly (the compose quickstart now sets it), a hop count for a proxy chain,
+  or a list of proxy addresses/CIDRs. `true`, more than 5 hops, and list entries that are not
+  addresses are **refused at boot**, since each either trusts every hop or silently trusts none.
+- Assumes the proxy appends (an ALB's default `xff_header_processing.mode=append`). An `ip:port`
+  entry (ALB client ports) is keyed by its address.
+- Upgrade-directive audit rows now record the real requester instead of the proxy's address.
+
+### Invite redemption and first-run setup
+
+- **`POST /hub/invite/redeem` is rate limited**, counting only failed attempts so a scripted rollout of
+  many machines behind one office NAT completes. Invite tokens over 4096 characters are refused before
+  their signature is checked.
+- **`/setup/initial-admin` makes exactly one admin.** The bootstrap token is consumed inside the
+  transaction that creates the admin, and a request that did not consume it creates nothing; every
+  leftover token is cleared. The route is rate limited.
+
 ## [1.1.21-beta.9] — 2026-09-22
 
 Beta, cumulative over `1.1.21-beta.8`.
