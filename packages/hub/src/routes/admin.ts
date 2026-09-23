@@ -16,7 +16,7 @@ import { recomputeRollups } from '../rollup.js';
 import { loadModelMeta, isLicenseClass, isHarnessName } from '../util/modelMeta.js';
 import { liveIdentityBlockers, blockersFor } from '../util/mergeLiveness.js';
 import { loadAliasMap, resolveAliasKey, canonicaliseSourceKey } from '../util/userKeyAlias.js';
-import { rateLimit } from '../util/rateLimit.js';
+import { rateLimit, sessionUserKey } from '../util/rateLimit.js';
 import { mintChildHubInvite } from './federation.js';
 import { parentUrlFromInviteToken, inviteExpiryFromToken } from '../auth/inviteToken.js';
 import { toChildHubDto, validChildHubName, isoOrNull, MAX_CHILD_HUB_NAME_LEN } from '../util/childHubRow.js';
@@ -104,7 +104,9 @@ export function adminRouter(ctx: HubServerContext): Router {
 
   // Admin routes are session-guarded, but several mutate state or run wide
   // queries, so bound them too rather than relying on the guard alone.
-  router.use(rateLimit({ windowMs: 60 * 1000, max: 300, message: 'Too many requests, slow down.' }));
+  // Keyed by the signed-in user, not the address: the hub is reached through
+  // shared corporate egress, and an IP bucket would be an office-wide cap.
+  router.use(rateLimit({ windowMs: 60 * 1000, max: 300, keyFn: sessionUserKey(ctx.config.sessionSecret), message: 'Too many requests, slow down.' }));
   const guard = requireAdmin(ctx.config.sessionSecret);
 
   // ── Auth config ──────────────────────────────────────────────────────────

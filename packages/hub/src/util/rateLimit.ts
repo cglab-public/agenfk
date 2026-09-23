@@ -1,5 +1,6 @@
 import { Request, RequestHandler } from 'express';
 import expressRateLimit, { ipKeyGenerator } from 'express-rate-limit';
+import { SESSION_COOKIE, verifySession } from '../auth/session.js';
 
 // In-memory rate limiting + brute-force lockout for the hub. The hub is a
 // single Node process, so a per-process fixed window is sufficient.
@@ -44,6 +45,21 @@ function clientKey(req: Request): string {
   return ipKeyGenerator(clientIp(req), 64);
 }
 
+/**
+ * The bucket for a route that requires a session: the VERIFIED session's
+ * user, so people sharing one NAT or VPN egress do not share a budget. A
+ * cookie that does not verify is charged to the client IP - a forged value
+ * must not buy a fresh bucket. Verification is a JWT signature check, the same
+ * one the route's own guard runs; it touches no database.
+ */
+export function sessionUserKey(sessionSecret: string): (req: Request) => string {
+  return (req: Request): string => {
+    const token = req.cookies?.[SESSION_COOKIE];
+    const session = typeof token === 'string' && token ? verifySession(token, sessionSecret) : null;
+    return session ? `user:${session.orgId}:${session.userId}` : clientKey(req);
+  };
+}
+
 /** Fixed-window per-key limiter. Returns 429 once `max` is exceeded within
  *  `windowMs`, with the JSON `error` and a Retry-After header. */
 export function rateLimit(opts: RateLimitOptions): RequestHandler {
@@ -59,6 +75,18 @@ export function rateLimit(opts: RateLimitOptions): RequestHandler {
     standardHeaders: false,
     legacyHeaders: false,
     handler: (req: any, res: any) => {
+      // Logged on the first refusal in a bucket's window, so a limit that
+      // bites is visible without one line per blocked request. (Under
+      // skipSuccessfulRequests a success still in flight can decrement the
+      // count back to the limit, so that limiter may log a few times per
+      // window.) No address or token: the route, the ceiling, and what the
+      // bucket is. The path is printable-ASCII only and capped.
+      if (req.rateLimit?.used === max + 1) {
+        const kind = String(req.rateLimit?.key ?? '').startsWith('user:') ? 'user' : 'client address';
+        const where = `${req.baseUrl ?? ''}${req.path ?? ''}`.replace(/[^\x21-\x7e]/g, '?').slice(0, 200);
+        const method = String(req.method ?? '').replace(/[^A-Z]/g, '').slice(0, 10);
+        console.warn(`[RATE_LIMIT] ${method} ${where} refused: over ${max} per ${Math.round(windowMs / 1000)}s for one ${kind}`);
+      }
       const resetTime = req.rateLimit?.resetTime as Date | undefined;
       const retryAfter = resetTime ? Math.max(1, Math.ceil((resetTime.getTime() - Date.now()) / 1000)) : Math.ceil(windowMs / 1000);
       res.setHeader('Retry-After', String(retryAfter));

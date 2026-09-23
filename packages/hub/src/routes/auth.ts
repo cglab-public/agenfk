@@ -15,7 +15,7 @@ import {
   setSessionCookie,
   signSession,
 } from '../auth/session.js';
-import { rateLimit, clientIp, FailedAttemptTracker } from '../util/rateLimit.js';
+import { rateLimit, FailedAttemptTracker, sessionUserKey } from '../util/rateLimit.js';
 import { asyncRoute } from '../util/asyncRoute.js';
 
 // Brute-force defences for password login (Security: bug 210b3d34):
@@ -37,14 +37,14 @@ export function authRouter(ctx: HubServerContext): Router {
   // /auth/me is authenticated AND hits the database on every call, so it needs
   // a bound. Deliberately NOT keyed by IP: the hub sits behind a corporate
   // egress where every user shares one, and the UI calls this on each page
-  // load — an IP bucket would be an org-wide cap, not a per-caller one. Key on
-  // the session cookie instead. It is unverified at this point, which is fine:
-  // a forged cookie buys its own bucket but is rejected by requireSession
-  // below, so it never reaches the read this limit exists to protect.
+  // load — an IP bucket would be an org-wide cap, not a per-caller one. Keyed
+  // by the VERIFIED session user, like /v1 and /v1/admin. It used to key on
+  // the raw cookie string, so every forged value minted a bucket kept for the
+  // window: memory that grew per request and a limit that never refused.
   const meRateLimit = rateLimit({
     windowMs: LOGIN_WINDOW_MS,
     max: 300,
-    keyFn: (req) => (req.cookies?.[SESSION_COOKIE] as string | undefined) || clientIp(req),
+    keyFn: sessionUserKey(ctx.config.sessionSecret),
     message: 'Too many requests, slow down.',
   });
   const loginFailures = new FailedAttemptTracker(/* maxFailures */ 5, LOGIN_WINDOW_MS, /* lockMs */ LOGIN_WINDOW_MS);

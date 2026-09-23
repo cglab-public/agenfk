@@ -6,7 +6,7 @@ import { aggregateHistogramRows } from '../queries/histogram-aggregate.js';
 import { coerceMetricsRow } from '../queries/metrics-coerce.js';
 import { aggregatePrOverview, parsePrNumberFilter, PrEventRow } from '../queries/pr-overview-aggregate.js';
 import { sanitizeRemoteUrl } from './events.js';
-import { rateLimit } from '../util/rateLimit.js';
+import { rateLimit, sessionUserKey } from '../util/rateLimit.js';
 import { loadModelMappings } from '../util/modelMapping.js';
 import { loadModelMeta, resolveModelMetaAll } from '../util/modelMeta.js';
 import { resolveModelId } from '../util/modelMapping.js';
@@ -104,7 +104,9 @@ export function queriesRouter(ctx: HubServerContext): Router {
   // Authenticated and org-scoped, but every route here runs real SQL, so an
   // authenticated client in a loop is still a resource concern. Generous cap:
   // high enough that no legitimate dashboard hits it, low enough to bound abuse.
-  router.use(rateLimit({ windowMs: 60 * 1000, max: 300, message: 'Too many requests, slow down.' }));
+  // Keyed by the signed-in user, not the address: the hub is reached through
+  // shared corporate egress, and an IP bucket would be an office-wide cap.
+  router.use(rateLimit({ windowMs: 60 * 1000, max: 300, keyFn: sessionUserKey(ctx.config.sessionSecret), message: 'Too many requests, slow down.' }));
   const guard = requireSession(ctx.config.sessionSecret);
 
   router.get('/users', guard, asyncRoute(async (req: Request, res: Response) => {
