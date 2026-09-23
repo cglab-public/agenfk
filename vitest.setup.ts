@@ -56,3 +56,12 @@ if (typeof window !== 'undefined' && typeof (window as Window & { localStorage?:
 // @ts-expect-error — plain .mjs helper, shared with the guard's own unit test
 import { installNetGuard } from './scripts/vitest-net-guard.mjs';
 installNetGuard();
+
+/**
+ * supertest binds the wildcard but dialled 127.0.0.1, so a foreign 127.0.0.1
+ * listener on the same port took the request - the wandering ECONNRESET/404
+ * flake. It now dials the loopback of the family it bound. See the helper.
+ */
+// @ts-expect-error — plain .mjs helper
+import { installSupertestLoopback } from './scripts/vitest-supertest-loopback.mjs';
+installSupertestLoopback();
