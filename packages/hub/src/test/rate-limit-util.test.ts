@@ -14,6 +14,8 @@ import { rateLimit } from '../util/rateLimit';
 
 function appWith(mw: express.RequestHandler) {
   const app = express();
+  // As the hub sets it by default: one proxy in front (see trust-proxy.test.ts).
+  app.set('trust proxy', 1);
   app.get('/x', mw, (req: Request, res) => res.json({ ok: true, info: (req as any).rateLimit ?? null }));
   return app;
 }
@@ -38,10 +40,10 @@ describe('hub rateLimit()', () => {
     expect((await supertest(app).get('/x').set('x-who', 'b')).status).toBe(200);
   });
 
-  it('keys by the first X-Forwarded-For hop by default (the hub runs behind a proxy)', async () => {
+  it('keys by the hop the trusted proxy appended, not by what the client wrote before it', async () => {
     const app = appWith(rateLimit({ windowMs: 60_000, max: 1 }));
-    expect((await supertest(app).get('/x').set('X-Forwarded-For', '203.0.113.7, 10.0.0.1')).status).toBe(200);
-    expect((await supertest(app).get('/x').set('X-Forwarded-For', '203.0.113.7')).status).toBe(429);
+    expect((await supertest(app).get('/x').set('X-Forwarded-For', '10.0.0.1, 203.0.113.7')).status).toBe(200);
+    expect((await supertest(app).get('/x').set('X-Forwarded-For', '10.0.0.2, 203.0.113.7')).status).toBe(429);
     expect((await supertest(app).get('/x').set('X-Forwarded-For', '203.0.113.8')).status).toBe(200);
   });
 

@@ -13,17 +13,18 @@ import expressRateLimit, { ipKeyGenerator } from 'express-rate-limit';
 // dismiss that rule wholesale. The package was already in the tree: the local
 // server has used it since its own migration.
 
-/** Best-effort client IP. Honours the first x-forwarded-for hop (the hub runs
- *  behind a reverse proxy in production) and falls back to the socket.
- *  NOTE: this trusts x-forwarded-for, so the per-IP limiter is only sound when
- *  a trusted proxy sets it. A directly-exposed hub lets a client spoof the
- *  header for a fresh bucket each request — which is why the login defense's
- *  real teeth are the IP-independent per-account lockout, and /device/start
- *  also has an absolute pending-row cap. */
+/** The client IP, as Express derives it from the app's `trust proxy` setting
+ *  (AGENFK_HUB_TRUST_PROXY, default one hop). This used to read the FIRST
+ *  X-Forwarded-For entry itself - the part the client writes, since a proxy
+ *  such as the production ALB appends rather than replaces - so any client
+ *  could choose its own bucket. The per-account login lockout and the device
+ *  flow's pending-row cap remain the IP-independent backstops. */
 export function clientIp(req: Request): string {
-  const fwd = req.headers['x-forwarded-for'];
-  const first = Array.isArray(fwd) ? fwd[0] : (fwd ?? '').toString().split(',')[0];
-  return (first.trim() || req.ip || req.socket?.remoteAddress || 'unknown').toString();
+  const ip = (req.ip || req.socket?.remoteAddress || 'unknown').toString();
+  // An ALB with client ports enabled reports "a.b.c.d:port". Keyed with the
+  // port, every TCP connection would be a new client.
+  const v4WithPort = /^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/.exec(ip);
+  return v4WithPort ? v4WithPort[1] : ip;
 }
 
 export interface RateLimitOptions {
@@ -57,10 +58,6 @@ export function rateLimit(opts: RateLimitOptions): RequestHandler {
     keyGenerator: (req: any) => keyFn(req as Request),
     standardHeaders: false,
     legacyHeaders: false,
-    // clientIp reads X-Forwarded-For itself (see above), so the library's
-    // warning about an unexpected X-Forwarded-For without `trust proxy` would
-    // fire on every proxied request and describe a decision already made.
-    validate: { xForwardedForHeader: false },
     handler: (req: any, res: any) => {
       const resetTime = req.rateLimit?.resetTime as Date | undefined;
       const retryAfter = resetTime ? Math.max(1, Math.ceil((resetTime.getTime() - Date.now()) / 1000)) : Math.ceil(windowMs / 1000);
