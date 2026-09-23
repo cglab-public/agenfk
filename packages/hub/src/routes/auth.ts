@@ -116,10 +116,16 @@ export function authRouter(ctx: HubServerContext): Router {
   return router;
 }
 
+/** The bootstrap token was consumed by another request after this one read it. */
+class SetupAlreadyClaimed extends Error {}
+
 export function setupRouter(ctx: HubServerContext): Router {
   const router = Router();
+  // Unauthenticated, and it creates an admin. The token is a UUIDv4, so this
+  // bounds probing rather than preventing a brute force that could not work.
+  const setupRateLimit = rateLimit({ windowMs: LOGIN_WINDOW_MS, max: 20, message: 'Too many setup attempts, try again later.' });
 
-  router.post('/initial-admin', asyncRoute(async (req: Request, res: Response) => {
+  router.post('/initial-admin', setupRateLimit, asyncRoute(async (req: Request, res: Response) => {
     if ((await countUsers(ctx.db)) > 0) {
       return res.status(409).json({ error: 'Setup is closed: an admin already exists.' });
     }
@@ -145,13 +151,28 @@ export function setupRouter(ctx: HubServerContext): Router {
       return res.status(400).json({ error: 'email + password (≥8 chars) required' });
     }
 
-    // Create the admin and consume the token in a single transaction. If
-    // user creation throws (e.g. a UNIQUE collision on email), the token
-    // row is rolled back so the operator can retry.
-    await ctx.db.transaction(async () => {
-      await createPasswordUser(ctx.db, ctx.config.defaultOrgId, email, password, 'admin');
-      await ctx.db.run('DELETE FROM bootstrap_tokens', []);
-    });
+    // Consume THIS token, then create the admin, in one transaction. The
+    // checks above ran outside it, so a concurrent request holding the same
+    // token may have claimed setup since: only the request whose DELETE
+    // removed the row may create an admin. If user creation throws (e.g. a
+    // UNIQUE collision on email), the token is rolled back so the operator
+    // can retry.
+    try {
+      await ctx.db.transaction(async () => {
+        const consumed = await ctx.db.run('DELETE FROM bootstrap_tokens WHERE token = ?', [token]);
+        if (consumed.changes !== 1) throw new SetupAlreadyClaimed();
+        // Any other token row (two hub tasks booting at once can each insert
+        // one) would be a second key to an admin account. On Postgres a racer
+        // holding it now waits on this DELETE and finds nothing once we commit.
+        await ctx.db.run('DELETE FROM bootstrap_tokens', []);
+        await createPasswordUser(ctx.db, ctx.config.defaultOrgId, email, password, 'admin');
+      });
+    } catch (err) {
+      if (err instanceof SetupAlreadyClaimed) {
+        return res.status(409).json({ error: 'Setup is closed: an admin already exists.' });
+      }
+      throw err;
+    }
     res.status(201).json({ ok: true });
   }));
 
