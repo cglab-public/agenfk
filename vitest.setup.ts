@@ -65,3 +65,14 @@ installNetGuard();
 // @ts-expect-error — plain .mjs helper
 import { installSupertestLoopback } from './scripts/vitest-supertest-loopback.mjs';
 installSupertestLoopback();
+
+/**
+ * jsdom 28.1 re-registers an unmounted <style>'s sheet, and every byRole query
+ * pays for each one - xterm alone leaves ~1,580 rules per terminal. Drop the
+ * orphans after each test (after Testing Library's cleanup has unmounted). See
+ * the helper.
+ */
+// @ts-expect-error — plain .mjs helper
+import { purgeOrphanedStyleSheets } from './scripts/vitest-jsdom-stylesheets.mjs';
+import { afterEach as afterEachTest } from 'vitest';
+afterEachTest(() => { purgeOrphanedStyleSheets(); });
