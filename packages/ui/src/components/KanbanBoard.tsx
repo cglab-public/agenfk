@@ -304,7 +304,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
               <button
                 ref={moveMenuButtonRef}
                 onClick={(e) => { e.stopPropagation(); setIsMoveMenuOpen(v => !v); }}
-                className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-600 hover:text-accent-text transition-colors"
+                className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-500 hover:text-accent-text transition-colors"
                 title="Move to project"
               >
                 <FolderInput size={11} />
@@ -344,12 +344,12 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
             onClick={(e) => { e.stopPropagation(); onOpenTerminal(item); }}
             aria-label={`Open a terminal on ${item.title}`}
             title="Open a terminal on this card"
-            className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-600 hover:text-accent-text transition-colors"
+            className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-500 hover:text-accent-text transition-colors"
           >
             <SquareTerminal size={11} />
           </button>
           )}
-          <button onClick={(e) => { e.stopPropagation(); onArchive(item.id); }} className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-600 hover:text-rose-500 dark:hover:text-rose-400 transition-colors">
+          <button onClick={(e) => { e.stopPropagation(); onArchive(item.id); }} className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-500 hover:text-rose-500 dark:hover:text-rose-400 transition-colors">
             <Archive size={11} />
           </button>
         </div>
@@ -1661,7 +1661,7 @@ export const KanbanBoard: React.FC = () => {
                       'p-0.5 rounded transition-colors',
                       isPinned
                         ? 'text-accent-text hover:opacity-80'
-                        : 'text-slate-300 dark:text-slate-600 hover:text-slate-500 dark:hover:text-slate-400'
+                        : 'text-slate-300 dark:text-slate-500 hover:text-slate-500 dark:hover:text-slate-400'
                     )}
                   >
                     {isPinned ? <Pin size={11} /> : <PinOff size={11} />}
@@ -1833,7 +1833,7 @@ export const KanbanBoard: React.FC = () => {
             </button>
             {navPath.map((nav, index) => (
               <React.Fragment key={nav.id}>
-                <ChevronRight size={14} className="text-slate-300 dark:text-slate-600 flex-shrink-0" />
+                <ChevronRight size={14} className="text-slate-300 dark:text-slate-500 flex-shrink-0" />
                 <button
                   /* v8 ignore start */
                   onClick={() => navigateTo(index)}

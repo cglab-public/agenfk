@@ -462,7 +462,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                   <div className="prose prose-slate dark:prose-invert prose-sm max-w-none bg-slate-50 dark:bg-slate-950 rounded-xl p-4 min-h-[100px] border border-slate-100 dark:border-slate-800 overflow-x-auto break-words">
                     {item.description
                       ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{stripAnsi(item.description)}</ReactMarkdown>
-                      : <span className="italic text-slate-400 dark:text-slate-600 not-prose">No description provided.</span>
+                      : <span className="italic text-slate-400 dark:text-slate-500 not-prose">No description provided.</span>
                     }
                   </div>
                 )}
@@ -661,7 +661,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                                 "p-1 rounded transition-colors text-xs font-medium flex items-center gap-1",
                                 confirmDeleteId === sub.id
                                   ? "bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 hover:bg-rose-200 dark:hover:bg-rose-900/50"
-                                  : "text-slate-300 dark:text-slate-600 hover:text-rose-500 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/20"
+                                  : "text-slate-300 dark:text-slate-500 hover:text-rose-500 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/20"
                               )}
                             >
                               <Trash2 size={13} />

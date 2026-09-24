@@ -210,7 +210,7 @@ export const GitHubImportModal: React.FC<Props> = ({ open, onClose, projectId })
                             <span className="flex-1 text-sm text-slate-700 dark:text-slate-200 truncate">{issue.title}</span>
                             <div className="flex items-center gap-1.5 shrink-0">
                               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">{issue.state}</span>
-                              <span className="text-xs text-slate-300 dark:text-slate-600">&rarr;</span>
+                              <span className="text-xs text-slate-300 dark:text-slate-500">&rarr;</span>
                               <select
                                 value={currentType}
                                 onChange={(e) => updateIssueType(issue.number, e.target.value)}

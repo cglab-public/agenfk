@@ -716,7 +716,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             value={name}
             onChange={e => { setName(e.target.value); setSaved(false); }}
             placeholder="Flow name…"
-            className="w-full text-xl font-bold text-slate-800 dark:text-slate-100 bg-transparent border-b-2 border-transparent hover:border-slate-300 dark:hover:border-slate-600 focus:border-brand focus:outline-none placeholder-slate-400 dark:placeholder-slate-600 transition-colors pb-0.5"
+            className="w-full text-xl font-bold text-slate-800 dark:text-slate-100 bg-transparent border-b-2 border-transparent hover:border-slate-300 dark:hover:border-slate-600 focus:border-brand focus:outline-none placeholder-slate-400 dark:placeholder-slate-500 transition-colors pb-0.5"
           />
         )}
       </div>
@@ -883,7 +883,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                           className={clsx(
                             'shrink-0',
                             isReadOnly
-                              ? 'text-slate-300 dark:text-slate-600'
+                              ? 'text-slate-300 dark:text-slate-500'
                               : 'cursor-grab active:cursor-grabbing text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
                           )}
                           title={isReadOnly ? undefined : 'Drag to reorder'}
@@ -1669,7 +1669,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                       }
                     }}
                     title="Clone flow"
-                    className="p-1 rounded transition-colors text-slate-300 hover:text-accent-text dark:text-slate-600 hover:bg-chip"
+                    className="p-1 rounded transition-colors text-slate-300 hover:text-accent-text dark:text-slate-500 hover:bg-chip"
                   >
                     <CopyPlus size={13} />
                   </button>
@@ -1747,7 +1747,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                           handleClone(flow, flow.name);
                         }}
                         title="Clone flow"
-                        className="p-1 rounded transition-colors text-slate-300 hover:text-accent-text dark:text-slate-600 hover:bg-chip"
+                        className="p-1 rounded transition-colors text-slate-300 hover:text-accent-text dark:text-slate-500 hover:bg-chip"
                       >
                         <CopyPlus size={13} />
                       </button>
@@ -1767,8 +1767,8 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                         className={clsx(
                           'shrink-0 p-1 rounded transition-colors',
                           isActive || isRowHubManaged
-                            ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
-                            : 'text-slate-300 hover:text-red-500 dark:text-slate-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20'
+                            ? 'text-slate-300 dark:text-slate-500 cursor-not-allowed'
+                            : 'text-slate-300 hover:text-red-500 dark:text-slate-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20'
                         )}
                       >
                         <Trash2 size={13} />
@@ -1815,7 +1815,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                 onCloneToEdit={handleCommunityClone}
               />
             ) : (
-              <div className="flex flex-col items-center justify-center flex-1 text-slate-400 dark:text-slate-600 gap-3 p-8">
+              <div className="flex flex-col items-center justify-center flex-1 text-slate-400 dark:text-slate-500 gap-3 p-8">
                 <Globe size={40} className="opacity-30" />
                 <p className="text-sm">Select a community flow to preview it.</p>
               </div>
@@ -1847,7 +1847,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               canSelectFlow={canSelectFlow}
             />
           ) : (
-            <div className="flex flex-col items-center justify-center flex-1 text-slate-400 dark:text-slate-600 gap-3 p-8">
+            <div className="flex flex-col items-center justify-center flex-1 text-slate-400 dark:text-slate-500 gap-3 p-8">
               <GitBranch size={40} className="opacity-30" />
               <p className="text-sm">Select a flow from the sidebar or create a new one.</p>
               <button

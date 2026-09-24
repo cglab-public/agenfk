@@ -113,7 +113,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
               const t = ROLE_TEXTS[r.id];
               return (
                 <button key={r.id} type="button" onClick={() => { onChange({ role: r.id }); setPickingRole(false); }}
-                  className={clsx('text-left', chip, role === r.id ? 'border-emerald-600 bg-emerald-50 dark:bg-emerald-950/40' : 'hover:bg-slate-50 dark:hover:bg-slate-800')}>
+                  className={clsx('text-left', chip, role === r.id ? 'border-emerald-600 bg-emerald-50 dark:bg-emerald-950/40' : 'hover:bg-slate-50 dark:hover:bg-slate-700')}>
                   <span className="font-semibold">{t?.name ?? r.id}</span>
                   <span className="block text-xs text-slate-500 dark:text-slate-400">{t?.desc}</span>
                   <span className="block text-xs text-slate-400 mt-1">Brings: {r.builtins.map(b => titleOf(b.id)).join(', ') || 'no checks'}</span>
@@ -185,7 +185,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
                   <span className="text-slate-500 dark:text-slate-400">{p.description}</span>
                   <select aria-label={p.description} disabled={disabled} value={ref.params?.[k] ?? p.default}
                     onChange={e => replace(ref.id, withParam(ref, k, e.target.value))}
-                    className="mt-1 block w-full rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-1">
+                    className="mt-1 block w-full rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1">
                     {p.values.map(v => <option key={v} value={v}>{v}</option>)}
                   </select>
                 </label>
@@ -207,7 +207,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
         })}
         {!disabled && (
           <button type="button" onClick={() => setBrowsing(v => !v)}
-            className="flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-md border border-dashed border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-800">
+            className="flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-md border border-dashed border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700">
             <Plus size={13} /> Add a check
           </button>
         )}
@@ -220,7 +220,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
                   placeholder='e.g. "deleted test" or "JIRA"' className="flex-1 bg-transparent py-1 text-xs outline-none" />
               </label>
               <select aria-label="Group" value={group} onChange={e => setGroup(e.target.value)}
-                className="text-xs rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-1">
+                className="text-xs rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1">
                 <option value="all">All</option>
                 {Object.entries(GROUP_TEXTS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
               </select>
@@ -262,7 +262,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
               <span className="text-slate-500 dark:text-slate-400">Who needs a go-ahead</span>
               <select aria-label="Who needs a go-ahead" disabled={disabled} value={approval.params?.appliesTo ?? 'parent'}
                 onChange={e => replace('human-approval', withParam(approval, 'appliesTo', e.target.value))}
-                className="mt-1 block w-full rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-1">
+                className="mt-1 block w-full rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1">
                 <option value="parent">This card, or its parent: approving a breakdown approves its children</option>
                 <option value="every-card">Every card, each on its own</option>
               </select>
