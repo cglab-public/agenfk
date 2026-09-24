@@ -8,7 +8,7 @@ import { insideRoot, parseJunitXml, parseVitestJson, surfaceOf } from './stepRec
 import { parseActor, parseFindings, readTranscriptIdentity } from './reviewRecords';
 import * as passkeys from './passkeys';
 import { argvHash, judgeCommandChecks, type CommandApproval } from './commandChecks';
-import { evaluateChecks, judgeReview, formatCheckResults, needsCapture, needsEntryRecord, type CheckResult } from './checkEngine';
+import { evaluateChecks, judgeReview, formatCheckResults, needsCapture, needsEntryRecord, parseAgentReports, type AgentReport, type CheckResult } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
@@ -5882,7 +5882,7 @@ function deferredToCommand(flow: { steps: any[] }, status: string, project: any)
   return final && !project?.testReport && project?.verifyCommand ? ['suite-green'] : [];
 }
 
-async function runStepGate(item: any, flow: { steps: any[] }, root: string | null, actor?: { client: string; sessionId: string; agentId: string | null } | null): Promise<StepGate> {
+async function runStepGate(item: any, flow: { steps: any[] }, root: string | null, actor?: { client: string; sessionId: string; agentId: string | null } | null, agentReports?: Record<string, AgentReport>): Promise<StepGate> {
   const sorted = sortedFlowSteps(flow as any);
   const index = sorted.findIndex(st => st.name === item.status);
   const next = sorted[index + 1];
@@ -5929,6 +5929,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     : undefined;
   const outcome = evaluateChecks(resolved, {
     ...(commandResults ? { commandResults } : {}),
+    ...(agentReports ? { agentReports } : {}),
     review,
     root,
     git: args => gitRun.run(args),
@@ -5958,7 +5959,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     lastChecks: { step: item.status, at, blocked: outcome.blocked, results: outcome.results },
     checkHistory: withHistory(latest, {
       kind: 'verify', step: item.status, at, blocked: outcome.blocked,
-      results: outcome.results.map(r => ({ id: r.id, outcome: r.outcome, blocking: r.blocking, severity: r.severity, detail: String(r.detail ?? '').slice(0, 500), ...(r.overridden ? { overridden: true } : {}) })),
+      results: outcome.results.map(r => ({ id: r.id, outcome: r.outcome, blocking: r.blocking, severity: r.severity, detail: String(r.detail ?? '').slice(0, 500), ...(r.overridden ? { overridden: true } : {}), ...(r.agentReported ? { agentReported: true } : {}) })),
     }),
     ...(made.length ? { stepRecords: [...(latest?.stepRecords ?? []), ...made] } : {}),
   } as any);
@@ -6002,7 +6003,7 @@ function runRecorder(run: ValidateRun) {
   };
 }
 
-async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string, asyncRun?: ValidateRun, opts?: { gate?: StepGate; run?: ValidateRun; actor?: ReturnType<typeof parseActor> }) {
+async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string, asyncRun?: ValidateRun, opts?: { gate?: StepGate; run?: ValidateRun; actor?: ReturnType<typeof parseActor>; agentReports?: Record<string, AgentReport> }) {
   const item = await storage.getItem(itemId);
   if (!item) return res.status(404).json({ error: "Item not found" });
 
@@ -6053,6 +6054,16 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     return res.status(400).json({ error: `validate_progress requires item to be in a flow step. Current status '${item.status}' is not part of the active flow '${activeFlow.name}'.` });
   }
 
+  // efcacdeb: a report must name one of THIS step's agent checks.
+  const reported = Object.keys(opts?.agentReports ?? {});
+  if (reported.length && !opts?.gate) {
+    const here = resolveStepChecks(activeFlow.steps, item.status).filter(c => c.id.startsWith('agent-check:')).map(c => c.params.name);
+    const unknown = reported.filter(n => !here.includes(n));
+    if (unknown.length) {
+      return res.status(400).json({ error: `Step ${item.status} has no agent check named ${unknown.map(n => `'${n}'`).join(', ')}. Its agent checks: ${here.length ? here.join(', ') : 'none'}.` });
+    }
+  }
+
   /*
    * CGLAB-380: the step's checks, before anything moves. A capture runs a
    * whole suite, so an async verify answers 202 first and runs the checks -
@@ -6079,9 +6090,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       void (async () => {
         const fresh: any = await storage.getItem(itemId);
         if (!fresh) return recorder.status(404).json({ status: item.status, message: '❌ Item was deleted while the checks ran.' });
-        const g = await runStepGate(fresh, activeFlow, effectiveRoot ?? null, opts?.actor);
+        const g = await runStepGate(fresh, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports);
         if (g.blocked) return refuseOnChecks(recorder, fresh, g);
-        return handleValidateProgress(itemId, command, recorder, undefined, undefined, { gate: g, run, actor: opts?.actor });
+        return handleValidateProgress(itemId, command, recorder, undefined, undefined, { gate: g, run, actor: opts?.actor, agentReports: opts?.agentReports });
       })()
         .catch((err: any) => {
           run.status = 'failed';
@@ -6093,7 +6104,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         });
       return;
     }
-    gate = await runStepGate(item, activeFlow, effectiveRoot ?? null, opts?.actor);
+    gate = await runStepGate(item, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports);
     if (gate.blocked) return refuseOnChecks(res, item, gate);
     // The gate may have written a capture and produced records: build the
     // exit record on top of what is stored now, not on the copy read above.
@@ -7000,6 +7011,10 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
   // an old client can't race a background run on the same item.
   const activeGuard = rejectIfRunActive(req.params.id, res);
   if (activeGuard) return;
+  // efcacdeb: the coding agent's reports of the step's agent checks.
+  const parsedReports = parseAgentReports(req.body.agentChecks);
+  if ('error' in parsedReports) return res.status(400).json({ error: parsedReports.error });
+  const agentReports = parsedReports.reports;
   const asyncMode = req.body.async === true || req.body.async === 'true';
   if (asyncMode) {
     // Reserve the run in the SAME tick as the guard — a check-then-set gap
@@ -7009,7 +7024,7 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
     validateRuns.set(run.runId, run);
     activeValidateRunByItem.set(req.params.id, run.runId);
     try {
-      return await handleValidateProgress(req.params.id, req.body.command || undefined, res, req.body.evidence || undefined, run, { actor: parseActor(req.body.actor) });
+      return await handleValidateProgress(req.params.id, req.body.command || undefined, res, req.body.evidence || undefined, run, { actor: parseActor(req.body.actor), agentReports });
     } finally {
       // A sync fast-path (anchor, sibling propagation, no-command, error)
       // responded without ever starting the command — discard the reservation.
@@ -7019,7 +7034,7 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
       }
     }
   }
-  return handleValidateProgress(req.params.id, req.body.command || undefined, res, req.body.evidence || undefined, undefined, { actor: parseActor(req.body.actor) });
+  return handleValidateProgress(req.params.id, req.body.command || undefined, res, req.body.evidence || undefined, undefined, { actor: parseActor(req.body.actor), agentReports });
 }));
 
 /** 409 if the item already has a live background validate run. Returns true when it responded. */

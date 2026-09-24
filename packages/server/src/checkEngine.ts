@@ -34,6 +34,29 @@ export interface CheckResult {
   blocking: boolean;
   /** A person passed this blocked check with a reason (CGLAB-382): it no longer blocks. */
   overridden?: Override;
+  /** An agent check: the coding agent reported it, the server did not check it (efcacdeb). */
+  agentReported?: boolean;
+}
+
+/** The coding agent's report of one agent check (efcacdeb). */
+export interface AgentReport { outcome: 'pass' | 'fail'; note?: string }
+
+/**
+ * `agentChecks` as verify receives it: [{ name, outcome: pass|fail, note? }].
+ * Returns the reports by name, or why the value is refused.
+ */
+export function parseAgentReports(value: unknown): { reports: Record<string, AgentReport> } | { error: string } {
+  if (value === undefined || value === null) return { reports: {} };
+  if (!Array.isArray(value)) return { error: 'agentChecks must be a list of { name, outcome: pass|fail, note? }' };
+  const reports: Record<string, AgentReport> = {};
+  for (const r of value) {
+    const { name, outcome, note } = (r ?? {}) as any;
+    if (typeof name !== 'string' || !/^[a-z0-9][a-z0-9-]{0,39}$/.test(name)) return { error: `agentChecks: ${JSON.stringify(name)} is not an agent check's name` };
+    if (outcome !== 'pass' && outcome !== 'fail') return { error: `agentChecks: '${name}' must be reported as pass or fail, not ${JSON.stringify(outcome)}` };
+    if (note !== undefined && (typeof note !== 'string' || note.length > 2000)) return { error: `agentChecks: '${name}' note must be a text of at most 2000 characters` };
+    reports[name] = { outcome, ...(typeof note === 'string' && note.trim() ? { note: note.trim() } : {}) };
+  }
+  return { reports };
 }
 
 /** A person's pass of one blocked check, with the reason they wrote (CGLAB-382). */
@@ -114,6 +137,8 @@ export interface EngineContext {
   inheritedApprovals?: Array<{ by: string; at: string; note?: string; authority?: string; from: string }>;
   /** The step's command checks, already run by the server, by resolved id (efcacdeb). */
   commandResults?: Record<string, { outcome: 'pass' | 'fail' | 'unavailable'; detail: string }>;
+  /** The coding agent's reports of the step's agent checks, by name (efcacdeb). */
+  agentReports?: Record<string, AgentReport>;
   /** People's overrides of the current step's checks, by check id (CGLAB-382). */
   overrides?: Record<string, Override>;
 }
@@ -431,6 +456,14 @@ export const EVALUATORS: Record<string, Evaluator> = {
     return { outcome: 'fail', detail: `waiting for a person to approve this step on the board${how} (agenfk ui --open ${ctx.item.id}). An agent cannot approve.` };
   },
 
+  // efcacdeb: carried out by the coding agent and reported on verify; the server takes its word, labelled.
+  'agent-check': (ctx, p) => {
+    const r = ctx.agentReports?.[p.name];
+    if (!r) return { outcome: 'fail', detail: `not reported yet. The step asks: ${p.instruction} When it is done, report it: agenfk verify ${ctx.item.id} --check ${p.name}=pass (or =fail) --check-note ${p.name}="<what you found>" --evidence "<evidence>" (MCP: validate_progress with agentChecks).` };
+    if (r.outcome === 'fail') return { outcome: 'fail', detail: `the agent reported it failed${r.note ? `: ${r.note}` : ''}` };
+    return { outcome: 'pass', detail: `agent-reported${r.note ? `: ${r.note}` : ''}` };
+  },
+
   // efcacdeb: run by the server before the engine (commandChecks.ts); judged here.
   'command-check': (ctx, p) => ctx.commandResults?.[`command-check:${p.name}`] ?? { outcome: 'unavailable', detail: 'the command did not run on this verify' },
 
@@ -497,7 +530,7 @@ export function evaluateChecks(resolved: readonly ResolvedCheck[], ctx: EngineCo
     // It covers the verdict it was given against: a different failure needs its own.
     const o = blocks ? ctx.overrides?.[c.id] : undefined;
     const overridden = o && (o.detail === undefined || o.detail === verdict.detail) ? o : undefined;
-    results.push({ ...base, outcome: verdict.outcome, detail: verdict.detail, blocking: blocks && !overridden, ...(overridden ? { overridden } : {}) });
+    results.push({ ...base, outcome: verdict.outcome, detail: verdict.detail, blocking: blocks && !overridden, ...(overridden ? { overridden } : {}), ...(c.id.startsWith('agent-check:') ? { agentReported: true } : {}) });
     if (verdict.outcome === 'pass' && verdict.produces) Object.assign(produced, verdict.produces);
   }
   return { results, blocked: results.some(r => r.blocking), produced };
