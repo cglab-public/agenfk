@@ -130,6 +130,9 @@ export type HubEventType =
   // A person's go-ahead for a step, or their pass of a blocked check (CGLAB-382).
   | 'step.approved'
   | 'check.overridden'
+  // A passkey enrolled on, or removed from, the board (CGLAB-383).
+  | 'passkey.enrolled'
+  | 'passkey.removed'
   | 'comment.added'
   | 'test.logged'
   // Legacy inbound-only event. Spokes no longer emit this, and Hub skips it

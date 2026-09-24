@@ -463,6 +463,9 @@ export interface StepRecord {
   id?: string;
   by?: string;
   note?: string;
+  /** On an `approval` or `override`: 'passkey' when signed with an enrolled passkey (CGLAB-383), else 'unverified'. */
+  authority?: 'passkey' | 'unverified';
+  credentialId?: string;
   /** On an `override`: the check it passes, and why. */
   check?: string;
   reason?: string;

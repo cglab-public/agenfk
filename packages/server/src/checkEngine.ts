@@ -100,9 +100,9 @@ export interface EngineContext {
   /** Records earlier steps produced. */
   records: Partial<Record<RecordName, unknown>>;
   /** People's approvals of the card's current step, made from the board (CGLAB-382). */
-  approvals?: Array<{ by: string; at: string; note?: string }>;
+  approvals?: Array<{ by: string; at: string; note?: string; authority?: string }>;
   /** Approvals of the same step on the card's ancestors, nearest first: a breakdown approved at its parent. */
-  inheritedApprovals?: Array<{ by: string; at: string; note?: string; from: string }>;
+  inheritedApprovals?: Array<{ by: string; at: string; note?: string; authority?: string; from: string }>;
   /** People's overrides of the current step's checks, by check id (CGLAB-382). */
   overrides?: Record<string, Override>;
 }
@@ -401,11 +401,15 @@ export const EVALUATORS: Record<string, Evaluator> = {
   },
 
   'human-approval': (ctx, p) => {
-    const a = (ctx.approvals ?? [])[(ctx.approvals ?? []).length - 1];
+    // A step that asks for a passkey counts only approvals signed with one (CGLAB-383).
+    const counts = (x: { authority?: string }) => p.signature !== 'passkey' || x.authority === 'passkey';
+    const own = (ctx.approvals ?? []).filter(counts);
+    const a = own[own.length - 1];
     if (a) return { outcome: 'pass', detail: `approved on the board at ${a.at}${a.note ? `: ${a.note}` : ''}` };
-    const up = p.appliesTo === 'every-card' ? undefined : (ctx.inheritedApprovals ?? [])[0];
+    const up = p.appliesTo === 'every-card' ? undefined : (ctx.inheritedApprovals ?? []).filter(counts)[0];
     if (up) return { outcome: 'pass', detail: `approved with its parent ${up.from.slice(0, 8)} on the board at ${up.at}` };
-    return { outcome: 'fail', detail: `waiting for a person to approve this step on the board (agenfk ui --open ${ctx.item.id}). An agent cannot approve.` };
+    const how = p.signature === 'passkey' ? ', signed with a passkey' : '';
+    return { outcome: 'fail', detail: `waiting for a person to approve this step on the board${how} (agenfk ui --open ${ctx.item.id}). An agent cannot approve.` };
   },
 
   'suite-green': ctx => {

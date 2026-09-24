@@ -6,6 +6,7 @@ import { commitStagedForCard, resolveCommitRoot } from './closeCommit';
 import { mayPropagate, readCleanTreeSha, readHead, readTreeStatus } from './propagation';
 import { insideRoot, parseJunitXml, parseVitestJson, surfaceOf } from './stepRecords';
 import { parseActor, parseFindings, readTranscriptIdentity } from './reviewRecords';
+import * as passkeys from './passkeys';
 import { evaluateChecks, judgeReview, formatCheckResults, needsCapture, needsEntryRecord, type CheckResult } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks } from "@agenfk/core";
@@ -2508,11 +2509,11 @@ app.put("/projects/:id/test-report", asyncHandler(async (req: any, res: any) => 
 /** A card's approvals of one step, as the board recorded them. */
 const approvalsAt = (card: any, step: string) => (card?.stepRecords ?? [])
   .filter((r: any) => r?.kind === 'approval' && r.step === step)
-  .map((r: any) => ({ by: String(r.by ?? 'board'), at: String(r.at), ...(r.note ? { note: String(r.note) } : {}) }));
+  .map((r: any) => ({ by: String(r.by ?? 'board'), at: String(r.at), ...(r.note ? { note: String(r.note) } : {}), ...(r.authority ? { authority: String(r.authority) } : {}) }));
 
 /** Approvals of the same step on a card's ancestors, nearest first. */
-async function ancestorApprovals(card: any, step: string): Promise<Array<{ by: string; at: string; note?: string; from: string }>> {
-  const out: Array<{ by: string; at: string; note?: string; from: string }> = [];
+async function ancestorApprovals(card: any, step: string): Promise<Array<{ by: string; at: string; note?: string; authority?: string; from: string }>> {
+  const out: Array<{ by: string; at: string; note?: string; authority?: string; from: string }> = [];
   let cur: any = card?.parentId ? await storage.getItem(card.parentId) : null;
   for (let depth = 0; cur && depth < 16; depth++) {
     for (const a of approvalsAt(cur, step).reverse()) out.push({ ...a, from: cur.id });
@@ -2525,8 +2526,9 @@ async function ancestorApprovals(card: any, step: string): Promise<Array<{ by: s
 async function approvalSatisfied(card: any, steps: any[], step: string): Promise<boolean> {
   const check = resolveStepChecks(steps, step).find(c => c.id === 'human-approval' && c.applicable);
   if (!check) return true;
-  if (approvalsAt(card, step).length) return true;
-  return check.params.appliesTo !== 'every-card' && (await ancestorApprovals(card, step)).length > 0;
+  const counts = (a: { authority?: string }) => check.params.signature !== 'passkey' || a.authority === 'passkey';
+  if (approvalsAt(card, step).some(counts)) return true;
+  return check.params.appliesTo !== 'every-card' && (await ancestorApprovals(card, step)).some(counts);
 }
 
 function refuseUnlessBoard(req: any, res: any): boolean {
@@ -2567,6 +2569,93 @@ async function appendGateRecord(item: any, rec: any, comment: string) {
  * checks - only when they were run on THIS step, so a previous step's results
  * never pose as the current one's.
  */
+/*
+ * CGLAB-383 — passkeys on the board. Once one is enrolled, approvals and
+ * overrides need an assertion over a challenge bound to the act; the board
+ * header alone no longer suffices. The first passkey is trust-on-first-use
+ * (announced as a hub event); adding or removing one needs an assertion from
+ * a passkey already enrolled.
+ */
+app.get("/webauthn/status", (_req: any, res: any) => {
+  const creds = passkeys.loadCredentials();
+  res.json({ enrolled: creds.length > 0, rpId: passkeys.RP_ID, credentials: creds.map(c => ({ id: c.id, createdAt: c.createdAt ?? null })) });
+});
+
+app.post("/webauthn/challenge", (req: any, res: any) => {
+  if (refuseUnlessBoard(req, res)) return;
+  const b = req.body ?? {};
+  if (!passkeys.isPurpose(b.purpose)) return res.status(400).json({ error: 'purpose must be one of enroll, add-passkey, remove, approval, override' });
+  const act: passkeys.Act = {
+    purpose: b.purpose,
+    ...(typeof b.itemId === 'string' ? { itemId: b.itemId } : {}),
+    ...(typeof b.step === 'string' ? { step: b.step } : {}),
+    ...(gateText(b.note) ? { note: gateText(b.note) } : {}),
+    ...(typeof b.checkId === 'string' ? { checkId: b.checkId } : {}),
+    ...(gateText(b.reason) ? { reason: gateText(b.reason) } : {}),
+    ...(typeof b.credentialId === 'string' ? { credentialId: b.credentialId } : {}),
+  };
+  const creds = passkeys.loadCredentials();
+  res.json({ challenge: passkeys.issueChallenge(act), rpId: passkeys.RP_ID, allowCredentials: creds.map(c => c.id) });
+});
+
+app.post("/webauthn/credentials", (req: any, res: any) => {
+  if (refuseUnlessBoard(req, res)) return;
+  const reg = req.body?.registration;
+  let cred: ReturnType<typeof passkeys.verifyRegistration>;
+  try {
+    if (!passkeys.consumeChallenge(passkeys.challengeOf(reg?.clientDataJSON), { purpose: 'enroll' })) throw new Error('the enrollment challenge is unknown, used or expired: start again');
+    cred = passkeys.verifyRegistration(reg, passkeys.challengeOf(reg.clientDataJSON)!);
+  } catch (e: any) { return res.status(400).json({ error: e?.message ?? String(e) }); }
+  const creds = passkeys.loadCredentials();
+  if (creds.some(c => c.id === cred.id)) return res.status(409).json({ error: 'This passkey is already enrolled.' });
+  if (creds.length) {
+    try { passkeys.authorise(req.body?.assertion, { purpose: 'add-passkey', credentialId: cred.id }); } catch (e: any) {
+      return res.status(401).json({ error: `Adding a passkey needs a signature from one already enrolled: ${e?.message ?? e}` });
+    }
+  }
+  const stored = { ...cred, signCount: 0, createdAt: new Date().toISOString() };
+  passkeys.saveCredentials([...passkeys.loadCredentials(), stored]);
+  recordHubEvent({ type: 'passkey.enrolled', payload: { credentialId: cred.id, first: creds.length === 0 } });
+  res.status(201).json({ id: stored.id, createdAt: stored.createdAt });
+});
+
+app.delete("/webauthn/credentials/:credId", (req: any, res: any) => {
+  if (refuseUnlessBoard(req, res)) return;
+  const id = req.params.credId;
+  if (!passkeys.loadCredentials().some(c => c.id === id)) return res.status(404).json({ error: 'No such passkey.' });
+  try { passkeys.authorise(req.body?.assertion, { purpose: 'remove', credentialId: id }); } catch (e: any) {
+    return res.status(401).json({ error: `Removing a passkey needs a signature from an enrolled one: ${e?.message ?? e}` });
+  }
+  passkeys.saveCredentials(passkeys.loadCredentials().filter(c => c.id !== id));
+  recordHubEvent({ type: 'passkey.removed', payload: { credentialId: id } });
+  res.json({ removed: id });
+});
+
+/**
+ * The authority behind a human gate. A step whose human-approval check asks
+ * for `signature: passkey` needs an assertion for exactly this act, and so do
+ * overrides on that step; elsewhere the board's word is recorded as
+ * 'unverified' (an assertion offered anyway is still checked).
+ */
+const stepWantsPasskey = (flow: Flow, step: string) =>
+  resolveStepChecks(flow.steps, step).some(c => c.id === 'human-approval' && c.applicable && c.params.signature === 'passkey');
+
+function gateAuthority(req: any, res: any, act: passkeys.Act, required: boolean): { authority: 'passkey'; credentialId: string } | { authority: 'unverified' } | null {
+  if (required && !passkeys.loadCredentials().length) {
+    res.status(401).json({ error: 'Passkey required: this step asks for approvals signed with a passkey, and none is enrolled on this board yet. Enroll one on the board first.' });
+    return null;
+  }
+  // Not asked for and not offered: the board's word, recorded as such.
+  if (!required && !req.body?.assertion) return { authority: 'unverified' };
+  try {
+    const cred = passkeys.authorise(req.body?.assertion, act);
+    return { authority: 'passkey', credentialId: cred.id };
+  } catch (e: any) {
+    res.status(401).json({ error: `Passkey required: ${e?.message ?? e}` });
+    return null;
+  }
+}
+
 app.get("/items/:id/gates", asyncHandler(async (req: any, res: any) => {
   const item: any = await storage.getItem(req.params.id);
   if (!item) return res.status(404).json({ error: 'Item not found' });
@@ -2619,7 +2708,9 @@ app.post("/items/:id/approvals", asyncHandler(async (req: any, res: any) => {
     return res.status(400).json({ error: `Step ${item.status} does not ask for an approval.` });
   }
   const note = gateText(req.body?.note);
-  const rec = { id: uuidv4(), step: item.status, kind: 'approval', at: new Date().toISOString(), head: null, clean: false, by: 'board', ...(note ? { note } : {}) };
+  const authority = gateAuthority(req, res, { purpose: 'approval', itemId: item.id, step: item.status, ...(note ? { note } : {}) }, stepWantsPasskey(flow, item.status));
+  if (!authority) return;
+  const rec = { id: uuidv4(), step: item.status, kind: 'approval', at: new Date().toISOString(), head: null, clean: false, by: 'board', ...authority, ...(note ? { note } : {}) };
   await appendGateRecord(item, rec, `### Step approved\n\n**Step**: ${item.status} — a person approved it on the board.${note ? `\n\n${note}` : ''}`);
   recordHubEvent({ type: 'step.approved', projectId: item.projectId, itemId: item.id, payload: { step: item.status, by: 'board' } });
   res.status(201).json(rec);
@@ -2642,7 +2733,9 @@ app.post("/items/:id/overrides", asyncHandler(async (req: any, res: any) => {
   if (!blocked) {
     return res.status(409).json({ error: `'${checkId}' is not blocking this card on ${item.status}. Only a check that blocked the card's last verify can be overridden.` });
   }
-  const rec = { id: uuidv4(), step: item.status, kind: 'override', at: new Date().toISOString(), head: null, clean: false, by: 'board', check: checkId, reason, detail: String(blocked.detail ?? '') };
+  const authority = gateAuthority(req, res, { purpose: 'override', itemId: item.id, step: item.status, checkId, reason }, stepWantsPasskey(flow, item.status));
+  if (!authority) return;
+  const rec = { id: uuidv4(), step: item.status, kind: 'override', at: new Date().toISOString(), head: null, clean: false, by: 'board', ...authority, check: checkId, reason, detail: String(blocked.detail ?? '') };
   await appendGateRecord(item, rec, `### Check overridden\n\n**Step**: ${item.status}\n**Check**: ${checkId} — a person passed it on the board.\n\n**Reason**: ${reason}`);
   recordHubEvent({ type: 'check.overridden', projectId: item.projectId, itemId: item.id, payload: { step: item.status, check: checkId, reason, by: 'board' } });
   res.status(201).json(rec);
@@ -8178,7 +8271,7 @@ export function resolveUiDir(explicit?: string | null): string | null {
 export const API_PATH_PREFIXES = [
   '/api', '/version', '/db', '/backup', '/projects', '/flows', '/prs',
   '/token-events', '/registry', '/items', '/internal', '/jira', '/github',
-  '/releases', '/agent-runs', '/settings', '/terminal-sessions', '/socket.io',
+  '/releases', '/agent-runs', '/settings', '/terminal-sessions', '/socket.io', '/webauthn', '/webauthn',
 ];
 
 /**
