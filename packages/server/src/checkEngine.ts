@@ -87,6 +87,8 @@ export interface EngineContext {
     startHead: string | null;
     /** Close commits of the card's descendants. */
     descendantCommits: string[];
+    /** This server's version: the CLI that can record a review (CGLAB-385). */
+    agenfkVersion?: string;
   };
   children: Array<{ id: string; type: string; status: string }>;
   /** This verify's capture, when a check needed one. */
@@ -206,7 +208,7 @@ export function judgeReview(r: ReviewEvidence, root: string | null, git: (args: 
     // server reads (Cursor, Gemini, OpenCode, an older agenfk): there is no
     // way to record a checkable review, so it warns rather than strands it.
     if (!r.authors.length) return { outcome: 'unavailable', soft: true, detail: 'no independent review is recorded, and no author identity either: this harness cannot record a checkable review. Review the change independently all the same.' };
-    return { outcome: 'fail', detail: 'no independent review is recorded. Have a separate agent review the diff, then: agenfk review record <id> --transcript <reviewer session log> --range <from>..<to> --findings <json>' };
+    return { outcome: 'fail', detail: `no independent review is recorded. Have a separate agent review the diff, then: agenfk review record <id> --transcript <reviewer session log> --range <from>..<to> --findings <json>. That command needs agenfk ${r.agenfkVersion ?? 'of this server\'s version'} or later (agenfk upgrade); otherwise a person can override this check on the board.` };
   }
   const who = `${rec.reviewer.client} session ${rec.reviewer.sessionId}${rec.reviewer.agentId ? `, agent ${rec.reviewer.agentId}` : ''}`;
   const same = (a: { sessionId: string; agentId: string | null }, b: { sessionId: string; agentId: string | null }) => a.sessionId === b.sessionId && (a.agentId ?? null) === (b.agentId ?? null);

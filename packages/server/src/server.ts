@@ -5853,7 +5853,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   // On a step that asks for a passkey, only signed overrides lift a check.
   const signedOnly = stepWantsPasskey(flow as Flow, item.status);
   for (const r of here) if (r.kind === 'override' && typeof r.check === 'string' && (!signedOnly || r.authority === 'passkey')) overrides[r.check] = { id: String(r.id), by: String(r.by ?? 'board'), at: String(r.at), reason: String(r.reason ?? ''), ...(typeof r.detail === 'string' ? { detail: r.detail } : {}) };
-  const review = resolved.some(c => c.id === 'review-record' && c.applicable) ? await reviewEvidence(item, root) : undefined;
+  const review = resolved.some(c => c.id === 'review-record' && c.applicable) ? { ...(await reviewEvidence(item, root)), agenfkVersion: getCurrentVersion() } : undefined;
   // Whoever is advancing the card now is an author too, though no step record carries them yet.
   if (review && actor && !review.authors.some((a: any) => a.sessionId === actor.sessionId && a.agentId === (actor.agentId ?? null))) {
     review.authors.push({ client: actor.client, sessionId: actor.sessionId, agentId: actor.agentId ?? null });
