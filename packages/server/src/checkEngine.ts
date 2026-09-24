@@ -59,6 +59,12 @@ export interface EngineContext {
   cardKeys: string[];
   /** Extra paths that count as test files (the test report's surface). */
   testPaths: string[];
+  /** Paths the checks never count as the card's changes (the test report the capture writes). */
+  ignoredPaths: string[];
+  /** Paths other active cards claim: their changes are theirs, in a shared tree. */
+  foreignClaims: string[];
+  /** Checks enforced by the project verify command on this transition, not judged here. */
+  deferToCommand: string[];
   children: Array<{ id: string; type: string; status: string }>;
   /** This verify's capture, when a check needed one. */
   capture: CaptureRecord | null;
@@ -109,7 +115,7 @@ function entryTests(ctx: EngineContext): ReportedTest[] | Verdict {
 /** The test names recorded when the tests were written, as tests. */
 function authoredTests(ctx: EngineContext): ReportedTest[] | Verdict {
   const names = ctx.records.authoredTests;
-  if (!Array.isArray(names)) return { outcome: 'unavailable', detail: "no 'authoredTests' record: the step that writes tests has not recorded one" };
+  if (!Array.isArray(names)) return { outcome: 'unavailable', soft: true, detail: "no 'authoredTests' record: the step that writes tests did not produce one for this card (it entered that step before checks, or its tests could not be judged there)" };
   return names.map(name => ({ name: String(name), file: '', status: 'passed' as const }));
 }
 
@@ -141,6 +147,20 @@ function newTests(ctx: EngineContext): { added: ReportedTest[]; now: ReportedTes
   return { added: now.tests.filter(t => !was.has(t.name)), now: now.tests, capture: now.capture };
 }
 
+/** A path inside a claim (a directory or an exact file), at a segment boundary. */
+const within = (file: string, claim: string) => {
+  const c = claim.replace(/^\.\//, '').replace(/\/+$/, '');
+  return file === c || file.startsWith(`${c}/`);
+};
+/**
+ * Changes that are this card's: not the test report the capture writes, and
+ * not files another active card has claimed. Unclaimed files stay the card's,
+ * so a card cannot hide an edit by claiming narrowly.
+ */
+function cardsOwn(ctx: EngineContext, files: string[]): string[] {
+  return files.filter(f => !ctx.ignoredPaths.some(p => within(f, p)) && !ctx.foreignClaims.some(c => within(f, c)));
+}
+
 const isVerdict = (x: unknown): x is Verdict => !!x && typeof x === 'object' && 'outcome' in (x as any);
 
 export const EVALUATORS: Record<string, Evaluator> = {
@@ -148,7 +168,10 @@ export const EVALUATORS: Record<string, Evaluator> = {
     if (!ctx.root) return { outcome: 'unavailable', detail: 'the card has no tree (no project root, no worktree)' };
     let porcelain: string;
     try { porcelain = ctx.git(['-C', ctx.root, 'status', '--porcelain']); } catch (e: any) { return { outcome: 'unavailable', detail: `git status failed: ${e?.message ?? e}` }; }
-    const dirty = porcelain.split('\n').map(l => l.trim()).filter(Boolean);
+    // `XY path` (or `XY old -> new`): the path is what follows the status.
+    const entries = porcelain.split('\n').filter(l => l.trim()).map(l => ({ line: l.trim(), file: l.slice(3).split(' -> ').pop()!.replace(/^"|"$/g, '') }));
+    const mine = new Set(cardsOwn(ctx, entries.map(e => e.file)));
+    const dirty = entries.filter(e => mine.has(e.file)).map(e => e.line);
     return dirty.length
       ? { outcome: 'fail', detail: `uncommitted changes: ${list(dirty)}. Commit or stash them before starting.` }
       : { outcome: 'pass', detail: 'clean' };
@@ -189,7 +212,7 @@ export const EVALUATORS: Record<string, Evaluator> = {
     try {
       const diff = ctx.git(['-C', ctx.root, 'diff', '--name-only', ctx.entryHead]);
       const untracked = ctx.git(['-C', ctx.root, 'ls-files', '--others', '--exclude-standard']);
-      changed = [...new Set([...diff.split('\n'), ...untracked.split('\n')].map(l => l.trim()).filter(Boolean))];
+      changed = cardsOwn(ctx, [...new Set([...diff.split('\n'), ...untracked.split('\n')].map(l => l.trim()).filter(Boolean))]);
     } catch (e: any) {
       return { outcome: 'unavailable', detail: `git could not list the changes since ${ctx.entryHead.slice(0, 12)}: ${e?.message ?? e}` };
     }
@@ -259,7 +282,7 @@ export const EVALUATORS: Record<string, Evaluator> = {
     const now = currentTests(ctx);
     if (isVerdict(now)) return now;
     const red = ctx.records.redSet;
-    if (!Array.isArray(red)) return { outcome: 'unavailable', detail: "no 'redSet' record: the step that writes tests has not recorded one" };
+    if (!Array.isArray(red)) return { outcome: 'unavailable', soft: true, detail: "no 'redSet' record: the step that writes tests did not produce one for this card (it entered that step before checks, or its tests could not be judged there)" };
     const status = new Map(now.tests.map(t => [t.name, t.status]));
     const open = red.map(String).filter(n => status.get(n) !== 'passed').map(n => `${n} [${status.get(n) ?? 'missing'}]`);
     return open.length
@@ -277,7 +300,7 @@ export const EVALUATORS: Record<string, Evaluator> = {
       base = e.surface.files;
     } else {
       const frozen = ctx.records.testSurface;
-      if (!frozen || typeof frozen !== 'object') return { outcome: 'unavailable', detail: "no 'testSurface' record: the step that writes tests has not recorded one" };
+      if (!frozen || typeof frozen !== 'object') return { outcome: 'unavailable', soft: true, detail: "no 'testSurface' record: the step that writes tests did not produce one for this card (it entered that step before checks, or its tests could not be judged there)" };
       base = frozen as Record<string, string>;
     }
     const cur = now.capture.surface?.files ?? {};
@@ -353,7 +376,7 @@ export function evaluateChecks(resolved: readonly ResolvedCheck[], ctx: EngineCo
       results.push({ ...base, outcome: 'n/a', blocking: false, detail: `needs ${(c.missing ?? []).map(m => `'${m}'`).join(', ')}, which no earlier step produces` });
       continue;
     }
-    if (c.id === 'server-owned-verify') {
+    if (c.id === 'server-owned-verify' || ctx.deferToCommand.includes(c.id)) {
       results.push({ ...base, outcome: 'deferred', blocking: false, detail: "enforced on this transition by the project's verify command" });
       continue;
     }

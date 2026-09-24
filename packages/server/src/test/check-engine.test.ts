@@ -273,6 +273,25 @@ describe('CGLAB-380: the check engine in verify', () => {
     });
   });
 
+  it('after a slow gate, the final command still streams its output into the run', async () => {
+    const dir = makeRepo();
+    const steps = [s('START', 0, { isAnchor: true }), s('MAKE', 1, { role: 'coding' }), s('END', 2, { isAnchor: true, role: 'closing' })];
+    const pid = await project(await flow(steps), { projectRoot: dir, verifyCommand: 'echo hello-stream; sleep 2; exit 0', testReport: { format: 'junit-xml', command: junitCommand(1), reportPath: 'report.xml' } });
+    const id = await card(pid, 'MAKE');
+    const res = await validate(id, { async: true });
+    expect(res.status).toBe(202);
+    let seenLive = false;
+    let run: any;
+    for (let i = 0; i < 100; i++) {
+      run = (await agent().get(`/items/validate-runs/${res.body.runId}`).set(internal())).body;
+      if (run.status === 'running' && String(run.output).includes('hello-stream')) seenLive = true;
+      if (run.status !== 'running') break;
+      await new Promise(r => setTimeout(r, 100));
+    }
+    expect(run.status, JSON.stringify(run)).toBe('passed');
+    expect(seenLive).toBe(true);
+  });
+
   it('lastChecks cannot be written through PUT /items/:id', async () => {
     const id = await card(await project(null), 'TODO');
     await agent().put(`/items/${id}`).send({ lastChecks: { step: 'TODO', at: 'x', results: [{ id: 'tree-clean', outcome: 'pass' }] } });

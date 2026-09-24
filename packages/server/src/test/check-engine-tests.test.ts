@@ -302,4 +302,68 @@ describe('CGLAB-380: test checks', () => {
     impl(dir, { add: 'broken' });
     await refused(id2, 'suite-green');
   });
+
+  describe('review findings (CGLAB-380 story review)', () => {
+    const unignore = (dir: string) => {
+      write(dir, '.gitignore', '');
+      execSync('git add .gitignore && git commit -qm unignore', { cwd: dir, shell: '/bin/sh' });
+    };
+
+    it('the report the capture writes is not the card\'s change, even when it is not gitignored', async () => {
+      const dir = makeRepo();
+      unignore(dir);
+      const id = await card(await project(await flow(tddSteps()), { projectRoot: dir, verifyCommand: 'node runner.cjs', testReport: REPORT }), 'START');
+      for (const expected of ['ASK', 'SPECS']) {
+        const r = await validate(id);
+        expect(r.status, JSON.stringify(r.body)).toBe(200);
+        expect((await item(id)).status).toBe(expected);
+      }
+      honestTests(dir);
+      const r = await validate(id);
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+    });
+
+    it('in a shared tree, files another active card claims are not this card\'s change', async () => {
+      const { dir, id } = await atSpecs();
+      const pid = (await item(id)).projectId;
+      await card(pid, 'BUILD', { claims: ['src/sibling.js'] });
+      honestTests(dir);
+      write(dir, 'src/sibling.js', 'theirs');
+      const r = await validate(id);
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+    });
+
+    it('an unclaimed source change is still refused', async () => {
+      const { dir, id } = await atSpecs();
+      await agent().put(`/items/${id}`).send({ claims: ['tests'] });
+      honestTests(dir);
+      write(dir, 'src/sneaky.js', 'code');
+      const c = await refused(id, 'only-test-files-changed');
+      expect(c.detail).toMatch(/src\/sneaky\.js/);
+    });
+
+    it('a card already in the coding step when the flow gained roles warns and advances', async () => {
+      const dir = makeRepo();
+      const id = await card(await project(await flow(tddSteps()), { projectRoot: dir, verifyCommand: 'node runner.cjs', testReport: REPORT }), 'BUILD');
+      const r = await validate(id);
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      const results = (await item(id)).lastChecks.results;
+      expect(byId(results, 'red-set-passes-by-name')).toMatchObject({ outcome: 'unavailable', blocking: false });
+    });
+
+    it('the final transition of a default-shaped flow runs the suite once, not twice', async () => {
+      const dir = makeRepo();
+      const counter = path.join(dir, '..', `${path.basename(dir)}-runs`);
+      repos.push(counter);
+      const steps = [
+        s('TODO', 0, { isAnchor: true }), s('IN_PROGRESS', 1, { role: 'coding' }),
+        s('REVIEW', 2, { role: 'review' }), s('TEST', 3, { role: 'testing' }), s('DONE', 4, { isAnchor: true, role: 'closing' }),
+      ];
+      const id = await card(await project(await flow(steps), { projectRoot: dir, verifyCommand: `echo x >> ${counter} && node runner.cjs` }), 'TEST');
+      const r = await validate(id);
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect((await item(id)).status).toBe('DONE');
+      expect(fs.readFileSync(counter, 'utf8').trim().split('\n')).toHaveLength(1);
+    });
+  });
 });

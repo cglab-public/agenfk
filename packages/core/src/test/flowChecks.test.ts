@@ -228,6 +228,18 @@ describe('flowChecksErrors (save-time validation)', () => {
     expect(flowChecksErrors(steps).length).toBeGreaterThan(0);
   });
 
+  it('refuses server-owned-verify or the closing role on a step whose exit does not end the flow: nothing would run it', () => {
+    const steps = tdd();
+    steps[5].checks = [{ id: 'server-owned-verify' }];
+    expect(flowChecksErrors(steps)).toEqual([]); // LOOK -> FINISHED ends the flow
+    const mid = tdd();
+    mid[4].checks = [{ id: 'server-owned-verify' }];
+    expect(flowChecksErrors(mid).join('\n')).toMatch(/TIDY.*server-owned-verify/);
+    const role = tdd();
+    role[3].role = 'closing';
+    expect(flowChecksErrors(role).join('\n')).toMatch(/BUILD.*closing/);
+  });
+
   it('treats null role and null checks as "none"', () => {
     const steps = plain();
     steps[1].role = null;

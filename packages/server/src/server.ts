@@ -7,7 +7,7 @@ import { mayPropagate, readCleanTreeSha, readHead, readTreeStatus } from './prop
 import { insideRoot, parseJunitXml, parseVitestJson, surfaceOf } from './stepRecords';
 import { evaluateChecks, formatCheckResults, needsCapture, needsEntryRecord, type CheckResult } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks } from "@agenfk/core";
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -5365,14 +5365,28 @@ async function keysOfCard(item: any): Promise<string[]> {
  * step needs per-test results, or the NEXT step reads its entry record - that
  * capture is then the next step's entry, so no suite runs just to snapshot.
  */
+/**
+ * Checks the project verify command settles on this transition. On the one
+ * that ends the flow the command runs anyway, so with no per-test report a
+ * `suite-green` capture would only run the same suite twice.
+ */
+function deferredToCommand(flow: { steps: any[] }, status: string, project: any): string[] {
+  const sorted = sortedFlowSteps(flow as any);
+  const next = sorted[sorted.findIndex(st => st.name === status) + 1];
+  const final = !next || next.name === Status.DONE || isBoundaryStep(next);
+  return final && !project?.testReport && project?.verifyCommand ? ['suite-green'] : [];
+}
+
 async function runStepGate(item: any, flow: { steps: any[] }, root: string | null): Promise<StepGate> {
   const sorted = sortedFlowSteps(flow as any);
   const index = sorted.findIndex(st => st.name === item.status);
   const next = sorted[index + 1];
+  const project: any = await storage.getProject(item.projectId);
+  const deferToCommand = deferredToCommand(flow, item.status, project);
   const resolved = resolveStepChecks(flow.steps, item.status);
   let capture: any = null;
   let captureError: string | undefined;
-  if (needsCapture(resolved) || (next && needsEntryRecord(resolveStepChecks(flow.steps, next.name)))) {
+  if (needsCapture(resolved.filter(c => !deferToCommand.includes(c.id))) || (next && needsEntryRecord(resolveStepChecks(flow.steps, next.name)))) {
     const out = await captureStepRecord(item);
     if ('error' in out) captureError = out.message; else capture = out.record;
   }
@@ -5383,7 +5397,13 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const produced: Record<string, unknown> = {};
   for (const r of records) if (r?.kind === 'record' && earlier.has(r.step) && typeof r.name === 'string') produced[r.name] = r.value;
 
-  const project: any = await storage.getProject(item.projectId);
+  // In a shared worktree the tree holds other cards' work too (MULTI_AGENT.md):
+  // what another active card has claimed is theirs, not this card's change.
+  const others: any[] = (await storage.listItems({ projectId: item.projectId, limit: 1_000_000 } as any)) as any;
+  const foreignClaims = others
+    .filter(o => o.id !== item.id && Array.isArray(o.claims) && stillHolds(String(o.status)))
+    .flatMap(o => o.claims as string[]);
+  const reportPath = typeof project?.testReport?.reportPath === 'string' ? project.testReport.reportPath : null;
   const outcome = evaluateChecks(resolved, {
     root,
     git: args => gitRun.run(args),
@@ -5391,6 +5411,9 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     cardBranch: await branchOfCard(item),
     cardKeys: await keysOfCard(item),
     testPaths: Array.isArray(project?.testReport?.surface) ? project.testReport.surface : [],
+    ignoredPaths: reportPath && root ? [insideRoot(root, path.resolve(root, reportPath)) ?? reportPath] : [],
+    foreignClaims,
+    deferToCommand,
     children: (await storage.listItems({ parentId: item.id } as any)) as any,
     capture,
     captureError,
@@ -5445,7 +5468,7 @@ function runRecorder(run: ValidateRun) {
   };
 }
 
-async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string, asyncRun?: ValidateRun, opts?: { gate?: StepGate }) {
+async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string, asyncRun?: ValidateRun, opts?: { gate?: StepGate; run?: ValidateRun }) {
   const item = await storage.getItem(itemId);
   if (!item) return res.status(404).json({ error: "Item not found" });
 
@@ -5502,7 +5525,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   let gate = opts?.gate;
   if (!gate && !(currentFlowStep.step.isAnchor && currentFlowStep.index !== 0)) {
     const nextName = sorted[currentFlowStep.index + 1]?.name;
-    const slow = needsCapture(resolveStepChecks(activeFlow.steps, item.status))
+    const deferred = deferredToCommand(activeFlow, item.status, project);
+    const slow = needsCapture(resolveStepChecks(activeFlow.steps, item.status).filter(c => !deferred.includes(c.id)))
       || (!!nextName && needsEntryRecord(resolveStepChecks(activeFlow.steps, nextName)));
     if (slow && asyncRun) {
       const run = asyncRun;
@@ -5518,7 +5542,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         if (!fresh) return recorder.status(404).json({ status: item.status, message: '❌ Item was deleted while the checks ran.' });
         const g = await runStepGate(fresh, activeFlow, effectiveRoot ?? null);
         if (g.blocked) return refuseOnChecks(recorder, fresh, g);
-        return handleValidateProgress(itemId, command, recorder, undefined, undefined, { gate: g });
+        return handleValidateProgress(itemId, command, recorder, undefined, undefined, { gate: g, run });
       })()
         .catch((err: any) => {
           run.status = 'failed';
@@ -6053,7 +6077,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     return;
   }
 
-  return runCommandAndFinalize(res);
+  // `opts.run`: the background run a slow gate already answered 202 for, so
+  // the command's output still streams to whoever follows it.
+  return runCommandAndFinalize(res, opts?.run);
 }
 
 // Live status/output of a background validate run. Registered before use in

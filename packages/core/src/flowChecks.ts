@@ -258,8 +258,17 @@ export function flowChecksErrors(steps: unknown): string[] {
   const producersOf = (rec: RecordName) => Object.values(CHECK_CATALOGUE)
     .filter(d => d.produces(withDefaults(d, {})).includes(rec)).map(d => d.id);
 
-  for (const s of list) {
+  // The project verify command runs only on the transition that ends the
+  // flow: from the last step before a terminal step, or into that terminal
+  // step. Anywhere else a check deferred to it would never run.
+  const last = list[list.length - 1];
+  const endsHere = (i: number) => i === list.length - 1 || (i === list.length - 2 && !!last && !!(last.isAnchor || last.isSpecial));
+  for (const [i, s] of list.entries()) {
     const name = String(s.name);
+    if (!endsHere(i)) {
+      if (s.role === 'closing') errors.push(`Step ${name}: role 'closing' belongs to the step that ends the flow, where the project's verify command runs; here nothing would run it.`);
+      if (refsOf(s).some(c => c.id === 'server-owned-verify')) errors.push(`Step ${name}: check 'server-owned-verify' only runs on the transition that ends the flow; here it would never run. Use 'suite-green' to require a green suite on this step.`);
+    }
     if (s.role !== undefined && s.role !== null && !isRole(s.role)) {
       errors.push(`Step ${name}: unknown role ${JSON.stringify(s.role)}. Roles: ${STEP_ROLES.join(', ')}.`);
     }
