@@ -32,6 +32,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -73,6 +74,8 @@ async function project(flowId: string | null, extra: Record<string, unknown> = {
   const p = await agent().post('/projects').send({ name: `engine-${++seq}` });
   expect(p.status).toBe(201);
   await storage.updateProject(p.body.id, { ...(flowId ? { flowId } : {}), ...extra } as never);
+  // No flow: the default flow as it was before it had roles (a role-less flow).
+  if (!flowId) await bindRoleLessDefaultFlow(storage, p.body.id);
   return p.body.id as string;
 }
 async function card(projectId: string, status: string, extra: Record<string, unknown> = {}) {

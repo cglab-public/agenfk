@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, beforeAll, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import { app, initStorage, storage, oauthStateStore, mapJiraTypeToAgEnFK, clearJiraValidationCache, VERIFY_TOKEN } from '../server';
+import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
 import { Status, ItemType, AgEnFKItem } from '@agenfk/core';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -105,6 +106,7 @@ describe('Server API', () => {
     beforeAll(async () => {
       const res = await agent().post('/projects').send({ name: 'Item Test' });
       projectId = res.body.id;
+      await bindRoleLessDefaultFlow(storage, projectId);
     });
 
     it('should create an item', async () => {

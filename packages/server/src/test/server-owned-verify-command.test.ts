@@ -43,6 +43,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 // Import AFTER the env var so storage lands in the test DB.
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -63,6 +64,7 @@ async function project(verifyCommand?: string, steps?: Array<Record<string, unkn
   const name = `sovc-${++seq}`;
   const p = await agent().post('/projects').send({ name });
   expect(p.status, `project: ${JSON.stringify(p.body)}`).toBe(201);
+  if (!steps) await bindRoleLessDefaultFlow(storage, p.body.id);
   if (steps) {
     const f = await agent().post('/flows').set(internal()).send({ name: `${name}-flow`, steps });
     expect(f.status, `flow: ${JSON.stringify(f.body)}`).toBe(201);

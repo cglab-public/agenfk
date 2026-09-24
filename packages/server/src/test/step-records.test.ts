@@ -30,6 +30,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 // Import AFTER the env var so storage lands in the test DB.
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -62,6 +63,7 @@ let seq = 0;
 async function project(extra: Record<string, unknown> = {}) {
   const p = await agent().post('/projects').send({ name: `steprec-${++seq}` });
   expect(p.status).toBe(201);
+  await bindRoleLessDefaultFlow(storage, p.body.id);
   if (Object.keys(extra).length) await storage.updateProject(p.body.id, extra as never);
   return p.body.id as string;
 }

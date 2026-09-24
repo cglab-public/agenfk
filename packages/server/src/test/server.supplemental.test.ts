@@ -7,6 +7,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } 
 import request from 'supertest';
 import { makeProject, makeItem } from './helpers/fixtures';
 import { app, initStorage, oauthStateStore, mapJiraTypeToAgEnFK, VERIFY_TOKEN, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl, setVerifyLogRootForTests, storage } from '../server';
+import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
 import { Status, ItemType } from '@agenfk/core';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -570,6 +571,7 @@ describe('POST /items/:id/validate — command required only on final step', () 
   it('advances intermediate step (REVIEW→TEST) with no command, without running anything', async () => {
     if (!VERIFY_TOKEN) return;
     const p = (await agent().post('/projects').send({ name: 'PV1' })).body;
+    await bindRoleLessDefaultFlow(storage, p.id);
     // No verifyCommand set on project
     const item = (await agent().post('/items').send({ type: 'TASK', title: 'TV1', projectId: p.id })).body;
     await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
@@ -587,6 +589,7 @@ describe('POST /items/:id/validate — command required only on final step', () 
   it('advances intermediate step (IN_PROGRESS→REVIEW) with no command', async () => {
     if (!VERIFY_TOKEN) return;
     const p = await makeProject(app, 'PV2');
+    await bindRoleLessDefaultFlow(storage, p.id);
     const item = await makeItem(app, { type: 'TASK', title: 'TV2', projectId: p.id });
     await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
 
@@ -602,6 +605,7 @@ describe('POST /items/:id/validate — command required only on final step', () 
   it('still returns NO_VERIFY_COMMAND when on final step (TEST→DONE) with no command and no verifyCommand', async () => {
     if (!VERIFY_TOKEN) return;
     const p = await makeProject(app, 'PV3');
+    await bindRoleLessDefaultFlow(storage, p.id);
     const item = await makeItem(app, { type: 'TASK', title: 'TV3', projectId: p.id });
     await agent()
       .post('/items/bulk')
@@ -623,6 +627,7 @@ describe('POST /items/:id/validate — command required only on final step', () 
   it('runs verifyCommand on final step (TEST→DONE) when no explicit command given', async () => {
     if (!VERIFY_TOKEN) return;
     const p = (await agent().post('/projects').send({ name: 'PV4' })).body;
+    await bindRoleLessDefaultFlow(storage, p.id);
     await agent().put(`/projects/${p.id}/verify-command`).set('x-agenfk-internal', VERIFY_TOKEN).send({ verifyCommand: 'echo verify-ok' });
     const item = (await agent().post('/items').send({ type: 'TASK', title: 'TV4', projectId: p.id })).body;
     await agent()
@@ -651,6 +656,7 @@ describe('POST /items/:id/validate — evidence comment logging', () => {
   it('logs evidence as a tagged comment before advancing', async () => {
     if (!VERIFY_TOKEN) return;
     const p = await makeProject(app, 'EV1');
+    await bindRoleLessDefaultFlow(storage, p.id);
     const item = await makeItem(app, { type: 'TASK', title: 'EV1', projectId: p.id });
     await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
 
@@ -669,6 +675,7 @@ describe('POST /items/:id/validate — evidence comment logging', () => {
   it('still advances without evidence when omitted', async () => {
     if (!VERIFY_TOKEN) return;
     const p = await makeProject(app, 'EV2');
+    await bindRoleLessDefaultFlow(storage, p.id);
     const item = await makeItem(app, { type: 'TASK', title: 'EV2', projectId: p.id });
     await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
 
@@ -1246,7 +1253,7 @@ describe('syncParentStatus advanced scenarios', () => {
     expect(updated.status).toBe('IN_PROGRESS');
   });
 
-  it('syncs parent to DONE when all children are done', async () => {
+  it('when all children are done, the parent stops at its REVIEW step (CGLAB-381)', async () => {
     if (!VERIFY_TOKEN) return;
     const p = (await agent().post('/projects').send({ name: 'P' })).body;
     const parent = (await agent().post('/items').send({ type: 'STORY', title: 'Parent', projectId: p.id })).body;
@@ -1254,7 +1261,8 @@ describe('syncParentStatus advanced scenarios', () => {
     // Set child to DONE via internal token
     await seedThenSync(child.id, 'DONE');
     const updated = (await agent().get(`/items/${parent.id}`)).body;
-    expect(updated.status).toBe('DONE');
+    // The parent stops at its own review step; only verify moves it on.
+    expect(updated.status).toBe('REVIEW');
   });
 
   it('handles nested parent sync (grandparent)', async () => {
@@ -1265,17 +1273,19 @@ describe('syncParentStatus advanced scenarios', () => {
     const child = (await agent().post('/items').send({ type: 'TASK', title: 'Child', projectId: p.id, parentId: parent.id })).body;
     await seedThenSync(child.id, 'DONE');
     const updatedParent = (await agent().get(`/items/${parent.id}`)).body;
-    expect(updatedParent.status).toBe('DONE');
+    // CGLAB-381: the parent stops at its own review step, and so does the grandparent.
+    expect(updatedParent.status).toBe('REVIEW');
+    expect((await agent().get(`/items/${grandparent.id}`)).body.status).toBe('REVIEW');
   });
 
-  it('syncs parent to TEST when all children are in TEST or DONE', async () => {
+  it('a parent following children in TEST stops at its REVIEW step (CGLAB-381)', async () => {
     if (!VERIFY_TOKEN) return;
     const p = (await agent().post('/projects').send({ name: 'P' })).body;
     const parent = (await agent().post('/items').send({ type: 'STORY', title: 'Parent', projectId: p.id })).body;
     const child = (await agent().post('/items').send({ type: 'TASK', title: 'Child', projectId: p.id, parentId: parent.id })).body;
     await seedThenSync(child.id, 'TEST');
     const updated = (await agent().get(`/items/${parent.id}`)).body;
-    expect(updated.status).toBe('TEST');
+    expect(updated.status).toBe('REVIEW');
   });
 });
 
@@ -2013,6 +2023,7 @@ describe('POST /items/:id/validate — push instructions included in DONE messag
   it('includes git push instruction when item moves to DONE via command', async () => {
     if (!VERIFY_TOKEN) return;
     const p = (await agent().post('/projects').send({ name: 'PI1', verifyCommand: 'echo ok' })).body;
+    await bindRoleLessDefaultFlow(storage, p.id);
     const item = (await agent().post('/items').send({ type: 'TASK', title: 'PI1', projectId: p.id })).body;
     await agent()
       .post('/items/bulk')
@@ -2035,6 +2046,7 @@ describe('POST /items/:id/validate — push instructions included in DONE messag
   it('includes git push instruction when item moves to DONE via sibling propagation', async () => {
     if (!VERIFY_TOKEN) return;
     const p = (await agent().post('/projects').send({ name: 'PI2', verifyCommand: 'echo ok' })).body;
+    await bindRoleLessDefaultFlow(storage, p.id);
     const parent = (await agent().post('/items').send({ type: 'STORY', title: 'PI2-parent', projectId: p.id })).body;
     const child1 = (await agent().post('/items').send({ type: 'TASK', title: 'PI2-child1', projectId: p.id, parentId: parent.id })).body;
     const child2 = (await agent().post('/items').send({ type: 'TASK', title: 'PI2-child2', projectId: p.id, parentId: parent.id })).body;
@@ -2073,6 +2085,7 @@ describe('POST /items/:id/validate — push instructions included in DONE messag
   it('includes branchName in push instruction when item has branchName set', async () => {
     if (!VERIFY_TOKEN) return;
     const p = (await agent().post('/projects').send({ name: 'PI3', verifyCommand: 'echo ok' })).body;
+    await bindRoleLessDefaultFlow(storage, p.id);
     const item = (await agent().post('/items').send({ type: 'TASK', title: 'PI3', projectId: p.id })).body;
     // Set a branchName on the item
     await agent().put(`/items/${item.id}`).send({ branchName: 'task/abc-my-feature' });
@@ -2097,6 +2110,7 @@ describe('POST /items/:id/validate — push instructions included in DONE messag
   it('does NOT include push instruction when item moves to an intermediate step', async () => {
     if (!VERIFY_TOKEN) return;
     const p = await makeProject(app, 'PI4');
+    await bindRoleLessDefaultFlow(storage, p.id);
     const item = await makeItem(app, { type: 'TASK', title: 'PI4', projectId: p.id });
     await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
 
@@ -2147,6 +2161,7 @@ describe('POST /items/:id/validate — full-output log persistence', () => {
 
   const setupItemInCoding = async (name: string) => {
     const p = (await agent().post('/projects').send({ name })).body;
+    await bindRoleLessDefaultFlow(storage, p.id);
     const item = (await agent().post('/items').send({ type: 'TASK', title: name, projectId: p.id })).body;
     await agent().put(`/items/${item.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
     return { p, item };
@@ -2259,6 +2274,7 @@ describe('POST /items/:id/validate — full-output log persistence', () => {
   it('stores head+tail preview (not full output) in the tests[] record on final step', async () => {
     if (!VERIFY_TOKEN) return;
     const p = (await agent().post('/projects').send({ name: 'LogPersist5', verifyCommand: longOutputCommand('r5') })).body;
+    await bindRoleLessDefaultFlow(storage, p.id);
     const item = (await agent().post('/items').send({ type: 'TASK', title: 'LogPersist5', projectId: p.id })).body;
     await agent()
       .post('/items/bulk')
@@ -2350,6 +2366,7 @@ describe('POST /items/:id/validate — full-output log persistence', () => {
   it('purges log directories of descendant items when a parent is trashed', async () => {
     if (!VERIFY_TOKEN) return;
     const p = (await agent().post('/projects').send({ name: 'LogPersist8' })).body;
+    await bindRoleLessDefaultFlow(storage, p.id);
     const parent = (await agent().post('/items').send({ type: 'STORY', title: 'parent', projectId: p.id })).body;
     const child = (await agent().post('/items').send({ type: 'TASK', title: 'child', projectId: p.id, parentId: parent.id })).body;
     await agent().put(`/items/${child.id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });

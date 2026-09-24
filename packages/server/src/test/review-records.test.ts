@@ -33,6 +33,7 @@ process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -96,6 +97,7 @@ let seq = 0;
 async function cardIn(dir: string) {
   const p = await agent().post('/projects').send({ name: `review-${++seq}` });
   await storage.updateProject(p.body.id, { projectRoot: dir } as never);
+  await bindRoleLessDefaultFlow(storage, p.body.id);
   const c = await agent().post('/items').send({ type: 'STORY', title: `card-${++seq}`, projectId: p.body.id });
   return c.body.id as string;
 }

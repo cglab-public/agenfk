@@ -38,6 +38,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 // Import AFTER the env var is set so storage lands in the test DB.
 import { app, initStorage, VERIFY_TOKEN, storage } from '../server';
+import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -227,6 +228,7 @@ describe('POST /items/:id/validate — async runs', () => {
   it('stays synchronous when no command would run (intermediate step, async flag ignored)', async () => {
     if (!VERIFY_TOKEN) return;
     const p = (await agent().post('/projects').send({ name: 'AV5' })).body;
+    await bindRoleLessDefaultFlow(storage, p.id);
     const item = (await agent().post('/items').send({ type: 'TASK', title: 'AV5-item', projectId: p.id })).body;
     await storage.updateItem(item.id, { status: 'IN_PROGRESS' } as any);
 

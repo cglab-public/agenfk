@@ -23,7 +23,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { app, initStorage, VERIFY_TOKEN, autoGitCommit } from '../server';
+import { app, initStorage, VERIFY_TOKEN, autoGitCommit, storage } from '../server';
+import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -93,6 +94,7 @@ const projectRoot = async (): Promise<string | undefined> => {
 const projectRootedAt = async (dir: string) => {
   const p = await internal(agent().post('/projects')).send({ name: `vwr-${Date.now()}` });
   projectId = p.body.id;
+  await bindRoleLessDefaultFlow(storage, projectId);
   const seed = await newItem('TASK', 'seed');
   await validate(seed.id, { cwd: dir });
 };
@@ -136,6 +138,7 @@ describe('verify runs against the card\'s own tree (CGLAB-366)', () => {
     repo = makeRepo();
     const p = await internal(agent().post('/projects')).send({ name: 'verify-worktree-root' });
     projectId = p.body.id;
+    await bindRoleLessDefaultFlow(storage, projectId);
     // The supported way to set projectRoot: a verify reporting where it ran.
     const seed = await newItem('TASK', 'seed');
     await validate(seed.id, { cwd: repo });

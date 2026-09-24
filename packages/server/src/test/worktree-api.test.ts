@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { app, initStorage, storage, VERIFY_TOKEN, defaultWorktreeRoot, findProjectRoot, autoGitCommit } from '../server';
+import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -336,6 +337,7 @@ describe('auto-worktree on entering a working step', () => {
     // user's intent; the worktree is a convenience on top of it.
     const p = await agent().post('/projects').send({ name: `broken-${Date.now()}` });
     await storage.updateProject(p.body.id, { projectRoot: '/nonexistent/path' } as never);
+    await bindRoleLessDefaultFlow(storage, p.body.id);
     await agent().put(`/projects/${p.body.id}`).send({ autoWorktree: true });
     const item = (await agent().post('/items')
       .send({ type: 'TASK', title: 'Broken repo', projectId: p.body.id })).body;
