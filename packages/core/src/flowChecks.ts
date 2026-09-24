@@ -36,8 +36,9 @@ export interface StepCheckRef {
  *   it never needs an earlier producer.
  * - `redSet`: the new tests that failed when they were written.
  * - `testSurface`: the hashed test files and runner config as they were then.
+ * - `authoredTests`: every test name as the tests were written.
  */
-export type RecordName = 'stepEntryTests' | 'redSet' | 'testSurface';
+export type RecordName = 'stepEntryTests' | 'redSet' | 'testSurface' | 'authoredTests';
 const ENGINE_RECORDS: ReadonlySet<RecordName> = new Set(['stepEntryTests']);
 
 export interface CheckParamDef {
@@ -84,7 +85,7 @@ export const CHECK_CATALOGUE: Record<string, CheckDef> = {
     requires: () => ['stepEntryTests'],
     description: 'At least one test was added in this step.' }),
   'some-new-test-red': def({ id: 'some-new-test-red', group: 'tests', defaultSeverity: 'block', needsCapture: true,
-    requires: () => ['stepEntryTests'], produces: () => ['redSet', 'testSurface'],
+    requires: () => ['stepEntryTests'], produces: () => ['redSet', 'testSurface', 'authoredTests'],
     description: 'At least one new test fails before the code exists. Those tests become the red set that must pass later, and the test files are frozen.' }),
   'new-tests-born-green': def({ id: 'new-tests-born-green', group: 'tests', defaultSeverity: 'warn', needsCapture: true,
     requires: () => ['stepEntryTests'],
@@ -108,8 +109,9 @@ export const CHECK_CATALOGUE: Record<string, CheckDef> = {
     requires: p => [p.since === 'step-entry' ? 'stepEntryTests' : 'testSurface'],
     description: 'Test files and runner config are unchanged, so a failing test cannot be weakened, skipped or deleted.' }),
   'test-count-not-lower': def({ id: 'test-count-not-lower', group: 'tests', defaultSeverity: 'block', needsCapture: true,
-    requires: () => ['stepEntryTests'],
-    description: 'There are at least as many tests as when the step began.' }),
+    params: { since: { values: ['step-entry', 'test-authoring'], default: 'step-entry', description: 'Compare with the tests as this step began, or as they were written.' } },
+    requires: p => [p.since === 'test-authoring' ? 'authoredTests' : 'stepEntryTests'],
+    description: 'There are at least as many tests as before: as the step began, or as they were written.' }),
   'test-set-identical': def({ id: 'test-set-identical', group: 'tests', defaultSeverity: 'block', needsCapture: true,
     requires: () => ['stepEntryTests'],
     description: 'The same tests, by name, as when the step began: none added, none removed.' }),
@@ -134,7 +136,7 @@ export const ROLE_BUILTINS: Record<StepRole, StepCheckRef[]> = {
   ],
   coding: [
     ref('suite-green'), ref('red-set-passes-by-name'), ref('test-surface-frozen', { mode: 'append', since: 'test-authoring' }),
-    ref('test-count-not-lower'),
+    ref('test-count-not-lower', { since: 'test-authoring' }),
   ],
   refactoring: [ref('suite-green'), ref('test-set-identical'), ref('test-surface-frozen', { mode: 'strict', since: 'step-entry' })],
   // review-record joins with S5; until then a review step has no built-ins.
