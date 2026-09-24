@@ -2691,7 +2691,7 @@ app.get("/items/:id/gate-events", asyncHandler(async (req: any, res: any) => {
     for (const r of card.stepRecords ?? []) {
       if (r?.kind !== 'approval' && r?.kind !== 'override' && r?.kind !== 'manual-advance') continue;
       events.push({
-        itemId: card.id, title: card.title, step: r.step, kind: r.kind, by: r.by, at: r.at, ...(r.to ? { to: r.to } : {}),
+        itemId: card.id, title: card.title, step: r.step, kind: r.kind, by: r.by, at: r.at, ...(r.to ? { to: r.to } : {}), ...(r.authority ? { authority: r.authority } : {}),
         ...(r.note ? { note: r.note } : {}), ...(r.check ? { check: r.check, reason: r.reason } : {}),
       });
     }

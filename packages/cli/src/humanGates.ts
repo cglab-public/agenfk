@@ -8,6 +8,8 @@ export interface GateEvent {
   title: string;
   step: string;
   kind: 'approval' | 'override' | 'manual-advance';
+  /** How the act was authorised: signed with a passkey, or the board's word (CGLAB-383). */
+  authority?: 'passkey' | 'unverified';
   /** On a manual-advance: the step the board moved the card to. */
   to?: string;
   by: string;
@@ -29,7 +31,8 @@ export function formatHumanGates(events: readonly GateEvent[]): string {
     const gate = e.kind === 'override' ? `🔓 overrode \`${cell(e.check)}\``
       : e.kind === 'manual-advance' ? `⏭ moved to ${cell(e.to)} on the board` : '✅ approved';
     const why = e.kind === 'override' ? e.reason : e.kind === 'manual-advance' ? 'dragged forward: verify and the step checks were skipped' : e.note;
-    return `| ${cell(e.title)} | ${cell(e.step)} | ${gate} | ${cell(why) || '—'} | ${cell(e.at)} |`;
+    const signed = e.kind === 'manual-advance' ? '—' : e.authority === 'passkey' ? '🔐 passkey' : 'unverified';
+    return `| ${cell(e.title)} | ${cell(e.step)} | ${gate} | ${cell(why) || '—'} | ${signed} | ${cell(e.at)} |`;
   });
   const overrides = events.filter(e => e.kind === 'override').length;
   const skipped = events.filter(e => e.kind === 'manual-advance').length;
@@ -42,8 +45,8 @@ export function formatHumanGates(events: readonly GateEvent[]): string {
     '',
     lead ? `${lead} Review them with the reason given.` : 'Approvals a person gave on the board.',
     '',
-    '| Card | Step | Gate | Reason / note | When |',
-    '| --- | --- | --- | --- | --- |',
+    '| Card | Step | Gate | Reason / note | Signed | When |',
+    '| --- | --- | --- | --- | --- | --- |',
     ...rows,
   ].join('\n');
 }

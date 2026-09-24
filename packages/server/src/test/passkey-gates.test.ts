@@ -331,3 +331,14 @@ describe('CGLAB-383: GET /items/:id/gates says whether the step asks for a passk
     expect((await agent().get(`/items/${id}/gates`)).body.approvals[0].authority).toBe('unverified');
   });
 });
+
+describe('CGLAB-383: gate-events carry the authority, for the PR', () => {
+  it('passkey for a signed approval', async () => {
+    const a = new SoftAuthenticator();
+    await enroll(a);
+    const id = await card('PLAN');
+    await approve(id, { assertion: await signedApproval(a, id, 'PLAN') });
+    const ev = (await agent().get(`/items/${id}/gate-events`)).body;
+    expect(ev[0]).toMatchObject({ kind: 'approval', authority: 'passkey' });
+  });
+});

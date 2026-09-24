@@ -38,7 +38,7 @@ describe('formatHumanGates', () => {
   it('keeps a reason from breaking the markdown table', () => {
     const md = formatHumanGates([{ ...override, reason: 'a | b\nc' }]);
     const row = md.split('\n').find(l => l.includes('jira-key-valid'))!;
-    expect(row.split(/(?<!\\)\|/).length).toBe(7);
+    expect(row.split(/(?<!\\)\|/).length).toBe(8);
     expect(md).toMatch(/a \\\| b c/);
   });
 });
@@ -50,6 +50,19 @@ describe('board moves on the PR (CGLAB-382 review)', () => {
     expect(md).toMatch(/PLAN/);
     expect(md).toMatch(/WORK/);
     expect(md).toMatch(/skipp/i);
+  });
+});
+
+describe('authority on the PR (CGLAB-383)', () => {
+  it('says which acts were signed with a passkey and which were not', () => {
+    const md = formatHumanGates([{ ...override, authority: 'passkey' }, { ...approval, authority: 'unverified' }]);
+    const rows = md.split('\n');
+    expect(rows.find(r => r.includes('jira-key-valid'))).toMatch(/passkey/);
+    expect(rows.find(r => r.includes('DISCOVERY'))).toMatch(/unverified/);
+  });
+
+  it('treats an act from before authority was recorded as unverified', () => {
+    expect(formatHumanGates([override]).split('\n').find(r => r.includes('jira-key-valid'))).toMatch(/unverified/);
   });
 });
 
