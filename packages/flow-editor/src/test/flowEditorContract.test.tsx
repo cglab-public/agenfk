@@ -29,7 +29,7 @@ const orphan = () => flowOf([
   s('DONE', 2, { isAnchor: true }),
 ]);
 
-function mount(flow: Flow, contract = true) {
+function mount(flow: Flow, contract = true, extra: Record<string, unknown> = {}) {
   const updateFlow = vi.fn(async (_id: string, payload: Partial<Flow>) => ({ ...flow, ...payload } as Flow));
   const flowClient: FlowClient = {
     listFlows: async () => [flow],
@@ -44,7 +44,7 @@ function mount(flow: Flow, contract = true) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   render(
     <QueryClientProvider client={qc}>
-      <FlowEditorModal isOpen onClose={() => {}} projectId="p1" initialFlowId="f1" flowClient={flowClient} registryClient={registryClient} />
+      <FlowEditorModal isOpen onClose={() => {}} projectId="p1" initialFlowId="f1" flowClient={flowClient} registryClient={registryClient} {...extra} />
     </QueryClientProvider>,
   );
   return { updateFlow };
@@ -97,6 +97,15 @@ describe('flow editor: contracts', () => {
     const dialog = await screen.findByRole('dialog', { name: /checks for build/i });
     fireEvent.keyDown(dialog, { key: 'Escape' });
     expect(screen.queryByRole('dialog', { name: /checks for build/i })).toBeNull();
+  });
+
+  it("a flow the org hub owns shows its contract read-only, saying who sets it", async () => {
+    mount({ ...good(), source: 'hub' }, true, { hubManagedReadOnly: true });
+    await ready();
+    fireEvent.click(screen.getByTestId('step-contract-btn-2'));
+    const dialog = await screen.findByRole('dialog', { name: /checks for build/i });
+    expect(dialog.textContent).toMatch(/set by your org admin/i);
+    expect(within(dialog).queryByRole('button', { name: /change role/i })).toBeNull();
   });
 
   it("shows where each record is made and used", async () => {

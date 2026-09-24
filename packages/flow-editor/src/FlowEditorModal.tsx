@@ -992,6 +992,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               stepContract={stepContractOf(contractStepIndex)}
               contract={contract}
               disabled={isReadOnly}
+              readOnlyNote={isHubManaged ? 'Set by your org admin: this flow can\'t be changed here.' : 'This is the built-in flow: clone it to change it.'}
               onChange={patch => updateStep(contractStepIndex, patch)}
               onClose={() => setContractStepIndex(null)}
             />

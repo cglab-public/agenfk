@@ -16,6 +16,7 @@ import { useSocketEvent } from '../SocketContext';
 import { isDesktop } from '../desktop';
 import { useActiveProject } from '../ActiveProject';
 import { CardDetailModal } from './CardDetailModal';
+import { ColumnContractBadges } from './ColumnContractBadges';
 import { CardAnimationWrapper } from '../animations/CardAnimationWrapper';
 import '../animations'; // Side-effect: registers all easter egg animations
 import { useEasterEggs } from '../useEasterEggs';
@@ -637,6 +638,19 @@ export const KanbanBoard: React.FC = () => {
   }, [activeFlow, isFlowError]);
 
   // Map from status name → FlowStep for quick label/order lookups
+  // CGLAB-384: the check count per column, as the server resolves the flow.
+  // An older server without the route: no counts, the rest still shows.
+  const { data: flowContract } = useQuery({
+    queryKey: ['flow-contract', activeFlow?.id, activeFlow?.updatedAt],
+    queryFn: () => api.getFlowContract(activeFlow!.steps),
+    enabled: !!activeFlow,
+    retry: false,
+  });
+  const checkCountOf = (name: string): number | undefined => {
+    const st = (flowContract as { steps?: Array<{ name: string; checks: Array<{ applicable: boolean }> }> } | undefined)?.steps?.find(x => x.name === name);
+    return st ? st.checks.filter(c => c.applicable).length : undefined;
+  };
+
   const flowStepByStatus = React.useMemo((): Record<string, FlowStep> => {
     if (!activeFlow) return {};
     return Object.fromEntries(activeFlow.steps.map((s: FlowStep) => [s.name, s]));
@@ -1956,6 +1970,7 @@ export const KanbanBoard: React.FC = () => {
                     {renderStepIcon(flowStep?.icon, statusIcons[status as Status] ?? <Briefcase size={14} />)}
                   </div>
                   <h2 className="font-bold text-ink-secondary text-sm uppercase tracking-wider">{columnLabel}</h2>
+                  {flowStep && <ColumnContractBadges step={flowStep} checkCount={checkCountOf(flowStep.name)} />}
                   <button onClick={() => handleArchiveColumn(status as Status)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 dark:text-slate-500 transition-colors" title="Archive Column">
                     <Archive size={12} />
                   </button>

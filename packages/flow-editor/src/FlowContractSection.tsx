@@ -51,9 +51,11 @@ export const StepContractDialog: React.FC<{
   stepContract: FlowContract['steps'][number] | undefined;
   contract: FlowContract;
   disabled: boolean;
+  /** Why the contract cannot be edited here, when it cannot. */
+  readOnlyNote?: string;
   onChange: (patch: Partial<FlowStep>) => void;
   onClose: () => void;
-}> = ({ step, stepContract, contract, disabled, onChange, onClose }) => (
+}> = ({ step, stepContract, contract, disabled, readOnlyNote, onChange, onClose }) => (
   <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/50 p-4" role="dialog" aria-modal="true" aria-label={`Checks for ${step.label || step.name}`}
     onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } }}>
     <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl bg-white dark:bg-slate-900 shadow-xl">
@@ -66,7 +68,10 @@ export const StepContractDialog: React.FC<{
           <X size={16} />
         </button>
       </div>
-      <div className="p-5">
+      <div className="p-5 space-y-3">
+        {disabled && readOnlyNote && (
+          <div className="text-xs rounded-lg bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900 text-blue-900 dark:text-blue-100 px-3 py-2">{readOnlyNote}</div>
+        )}
         <StepContractPanel step={step} stepContract={stepContract} contract={contract} disabled={disabled} onChange={onChange} />
       </div>
     </div>

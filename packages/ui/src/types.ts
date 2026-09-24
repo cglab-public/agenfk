@@ -83,6 +83,9 @@ export interface FlowStep {
   isAnchor?: boolean;     // True for TODO (first) and DONE (last) — cannot be deleted or reordered
   /** @deprecated Use isAnchor instead. Kept for backwards compatibility. */
   isSpecial?: boolean;
+  /** CGLAB-380: what the step is for, and the checks this flow adds to it. */
+  role?: string | null;
+  checks?: Array<{ id: string; params?: Record<string, string>; severity?: 'block' | 'warn' }> | null;
 }
 
 export interface Flow {
