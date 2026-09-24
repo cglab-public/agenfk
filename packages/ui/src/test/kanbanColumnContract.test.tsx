@@ -61,6 +61,10 @@ describe('board column contracts', () => {
     mount();
     const specs = await screen.findByTestId('column-header-SPECS');
     await waitFor(() => expect(within(specs).getByText('Writing tests')).toBeTruthy());
+    // b13f37e6: the role is the line directly under the step name, not a badge beside it.
+    const role = within(specs).getByText('Writing tests');
+    expect(role.previousElementSibling?.tagName).toBe('H2');
+    expect(role.previousElementSibling?.textContent).toMatch(/Specs/i);
     await waitFor(() => expect(within(specs).getByText(/\d+ checks/)).toBeTruthy());
     const plan = screen.getByTestId('column-header-PLAN');
     expect(within(plan).getByLabelText(/a person must approve/i)).toBeTruthy();

@@ -7,7 +7,7 @@
  */
 import { render, screen, cleanup } from '@testing-library/react';
 import { describe, it, expect, afterEach } from 'vitest';
-import { ColumnContractBadges } from '../components/ColumnContractBadges';
+import { ColumnContractBadges, ColumnRole } from '../components/ColumnContractBadges';
 
 afterEach(() => cleanup());
 
@@ -17,10 +17,22 @@ describe('ColumnContractBadges', () => {
     expect(container.textContent).toBe('');
   });
 
-  it("shows the role in words and the server's check count", () => {
+  it("shows the server's check count, and leaves the role to its own line under the step name", () => {
     render(<ColumnContractBadges step={{ id: 's', name: 'X', label: 'X', order: 1, role: 'test-authoring' }} checkCount={8} />);
-    expect(screen.getByText('Writing tests')).toBeTruthy();
     expect(screen.getByText(/8 checks/)).toBeTruthy();
+    expect(screen.queryByText('Writing tests')).toBeNull();
+  });
+
+  // b13f37e6: the role sits under the step name, in the flow editor's words.
+  it('ColumnRole shows the role in words, with what it means as the tooltip', () => {
+    render(<ColumnRole step={{ id: 's', name: 'X', label: 'X', order: 1, role: 'test-authoring' }} />);
+    const role = screen.getByText('Writing tests');
+    expect(role.getAttribute('title')).toMatch(/Tests come first and must fail/);
+  });
+
+  it('ColumnRole shows nothing for a step with no role', () => {
+    const { container } = render(<ColumnRole step={{ id: 's', name: 'X', label: 'X', order: 1 }} />);
+    expect(container.textContent).toBe('');
   });
 
   it('shows no count for a flow whose checks only warn (a flow from before roles)', () => {

@@ -16,7 +16,7 @@ import { useSocketEvent } from '../SocketContext';
 import { isDesktop } from '../desktop';
 import { useActiveProject } from '../ActiveProject';
 import { CardDetailModal } from './CardDetailModal';
-import { ColumnContractBadges } from './ColumnContractBadges';
+import { ColumnContractBadges, ColumnRole } from './ColumnContractBadges';
 import { CardAnimationWrapper } from '../animations/CardAnimationWrapper';
 import '../animations'; // Side-effect: registers all easter egg animations
 import { useEasterEggs } from '../useEasterEggs';
@@ -1972,7 +1972,10 @@ export const KanbanBoard: React.FC = () => {
                   <div className="p-1 rounded-md text-slate-500 bg-slate-50 dark:bg-slate-800" style={{ color: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? colorForUnknownStatus(status) }}>
                     {renderStepIcon(flowStep?.icon, statusIcons[status as Status] ?? <Briefcase size={14} />)}
                   </div>
-                  <h2 className="font-bold text-ink-secondary text-sm uppercase tracking-wider">{columnLabel}</h2>
+                  <div className="flex flex-col min-w-0">
+                    <h2 className="font-bold text-ink-secondary text-sm uppercase tracking-wider">{columnLabel}</h2>
+                    {flowStep && <ColumnRole step={flowStep} />}
+                  </div>
                   {flowStep && <ColumnContractBadges step={flowStep} checkCount={checkCountOf(flowStep.name)} />}
                   <button onClick={() => handleArchiveColumn(status as Status)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 dark:text-slate-500 transition-colors" title="Archive Column">
                     <Archive size={12} />
