@@ -2487,6 +2487,88 @@ app.put("/projects/:id/test-report", asyncHandler(async (req: any, res: any) => 
 }));
 
 /**
+ * CGLAB-382 — human gates. An approval is a person's go-ahead for the card's
+ * current step; an override is their pass of ONE check that blocked the card's
+ * last verify, with a written reason. Both are made on the board: a request
+ * without the board header, or carrying the agent's internal token, is
+ * refused. The header is forgeable by any same-user process until CGLAB-383
+ * gives approvals an authority the agent cannot reach.
+ *
+ * Both are server-written step records of the current step, so PUT cannot
+ * forge one, and a rollback over the step drops them like the step's other
+ * records: a card that comes back needs a fresh go-ahead.
+ */
+function refuseUnlessBoard(req: any, res: any): boolean {
+  if (req.headers['x-agenfk-internal'] !== undefined || req.headers['x-agenfk-ui'] !== '1') {
+    res.status(403).json({ error: 'Approvals and overrides are made by a person on the board (agenfk ui), never by an agent.' });
+    return true;
+  }
+  return false;
+}
+
+/** The card, its active flow, and the step the request names, or the refusal already sent. */
+async function gateTarget(req: any, res: any): Promise<{ item: any; flow: Flow } | null> {
+  const item: any = await storage.getItem(req.params.id);
+  if (!item) { res.status(404).json({ error: 'Item not found' }); return null; }
+  const step = req.body?.step;
+  if (step !== undefined && step !== item.status) {
+    res.status(409).json({ error: `The card is on ${item.status}, not ${String(step)}: refresh the board and try again.` });
+    return null;
+  }
+  const project: any = await storage.getProject(item.projectId);
+  return { item, flow: getActiveFlow(project?.flowId, await storage.listFlows()) };
+}
+
+const gateText = (v: unknown, max = 2000) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+
+async function appendGateRecord(item: any, rec: any, comment: string) {
+  const fresh: any = await storage.getItem(item.id);
+  await storage.updateItem(item.id, {
+    stepRecords: [...(fresh?.stepRecords ?? []), rec],
+    comments: [...(fresh?.comments ?? []), { id: uuidv4(), author: 'Board', content: comment, timestamp: new Date(), step: item.status }],
+  } as any);
+  io.emit('items_updated');
+}
+
+app.post("/items/:id/approvals", asyncHandler(async (req: any, res: any) => {
+  if (refuseUnlessBoard(req, res)) return;
+  const target = await gateTarget(req, res);
+  if (!target) return;
+  const { item, flow } = target;
+  if (!resolveStepChecks(flow.steps, item.status).some(c => c.id === 'human-approval' && c.applicable)) {
+    return res.status(400).json({ error: `Step ${item.status} does not ask for an approval.` });
+  }
+  const note = gateText(req.body?.note);
+  const rec = { id: uuidv4(), step: item.status, kind: 'approval', at: new Date().toISOString(), head: null, clean: false, by: 'board', ...(note ? { note } : {}) };
+  await appendGateRecord(item, rec, `### Step approved\n\n**Step**: ${item.status} — a person approved it on the board.${note ? `\n\n${note}` : ''}`);
+  recordHubEvent({ type: 'step.approved', projectId: item.projectId, itemId: item.id, payload: { step: item.status, by: 'board' } });
+  res.status(201).json(rec);
+}));
+
+app.post("/items/:id/overrides", asyncHandler(async (req: any, res: any) => {
+  if (refuseUnlessBoard(req, res)) return;
+  const checkId = req.body?.checkId;
+  const reason = gateText(req.body?.reason);
+  if (typeof checkId !== 'string' || !checkId) return res.status(400).json({ error: 'checkId is required: the check to pass.' });
+  if (!reason) return res.status(400).json({ error: 'A reason is required: say why this check may be passed.' });
+  const target = await gateTarget(req, res);
+  if (!target) return;
+  const { item, flow } = target;
+  if (!resolveStepChecks(flow.steps, item.status).some(c => c.id === checkId)) {
+    return res.status(400).json({ error: `Step ${item.status} does not run the check '${checkId}'.` });
+  }
+  const last = item.lastChecks;
+  const blocking = last?.step === item.status && (last.results ?? []).some((r: any) => r.id === checkId && r.blocking);
+  if (!blocking) {
+    return res.status(409).json({ error: `'${checkId}' is not blocking this card on ${item.status}. Only a check that blocked the card's last verify can be overridden.` });
+  }
+  const rec = { id: uuidv4(), step: item.status, kind: 'override', at: new Date().toISOString(), head: null, clean: false, by: 'board', check: checkId, reason };
+  await appendGateRecord(item, rec, `### Check overridden\n\n**Step**: ${item.status}\n**Check**: ${checkId} — a person passed it on the board.\n\n**Reason**: ${reason}`);
+  recordHubEvent({ type: 'check.overridden', projectId: item.projectId, itemId: item.id, payload: { step: item.status, check: checkId, reason, by: 'board' } });
+  res.status(201).json(rec);
+}));
+
+/**
  * Record an independent review of a card (CGLAB-381): the reviewer's
  * transcript, the commit range it reviewed, and what became of each finding.
  * The reviewer's identity is read from the transcript - never from the
@@ -5537,6 +5619,11 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     .filter(o => o.id !== item.id && Array.isArray(o.claims) && stillHolds(String(o.status)))
     .flatMap(o => o.claims as string[]);
   const reportPath = typeof project?.testReport?.reportPath === 'string' ? project.testReport.reportPath : null;
+  // People's approvals and overrides of THIS step (CGLAB-382); a rollback over it dropped older ones.
+  const here = records.filter(r => r?.step === item.status);
+  const approvals = here.filter(r => r.kind === 'approval').map(r => ({ by: String(r.by ?? 'board'), at: String(r.at), ...(r.note ? { note: String(r.note) } : {}) }));
+  const overrides: Record<string, { id: string; by: string; at: string; reason: string }> = {};
+  for (const r of here) if (r.kind === 'override' && typeof r.check === 'string') overrides[r.check] = { id: String(r.id), by: String(r.by ?? 'board'), at: String(r.at), reason: String(r.reason ?? '') };
   const review = resolved.some(c => c.id === 'review-record' && c.applicable) ? await reviewEvidence(item, root) : undefined;
   // Whoever is advancing the card now is an author too, though no step record carries them yet.
   if (review && actor && !review.authors.some((a: any) => a.sessionId === actor.sessionId && a.agentId === (actor.agentId ?? null))) {
@@ -5559,6 +5646,8 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     entry: prev ? lastOf(r => r?.kind === 'capture' && r.step === prev.name) : null,
     entryHead: prev ? (lastOf(r => r?.kind === 'exit' && r.step === prev.name)?.head ?? null) : null,
     records: produced,
+    approvals,
+    overrides,
   });
   const at = new Date().toISOString();
   const latest: any = await storage.getItem(item.id);

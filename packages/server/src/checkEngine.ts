@@ -32,7 +32,12 @@ export interface CheckResult {
   detail: string;
   /** True when this result refuses the transition. */
   blocking: boolean;
+  /** A person passed this blocked check with a reason (CGLAB-382): it no longer blocks. */
+  overridden?: Override;
 }
+
+/** A person's pass of one blocked check, with the reason they wrote (CGLAB-382). */
+export interface Override { id: string; by: string; at: string; reason: string }
 
 type ReportedTest = { name: string; file: string; status: 'passed' | 'failed' | 'skipped'; failure?: 'assertion' | 'error' };
 
@@ -94,6 +99,10 @@ export interface EngineContext {
   entryHead: string | null;
   /** Records earlier steps produced. */
   records: Partial<Record<RecordName, unknown>>;
+  /** People's approvals of the card's current step, made from the board (CGLAB-382). */
+  approvals?: Array<{ by: string; at: string; note?: string }>;
+  /** People's overrides of the current step's checks, by check id (CGLAB-382). */
+  overrides?: Record<string, Override>;
 }
 
 interface Verdict {
@@ -389,6 +398,13 @@ export const EVALUATORS: Record<string, Evaluator> = {
     return judgeReview(r, ctx.root, ctx.git, { bindTree: true });
   },
 
+  'human-approval': ctx => {
+    const a = (ctx.approvals ?? [])[(ctx.approvals ?? []).length - 1];
+    return a
+      ? { outcome: 'pass', detail: `approved on the board at ${a.at}${a.note ? `: ${a.note}` : ''}` }
+      : { outcome: 'fail', detail: `waiting for a person to approve this step on the board (agenfk ui --open ${ctx.item.id}). An agent cannot approve.` };
+  },
+
   'suite-green': ctx => {
     const c = ctx.capture;
     if (!c) return { outcome: 'unavailable', detail: ctx.captureError ?? 'no test run was captured' };
@@ -447,8 +463,10 @@ export function evaluateChecks(resolved: readonly ResolvedCheck[], ctx: EngineCo
     const verdict: Verdict = evaluate
       ? (() => { try { return evaluate(ctx, c.params); } catch (e: any) { return { outcome: 'unavailable' as const, detail: `the check itself failed: ${e?.message ?? e}` }; } })()
       : { outcome: 'unavailable', detail: `'${c.id}' is not implemented on this server` };
-    const blocking = c.severity === 'block' && (verdict.outcome === 'fail' || (verdict.outcome === 'unavailable' && !verdict.soft));
-    results.push({ ...base, outcome: verdict.outcome, detail: verdict.detail, blocking });
+    const blocks = c.severity === 'block' && (verdict.outcome === 'fail' || (verdict.outcome === 'unavailable' && !verdict.soft));
+    // A person's override lifts the block; the verdict itself stays on record.
+    const overridden = blocks ? ctx.overrides?.[c.id] : undefined;
+    results.push({ ...base, outcome: verdict.outcome, detail: verdict.detail, blocking: blocks && !overridden, ...(overridden ? { overridden } : {}) });
     if (verdict.outcome === 'pass' && verdict.produces) Object.assign(produced, verdict.produces);
   }
   return { results, blocked: results.some(r => r.blocking), produced };
@@ -470,7 +488,8 @@ const MARK: Record<CheckOutcome, string> = { pass: '✅', fail: '❌', unavailab
 export function formatCheckResults(results: readonly CheckResult[]): string {
   const rank = (r: CheckResult) => (r.blocking ? 0 : r.outcome === 'fail' || r.outcome === 'unavailable' ? 1 : 2);
   return [...results].sort((a, b) => rank(a) - rank(b)).map(r => {
-    const mark = !r.blocking && (r.outcome === 'fail' || r.outcome === 'unavailable') ? '⚠️' : MARK[r.outcome];
-    return `${mark} ${r.id} [${r.severity}${r.source === 'flow' ? ', added by the flow' : ''}]: ${r.outcome}${r.detail ? ` — ${r.detail}` : ''}`;
+    const mark = r.overridden ? '🔓' : !r.blocking && (r.outcome === 'fail' || r.outcome === 'unavailable') ? '⚠️' : MARK[r.outcome];
+    const why = r.overridden ? ` (overridden by a person: ${r.overridden.reason})` : '';
+    return `${mark} ${r.id} [${r.severity}${r.source === 'flow' ? ', added by the flow' : ''}]: ${r.outcome}${r.detail ? ` — ${r.detail}` : ''}${why}`;
   }).join('\n');
 }

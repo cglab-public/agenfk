@@ -430,8 +430,12 @@ export interface TestReportSetting {
  */
 export interface StepRecord {
   step: string;
-  /** `record`: a named record a passing check produced (CGLAB-380), e.g. redSet. */
-  kind: 'exit' | 'capture' | 'record';
+  /**
+   * `record`: a named record a passing check produced (CGLAB-380), e.g. redSet.
+   * `approval` / `override`: a person's go-ahead for the step, or their pass of
+   * one blocked check with a reason (CGLAB-382). Made from the board only.
+   */
+  kind: 'exit' | 'capture' | 'record' | 'approval' | 'override';
   at: string;
   head: string | null;
   clean: boolean;
@@ -455,6 +459,13 @@ export interface StepRecord {
   /** On a `record`: its name and value. */
   name?: string;
   value?: unknown;
+  /** On an `approval` or `override`: its id, who made it, and what they wrote. */
+  id?: string;
+  by?: string;
+  note?: string;
+  /** On an `override`: the check it passes, and why. */
+  check?: string;
+  reason?: string;
 }
 
 /** One check's verdict on a verify (CGLAB-380). */
@@ -467,6 +478,8 @@ export interface StepCheckResult {
   outcome: 'pass' | 'fail' | 'unavailable' | 'n/a' | 'deferred';
   detail: string;
   blocking: boolean;
+  /** Set when a person passed this blocked check with a reason (CGLAB-382). */
+  overridden?: { id: string; by: string; at: string; reason: string };
 }
 
 export interface Project {

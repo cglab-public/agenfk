@@ -211,13 +211,22 @@ describe('flowChecksErrors (save-time validation)', () => {
   });
 
   it('refuses checks that are not available on this server yet, saying why, so they can never pass by accident', () => {
-    for (const id of ['human-approval']) { // review-record became available with CGLAB-381
+    CHECK_CATALOGUE['future-check'] = { ...CHECK_CATALOGUE['suite-green'], id: 'future-check', unavailable: 'arrives later' };
+    try {
       const steps = tdd();
-      steps[5].checks = [{ id }];
-      const errs = flowChecksErrors(steps);
-      expect(errs.join('\n'), id).toMatch(new RegExp(id));
-      expect(errs.join('\n'), id).toMatch(/not available/);
+      steps[5].checks = [{ id: 'future-check' }];
+      const errs = flowChecksErrors(steps).join('\n');
+      expect(errs).toMatch(/future-check/);
+      expect(errs).toMatch(/not available/);
+    } finally {
+      delete CHECK_CATALOGUE['future-check'];
     }
+  });
+
+  it('accepts human-approval now that approvals are made in the UI (CGLAB-382)', () => {
+    const steps = tdd();
+    steps[1].checks = [{ id: 'human-approval' }];
+    expect(flowChecksErrors(steps)).toEqual([]);
   });
 
   it('refuses checks that are not an array of objects', () => {

@@ -13,6 +13,8 @@ export const KNOWN_EVENT_TYPES = [
   'validate.invoked',
   'validate.passed',
   'validate.failed',
+  'step.approved',
+  'check.overridden',
   'comment.added',
   'test.logged',
   'session.started',

@@ -33,6 +33,9 @@ export const TDD_FLOW_PRESET: Flow = {
       },
       {
         "id": "has-children"
+      },
+      {
+        "id": "human-approval"
       }
     ]
   },

@@ -127,6 +127,9 @@ export type HubEventType =
   | 'validate.invoked'
   | 'validate.passed'
   | 'validate.failed'
+  // A person's go-ahead for a step, or their pass of a blocked check (CGLAB-382).
+  | 'step.approved'
+  | 'check.overridden'
   | 'comment.added'
   | 'test.logged'
   // Legacy inbound-only event. Spokes no longer emit this, and Hub skips it
