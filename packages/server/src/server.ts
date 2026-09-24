@@ -783,8 +783,18 @@ const syncParentStatus = async (parentId: string) => {
     // only FORWARD. Moving it backward is not propagation: it would un-pause a
     // parent that someone deliberately paused, and the pre-existing behaviour
     // never moved a parent back.
-    const laggard = Math.min(...positioned);
+    let laggard = Math.min(...positioned);
     const parentIdx = orderOf(parent.status);
+    /*
+     * CGLAB-381: never past the parent's own review. Reviews happen at the
+     * parent, so a step whose checks include the review record is where the
+     * parent stops; only verify, which runs that check, moves it on.
+     */
+    if (parentIdx !== null) {
+      for (let i = parentIdx; i < laggard; i++) {
+        if (resolveStepChecks(parentFlow.steps, ordered[i].name).some(c => c.id === 'review-record' && c.applicable)) { laggard = i; break; }
+      }
+    }
     if (parentIdx !== null && laggard > parentIdx) {
       newStatus = ordered[laggard].name as Status;
     }
