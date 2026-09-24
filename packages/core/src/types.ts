@@ -430,7 +430,8 @@ export interface TestReportSetting {
  */
 export interface StepRecord {
   step: string;
-  kind: 'exit' | 'capture';
+  /** `record`: a named record a passing check produced (CGLAB-380), e.g. redSet. */
+  kind: 'exit' | 'capture' | 'record';
   at: string;
   head: string | null;
   clean: boolean;
@@ -447,6 +448,23 @@ export interface StepRecord {
   /** Names two or more tests share: left out of `tests`, since a name cannot tell them apart. */
   duplicateNames?: string[];
   parseError?: string;
+  /** On an exit record: the checks that let the card leave (CGLAB-380). */
+  checks?: StepCheckResult[];
+  /** On a `record`: its name and value. */
+  name?: string;
+  value?: unknown;
+}
+
+/** One check's verdict on a verify (CGLAB-380). */
+export interface StepCheckResult {
+  id: string;
+  step: string;
+  source: 'universal' | 'role' | 'flow';
+  severity: 'block' | 'warn';
+  params: Record<string, string>;
+  outcome: 'pass' | 'fail' | 'unavailable' | 'n/a' | 'deferred';
+  detail: string;
+  blocking: boolean;
 }
 
 export interface Project {
@@ -494,6 +512,8 @@ export interface BaseItem {
   tests?: TestRecord[];
   /** Server-written only; PUT /items/:id never accepts it (CGLAB-379). */
   stepRecords?: StepRecord[];
+  /** The last verify's check results (CGLAB-380). Server-written only. */
+  lastChecks?: { step: string; at: string; blocked: boolean; results: StepCheckResult[] };
   history?: HistoryRecord[];
   comments?: CommentRecord[];
   createdAt: Date;

@@ -5,8 +5,9 @@ import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
 import { commitStagedForCard, resolveCommitRoot } from './closeCommit';
 import { mayPropagate, readCleanTreeSha, readHead, readTreeStatus } from './propagation';
 import { insideRoot, parseJunitXml, parseVitestJson, surfaceOf } from './stepRecords';
+import { evaluateChecks, formatCheckResults, needsCapture, needsEntryRecord, type CheckResult } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts } from "@agenfk/core";
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -2535,22 +2536,21 @@ function treeContentState(root: string, excludeRel: string | null): string | nul
  *
  * With no testReport setting it falls back to the verify command's exit code,
  * and per-test results are then `available: false` - unavailable, never passed.
+ *
+ * Used by the endpoint below and by the check engine. Resolves to the stored
+ * record, or to a refusal.
  */
-app.post("/items/:id/step-records/capture", asyncHandler(async (req: any, res: any) => {
-  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
-  const item: any = await storage.getItem(req.params.id);
-  if (!item) return res.status(404).json({ error: "Item not found" });
+type CaptureOutcome = { record: any } | { status: number; error: string; message: string };
+async function captureStepRecord(item: any): Promise<CaptureOutcome> {
   const project: any = await storage.getProject(item.projectId);
   const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
   if (!root) {
-    return res.status(400).json({ error: 'NO_TREE', message: 'This card has no tree to run in: set the project root (agenfk verify from the repository sets it) or give the card a worktree.' });
+    return { status: 400, error: 'NO_TREE', message: 'This card has no tree to run in: set the project root (agenfk verify from the repository sets it) or give the card a worktree.' };
   }
   const setting: TestReportSetting | undefined = project?.testReport;
   const command = setting?.command ?? project?.verifyCommand;
   if (!command) {
-    return res.status(400).json({ error: 'NO_REPORT_COMMAND', message: 'Nothing to run: set a test report (agenfk update-project <id> --test-report-...) or a verifyCommand.' });
+    return { status: 400, error: 'NO_REPORT_COMMAND', message: 'Nothing to run: set a test report (agenfk update-project <id> --test-report-...) or a verifyCommand.' };
   }
 
   const record: any = {
@@ -2603,10 +2603,21 @@ app.post("/items/:id/step-records/capture", asyncHandler(async (req: any, res: a
   // no longer occupies (or was rolled back over) must not be written.
   const fresh: any = await storage.getItem(item.id);
   if (!fresh || fresh.status !== item.status) {
-    return res.status(409).json({ error: 'CARD_MOVED', message: `The card moved (${item.status} -> ${fresh?.status ?? 'deleted'}) while the capture ran; nothing was recorded.` });
+    return { status: 409, error: 'CARD_MOVED', message: `The card moved (${item.status} -> ${fresh?.status ?? 'deleted'}) while the capture ran; nothing was recorded.` };
   }
   await storage.updateItem(item.id, { stepRecords: [...(fresh.stepRecords ?? []), record] } as any);
-  res.json(record);
+  return { record };
+}
+
+app.post("/items/:id/step-records/capture", asyncHandler(async (req: any, res: any) => {
+  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const item: any = await storage.getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: "Item not found" });
+  const outcome = await captureStepRecord(item);
+  if ('error' in outcome) return res.status(outcome.status).json({ error: outcome.error, message: outcome.message });
+  res.json(outcome.record);
 }));
 
 /**
@@ -5232,6 +5243,8 @@ export interface ValidateRun {
   output: string;
   message?: string;
   itemStatus?: string;
+  /** Per-check results when the step's checks refused or ran (CGLAB-380). */
+  checks?: CheckResult[];
   startedAt: Date;
   finishedAt?: Date;
 }
@@ -5320,11 +5333,109 @@ const staysOn = (status: string) => `\n\nThe advance was refused. Item stays on 
 // executes; every other path (anchor advance, sibling propagation, no-command
 // step, errors) responds synchronously as before — the route discards the
 // unused reservation in that case.
-async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string, asyncRun?: ValidateRun) {
+/** What the step's checks decided (CGLAB-380), carried into the transition that follows them. */
+interface StepGate { results: CheckResult[]; blocked: boolean }
+
+/** The branch a card works on: its own, else its nearest ancestor's (branches live on top-level items). */
+async function branchOfCard(item: any): Promise<string | null> {
+  let cur: any = item;
+  for (let depth = 0; cur && depth < 16; depth++) {
+    if (typeof cur.branchName === 'string' && cur.branchName.trim()) return cur.branchName.trim();
+    cur = cur.parentId ? await storage.getItem(cur.parentId) : null;
+  }
+  return null;
+}
+
+/**
+ * Run the checks for leaving the card's current step (CGLAB-380), and record
+ * the outcome on the card (`lastChecks`) and, when they pass, the records they
+ * produced (step records of kind 'record', which a rollback over this step
+ * drops like any other). A test report is captured only when a check of THIS
+ * step needs per-test results, or the NEXT step reads its entry record - that
+ * capture is then the next step's entry, so no suite runs just to snapshot.
+ */
+async function runStepGate(item: any, flow: { steps: any[] }, root: string | null): Promise<StepGate> {
+  const sorted = sortedFlowSteps(flow as any);
+  const index = sorted.findIndex(st => st.name === item.status);
+  const next = sorted[index + 1];
+  const resolved = resolveStepChecks(flow.steps, item.status);
+  let capture: any = null;
+  let captureError: string | undefined;
+  if (needsCapture(resolved) || (next && needsEntryRecord(resolveStepChecks(flow.steps, next.name)))) {
+    const out = await captureStepRecord(item);
+    if ('error' in out) captureError = out.message; else capture = out.record;
+  }
+  const records: any[] = ((await storage.getItem(item.id)) as any)?.stepRecords ?? [];
+  const lastOf = (pred: (r: any) => boolean) => [...records].reverse().find(pred) ?? null;
+  const prev = sorted[index - 1];
+  const earlier = new Set(sorted.slice(0, Math.max(index, 0)).map(st => st.name));
+  const produced: Record<string, unknown> = {};
+  for (const r of records) if (r?.kind === 'record' && earlier.has(r.step) && typeof r.name === 'string') produced[r.name] = r.value;
+
+  const outcome = evaluateChecks(resolved, {
+    root,
+    git: args => gitRun.run(args),
+    item,
+    cardBranch: await branchOfCard(item),
+    children: (await storage.listItems({ parentId: item.id } as any)) as any,
+    capture,
+    captureError,
+    entry: prev ? lastOf(r => r?.kind === 'capture' && r.step === prev.name) : null,
+    entryHead: prev ? (lastOf(r => r?.kind === 'exit' && r.step === prev.name)?.head ?? null) : null,
+    records: produced,
+  });
+  const at = new Date().toISOString();
+  const latest: any = await storage.getItem(item.id);
+  const made = outcome.blocked ? [] : Object.entries(outcome.produced).map(([name, value]) => ({ step: item.status, kind: 'record', name, value, at, head: null, clean: false }));
+  await storage.updateItem(item.id, {
+    lastChecks: { step: item.status, at, blocked: outcome.blocked, results: outcome.results },
+    ...(made.length ? { stepRecords: [...(latest?.stepRecords ?? []), ...made] } : {}),
+  } as any);
+  return { results: outcome.results, blocked: outcome.blocked };
+}
+
+/** Refuse a transition on the step's checks, in verify's failure shape plus `checks[]`. */
+async function refuseOnChecks(res: any, item: any, gate: StepGate) {
+  const text = formatCheckResults(gate.results);
+  const fresh: any = await storage.getItem(item.id);
+  await storage.updateItem(item.id, { comments: [...(fresh?.comments ?? []), { id: uuidv4(), author: 'ValidateTool', content: `### Checks FAILED\n\n**Step**: ${item.status} (advance refused — the card stays here)\n\n${text}`, timestamp: new Date() }] });
+  io.emit('items_updated');
+  recordHubEvent({
+    type: 'validate.failed',
+    projectId: item.projectId,
+    itemId: item.id,
+    payload: { fromStatus: item.status, stayedOn: item.status, command: null, checks: gate.results.map(r => ({ id: r.id, outcome: r.outcome, blocking: r.blocking })) },
+  });
+  return res.status(422).json({
+    status: item.status,
+    message: `❌ Checks failed: the card cannot leave ${item.status} yet.\n\n${text}${staysOn(item.status)}`,
+    checks: gate.results,
+  });
+}
+
+/** A response stand-in that writes a verify reply into a background run. */
+function runRecorder(run: ValidateRun) {
+  return {
+    _code: 200,
+    status(code: number) { this._code = code; return this; },
+    json(payload: any) {
+      run.status = this._code === 200 ? 'passed' : 'failed';
+      run.itemStatus = payload?.status;
+      run.message = payload?.message;
+      if (Array.isArray(payload?.checks)) run.checks = payload.checks;
+      // Keep the live full output when we have it; fall back to the preview.
+      if (!run.output && payload?.output) run.output = payload.output;
+      run.finishedAt = new Date();
+      return this;
+    },
+  };
+}
+
+async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string, asyncRun?: ValidateRun, opts?: { gate?: StepGate }) {
   const item = await storage.getItem(itemId);
   if (!item) return res.status(404).json({ error: "Item not found" });
 
-  recordHubEvent({
+  if (!opts?.gate) recordHubEvent({
     type: 'validate.invoked',
     projectId: item.projectId,
     itemId,
@@ -5367,6 +5478,57 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   if (!currentFlowStep) {
     return res.status(400).json({ error: `validate_progress requires item to be in a flow step. Current status '${item.status}' is not part of the active flow '${activeFlow.name}'.` });
   }
+
+  /*
+   * CGLAB-380: the step's checks, before anything moves. A capture runs a
+   * whole suite, so an async verify answers 202 first and runs the checks -
+   * and then the transition - in the background run, exactly as it does the
+   * command; a check that needs no capture only reads git and runs inline.
+   */
+  let gate = opts?.gate;
+  if (!gate && !(currentFlowStep.step.isAnchor && currentFlowStep.index !== 0)) {
+    const nextName = sorted[currentFlowStep.index + 1]?.name;
+    const slow = needsCapture(resolveStepChecks(activeFlow.steps, item.status))
+      || (!!nextName && needsEntryRecord(resolveStepChecks(activeFlow.steps, nextName)));
+    if (slow && asyncRun) {
+      const run = asyncRun;
+      (run as any).started = true;
+      res.status(202).json({
+        runId: run.runId,
+        command: null,
+        message: `⏳ Step checks and validation running in background (run ${run.runId.slice(0, 8)}…). Follow with GET /items/validate-runs/${run.runId}.`,
+      });
+      const recorder = runRecorder(run);
+      void (async () => {
+        const fresh: any = await storage.getItem(itemId);
+        if (!fresh) return recorder.status(404).json({ status: item.status, message: '❌ Item was deleted while the checks ran.' });
+        const g = await runStepGate(fresh, activeFlow, effectiveRoot ?? null);
+        if (g.blocked) return refuseOnChecks(recorder, fresh, g);
+        return handleValidateProgress(itemId, command, recorder, undefined, undefined, { gate: g });
+      })()
+        .catch((err: any) => {
+          run.status = 'failed';
+          run.message = `Internal error during background validation: ${err?.message || err}`;
+          run.finishedAt = new Date();
+        })
+        .finally(() => {
+          if (activeValidateRunByItem.get(itemId) === run.runId) activeValidateRunByItem.delete(itemId);
+        });
+      return;
+    }
+    gate = await runStepGate(item, activeFlow, effectiveRoot ?? null);
+    if (gate.blocked) return refuseOnChecks(res, item, gate);
+    // The gate may have written a capture and produced records: build the
+    // exit record on top of what is stored now, not on the copy read above.
+    const refreshed = await storage.getItem(itemId);
+    if (refreshed) Object.assign(item, refreshed);
+  }
+  if (gate) {
+    (exitRecord as any).checks = gate.results;
+    const warned = gate.results.filter(r => !r.blocking && (r.outcome === 'fail' || r.outcome === 'unavailable'));
+    if (warned.length) res = withNote(res, `⚠️ Check warnings (not blocking):\n${formatCheckResults(warned)}`);
+  }
+
   if (currentFlowStep.step.isAnchor) {
     if (currentFlowStep.index !== 0) {
       return res.status(400).json({ error: `validate_progress requires item to be in an intermediate flow step, not an anchor. Current status: ${item.status}` });
@@ -5864,19 +6026,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       command: resolvedCommand,
       message: `⏳ Validation running in background (run ${runId.slice(0, 8)}…). Follow with GET /items/validate-runs/${runId}.`,
     });
-    const recorder = {
-      _code: 200,
-      status(code: number) { this._code = code; return this; },
-      json(payload: any) {
-        run.status = this._code === 200 ? 'passed' : 'failed';
-        run.itemStatus = payload?.status;
-        run.message = payload?.message;
-        // Keep the live full output when we have it; fall back to the preview.
-        if (!run.output && payload?.output) run.output = payload.output;
-        run.finishedAt = new Date();
-        return this;
-      },
-    };
+    const recorder = runRecorder(run);
     void runCommandAndFinalize(commandNote ? withNote(recorder, commandNote) : recorder, run)
       .catch((err: any) => {
         run.status = 'failed';
