@@ -15,6 +15,8 @@ Beta, cumulative over `2.0.0-beta.1`: everything in beta.1, plus the fixes below
 - **Dialogs stand out from the editor behind them**: a dimmed, blurred backdrop, a raised surface and a border, with
   hover states and form fields that stay visible inside it.
 - **The hub's PR heatmap tooltip is readable in light mode.** It was white text on the light glass card.
+- **The hub's sidebar stays full height.** It used to stretch with long pages; now the content pane scrolls on
+  its own and the sidebar stays put.
 
 ### Workflow
 

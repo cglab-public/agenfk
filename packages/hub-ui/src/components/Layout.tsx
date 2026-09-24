@@ -50,8 +50,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
     return { label: me.data?.userId ?? '—', isOpaqueId: true };
   })();
   return (
-    <div className="min-h-screen flex bg-canvas text-ink">
-      <aside className="w-60 shrink-0 border-r border-border-brand bg-nav-surface backdrop-blur-sm p-4 flex flex-col gap-1">
+    // The shell is the viewport: the sidebar stays full height and the content
+    // pane scrolls on its own (it is the scroll root scrollPageToTop moves).
+    <div className="h-screen flex overflow-hidden bg-canvas text-ink">
+      <aside className="w-60 shrink-0 overflow-y-auto border-r border-border-brand bg-nav-surface backdrop-blur-sm p-4 flex flex-col gap-1">
         <div className="px-2 pt-1 pb-5">
           <Logo version={health.data?.version ?? null} />
         </div>
@@ -80,7 +82,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </div>
         </div>
       </aside>
-      <main className="flex-1 min-w-0 p-6 lg:p-8">
+      <main data-scroll-root className="flex-1 min-w-0 overflow-y-auto p-6 lg:p-8">
         {me.data?.role === 'admin' && <PendingEnvOrgIdBanner />}
         {children}
       </main>
