@@ -511,5 +511,9 @@ export function harnessActor(env: NodeJS.ProcessEnv = process.env, home: string 
   }
   const id = env.CLAUDE_CODE_SESSION_ID;
   if (typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id)) return { client: 'claude-code', sessionId: id };
+  // Codex (BUG e78e78d2): the commands it runs get CODEX_THREAD_ID, the id its
+  // transcript's session_meta carries (verified against Codex 0.155.1).
+  const thread = env.CODEX_THREAD_ID;
+  if (typeof thread === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(thread)) return { client: 'codex', sessionId: thread };
   return null;
 }

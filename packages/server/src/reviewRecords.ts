@@ -167,3 +167,18 @@ export function parseActor(value: unknown): Identity | null {
   if (typeof client !== 'string' || !client.trim() || typeof sessionId !== 'string' || !sessionId.trim()) return null;
   return { client, sessionId, agentId: typeof agentId === 'string' && agentId.trim() ? agentId : null };
 }
+
+const SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+/**
+ * The author the harness that launched this process names (BUG e78e78d2): the
+ * MCP validate path used to read only Claude Code's variable, so a Codex
+ * author left no identity and a self-review passed with a warning.
+ */
+export function actorFromEnv(env: NodeJS.ProcessEnv = process.env): { client: string; sessionId: string } | undefined {
+  const claude = env.CLAUDE_CODE_SESSION_ID;
+  if (typeof claude === 'string' && SESSION_ID.test(claude)) return { client: 'claude-code', sessionId: claude };
+  const codex = env.CODEX_THREAD_ID;
+  if (typeof codex === 'string' && SESSION_ID.test(codex)) return { client: 'codex', sessionId: codex };
+  return undefined;
+}

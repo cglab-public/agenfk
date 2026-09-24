@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { actorFromEnv } from './reviewRecords';
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 // @ts-ignore
@@ -735,8 +736,7 @@ async function callToolHandler(request: any): Promise<any> {
       case "validate_progress": {
         const { itemId, evidence, command } = z.object({ itemId: z.string(), evidence: z.string(), command: z.string().optional() }).parse(request.params.arguments);
         // The author, as the harness that launched this MCP server names it (CGLAB-381).
-        const sid = process.env.CLAUDE_CODE_SESSION_ID;
-        const actor = typeof sid === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(sid) ? { client: 'claude-code', sessionId: sid } : undefined;
+        const actor = actorFromEnv(process.env);
         const result = await validateViaApi(itemId, { evidence, command, cwd: process.cwd(), ...(actor ? { actor } : {}) });
         if (!result.ok) return { isError: true, content: [{ type: "text", text: result.text }] };
         return { content: [{ type: "text", text: result.text }] };
