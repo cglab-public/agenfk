@@ -1153,7 +1153,7 @@ export function PrOverviewPage() {
               defect). Coordinates are viewport-relative, from placeTooltip. */}
           {heatTip && (
             <div
-              className={`pointer-events-none fixed z-50 -translate-x-1/2 whitespace-nowrap rounded-md bg-card-glass text-white font-mono text-[10px] px-2 py-1 shadow-lg ${heatTip.below ? '' : '-translate-y-full'}`}
+              className={`pointer-events-none fixed z-50 -translate-x-1/2 whitespace-nowrap rounded-md bg-surface text-ink border border-slate-200 dark:border-slate-700 font-mono text-[10px] px-2 py-1 shadow-lg ${heatTip.below ? '' : '-translate-y-full'}`}
               style={{ left: heatTip.x, top: heatTip.y }}
             >
               {heatTip.text}
