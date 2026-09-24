@@ -4,9 +4,7 @@
 # The full (not -slim) image ships git, python3, make and g++: nothing to
 # apt-get, so a slow Debian mirror cannot stall the build.
 FROM node:22-bookworm
-RUN git config --global user.email harness@agenfk.test \
- && git config --global user.name "AgEnFK harness" \
- && git config --global init.defaultBranch main
+# git's identity is set by the entrypoint, in the throwaway HOME the run uses.
 WORKDIR /agenfk
 # Manifests first, so the dependency layer is cached across source edits.
 COPY package.json package-lock.json ./

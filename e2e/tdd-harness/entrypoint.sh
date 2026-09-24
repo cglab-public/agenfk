@@ -5,6 +5,10 @@ set -eu
 export HOME=/work/home
 export AGENFK_DB_PATH=/work/agenfk.sqlite
 mkdir -p "$HOME/.agenfk"
+# git reads its identity from HOME, which is the throwaway one now.
+git config --global user.email harness@agenfk.test
+git config --global user.name "AgEnFK harness"
+git config --global init.defaultBranch main
 # No outbound telemetry from a test run.
 echo '{"telemetry":false}' > "$HOME/.agenfk/config.json"
 # The token the server and the CLI share for verify (the installer writes it on a real machine).
