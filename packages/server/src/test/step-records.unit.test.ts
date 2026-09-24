@@ -96,6 +96,74 @@ describe('CGLAB-379: test report readers', () => {
   });
 
   describe('JUnit XML', () => {
+    // node --test --test-reporter=junit writes every failure as <failure
+    // type="testCodeFailure">; the class is in the body's `cause:` line, and a
+    // file that fails to load is one testcase named after the file.
+    const nodeCase = (name: string, body: string) =>
+      `<testcase name="${name}" classname="test" failure="x"><failure type="testCodeFailure" message="x">\n${body}\n</failure></testcase>`;
+    const ASSERT = "[Error [ERR_TEST_FAILURE]: 1 !== 2] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n    code: 'ERR_ASSERTION'\n  }\n}";
+    const THROW = "[Error [ERR_TEST_FAILURE]: Cannot read properties of null] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: TypeError: Cannot read properties of null (reading 'x')\n}";
+    const BROKEN = "[Error: test failed] { code: 'ERR_TEST_FAILURE', failureType: 'testCodeFailure', cause: 'test failed', exitCode: 1, signal: null }";
+
+    it("node:test: reads an assertion failure from the body's cause line", async () => {
+      const mod = await load();
+      const r = mod.parseJunitXml(`<testsuites>${nodeCase('asserts', ASSERT)}</testsuites>`, '/repo');
+      expect(r.tests[0]).toMatchObject({ status: 'failed', failure: 'assertion' });
+    });
+
+    it('node:test: reads a thrown error as an error, not an assertion', async () => {
+      const mod = await load();
+      const r = mod.parseJunitXml(`<testsuites>${nodeCase('throws', THROW)}</testsuites>`, '/repo');
+      expect(r.tests[0]).toMatchObject({ status: 'failed', failure: 'error' });
+    });
+
+    it('node:test: a test file that fails to load is a broken file, not a (red) test', async () => {
+      const mod = await load();
+      const r = mod.parseJunitXml(`<testsuites>${nodeCase('asserts', ASSERT)}${nodeCase('test/broken.test.js', BROKEN)}</testsuites>`, '/repo');
+      expect(r.tests.map((t: any) => t.name)).toEqual(['test > asserts']);
+      expect(r.brokenFiles).toEqual([{ file: 'test/broken.test.js', message: expect.stringMatching(/exited \(code 1\)/) }]);
+    });
+
+    // Real node shapes: the message comes FIRST, then the wrapper's failureType/cause.
+    const wrap = (message: string, failureType: string, cause: string) =>
+      `[Error [ERR_TEST_FAILURE]: ${message}] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: '${failureType}',\n  cause: ${cause}\n}`;
+
+    it('node:test: text in the message cannot decide the class; the wrapper cause line does (review)', async () => {
+      const mod = await load();
+      const diffMentionsTypeError = wrap("Expected values to be strictly deep-equal:\n+   cause: TypeError: a\n-   cause: 1", 'testCodeFailure', 'AssertionError [ERR_ASSERTION]: Expected values');
+      const errorMentionsAssertion = wrap('root cause: AssertionError: nope', 'testCodeFailure', 'RangeError: root cause: AssertionError: nope');
+      const r = mod.parseJunitXml(`<testsuites>${nodeCase('deep', diffMentionsTypeError)}${nodeCase('range', errorMentionsAssertion)}</testsuites>`, '/repo');
+      expect(r.tests.map((t: any) => t.failure)).toEqual(['assertion', 'error']);
+    });
+
+    it('node:test: a timeout or a thrown non-Error is an error, not an assertion (review)', async () => {
+      const mod = await load();
+      const r = mod.parseJunitXml(`<testsuites>${nodeCase('slow', wrap('test timed out after 10ms', 'testTimeoutFailure', "'test timed out after 10ms'"))}${nodeCase('str', wrap('boom', 'testCodeFailure', "'boom'"))}</testsuites>`, '/repo');
+      expect(r.tests.map((t: any) => t.failure)).toEqual(['error', 'error']);
+    });
+
+    it('node:test: a real test whose error mentions an exit code stays a test (review)', async () => {
+      const mod = await load();
+      const body = wrap('Command failed with exit code 2', 'testCodeFailure', "Error: Command failed with exit code 2\n    exitCode: 2,\n    signal: null");
+      const r = mod.parseJunitXml(`<testsuites>${nodeCase('spawns bin/cli.js', body)}</testsuites>`, '/repo');
+      expect(r.tests.map((t: any) => t.name)).toEqual(['test > spawns bin/cli.js']);
+      expect(r.brokenFiles).toEqual([]);
+    });
+
+    it('node:test: a broken file is named relative to the repository, from its file attribute (review)', async () => {
+      const mod = await load();
+      const tc = `<testcase name="test/broken.test.js" time="0.01" classname="test" failure="test failed" file="/repo/pkg/test/broken.test.js"><failure type="testCodeFailure" message="test failed">\n${BROKEN}\n</failure></testcase>`;
+      const r = mod.parseJunitXml(`<testsuites>${tc}</testsuites>`, '/repo');
+      expect(r.brokenFiles).toEqual([{ file: 'pkg/test/broken.test.js', message: expect.stringMatching(/exited \(code 1\)/) }]);
+    });
+
+    it('other JUnit producers are unchanged: a <failure> without a cause line is an assertion, <error> an error', async () => {
+      const mod = await load();
+      const r = mod.parseJunitXml('<testsuite><testcase classname="c" name="a"><failure message="m">stack</failure></testcase><testcase classname="c" name="b"><error/></testcase></testsuite>', '/repo');
+      expect(r.tests.map((t: any) => t.failure)).toEqual(['assertion', 'error']);
+      expect(r.brokenFiles).toEqual([]);
+    });
+
     const xml = `<?xml version="1.0" encoding="utf-8"?>
 <testsuites>
   <testsuite name="pytest" tests="4">

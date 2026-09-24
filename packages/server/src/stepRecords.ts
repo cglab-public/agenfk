@@ -208,10 +208,29 @@ export function parseJunitXml(text: string, root: string): ParsedReport {
   const clean = stripCommentsAndCdata(text);
   const tag = /<(\/?)([\w:.-]+)((?:\s+[\w:.-]+\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/?)>/g;
   const tests: ReportedTest[] = [];
+  const brokenFiles: Array<{ file: string; message: string }> = [];
   let sawSuite = false;
-  let open: { attrs: Record<string, string>; failed?: 'assertion' | 'error'; skipped?: boolean } | null = null;
+  let open: { attrs: Record<string, string>; failed?: 'assertion' | 'error'; skipped?: boolean; body?: string } | null = null;
+  let failureFrom = -1;
   const close = () => {
+    failureFrom = -1;
     if (!open) return;
+    /*
+     * node --test writes a test file whose process exits before it finishes
+     * (it may not even load) as ONE testcase named after the file, with its
+     * own wrapper: `cause: 'test failed', exitCode: N, signal: ...`, and a
+     * file attribute naming that file. It is a broken file, never a test:
+     * counted as one, it was a new red test that could start the TDD cycle.
+     * A real test whose error merely mentions an exit code has neither shape.
+     */
+    const name = open.attrs.name ?? '';
+    const exited = open.failed && open.body ? /cause: 'test failed',\s*exitCode: (\d+),\s*signal:/.exec(open.body) : null;
+    const fileAttr = open.attrs.file ? relativeTo(root, open.attrs.file) : null;
+    if (exited && /\.[cm]?[jt]sx?$/.test(name) && (!fileAttr || fileAttr === name || fileAttr.endsWith(`/${name}`))) {
+      brokenFiles.push({ file: fileAttr ?? name, message: `the test process exited (code ${exited[1]}) before the file finished; it may not load` });
+      open = null;
+      return;
+    }
     const file = open.attrs.file ? relativeTo(root, open.attrs.file) : (open.attrs.classname ?? '');
     const status: ReportedStatus = open.failed ? 'failed' : open.skipped ? 'skipped' : 'passed';
     tests.push({ name: `${file} > ${open.attrs.name ?? ''}`, file, status, ...(open.failed ? { failure: open.failed } : {}) });
@@ -227,14 +246,30 @@ export function parseJunitXml(text: string, root: string): ParsedReport {
       if (selfClosing) close();
       continue;
     }
+    if (open && closing && name === 'failure' && failureFrom >= 0) {
+      open.body = clean.slice(failureFrom, m.index);
+      failureFrom = -1;
+      /*
+       * node:test writes every <failure> the same way; its wrapper names the
+       * kind (`failureType`) and the real error (`cause`). The message comes
+       * first and may quote anything, so the LAST failureType/cause pair is
+       * the wrapper's. An assertion only when the code failed on an
+       * AssertionError; a timeout, a thrown string, any other class is an
+       * error. No wrapper at all (pytest, surefire...): unchanged.
+       */
+      let wrapper: RegExpExecArray | null = null;
+      for (const w of open.body.matchAll(/failureType: '(\w+)',\s*cause: (?:([A-Za-z_$][\w$]*)(?:\s*\[[A-Z0-9_]+\])?:|')/g)) wrapper = w;
+      if (wrapper) open.failed = wrapper[1] === 'testCodeFailure' && wrapper[2] === 'AssertionError' ? 'assertion' : 'error';
+      continue;
+    }
     if (!open || closing) continue;
-    if (name === 'failure') open.failed = open.failed ?? 'assertion';
+    if (name === 'failure') { open.failed = open.failed ?? 'assertion'; if (!selfClosing) failureFrom = (m.index ?? 0) + m[0].length; }
     else if (name === 'error') open.failed = 'error';
     else if (name === 'skipped') open.skipped = true;
   }
   close();
   if (!sawSuite) throw new Error('not a JUnit XML report: no <testsuite>');
-  return { tests, brokenFiles: [], duplicateNames: duplicatesOf(tests) };
+  return { tests, brokenFiles, duplicateNames: duplicatesOf(tests) };
 }
 
 /**
