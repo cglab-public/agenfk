@@ -172,6 +172,19 @@ describe('flow editor: contracts', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it('sends the commit flags with the contract question, so an auto commit that would do nothing is reported (S10 review)', async () => {
+    const { flowClient } = mount(flowOf([
+      s('TODO', 0, { isAnchor: true }),
+      s('BUILD', 1, { autoCommit: true } as Partial<FlowStep>),
+      s('DONE', 2, { isAnchor: true }),
+    ]));
+    await ready();
+    const problems = await screen.findByTestId('flow-contract-problems');
+    await waitFor(() => expect(problems.textContent).toMatch(/auto commit has no effect/i));
+    const sent = (flowClient.getFlowContract as any).mock.calls.at(-1)[0];
+    expect(sent.find((st: FlowStep) => st.name === 'BUILD')).toMatchObject({ autoCommit: true });
+  });
+
   it('does not ask the server again for a label edit, which the contract does not read', async () => {
     const { flowClient } = mount(good());
     await ready();

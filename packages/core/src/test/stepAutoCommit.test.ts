@@ -10,7 +10,8 @@ import { stepContractFields } from '../registryFlow';
 
 const step = (extra: Record<string, unknown>) => ({ id: 'b', name: 'BUILD', label: 'Build', order: 1, ...extra });
 const flow = (extra: Record<string, unknown>) => [
-  { id: 'a', name: 'TODO', label: 'To Do', order: 0, isAnchor: true }, step(extra), { id: 'c', name: 'DONE', label: 'Done', order: 2, isAnchor: true },
+  { id: 'a', name: 'TODO', label: 'To Do', order: 0, isAnchor: true }, step(extra),
+  { id: 't', name: 'TEST', label: 'Test', order: 2 }, { id: 'c', name: 'DONE', label: 'Done', order: 3, isAnchor: true },
 ];
 
 describe('step auto commit fields', () => {
@@ -39,5 +40,11 @@ describe('step auto commit fields', () => {
     expect(flowChecksErrors(flow({ autoCommit: 'yes' })).join(' ')).toMatch(/autoCommit/);
     expect(flowChecksErrors(flow({ requireCommit: true })).join(' ')).toMatch(/requireCommit.*autoCommit|autoCommit.*requireCommit/);
     expect(flowChecksErrors(flow({ autoCommit: true, requireCommit: true }))).toEqual([]);
+  });
+
+  it('are refused on the step whose leaving ends the flow, where the close commit takes the work (S10 review)', () => {
+    const last = [{ id: 'a', name: 'TODO', label: 'To Do', order: 0, isAnchor: true }, step({ autoCommit: true }), { id: 'c', name: 'DONE', label: 'Done', order: 2, isAnchor: true }];
+    expect(flowChecksErrors(last).join(' ')).toMatch(/BUILD: auto commit has no effect here/);
+    expect(flowChecksErrors(flow({ autoCommit: true }))).toEqual([]);
   });
 });

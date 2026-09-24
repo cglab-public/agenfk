@@ -279,6 +279,11 @@ export function flowChecksErrors(steps: unknown): string[] {
     if (flags.requireCommit === true && flags.autoCommit !== true) {
       errors.push(`Step ${name}: requireCommit needs autoCommit on: a step can only require the commit it makes.`);
     }
+    // Leaving this step ends the flow, and the close commit takes the card's
+    // work: a step commit here would never run, so the flag would do nothing.
+    if (endsHere(i) && (flags.autoCommit === true || flags.requireCommit === true)) {
+      errors.push(`Step ${name}: auto commit has no effect here: leaving this step ends the flow, and the close commit covers its work. Turn it off, or set it on an earlier step.`);
+    }
     if (s.role !== undefined && s.role !== null && !isRole(s.role)) {
       errors.push(`Step ${name}: unknown role ${JSON.stringify(s.role)}. Roles: ${STEP_ROLES.join(', ')}.`);
     }

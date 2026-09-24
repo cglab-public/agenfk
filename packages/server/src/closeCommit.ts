@@ -91,6 +91,11 @@ export interface CloseCommitResult {
   /** Why not, when it did not. Surfaced to the agent, not only logged. */
   readonly reason?: string;
   readonly output?: string;
+  /**
+   * The commit this call made, read from git's own report of it, never from
+   * HEAD afterwards: another agent in the same worktree may commit in between.
+   */
+  readonly sha?: string;
 }
 
 /**
@@ -228,7 +233,14 @@ export function commitStagedForCard(
      * reaches here unescaped.
      */
     const output = deps.run(at('commit', '-m', message, ...(paths.length ? ['--', ...mine] : [])));
-    return { committed: true, output: output.trim(), outsideClaims };
+    // `[branch (root-commit) abc1234] subject`: the abbreviated sha of THIS
+    // commit. Expanded with rev-parse, which resolves it however HEAD moves.
+    const short = /^\[[^\]]*?\b([0-9a-f]{7,40})\]/m.exec(output)?.[1];
+    let sha: string | undefined;
+    if (short) {
+      try { sha = deps.run(at('rev-parse', '--verify', `${short}^{commit}`)).trim() || undefined; } catch { /* reported without a sha */ }
+    }
+    return { committed: true, output: output.trim(), outsideClaims, ...(sha ? { sha } : {}) };
   } catch (e: any) {
     return { committed: false, reason: gitSaid(e) };
   }

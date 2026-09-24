@@ -433,7 +433,9 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   const hasContract = typeof flowClient.getFlowContract === 'function';
   // Only what the contract reads, debounced: a label or a keystroke in a name
   // is not a new question for the server.
-  const contractKey = JSON.stringify(steps.map((s, i) => ({ id: s.id, name: s.name, order: i, isAnchor: s.isAnchor, role: s.role, checks: s.checks })));
+  // The commit flags and isSpecial count too: the server validates where a
+  // step commit can run, which depends on both (CGLAB-388).
+  const contractKey = JSON.stringify(steps.map((s, i) => ({ id: s.id, name: s.name, order: i, isAnchor: s.isAnchor, isSpecial: s.isSpecial, role: s.role, checks: s.checks, autoCommit: s.autoCommit, requireCommit: s.requireCommit })));
   const [askedKey, setAskedKey] = useState(contractKey);
   useEffect(() => {
     const t = setTimeout(() => setAskedKey(contractKey), 250);

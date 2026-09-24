@@ -107,10 +107,107 @@ describe('CGLAB-388: commit when the card leaves the step', () => {
     expect(sh('git diff --cached --name-only', dir)).toBe('x.txt');
   });
 
-  it('no step commit on the move that ends the flow: the close commit covers it', async () => {
-    const { id, dir } = await setup({}, 'WORK', { autoCommit: true });
+  it('refuses the flag on the step that ends the flow, where it would do nothing', async () => {
+    const f = await agent().post('/flows').send({ name: `sc-${++seq}`, steps: [s('TODO', 0, { isAnchor: true }), s('WORK', 1, { autoCommit: true }), s('DONE', 2, { isAnchor: true })] });
+    expect(f.status).toBe(400);
+    expect(f.body.error).toMatch(/close commit covers/);
+  });
+
+  it('no step commit on the move that ends the flow, even from a flow stored before that was refused', async () => {
+    const { id, dir } = await setup({}, 'WORK');
+    const project = await storage.getProject((await item(id)).projectId);
+    const flow: any = await storage.getFlow((project as any).flowId);
+    await storage.updateFlow(flow.id, { steps: flow.steps.map((st: any) => st.name === 'WORK' ? { ...st, autoCommit: true } : st) } as any);
     fs.writeFileSync(path.join(dir, 'x.txt'), 'x'); sh('git add x.txt', dir);
     await validate(id);
     expect(sh('git log --format=%s', dir)).not.toMatch(/step\(/);
   });
+
 });
+
+describe('S10 review: the step commit happens only when the card really leaves', () => {
+  const validateWith = (id: string, command: string) => agent().post(`/items/${id}/validate`).set({ 'x-agenfk-internal': VERIFY_TOKEN! }).send({ evidence: 'ok', command });
+
+  it('a failing command on an autoCommit step: refused, card stays, nothing committed, the work still staged', async () => {
+    const { id, dir } = await setup({ autoCommit: true });
+    fs.writeFileSync(path.join(dir, 'x.txt'), 'x'); sh('git add x.txt', dir);
+    const res = await validateWith(id, 'exit 1');
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect((await item(id)).status).toBe('PLAN');
+    expect(sh('git log --format=%s', dir)).not.toMatch(/step\(/);
+    expect(sh('git diff --cached --name-only', dir)).toBe('x.txt');
+  });
+
+  it('requireCommit after a failed command: the retry still finds the work staged and commits it', async () => {
+    const { id, dir } = await setup({ autoCommit: true, requireCommit: true });
+    fs.writeFileSync(path.join(dir, 'x.txt'), 'x'); sh('git add x.txt', dir);
+    expect((await validateWith(id, 'exit 1')).status).toBe(422);
+    const retry = await validateWith(id, 'exit 0');
+    expect(retry.status, JSON.stringify(retry.body)).toBe(200);
+    expect((await item(id)).status).toBe('WORK');
+    expect(sh('git log -1 --format=%s', dir)).toMatch(/^step\(PLAN\)/);
+  });
+
+  it('the next step diffs from the step commit, so the step\'s own committed work is not counted again', async () => {
+    const f = await agent().post('/flows').send({ name: `sc-${++seq}`, steps: [
+      s('TODO', 0, { isAnchor: true }), s('PLAN', 1, { autoCommit: true }),
+      s('RED', 2, { checks: [{ id: 'only-test-files-changed' }] }), s('WORK', 3), s('DONE', 4, { isAnchor: true }),
+    ] });
+    expect(f.status, JSON.stringify(f.body)).toBe(201);
+    const dir = repo();
+    const p = await agent().post('/projects').send({ name: `sc-${++seq}` });
+    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: dir, verifyCommand: 'exit 0' } as never);
+    const id = (await agent().post('/items').send({ type: 'TASK', title: `Card ${++seq}`, projectId: p.body.id })).body.id;
+    await storage.updateItem(id, { status: 'PLAN' } as any);
+    fs.writeFileSync(path.join(dir, 'foo.ts'), 'export const foo = 1;\n'); sh('git add foo.ts', dir);
+    expect((await validate(id)).status).toBe(200);
+    fs.writeFileSync(path.join(dir, 'foo.test.ts'), 'test\n');
+    const red = await validate(id);
+    expect(red.status, JSON.stringify(red.body)).toBe(200);
+    expect((await item(id)).status).toBe('WORK');
+  });
+
+  it('records the sha of the commit it made', async () => {
+    const { id, dir } = await setup({ autoCommit: true });
+    fs.writeFileSync(path.join(dir, 'x.txt'), 'x'); sh('git add x.txt', dir);
+    const res = await validate(id);
+    const rec = await exitOf(id, 'PLAN');
+    expect(rec.commit).toBe(sh('git log -1 --format=%H --grep=^step', dir));
+    expect(res.body.message).toContain(rec.commit.slice(0, 12));
+  });
+
+  it('a step before a mid-flow special step commits: only the move that ends the flow skips it', async () => {
+    const f = await agent().post('/flows').send({ name: `sc-${++seq}`, steps: [
+      s('TODO', 0, { isAnchor: true }), s('PLAN', 1, { autoCommit: true }), s('HOLD', 2, { isSpecial: true }),
+      s('WORK', 3), s('DONE', 4, { isAnchor: true }),
+    ] });
+    expect(f.status, JSON.stringify(f.body)).toBe(201);
+    const dir = repo();
+    const p = await agent().post('/projects').send({ name: `sc-${++seq}` });
+    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: dir, verifyCommand: 'exit 0' } as never);
+    const id = (await agent().post('/items').send({ type: 'TASK', title: `Card ${++seq}`, projectId: p.body.id })).body.id;
+    await storage.updateItem(id, { status: 'PLAN' } as any);
+    fs.writeFileSync(path.join(dir, 'x.txt'), 'x'); sh('git add x.txt', dir);
+    const res = await validate(id);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(sh('git log -1 --format=%s', dir)).toMatch(/^step\(PLAN\)/);
+  });
+
+  it('speaks of the step, not the close: nothing staged does not say to close the card again', async () => {
+    const { id } = await setup({ autoCommit: true });
+    const res = await validate(id);
+    expect(res.body.message).toMatch(/nothing was staged/i);
+    expect(res.body.message).not.toMatch(/close it again/i);
+  });
+
+  it('a failed step commit says FAILED, like the close commit', async () => {
+    const { id, dir } = await setup({ autoCommit: true });
+    fs.writeFileSync(path.join(dir, 'x.txt'), 'x'); sh('git add x.txt', dir);
+    // A pre-commit hook that refuses: the commit itself fails.
+    fs.writeFileSync(path.join(dir, '.git', 'hooks', 'pre-commit'), '#!/bin/sh\necho refused >&2\nexit 1\n', { mode: 0o755 });
+    const res = await validate(id);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.message).toMatch(/step commit FAILED/);
+  });
+});
+

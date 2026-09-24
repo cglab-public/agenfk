@@ -946,6 +946,8 @@ export interface AutoGitCommitResult {
   outsideClaims?: string[];
   /** Why, for every outcome but 'committed'. */
   detail?: string;
+  /** The commit it made, for 'committed' (see CloseCommitResult.sha). */
+  sha?: string;
   /** The same reason under the name callers and older tests already use. */
   error?: string;
 }
@@ -1187,6 +1189,7 @@ export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null
     return done({
       outcome: 'committed', success: true, committed: true,
       output: result.output ?? '', unstaged, outsideClaims: result.outsideClaims ? [...result.outsideClaims] : undefined,
+      ...(result.sha ? { sha: result.sha } : {}),
     });
   }
   const reason = result.reason ?? 'the close commit did not run';
@@ -5850,7 +5853,9 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     capture,
     captureError,
     entry: prev ? lastOf(r => r?.kind === 'capture' && r.step === prev.name) : null,
-    entryHead: prev ? (lastOf(r => r?.kind === 'exit' && r.step === prev.name)?.head ?? null) : null,
+    // A step that committed on leaving (CGLAB-388) hands the next step its
+    // commit as the baseline: its own work is not this step's change.
+    entryHead: prev ? (() => { const x = lastOf(r => r?.kind === 'exit' && r.step === prev.name); return x?.commit ?? x?.head ?? null; })() : null,
     records: produced,
     approvals,
     inheritedApprovals,
@@ -6008,32 +6013,37 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   /*
    * CGLAB-388: a step with autoCommit commits the card's work as the card
    * leaves it - only what is staged, only the card's claimed files, the same
-   * commit the close makes, named for the step. Not on the move that ends the
-   * flow: the close commit covers it, and would find nothing staged after.
-   * A missing commit is a note, unless the step requires one.
+   * commit the close makes, named for the step. Called on each path that
+   * ADVANCES the card, just before it moves, never before: a refused advance
+   * (a failing command, a stale step) must leave the work staged, or a
+   * requireCommit step could never be left again. Not on the move that ends
+   * the flow: the close commit covers that. A missing commit is a note,
+   * unless the step requires one, which answers 422 and moves nothing.
    */
-  {
+  const commitOnLeave = async (r0: any, endsTheFlow: boolean): Promise<{ res: any; refused?: false } | { refused: true }> => {
     const leaving: any = currentFlowStep.step;
-    const nx: any = sorted[currentFlowStep.index + 1];
-    const endsHere = !nx || nx.name === Status.DONE || isBoundaryStep(nx);
-    if (leaving.autoCommit === true && !endsHere) {
-      const stepMessage = `step(${item.status}): ${item.title} [${item.id}]`;
-      const r = await autoGitCommit(item as any, (project as any)?.projectRoot, { message: stepMessage });
-      const SHOWN = 20;
-      const loose = r.unstaged.length
-        ? `\nNot staged, so not committed: ${r.unstaged.slice(0, SHOWN).map(f => `\`${f}\``).join(', ')}${r.unstaged.length > SHOWN ? ` and ${r.unstaged.length - SHOWN} more` : ''}.`
-        : '';
-      if (r.committed) {
-        const sha = effectiveRoot ? readHead(effectiveRoot, gitRun) : null;
-        (exitRecord as any).commit = sha;
-        res = withNote(res, `📌 Step commit ${sha ? sha.slice(0, 12) : ''}: "${stepMessage}".${loose}`);
-      } else if (leaving.requireCommit === true) {
-        return res.status(422).json({ status: item.status, message: `❌ This step requires a commit of the card's work when it leaves, and none was made: ${r.detail}${loose}${staysOn(item.status)}` });
-      } else {
-        res = withNote(res, `⚠️ No step commit: ${r.detail}${loose}`);
-      }
+    if (leaving.autoCommit !== true || endsTheFlow) return { res: r0 };
+    const stepMessage = `step(${item.status}): ${item.title} [${item.id}]`;
+    const r = await autoGitCommit(item as any, (project as any)?.projectRoot, { message: stepMessage });
+    const SHOWN = 20;
+    const loose = r.unstaged.length
+      ? `\nNot staged, so not committed: ${r.unstaged.slice(0, SHOWN).map(f => `\`${f}\``).join(', ')}${r.unstaged.length > SHOWN ? ` and ${r.unstaged.length - SHOWN} more` : ''}.`
+      : '';
+    if (r.committed) {
+      (exitRecord as any).commit = r.sha ?? null;
+      return { res: withNote(r0, `📌 Step commit ${r.sha ? r.sha.slice(0, 12) : ''}: "${stepMessage}".${loose}`) };
     }
-  }
+    // Worded like the close commit's outcomes, about the step.
+    const why = r.outcome === 'nothing-staged'
+      ? `nothing was staged for this card, so the work of ${item.status} is not committed. Stage the files this card changed before leaving a step that commits.`
+      : r.outcome === 'declined' ? `the server made NO step commit: ${r.detail}.`
+      : `the step commit FAILED: ${r.detail}. Nothing was committed.`;
+    if (leaving.requireCommit === true) {
+      r0.status(422).json({ status: item.status, message: `❌ This step requires a commit of the card's work when it leaves, and none was made: ${why}${loose}${staysOn(item.status)}` });
+      return { refused: true };
+    }
+    return { res: withNote(r0, `${r.outcome === 'failed' ? '❌' : '⚠️'} No step commit: ${why}${loose}`) };
+  };
 
   if (currentFlowStep.step.isAnchor) {
     if (currentFlowStep.index !== 0) {
@@ -6046,6 +6056,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const exitCriteria = (currentFlowStep.step as any).exitCriteria as string | undefined;
     const exitNote = exitCriteria ? `\n**Exit criteria acknowledged**: ${exitCriteria}` : '';
     const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED\n\n**Step**: ${item.status} → ${codingStep.name}${exitNote}`, timestamp: new Date() };
+    const leftTodo = await commitOnLeave(res, false);
+    if (leftTodo.refused) return;
+    res = leftTodo.res;
     const movedToCoding = await storage.updateItem(itemId, { status: codingStep.name as Status, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment] } as any);
     // Entering the first working step is where a worktree earns its keep.
     await ensureWorktreeForItem(movedToCoding, true);
@@ -6238,6 +6251,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       });
       if (passedSibling) {
         const sibComment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).`, timestamp: new Date() };
+        const left = await commitOnLeave(res, false);
+        if (left.refused) return;
+        res = left.res;
         const updated = await storage.updateItem(itemId, { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), sibComment], ...(isExitStep ? { failureCount: 0 } : {}) } as any);
         // Sibling propagation moves the item into a working step exactly like
         // a verify does. It is the same transition; only the reason differs.
@@ -6253,6 +6269,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   if (!resolvedCommand) {
     const exitNote = exitCriteria ? `\n**Exit criteria acknowledged**: ${exitCriteria}` : '';
     const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED\n\n**Step**: ${item.status} → ${nextStatus}${exitNote}`, timestamp: new Date() };
+    const left = await commitOnLeave(res, endsFlow);
+    if (left.refused) return;
+    res = left.res;
     const updated = await storage.updateItem(itemId, { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment] } as any);
     await ensureWorktreeForItem(updated, true);
     io.emit('items_updated');
@@ -6396,6 +6415,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   }];
 
     if (passed) {
+      const left = await commitOnLeave(res2, endsFlow);
+      if (left.refused) return;
+      res2 = left.res;
       const updates: any = { status: nextStatus, comments, stepRecords: withExitRecord() };
       /*
        * The flow's OWN exit step is rarely named DONE, so the storage clear
