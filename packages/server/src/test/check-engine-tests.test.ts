@@ -351,6 +351,82 @@ describe('9afdba7d: a junit report that names no file: the project declares its 
   });
 });
 
+describe('4a428bb0: a card keeps the history of its checks, approvals and overrides', () => {
+  const steps = () => [
+    s('START', 0, { isAnchor: true }),
+    s('WORK', 1, { checks: [{ id: 'jira-key-valid' }, { id: 'human-approval' }] }),
+    s('NEXT', 2),
+    s('END', 3, { isAnchor: true }),
+  ];
+  const board = { 'x-agenfk-ui': '1' };
+  async function onWork() {
+    const dir = makeRepo();
+    const pid = await project(await flow(steps()), { projectRoot: dir });
+    const id = await card(pid, 'START');
+    expect((await validate(id)).status).toBe(200);
+    return id;
+  }
+  const history = async (id: string) => {
+    const r = await agent().get(`/items/${id}/check-history`);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    return r.body as any[];
+  };
+
+  it('records every verify, refused or passed, with its step, time and each check', async () => {
+    const id = await onWork();
+    expect((await validate(id)).status).toBe(422); // no key, no approval
+    await agent().put(`/items/${id}`).send({ jiraItem: 'ABC-12' });
+    await agent().post(`/items/${id}/approvals`).set(board).send({ step: 'WORK' });
+    expect((await validate(id)).status).toBe(200);
+    const h = await history(id);
+    const verifies = h.filter(e => e.kind === 'verify');
+    // Newest first: the passing WORK run, the refused one, then leaving START.
+    expect(verifies.map(e => [e.step, e.blocked])).toEqual([['WORK', false], ['WORK', true], ['START', false]]);
+    const refused = verifies[1];
+    expect(Date.parse(refused.at)).not.toBeNaN();
+    expect(refused.results.find((r: any) => r.id === 'jira-key-valid')).toMatchObject({ outcome: 'fail', blocking: true });
+    expect(refused.results.find((r: any) => r.id === 'human-approval')).toMatchObject({ outcome: 'fail', blocking: true });
+  });
+
+  it('records approvals and overrides, with who, when and on what authority', async () => {
+    const id = await onWork();
+    await validate(id);
+    await agent().post(`/items/${id}/overrides`).set(board).send({ step: 'WORK', checkId: 'jira-key-valid', reason: 'spike, no ticket' });
+    await agent().post(`/items/${id}/approvals`).set(board).send({ step: 'WORK', note: 'go' });
+    const h = await history(id);
+    expect(h[0]).toMatchObject({ kind: 'approval', step: 'WORK', by: 'board', authority: 'unverified', note: 'go' });
+    expect(h[1]).toMatchObject({ kind: 'override', step: 'WORK', by: 'board', check: 'jira-key-valid', reason: 'spike, no ticket' });
+    expect(Date.parse(h[0].at)).not.toBeNaN();
+  });
+
+  it('survives a rollback: the approvals it records are history, not the step\'s live state', async () => {
+    const id = await onWork();
+    await agent().put(`/items/${id}`).send({ jiraItem: 'ABC-12' });
+    await agent().post(`/items/${id}/approvals`).set(board).send({ step: 'WORK' });
+    expect((await validate(id)).status).toBe(200);
+    expect((await agent().put(`/items/${id}`).send({ status: 'WORK' })).status).toBe(200);
+    const kinds = (await history(id)).map(e => e.kind);
+    expect(kinds).toContain('approval');
+    expect(kinds.filter(k => k === 'verify')).toHaveLength(2);
+  });
+
+  it('keeps the latest 100 entries', async () => {
+    const id = await onWork();
+    const old = Array.from({ length: 100 }, (_, i) => ({ kind: 'verify', step: 'WORK', at: new Date(2020, 0, 1, 0, i).toISOString(), blocked: true, results: [] }));
+    await storage.updateItem(id, { checkHistory: old } as any);
+    await validate(id);
+    const h = await history(id);
+    expect(h).toHaveLength(100);
+    expect(Date.parse(h[0].at)).toBeGreaterThan(Date.parse('2021-01-01'));
+  });
+
+  it('cannot be written by a client', async () => {
+    const id = await onWork();
+    await agent().put(`/items/${id}`).send({ checkHistory: [{ kind: 'approval', step: 'WORK', at: 'x', by: 'forged' }] });
+    expect((await history(id)).some(e => e.by === 'forged')).toBe(false);
+  });
+});
+
 describe('CGLAB-380: test checks', () => {
   it('the honest TDD path reaches the end, and the red set is recorded by name', async () => {
     const { dir, id } = await atSpecs();

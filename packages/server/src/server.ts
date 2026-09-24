@@ -2592,10 +2592,24 @@ async function gateTarget(req: any, res: any): Promise<{ item: any; flow: Flow }
 
 const gateText = (v: unknown, max = 2000) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 
+/**
+ * A card's history of its checks, approvals and overrides (4a428bb0): what the
+ * board's Checks tab shows. A log, not live state - unlike step records, a
+ * rollback never drops it - kept to the latest CHECK_HISTORY_MAX entries.
+ * Server-written only: PUT /items/:id takes an allow-list without it.
+ */
+const CHECK_HISTORY_MAX = 100;
+const withHistory = (fresh: any, entry: Record<string, unknown>) => [...(Array.isArray(fresh?.checkHistory) ? fresh.checkHistory : []), entry].slice(-CHECK_HISTORY_MAX);
+const gateEntry = (rec: any) => ({
+  kind: rec.kind, step: rec.step, at: rec.at, by: rec.by, authority: rec.authority,
+  ...(rec.note ? { note: rec.note } : {}), ...(rec.check ? { check: rec.check, reason: rec.reason } : {}),
+});
+
 async function appendGateRecord(item: any, rec: any, comment: string) {
   const fresh: any = await storage.getItem(item.id);
   await storage.updateItem(item.id, {
     stepRecords: [...(fresh?.stepRecords ?? []), rec],
+    checkHistory: withHistory(fresh, gateEntry(rec)),
     comments: [...(fresh?.comments ?? []), { id: uuidv4(), author: 'Board', content: comment, timestamp: new Date(), step: item.status }],
   } as any);
   io.emit('items_updated');
@@ -2750,6 +2764,13 @@ app.get("/items/:id/gate-events", asyncHandler(async (req: any, res: any) => {
     queue.push(...((await storage.listItems({ parentId: card.id } as any)) as any[]));
   }
   res.json(events);
+}));
+
+/** The card's check history, newest first (4a428bb0). */
+app.get("/items/:id/check-history", asyncHandler(async (req: any, res: any) => {
+  const item: any = await storage.getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: 'Item not found' });
+  res.json([...(Array.isArray(item.checkHistory) ? item.checkHistory : [])].reverse());
 }));
 
 app.post("/items/:id/approvals", limitExpensive, asyncHandler(async (req: any, res: any) => {
@@ -5900,6 +5921,10 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const made = outcome.blocked ? [] : Object.entries(outcome.produced).map(([name, value]) => ({ step: item.status, kind: 'record', name, value, at, head: null, clean: false }));
   await storage.updateItem(item.id, {
     lastChecks: { step: item.status, at, blocked: outcome.blocked, results: outcome.results },
+    checkHistory: withHistory(latest, {
+      kind: 'verify', step: item.status, at, blocked: outcome.blocked,
+      results: outcome.results.map(r => ({ id: r.id, outcome: r.outcome, blocking: r.blocking, severity: r.severity, detail: String(r.detail ?? '').slice(0, 500), ...(r.overridden ? { overridden: true } : {}) })),
+    }),
     ...(made.length ? { stepRecords: [...(latest?.stepRecords ?? []), ...made] } : {}),
   } as any);
   return { results: outcome.results, blocked: outcome.blocked };
