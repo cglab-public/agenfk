@@ -12,6 +12,7 @@ import { CheckCircle2, XCircle, AlertTriangle, MinusCircle, FastForward, Unlock,
 import { api, type StepCheckResult } from '../api';
 import { useSocketEvent } from '../SocketContext';
 import { canSignHere, createPasskey, handoffUrl, signAct } from '../webauthn';
+import { approveCommand, argvHash } from '../commandApprovals';
 
 const errorText = (e: unknown): string => {
   const err = e as { response?: { data?: { error?: string } }; message?: string } | null;
@@ -32,7 +33,10 @@ export const StepChecksPanel: React.FC<{ itemId: string; projectId?: string }> =
   const key = ['gates', itemId];
   const { data: gates } = useQuery({ queryKey: key, queryFn: () => api.getGates(itemId) });
   // A step that asks for a passkey (CGLAB-383): is one enrolled on this board?
-  const { data: passkeyStatus } = useQuery({ queryKey: ['passkeys'], queryFn: () => api.getPasskeyStatus(), enabled: !!gates?.passkeyRequired });
+  // A command check waiting for a person's approval of its exact command (efcacdeb): approved with a passkey.
+  const awaitingCommand = (r: StepCheckResult) => r.id.startsWith('command-check:') && r.blocking && r.params?.approval === 'person' && /waiting for a person to approve the command/.test(r.detail);
+  const commandWaits = (gates?.lastChecks?.results ?? []).some(awaitingCommand);
+  const { data: passkeyStatus } = useQuery({ queryKey: ['passkeys'], queryFn: () => api.getPasskeyStatus(), enabled: !!gates?.passkeyRequired || commandWaits });
   useSocketEvent('items_updated', () => { void qc.invalidateQueries({ queryKey: key }); });
 
   const [note, setNote] = React.useState('');
@@ -81,6 +85,16 @@ export const StepChecksPanel: React.FC<{ itemId: string; projectId?: string }> =
       const body = { step: gates.step, checkId, reason: r };
       const assertion = signed ? await assertionFor({ purpose: 'override', itemId, ...body }) : undefined;
       await api.overrideCheck(itemId, { ...body, ...(assertion ? { assertion } : {}) });
+    });
+  };
+
+  const approveCommandNow = (r: StepCheckResult) => {
+    if (!signHere) return handOff();
+    return act(async () => {
+      if (!projectId) throw new Error('This card has no project to approve the command for.');
+      const argv = JSON.parse(r.params.argv) as string[];
+      const assertion = await assertionFor({ purpose: 'command', itemId: projectId, checkId: await argvHash(argv) });
+      await approveCommand(projectId, argv, assertion);
     });
   };
 
@@ -163,8 +177,27 @@ export const StepChecksPanel: React.FC<{ itemId: string; projectId?: string }> =
                   <div className="min-w-0 flex-1">
                     <span className="font-mono text-xs text-slate-700 dark:text-slate-200">{r.id}</span>
                     <span className="text-xs text-slate-400 dark:text-slate-500"> · {r.severity}{r.source === 'flow' ? ' · added by the flow' : ''}</span>
+                    {(r as StepCheckResult & { agentReported?: boolean }).agentReported && (
+                      <span className="ml-1 text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300" title="The coding agent reported this; the server did not check it.">agent-reported</span>
+                    )}
                     {r.detail && <p className="text-xs text-slate-500 dark:text-slate-400 break-words">{r.detail}</p>}
                     {given && <p className="text-xs text-amber-700 dark:text-amber-300">Overridden: {given.reason}</p>}
+                    {awaitingCommand(r) && (
+                      <div className="mt-1 space-y-1">
+                        <code className="block text-xs bg-slate-100 dark:bg-slate-800 rounded px-2 py-1 break-all">{(JSON.parse(r.params.argv) as string[]).join(' ')}</code>
+                        {passkeyStatus && !passkeyStatus.enrolled && signHere ? (
+                          <button type="button" disabled={busy} onClick={enroll}
+                            className="text-xs font-bold px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-900 dark:bg-slate-200 dark:text-slate-900 text-white disabled:opacity-50">
+                            Enroll a passkey to approve commands
+                          </button>
+                        ) : (
+                          <button type="button" disabled={busy} onClick={() => approveCommandNow(r)}
+                            className="text-xs font-bold px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50">
+                            {signHere ? 'Approve this command' : 'Approve this command in the browser'}
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                   {r.blocking && !given && overriding !== r.id && (
                     <button

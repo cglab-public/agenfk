@@ -68,4 +68,5 @@ export const GROUP_TEXTS: Record<string, string> = {
   tests: 'Tests',
   review: 'Review',
   approvals: 'Approvals',
+  custom: 'Custom',
 };

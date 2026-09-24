@@ -81,4 +81,10 @@ describe('CheckHistoryTab', () => {
     expect(entries.map(e => e.textContent)).toEqual([expect.stringMatching(/NEXT/), expect.stringMatching(/WORK/)]);
     await waitFor(() => expect(api.getCheckHistory).toHaveBeenCalledWith('c1'));
   });
+
+  it('labels an agent check as agent-reported', async () => {
+    show([{ kind: 'verify', step: 'WORK', at: AT, blocked: false, results: [{ id: 'agent-check:docs', outcome: 'pass', blocking: false, severity: 'block', detail: 'agent-reported: README updated', agentReported: true }] }]);
+    const li = (await screen.findByText('agent-check:docs')).closest('li')!;
+    expect(li.textContent).toMatch(/passed, agent-reported/);
+  });
 });

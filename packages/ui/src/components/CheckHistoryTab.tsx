@@ -46,7 +46,7 @@ function Entry({ e }: { e: CheckHistoryEntry }) {
                   {s.icon}
                   <div className="min-w-0">
                     <span className="font-mono text-slate-700 dark:text-slate-200">{r.id}</span>
-                    <span className="text-slate-400"> · {s.label}</span>
+                    <span className="text-slate-400"> · {s.label}{(r as Result & { agentReported?: boolean }).agentReported ? ', agent-reported' : ''}</span>
                     {r.detail && <p className="text-slate-500 dark:text-slate-400 break-words">{r.detail}</p>}
                   </div>
                 </li>

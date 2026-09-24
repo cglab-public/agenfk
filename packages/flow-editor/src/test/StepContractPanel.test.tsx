@@ -172,3 +172,59 @@ describe('StepContractPanel', () => {
     expect((screen.getByRole('checkbox', { name: /a person must approve/i }) as HTMLInputElement).disabled).toBe(true);
   });
 });
+
+/**
+ * efcacdeb (C4) — custom checks in the editor: a command the server runs, and
+ * an instruction the coding agent carries out. Several per step, by name.
+ */
+describe('custom checks in the editor', () => {
+  const plain = (checks?: unknown[]) => [s('TODO', 0, { isAnchor: true }), s('WORK', 1, checks ? { checks: checks as any } : {}), s('DONE', 2, { isAnchor: true })];
+  const LINT = { id: 'command-check', params: { name: 'lint', argv: ['npm', 'run', 'lint'] } };
+  const TYPES = { id: 'command-check', params: { name: 'types', argv: ['npx', 'tsc', '--noEmit'] } };
+  const lastChecks = (onChange: ReturnType<typeof vi.fn>) => onChange.mock.calls[onChange.mock.calls.length - 1][0].checks;
+
+  it('offers both custom checks in the gallery, even when one of that kind is already there', () => {
+    show(plain([LINT]), 1);
+    fireEvent.click(screen.getByRole('button', { name: /add a check/i }));
+    const gallery = screen.getByTestId('check-gallery');
+    expect(within(gallery).getByRole('button', { name: /Add A command the flow defines passes/ })).toBeTruthy();
+    expect(within(gallery).getByRole('button', { name: /Add The agent carried out an instruction/ })).toBeTruthy();
+  });
+
+  it('adds a command check as a named draft, a new name each time', () => {
+    const onChange = show(plain([LINT]), 1);
+    fireEvent.click(screen.getByRole('button', { name: /add a check/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Add A command the flow defines passes/ }));
+    const checks = lastChecks(onChange);
+    expect(checks).toHaveLength(2);
+    expect(checks[1]).toMatchObject({ id: 'command-check', params: { name: 'check-1' } });
+  });
+
+  it('edits the command one argument per line, sent as a list', () => {
+    const onChange = show(plain([LINT]), 1);
+    const argv = screen.getByRole('textbox', { name: /command.*lint/i }) as HTMLTextAreaElement;
+    expect(argv.value).toBe('npm\nrun\nlint');
+    fireEvent.change(argv, { target: { value: 'npm\nrun\nlint:ci\n' } });
+    expect(lastChecks(onChange)[0].params.argv).toEqual(['npm', 'run', 'lint:ci']);
+  });
+
+  it('keeps two command checks apart: editing or removing one leaves the other', () => {
+    const onChange = show(plain([LINT, TYPES]), 1);
+    fireEvent.change(screen.getByRole('textbox', { name: /name.*types/i }), { target: { value: 'tsc' } });
+    expect(lastChecks(onChange).map((c: any) => c.params.name)).toEqual(['lint', 'tsc']);
+    fireEvent.click(screen.getAllByRole('button', { name: /Remove A command the flow defines passes/ })[0]);
+    expect(lastChecks(onChange)).toEqual([TYPES]);
+  });
+
+  it("asks for a person's approval of the command with a real control", () => {
+    const onChange = show(plain([LINT]), 1);
+    fireEvent.change(screen.getByRole('combobox', { name: /approves it on the board/i }), { target: { value: 'person' } });
+    expect(lastChecks(onChange)[0].params).toMatchObject({ name: 'lint', approval: 'person' });
+  });
+
+  it("edits an agent check's instruction", () => {
+    const onChange = show(plain([{ id: 'agent-check', params: { name: 'docs', instruction: 'Check the README.' } }]), 1);
+    fireEvent.change(screen.getByRole('textbox', { name: /instruction.*docs/i }), { target: { value: 'Check the README and the CHANGELOG.' } });
+    expect(lastChecks(onChange)[0].params).toEqual({ name: 'docs', instruction: 'Check the README and the CHANGELOG.' });
+  });
+});

@@ -45,19 +45,29 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
   const titleOf = (id: string) => checkText(id, catalogue.get(id)?.description).title;
 
   const setChecks = (checks: StepCheckRef[]) => onChange({ checks });
-  const replace = (id: string, next: StepCheckRef | null) =>
-    setChecks(added.flatMap(c => (c.id === id ? (next ? [next] : []) : [c])));
-  /** A param at its default is left out, so the stored step stays minimal. */
-  const withParam = (ref: StepCheckRef, key: string, value: string): StepCheckRef => {
-    const def = catalogue.get(ref.id)?.params[key]?.default;
-    const params = { ...(ref.params ?? {}) };
-    if (value === def) delete params[key]; else params[key] = value;
+  /** A custom check (efcacdeb) is one of several of its kind on a step: it is known by its name too. */
+  const isCustom = (id: string) => catalogue.get(id)?.group === 'custom';
+  const keyOf = (ref: StepCheckRef) => (isCustom(ref.id) ? `${ref.id}:${String((ref.params as any)?.name ?? '')}` : ref.id);
+  const replace = (key: string, next: StepCheckRef | null) =>
+    setChecks(added.flatMap(c => (keyOf(c) === key ? (next ? [next] : []) : [c])));
+  /** A param at its default is left out, so the stored step stays minimal; a required one always stays. */
+  const withParam = (ref: StepCheckRef, key: string, value: string | string[]): StepCheckRef => {
+    const def = catalogue.get(ref.id)?.params[key];
+    const params: Record<string, unknown> = { ...(ref.params ?? {}) };
+    if (!def?.required && value === def?.default) delete params[key]; else params[key] = value;
     const { params: _drop, ...rest } = ref;
-    return Object.keys(params).length ? { ...rest, params } : rest;
+    return Object.keys(params).length ? { ...rest, params: params as any } : rest;
+  };
+  /** A new custom check: a draft with a name no other check of its kind on the step uses. */
+  const draft = (id: string): StepCheckRef => {
+    const taken = new Set(added.filter(a => a.id === id).map(a => String((a.params as any)?.name ?? '')));
+    let n = 1;
+    while (taken.has(`check-${n}`)) n++;
+    return { id, params: (id === 'command-check' ? { name: `check-${n}`, argv: [] } : { name: `check-${n}`, instruction: '' }) as any };
   };
 
   const gallery = contract.catalogue
-    .filter(c => !NOT_IN_GALLERY.has(c.id) && !c.unavailable && !added.some(a => a.id === c.id))
+    .filter(c => !NOT_IN_GALLERY.has(c.id) && !c.unavailable && (c.group === 'custom' || !added.some(a => a.id === c.id)))
     .filter(c => group === 'all' || c.group === group)
     .filter(c => {
       const q = query.trim().toLowerCase();
@@ -164,32 +174,58 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
           const warn = (ref.severity ?? byDefault) === 'warn';
           const setSeverity = (sev: 'block' | 'warn') => {
             const { severity: _s, ...rest } = ref;
-            replace(ref.id, sev === byDefault ? rest : { ...rest, severity: sev });
+            replace(keyOf(ref), sev === byDefault ? rest : { ...rest, severity: sev });
           };
+          const name = String((ref.params as any)?.name ?? '');
           return (
-            <div key={ref.id} className={clsx('space-y-2', chip)}>
+            <div key={keyOf(ref)} className={clsx('space-y-2', chip)}>
               <div className="flex items-start gap-2">
                 <div className="flex-1">
                   <div className="font-medium">{t.title}</div>
                   <div className="text-xs text-slate-500 dark:text-slate-400">Stops: {t.stops}</div>
                 </div>
                 {!disabled && (
-                  <button type="button" aria-label={`Remove ${t.title}`} onClick={() => replace(ref.id, null)}
+                  <button type="button" aria-label={`Remove ${t.title}`} onClick={() => replace(keyOf(ref), null)}
                     className="p-1 rounded text-slate-400 hover:text-red-500">
                     <Trash2 size={14} />
                   </button>
                 )}
               </div>
-              {Object.entries(d?.params ?? {}).map(([k, p]) => (
-                <label key={k} className="block text-xs">
-                  <span className="text-slate-500 dark:text-slate-400">{p.description}</span>
-                  <select aria-label={p.description} disabled={disabled} value={ref.params?.[k] ?? p.default}
-                    onChange={e => replace(ref.id, withParam(ref, k, e.target.value))}
-                    className="mt-1 block w-full rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1">
-                    {p.values.map(v => <option key={v} value={v}>{v}</option>)}
-                  </select>
-                </label>
-              ))}
+              {Object.entries(d?.params ?? {}).map(([k, p]) => {
+                const field = 'mt-1 block w-full rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1';
+                const value = (ref.params as any)?.[k];
+                const set = (v: string | string[]) => replace(keyOf(ref), withParam(ref, k, v));
+                // Controls by what the param holds (efcacdeb): a name, a command as a list, a text.
+                if (p.kind === 'name') return (
+                  <label key={k} className="block text-xs">
+                    <span className="text-slate-500 dark:text-slate-400">{p.description}</span>
+                    <input aria-label={`Name (${name})`} disabled={disabled} value={String(value ?? '')} onChange={e => set(e.target.value)} className={field} />
+                  </label>
+                );
+                if (p.kind === 'argv') return (
+                  <label key={k} className="block text-xs">
+                    <span className="text-slate-500 dark:text-slate-400">{p.description} One argument per line.</span>
+                    <textarea aria-label={`Command (${name}), one argument per line`} disabled={disabled} rows={3}
+                      value={Array.isArray(value) ? value.join('\n') : ''}
+                      onChange={e => set(e.target.value.split('\n').map(a => a.trim()).filter(Boolean))}
+                      className={clsx(field, 'font-mono')} />
+                  </label>
+                );
+                if (p.kind === 'text') return (
+                  <label key={k} className="block text-xs">
+                    <span className="text-slate-500 dark:text-slate-400">{p.description}</span>
+                    <textarea aria-label={`Instruction (${name})`} disabled={disabled} rows={3} value={String(value ?? '')} onChange={e => set(e.target.value)} className={field} />
+                  </label>
+                );
+                return (
+                  <label key={k} className="block text-xs">
+                    <span className="text-slate-500 dark:text-slate-400">{p.description}</span>
+                    <select aria-label={p.description} disabled={disabled} value={String(value ?? p.default)} onChange={e => set(e.target.value)} className={field}>
+                      {p.values.map(v => <option key={v} value={v}>{v}</option>)}
+                    </select>
+                  </label>
+                );
+              })}
               <div className="flex gap-1 text-xs" role="group" aria-label={`If ${t.title} fails`}>
                 <button type="button" disabled={disabled} aria-pressed={!warn} aria-label={`Block the step: ${t.title}`}
                   onClick={() => setSeverity('block')}
@@ -234,7 +270,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
                     <div className="font-medium">{t.title} <span className="text-xs font-normal text-slate-400">· {GROUP_TEXTS[c.group] ?? c.group}</span></div>
                     <div className="text-xs text-slate-500 dark:text-slate-400">Stops: {t.stops}</div>
                   </div>
-                  <button type="button" aria-label={`Add ${t.title}`} onClick={() => { setChecks([...added, { id: c.id }]); setBrowsing(false); setQuery(''); }}
+                  <button type="button" aria-label={`Add ${t.title}`} onClick={() => { setChecks([...added, c.group === 'custom' ? draft(c.id) : { id: c.id }]); setBrowsing(false); setQuery(''); }}
                     className="text-xs font-semibold px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700">
                     Add
                   </button>

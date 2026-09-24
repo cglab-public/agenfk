@@ -57,7 +57,7 @@ export interface FlowContract {
     group: 'git' | 'tests' | 'review' | 'approvals' | string;
     description: string;
     defaultSeverity: 'block' | 'warn';
-    params: Record<string, { values: readonly string[]; default: string; description: string }>;
+    params: Record<string, { values: readonly string[]; default: string; description: string; kind?: 'enum' | 'name' | 'argv' | 'text'; required?: boolean }>;
     needsCapture: boolean;
     unavailable?: string;
   }>;
