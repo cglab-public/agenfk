@@ -2553,6 +2553,26 @@ app.get("/items/:id/gates", asyncHandler(async (req: any, res: any) => {
   });
 }));
 
+/** Every approval and override on a card and its descendants, for the PR body (CGLAB-382). */
+app.get("/items/:id/gate-events", asyncHandler(async (req: any, res: any) => {
+  const root: any = await storage.getItem(req.params.id);
+  if (!root) return res.status(404).json({ error: 'Item not found' });
+  const events: any[] = [];
+  const queue = [root];
+  for (let seen = 0; queue.length && seen < 5000; seen++) {
+    const card = queue.shift();
+    for (const r of card.stepRecords ?? []) {
+      if (r?.kind !== 'approval' && r?.kind !== 'override') continue;
+      events.push({
+        itemId: card.id, title: card.title, step: r.step, kind: r.kind, by: r.by, at: r.at,
+        ...(r.note ? { note: r.note } : {}), ...(r.check ? { check: r.check, reason: r.reason } : {}),
+      });
+    }
+    queue.push(...((await storage.listItems({ parentId: card.id } as any)) as any[]));
+  }
+  res.json(events);
+}));
+
 app.post("/items/:id/approvals", asyncHandler(async (req: any, res: any) => {
   if (refuseUnlessBoard(req, res)) return;
   const target = await gateTarget(req, res);

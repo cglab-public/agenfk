@@ -16,6 +16,7 @@ import path from 'path';
 import os from 'os';
 import { stageJsonMigration } from './db-migration.js';
 import { followValidateRun } from './verifyRun.js';
+import { buildPrBody, type GateEvent } from './humanGates.js';
 import { buildUiOpenUrl, resolveDashboardUrl } from './uiUrl.js';
 import { registerHubCommands } from './commands/hub.js';
 import { toonEncode } from './toon.js';
@@ -4274,7 +4275,13 @@ prCmd
       }
       const prTitle = options.title || item.title;
       const args = ['pr', 'create', '--title', prTitle];
-      if (options.body) { args.push('--body', options.body); } else { args.push('--body', item.description || ''); }
+      // A person's approvals and overrides go on the PR, so a reviewer sees what was let through (CGLAB-382).
+      let gateEvents: GateEvent[] = [];
+      try { gateEvents = (await axios.get(`${API_URL}/items/${itemId}/gate-events`)).data ?? []; } catch (e: any) {
+        // An older server has no such route: say so rather than drop the section silently.
+        console.warn(chalk.yellow(`⚠️  Could not read the card's approvals and overrides (${e?.response?.status ?? e?.message}); the PR body will not list them.`));
+      }
+      args.push('--body', buildPrBody(options.body || item.description || '', gateEvents));
       if (options.draft) args.push('--draft');
 
       console.log(chalk.blue(`Creating PR: "${prTitle}"...`));

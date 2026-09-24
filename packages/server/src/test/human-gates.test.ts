@@ -262,3 +262,25 @@ describe('CGLAB-382: GET /items/:id/gates (what the board shows)', () => {
     expect((await agent().get('/items/nope/gates')).status).toBe(404);
   });
 });
+
+describe('CGLAB-382: GET /items/:id/gate-events (what the PR shows)', () => {
+  it("lists approvals and overrides of the card and its descendants", async () => {
+    const parent = await setup('WORK');
+    const p = await item(parent);
+    const c = await agent().post('/items').send({ type: 'TASK', title: 'child card', projectId: p.projectId, parentId: parent });
+    await storage.updateItem(c.body.id, { status: 'PLAN' } as any);
+    await approve(c.body.id, { note: 'go' });
+    await validate(parent);
+    await override(parent, { checkId: 'jira-key-valid', reason: 'spike card' });
+    const res = await agent().get(`/items/${parent}/gate-events`);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(expect.arrayContaining([
+      expect.objectContaining({ itemId: parent, kind: 'override', check: 'jira-key-valid', reason: 'spike card', step: 'WORK' }),
+      expect.objectContaining({ itemId: c.body.id, title: 'child card', kind: 'approval', note: 'go', step: 'PLAN' }),
+    ]));
+  });
+
+  it('404s for a card that does not exist', async () => {
+    expect((await agent().get('/items/nope/gate-events')).status).toBe(404);
+  });
+});
