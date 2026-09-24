@@ -37,6 +37,7 @@ vi.mock('../api', () => ({
     listItems: vi.fn(() => Promise.resolve([])),
     listAgentRuns: vi.fn(() => Promise.resolve([])),
     listRunEvents: vi.fn(() => Promise.resolve([])),
+    getGates: vi.fn(() => Promise.resolve({ step: 'TODO', approvalRequired: false, approvals: [], overrides: {}, lastChecks: null })),
   }
 }));
 

@@ -1,6 +1,28 @@
 import axios from 'axios';
 import { AgEnFKItem, ItemType, Status, Flow, RegistryFlow } from './types'; // We need to copy types or import from core if possible, but symlinking in Vite monorepo can be tricky without proper setup.
 import { API_URL } from './apiUrl';
+
+/** One check's verdict on a verify (CGLAB-380), as the server records it. */
+export interface StepCheckResult {
+  id: string;
+  step: string;
+  source: 'universal' | 'role' | 'flow';
+  severity: 'block' | 'warn';
+  params: Record<string, string>;
+  outcome: 'pass' | 'fail' | 'unavailable' | 'n/a' | 'deferred';
+  detail: string;
+  blocking: boolean;
+  overridden?: GateOverride;
+}
+export interface GateOverride { id: string; by: string; at: string; reason: string }
+/** The human gates of a card's current step (CGLAB-382). */
+export interface StepGates {
+  step: string;
+  approvalRequired: boolean;
+  approvals: Array<{ id?: string; by: string; at: string; note?: string }>;
+  overrides: Record<string, GateOverride>;
+  lastChecks: { step: string; at: string; blocked: boolean; results: StepCheckResult[] } | null;
+}
 // For MVP, we'll duplicate the types interface or use `any`.
 // Better: configure vite to aliase @agenfk/core to the local package.
 
@@ -295,6 +317,21 @@ export const api = {
       console.error('API Error updating item', id, e);
       throw e;
     }
+  },
+  /** The card's current step: go-ahead needed, approvals, overrides, last checks (CGLAB-382). */
+  getGates: async (id: string): Promise<StepGates> => {
+    const { data } = await axios.get(`${API_URL}/items/${id}/gates`);
+    return data;
+  },
+  /** A person's go-ahead for the card's current step. The board header is what the server accepts. */
+  approveStep: async (id: string, body: { step: string; note?: string }) => {
+    const { data } = await axios.post(`${API_URL}/items/${id}/approvals`, body, { headers: { 'x-agenfk-ui': '1' } });
+    return data;
+  },
+  /** A person's pass of one blocked check, with the reason they wrote. */
+  overrideCheck: async (id: string, body: { step: string; checkId: string; reason: string }) => {
+    const { data } = await axios.post(`${API_URL}/items/${id}/overrides`, body, { headers: { 'x-agenfk-ui': '1' } });
+    return data;
   },
   bulkUpdateItems: async (items: { id: string; updates: Partial<AgEnFKItem> }[]) => {
     try {

@@ -14,6 +14,7 @@ import { useSocketEvent } from '../SocketContext';
 import { stripAnsi, calculateCost, formatCost, calculateCycleTimeMs, formatDuration } from '../utils';
 import { api } from '../api';
 import { RunsPanel, type AgentRun } from './RunsPanel';
+import { StepChecksPanel } from './StepChecksPanel';
 
 interface CardDetailModalProps {
   item: AgEnFKItem;
@@ -438,6 +439,8 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                   </div>
                 )}
               </div>
+
+              {!isNew && <StepChecksPanel itemId={item.id} />}
 
               <div>
                 <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3">Description</h4>

@@ -2530,6 +2530,29 @@ async function appendGateRecord(item: any, rec: any, comment: string) {
   io.emit('items_updated');
 }
 
+/**
+ * What the board shows for the card's current step: whether it waits for a
+ * go-ahead, the approvals and overrides given on it, and the last verify's
+ * checks - only when they were run on THIS step, so a previous step's results
+ * never pose as the current one's.
+ */
+app.get("/items/:id/gates", asyncHandler(async (req: any, res: any) => {
+  const item: any = await storage.getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: 'Item not found' });
+  const project: any = await storage.getProject(item.projectId);
+  const flow = getActiveFlow(project?.flowId, await storage.listFlows());
+  const here = (item.stepRecords ?? []).filter((r: any) => r?.step === item.status);
+  const overrides: Record<string, any> = {};
+  for (const r of here) if (r.kind === 'override' && typeof r.check === 'string') overrides[r.check] = { id: r.id, by: r.by, at: r.at, reason: r.reason };
+  res.json({
+    step: item.status,
+    approvalRequired: resolveStepChecks(flow.steps, item.status).some(c => c.id === 'human-approval' && c.applicable),
+    approvals: here.filter((r: any) => r.kind === 'approval').map((r: any) => ({ id: r.id, by: r.by, at: r.at, ...(r.note ? { note: r.note } : {}) })),
+    overrides,
+    lastChecks: item.lastChecks?.step === item.status ? item.lastChecks : null,
+  });
+}));
+
 app.post("/items/:id/approvals", asyncHandler(async (req: any, res: any) => {
   if (refuseUnlessBoard(req, res)) return;
   const target = await gateTarget(req, res);

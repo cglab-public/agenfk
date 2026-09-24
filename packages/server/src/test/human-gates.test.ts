@@ -224,3 +224,41 @@ describe('CGLAB-382: override with a reason', () => {
     expect((await validate(id)).status).toBe(422);
   });
 });
+
+describe('CGLAB-382: GET /items/:id/gates (what the board shows)', () => {
+  const gates = async (id: string) => (await agent().get(`/items/${id}/gates`)).body;
+
+  it('says whether the current step waits for a go-ahead, and records it once given', async () => {
+    const id = await setup('PLAN');
+    expect(await gates(id)).toMatchObject({ step: 'PLAN', approvalRequired: true, approvals: [] });
+    await approve(id, { note: 'go' });
+    const g = await gates(id);
+    expect(g.approvals).toHaveLength(1);
+    expect(g.approvals[0]).toMatchObject({ note: 'go', by: 'board' });
+  });
+
+  it("carries the last verify's checks for the current step, and each override", async () => {
+    const id = await setup('WORK');
+    await validate(id);
+    let g = await gates(id);
+    expect(g.approvalRequired).toBe(false);
+    expect(byId(g.lastChecks.results, 'jira-key-valid')).toMatchObject({ blocking: true });
+    await override(id, { checkId: 'jira-key-valid', reason: 'spike card, no JIRA issue' });
+    g = await gates(id);
+    expect(g.overrides['jira-key-valid']).toMatchObject({ reason: 'spike card, no JIRA issue' });
+  });
+
+  it("does not show a previous step's checks as the current step's", async () => {
+    const id = await setup('PLAN');
+    await validate(id);
+    await approve(id);
+    await validate(id);
+    const g = await gates(id);
+    expect(g.step).toBe('WORK');
+    expect(g.lastChecks).toBeNull();
+  });
+
+  it('404s for a card that does not exist', async () => {
+    expect((await agent().get('/items/nope/gates')).status).toBe(404);
+  });
+});
