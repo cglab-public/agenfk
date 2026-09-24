@@ -112,6 +112,23 @@ describe('StepContractPanel', () => {
     expect(onChange).toHaveBeenLastCalledWith({ checks: [{ id: 'jira-key-valid' }] });
   });
 
+  it('the preview tells the author the agent must stage its work on a step that commits', () => {
+    show(flow({ autoCommit: true, requireCommit: true } as Partial<FlowStep>), 1);
+    const preview = screen.getByTestId('contract-preview');
+    expect(preview.textContent).not.toMatch(/stage/i);
+    cleanup();
+    const steps = [s('TODO', 0, { isAnchor: true }), s('SPECS', 1, { role: 'test-authoring', autoCommit: true, requireCommit: true } as Partial<FlowStep>), s('BUILD', 2, { role: 'coding' }), s('DONE', 3, { isAnchor: true, role: 'closing' })];
+    show(steps, 1);
+    const text = screen.getByTestId('contract-preview').textContent ?? '';
+    expect(text).toMatch(/Stage its work before verify: this step commits the card's staged, claimed files when it leaves/);
+    expect(text).toMatch(/refuses to move on without that commit/);
+  });
+
+  it('says nothing about staging on the step whose leaving ends the flow, where no step commit runs (review)', () => {
+    show(flow({ autoCommit: true } as Partial<FlowStep>), 2);
+    expect(screen.getByTestId('contract-preview').textContent).not.toMatch(/stage/i);
+  });
+
   it('previews what an agent must do to leave the step', () => {
     show(flow({ checks: [{ id: 'jira-key-valid' }] }));
     const p = screen.getByTestId('contract-preview').textContent ?? '';

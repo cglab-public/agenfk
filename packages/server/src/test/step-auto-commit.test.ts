@@ -209,5 +209,33 @@ describe('S10 review: the step commit happens only when the card really leaves',
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.message).toMatch(/step commit FAILED/);
   });
+
+  it('the reply that lands a card on a step that commits on leave says so', async () => {
+    const f = await agent().post('/flows').send({ name: `sc-${++seq}`, steps: [
+      s('TODO', 0, { isAnchor: true }), s('PLAN', 1), s('WORK', 2, { autoCommit: true }), s('CHECK', 3), s('DONE', 4, { isAnchor: true }),
+    ] });
+    expect(f.status, JSON.stringify(f.body)).toBe(201);
+    const p = await agent().post('/projects').send({ name: `sc-${++seq}` });
+    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo(), verifyCommand: 'exit 0' } as never);
+    const id = (await agent().post('/items').send({ type: 'TASK', title: `Card ${++seq}`, projectId: p.body.id })).body.id;
+    await storage.updateItem(id, { status: 'PLAN' } as any);
+    const res = await validate(id);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.message).toMatch(/WORK commits the card's staged, claimed files when it leaves/);
+  });
+
+  it('the TODO move into a first step that commits on leave says so, and says when it insists', async () => {
+    const f = await agent().post('/flows').send({ name: `sc-${++seq}`, steps: [
+      s('TODO', 0, { isAnchor: true }), s('PLAN', 1, { autoCommit: true, requireCommit: true }), s('WORK', 2), s('DONE', 3, { isAnchor: true }),
+    ] });
+    expect(f.status, JSON.stringify(f.body)).toBe(201);
+    const p = await agent().post('/projects').send({ name: `sc-${++seq}` });
+    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo(), verifyCommand: 'exit 0' } as never);
+    const id = (await agent().post('/items').send({ type: 'TASK', title: `Card ${++seq}`, projectId: p.body.id })).body.id;
+    const res = await validate(id);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.message).toMatch(/PLAN commits the card's staged, claimed files when it leaves/);
+    expect(res.body.message).toMatch(/refuses to move on without that commit/);
+  });
 });
 

@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest';
 import { FLOW_STEP_FIELDS, normalizeFlowSteps } from '../utils';
 import { flowChecksErrors, mergeStepContracts } from '../flowChecks';
 import { stepContractFields } from '../registryFlow';
+import { describeFlowContract } from '../flowContract';
 
 const step = (extra: Record<string, unknown>) => ({ id: 'b', name: 'BUILD', label: 'Build', order: 1, ...extra });
 const flow = (extra: Record<string, unknown>) => [
@@ -47,4 +48,16 @@ describe('step auto commit fields', () => {
     expect(flowChecksErrors(last).join(' ')).toMatch(/BUILD: auto commit has no effect here/);
     expect(flowChecksErrors(flow({ autoCommit: true }))).toEqual([]);
   });
+
+  it('refuses them where the next step is DONE even with a special step after it (review)', () => {
+    const f = [{ id: 'a', name: 'TODO', label: 'To Do', order: 0, isAnchor: true }, step({ autoCommit: true }),
+      { id: 'c', name: 'DONE', label: 'Done', order: 2, isAnchor: true }, { id: 'x', name: 'ARCHIVED', label: 'Archived', order: 3, isSpecial: true }];
+    expect(flowChecksErrors(f).join(' ')).toMatch(/BUILD: auto commit has no effect here/);
+  });
+  it('the flow contract says which steps commit on leave', () => {
+    const c = describeFlowContract(flow({ autoCommit: true, requireCommit: true }));
+    expect(c.steps.find(x => x.name === 'BUILD')!.commitsOnLeave).toBe('required');
+    expect(c.steps.find(x => x.name === 'TEST')!.commitsOnLeave).toBeNull();
+  });
 });
+

@@ -9,7 +9,7 @@ import { parseActor, parseFindings, readTranscriptIdentity } from './reviewRecor
 import * as passkeys from './passkeys';
 import { evaluateChecks, judgeReview, formatCheckResults, needsCapture, needsEntryRecord, type CheckResult } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps } from "@agenfk/core";
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -6046,9 +6046,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
    * the flow: the close commit covers that. A missing commit is a note,
    * unless the step requires one, which answers 422 and moves nothing.
    */
-  const commitOnLeave = async (r0: any, endsTheFlow: boolean): Promise<{ res: any; refused?: false } | { refused: true }> => {
-    const leaving: any = currentFlowStep.step;
-    if (leaving.autoCommit !== true || endsTheFlow) return { res: r0 };
+  const commitOnLeave = async (r0: any): Promise<{ res: any; refused?: false } | { refused: true }> => {
+    const mode = stepCommitsOnLeave(sorted as any, item.status);
+    if (!mode) return { res: r0 };
     const stepMessage = `step(${item.status}): ${item.title} [${item.id}]`;
     const r = await autoGitCommit(item as any, (project as any)?.projectRoot, { message: stepMessage });
     const SHOWN = 20;
@@ -6064,7 +6064,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       ? `nothing was staged for this card, so the work of ${item.status} is not committed. Stage the files this card changed before leaving a step that commits.`
       : r.outcome === 'declined' ? `the server made NO step commit: ${r.detail}.`
       : `the step commit FAILED: ${r.detail}. Nothing was committed.`;
-    if (leaving.requireCommit === true) {
+    if (mode === 'required') {
       r0.status(422).json({ status: item.status, message: `❌ This step requires a commit of the card's work when it leaves, and none was made: ${why}${loose}${staysOn(item.status)}` });
       return { refused: true };
     }
@@ -6082,7 +6082,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const exitCriteria = (currentFlowStep.step as any).exitCriteria as string | undefined;
     const exitNote = exitCriteria ? `\n**Exit criteria acknowledged**: ${exitCriteria}` : '';
     const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED\n\n**Step**: ${item.status} → ${codingStep.name}${exitNote}`, timestamp: new Date() };
-    const leftTodo = await commitOnLeave(res, false);
+    const leftTodo = await commitOnLeave(res);
     if (leftTodo.refused) return;
     res = leftTodo.res;
     const movedToCoding = await storage.updateItem(itemId, { status: codingStep.name as Status, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment] } as any);
@@ -6091,7 +6091,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     await ensureWorktreeForItem(movedToCoding, true);
     io.emit('items_updated');
     const codingStepCriteria = (codingStep as any).exitCriteria as string | undefined;
-    const mandatoryNote = codingStepCriteria ? criteriaBanner(codingStep.name, codingStepCriteria) : '';
+    const codingCommitNote = commitOnLeaveNote(codingStep.name, stepCommitsOnLeave(sorted as any, codingStep.name));
+    const mandatoryNote = (codingStepCriteria ? criteriaBanner(codingStep.name, codingStepCriteria) : '') + (codingCommitNote ? `\n\n${codingCommitNote}` : '');
     return res.json({ status: codingStep.name, message: `✅ Validation Passed!\n\nItem moved to ${codingStep.name}.${mandatoryNote}${nowOn(codingStep.name)}` });
   }
 
@@ -6108,9 +6109,10 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   const failureStatus = item.status as Status;
   // Exit criteria of the step the item is moving INTO — returned as mandatory agent instructions
   const nextStepCriteria = (nextStep as any)?.exitCriteria as string | undefined;
-  const mandatoryInstructions = (nextStatus !== Status.DONE && nextStepCriteria)
+  const nextCommitNote = commitOnLeaveNote(nextStatus, stepCommitsOnLeave(sorted as any, nextStatus));
+  const mandatoryInstructions = ((nextStatus !== Status.DONE && nextStepCriteria)
     ? criteriaBanner(nextStatus, nextStepCriteria)
-    : '';
+    : '') + (nextCommitNote ? `\n\n${nextCommitNote}` : '');
   const branchRef = (item as any).branchName || 'HEAD';
   /**
   /**
@@ -6279,7 +6281,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       });
       if (passedSibling) {
         const sibComment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).`, timestamp: new Date() };
-        const left = await commitOnLeave(res, false);
+        const left = await commitOnLeave(res);
         if (left.refused) return;
         res = left.res;
         const updated = await storage.updateItem(itemId, { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), sibComment], ...(isExitStep ? { failureCount: 0 } : {}) } as any);
@@ -6298,7 +6300,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   if (!resolvedCommand) {
     const exitNote = exitCriteria ? `\n**Exit criteria acknowledged**: ${exitCriteria}` : '';
     const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED\n\n**Step**: ${item.status} → ${nextStatus}${exitNote}`, timestamp: new Date() };
-    const left = await commitOnLeave(res, endsFlow);
+    const left = await commitOnLeave(res);
     if (left.refused) return;
     res = left.res;
     const updated = await storage.updateItem(itemId, { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment] } as any);
@@ -6445,7 +6447,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   }];
 
     if (passed) {
-      const left = await commitOnLeave(res2, endsFlow);
+      const left = await commitOnLeave(res2);
       if (left.refused) return;
       res2 = left.res;
       const updates: any = { status: nextStatus, comments, stepRecords: withExitRecord() };

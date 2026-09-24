@@ -75,6 +75,14 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
     return c.id === 'human-approval' && c.params.signature === 'passkey' ? `${must}, signed with a passkey` : must;
   }).filter(Boolean);
   const warns = preview.filter(c => c.severity === 'warn').map(c => titleOf(c.id));
+  // The same rule the gatekeeper and verify give the agent (CGLAB-388), from
+  // the server's contract: it knows where the move ends the flow and the
+  // close commit takes the work instead.
+  const commits = stepContract?.commitsOnLeave;
+  if (commits) {
+    musts.push("Stage its work before verify: this step commits the card's staged, claimed files when it leaves"
+      + (commits === 'required' ? ', and refuses to move on without that commit' : ''));
+  }
 
   const section = 'text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest';
   const chip = 'rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2';

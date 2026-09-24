@@ -15,6 +15,7 @@
  *
  * Pure data and functions: the engine that runs the checks lives in the server.
  */
+import { leavingEndsFlow } from './gatekeeper';
 
 /** One vocabulary with the gatekeeper's advisory `--role`, extended. */
 export const STEP_ROLES = ['planning', 'test-authoring', 'coding', 'refactoring', 'review', 'testing', 'closing'] as const;
@@ -281,7 +282,7 @@ export function flowChecksErrors(steps: unknown): string[] {
     }
     // Leaving this step ends the flow, and the close commit takes the card's
     // work: a step commit here would never run, so the flag would do nothing.
-    if (endsHere(i) && (flags.autoCommit === true || flags.requireCommit === true)) {
+    if ((endsHere(i) || leavingEndsFlow(list as Array<{ name: string; isAnchor?: boolean; isSpecial?: boolean }>, i)) && (flags.autoCommit === true || flags.requireCommit === true)) {
       errors.push(`Step ${name}: auto commit has no effect here: leaving this step ends the flow, and the close commit covers its work. Turn it off, or set it on an earlier step.`);
     }
     if (s.role !== undefined && s.role !== null && !isRole(s.role)) {

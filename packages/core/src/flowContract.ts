@@ -6,6 +6,7 @@
  * functions that validate a flow on save and run its checks on verify, so
  * what the editor shows cannot drift from what is enforced.
  */
+import { stepCommitsOnLeave } from './gatekeeper';
 import {
   CHECK_CATALOGUE, ROLE_BUILTINS, STEP_ROLES, flowChecksErrors, resolveStepChecks,
   type CheckParamDef, type CheckSeverity, type RecordName, type ResolvedCheck, type StepCheckRef, type StepRole,
@@ -21,7 +22,7 @@ export interface FlowContract {
    * terminal step is never left (`terminal`). `consumes`: the records its
    * applicable checks read from earlier steps.
    */
-  steps: Array<{ name: string; role: string | null; checks: ResolvedCheck[]; onLeave: ResolvedCheck[]; terminal: boolean; produces: RecordName[]; consumes: RecordName[] }>;
+  steps: Array<{ name: string; role: string | null; checks: ResolvedCheck[]; onLeave: ResolvedCheck[]; terminal: boolean; produces: RecordName[]; consumes: RecordName[]; commitsOnLeave: 'auto' | 'required' | null }>;
   roles: Array<{ id: StepRole; builtins: StepCheckRef[] }>;
   catalogue: Array<{ id: string; group: string; description: string; defaultSeverity: CheckSeverity; params: Record<string, CheckParamDef>; needsCapture: boolean; unavailable?: string }>;
 }
@@ -43,7 +44,9 @@ export function describeFlowContract(steps: unknown): FlowContract {
     const checks = resolveStepChecks(list, name).filter(c => c.step === name || c.source === 'universal');
     const produces = [...new Set(checks.filter(c => c.applicable).flatMap(c => CHECK_CATALOGUE[c.id]?.produces(c.params) ?? []))];
     const consumes = [...new Set(checks.filter(c => c.applicable).flatMap(c => CHECK_CATALOGUE[c.id]?.requires(c.params) ?? []).filter(r => r !== 'stepEntryTests'))];
-    return { name, role: typeof s.role === 'string' ? s.role : null, checks, onLeave, terminal, produces, consumes };
+    // CGLAB-388: the same answer the server's commit gives.
+    const commitsOnLeave = stepCommitsOnLeave(list as any, name) ?? null;
+    return { name, role: typeof s.role === 'string' ? s.role : null, checks, onLeave, terminal, produces, consumes, commitsOnLeave };
   });
   return {
     valid: errors.length === 0,

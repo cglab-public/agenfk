@@ -14,7 +14,7 @@ import { gateOnClaims } from './claimGate';
 export interface GatekeeperFlow {
   /** Flow name, echoed back so the caller can see which flow is governing. */
   name?: string;
-  steps: Array<{ name: string; order: number; isAnchor?: boolean; isSpecial?: boolean; exitCriteria?: string }>;
+  steps: Array<{ name: string; order: number; isAnchor?: boolean; isSpecial?: boolean; exitCriteria?: string; autoCommit?: boolean | null; requireCommit?: boolean | null }>;
 }
 
 export interface GatekeeperItem {
@@ -114,6 +114,8 @@ export function detectCrossProjectItem<T extends { id: string; projectId?: strin
 export interface GatekeeperDecision {
   authorized: boolean;
   message: string;
+  /** The current step commits the card's work when it leaves (CGLAB-388). */
+  commitOnLeave?: 'auto' | 'required';
   task: GatekeeperItem | null;
   /** True when authorization failed because multiple tasks were active. */
   ambiguous?: boolean;
@@ -145,6 +147,53 @@ export interface StepContract {
   activeFlow?: { name?: string; steps: string[] };
   codingStep?: string;
   finalStep?: string;
+  /** The step commits the card's work when it leaves (CGLAB-388), and whether it insists. */
+  commitOnLeave?: 'auto' | 'required';
+}
+
+/**
+ * What an agent is told about a step that commits on leave (CGLAB-388): the
+ * gatekeeper and verify's reply both say it, so the agent stages first rather
+ * than learning from a note after it moved on.
+ */
+export function commitOnLeaveNote(step: string, mode: 'auto' | 'required' | undefined): string {
+  if (!mode) return '';
+  return `📌 ${step} commits the card's staged, claimed files when it leaves: stage your work before you advance the card.`
+    + (mode === 'required' ? ' It refuses to move on without that commit.' : '');
+}
+
+/**
+ * Does leaving the step at `index` of these ORDERED steps end the flow? The
+ * server's own rule for the close commit (verify's endsFlow): no next step, a
+ * next step named DONE, or a next step that is the last and a boundary.
+ */
+export function leavingEndsFlow(sorted: ReadonlyArray<{ name: string; isAnchor?: boolean; isSpecial?: boolean }>, index: number): boolean {
+  const next = sorted[index + 1];
+  const exit = sorted[sorted.length - 1];
+  return !next || next.name === 'DONE' || (next.name === exit?.name && isBoundaryStep(next));
+}
+
+/**
+ * THE answer to "does leaving this step make a step commit?" (CGLAB-388): its
+ * flags, except on the move that ends the flow, where the close commit takes
+ * the work. The server's commit, the gatekeeper, verify's hints, flow
+ * validation and the editor all ask this, so none of them can promise a
+ * commit the server does not make.
+ */
+export function stepCommitsOnLeave(
+  steps: ReadonlyArray<{ name: string; order: number; isAnchor?: boolean; isSpecial?: boolean; autoCommit?: unknown; requireCommit?: unknown }>,
+  name: string,
+): 'auto' | 'required' | undefined {
+  const sorted = [...steps].sort((a, b) => a.order - b.order);
+  const i = sorted.findIndex(s => s.name === name);
+  if (i === -1 || leavingEndsFlow(sorted, i)) return undefined;
+  return commitModeOf(sorted[i]);
+}
+
+/** A step's commit-on-leave mode, from its flags alone. */
+export function commitModeOf(step: { autoCommit?: unknown; requireCommit?: unknown } | undefined): 'auto' | 'required' | undefined {
+  if (step?.autoCommit !== true) return undefined;
+  return step.requireCommit === true ? 'required' : 'auto';
 }
 
 /**
@@ -187,7 +236,9 @@ export function resolveStepContract(
   }
 
   const exitCriteria = currentStep.exitCriteria?.trim() || undefined;
+  const commitOnLeave = stepCommitsOnLeave(sorted, currentStep.name);
   return {
+    ...(commitOnLeave ? { commitOnLeave } : {}),
     exitCriteria,
     criteriaState: exitCriteria ? 'present' : 'none-defined',
     activeFlow,
@@ -230,7 +281,8 @@ export function renderStepContract(c: StepContract, status: string, advanceHint:
       + (c.finalStep ? `\nFinal step (omit the command here; the project's verifyCommand runs and closes the item): ${c.finalStep}` : '')
     : '';
 
-  return `${head}${steps}`;
+  const commit = commitOnLeaveNote(status, c.commitOnLeave);
+  return `${head}${commit ? `\n${commit}` : ''}${steps}`;
 }
 
 export interface GatekeeperDecisionOptions {
@@ -342,6 +394,7 @@ export function decideGatekeeperAuthorization(
     activeFlow: contract.activeFlow,
     codingStep: contract.codingStep,
     finalStep: contract.finalStep,
+    ...(contract.commitOnLeave ? { commitOnLeave: contract.commitOnLeave } : {}),
     message: `✅ AUTHORIZED (${role.toUpperCase()}).\n\n${task.type}: [${task.id.substring(0, 8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"`
       + renderStepContract(contract, task.status, advanceHint),
   };
