@@ -131,6 +131,16 @@ function isTestPath(file: string, extra: readonly string[]): boolean {
   });
 }
 
+/** The tests this step added: named now, not at the step's entry. */
+function newTests(ctx: EngineContext): { added: ReportedTest[]; now: ReportedTest[]; capture: CaptureRecord } | Verdict {
+  const now = currentTests(ctx);
+  if (isVerdict(now)) return now;
+  const before = entryTests(ctx);
+  if (isVerdict(before)) return before;
+  const was = new Set(before.map(t => t.name));
+  return { added: now.tests.filter(t => !was.has(t.name)), now: now.tests, capture: now.capture };
+}
+
 const isVerdict = (x: unknown): x is Verdict => !!x && typeof x === 'object' && 'outcome' in (x as any);
 
 export const EVALUATORS: Record<string, Evaluator> = {
@@ -188,6 +198,109 @@ export const EVALUATORS: Record<string, Evaluator> = {
     return other.length
       ? { outcome: 'fail', detail: `non-test files changed: ${list(other)}. This step writes tests only; the code comes in the next step.` }
       : { outcome: 'pass', detail: `${changed.length} test file(s) changed` };
+  },
+
+  'no-broken-test-files': ctx => {
+    const now = currentTests(ctx);
+    if (isVerdict(now)) return now;
+    const broken = now.capture.brokenFiles ?? [];
+    return broken.length
+      ? { outcome: 'fail', detail: `${broken.length} test file(s) failed to load, so their tests have no names: ${list(broken.map(b => `${b.file}: ${b.message}`))}` }
+      : { outcome: 'pass', detail: 'every test file loads' };
+  },
+
+  'new-tests-exist': ctx => {
+    const d = newTests(ctx);
+    if (isVerdict(d)) return d;
+    return d.added.length ? { outcome: 'pass', detail: `${d.added.length} new test(s)` } : { outcome: 'fail', detail: 'no test was added in this step' };
+  },
+
+  'some-new-test-red': ctx => {
+    const d = newTests(ctx);
+    if (isVerdict(d)) return d;
+    const red = d.added.filter(t => t.status === 'failed').map(t => t.name);
+    if (!red.length) return { outcome: 'fail', detail: d.added.length ? `none of the ${d.added.length} new test(s) fails: a test that passes before the code exists proves nothing about it` : 'no new test was added' };
+    return {
+      outcome: 'pass',
+      detail: `${red.length} of ${d.added.length} new test(s) red: ${list(red)}`,
+      produces: { redSet: red, testSurface: d.capture.surface?.files ?? {}, authoredTests: d.now.map(t => t.name) },
+    };
+  },
+
+  'new-tests-born-green': ctx => {
+    const d = newTests(ctx);
+    if (isVerdict(d)) return d;
+    const green = d.added.filter(t => t.status === 'passed').map(t => t.name);
+    return green.length
+      ? { outcome: 'fail', detail: `already passing, so left out of the red set: ${list(green)}` }
+      : { outcome: 'pass', detail: 'none' };
+  },
+
+  'red-is-assertion': ctx => {
+    const d = newTests(ctx);
+    if (isVerdict(d)) return d;
+    const errored = d.added.filter(t => t.status === 'failed' && t.failure === 'error').map(t => t.name);
+    return errored.length
+      ? { outcome: 'fail', detail: `red because of an error, not a failed assertion: ${list(errored)}` }
+      : { outcome: 'pass', detail: 'every red test fails on an assertion' };
+  },
+
+  'existing-tests-still-green': ctx => {
+    const now = currentTests(ctx);
+    if (isVerdict(now)) return now;
+    const before = entryTests(ctx);
+    if (isVerdict(before)) return before;
+    const status = new Map(now.tests.map(t => [t.name, t.status]));
+    const broke = before.filter(t => t.status === 'passed' && status.get(t.name) !== 'passed').map(t => `${t.name} [${status.get(t.name) ?? 'missing'}]`);
+    return broke.length ? { outcome: 'fail', detail: `passed when the step began, not now: ${list(broke)}` } : { outcome: 'pass', detail: 'ok' };
+  },
+
+  'red-set-passes-by-name': ctx => {
+    const now = currentTests(ctx);
+    if (isVerdict(now)) return now;
+    const red = ctx.records.redSet;
+    if (!Array.isArray(red)) return { outcome: 'unavailable', detail: "no 'redSet' record: the step that writes tests has not recorded one" };
+    const status = new Map(now.tests.map(t => [t.name, t.status]));
+    const open = red.map(String).filter(n => status.get(n) !== 'passed').map(n => `${n} [${status.get(n) ?? 'missing'}]`);
+    return open.length
+      ? { outcome: 'fail', detail: `not passing yet: ${list(open)}` }
+      : { outcome: 'pass', detail: `${red.length} red test(s) now pass` };
+  },
+
+  'test-surface-frozen': (ctx, p) => {
+    const now = currentTests(ctx);
+    if (isVerdict(now)) return now;
+    let base: Record<string, string>;
+    if (p.since === 'step-entry') {
+      const e = ctx.entry;
+      if (!e?.surface) return { outcome: 'unavailable', soft: true, detail: 'no entry record with a test surface: the card entered this step before checks recorded one (it predates checks)' };
+      base = e.surface.files;
+    } else {
+      const frozen = ctx.records.testSurface;
+      if (!frozen || typeof frozen !== 'object') return { outcome: 'unavailable', detail: "no 'testSurface' record: the step that writes tests has not recorded one" };
+      base = frozen as Record<string, string>;
+    }
+    const cur = now.capture.surface?.files ?? {};
+    const changes: string[] = [];
+    for (const f of new Set([...Object.keys(base), ...Object.keys(cur)])) {
+      if (!(f in cur)) changes.push(`deleted ${f}`);
+      else if (!(f in base)) { if (p.mode === 'strict') changes.push(`added ${f}`); }
+      else if (base[f] !== cur[f]) changes.push(`edited ${f}`);
+    }
+    return changes.length
+      ? { outcome: 'fail', detail: `the tests changed: ${list(changes)}. Put them back; ${p.mode === 'strict' ? 'nothing may change here' : 'only new test files may be added'}.` }
+      : { outcome: 'pass', detail: p.mode === 'strict' ? 'unchanged' : 'unchanged (new files allowed)' };
+  },
+
+  'test-set-identical': ctx => {
+    const now = currentTests(ctx);
+    if (isVerdict(now)) return now;
+    const before = entryTests(ctx);
+    if (isVerdict(before)) return before;
+    const was = new Set(before.map(t => t.name));
+    const is = new Set(now.tests.map(t => t.name));
+    const diff = [...[...was].filter(n => !is.has(n)).map(n => `-${n}`), ...[...is].filter(n => !was.has(n)).map(n => `+${n}`)];
+    return diff.length ? { outcome: 'fail', detail: `the tests changed: ${list(diff)}` } : { outcome: 'pass', detail: `${is.size} tests, identical` };
   },
 
   'suite-green': ctx => {
