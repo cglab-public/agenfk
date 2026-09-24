@@ -2,6 +2,38 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.2] — 2026-09-24
+
+Beta, cumulative over `2.0.0-beta.1`: everything in beta.1, plus the fixes below.
+
+### Dark and light mode
+
+- **Dark mode is neutral gray, app-wide.** The Kanban UI, the Hub UI and the flow editor used Tailwind's
+  blue-tinted slate; the flow editor showed as a navy panel on the hub's neutral page. The slate colours are now a
+  neutral ramp in dark mode (light mode is unchanged), the hub's own text and border tokens and rendered markdown
+  follow it, and secondary text meets WCAG AA (it was 3.8:1, and 2.4:1 in places).
+- **Dialogs stand out from the editor behind them**: a dimmed, blurred backdrop, a raised surface and a border, with
+  hover states and form fields that stay visible inside it.
+- **The hub's PR heatmap tooltip is readable in light mode.** It was white text on the light glass card.
+
+### Workflow
+
+- **Agents are told when a step commits on leave.** The gatekeeper, verify's reply and the flow editor's preview
+  say "stage your work before you advance the card" on a step with auto commit, and stay silent on the step whose
+  leaving ends the flow, where the close commit takes the work instead. `flowChecksErrors` now also refuses the
+  flag on a step followed by a mid-list DONE.
+- **The hub now sees every closed card.** A parent closed by the roll-up when its last child closes, a card
+  closed by sibling propagation, and a card on a custom flow whose last step is not named DONE all emit
+  `item.closed` (and `step.transitioned`). Before, none of them reached the hub, so its closed counts
+  (`items_closed`, the Org and User pages) were low; expect them to rise after upgrading. (On a flow with a
+  review step the roll-up stops a parent there, and the parent's own verify closes it - that was counted
+  already.) Every step move verify makes now reaches the hub as `step.transitioned`, not only command runs.
+
+### Security
+
+- The authority routes (passkeys, approvals, overrides) are rate limited; transcript paths are checked on the
+  resolved path; PR-body table cells escape backslashes.
+
 ## [2.0.0-beta.1] — 2026-09-24
 
 Beta, cumulative over `1.1.21-beta.12`. Deterministic flow adherence (CGLAB-376): the server now enforces step
@@ -39,14 +71,6 @@ transitions instead of trusting the agent. Major version because forward moves a
 
 - Codex verifies record the author (`CODEX_THREAD_ID`).
 - Malformed test records on a card no longer make verify answer 500.
-- **The hub now sees every closed card.** A parent closed by the roll-up when its last child closes, a card
-  closed by sibling propagation, and a card on a custom flow whose last step is not named DONE all emit
-  `item.closed` (and `step.transitioned`). Before, none of them reached the hub, so its closed counts
-  (`items_closed`, the Org and User pages) were low; expect them to rise after upgrading. (On a flow with a
-  review step the roll-up stops a parent there, and the parent's own verify closes it - that was counted
-  already.) Every step move verify makes now reaches the hub as `step.transitioned`, not only command runs.
-- The authority routes (passkeys, approvals, overrides) are rate limited; transcript paths are checked on the
-  resolved path; PR-body table cells escape backslashes.
 
 ## [1.1.21-beta.12] — 2026-09-22
 
