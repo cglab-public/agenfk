@@ -22,6 +22,7 @@ const flowClient: FlowClient = {
   updateFlow: (id, payload) => api.updateFlow(id, payload),
   deleteFlow: (id) => api.deleteFlow(id),
   setProjectFlow: (projectId, flowId) => api.setProjectFlow(projectId, flowId),
+  getFlowContract: (steps) => api.getFlowContract(steps),
 };
 
 const registryClient: RegistryClient = {

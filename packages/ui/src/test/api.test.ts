@@ -47,6 +47,13 @@ describe('UI API Client', () => {
     expect(mockedAxios.post).toHaveBeenCalledWith(expect.stringContaining('/items/i1/overrides'), { step: 'WORK', checkId: 'suite-green', reason: 'flaky' }, board);
   });
 
+  it("asks the server what a draft flow's steps mean (CGLAB-384)", async () => {
+    mockedAxios.post.mockResolvedValue({ data: { valid: true } });
+    const steps = [{ id: 's0', name: 'TODO' }];
+    expect(await api.getFlowContract(steps)).toEqual({ valid: true });
+    expect(mockedAxios.post).toHaveBeenCalledWith(expect.stringContaining('/flows/contract'), { steps });
+  });
+
   it('should update item', async () => {
     mockedAxios.put.mockResolvedValue({ data: {} });
     await api.updateItem('i1', { status: 'DONE' } as any);

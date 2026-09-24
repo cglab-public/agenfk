@@ -320,6 +320,11 @@ export const api = {
       throw e;
     }
   },
+  /** What a draft flow's steps mean, as the server validates and enforces them (CGLAB-384). */
+  getFlowContract: async (steps: unknown[]) => {
+    const { data } = await axios.post(`${API_URL}/flows/contract`, { steps });
+    return data;
+  },
   /** The card's current step: go-ahead needed, approvals, overrides, last checks (CGLAB-382). */
   getGates: async (id: string): Promise<StepGates> => {
     const { data } = await axios.get(`${API_URL}/items/${id}/gates`);

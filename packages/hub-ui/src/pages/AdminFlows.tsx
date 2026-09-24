@@ -110,6 +110,7 @@ export const flowClient: FlowClient = {
   setProjectFlow: async (_projectId, flowId) => {
     await api.put('/v1/admin/flow-assignments', { flowId });
   },
+  getFlowContract: async (steps) => (await api.post('/v1/admin/flows/contract', { steps })).data,
 };
 
 /**

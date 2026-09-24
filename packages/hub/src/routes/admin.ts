@@ -5,7 +5,7 @@ import { issueApiKey } from '../auth/apiKey.js';
 import { encryptSecret } from '../crypto.js';
 import { createPasswordUser, hashPassword } from '../auth/password.js';
 import { randomUUID } from 'crypto';
-import { DEFAULT_FLOW, mergeStepContracts } from '@agenfk/core';
+import { DEFAULT_FLOW, describeFlowContract, mergeStepContracts } from '@agenfk/core';
 import { getAgenfkReleases, resetAgenfkReleaseCache } from '../services/githubReleases.js';
 import { compareSemver } from '../util/semver.js';
 import { isOnboardingKeyLabel } from '../util/keyLabel.js';
@@ -1442,6 +1442,12 @@ export function adminRouter(ctx: HubServerContext): Router {
     const row = await ctx.db.get<FlowRow>('SELECT * FROM flows WHERE id = ?', [id]);
     res.status(201).json(presentFlow(row!));
   }));
+
+  // CGLAB-384: what a draft's steps mean, for the flow editor. Declared
+  // before /flows/:id; computed with the core functions that validate it.
+  router.post('/flows/contract', guard, (req: Request, res: Response) => {
+    res.json(describeFlowContract(req.body?.steps));
+  });
 
   router.get('/flows/:id', guard, asyncRoute(async (req: Request, res: Response) => {
     const row = await ctx.db.get<FlowRow>(

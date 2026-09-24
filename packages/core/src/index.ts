@@ -18,5 +18,6 @@ export * from './baseDrift';
 export * from './dispatch';
 export * from './flowChecks';
 export * from './flowPresets';
+export * from './flowContract';
 
 export * from './requestBudget.js';
