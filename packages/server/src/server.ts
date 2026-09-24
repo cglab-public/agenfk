@@ -7,6 +7,7 @@ import { mayPropagate, readCleanTreeSha, readHead, readTreeStatus } from './prop
 import { insideRoot, parseJunitXml, parseVitestJson, surfaceOf } from './stepRecords';
 import { parseActor, parseFindings, readTranscriptIdentity } from './reviewRecords';
 import * as passkeys from './passkeys';
+import { argvHash, judgeCommandChecks, type CommandApproval } from './commandChecks';
 import { evaluateChecks, judgeReview, formatCheckResults, needsCapture, needsEntryRecord, type CheckResult } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave } from "@agenfk/core";
@@ -2823,6 +2824,30 @@ app.post("/items/:id/overrides", limitExpensive, asyncHandler(async (req: any, r
 }));
 
 /**
+ * efcacdeb: a person's approval of a command check's exact argv for this
+ * project, signed with a passkey on the board. The check runs once the argv's
+ * hash is approved, and asks again when the command changes.
+ */
+app.post("/projects/:id/command-approvals", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  if (refuseUnlessBoard(req, res)) return;
+  const project: any = await storage.getProject(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  const argv = req.body?.argv;
+  if (!Array.isArray(argv) || !argv.length || !argv.every((a: unknown) => typeof a === 'string' && a.length > 0)) {
+    return res.status(400).json({ error: 'argv must be the command as a list of strings, exactly as the flow defines it.' });
+  }
+  const hash = argvHash(argv);
+  const authority = gateAuthority(req, res, { purpose: 'command', itemId: project.id, checkId: hash }, true);
+  if (!authority) return;
+  const rec: CommandApproval = { hash, argv, at: new Date().toISOString(), by: 'board', ...(authority as any) };
+  const approvals: CommandApproval[] = Array.isArray(project.commandApprovals) ? project.commandApprovals : [];
+  await storage.updateProject(project.id, { commandApprovals: [...approvals.filter(a => a.hash !== hash), rec] } as any);
+  recordHubEvent({ type: 'command.approved', projectId: project.id, payload: { hash, argv, by: 'board' } });
+  io.emit('items_updated');
+  res.status(201).json(rec);
+}));
+
+/**
  * Record an independent review of a card (CGLAB-381): the reviewer's
  * transcript, the commit range it reviewed, and what became of each finding.
  * The reviewer's identity is read from the transcript - never from the
@@ -4189,6 +4214,8 @@ app.post("/registry/flows/install", asyncHandler(async (req: any, res: any) => {
       const hubStepsError = flowStepsError(hubSteps);
       if (hubStepsError) return res.status(422).json({ error: `The registry flow cannot be installed: ${hubStepsError}` });
       const created = await storage.createFlow({
+        // efcacdeb: someone else's text - its command checks never run.
+        origin: 'registry',
         id: uuidv4(),
         name: body.flow?.name ?? filename,
         description: body.flow?.description,
@@ -4227,6 +4254,8 @@ app.post("/registry/flows/install", asyncHandler(async (req: any, res: any) => {
 
     // Create flow in local storage (no projectId — registry flows are global)
     const newFlow = await storage.createFlow({
+        // efcacdeb: someone else's text - its command checks never run.
+        origin: 'registry',
       id: uuidv4(),
       name: flowData.name ?? filename.replace('.json', ''),
       description: flowData.description,
@@ -5893,7 +5922,13 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   if (review && actor && !review.authors.some((a: any) => a.sessionId === actor.sessionId && a.agentId === (actor.agentId ?? null))) {
     review.authors.push({ client: actor.client, sessionId: actor.sessionId, agentId: actor.agentId ?? null });
   }
+  // efcacdeb: command checks run here, before the engine, in the card's tree.
+  const commandChecks = resolved.filter(c => c.applicable && c.id.startsWith('command-check:'));
+  const commandResults = commandChecks.length
+    ? await judgeCommandChecks(commandChecks, { root, origin: (flow as any).origin, approvals: Array.isArray(project?.commandApprovals) ? project.commandApprovals : [], timeoutMs: verifyMaxMs() })
+    : undefined;
   const outcome = evaluateChecks(resolved, {
+    ...(commandResults ? { commandResults } : {}),
     review,
     root,
     git: args => gitRun.run(args),
@@ -6029,7 +6064,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const nextName = sorted[currentFlowStep.index + 1]?.name;
     const deferred = deferredToCommand(activeFlow, item.status, project);
     const slow = needsCapture(resolveStepChecks(activeFlow.steps, item.status).filter(c => !deferred.includes(c.id)))
-      || (!!nextName && needsEntryRecord(resolveStepChecks(activeFlow.steps, nextName)));
+      || (!!nextName && needsEntryRecord(resolveStepChecks(activeFlow.steps, nextName)))
+      // A command check may run for minutes: never inside the request (efcacdeb).
+      || resolveStepChecks(activeFlow.steps, item.status).some(c => c.applicable && c.id.startsWith('command-check:'));
     if (slow && asyncRun) {
       const run = asyncRun;
       (run as any).started = true;

@@ -133,6 +133,8 @@ export type HubEventType =
   // A passkey enrolled on, or removed from, the board (CGLAB-383).
   | 'passkey.enrolled'
   | 'passkey.removed'
+  // A person's approval of a command check's exact argv for a project (efcacdeb).
+  | 'command.approved'
   | 'comment.added'
   | 'test.logged'
   // Legacy inbound-only event. Spokes no longer emit this, and Hub skips it

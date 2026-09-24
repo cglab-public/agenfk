@@ -668,6 +668,8 @@ export interface Flow {
   hubFlowId?: string;
   /** Monotonic version number on the Hub side; bumps on every Hub-side update. */
   hubVersion?: number;
+  /** 'registry' when installed from the community registry: its command checks never run (efcacdeb). */
+  origin?: 'registry';
 }
 
 export interface PauseSnapshot {

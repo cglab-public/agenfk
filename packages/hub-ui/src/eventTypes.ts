@@ -17,6 +17,7 @@ export const KNOWN_EVENT_TYPES = [
   'check.overridden',
   'passkey.enrolled',
   'passkey.removed',
+  'command.approved',
   'comment.added',
   'test.logged',
   'session.started',

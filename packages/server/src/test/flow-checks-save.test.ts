@@ -149,6 +149,14 @@ describe('POST /registry/flows/install (public registry)', () => {
     expect(build.checks).toEqual([{ id: 'jira-key-valid' }]);
   });
 
+  // efcacdeb: someone else's text - its command checks must never run.
+  it('marks the installed flow as from the registry', async () => {
+    vi.mocked(axios.get).mockResolvedValue({ data: { content: content([{ name: 'WORK', label: 'Work', order: 1, checks: [{ id: 'command-check', params: { name: 'lint', argv: ['npm', 'run', 'lint'] } }] }]) } });
+    const res = await agent().post('/registry/flows/install').send({ filename: 'cmd.json' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect((await agent().get('/flows')).body.find((f: any) => f.id === res.body.id)?.origin).toBe('registry');
+  });
+
   it('keeps the registry anchors\' contracts on the fresh anchors (S9 review)', async () => {
     vi.mocked(axios.get).mockResolvedValue({
       data: {

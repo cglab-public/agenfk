@@ -112,6 +112,8 @@ export interface EngineContext {
   approvals?: Array<{ by: string; at: string; note?: string; authority?: string }>;
   /** Approvals of the same step on the card's ancestors, nearest first: a breakdown approved at its parent. */
   inheritedApprovals?: Array<{ by: string; at: string; note?: string; authority?: string; from: string }>;
+  /** The step's command checks, already run by the server, by resolved id (efcacdeb). */
+  commandResults?: Record<string, { outcome: 'pass' | 'fail' | 'unavailable'; detail: string }>;
   /** People's overrides of the current step's checks, by check id (CGLAB-382). */
   overrides?: Record<string, Override>;
 }
@@ -428,6 +430,9 @@ export const EVALUATORS: Record<string, Evaluator> = {
     const how = p.signature === 'passkey' ? ', signed with a passkey' : '';
     return { outcome: 'fail', detail: `waiting for a person to approve this step on the board${how} (agenfk ui --open ${ctx.item.id}). An agent cannot approve.` };
   },
+
+  // efcacdeb: run by the server before the engine (commandChecks.ts); judged here.
+  'command-check': (ctx, p) => ctx.commandResults?.[`command-check:${p.name}`] ?? { outcome: 'unavailable', detail: 'the command did not run on this verify' },
 
   'suite-green': ctx => {
     const c = ctx.capture;
