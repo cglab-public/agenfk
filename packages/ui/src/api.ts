@@ -25,6 +25,11 @@ export interface StepGates {
   overrides: Record<string, GateOverride>;
   lastChecks: { step: string; at: string; blocked: boolean; results: StepCheckResult[] } | null;
 }
+/** One entry of a card's check history (4a428bb0): a verify's checks, an approval, or an override. */
+export type CheckHistoryEntry =
+  | { kind: 'verify'; step: string; at: string; blocked: boolean; results: Array<{ id: string; outcome: StepCheckResult['outcome']; blocking: boolean; severity: 'block' | 'warn'; detail: string; overridden?: boolean }> }
+  | { kind: 'approval'; step: string; at: string; by: string; authority?: string; note?: string }
+  | { kind: 'override'; step: string; at: string; by: string; authority?: string; check: string; reason: string };
 // For MVP, we'll duplicate the types interface or use `any`.
 // Better: configure vite to aliase @agenfk/core to the local package.
 
@@ -328,6 +333,11 @@ export const api = {
   /** The card's current step: go-ahead needed, approvals, overrides, last checks (CGLAB-382). */
   getGates: async (id: string): Promise<StepGates> => {
     const { data } = await axios.get(`${API_URL}/items/${id}/gates`);
+    return data;
+  },
+  /** The card's history of checks, approvals and overrides, newest first (5ee2c3b1). */
+  getCheckHistory: async (id: string): Promise<CheckHistoryEntry[]> => {
+    const { data } = await axios.get(`${API_URL}/items/${id}/check-history`);
     return data;
   },
   /** A person's go-ahead for the card's current step. The board header is what the server accepts. */

@@ -3,7 +3,7 @@ import { AgEnFKItem, ItemType, Status } from '../types';
 import {
   X, Layout, Tag, AlignLeft, AlertCircle, Zap,
   Clock, Calendar, FileText, ArrowLeft, Plus,
-  Loader2, ShieldCheck, FlaskConical, Copy, Check, Pencil, Trash2, ExternalLink
+  Loader2, ShieldCheck, FlaskConical, ListChecks, Copy, Check, Pencil, Trash2, ExternalLink
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import ReactMarkdown from 'react-markdown';
@@ -15,6 +15,7 @@ import { stripAnsi, calculateCost, formatCost, calculateCycleTimeMs, formatDurat
 import { api } from '../api';
 import { RunsPanel, type AgentRun } from './RunsPanel';
 import { StepChecksPanel } from './StepChecksPanel';
+import { CheckHistoryTab } from './CheckHistoryTab';
 
 interface CardDetailModalProps {
   item: AgEnFKItem;
@@ -29,7 +30,7 @@ interface CardDetailModalProps {
   flowName?: string;
 }
 
-type TabType = 'overview' | 'plan' | 'subitems' | 'history' | 'tests' | 'reviews' | 'usage' | 'runs';
+type TabType = 'overview' | 'plan' | 'subitems' | 'history' | 'checks' | 'tests' | 'reviews' | 'usage' | 'runs';
 
 export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems, pricesData, onClose, onSelectItem, onAddItem, onDeleteItem, onUpdateItem, projectName, flowName }) => {
   const isNew = !item.id;
@@ -116,6 +117,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
     { id: 'plan', label: 'Plan', icon: <FileText size={14} />, hidden: isNew || !item.implementationPlan },
     { id: 'subitems', label: 'Subitems', icon: <Layout size={14} />, badge: subitems.length, hidden: isNew || item.type === ItemType.TASK || item.type === ItemType.BUG },
     { id: 'history', label: 'History', icon: <Clock size={14} />, badge: item.history?.length, hidden: isNew },
+    { id: 'checks', label: 'Checks', icon: <ListChecks size={14} />, hidden: isNew },
     { id: 'tests', label: 'Test Results', icon: <FlaskConical size={14} />, badge: item.tests?.length, hidden: isNew },
     { id: 'reviews', label: 'Reviews', icon: <ShieldCheck size={14} />, hidden: true },
     { id: 'usage', label: 'Usage', icon: <Zap size={14} />, hidden: isNew || !item.tokenUsage?.length },
@@ -774,6 +776,8 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               {/* v8 ignore stop */}
             </div>
           )}
+
+          {activeTab === 'checks' && <CheckHistoryTab itemId={item.id} />}
 
           {activeTab === 'usage' && item.tokenUsage && (
             <div className="animate-in slide-in-from-bottom-2 duration-300">

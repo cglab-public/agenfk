@@ -38,6 +38,7 @@ vi.mock('../api', () => ({
     listAgentRuns: vi.fn(() => Promise.resolve([])),
     listRunEvents: vi.fn(() => Promise.resolve([])),
     getGates: vi.fn(() => Promise.resolve({ step: 'TODO', approvalRequired: false, approvals: [], overrides: {}, lastChecks: null })),
+    getCheckHistory: vi.fn(() => Promise.resolve([{ kind: 'approval', step: 'DISCOVERY', at: '2026-09-24T21:05:00.000Z', by: 'board', authority: 'unverified' }])),
   }
 }));
 
@@ -138,6 +139,13 @@ describe('CardDetailModal', () => {
   it('renders no reference badge when externalId is null', async () => {
     renderModal({ ...mockItem, externalId: null, externalUrl: null });
     expect(screen.queryByText('CGLAB-163')).toBeNull();
+  });
+
+  // 5ee2c3b1: approvals and checks have their own tab; the go-ahead itself stays on Overview.
+  it('has a Checks tab showing the card\'s check history', async () => {
+    renderModal(mockItem);
+    fireEvent.click(screen.getByRole('button', { name: /^Checks/ }));
+    expect(await screen.findByText(/Approved DISCOVERY/)).toBeDefined();
   });
 
   it('should render item details and switch tabs', async () => {
