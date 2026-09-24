@@ -84,6 +84,8 @@ const REQUESTED_PORT = Number.parseInt(
 // the UI is somebody else's job (the `agenfk up` flow, where `vite preview`
 // owns port 5173). Set by mountStaticUI() at the bottom of the route table.
 let servedUiDir: string | null = null;
+/** The port this server listens on, once bound. */
+let boundPort: number | null = null;
 
 // Does this caller want a page or data? A browser navigating to a URL asks for
 // html; the CLI, `agenfk health` and curl land on json. Both the "/" banner and
@@ -2511,12 +2513,17 @@ const approvalsAt = (card: any, step: string) => (card?.stepRecords ?? [])
   .filter((r: any) => r?.kind === 'approval' && r.step === step)
   .map((r: any) => ({ by: String(r.by ?? 'board'), at: String(r.at), ...(r.note ? { note: String(r.note) } : {}), ...(r.authority ? { authority: String(r.authority) } : {}) }));
 
-/** Approvals of the same step on a card's ancestors, nearest first. */
+/**
+ * Approvals of the same step on a card's ancestors, nearest first - only those
+ * that covered this card when they were given (CGLAB-383 review): a card moved
+ * under an approved one later is not approved with it.
+ */
 async function ancestorApprovals(card: any, step: string): Promise<Array<{ by: string; at: string; note?: string; authority?: string; from: string }>> {
   const out: Array<{ by: string; at: string; note?: string; authority?: string; from: string }> = [];
   let cur: any = card?.parentId ? await storage.getItem(card.parentId) : null;
   for (let depth = 0; cur && depth < 16; depth++) {
-    for (const a of approvalsAt(cur, step).reverse()) out.push({ ...a, from: cur.id });
+    const covering = (cur.stepRecords ?? []).filter((r: any) => r?.kind === 'approval' && r.step === step && Array.isArray(r.covers) && r.covers.includes(card.id));
+    for (const a of approvalsAt({ stepRecords: covering }, step).reverse()) out.push({ ...a, from: cur.id });
     cur = cur.parentId ? await storage.getItem(cur.parentId) : null;
   }
   return out;
@@ -2576,6 +2583,18 @@ async function appendGateRecord(item: any, rec: any, comment: string) {
  * (announced as a hub event); adding or removing one needs an assertion from
  * a passkey already enrolled.
  */
+/**
+ * Where the board runs, and so the only origins a passkey signature is
+ * accepted from (CGLAB-383 review): the server itself when it serves the UI
+ * (the desktop app, reached on localhost), else the UI's own port.
+ */
+function boardOrigins(): string[] {
+  const env = process.env.AGENFK_BOARD_ORIGINS;
+  if (env) return env.split(',').map(s => s.trim()).filter(Boolean);
+  if (servedUiDir) return boundPort ? [`http://localhost:${boundPort}`] : [];
+  return [`http://localhost:${process.env.VITE_PORT || 5173}`];
+}
+
 app.get("/webauthn/status", (_req: any, res: any) => {
   const creds = passkeys.loadCredentials();
   res.json({ enrolled: creds.length > 0, rpId: passkeys.RP_ID, credentials: creds.map(c => ({ id: c.id, createdAt: c.createdAt ?? null })) });
@@ -2593,6 +2612,7 @@ app.post("/webauthn/challenge", (req: any, res: any) => {
     ...(typeof b.checkId === 'string' ? { checkId: b.checkId } : {}),
     ...(gateText(b.reason) ? { reason: gateText(b.reason) } : {}),
     ...(typeof b.credentialId === 'string' ? { credentialId: b.credentialId } : {}),
+    ...(typeof b.publicKey === 'string' ? { publicKey: b.publicKey } : {}),
   };
   const creds = passkeys.loadCredentials();
   res.json({ challenge: passkeys.issueChallenge(act), rpId: passkeys.RP_ID, allowCredentials: creds.map(c => c.id) });
@@ -2604,12 +2624,12 @@ app.post("/webauthn/credentials", (req: any, res: any) => {
   let cred: ReturnType<typeof passkeys.verifyRegistration>;
   try {
     if (!passkeys.consumeChallenge(passkeys.challengeOf(reg?.clientDataJSON), { purpose: 'enroll' })) throw new Error('the enrollment challenge is unknown, used or expired: start again');
-    cred = passkeys.verifyRegistration(reg, passkeys.challengeOf(reg.clientDataJSON)!);
+    cred = passkeys.verifyRegistration(reg, passkeys.challengeOf(reg.clientDataJSON)!, boardOrigins());
   } catch (e: any) { return res.status(400).json({ error: e?.message ?? String(e) }); }
   const creds = passkeys.loadCredentials();
   if (creds.some(c => c.id === cred.id)) return res.status(409).json({ error: 'This passkey is already enrolled.' });
   if (creds.length) {
-    try { passkeys.authorise(req.body?.assertion, { purpose: 'add-passkey', credentialId: cred.id }); } catch (e: any) {
+    try { passkeys.authorise(req.body?.assertion, { purpose: 'add-passkey', credentialId: cred.id, publicKey: cred.publicKey }, boardOrigins()); } catch (e: any) {
       return res.status(401).json({ error: `Adding a passkey needs a signature from one already enrolled: ${e?.message ?? e}` });
     }
   }
@@ -2623,7 +2643,7 @@ app.delete("/webauthn/credentials/:credId", (req: any, res: any) => {
   if (refuseUnlessBoard(req, res)) return;
   const id = req.params.credId;
   if (!passkeys.loadCredentials().some(c => c.id === id)) return res.status(404).json({ error: 'No such passkey.' });
-  try { passkeys.authorise(req.body?.assertion, { purpose: 'remove', credentialId: id }); } catch (e: any) {
+  try { passkeys.authorise(req.body?.assertion, { purpose: 'remove', credentialId: id }, boardOrigins()); } catch (e: any) {
     return res.status(401).json({ error: `Removing a passkey needs a signature from an enrolled one: ${e?.message ?? e}` });
   }
   passkeys.saveCredentials(passkeys.loadCredentials().filter(c => c.id !== id));
@@ -2648,7 +2668,7 @@ function gateAuthority(req: any, res: any, act: passkeys.Act, required: boolean)
   // Not asked for and not offered: the board's word, recorded as such.
   if (!required && !req.body?.assertion) return { authority: 'unverified' };
   try {
-    const cred = passkeys.authorise(req.body?.assertion, act);
+    const cred = passkeys.authorise(req.body?.assertion, act, boardOrigins());
     return { authority: 'passkey', credentialId: cred.id };
   } catch (e: any) {
     res.status(401).json({ error: `Passkey required: ${e?.message ?? e}` });
@@ -2671,10 +2691,11 @@ app.get("/items/:id/gates", asyncHandler(async (req: any, res: any) => {
     step: item.status,
     approvalRequired: !!approval,
     passkeyRequired: stepWantsPasskey(flow, item.status),
+    // On a step that asks for a passkey only signed approvals count, so only they show.
     approvals: [
       ...here.filter((r: any) => r.kind === 'approval').map((r: any) => ({ id: r.id, by: r.by, at: r.at, ...(r.note ? { note: r.note } : {}), ...(r.authority ? { authority: r.authority } : {}) })),
       ...inherited,
-    ],
+    ].filter(a => !stepWantsPasskey(flow, item.status) || a.authority === 'passkey'),
     overrides,
     lastChecks: item.lastChecks?.step === item.status ? item.lastChecks : null,
   });
@@ -2711,7 +2732,14 @@ app.post("/items/:id/approvals", asyncHandler(async (req: any, res: any) => {
   const note = gateText(req.body?.note);
   const authority = gateAuthority(req, res, { purpose: 'approval', itemId: item.id, step: item.status, ...(note ? { note } : {}) }, stepWantsPasskey(flow, item.status));
   if (!authority) return;
-  const rec = { id: uuidv4(), step: item.status, kind: 'approval', at: new Date().toISOString(), head: null, clean: false, by: 'board', ...authority, ...(note ? { note } : {}) };
+  // The cards this go-ahead covers: the card and its descendants as they are now.
+  const covers: string[] = [];
+  const queue = [item.id];
+  while (queue.length && covers.length < 5000) {
+    const kids: any[] = (await storage.listItems({ parentId: queue.shift() } as any)) as any;
+    for (const k of kids) { covers.push(k.id); queue.push(k.id); }
+  }
+  const rec = { id: uuidv4(), step: item.status, kind: 'approval', at: new Date().toISOString(), head: null, clean: false, by: 'board', ...authority, ...(note ? { note } : {}), covers };
   await appendGateRecord(item, rec, `### Step approved\n\n**Step**: ${item.status} — a person approved it on the board.${note ? `\n\n${note}` : ''}`);
   recordHubEvent({ type: 'step.approved', projectId: item.projectId, itemId: item.id, payload: { step: item.status, by: 'board' } });
   res.status(201).json(rec);
@@ -5805,7 +5833,9 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const approvals = approvalsAt({ stepRecords: here }, item.status);
   const inheritedApprovals = resolved.some(c => c.id === 'human-approval' && c.applicable) ? await ancestorApprovals(item, item.status) : [];
   const overrides: Record<string, { id: string; by: string; at: string; reason: string }> = {};
-  for (const r of here) if (r.kind === 'override' && typeof r.check === 'string') overrides[r.check] = { id: String(r.id), by: String(r.by ?? 'board'), at: String(r.at), reason: String(r.reason ?? ''), ...(typeof r.detail === 'string' ? { detail: r.detail } : {}) };
+  // On a step that asks for a passkey, only signed overrides lift a check.
+  const signedOnly = stepWantsPasskey(flow as Flow, item.status);
+  for (const r of here) if (r.kind === 'override' && typeof r.check === 'string' && (!signedOnly || r.authority === 'passkey')) overrides[r.check] = { id: String(r.id), by: String(r.by ?? 'board'), at: String(r.at), reason: String(r.reason ?? ''), ...(typeof r.detail === 'string' ? { detail: r.detail } : {}) };
   const review = resolved.some(c => c.id === 'review-record' && c.applicable) ? await reviewEvidence(item, root) : undefined;
   // Whoever is advancing the card now is an author too, though no step record carries them yet.
   if (review && actor && !review.authors.some((a: any) => a.sessionId === actor.sessionId && a.agentId === (actor.agentId ?? null))) {
@@ -8374,6 +8404,7 @@ if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
 
     findAvailablePort(REQUESTED_PORT).then((port) => {
       httpServer.listen(port, BIND_HOST, () => {
+        boundPort = port;
         writeServerPortFile(port);
         if (port !== REQUESTED_PORT) {
           console.log(`AgEnFK API Server: requested port ${REQUESTED_PORT} was in use, bound to ${port} instead`);

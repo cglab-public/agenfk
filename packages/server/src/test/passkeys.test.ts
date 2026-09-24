@@ -69,7 +69,7 @@ describe('verifyAssertion', () => {
   it('refuses a tampered clientDataJSON', () => {
     const { a, cred } = enrolled();
     const good = a.assert(CH);
-    const forged = Buffer.from(JSON.stringify({ type: 'webauthn.get', challenge: CH, origin: 'http://localhost:5174' })).toString('base64url');
+    const forged = Buffer.from(JSON.stringify({ type: 'webauthn.get', challenge: CH, origin: 'http://localhost:5173', crossOrigin: true })).toString('base64url');
     expect(() => verifyAssertion({ ...good, clientDataJSON: forged }, cred, CH)).toThrow(/signature/);
   });
 

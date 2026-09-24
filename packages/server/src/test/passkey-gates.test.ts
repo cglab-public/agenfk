@@ -128,7 +128,8 @@ describe('CGLAB-383: enrolling a passkey', () => {
     const first = new SoftAuthenticator();
     await enroll(first);
     const second = new SoftAuthenticator();
-    const ch = await challenge({ purpose: 'add-passkey', credentialId: second.id });
+    // The signature is bound to the new key itself, not only its id.
+    const ch = await challenge({ purpose: 'add-passkey', credentialId: second.id, publicKey: second.register('x').publicKey });
     const res = await enroll(second, first.assert(ch));
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect((await agent().get('/webauthn/status')).body.credentials).toHaveLength(2);
@@ -340,5 +341,76 @@ describe('CGLAB-383: gate-events carry the authority, for the PR', () => {
     await approve(id, { assertion: await signedApproval(a, id, 'PLAN') });
     const ev = (await agent().get(`/items/${id}/gate-events`)).body;
     expect(ev[0]).toMatchObject({ kind: 'approval', authority: 'passkey' });
+  });
+});
+
+describe('CGLAB-383 review fixes', () => {
+  async function family() {
+    const parent = await card('PLAN');
+    const p = await item(parent);
+    const c = await agent().post('/items').send({ type: 'TASK', title: 'child', projectId: p.projectId, parentId: parent });
+    await storage.updateItem(c.body.id, { status: 'PLAN' } as any);
+    return { parent, child: c.body.id as string, projectId: p.projectId as string };
+  }
+
+  it("a signed go-ahead on a parent covers the children it had when it was signed", async () => {
+    const a = new SoftAuthenticator();
+    await enroll(a);
+    const { parent, child } = await family();
+    expect((await approve(parent, { assertion: await signedApproval(a, parent, 'PLAN') })).status).toBe(201);
+    const v = await validate(child);
+    expect(v.status, JSON.stringify(v.body)).toBe(200);
+  });
+
+  it('re-parenting a card under an approved card does not get it past the step', async () => {
+    const a = new SoftAuthenticator();
+    await enroll(a);
+    const { parent, projectId } = await family();
+    await approve(parent, { assertion: await signedApproval(a, parent, 'PLAN') });
+    const v = await agent().post('/items').send({ type: 'TASK', title: 'victim', projectId });
+    await storage.updateItem(v.body.id, { status: 'PLAN' } as any);
+    await agent().put(`/items/${v.body.id}`).send({ parentId: parent });
+    expect((await validate(v.body.id)).status).toBe(422);
+  });
+
+  it("refuses an assertion made on a page that is not the board's (another localhost port)", async () => {
+    const a = new SoftAuthenticator();
+    await enroll(a);
+    const id = await card('PLAN');
+    const ch = await challenge({ purpose: 'approval', itemId: id, step: 'PLAN' });
+    const res = await approve(id, { assertion: a.assert(ch, { origin: 'http://localhost:49152' }) });
+    expect(res.status).toBe(401);
+    expect(res.body.error).toMatch(/origin/);
+  });
+
+  it('refuses to enroll a passkey from a page that is not the board', async () => {
+    const ch = await challenge({ purpose: 'enroll' });
+    const res = await agent().post('/webauthn/credentials').set(board()).send({ registration: new SoftAuthenticator().register(ch, { origin: 'http://localhost:49152' }) });
+    expect(res.status).toBe(400);
+  });
+
+  it('an add-passkey signature covers only the key it was signed for', async () => {
+    const first = new SoftAuthenticator();
+    await enroll(first);
+    const meant = new SoftAuthenticator();
+    const planted = new SoftAuthenticator();
+    const ch = await challenge({ purpose: 'add-passkey', credentialId: planted.id, publicKey: meant.register('x').publicKey });
+    const res = await enroll(planted, first.assert(ch));
+    expect(res.status).toBe(401);
+  });
+
+  it('on a passkey step the board does not show an unsigned approval as the go-ahead', async () => {
+    const id = await card('PLAN');
+    await storage.updateItem(id, { stepRecords: [{ step: 'PLAN', kind: 'approval', at: new Date().toISOString(), head: null, clean: false, by: 'board', authority: 'unverified' }] } as any);
+    expect((await agent().get(`/items/${id}/gates`)).body.approvals).toEqual([]);
+  });
+
+  it('on a passkey step an unsigned override does not lift a check', async () => {
+    const id = await card('WORK');
+    const v1 = await validate(id);
+    const detail = v1.body.checks.find((c: any) => c.id === 'jira-key-valid').detail;
+    await storage.updateItem(id, { stepRecords: [...((await item(id)).stepRecords ?? []), { id: 'o1', step: 'WORK', kind: 'override', at: new Date().toISOString(), head: null, clean: false, by: 'board', authority: 'unverified', check: 'jira-key-valid', reason: 'x', detail }] } as any);
+    const v2 = await validate(id);
+    expect(v2.body.checks.find((c: any) => c.id === 'jira-key-valid')).toMatchObject({ blocking: true });
   });
 });

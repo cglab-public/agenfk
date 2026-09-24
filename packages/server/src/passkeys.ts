@@ -26,7 +26,12 @@ import * as os from 'os';
 import * as path from 'path';
 
 export const RP_ID = 'localhost';
-const ORIGIN = /^http:\/\/localhost(:\d{1,5})?$/;
+/**
+ * The board's own origins. Pinned, not any localhost port: a passkey is scoped
+ * to the relying party, not the port, so a page an agent serves on another
+ * localhost port could otherwise ask the person's authenticator to sign.
+ */
+const DEFAULT_ORIGINS: readonly string[] = ['http://localhost:5173'];
 const ALGS: Record<number, string> = { [-7]: 'ES256', [-257]: 'RS256' };
 const CHALLENGE_TTL_MS = 2 * 60 * 1000;
 
@@ -40,13 +45,13 @@ const fromB64u = (s: unknown, what: string): Buffer => {
 };
 const sha256 = (b: Buffer | string) => crypto.createHash('sha256').update(b).digest();
 
-function parseClientData(b64: unknown, type: string, challenge: string): Buffer {
+function parseClientData(b64: unknown, type: string, challenge: string, origins: readonly string[]): Buffer {
   const raw = fromB64u(b64, 'clientDataJSON');
   let cd: any;
   try { cd = JSON.parse(raw.toString('utf8')); } catch { throw new Error('clientDataJSON is not JSON'); }
   if (cd?.type !== type) throw new Error(`clientDataJSON type is ${JSON.stringify(cd?.type)}, not ${type}`);
   if (typeof cd.challenge !== 'string' || cd.challenge !== challenge) throw new Error('the challenge does not match the one issued for this act');
-  if (typeof cd.origin !== 'string' || !ORIGIN.test(cd.origin)) throw new Error(`origin ${JSON.stringify(cd.origin)} is not the board on http://localhost`);
+  if (typeof cd.origin !== 'string' || !origins.includes(cd.origin)) throw new Error(`origin ${JSON.stringify(cd.origin)} is not the board (${origins.join(', ')}): sign on the board itself`);
   return raw;
 }
 
@@ -67,11 +72,11 @@ function publicKeyOf(spki: string): crypto.KeyObject {
 }
 
 /** Check a new passkey. Returns the credential to store; throws with the reason otherwise. */
-export function verifyRegistration(reg: Registration, challenge: string): Omit<Credential, 'signCount'> {
+export function verifyRegistration(reg: Registration, challenge: string, origins: readonly string[] = DEFAULT_ORIGINS): Omit<Credential, 'signCount'> {
   if (!reg || typeof reg !== 'object') throw new Error('registration is required');
   if (!ALGS[reg.alg]) throw new Error(`algorithm ${JSON.stringify(reg.alg)} is not supported (ES256 or RS256)`);
   if (typeof reg.credentialId !== 'string' || !/^[A-Za-z0-9_-]{8,1024}$/.test(reg.credentialId)) throw new Error('credentialId is not a credential id');
-  parseClientData(reg.clientDataJSON, 'webauthn.create', challenge);
+  parseClientData(reg.clientDataJSON, 'webauthn.create', challenge, origins);
   parseAuthData(reg.authenticatorData);
   const key = publicKeyOf(reg.publicKey);
   const kind = key.asymmetricKeyType;
@@ -80,9 +85,9 @@ export function verifyRegistration(reg: Registration, challenge: string): Omit<C
 }
 
 /** Check an assertion by an enrolled passkey. Returns its sign count; throws with the reason otherwise. */
-export function verifyAssertion(a: Assertion, cred: Credential, challenge: string): { signCount: number } {
+export function verifyAssertion(a: Assertion, cred: Credential, challenge: string, origins: readonly string[] = DEFAULT_ORIGINS): { signCount: number } {
   if (!a || typeof a !== 'object') throw new Error('assertion is required');
-  const clientData = parseClientData(a.clientDataJSON, 'webauthn.get', challenge);
+  const clientData = parseClientData(a.clientDataJSON, 'webauthn.get', challenge, origins);
   const auth = parseAuthData(a.authenticatorData);
   const signed = Buffer.concat([auth.raw, sha256(clientData)]);
   let ok = false;
@@ -128,10 +133,12 @@ export interface Act {
   checkId?: string;
   reason?: string;
   credentialId?: string;
+  /** add-passkey: the new key itself, so a signature adds that key and no other. */
+  publicKey?: string;
 }
 
 const PURPOSES = new Set(['enroll', 'add-passkey', 'remove', 'approval', 'override']);
-const actKey = (act: Act) => sha256(JSON.stringify([act.purpose, act.itemId ?? '', act.step ?? '', act.note ?? '', act.checkId ?? '', act.reason ?? '', act.credentialId ?? ''])).toString('hex');
+const actKey = (act: Act) => sha256(JSON.stringify([act.purpose, act.itemId ?? '', act.step ?? '', act.note ?? '', act.checkId ?? '', act.reason ?? '', act.credentialId ?? '', act.publicKey ?? ''])).toString('hex');
 const issued = new Map<string, { key: string; expires: number }>();
 
 export function isPurpose(p: unknown): p is Act['purpose'] {
@@ -164,7 +171,7 @@ export function consumeChallenge(challenge: string | null, act: Act, now = Date.
  * Verify an assertion for an act against the enrolled passkeys, consuming its
  * challenge and advancing the passkey's sign count. Throws with the reason.
  */
-export function authorise(assertion: Assertion | undefined, act: Act): Credential {
+export function authorise(assertion: Assertion | undefined, act: Act, origins: readonly string[] = DEFAULT_ORIGINS): Credential {
   if (!assertion || typeof assertion !== 'object') throw new Error('a passkey is enrolled on this board: sign this with it (the board asks for your fingerprint, face or PIN)');
   const creds = loadCredentials();
   const cred = creds.find(c => c.id === assertion.credentialId);
@@ -172,7 +179,7 @@ export function authorise(assertion: Assertion | undefined, act: Act): Credentia
   // Consumed before anything else can fail, so a refused assertion cannot be retried.
   if (!consumeChallenge(challenge, act)) throw new Error('the passkey signature is not for this act, was already used, or expired: sign it again');
   if (!cred) throw new Error('the assertion is from a passkey that is not enrolled on this board');
-  const { signCount } = verifyAssertion(assertion, cred, challenge!);
+  const { signCount } = verifyAssertion(assertion, cred, challenge!, origins);
   cred.signCount = signCount;
   saveCredentials(creds);
   return cred;
