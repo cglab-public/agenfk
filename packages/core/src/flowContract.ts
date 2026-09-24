@@ -8,7 +8,7 @@
  */
 import { stepCommitsOnLeave } from './gatekeeper';
 import {
-  CHECK_CATALOGUE, ROLE_BUILTINS, STEP_ROLES, flowChecksErrors, resolveStepChecks,
+  CHECK_CATALOGUE, ROLE_BUILTINS, STEP_ROLES, checkDef, flowChecksErrors, resolveStepChecks,
   type CheckParamDef, type CheckSeverity, type RecordName, type ResolvedCheck, type StepCheckRef, type StepRole,
 } from './flowChecks';
 
@@ -42,8 +42,8 @@ export function describeFlowContract(steps: unknown): FlowContract {
     // A step's own contract: resolveStepChecks also runs the terminal step's
     // checks on the move into it, which belong to the terminal step here.
     const checks = resolveStepChecks(list, name).filter(c => c.step === name || c.source === 'universal');
-    const produces = [...new Set(checks.filter(c => c.applicable).flatMap(c => CHECK_CATALOGUE[c.id]?.produces(c.params) ?? []))];
-    const consumes = [...new Set(checks.filter(c => c.applicable).flatMap(c => CHECK_CATALOGUE[c.id]?.requires(c.params) ?? []).filter(r => r !== 'stepEntryTests'))];
+    const produces = [...new Set(checks.filter(c => c.applicable).flatMap(c => checkDef(c.id)?.produces(c.params) ?? []))];
+    const consumes = [...new Set(checks.filter(c => c.applicable).flatMap(c => checkDef(c.id)?.requires(c.params) ?? []).filter(r => r !== 'stepEntryTests'))];
     // CGLAB-388: the same answer the server's commit gives.
     const commitsOnLeave = stepCommitsOnLeave(list as any, name) ?? null;
     return { name, role: typeof s.role === 'string' ? s.role : null, checks, onLeave, terminal, produces, consumes, commitsOnLeave };
