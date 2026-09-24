@@ -10,6 +10,7 @@ import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT, setTeleme
 import { checkClaudeCodeEnforcement, checkPiEnforcement } from './enforcement.js';
 import { execSync, execFileSync, spawn, spawnSync } from 'child_process';
 import { chooseOpenTarget } from './openTarget.js';
+import { onlyApprovalBlocks, waitAllowed, waitForApproval } from './approvalWait.js';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -3837,6 +3838,8 @@ program
   .command('verify <id> [command]')
   .description('Log evidence and advance item to next flow step (MCP fallback: validate_progress). [command] runs only on intermediate steps; on the final step the server runs the project verifyCommand.')
   .option('--evidence <text>', 'REQUIRED: How you satisfied the current step\'s exit criteria')
+  .option('--no-wait', 'When only a person\'s approval blocks the card, return at once instead of opening the board and waiting for it')
+  .option('--wait-minutes <n>', 'How long to wait for a person\'s approval before giving up (default 9)')
   .action(async (id, command, options) => {
     if (!options.evidence) {
       console.error(chalk.red('Error: --evidence is required. Describe how you satisfied the current step\'s exit criteria.'));
@@ -3869,72 +3872,120 @@ program
 
     // Follow an async validate run to completion, streaming output. No overall
     // deadline — the verifyCommand may legitimately run for a long time.
-    const follow = async (runId: string) => {
-      const final = await followValidateRun({
-        poll: async () => {
-          try {
-            return (await axios.get(`${API_URL}/items/validate-runs/${runId}`, { headers: { 'x-agenfk-internal': verifyToken }, timeout: 10000 })).data;
-          } catch (e: any) {
-            // 404 is a definitive answer (run expired / server restarted mid-run),
-            // not a connection blip — don't retry, surface the server's guidance.
-            if (e.response?.status === 404) {
-              const fatal: any = new Error(e.response.data?.message || 'The validation run is unknown to the server (it may have restarted). Check the item\'s comments for the persisted outcome before re-running verify.');
-              fatal.fatal = true;
-              throw fatal;
-            }
-            throw e;
+    const follow = (runId: string) => followValidateRun({
+      poll: async () => {
+        try {
+          return (await axios.get(`${API_URL}/items/validate-runs/${runId}`, { headers: { 'x-agenfk-internal': verifyToken }, timeout: 10000 })).data;
+        } catch (e: any) {
+          // 404 is a definitive answer (run expired / server restarted mid-run),
+          // not a connection blip — don't retry, surface the server's guidance.
+          if (e.response?.status === 404) {
+            const fatal: any = new Error(e.response.data?.message || 'The validation run is unknown to the server (it may have restarted). Check the item\'s comments for the persisted outcome before re-running verify.');
+            fatal.fatal = true;
+            throw fatal;
           }
-        },
-        onOutput: (chunk: string) => process.stdout.write(chunk),
-      });
-      if (final.status === 'passed') {
-        console.log(chalk.green(final.message || `\n✅ Validation passed.`));
-      } else {
-        console.error(chalk.red(`\n❌ ${final.message || 'Validation failed.'}`));
-        process.exit(1);
+          throw e;
+        }
+      },
+      onOutput: (chunk: string) => process.stdout.write(chunk),
+    });
+
+    /** One verify: its outcome, never an exit. Throws only when following a run fails. */
+    const attempt = async (): Promise<{ ok: boolean; message?: string; output?: string; checks?: Array<{ id: string; blocking?: boolean }> }> => {
+      try {
+        // Report the caller's cwd so the server can run the verifyCommand in this
+        // project's directory (resolved up to the repo root), not the daemon's own
+        // cwd — matching the MCP validate_progress path (CGLAB-13).
+        const body: any = { evidence: options.evidence, async: true, cwd: process.cwd() };
+        // Who is advancing the card (CGLAB-381), so a review check can tell an
+        // independent reviewer apart from the author.
+        const actor = harnessActor();
+        if (actor) body.actor = actor;
+        if (command) body.command = command;
+        // 5-minute POST timeout: a NEW server answers 202 in milliseconds, but an
+        // OLD server (upgrade window) ignores async:true and blocks for the whole
+        // command — keep the previous ceiling so that path doesn't regress.
+        const res = await axios.post(`${API_URL}/items/${targetId}/validate`, body, { headers: { 'x-agenfk-internal': verifyToken }, timeout: 300000 });
+        if (res.status === 202 && res.data?.runId) {
+          console.log(chalk.blue(res.data.message || `⏳ Validation running in background…`));
+          const final = await follow(res.data.runId);
+          return { ok: final.status === 'passed', message: final.message, checks: final.checks };
+        }
+        // Synchronous fast-path (no command executed: anchor advance, sibling
+        // propagation, intermediate step without command).
+        return { ok: true, message: res.data.message, output: res.data.output };
+      } catch (error: any) {
+        const errData = error.response?.data;
+        // A run is already active for this item — follow it instead of failing.
+        if (errData?.error === 'VALIDATE_RUN_ACTIVE' && errData.runId) {
+          console.log(chalk.yellow(errData.message || 'A validation run is already active — following it.'));
+          const final = await follow(errData.runId);
+          return { ok: final.status === 'passed', message: final.message, checks: final.checks };
+        }
+        if (errData === undefined && (error?.fatal || !error?.response)) throw error;
+        return { ok: false, message: errData?.message || errData?.error || error.message, output: errData?.output, checks: errData?.checks };
       }
     };
 
-    try {
-      // Report the caller's cwd so the server can run the verifyCommand in this
-      // project's directory (resolved up to the repo root), not the daemon's own
-      // cwd — matching the MCP validate_progress path (CGLAB-13).
-      const body: any = { evidence: options.evidence, async: true, cwd: process.cwd() };
-      // Who is advancing the card (CGLAB-381), so a review check can tell an
-      // independent reviewer apart from the author.
-      const actor = harnessActor();
-      if (actor) body.actor = actor;
-      if (command) body.command = command;
-      // 5-minute POST timeout: a NEW server answers 202 in milliseconds, but an
-      // OLD server (upgrade window) ignores async:true and blocks for the whole
-      // command — keep the previous ceiling so that path doesn't regress.
-      const res = await axios.post(`${API_URL}/items/${targetId}/validate`, body, { headers: { 'x-agenfk-internal': verifyToken }, timeout: 300000 });
-      if (res.status === 202 && res.data?.runId) {
-        console.log(chalk.blue(res.data.message || `⏳ Validation running in background…`));
-        await follow(res.data.runId);
+    /*
+     * c857900e: when a person's approval is the only thing holding the card,
+     * open the board on it and wait for the go-ahead, then verify again - the
+     * agent carries on with no message in its chat. Bounded: an agent's tool
+     * call is killed after minutes, so past the deadline it says to run the
+     * same verify again, which waits again.
+     */
+    const canWait = waitAllowed(process.env, { wait: options.wait });
+    const waitMinutes = options.waitMinutes !== undefined && Number.isFinite(Number(options.waitMinutes)) ? Math.max(0, Number(options.waitMinutes)) : 9;
+    const pollMs = Number(process.env.AGENFK_APPROVAL_POLL_MS) || 3000;
+    const gatesNow = async () => (await axios.get(`${API_URL}/items/${targetId}/gates`, { timeout: 10000 })).data;
+    let opened = false;
+    // An approval that lands but does not let the card go is not waited on forever.
+    for (let round = 0; round < 5; round++) {
+      let r: Awaited<ReturnType<typeof attempt>>;
+      try {
+        r = await attempt();
+      } catch (e: any) {
+        console.error(chalk.red(`\n❌ ${e?.message || e}`));
+        process.exit(1);
         return;
       }
-      // Synchronous fast-path (no command executed: anchor advance, sibling
-      // propagation, intermediate step without command).
-      if (res.data.output) console.log(res.data.output);
-      console.log(chalk.green(res.data.message || `\n✅ Validation passed.`));
-    } catch (error: any) {
-      const errData = error.response?.data;
-      // A run is already active for this item — follow it instead of failing.
-      if (errData?.error === 'VALIDATE_RUN_ACTIVE' && errData.runId) {
-        console.log(chalk.yellow(errData.message || 'A validation run is already active — following it.'));
-        try {
-          await follow(errData.runId);
-        } catch (followErr: any) {
-          console.error(chalk.red(`\n❌ ${followErr?.message || followErr}`));
-          process.exit(1);
-        }
+      if (r.ok) {
+        if (r.output) console.log(r.output);
+        console.log(chalk.green(r.message || `\n✅ Validation passed.`));
         return;
       }
-      if (errData?.output) console.error(errData.output);
-      console.error(chalk.red(`\n❌ ${errData?.message || errData?.error || error.message}`));
-      process.exit(1);
+      if (r.output) console.error(r.output);
+      console.error(chalk.red(`\n❌ ${r.message || 'Validation failed.'}`));
+      if (!onlyApprovalBlocks(r.checks)) { process.exit(1); return; }
+      if (!canWait) {
+        console.error(chalk.yellow(`A person must approve this step on the board: agenfk ui --open ${targetId}`));
+        process.exit(1);
+        return;
+      }
+      let before: { step?: string; approvals?: unknown[] } | null = null;
+      try { before = await gatesNow(); } catch { /* the wait polls again */ }
+      if (!opened) {
+        spawnSync(process.execPath, [process.argv[1], 'ui', '--open', targetId], { stdio: 'inherit' });
+        opened = true;
+      }
+      console.log(chalk.cyan(`⏳ Waiting up to ${waitMinutes} min for a person to approve ${before?.step ?? 'this step'} on the board…`));
+      const outcome = await waitForApproval({
+        step: before?.step ?? '',
+        approvalsBefore: before?.approvals?.length ?? 0,
+        // Without a baseline, only an approval counts, never a step we could not read.
+        poll: async () => { const g = await gatesNow(); return before ? g : { ...g, step: '' }; },
+        intervalMs: pollMs,
+        deadlineMs: waitMinutes * 60_000,
+      });
+      if (outcome === 'timeout') {
+        console.error(chalk.yellow(`Still waiting for a person's approval (agenfk ui --open ${targetId}). Once it is given, run the same agenfk verify again: it waits again and carries on.`));
+        process.exit(1);
+        return;
+      }
+      console.log(chalk.green('✅ Approved on the board — verifying again.'));
     }
+    console.error(chalk.red('\n❌ The card was approved but is still refused: check its step checks on the board.'));
+    process.exit(1);
   });
 
 // ── Branch commands ──────────────────────────────────────────────────────────
