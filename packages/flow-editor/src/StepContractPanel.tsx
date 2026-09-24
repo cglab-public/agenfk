@@ -272,6 +272,30 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
         )}
       </div>
 
+      {/* Commit on leave (CGLAB-388) */}
+      <div data-testid="contract-commit" className={clsx('space-y-2', chip)}>
+        <label className="flex items-start gap-2">
+          <input type="checkbox" checked={!!step.autoCommit} disabled={disabled}
+            onChange={e => onChange(e.target.checked ? { autoCommit: true } : { autoCommit: null, requireCommit: null })}
+            className="mt-1" />
+          <span>
+            <span className="font-medium">Commit the card's work when it leaves this step</span>
+            <span className="block text-xs text-slate-500 dark:text-slate-400">Only what the agent staged, and only the card's own files. One commit per step makes each step's work reviewable on its own.</span>
+          </span>
+        </label>
+        {step.autoCommit && (
+          <label className="flex items-start gap-2 pl-6 text-xs">
+            <input type="checkbox" checked={!!step.requireCommit} disabled={disabled}
+              onChange={e => onChange({ requireCommit: e.target.checked ? true : null })}
+              className="mt-0.5" />
+            <span>
+              <span className="font-medium">Refuse to move on without it</span>
+              <span className="block text-slate-500 dark:text-slate-400">If nothing was staged or the commit fails, the card stays in this step.</span>
+            </span>
+          </label>
+        )}
+      </div>
+
       {/* What an agent must do */}
       <div data-testid="contract-preview" className="space-y-1 rounded-lg bg-slate-50 dark:bg-slate-900 px-3 py-2">
         <div className={section}>What an agent must do to leave this step</div>

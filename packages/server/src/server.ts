@@ -1119,8 +1119,8 @@ async function placeCaller(
   return at === testedTop ? { kind: 'tested' } : { kind: 'other', checkout: at, testedTop };
 }
 
-export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null | undefined): Promise<AutoGitCommitResult> => {
-  const message = `close(${item.type.toLowerCase()}): ${item.title} [${item.id}]`;
+export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null | undefined, opts: { message?: string } = {}): Promise<AutoGitCommitResult> => {
+  const message = opts.message ?? `close(${item.type.toLowerCase()}): ${item.title} [${item.id}]`;
   const stamp = () => new Date().toISOString();
   const done = (r: AutoGitCommitResult): AutoGitCommitResult => {
     const line = r.outcome === 'committed' ? `Committed: "${message}"` : `${r.outcome}: ${r.detail ?? ''}`;
@@ -1181,6 +1181,7 @@ export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null
     root,
     { run: args => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) },
     (item as any).claims,
+    { message },
   );
   if (result.committed) {
     return done({
@@ -6026,6 +6027,36 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     (exitRecord as any).checks = gate.results;
     const warned = gate.results.filter(r => !r.blocking && (r.outcome === 'fail' || r.outcome === 'unavailable'));
     if (warned.length) res = withNote(res, `⚠️ Check warnings (not blocking):\n${formatCheckResults(warned)}`);
+  }
+
+  /*
+   * CGLAB-388: a step with autoCommit commits the card's work as the card
+   * leaves it - only what is staged, only the card's claimed files, the same
+   * commit the close makes, named for the step. Not on the move that ends the
+   * flow: the close commit covers it, and would find nothing staged after.
+   * A missing commit is a note, unless the step requires one.
+   */
+  {
+    const leaving: any = currentFlowStep.step;
+    const nx: any = sorted[currentFlowStep.index + 1];
+    const endsHere = !nx || nx.name === Status.DONE || isBoundaryStep(nx);
+    if (leaving.autoCommit === true && !endsHere) {
+      const stepMessage = `step(${item.status}): ${item.title} [${item.id}]`;
+      const r = await autoGitCommit(item as any, (project as any)?.projectRoot, { message: stepMessage });
+      const SHOWN = 20;
+      const loose = r.unstaged.length
+        ? `\nNot staged, so not committed: ${r.unstaged.slice(0, SHOWN).map(f => `\`${f}\``).join(', ')}${r.unstaged.length > SHOWN ? ` and ${r.unstaged.length - SHOWN} more` : ''}.`
+        : '';
+      if (r.committed) {
+        const sha = effectiveRoot ? readHead(effectiveRoot, gitRun) : null;
+        (exitRecord as any).commit = sha;
+        res = withNote(res, `📌 Step commit ${sha ? sha.slice(0, 12) : ''}: "${stepMessage}".${loose}`);
+      } else if (leaving.requireCommit === true) {
+        return res.status(422).json({ status: item.status, message: `❌ This step requires a commit of the card's work when it leaves, and none was made: ${r.detail}${loose}${staysOn(item.status)}` });
+      } else {
+        res = withNote(res, `⚠️ No step commit: ${r.detail}${loose}`);
+      }
+    }
   }
 
   if (currentFlowStep.step.isAnchor) {

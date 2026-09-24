@@ -112,9 +112,11 @@ export function commitStagedForCard(
    * just because it arrived through a different door.
    */
   claims?: readonly string[],
+  /** A step commit (CGLAB-388) names its step instead of closing the card. */
+  opts: { message?: string } = {},
 ): CloseCommitResult {
   const at = (...args: string[]): string[] => ['-C', repoRoot, ...args];
-  const message = `close(${card.type.toLowerCase()}): ${card.title} [${card.id}]`;
+  const message = opts.message ?? `close(${card.type.toLowerCase()}): ${card.title} [${card.id}]`;
   const paths = (claims ?? []).filter(isWellFormedClaim);
 
   let staged: string;

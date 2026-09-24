@@ -18,6 +18,9 @@ export interface FlowStep {
   role?: string | null;
   /** CGLAB-380: checks this flow adds to the step. */
   checks?: StepCheckRef[] | null;
+  /** CGLAB-388: commit the card's work when it leaves the step, and whether that is required. */
+  autoCommit?: boolean | null;
+  requireCommit?: boolean | null;
 }
 
 /** A check as a flow step lists it (CGLAB-380). */

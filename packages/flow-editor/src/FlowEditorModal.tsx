@@ -239,6 +239,8 @@ function serializeDefinition(
       // CGLAB-384: a change to a role or a check is a change to the flow.
       ...(typeof s?.role === 'string' && s.role ? { role: s.role } : {}),
       ...(Array.isArray(s?.checks) && s.checks.length ? { checks: s.checks } : {}),
+      ...(s?.autoCommit ? { autoCommit: true } : {}),
+      ...(s?.requireCommit ? { requireCommit: true } : {}),
     }))
     .sort((a, b) => a.order - b.order);
   return JSON.stringify({ name, description, steps: canonical });

@@ -271,6 +271,14 @@ export function flowChecksErrors(steps: unknown): string[] {
       if (s.role === 'closing') errors.push(`Step ${name}: role 'closing' belongs to the step that ends the flow, where the project's verify command runs; here nothing would run it.`);
       if (refsOf(s).some(c => c.id === 'server-owned-verify')) errors.push(`Step ${name}: check 'server-owned-verify' only runs on the transition that ends the flow; here it would never run. Use 'suite-green' to require a green suite on this step.`);
     }
+    // CGLAB-388: the step commit flags.
+    const flags = s as AnyStep & { autoCommit?: unknown; requireCommit?: unknown };
+    for (const k of ['autoCommit', 'requireCommit'] as const) {
+      if (flags[k] !== undefined && flags[k] !== null && typeof flags[k] !== 'boolean') errors.push(`Step ${name}: ${k} must be true or false.`);
+    }
+    if (flags.requireCommit === true && flags.autoCommit !== true) {
+      errors.push(`Step ${name}: requireCommit needs autoCommit on: a step can only require the commit it makes.`);
+    }
     if (s.role !== undefined && s.role !== null && !isRole(s.role)) {
       errors.push(`Step ${name}: unknown role ${JSON.stringify(s.role)}. Roles: ${STEP_ROLES.join(', ')}.`);
     }
@@ -322,20 +330,20 @@ export function flowChecksErrors(steps: unknown): string[] {
  * empty list) clears it. An older editor that knows nothing about contracts
  * therefore never wipes one. A step with a new id starts empty.
  */
-export function mergeStepContracts<T extends Record<string, any>>(incoming: T[], stored: readonly Record<string, any>[] | undefined): Array<T & { role?: any; checks?: any }> {
+export function mergeStepContracts<T extends Record<string, any>>(incoming: T[], stored: readonly Record<string, any>[] | undefined): Array<T & { role?: any; checks?: any; autoCommit?: any; requireCommit?: any }> {
   if (!Array.isArray(incoming)) return incoming;
   const byId = new Map((stored ?? []).filter(s => s && typeof s.id === 'string').map(s => [s.id, s]));
   return incoming.map(step => {
     if (!step || typeof step !== 'object') return step;
     const prev = typeof step.id === 'string' ? byId.get(step.id) : undefined;
     const out: Record<string, any> = { ...step };
-    for (const k of ['role', 'checks'] as const) {
+    for (const k of ['role', 'checks', 'autoCommit', 'requireCommit'] as const) {
       if (!Object.prototype.hasOwnProperty.call(step, k)) {
         if (prev && prev[k] !== undefined && prev[k] !== null) out[k] = prev[k];
       } else if (step[k] === null || (k === 'checks' && Array.isArray(step[k]) && step[k].length === 0)) {
         delete out[k];
       }
     }
-    return out as T & { role?: any; checks?: any };
+    return out as T & { role?: any; checks?: any; autoCommit?: any; requireCommit?: any };
   });
 }

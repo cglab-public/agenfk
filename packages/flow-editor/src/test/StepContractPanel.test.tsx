@@ -134,6 +134,20 @@ describe('StepContractPanel', () => {
     expect(screen.getByTestId('contract-preview').textContent).toMatch(/checked when a card moves into this step/i);
   });
 
+  it("turns on committing the card's work when it leaves the step, and requiring it", () => {
+    const onChange = show(flow());
+    fireEvent.click(screen.getByRole('checkbox', { name: /commit the card's work when it leaves/i }));
+    expect(onChange).toHaveBeenLastCalledWith({ autoCommit: true });
+  });
+
+  it('requiring the commit, and turning it off again', () => {
+    const onChange = show(flow({ autoCommit: true }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /refuse to move on/i }));
+    expect(onChange).toHaveBeenLastCalledWith({ requireCommit: true });
+    fireEvent.click(screen.getByRole('checkbox', { name: /commit the card's work when it leaves/i }));
+    expect(onChange).toHaveBeenLastCalledWith({ autoCommit: null, requireCommit: null });
+  });
+
   it('read-only: shows the contract, offers no controls', () => {
     show(flow({ checks: [{ id: 'jira-key-valid' }] }), 2, true);
     expect(screen.queryByRole('button', { name: /add a check/i })).toBeNull();

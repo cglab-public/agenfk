@@ -12,10 +12,13 @@ import { hasStepContracts } from './flowChecks';
 type AnyStep = { role?: unknown; checks?: unknown; [k: string]: unknown };
 
 /** The contract fields a registry step carries: only the ones the step has. */
-export function stepContractFields(step: AnyStep): { role?: string; checks?: unknown[] } {
+export function stepContractFields(step: AnyStep): { role?: string; checks?: unknown[]; autoCommit?: true; requireCommit?: true } {
   return {
     ...(typeof step?.role === 'string' && step.role ? { role: step.role } : {}),
     ...(Array.isArray(step?.checks) && step.checks.length ? { checks: step.checks } : {}),
+    // CGLAB-388: the step commit flags are part of the step's contract too.
+    ...(step?.autoCommit === true ? { autoCommit: true as const } : {}),
+    ...(step?.requireCommit === true ? { requireCommit: true as const } : {}),
   };
 }
 

@@ -289,6 +289,8 @@ export const FLOW_STEP_FIELDS = [
   'id', 'name', 'label', 'order', 'exitCriteria', 'color', 'icon', 'isAnchor', 'isSpecial',
   // CGLAB-380: what the step IS and what it adds. Validated by flowChecksErrors.
   'role', 'checks',
+  // CGLAB-388: commit the card's work when it leaves the step.
+  'autoCommit', 'requireCommit',
 ] as const;
 
 /**

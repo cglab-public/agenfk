@@ -648,6 +648,10 @@ export interface FlowStep {
   role?: import('./flowChecks').StepRole | null;
   /** Checks the flow adds to this step (CGLAB-380). A flow can add, never remove. */
   checks?: import('./flowChecks').StepCheckRef[] | null;
+  /** Commit the card's work when it leaves this step (CGLAB-388). */
+  autoCommit?: boolean | null;
+  /** With autoCommit: refuse to leave the step when that commit does not happen. */
+  requireCommit?: boolean | null;
 }
 
 export interface Flow {
