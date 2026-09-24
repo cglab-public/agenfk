@@ -397,6 +397,28 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "record_review",
+        description: "Record an independent review of a card (CGLAB-381). The server reads the reviewer's identity from `transcript` (the REVIEWER's session log, e.g. a Claude Code sub-agent's <session>/subagents/agent-<id>.jsonl), so the reviewer must not be the author. CLI: agenfk review record.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            itemId: { type: "string" },
+            transcript: { type: "string", description: "Path of the reviewer's session log, under ~/.claude/projects, ~/.pi/agent/sessions or ~/.codex/sessions." },
+            range: { type: "string", description: "<from>..<to>: the commits the review covered." },
+            findings: {
+              type: "array",
+              description: "Each finding and its fate: fixed, or rejected with a reason. [] when nothing was found.",
+              items: {
+                type: "object",
+                properties: { title: { type: "string" }, state: { type: "string", enum: ["fixed", "rejected"] }, reason: { type: "string" } },
+                required: ["title", "state"],
+              },
+            },
+          },
+          required: ["itemId", "transcript", "range", "findings"],
+        },
+      },
+      {
         name: "add_comment",
         description: "Add a comment to an item to log progress or steps.",
         inputSchema: {
@@ -712,7 +734,10 @@ async function callToolHandler(request: any): Promise<any> {
       }
       case "validate_progress": {
         const { itemId, evidence, command } = z.object({ itemId: z.string(), evidence: z.string(), command: z.string().optional() }).parse(request.params.arguments);
-        const result = await validateViaApi(itemId, { evidence, command, cwd: process.cwd() });
+        // The author, as the harness that launched this MCP server names it (CGLAB-381).
+        const sid = process.env.CLAUDE_CODE_SESSION_ID;
+        const actor = typeof sid === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(sid) ? { client: 'claude-code', sessionId: sid } : undefined;
+        const result = await validateViaApi(itemId, { evidence, command, cwd: process.cwd(), ...(actor ? { actor } : {}) });
         if (!result.ok) return { isError: true, content: [{ type: "text", text: result.text }] };
         return { content: [{ type: "text", text: result.text }] };
       }
@@ -985,6 +1010,17 @@ async function callToolHandler(request: any): Promise<any> {
         if (args.limit) params.limit = args.limit;
         const { data } = await api.get('/token-events', { params });
         return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+      }
+      case "record_review": {
+        const { itemId, transcript, range, findings } = z.object({
+          itemId: z.string(), transcript: z.string(), range: z.string(), findings: z.array(z.any()),
+        }).parse(request.params.arguments);
+        try {
+          const { data } = await api.post(`/items/${itemId}/review-records`, { transcript, range, findings }, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
+          return { content: [{ type: "text", text: `✅ Review recorded by ${data.reviewer.client} session ${data.reviewer.sessionId}${data.reviewer.agentId ? `, agent ${data.reviewer.agentId}` : ''}: ${data.findings.length} finding(s).` }] };
+        } catch (error: any) {
+          return { isError: true, content: [{ type: "text", text: error.response?.data?.error || error.message }] };
+        }
       }
       case "add_comment": {
         const args = AddCommentSchema.parse(request.params.arguments);

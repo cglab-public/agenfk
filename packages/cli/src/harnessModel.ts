@@ -489,3 +489,27 @@ export function resolveFromOptions(
     harness: options.harness,
   });
 }
+
+/**
+ * The session this CLI runs in, as its harness names it (CGLAB-381): the
+ * AUTHOR identity `agenfk verify` reports, so a review check can tell an
+ * independent reviewer from whoever advanced the card. Read from the variables
+ * the harness exports to every tool shell, never from a flag an agent fills in.
+ *   - pi: PI_SESSION_FILE, under pi's own sessions folder; the id is the
+ *     session header's, which is what a transcript check reads back.
+ *   - Claude Code: CLAUDE_CODE_SESSION_ID. A sub-agent inherits it, so a
+ *     verify from a sub-agent counts as its parent session's - the cautious
+ *     direction for an author identity.
+ * Null when neither names a session.
+ */
+export function harnessActor(env: NodeJS.ProcessEnv = process.env, home: string = os.homedir()): { client: string; sessionId: string } | null {
+  const file = env.PI_SESSION_FILE;
+  const piRoot = path.join(home, '.pi', 'agent', 'sessions') + path.sep;
+  if (typeof file === 'string' && file.endsWith('.jsonl') && file.startsWith(piRoot) && isFile(file)) {
+    const header = records(file, 5).find(r => r && r.type === 'session' && typeof r.id === 'string');
+    if (header) return { client: 'pi', sessionId: header.id };
+  }
+  const id = env.CLAUDE_CODE_SESSION_ID;
+  if (typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id)) return { client: 'claude-code', sessionId: id };
+  return null;
+}

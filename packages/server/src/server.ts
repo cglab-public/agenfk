@@ -5,6 +5,7 @@ import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
 import { commitStagedForCard, resolveCommitRoot } from './closeCommit';
 import { mayPropagate, readCleanTreeSha, readHead, readTreeStatus } from './propagation';
 import { insideRoot, parseJunitXml, parseVitestJson, surfaceOf } from './stepRecords';
+import { parseActor, parseFindings, readTranscriptIdentity } from './reviewRecords';
 import { evaluateChecks, formatCheckResults, needsCapture, needsEntryRecord, type CheckResult } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks } from "@agenfk/core";
@@ -2473,6 +2474,62 @@ app.put("/projects/:id/test-report", asyncHandler(async (req: any, res: any) => 
   }
   io.emit('items_updated');
   res.json(updated);
+}));
+
+/**
+ * Record an independent review of a card (CGLAB-381): the reviewer's
+ * transcript, the commit range it reviewed, and what became of each finding.
+ * The reviewer's identity is read from the transcript - never from the
+ * request - and the transcript must have been written after the range's tip
+ * commit, or it cannot have reviewed it. Server-written only: PUT
+ * /items/:id never accepts `reviewRecords`.
+ */
+app.post("/items/:id/review-records", asyncHandler(async (req: any, res: any) => {
+  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const item: any = await storage.getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: "Item not found" });
+  const body = req.body ?? {};
+  let reviewer: ReturnType<typeof readTranscriptIdentity>;
+  let findings: ReturnType<typeof parseFindings>;
+  try {
+    reviewer = readTranscriptIdentity(body.transcript);
+    findings = parseFindings(body.findings);
+  } catch (e: any) {
+    return res.status(400).json({ error: e?.message ?? String(e) });
+  }
+  const m = typeof body.range === 'string' ? /^\s*([^\s.]+)\.\.([^\s.]+)\s*$/.exec(body.range) : null;
+  if (!m) return res.status(400).json({ error: 'range must be <from>..<to>: the commits the review covered' });
+  const project: any = await storage.getProject(item.projectId);
+  const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
+  if (!root) return res.status(400).json({ error: 'This card has no tree to read the range from: set the project root or give the card a worktree.' });
+  const git = (args: string[]) => gitRun.run(['-C', root, ...args]).trim();
+  let from: string;
+  let to: string;
+  let tipAt: string;
+  try {
+    from = git(['rev-parse', '--verify', `${m[1]}^{commit}`]);
+    to = git(['rev-parse', '--verify', `${m[2]}^{commit}`]);
+    tipAt = git(['show', '-s', '--format=%cI', to]);
+  } catch {
+    return res.status(400).json({ error: `range ${body.range} names a commit this card's tree (${root}) does not have` });
+  }
+  try { git(['merge-base', '--is-ancestor', from, to]); } catch {
+    return res.status(400).json({ error: `range ${body.range}: ${m[1]} is not an ancestor of ${m[2]}` });
+  }
+  if (!reviewer.lastAt || Date.parse(reviewer.lastAt) < Date.parse(tipAt)) {
+    return res.status(400).json({ error: `The transcript was last written ${reviewer.lastAt ?? 'at no recorded time'}, before the range's tip commit (${tipAt}): it cannot have reviewed it.` });
+  }
+  const rec = {
+    id: uuidv4(), at: new Date().toISOString(),
+    reviewer: { client: reviewer.client, sessionId: reviewer.sessionId, agentId: reviewer.agentId, transcript: reviewer.transcript },
+    range: { from, to }, findings,
+  };
+  const fresh: any = await storage.getItem(item.id);
+  await storage.updateItem(item.id, { reviewRecords: [...(fresh?.reviewRecords ?? []), rec] } as any);
+  io.emit('items_updated');
+  res.status(201).json(rec);
 }));
 
 /** A card's step records: what each step left behind (exit) and any captured reports. */
@@ -5468,7 +5525,7 @@ function runRecorder(run: ValidateRun) {
   };
 }
 
-async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string, asyncRun?: ValidateRun, opts?: { gate?: StepGate; run?: ValidateRun }) {
+async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string, asyncRun?: ValidateRun, opts?: { gate?: StepGate; run?: ValidateRun; actor?: ReturnType<typeof parseActor> }) {
   const item = await storage.getItem(itemId);
   if (!item) return res.status(404).json({ error: "Item not found" });
 
@@ -5506,6 +5563,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     step: item.status, kind: 'exit' as const, at: new Date().toISOString(),
     head: effectiveRoot ? readHead(effectiveRoot, gitRun) : null,
     clean: effectiveRoot ? readCleanTreeSha(effectiveRoot, gitRun) !== null : false,
+    // Who advanced the card, as its harness reports it (CGLAB-381): the review
+    // check tells the reviewer apart from every author by this.
+    ...(opts?.actor ? { actor: opts.actor } : {}),
   };
   /** The card's records plus this one; built at write time, after any re-read. */
   const withExitRecord = () => [...((item as any).stepRecords ?? []), exitRecord];
@@ -5542,7 +5602,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         if (!fresh) return recorder.status(404).json({ status: item.status, message: '❌ Item was deleted while the checks ran.' });
         const g = await runStepGate(fresh, activeFlow, effectiveRoot ?? null);
         if (g.blocked) return refuseOnChecks(recorder, fresh, g);
-        return handleValidateProgress(itemId, command, recorder, undefined, undefined, { gate: g, run });
+        return handleValidateProgress(itemId, command, recorder, undefined, undefined, { gate: g, run, actor: opts?.actor });
       })()
         .catch((err: any) => {
           run.status = 'failed';
@@ -6431,7 +6491,7 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
     validateRuns.set(run.runId, run);
     activeValidateRunByItem.set(req.params.id, run.runId);
     try {
-      return await handleValidateProgress(req.params.id, req.body.command || undefined, res, req.body.evidence || undefined, run);
+      return await handleValidateProgress(req.params.id, req.body.command || undefined, res, req.body.evidence || undefined, run, { actor: parseActor(req.body.actor) });
     } finally {
       // A sync fast-path (anchor, sibling propagation, no-command, error)
       // responded without ever starting the command — discard the reservation.
@@ -6441,7 +6501,7 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
       }
     }
   }
-  return handleValidateProgress(req.params.id, req.body.command || undefined, res, req.body.evidence || undefined);
+  return handleValidateProgress(req.params.id, req.body.command || undefined, res, req.body.evidence || undefined, undefined, { actor: parseActor(req.body.actor) });
 }));
 
 /** 409 if the item already has a live background validate run. Returns true when it responded. */

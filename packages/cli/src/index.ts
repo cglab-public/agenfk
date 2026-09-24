@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { resolveFromOptions } from './harnessModel.js';
+import { harnessActor, resolveFromOptions } from './harnessModel.js';
 import figlet from 'figlet';
 import axios from 'axios';
 import { ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, isHubRelease, isUpgrade, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
@@ -3767,6 +3767,42 @@ program
     }
   });
 
+const reviewCmd = program
+  .command('review')
+  .description('Record independent reviews (CGLAB-381)');
+
+reviewCmd
+  .command('record <id>')
+  .description('Record an independent review of a card. The server reads the reviewer\'s identity from --transcript (a session log under ~/.claude/projects, ~/.pi/agent/sessions or ~/.codex/sessions), so the reviewer must not be the author. MCP: record_review.')
+  .requiredOption('--transcript <path>', 'The REVIEWER\'s session log, e.g. a Claude Code sub-agent\'s <session>/subagents/agent-<id>.jsonl')
+  .requiredOption('--range <from..to>', 'The commits the review covered')
+  .requiredOption('--findings <json>', 'JSON list of { "title", "state": "fixed"|"rejected", "reason"? } ([] when nothing was found)')
+  .action(async (id, options) => {
+    let findings: unknown;
+    try { findings = JSON.parse(options.findings); } catch {
+      console.error(chalk.red('Error: --findings must be JSON, e.g. [{"title":"null check in x","state":"fixed"}]'));
+      process.exit(1);
+      return;
+    }
+    const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
+    if (!fs.existsSync(tokenPath)) {
+      console.error(chalk.red('Error: ~/.agenfk/verify-token not found.'));
+      process.exit(1);
+      return;
+    }
+    const verifyToken = fs.readFileSync(tokenPath, 'utf8').trim();
+    try {
+      const { data } = await axios.post(`${API_URL}/items/${id}/review-records`,
+        { transcript: options.transcript, range: options.range, findings },
+        { headers: { 'x-agenfk-internal': verifyToken } });
+      const who = data?.reviewer ? `${data.reviewer.client} session ${data.reviewer.sessionId}${data.reviewer.agentId ? `, agent ${data.reviewer.agentId}` : ''}` : 'the reviewer';
+      console.log(chalk.green(`✅ Review recorded for [${String(id).slice(0, 8)}] by ${who}: ${(data?.findings ?? []).length} finding(s).`));
+    } catch (e: any) {
+      console.error(chalk.red(`❌ ${e.response?.data?.error || e.message}`));
+      process.exit(1);
+    }
+  });
+
 program
   .command('verify <id> [command]')
   .description('Log evidence and advance item to next flow step (MCP fallback: validate_progress). [command] runs only on intermediate steps; on the final step the server runs the project verifyCommand.')
@@ -3834,6 +3870,10 @@ program
       // project's directory (resolved up to the repo root), not the daemon's own
       // cwd — matching the MCP validate_progress path (CGLAB-13).
       const body: any = { evidence: options.evidence, async: true, cwd: process.cwd() };
+      // Who is advancing the card (CGLAB-381), so a review check can tell an
+      // independent reviewer apart from the author.
+      const actor = harnessActor();
+      if (actor) body.actor = actor;
       if (command) body.command = command;
       // 5-minute POST timeout: a NEW server answers 202 in milliseconds, but an
       // OLD server (upgrade window) ignores async:true and blocks for the whole
