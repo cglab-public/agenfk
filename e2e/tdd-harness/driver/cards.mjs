@@ -48,7 +48,7 @@ let seq = 0;
  * A fresh project on its own flow. `steps` is the flow; `testReport: false`
  * leaves the project without one (per-test checks are then unavailable).
  */
-export async function newProject({ steps, files = SAMPLE, testReport = true, verifyCommand = TEST_COMMAND } = {}) {
+export async function newProject({ steps, files = SAMPLE, testReport = true, verifyCommand = TEST_COMMAND, root = true } = {}) {
   const n = ++seq;
   const dir = `/work/projects/p${n}`;
   mkdirSync(dir, { recursive: true });
@@ -60,7 +60,8 @@ export async function newProject({ steps, files = SAMPLE, testReport = true, ver
   if (project.status >= 300) throw new Error(`project refused (${project.status}): ${JSON.stringify(project.body)}`);
   const id = project.body.id;
   const must = async (label, p) => { const r = await p; if (r.status >= 300) throw new Error(`${label} refused (${r.status}): ${JSON.stringify(r.body)}`); return r; };
-  await must('project root', api('PUT', `/projects/${id}/project-root`, { projectRoot: dir }, { headers: internal() }));
+  // `root: false` leaves the project with no tree: the checks that read git are then unavailable.
+  if (root) await must('project root', api('PUT', `/projects/${id}/project-root`, { projectRoot: dir }, { headers: internal() }));
   await must('flow', api('POST', `/projects/${id}/flow`, { flowId: flow.body.id }));
   if (verifyCommand) await must('verify command', api('PUT', `/projects/${id}/verify-command`, { verifyCommand }, { headers: internal() }));
   if (testReport) {
@@ -85,4 +86,43 @@ export const card = async id => (await api('GET', `/items/${id}`)).body;
  */
 export async function verify(id, { evidence = 'harness', command, actor } = {}) {
   return api('POST', `/items/${id}/validate`, { evidence, ...(command ? { command } : {}), ...(actor ? { actor } : {}) }, { headers: internal() });
+}
+
+export const update = (id, patch) => api('PUT', `/items/${id}`, patch);
+
+const WORK_FLOW = checks => [
+  { name: 'TODO', label: 'To Do', order: 0, isAnchor: true },
+  { name: 'WORK', label: 'Work', order: 1, checks },
+  { name: 'NEXT', label: 'Next', order: 2 },
+  { name: 'DONE', label: 'Done', order: 3, isAnchor: true },
+];
+
+/**
+ * The shape of most check scenarios: `check` is the only thing on WORK; a card
+ * is verified onto WORK, `prepare` sets the tree and the card up, then the
+ * card is verified off WORK and the check's verdict is read off it.
+ */
+export async function checkOnWork(checkId, { params, project: projectOpts = {}, card: cardOpts = {}, prepare, before, at = 'WORK' } = {}) {
+  const project = await newProject({ steps: WORK_FLOW([{ id: checkId, ...(params ? { params } : {}) }]), ...projectOpts });
+  const id = await newCard(project, cardOpts);
+  if (before) await before({ project, id, dir: project.dir });
+  // Leaving TODO runs the entry guard (tree-clean, on-card-branch) on every
+  // flow with checks: `at: 'TODO'` reads a check's verdict there instead.
+  if (at === 'TODO') {
+    const r = await verify(id);
+    const c = await card(id);
+    const o = outcomeOf(c, checkId, 'TODO');
+    const actual = o.outcome === 'fail' && o.blocking && c.status !== 'TODO' ? 'fail-but-moved' : o.outcome;
+    return { actual, detail: `${o.detail ?? ''} [verify ${r.status}, card on ${c.status}]`, card: c };
+  }
+  const toWork = await verify(id);
+  if (toWork.status !== 200) throw new Error(`TODO -> WORK refused (${toWork.status}): ${JSON.stringify(toWork.body).slice(0, 300)}`);
+  if (prepare) await prepare({ project, id, dir: project.dir });
+  const r = await verify(id);
+  const c = await card(id);
+  const o = outcomeOf(c, checkId, 'WORK');
+  // A blocking verdict must hold the card; one that reports fail and lets it
+  // move is its own outcome, and never an expected one.
+  const actual = o.outcome === 'fail' && o.blocking && c.status !== 'WORK' ? 'fail-but-moved' : o.outcome;
+  return { actual, detail: `${o.detail ?? ''} [verify ${r.status}, card on ${c.status}]`, card: c };
 }
