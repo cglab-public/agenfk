@@ -5222,6 +5222,9 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
 app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   console.log(`[API_DEBUG] PUT /items/${req.params.id} body keys: ${Object.keys(req.body).join(', ')}`);
   const { title, description, status, type, parentId, context, implementationPlan, reviews, tests, comments, sortOrder, branchName, prUrl, prNumber, prStatus, claims, externalId, externalUrl } = req.body;
+  // BUG 93d9fbd0: a card's tests are a list of records; anything else is refused
+  // before it is stored, where the verify path would trip over it.
+  if (tests !== undefined && !Array.isArray(tests)) return res.status(400).json({ error: 'tests must be an array of test records' });
 
   const currentItem = await storage.getItem(req.params.id);
   if (!currentItem) {
@@ -5640,12 +5643,21 @@ function pruneValidateRuns() {
  * project's command at HEAD onto a DONE sibling and land a red card on DONE
  * (CGLAB-378 review).
  */
+/**
+ * A card's stored test records, whatever was stored (BUG 93d9fbd0). Before PUT
+ * sanitised them, any value could land in `tests`: an object, a string, a list
+ * with nulls. Every reader on the verify path goes through this.
+ */
+function testRecords(x: unknown): any[] {
+  return Array.isArray(x) ? x.filter(t => !!t && typeof t === 'object' && !Array.isArray(t)) : [];
+}
+
 function sanitizeCallerTests(incoming: unknown, stored: any[] | undefined): any {
   if (!Array.isArray(incoming)) return incoming;
   const byId = new Map((stored ?? []).filter(t => t && t.id).map(t => [t.id, t]));
-  return incoming.map((t: any) => {
-    if (t && byId.has(t.id)) return byId.get(t.id);
-    if (!t || typeof t !== 'object') return t;
+  // A record is an object; null, numbers and strings are dropped (BUG 93d9fbd0).
+  return incoming.filter((t: any) => !!t && typeof t === 'object' && !Array.isArray(t)).map((t: any) => {
+    if (byId.has(t.id)) return byId.get(t.id);
     const { commit: _dropped, ...rest } = t;
     return rest;
   });
@@ -6211,7 +6223,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         if (!sharesRoot || resolveCommitRoot(await withEffectiveWorktree(s), (project as any)?.projectRoot).root !== gateRoot) continue;
         // EVERY matching test, not the first: a sibling re-verified after a
         // rollback has an older record that must not shadow the current one.
-        for (const test of s.tests || []) {
+        for (const test of testRecords(s.tests)) {
           if (pass || test.status !== 'PASSED' || test.command !== resolvedCommand) continue;
           const gate = mayPropagate(treeSha, test);
           if (gate.allowed) pass = { sibling: s, test };
@@ -6221,7 +6233,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       if (pass) {
         const { sibling: passedSibling, test: siblingTest } = pass;
         const sibComment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).\n**Command**: \`${resolvedCommand}\` at \`${String(siblingTest.commit).slice(0, 12)}\``, timestamp: new Date() };
-        const updates: any = { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), sibComment], tests: [...(item.tests || []), { id: uuidv4(), command: resolvedCommand, output: `Sibling propagation: verified by ${passedSibling.id}`, status: 'PASSED', executedAt: new Date(), commit: siblingTest.commit }], ...(isExitStep ? { failureCount: 0 } : {}) };
+        const updates: any = { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), sibComment], tests: [...testRecords(item.tests), { id: uuidv4(), command: resolvedCommand, output: `Sibling propagation: verified by ${passedSibling.id}`, status: 'PASSED', executedAt: new Date(), commit: siblingTest.commit }], ...(isExitStep ? { failureCount: 0 } : {}) };
         const updated = await storage.updateItem(itemId, updates);
         io.emit('items_updated');
         if (updated.parentId) await syncParentStatus(updated.parentId);
@@ -6418,7 +6430,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         // The commit is attached AFTER the close commit below - the state a
         // later card inherits is the one the sibling LEFT BEHIND, not the one
         // it started from.
-        updates.tests = [...(item.tests || []), { id: testId, command: resolvedCommand, output: preview, status: 'PASSED', executedAt: new Date() }];
+        updates.tests = [...testRecords(item.tests), { id: testId, command: resolvedCommand, output: preview, status: 'PASSED', executedAt: new Date() }];
       }
       const updated = await storage.updateItem(itemId, updates);
       io.emit('items_updated');
@@ -6461,7 +6473,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         const verifiedSha = readCleanTreeSha(gateRoot, gitRun);
         if (verifiedSha) {
           const current = await storage.getItem(itemId);
-          const tests = (current?.tests || []).map((t: any) =>
+          const tests = testRecords(current?.tests).map((t: any) =>
             t.id === testId ? { ...t, commit: verifiedSha } : t,
           );
           await storage.updateItem(itemId, { tests });
@@ -6502,7 +6514,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     // Same positional predicate as the PASSED record above: a red final gate on
     // a flow whose exit step is not named DONE must still leave a FAILED record.
     if (endsFlow) {
-      updates.tests = [...(item.tests || []), { id: testId, command: resolvedCommand, output: preview, status: 'FAILED', executedAt: new Date() }];
+      updates.tests = [...testRecords(item.tests), { id: testId, command: resolvedCommand, output: preview, status: 'FAILED', executedAt: new Date() }];
     }
     await storage.updateItem(itemId, updates);
     io.emit('items_updated');
