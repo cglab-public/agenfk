@@ -147,7 +147,7 @@ This is the full workflow surface. Each row notes the equivalent MCP tool (avail
 | Activate a flow | `agenfk flow use <id> [--project <id>]` (defaults to current project) | `use_flow` |
 | Delete a flow | `agenfk flow delete <id> [-y/--yes]` | `delete_flow` |
 | Reset to default flow | `agenfk flow reset [--project <id>]` | — |
-| Publish a flow | `agenfk flow publish <id> [--registry <owner/repo>]` | — |
+| Publish a flow | `agenfk flow publish <id> [--registry <owner/repo>] [--allow-removing-checks]` (the flag confirms a publish that drops step roles/checks the registry copy has) | — |
 | Browse community flows | `agenfk flow browse [--registry <owner/repo>]` | — |
 | Install a community flow | `agenfk flow install <filename> [--registry <owner/repo>]` | — |
 

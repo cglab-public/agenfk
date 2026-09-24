@@ -133,6 +133,53 @@ export const server = new Server(
 );
 
 // Define Tool Schemas
+/**
+ * One flow step as create_flow / update_flow take it. zod strips the keys a
+ * schema does not name, so every field the REST route persists must be here or
+ * an MCP caller silently loses it (roles and checks did, CGLAB-385). The
+ * server whitelists and validates what arrives; this only has to not drop it.
+ * Never add `command`: a flow must not be able to supply one.
+ */
+const FlowStepToolSchema = z.object({
+  // Accept an id so it round-trips: without it an update regenerated every
+  // step id on every call.
+  id: z.string().optional(),
+  name: z.string(),
+  label: z.string().optional(),
+  exitCriteria: z.string().optional(),
+  order: z.number(),
+  isSpecial: z.boolean().optional(),
+  isAnchor: z.boolean().optional(),
+  // null / [] clear a stored value; leaving the key out keeps it.
+  role: z.string().nullable().optional(),
+  checks: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
+  autoCommit: z.boolean().nullable().optional(),
+  requireCommit: z.boolean().nullable().optional(),
+  color: z.string().optional(),
+  icon: z.string().optional(),
+});
+
+/** The advertised JSON schema of the same step. */
+const FLOW_STEP_TOOL_PROPERTIES = {
+  id: { type: "string" },
+  name: { type: "string" },
+  label: { type: "string" },
+  exitCriteria: { type: "string" },
+  order: { type: "number" },
+  isSpecial: { type: "boolean" },
+  isAnchor: { type: "boolean" },
+  role: { type: ["string", "null"], description: "What the step IS (e.g. coding, review, closing). null clears it; omit to keep the stored value." },
+  checks: {
+    type: ["array", "null"],
+    description: "Checks the step adds, each { id, params? }. [] or null clears them; omit to keep the stored value.",
+    items: { type: "object", properties: { id: { type: "string" }, params: { type: "object" } }, required: ["id"] },
+  },
+  autoCommit: { type: ["boolean", "null"], description: "Commit the card's work when it leaves this step." },
+  requireCommit: { type: ["boolean", "null"], description: "With autoCommit: refuse to leave the step when that commit does not happen." },
+  color: { type: "string" },
+  icon: { type: "string" },
+};
+
 const CreateProjectSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
@@ -587,18 +634,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             description: { type: "string", description: "Optional description." },
             steps: {
               type: "array",
-              description: "Ordered list of steps. Each step: { id?, name, label?, exitCriteria?, order, isSpecial?, isAnchor? }. Omit id and the server generates one; pass back the id you read to keep it stable across updates.",
+              description: "Ordered list of steps. Each step: { id?, name, label?, exitCriteria?, order, isSpecial?, isAnchor?, role?, checks?, autoCommit?, requireCommit?, color?, icon? }. Omit id and the server generates one; pass back the id you read to keep it stable across updates.",
               items: {
                 type: "object",
-                properties: {
-                  id: { type: "string" },
-                  name: { type: "string" },
-                  label: { type: "string" },
-                  exitCriteria: { type: "string" },
-                  order: { type: "number" },
-                  isSpecial: { type: "boolean" },
-                  isAnchor: { type: "boolean" },
-                },
+                properties: FLOW_STEP_TOOL_PROPERTIES,
                 required: ["name", "order"],
               },
             },
@@ -620,14 +659,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: "array",
               items: {
                 type: "object",
-                properties: {
-                  name: { type: "string" },
-                  label: { type: "string" },
-                  exitCriteria: { type: "string" },
-                  order: { type: "number" },
-                  isSpecial: { type: "boolean" },
-                  isAnchor: { type: "boolean" },
-                },
+                properties: FLOW_STEP_TOOL_PROPERTIES,
                 required: ["name", "order"],
               },
             },
@@ -1102,17 +1134,7 @@ async function callToolHandler(request: any): Promise<any> {
         const args = z.object({
           name: z.string(),
           description: z.string().optional(),
-          steps: z.array(z.object({
-            // Accept an id so it round-trips: zod strips unknown keys, so
-            // without this an update regenerated every step id on every call.
-            id: z.string().optional(),
-            name: z.string(),
-            label: z.string().optional(),
-            exitCriteria: z.string().optional(),
-            order: z.number(),
-            isSpecial: z.boolean().optional(),
-            isAnchor: z.boolean().optional(),
-          })),
+          steps: z.array(FlowStepToolSchema),
           projectId: z.string().optional(),
         }).parse(request.params.arguments);
         const { projectId, ...flowBody } = args;
@@ -1128,17 +1150,7 @@ async function callToolHandler(request: any): Promise<any> {
           id: z.string(),
           name: z.string().optional(),
           description: z.string().optional(),
-          steps: z.array(z.object({
-            // Accept an id so it round-trips: zod strips unknown keys, so
-            // without this an update regenerated every step id on every call.
-            id: z.string().optional(),
-            name: z.string(),
-            label: z.string().optional(),
-            exitCriteria: z.string().optional(),
-            order: z.number(),
-            isSpecial: z.boolean().optional(),
-            isAnchor: z.boolean().optional(),
-          })).optional(),
+          steps: z.array(FlowStepToolSchema).optional(),
         }).parse(request.params.arguments);
         const { id, ...updates } = args;
         try {

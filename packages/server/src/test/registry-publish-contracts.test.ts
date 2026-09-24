@@ -77,4 +77,21 @@ describe('gh publish keeps the step contract', () => {
     expect(res.body.error).toMatch(/roles|checks/i);
     expect(written).toBeNull();
   });
+
+  it('refuses a publish that drops one step\'s checks while another step keeps its role (step by step, S9 review)', async () => {
+    const two = [...rich.slice(0, 2), { name: 'BUILD', label: 'Build', order: 2, role: 'coding', checks: [{ id: 'jira-key-valid' }] }, { ...rich[2], order: 3 }];
+    onRegistry = JSON.stringify({ name: 'Contract Flow', version: '1.0.0', steps: two });
+    const id = await flowWith(two.map(({ checks: _c, ...s }: any) => s));
+    const res = await agent().post('/registry/flows/publish').send({ flowId: id });
+    expect(res.status).toBe(409);
+    expect(written).toBeNull();
+  });
+
+  it('publishes a deliberate removal when allowContractRemoval is true', async () => {
+    onRegistry = JSON.stringify({ name: 'Contract Flow', version: '1.0.0', steps: rich });
+    const id = await flowWith(rich.map(({ role: _r, ...s }: any) => s));
+    const res = await agent().post('/registry/flows/publish').send({ flowId: id, allowContractRemoval: true });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(JSON.parse(written!).steps.find((s: any) => s.name === 'SPECS').role).toBeUndefined();
+  });
 });

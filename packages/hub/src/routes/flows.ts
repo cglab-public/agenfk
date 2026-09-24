@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
+import { registryInstallSteps } from '@agenfk/core';
 import { HubServerContext } from '../server.js';
 import { requireApiKey } from '../auth/apiKey.js';
 import { resolveEffectiveFlow } from '../services/flowResolution.js';
@@ -145,24 +146,9 @@ export function flowsRouter(ctx: HubServerContext): Router {
       const fileInfo: any = await r.json();
       const raw = Buffer.from(fileInfo.content, 'base64').toString('utf8');
       const flowData = JSON.parse(raw);
-      // Normalise exactly as the hub admin install does, so a flow behaves the
-      // same however it arrived.
-      const rawSteps: any[] = Array.isArray(flowData.steps) ? flowData.steps : [];
-      const middle = rawSteps
-        .filter((s: any) => !s.isAnchor && s.name?.toUpperCase() !== 'TODO' && s.name?.toUpperCase() !== 'DONE')
-        .map((s: any, i: number) => ({
-          id: randomUUID(),
-          name: (typeof s.name === 'string' && s.name.trim()) ? s.name : `step-${i}`,
-          label: (typeof s.label === 'string' && s.label.trim()) ? s.label : ((typeof s.name === 'string' && s.name.trim()) ? s.name : `Step ${i + 1}`),
-          order: i + 1,
-          exitCriteria: s.exitCriteria ?? '',
-          isSpecial: s.isSpecial ?? false,
-        }));
-      const steps = [
-        { id: randomUUID(), name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
-        ...middle,
-        { id: randomUUID(), name: 'DONE', label: 'Done', order: middle.length + 1, exitCriteria: '', isAnchor: true },
-      ];
+      // Normalise exactly as the hub admin install and the local server do, so
+      // a flow behaves the same however it arrived, contract included.
+      const steps = registryInstallSteps(flowData.steps, randomUUID);
       res.json({ repo, flow: { name: flowData.name ?? filename.replace('.json', ''), description: flowData.description ?? '', steps } });
     } catch (e: any) {
       res.status(502).json({ error: 'Failed to install flow', detail: e?.message });
@@ -242,6 +228,7 @@ export function flowsRouter(ctx: HubServerContext): Router {
         repo: cfg.repo, branch: cfg.branch, token, flow, publisher,
         // The one attribution the hub itself can vouch for.
         installationId: req.hubApiKey!.installationId ?? null,
+        allowContractRemoval: req.body?.allowContractRemoval === true,
       });
       if (result.kind === 'error') return res.status(result.status).json({ error: result.error, repo: cfg.repo });
       res.json(result);

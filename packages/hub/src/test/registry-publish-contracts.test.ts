@@ -11,7 +11,7 @@ const BASE = 'b'.repeat(40);
 const rich = { name: 'Org TDD', version: '1.0.0', steps: [{ name: 'TODO', order: 0, isAnchor: true }, { name: 'SPECS', order: 1, role: 'test-authoring', checks: [{ id: 'jira-key-valid' }] }] };
 const bare = { name: 'Org TDD', version: '1.0.0', steps: [{ name: 'TODO', order: 0, isAnchor: true }, { name: 'SPECS', order: 1 }] };
 
-function gh(baseFile: string | undefined) {
+function gh(baseFile: string | undefined, head?: { file: string }) {
   const writes: string[] = [];
   const res = (status: number, body: unknown) => ({ ok: status < 300, status, json: async () => body, text: async () => JSON.stringify(body) });
   const fn = vi.fn(async (url: string, init?: any) => {
@@ -19,8 +19,13 @@ function gh(baseFile: string | undefined) {
     const p = decodeURIComponent(new URL(url).pathname);
     if (method !== 'GET') writes.push(`${method} ${p}`);
     if (method === 'GET' && p.endsWith('/git/ref/heads/main')) return res(200, { object: { sha: BASE } });
-    if (method === 'GET' && p.includes('/git/ref/heads/flow/')) return res(404, {});
-    if (method === 'GET' && p.includes('/contents/flows/')) return baseFile === undefined ? res(404, {}) : res(200, { sha: 'f'.repeat(40), content: Buffer.from(baseFile).toString('base64') });
+    if (method === 'GET' && p.includes('/git/ref/heads/flow/')) return head ? res(200, { object: { sha: 'c'.repeat(40) } }) : res(404, {});
+    if (method === 'GET' && p.endsWith('/pulls')) return res(200, head ? [{ html_url: `https://github.com/${REPO}/pull/3`, base: { ref: 'main' } }] : []);
+    if (method === 'GET' && p.includes('/contents/flows/')) {
+      const onHead = (new URL(url).searchParams.get('ref') ?? '').startsWith('flow/');
+      const file = onHead ? head?.file : baseFile;
+      return file === undefined ? res(404, {}) : res(200, { sha: 'f'.repeat(40), content: Buffer.from(file).toString('base64') });
+    }
     if (method === 'POST' && p.endsWith('/git/refs')) return res(201, {});
     if (method === 'PUT') return res(201, {});
     if (method === 'POST' && p.endsWith('/pulls')) return res(201, { number: 1, html_url: `https://github.com/${REPO}/pull/1` });
@@ -29,7 +34,7 @@ function gh(baseFile: string | undefined) {
   });
   return { fn, writes };
 }
-const publish = (fetchImpl: any, flow: any) => publishFlowPullRequest(fetchImpl, { repo: REPO, branch: 'main', token: 't', flow, publisher: 'me', installationId: null });
+const publish = (fetchImpl: any, flow: any, extra: { allowContractRemoval?: boolean } = {}) => publishFlowPullRequest(fetchImpl, { repo: REPO, branch: 'main', token: 't', flow, publisher: 'me', installationId: null, ...extra });
 afterEach(() => vi.restoreAllMocks());
 
 describe('registry file keeps the step contract', () => {
@@ -59,5 +64,31 @@ describe('a stripped publish', () => {
   it('goes through when it carries a contract of its own', async () => {
     const g = gh(serializeRegistryFlow(rich, 'someone'));
     expect((await publish(g.fn, { ...rich, steps: [...rich.steps, { name: 'MORE', order: 2, role: 'review' }] })).kind).toBe('pr');
+  });
+});
+
+describe('S9 review: the open pull request and a deliberate removal', () => {
+  it('refuses a stripped publish onto an open pull request whose head has the contract, and writes nothing', async () => {
+    const g = gh(undefined, { file: serializeRegistryFlow(rich, 'someone') });
+    const r = await publish(g.fn, bare);
+    expect((r as any).status, JSON.stringify(r)).toBe(409);
+    expect(g.writes).toEqual([]);
+  });
+
+  it('commits onto the open pull request when the publish keeps the contract', async () => {
+    const g = gh(undefined, { file: serializeRegistryFlow(rich, 'someone') });
+    const r = await publish(g.fn, { ...rich, version: '1.0.1' });
+    expect(r.kind, JSON.stringify(r)).toBe('pr');
+    expect(g.writes.some(w => w.startsWith('PUT '))).toBe(true);
+  });
+
+  it('names the explicit escape in the refusal', async () => {
+    const r = await publish(gh(serializeRegistryFlow(rich, 'someone')).fn, bare);
+    expect((r as any).error).toMatch(/--allow-removing-checks/);
+  });
+
+  it('lets a deliberate removal through when asked explicitly, on the base and on an open pull request', async () => {
+    expect((await publish(gh(serializeRegistryFlow(rich, 'someone')).fn, bare, { allowContractRemoval: true })).kind).toBe('pr');
+    expect((await publish(gh(undefined, { file: serializeRegistryFlow(rich, 'someone') }).fn, bare, { allowContractRemoval: true })).kind).toBe('pr');
   });
 });

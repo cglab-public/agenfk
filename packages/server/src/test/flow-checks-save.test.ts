@@ -149,6 +149,21 @@ describe('POST /registry/flows/install (public registry)', () => {
     expect(build.checks).toEqual([{ id: 'jira-key-valid' }]);
   });
 
+  it('keeps the registry anchors\' contracts on the fresh anchors (S9 review)', async () => {
+    vi.mocked(axios.get).mockResolvedValue({
+      data: {
+        content: content([
+          { name: 'TODO', isAnchor: true },
+          { name: 'BUILD', label: 'Build', order: 1, role: 'coding' },
+          { name: 'DONE', isAnchor: true, role: 'closing' },
+        ]),
+      },
+    });
+    const res = await agent().post('/registry/flows/install').send({ filename: 'anchors.json' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.steps.find((s: any) => s.name === 'DONE')).toMatchObject({ isAnchor: true, role: 'closing' });
+  });
+
   it('refuses an invalid contract and installs nothing', async () => {
     const before = (await agent().get('/flows')).body.length;
     vi.mocked(axios.get).mockResolvedValue({

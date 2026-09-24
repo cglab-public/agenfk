@@ -455,9 +455,14 @@ const GITHUB_LINK = /^https:\/\/github\.com\//;
  */
 export async function publishFlowPullRequest(
   fetchImpl: typeof fetch,
-  opts: { repo: string; branch: string; token: string; flow: any; publisher: string; installationId: string | null },
+  opts: {
+    repo: string; branch: string; token: string; flow: any; publisher: string; installationId: string | null;
+    /** The publisher removes steps' roles/checks on purpose (`agenfk flow publish --allow-removing-checks`). */
+    allowContractRemoval?: boolean;
+  },
 ): Promise<PublishResult> {
   const { repo, branch, token, flow, publisher, installationId } = opts;
+  const strips = (steps: unknown) => !opts.allowContractRemoval && wouldStripContracts(steps, flow?.steps);
   const slug = slugify(String(flow?.name ?? ''));
   const filename = `${slug}.json`;
   const filePath = `flows/${encodeURIComponent(filename)}`;
@@ -530,7 +535,7 @@ export async function publishFlowPullRequest(
     registrySteps = onRegistry?.steps;
   } catch { /* unreadable */ }
   // CGLAB-385: an older agenfk's copy must not strip the registry flow's contract.
-  if (wouldStripContracts(registrySteps, flow?.steps)) return fail(409, STRIPPED_PUBLISH_MESSAGE);
+  if (strips(registrySteps)) return fail(409, STRIPPED_PUBLISH_MESSAGE);
 
   // 2. The flow's own branch, and any pull request open FROM it.
   const branchRef = await call(`${api}/git/ref/heads/${headBranch}`);
@@ -576,6 +581,11 @@ export async function publishFlowPullRequest(
   if (openPr) {
     const onHead = await readFile(headBranch);
     if (!onHead.ok) return fail(502, `GitHub returned ${onHead.status} reading flows/${filename} on ${headBranch}`);
+    // The open pull request is where the next merge comes from: a stripped
+    // copy must not replace the contract it proposes either.
+    let headSteps: unknown;
+    try { headSteps = onHead.file ? JSON.parse(onHead.file.text)?.steps : undefined; } catch { /* unreadable */ }
+    if (strips(headSteps)) return fail(409, STRIPPED_PUBLISH_MESSAGE);
     if (!(onHead.file && sameRegistryFlow(onHead.file.text, content, { ignoreVersion: false }))) {
       const put = await writeFile(content, onHead.file?.sha, title);
       if (!put.ok) {

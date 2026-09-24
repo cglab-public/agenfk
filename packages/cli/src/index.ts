@@ -4800,11 +4800,13 @@ flowCommand
   .command('publish <id>')
   .description('Publish a flow to the community registry (requires gh auth login)')
   .option('--registry <owner/repo>', 'Registry repo (default: from config or cglab-public/agenfk-flows)')
+  .option('--allow-removing-checks', 'Publish even though this removes step roles/checks the registry copy has')
   .action(async (id, options) => {
     try {
       const registry = options.registry || getFlowRegistryRepo();
       const body: any = { flowId: id };
       if (registry) body.registry = registry;
+      if (options.allowRemovingChecks) body.allowContractRemoval = true;
       const { data } = await axios.post(`${API_URL}/registry/flows/publish`, body);
       console.log(chalk.green(`\nFlow published successfully!`));
       if (data.version) console.log(chalk.gray(`Version: ${data.version}`));

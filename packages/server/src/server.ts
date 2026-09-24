@@ -9,7 +9,7 @@ import { parseActor, parseFindings, readTranscriptIdentity } from './reviewRecor
 import * as passkeys from './passkeys';
 import { evaluateChecks, judgeReview, formatCheckResults, needsCapture, needsEntryRecord, type CheckResult } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE } from "@agenfk/core";
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -4158,30 +4158,9 @@ app.post("/registry/flows/install", asyncHandler(async (req: any, res: any) => {
     const rawContent = Buffer.from(fileInfo.content, 'base64').toString('utf8');
     const flowData = JSON.parse(rawContent);
 
-    // Build steps: strip anchor steps from the registry JSON and add fresh standard anchors.
-    const rawSteps: any[] = Array.isArray(flowData.steps) ? flowData.steps : [];
-    const middle = rawSteps
-      .filter((s: any) => !s.isAnchor && s.name?.toUpperCase() !== 'TODO' && s.name?.toUpperCase() !== 'DONE')
-      .map((s: any, i: number) => ({
-        id: uuidv4(),
-        // `??` does not catch '' — a community flow with "name": "" would
-        // install an empty-named step, the exact value flowStepsError exists to
-        // reject, while bypassing it (this path calls storage.createFlow direct).
-        name: (typeof s.name === 'string' && s.name.trim()) ? s.name : `step-${i}`,
-        label: (typeof s.label === 'string' && s.label.trim())
-          ? s.label
-          : ((typeof s.name === 'string' && s.name.trim()) ? s.name : `Step ${i + 1}`),
-        order: i + 1,
-        exitCriteria: s.exitCriteria ?? '',
-        isSpecial: s.isSpecial ?? false,
-        ...(s.role !== undefined ? { role: s.role } : {}),
-        ...(s.checks !== undefined ? { checks: s.checks } : {}),
-      }));
-    const steps = [
-      { id: uuidv4(), name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
-      ...middle,
-      { id: uuidv4(), name: 'DONE', label: 'Done', order: middle.length + 1, exitCriteria: '', isAnchor: true },
-    ];
+    // Fresh anchors, and each step's contract kept (anchors' too): the same
+    // transform as the hub's install paths.
+    const steps = registryInstallSteps(flowData.steps, () => uuidv4());
     // CGLAB-380: a community flow's roles and checks are validated like any
     // other; an invalid one is refused whole, never installed with parts dropped.
     const registryStepsError = flowStepsError(steps);
@@ -4242,6 +4221,8 @@ async function reportedPublisher(): Promise<string> {
 app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
   const { flowId, registry } = req.body;
   if (!flowId) return res.status(400).json({ error: 'flowId is required' });
+  // Only a literal true: removing a registry flow's roles/checks must be asked for.
+  const allowContractRemoval = req.body?.allowContractRemoval === true;
 
   const flow = await storage.getFlow(flowId);
   if (!flow) return res.status(404).json({ error: 'Flow not found' });
@@ -4283,9 +4264,13 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
               exitCriteria: st.exitCriteria,
               isSpecial: st.isSpecial,
               isAnchor: st.isAnchor,
+              // The step contract is a registry field: without it the hub
+              // refuses this machine's own flow as a stripped copy.
+              ...stepContractFields(st),
             })),
           },
           publisher,
+          ...(allowContractRemoval ? { allowContractRemoval: true } : {}),
         }),
         signal: AbortSignal.timeout(HUB_PUBLISH_TIMEOUT_MS),
       });
@@ -4412,7 +4397,7 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
     if (fileExists) {
       let registrySteps: unknown;
       try { registrySteps = JSON.parse(fs.readFileSync(targetPath, 'utf8'))?.steps; } catch { /* unreadable: nothing to protect */ }
-      if (wouldStripContracts(registrySteps, flow.steps)) return res.status(409).json({ error: STRIPPED_PUBLISH_MESSAGE });
+      if (!allowContractRemoval && wouldStripContracts(registrySteps, flow.steps)) return res.status(409).json({ error: STRIPPED_PUBLISH_MESSAGE });
     }
 
     // Auto-increment patch version on re-publish; persist updated version back to local flow

@@ -264,6 +264,27 @@ describe('POST /registry/flows/publish with a hub connection (CGLAB-367)', () =>
     }
   });
 
+  it('sends each step\'s role and checks to the hub (S9 review: a current client must not strip its own contract)', async () => {
+    const made = await agent().post('/flows').send({ name: 'Contract Hub Flow', steps: [
+      { name: 'TODO', label: 'To Do', order: 0, isAnchor: true },
+      { name: 'BUILD', label: 'Build', order: 1, role: 'coding', checks: [{ id: 'jira-key-valid' }] },
+      { name: 'DONE', label: 'Done', order: 2, isAnchor: true, role: 'closing' },
+    ] });
+    expect(made.status, JSON.stringify(made.body)).toBeLessThan(300);
+    await agent().post('/registry/flows/publish').send({ flowId: made.body.id });
+    const steps = publishCalls[0].body.flow.steps;
+    expect(steps.find((s: any) => s.name === 'BUILD')).toMatchObject({ role: 'coding', checks: [{ id: 'jira-key-valid' }] });
+    expect(steps.find((s: any) => s.name === 'DONE')).toMatchObject({ role: 'closing' });
+  });
+
+  it('forwards an explicit allowContractRemoval to the hub, and nothing else as one', async () => {
+    await agent().post('/registry/flows/publish').send({ flowId, allowContractRemoval: true });
+    expect(publishCalls[0].body.allowContractRemoval).toBe(true);
+    publishCalls.length = 0;
+    await agent().post('/registry/flows/publish').send({ flowId, allowContractRemoval: 'yes' });
+    expect(publishCalls[0].body.allowContractRemoval).toBeUndefined();
+  });
+
   it('keeps the flow\'s version in step with what the hub published', async () => {
     publishReply = {
       status: 200,

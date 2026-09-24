@@ -128,6 +128,22 @@ describe('flow registry commands', () => {
       logSpy.mockRestore();
     });
 
+    it('sends allowContractRemoval when --allow-removing-checks is passed (S9 review)', async () => {
+      mockedAxios.post.mockResolvedValue({ data: { url: 'https://x/pull/1', kind: 'pr', version: '1.0.1' } });
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      await program.parseAsync(['node', 'agenfk', 'flow', 'publish', 'flow-uuid-registry-1', '--allow-removing-checks']);
+      expect(mockedAxios.post.mock.calls[0][1]).toMatchObject({ flowId: 'flow-uuid-registry-1', allowContractRemoval: true });
+      logSpy.mockRestore();
+    });
+
+    it('does not send allowContractRemoval without the flag', async () => {
+      mockedAxios.post.mockResolvedValue({ data: { url: 'https://x/pull/1', kind: 'pr', version: '1.0.1' } });
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      await program.parseAsync(['node', 'agenfk', 'flow', 'publish', 'flow-uuid-registry-1']);
+      expect(mockedAxios.post.mock.calls[0][1]).not.toHaveProperty('allowContractRemoval');
+      logSpy.mockRestore();
+    });
+
     it('should show PR message when server returns kind=pr', async () => {
       mockedAxios.post.mockResolvedValue({
         data: { url: 'https://github.com/cglab-public/agenfk-flows/pull/42', kind: 'pr', version: '1.0.1' },

@@ -61,7 +61,10 @@ describe('v1.1.20 CLI against this server', () => {
   it("verify with a positional command: accepted, the project's command runs instead", async () => {
     const id = await card('TEST', { verifyCommand: 'exit 1' });
     const res = await oldVerify(id, 'true');
-    expect(res.body.status === 'failed' || res.status === 422 || res.status === 400, JSON.stringify(res.body)).toBe(true);
+    // Never a 400: the command is ignored, not refused. The project's `exit 1` ran, so it fails.
+    expect(res.status, JSON.stringify(res.body)).not.toBe(400);
+    expect(res.body.status === 'failed' || res.status === 422, JSON.stringify(res.body)).toBe(true);
+    expect(JSON.stringify(res.body)).toMatch(/command you passed .* was ignored/);
     expect((await agent().get(`/items/${id}`)).body.status).toBe('TEST');
   });
 
@@ -93,5 +96,15 @@ describe('v1.1.20 CLI against this server', () => {
     expect(res.status).toBe(422);
     expect(res.body.message).toMatch(/agenfk upgrade/);
     expect(res.body.message).toMatch(/override/i);
+  });
+
+  it('a review step with no actor at all (the real v1.1.20 shape) warns, naming the upgrade and the override', async () => {
+    const id = await card('REVIEW', { verifyCommand: 'exit 0' });
+    const res = await oldVerify(id);
+    const text = JSON.stringify(res.body);
+    expect(res.status, text).not.toBe(400);
+    expect(text).toMatch(/independent review/);
+    expect(text).toMatch(/agenfk upgrade/);
+    expect(text).toMatch(/override/i);
   });
 });

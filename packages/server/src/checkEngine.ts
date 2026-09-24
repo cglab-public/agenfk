@@ -207,7 +207,9 @@ export function judgeReview(r: ReviewEvidence, root: string | null, git: (args: 
     // Nobody who advanced this card used a harness whose transcripts the
     // server reads (Cursor, Gemini, OpenCode, an older agenfk): there is no
     // way to record a checkable review, so it warns rather than strands it.
-    if (!r.authors.length) return { outcome: 'unavailable', soft: true, detail: 'no independent review is recorded, and no author identity either: this harness cannot record a checkable review. Review the change independently all the same.' };
+    // An agenfk older than the review checks sends no actor either (S9 row A4),
+    // so say what makes the check real, not only that it cannot run.
+    if (!r.authors.length) return { outcome: 'unavailable', soft: true, detail: `no independent review is recorded, and no author identity either: this harness, or an agenfk older than ${r.agenfkVersion ?? 'this server'}, cannot record a checkable review. Review the change independently all the same. With Claude Code, Codex or pi, upgrade (agenfk upgrade) and record it with agenfk review record; otherwise a person can override this check on the board.` };
     return { outcome: 'fail', detail: `no independent review is recorded. Have a separate agent review the diff, then: agenfk review record <id> --transcript <reviewer session log> --range <from>..<to> --findings <json>. That command needs agenfk ${r.agenfkVersion ?? 'of this server\'s version'} or later (agenfk upgrade); otherwise a person can override this check on the board.` };
   }
   const who = `${rec.reviewer.client} session ${rec.reviewer.sessionId}${rec.reviewer.agentId ? `, agent ${rec.reviewer.agentId}` : ''}`;
@@ -227,7 +229,7 @@ export function judgeReview(r: ReviewEvidence, root: string | null, git: (args: 
   if (opts.bindTree && rec.tree && r.currentTree && rec.tree !== r.currentTree) {
     return { outcome: 'fail', detail: 'the tree changed after the review was recorded: fix the findings first, then record the review of the final tree' };
   }
-  if (!r.authors.length) return { outcome: 'unavailable', soft: true, detail: 'no author identity is recorded for this card (advanced by an older agenfk or an unknown harness), so independence cannot be shown' };
+  if (!r.authors.length) return { outcome: 'unavailable', soft: true, detail: 'no author identity is recorded for this card (advanced by an older agenfk or an unknown harness), so independence cannot be shown. Upgrade agenfk (agenfk upgrade) so verify records who advanced it, or a person can override this check on the board.' };
   return { outcome: 'pass', detail: `reviewed by ${who} over ${rec.range.from.slice(0, 12)}..${rec.range.to.slice(0, 12)}` };
 }
 

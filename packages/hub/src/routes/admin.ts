@@ -5,7 +5,7 @@ import { issueApiKey } from '../auth/apiKey.js';
 import { encryptSecret } from '../crypto.js';
 import { createPasswordUser, hashPassword } from '../auth/password.js';
 import { randomUUID } from 'crypto';
-import { DEFAULT_FLOW, describeFlowContract, mergeStepContracts } from '@agenfk/core';
+import { DEFAULT_FLOW, describeFlowContract, mergeStepContracts, registryInstallSteps, flowChecksErrors } from '@agenfk/core';
 import { getAgenfkReleases, resetAgenfkReleaseCache } from '../services/githubReleases.js';
 import { compareSemver } from '../util/semver.js';
 import { isOnboardingKeyLabel } from '../util/keyLabel.js';
@@ -1813,25 +1813,12 @@ export function adminRouter(ctx: HubServerContext): Router {
       const rawContent = Buffer.from(fileInfo.content, 'base64').toString('utf8');
       const flowData = JSON.parse(rawContent);
 
-      // Normalise step shape: drop anchors and add fresh ones (matches local
-      // server's /registry/flows/install transform, so installed flows behave
-      // identically wherever they land).
-      const rawSteps: any[] = Array.isArray(flowData.steps) ? flowData.steps : [];
-      const middle = rawSteps
-        .filter((s: any) => !s.isAnchor && s.name?.toUpperCase() !== 'TODO' && s.name?.toUpperCase() !== 'DONE')
-        .map((s: any, i: number) => ({
-          id: randomUUID(),
-          name: s.name ?? `step-${i}`,
-          label: s.label ?? s.name ?? `Step ${i + 1}`,
-          order: i + 1,
-          exitCriteria: s.exitCriteria ?? '',
-          isSpecial: s.isSpecial ?? false,
-        }));
-      const steps = [
-        { id: randomUUID(), name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
-        ...middle,
-        { id: randomUUID(), name: 'DONE', label: 'Done', order: middle.length + 1, exitCriteria: '', isAnchor: true },
-      ];
+      // Fresh anchors, each step's contract kept: the same transform as the
+      // local server's /registry/flows/install, so installed flows behave
+      // identically wherever they land. An invalid contract is refused whole.
+      const steps = registryInstallSteps(flowData.steps, randomUUID);
+      const contractErrors = flowChecksErrors(steps);
+      if (contractErrors.length) return res.status(422).json({ error: `The registry flow cannot be installed: ${contractErrors.join(' ')}` });
       const definition = {
         name: flowData.name ?? filename.replace('.json', ''),
         description: flowData.description ?? '',
