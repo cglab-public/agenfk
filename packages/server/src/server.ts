@@ -5403,6 +5403,49 @@ async function branchOfCard(item: any): Promise<string | null> {
   return null;
 }
 
+/**
+ * What the review-record check needs (CGLAB-381): the card's place in its
+ * tree, its review records, every author identity on it and its descendants,
+ * where its work began, and its descendants' close commits.
+ */
+async function reviewEvidence(item: any, root: string | null) {
+  const descendants: any[] = [];
+  const queue = [item.id];
+  while (queue.length && descendants.length < 5000) {
+    const kids: any[] = (await storage.listItems({ parentId: queue.shift() } as any)) as any;
+    for (const k of kids) { descendants.push(k); queue.push(k.id); }
+  }
+  const children = descendants.filter(d => d.parentId === item.id);
+  const authors: Array<{ client: string; sessionId: string; agentId: string | null }> = [];
+  for (const c of [item, ...descendants]) {
+    for (const r of c.stepRecords ?? []) {
+      const a = r?.actor;
+      if (a && typeof a.sessionId === 'string' && !authors.some(x => x.sessionId === a.sessionId && x.agentId === (a.agentId ?? null))) {
+        authors.push({ client: String(a.client), sessionId: a.sessionId, agentId: a.agentId ?? null });
+      }
+    }
+  }
+  const firstExit = (item.stepRecords ?? []).find((r: any) => r?.kind === 'exit' && typeof r.head === 'string');
+  const descendantCommits: string[] = [];
+  if (root) {
+    for (const d of descendants) {
+      try {
+        const out = gitRun.run(['-C', root, 'log', '--format=%H', '--fixed-strings', `--grep=[${d.id}]`]).trim();
+        for (const sha of out.split('\n').filter(Boolean)) if (!descendantCommits.includes(sha)) descendantCommits.push(sha);
+      } catch { /* no history to read: nothing to require */ }
+    }
+  }
+  return {
+    hasParent: !!item.parentId,
+    childCount: children.length,
+    childrenReviewed: children.filter(c => Array.isArray(c.reviewRecords) && c.reviewRecords.length > 0).length,
+    records: Array.isArray(item.reviewRecords) ? item.reviewRecords : [],
+    authors,
+    startHead: firstExit?.head ?? null,
+    descendantCommits,
+  };
+}
+
 /** JIRA keys on a card and its ancestors, nearest first. */
 async function keysOfCard(item: any): Promise<string[]> {
   const keys: string[] = [];
@@ -5461,7 +5504,9 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     .filter(o => o.id !== item.id && Array.isArray(o.claims) && stillHolds(String(o.status)))
     .flatMap(o => o.claims as string[]);
   const reportPath = typeof project?.testReport?.reportPath === 'string' ? project.testReport.reportPath : null;
+  const review = resolved.some(c => c.id === 'review-record' && c.applicable) ? await reviewEvidence(item, root) : undefined;
   const outcome = evaluateChecks(resolved, {
+    review,
     root,
     git: args => gitRun.run(args),
     item,

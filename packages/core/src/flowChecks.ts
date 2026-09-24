@@ -116,8 +116,8 @@ export const CHECK_CATALOGUE: Record<string, CheckDef> = {
     requires: () => ['stepEntryTests'],
     description: 'The same tests, by name, as when the step began: none added, none removed.' }),
   'review-record': def({ id: 'review-record', group: 'review', defaultSeverity: 'block',
-    unavailable: 'recording an independent review arrives with CGLAB-381 (S5)',
-    description: 'An independent reviewer, not the author, recorded a review and every finding is fixed or rejected with a reason.' }),
+    params: { appliesTo: { values: ['parent', 'every-card'], default: 'parent', description: 'parent: a card with children, or with none above it, needs a review, and its children pass with it; every-card: every card needs its own.' } },
+    description: 'An independent reviewer, not the author, recorded a review covering the card\'s commits, and every finding is fixed or rejected with a reason.' }),
   'human-approval': def({ id: 'human-approval', group: 'approvals', defaultSeverity: 'block',
     unavailable: 'approvals in the UI arrive with CGLAB-382 (S6)',
     description: 'A person approved in the UI before the card leaves this step.' }),
@@ -139,8 +139,7 @@ export const ROLE_BUILTINS: Record<StepRole, StepCheckRef[]> = {
     ref('test-count-not-lower', { since: 'test-authoring' }),
   ],
   refactoring: [ref('suite-green'), ref('test-set-identical'), ref('test-surface-frozen', { mode: 'strict', since: 'step-entry' })],
-  // review-record joins with S5; until then a review step has no built-ins.
-  review: [],
+  review: [ref('review-record')],
   testing: [ref('suite-green')],
   closing: [ref('server-owned-verify')],
 };

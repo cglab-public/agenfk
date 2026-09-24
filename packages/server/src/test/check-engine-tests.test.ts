@@ -38,7 +38,17 @@ import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
 let __server: import('http').Server;
 const agent = () => request(__server);
 const repos: string[] = [];
-beforeAll(async () => { await initStorage(); __server = app.listen(0); });
+// Review transcripts (CGLAB-381) live under a sandboxed HOME, never the real ~/.claude.
+const savedHome = process.env.HOME;
+let home: string;
+beforeAll(async () => {
+  home = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-engine-tests-home-'));
+  repos.push(home);
+  process.env.HOME = home;
+  await initStorage();
+  __server = app.listen(0);
+});
+afterAll(() => { process.env.HOME = savedHome; });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 afterAll(() => {
   for (const suffix of ['', '-shm', '-wal']) {
@@ -87,6 +97,18 @@ function makeRepo(): string {
 const write = (dir: string, f: string, text: string) => fs.writeFileSync(path.join(dir, f), text);
 const impl = (dir: string, o: Record<string, string>) => write(dir, 'src/impl.json', JSON.stringify(o));
 const REPORT = { format: 'vitest-json', command: 'node runner.cjs', reportPath: 'report.json' };
+
+/** Record an independent review by a (sandboxed) sub-agent over the whole history, as a review step now requires. */
+async function reviewed(id: string, dir: string) {
+  const first = execSync('git rev-list --max-parents=0 HEAD', { cwd: dir, encoding: 'utf8' }).trim();
+  const head = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
+  const tdir = path.join(home, '.claude', 'projects', '-repo', 'sess', 'subagents');
+  fs.mkdirSync(tdir, { recursive: true });
+  const t = path.join(tdir, `agent-${id.slice(0, 8)}.jsonl`);
+  fs.writeFileSync(t, JSON.stringify({ isSidechain: true, agentId: id.slice(0, 8), sessionId: 'sess', timestamp: '2099-01-01T00:00:00.000Z' }) + '\n');
+  const r = await agent().post(`/items/${id}/review-records`).set(internal()).send({ transcript: t, range: `${first}..${head}`, findings: [] });
+  expect(r.status, JSON.stringify(r.body)).toBe(201);
+}
 
 let seq = 0;
 async function flow(steps: any[]): Promise<string> {
@@ -171,6 +193,7 @@ describe('CGLAB-380: test checks', () => {
 
     impl(dir, { add: 'ok', mul: '12' });
     for (const expected of ['TIDY', 'LOOK', 'FINISHED']) {
+      if (expected === 'FINISHED') await reviewed(id, dir);
       r = await validate(id);
       expect(r.status, `${expected}: ${JSON.stringify(r.body)}`).toBe(200);
       expect((await item(id)).status).toBe(expected);
@@ -293,6 +316,7 @@ describe('CGLAB-380: test checks', () => {
     ];
     const id = await card(await project(await flow(steps), { projectRoot: dir, verifyCommand: 'node runner.cjs', testReport: REPORT }), 'TODO');
     for (const expected of ['IN_PROGRESS', 'REVIEW', 'TEST', 'DONE']) {
+      if (expected === 'TEST') await reviewed(id, dir);
       const r = await validate(id);
       expect(r.status, `${expected}: ${JSON.stringify(r.body)}`).toBe(200);
       expect((await item(id)).status).toBe(expected);

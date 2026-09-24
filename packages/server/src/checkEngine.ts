@@ -65,6 +65,20 @@ export interface EngineContext {
   foreignClaims: string[];
   /** Checks enforced by the project verify command on this transition, not judged here. */
   deferToCommand: string[];
+  /** For review-record (CGLAB-381): the card's place and its review evidence. */
+  review?: {
+    hasParent: boolean;
+    childCount: number;
+    /** Children that carry a review record of their own. */
+    childrenReviewed: number;
+    records: Array<{ reviewer: { client: string; sessionId: string; agentId: string | null }; range: { from: string; to: string } }>;
+    /** Every author identity recorded on the card and its descendants. */
+    authors: Array<{ client: string; sessionId: string; agentId: string | null }>;
+    /** HEAD when the card's work began (its first step's exit record). */
+    startHead: string | null;
+    /** Close commits of the card's descendants. */
+    descendantCommits: string[];
+  };
   children: Array<{ id: string; type: string; status: string }>;
   /** This verify's capture, when a check needed one. */
   capture: CaptureRecord | null;
@@ -324,6 +338,30 @@ export const EVALUATORS: Record<string, Evaluator> = {
     const is = new Set(now.tests.map(t => t.name));
     const diff = [...[...was].filter(n => !is.has(n)).map(n => `-${n}`), ...[...is].filter(n => !was.has(n)).map(n => `+${n}`)];
     return diff.length ? { outcome: 'fail', detail: `the tests changed: ${list(diff)}` } : { outcome: 'pass', detail: `${is.size} tests, identical` };
+  },
+
+  'review-record': (ctx, p) => {
+    const r = ctx.review;
+    if (!r) return { outcome: 'unavailable', detail: 'no review evidence was gathered' };
+    const isParent = r.childCount > 0 || !r.hasParent;
+    if (p.appliesTo !== 'every-card' && !isParent) return { outcome: 'pass', detail: 'reviewed with its parent: reviews happen at the parent card' };
+    const rec = r.records[r.records.length - 1];
+    if (!rec) {
+      if (r.childCount > 0 && r.childrenReviewed === r.childCount) return { outcome: 'pass', detail: `each of its ${r.childCount} child cards carries an independent review` };
+      return { outcome: 'fail', detail: 'no independent review is recorded. Have a separate agent review the diff, then: agenfk review record <id> --transcript <reviewer session log> --range <from>..<to> --findings <json>' };
+    }
+    const same = (a: { sessionId: string; agentId: string | null }, b: { sessionId: string; agentId: string | null }) => a.sessionId === b.sessionId && (a.agentId ?? null) === (b.agentId ?? null);
+    const clash = r.authors.find(a => same(a, rec.reviewer));
+    if (clash) return { outcome: 'fail', detail: `not independent: the reviewer (${rec.reviewer.client} session ${rec.reviewer.sessionId}${rec.reviewer.agentId ? `, agent ${rec.reviewer.agentId}` : ''}) is an author of this card` };
+    if (!ctx.root) return { outcome: 'unavailable', detail: 'the card has no tree to check the reviewed range in' };
+    const isAncestor = (a: string, b: string) => { try { ctx.git(['-C', ctx.root!, 'merge-base', '--is-ancestor', a, b]); return true; } catch { return false; } };
+    if (r.startHead && !isAncestor(rec.range.from, r.startHead)) {
+      return { outcome: 'fail', detail: `the review starts at ${rec.range.from.slice(0, 12)}, after the card's work began at ${r.startHead.slice(0, 12)}: it does not cover all of it` };
+    }
+    const missed = r.descendantCommits.filter(c => !isAncestor(c, rec.range.to));
+    if (missed.length) return { outcome: 'fail', detail: `the review ends at ${rec.range.to.slice(0, 12)} and misses child work committed later: ${list(missed.map(c => c.slice(0, 12)))}. Review again over the whole range.` };
+    if (!r.authors.length) return { outcome: 'unavailable', soft: true, detail: 'no author identity is recorded for this card (advanced by an older agenfk or an unknown harness), so independence cannot be shown' };
+    return { outcome: 'pass', detail: `reviewed by ${rec.reviewer.client} session ${rec.reviewer.sessionId}${rec.reviewer.agentId ? `, agent ${rec.reviewer.agentId}` : ''} over ${rec.range.from.slice(0, 12)}..${rec.range.to.slice(0, 12)}` };
   },
 
   'suite-green': ctx => {

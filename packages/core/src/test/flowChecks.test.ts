@@ -211,7 +211,7 @@ describe('flowChecksErrors (save-time validation)', () => {
   });
 
   it('refuses checks that are not available on this server yet, saying why, so they can never pass by accident', () => {
-    for (const id of ['review-record', 'human-approval']) {
+    for (const id of ['human-approval']) { // review-record became available with CGLAB-381
       const steps = tdd();
       steps[5].checks = [{ id }];
       const errs = flowChecksErrors(steps);
