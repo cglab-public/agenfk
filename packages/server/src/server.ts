@@ -5494,31 +5494,10 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
       });
     }
 
-      if (updated.status === Status.DONE && currentItem.status !== Status.DONE) {
-        recordHubEvent({
-          type: 'item.closed',
-          projectId: updated.projectId,
-          itemId: updated.id,
-          payload: { fromStatus: currentItem.status, toStatus: Status.DONE, itemType: updated.type },
-        });
-        if (process.env.NODE_ENV !== 'test' && !process.env.VITEST) {
-          const proj = await storage.getProject(updated.projectId);
-          // No `|| findProjectRoot(process.cwd())`: that made a long-lived daemon
-          // commit into whatever repository it was launched from. autoGitCommit
-          // declines and says why.
-          const projectRoot = (proj as any)?.projectRoot;
-          // These routes have no message field to carry it, so the outcome is
-          // at least surfaced to the log rather than dropped on the floor.
-          const r = await autoGitCommit(updated, projectRoot);
-          if (r.outcome !== 'committed') {
-            console.warn(`[AUTO_GIT] ${updated.id}: no close commit (${r.outcome}) — ${r.detail ?? ''}`);
-          }
-        } else {
-          console.log(`[TEST_MODE] Skipping auto-git commit for item ${updated.id}`);
-        }
-      }
-
-
+    // No close handling here: PUT refuses every route into DONE (CGLAB-377), so it
+    // can never close a card. Closing emits item.closed from validate_progress
+    // (literal DONE only, today; sibling-propagated and parent-rolled-up closes
+    // and custom exit steps emit none, which is a separate gap).
     res.json(withJiraWarning(updated, externalRef.warning));
   } catch (error) {
     res.status(404).json({ error: "Item not found" });
