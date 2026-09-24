@@ -318,3 +318,16 @@ describe('CGLAB-383: signing is off by default and per step', () => {
     expect((await agent().post('/flows').send({ name: `pk-${++seq}`, steps })).status).toBe(400);
   });
 });
+
+describe('CGLAB-383: GET /items/:id/gates says whether the step asks for a passkey', () => {
+  it('true on a signed step, false elsewhere', async () => {
+    expect((await agent().get(`/items/${await card('PLAN')}/gates`)).body.passkeyRequired).toBe(true);
+    expect((await agent().get(`/items/${await card('PLAN', false)}/gates`)).body.passkeyRequired).toBe(false);
+  });
+
+  it('shows each approval with its authority', async () => {
+    const id = await card('PLAN', false);
+    await approve(id, {});
+    expect((await agent().get(`/items/${id}/gates`)).body.approvals[0].authority).toBe('unverified');
+  });
+});

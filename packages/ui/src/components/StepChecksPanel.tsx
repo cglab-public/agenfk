@@ -11,6 +11,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, XCircle, AlertTriangle, MinusCircle, FastForward, Unlock, ShieldCheck } from 'lucide-react';
 import { api, type StepCheckResult } from '../api';
 import { useSocketEvent } from '../SocketContext';
+import { canSignHere, createPasskey, handoffUrl, signAct } from '../webauthn';
 
 const errorText = (e: unknown): string => {
   const err = e as { response?: { data?: { error?: string } }; message?: string } | null;
@@ -26,10 +27,12 @@ function ResultIcon({ r }: { r: StepCheckResult }) {
   return <AlertTriangle size={14} className="text-amber-500 shrink-0" aria-label="warning" />;
 }
 
-export const StepChecksPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
+export const StepChecksPanel: React.FC<{ itemId: string; projectId?: string }> = ({ itemId, projectId }) => {
   const qc = useQueryClient();
   const key = ['gates', itemId];
   const { data: gates } = useQuery({ queryKey: key, queryFn: () => api.getGates(itemId) });
+  // A step that asks for a passkey (CGLAB-383): is one enrolled on this board?
+  const { data: passkeyStatus } = useQuery({ queryKey: ['passkeys'], queryFn: () => api.getPasskeyStatus(), enabled: !!gates?.passkeyRequired });
   useSocketEvent('items_updated', () => { void qc.invalidateQueries({ queryKey: key }); });
 
   const [note, setNote] = React.useState('');
@@ -46,6 +49,40 @@ export const StepChecksPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
     .sort((a, b) => rank(a) - rank(b));
   const approval = gates.approvals[gates.approvals.length - 1];
   if (!gates.approvalRequired && !results.length) return null;
+
+  const signed = !!gates.passkeyRequired;
+  const signHere = canSignHere();
+  const needsEnrollment = signed && signHere && passkeyStatus !== undefined && !passkeyStatus.enrolled;
+  /** Sign one act with an enrolled passkey: the server binds the challenge to exactly these fields. */
+  const assertionFor = async (a: Record<string, string>) => {
+    const { challenge, allowCredentials } = await api.passkeyChallenge(a);
+    return signAct(challenge, allowCredentials);
+  };
+  /** The desktop app (127.0.0.1) cannot sign: open the card where the browser can. */
+  const handOff = () => { window.open(handoffUrl(window.location, itemId, projectId), '_blank'); };
+  const enroll = () => act(async () => {
+    const { challenge } = await api.passkeyChallenge({ purpose: 'enroll' });
+    await api.enrollPasskey(await createPasskey(challenge));
+    await qc.invalidateQueries({ queryKey: ['passkeys'] });
+  });
+  const approveNow = () => {
+    if (signed && !signHere) return handOff();
+    const n = note.trim();
+    return act(async () => {
+      const body = { step: gates.step, ...(n ? { note: n } : {}) };
+      const assertion = signed ? await assertionFor({ purpose: 'approval', itemId, ...body }) : undefined;
+      await api.approveStep(itemId, { ...body, ...(assertion ? { assertion } : {}) });
+    });
+  };
+  const overrideNow = (checkId: string) => {
+    if (signed && !signHere) return handOff();
+    const r = reason.trim();
+    return act(async () => {
+      const body = { step: gates.step, checkId, reason: r };
+      const assertion = signed ? await assertionFor({ purpose: 'override', itemId, ...body }) : undefined;
+      await api.overrideCheck(itemId, { ...body, ...(assertion ? { assertion } : {}) });
+    });
+  };
 
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -71,11 +108,18 @@ export const StepChecksPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
         approval ? (
           <div className="flex items-start gap-2 text-sm rounded-xl border border-emerald-200 dark:border-emerald-900 bg-emerald-50 dark:bg-emerald-950/40 px-4 py-3 text-emerald-800 dark:text-emerald-200">
             <ShieldCheck size={16} className="shrink-0 mt-0.5" />
-            <span>Approved on the board {new Date(approval.at).toLocaleString()}{approval.note ? ` — ${approval.note}` : ''}</span>
+            <span>
+              Approved on the board {new Date(approval.at).toLocaleString()}{approval.note ? ` — ${approval.note}` : ''}
+              {approval.authority === 'passkey' && <span className="ml-1 font-semibold">· signed with a passkey</span>}
+            </span>
           </div>
         ) : (
           <div className="space-y-2 rounded-xl border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950/40 px-4 py-3">
-            <p className="text-sm text-amber-900 dark:text-amber-100">This step waits for your go-ahead before the card can move on. An agent cannot give it.</p>
+            <p className="text-sm text-amber-900 dark:text-amber-100">
+              This step waits for your go-ahead before the card can move on. An agent cannot give it.
+              {signed && ' It is signed with your passkey (fingerprint, face or PIN).'}
+            </p>
+{!(signed && !signHere) && (
             <label className="block text-xs text-amber-800 dark:text-amber-200">
               Note (optional)
               <input
@@ -85,14 +129,25 @@ export const StepChecksPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
                 className="mt-1 w-full text-sm bg-white dark:bg-slate-950 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-1.5 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-brand"
               />
             </label>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => act(() => api.approveStep(itemId, { step: gates.step, ...(note.trim() ? { note: note.trim() } : {}) }))}
-              className="text-xs font-bold px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50"
-            >
-              Approve {gates.step}
-            </button>
+            )}
+            {needsEnrollment ? (
+              <div className="space-y-1">
+                <p className="text-xs text-amber-800 dark:text-amber-200">No passkey is enrolled on this board yet. Enroll one to sign approvals.</p>
+                <button type="button" disabled={busy} onClick={enroll}
+                  className="text-xs font-bold px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-900 dark:bg-slate-200 dark:text-slate-900 text-white disabled:opacity-50">
+                  Enroll a passkey
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={approveNow}
+                className="text-xs font-bold px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50"
+              >
+                {signed && !signHere ? `Approve in the browser` : `Approve ${gates.step}`}
+              </button>
+            )}
           </div>
         )
       )}
@@ -137,7 +192,7 @@ export const StepChecksPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
                       <button
                         type="button"
                         disabled={busy || !reason.trim()}
-                        onClick={() => act(() => api.overrideCheck(itemId, { step: gates.step, checkId: r.id, reason: reason.trim() }))}
+                        onClick={() => overrideNow(r.id)}
                         className="text-xs font-bold px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white disabled:opacity-50"
                       >
                         Pass this check

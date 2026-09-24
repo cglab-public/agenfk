@@ -16,15 +16,25 @@ vi.mock('../api', () => ({
     getGates: vi.fn(),
     approveStep: vi.fn(() => Promise.resolve({})),
     overrideCheck: vi.fn(() => Promise.resolve({})),
+    getPasskeyStatus: vi.fn(() => Promise.resolve({ enrolled: true, credentials: [{ id: 'cred-1' }] })),
+    passkeyChallenge: vi.fn(() => Promise.resolve({ challenge: 'ch-1', allowCredentials: ['cred-1'] })),
+    enrollPasskey: vi.fn(() => Promise.resolve({ id: 'cred-1' })),
   },
 }));
+vi.mock('../webauthn', () => ({
+  canSignHere: vi.fn(() => true),
+  createPasskey: vi.fn(() => Promise.resolve({ credentialId: 'cred-1' })),
+  signAct: vi.fn(() => Promise.resolve({ credentialId: 'cred-1', signature: 's' })),
+  handoffUrl: vi.fn(() => 'http://localhost:3000/?item=c1'),
+}));
+import * as webauthn from '../webauthn';
 vi.mock('../SocketContext', () => ({ useSocketEvent: vi.fn() }));
 
 const result = (id: string, extra: Record<string, unknown> = {}) => ({
   id, step: 'WORK', source: 'flow', severity: 'block', params: {}, outcome: 'pass', detail: 'ok', blocking: false, ...extra,
 });
 const gates = (extra: Record<string, unknown> = {}) => ({
-  step: 'WORK', approvalRequired: false, approvals: [], overrides: {}, lastChecks: null, ...extra,
+  step: 'WORK', approvalRequired: false, passkeyRequired: false, approvals: [], overrides: {}, lastChecks: null, ...extra,
 });
 
 function show(g: ReturnType<typeof gates>) {
@@ -37,7 +47,7 @@ function show(g: ReturnType<typeof gates>) {
   );
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => { vi.clearAllMocks(); vi.mocked(webauthn.canSignHere).mockReturnValue(true); });
 afterEach(() => cleanup());
 
 describe('StepChecksPanel', () => {
@@ -115,5 +125,57 @@ describe('StepChecksPanel', () => {
     show(gates({ step: 'PLAN', approvalRequired: true }));
     fireEvent.click(await screen.findByRole('button', { name: /approve/i }));
     expect(await screen.findByText(/The card is on WORK, not PLAN/)).toBeTruthy();
+  });
+});
+
+describe('StepChecksPanel: a step that asks for a passkey (CGLAB-383)', () => {
+  it('signs the go-ahead for this card, step and note, and sends the assertion', async () => {
+    show(gates({ step: 'PLAN', approvalRequired: true, passkeyRequired: true }));
+    fireEvent.change(await screen.findByLabelText(/note/i), { target: { value: 'ok' } });
+    fireEvent.click(screen.getByRole('button', { name: /approve/i }));
+    await waitFor(() => expect(api.approveStep).toHaveBeenCalledWith('c1', { step: 'PLAN', note: 'ok', assertion: { credentialId: 'cred-1', signature: 's' } }));
+    expect(api.passkeyChallenge).toHaveBeenCalledWith({ purpose: 'approval', itemId: 'c1', step: 'PLAN', note: 'ok' });
+    expect(webauthn.signAct).toHaveBeenCalledWith('ch-1', ['cred-1']);
+  });
+
+  it('signs an override for this check and reason', async () => {
+    show(gates({ passkeyRequired: true, lastChecks: { step: 'WORK', at: 'now', blocked: true, results: [result('jira-key-valid', { outcome: 'fail', blocking: true })] } }));
+    fireEvent.click(await screen.findByRole('button', { name: /override jira-key-valid/i }));
+    fireEvent.change(screen.getByLabelText(/reason/i), { target: { value: 'spike' } });
+    fireEvent.click(screen.getByRole('button', { name: /pass this check/i }));
+    await waitFor(() => expect(api.overrideCheck).toHaveBeenCalledWith('c1', { step: 'WORK', checkId: 'jira-key-valid', reason: 'spike', assertion: { credentialId: 'cred-1', signature: 's' } }));
+    expect(api.passkeyChallenge).toHaveBeenCalledWith({ purpose: 'override', itemId: 'c1', step: 'WORK', checkId: 'jira-key-valid', reason: 'spike' });
+  });
+
+  it('offers to enroll a passkey when none is, and enrolls it', async () => {
+    vi.mocked(api.getPasskeyStatus).mockResolvedValue({ enrolled: false, credentials: [] } as never);
+    show(gates({ step: 'PLAN', approvalRequired: true, passkeyRequired: true }));
+    fireEvent.click(await screen.findByRole('button', { name: /enroll a passkey/i }));
+    await waitFor(() => expect(api.enrollPasskey).toHaveBeenCalledWith({ credentialId: 'cred-1' }));
+    expect(api.passkeyChallenge).toHaveBeenCalledWith({ purpose: 'enroll' });
+    expect(screen.queryByRole('button', { name: /^approve/i })).toBeNull();
+  });
+
+  it('where this page cannot sign (the desktop app on 127.0.0.1), hands the act off to the browser', async () => {
+    vi.mocked(webauthn.canSignHere).mockReturnValue(false);
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null);
+    show(gates({ step: 'PLAN', approvalRequired: true, passkeyRequired: true }));
+    fireEvent.click(await screen.findByRole('button', { name: /approve in the browser/i }));
+    expect(open).toHaveBeenCalledWith('http://localhost:3000/?item=c1', '_blank');
+    expect(api.approveStep).not.toHaveBeenCalled();
+    // A note typed here would be lost in the hand-off: it is written where the act is signed.
+    expect(screen.queryByLabelText(/note/i)).toBeNull();
+  });
+
+  it('a step that does not ask for a passkey never prompts for one', async () => {
+    show(gates({ step: 'PLAN', approvalRequired: true, passkeyRequired: false }));
+    fireEvent.click(await screen.findByRole('button', { name: /approve/i }));
+    await waitFor(() => expect(api.approveStep).toHaveBeenCalledWith('c1', { step: 'PLAN' }));
+    expect(webauthn.signAct).not.toHaveBeenCalled();
+  });
+
+  it('marks a signed approval as signed', async () => {
+    show(gates({ step: 'PLAN', approvalRequired: true, passkeyRequired: true, approvals: [{ by: 'board', at: '2026-09-24T10:00:00Z', authority: 'passkey' }] }));
+    expect(await screen.findByText(/signed with a passkey/i)).toBeTruthy();
   });
 });

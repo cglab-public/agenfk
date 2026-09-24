@@ -2670,8 +2670,9 @@ app.get("/items/:id/gates", asyncHandler(async (req: any, res: any) => {
   res.json({
     step: item.status,
     approvalRequired: !!approval,
+    passkeyRequired: stepWantsPasskey(flow, item.status),
     approvals: [
-      ...here.filter((r: any) => r.kind === 'approval').map((r: any) => ({ id: r.id, by: r.by, at: r.at, ...(r.note ? { note: r.note } : {}) })),
+      ...here.filter((r: any) => r.kind === 'approval').map((r: any) => ({ id: r.id, by: r.by, at: r.at, ...(r.note ? { note: r.note } : {}), ...(r.authority ? { authority: r.authority } : {}) })),
       ...inherited,
     ],
     overrides,

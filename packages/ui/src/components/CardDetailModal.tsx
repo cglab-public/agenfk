@@ -440,7 +440,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 )}
               </div>
 
-              {!isNew && <StepChecksPanel itemId={item.id} />}
+              {!isNew && <StepChecksPanel itemId={item.id} projectId={item.projectId} />}
 
               <div>
                 <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3">Description</h4>

@@ -19,7 +19,9 @@ export interface GateOverride { id: string; by: string; at: string; reason: stri
 export interface StepGates {
   step: string;
   approvalRequired: boolean;
-  approvals: Array<{ id?: string; by: string; at: string; note?: string }>;
+  /** The step's human-approval check asks for acts signed with a passkey (CGLAB-383). */
+  passkeyRequired?: boolean;
+  approvals: Array<{ id?: string; by: string; at: string; note?: string; authority?: string; from?: string }>;
   overrides: Record<string, GateOverride>;
   lastChecks: { step: string; at: string; blocked: boolean; results: StepCheckResult[] } | null;
 }
@@ -324,13 +326,27 @@ export const api = {
     return data;
   },
   /** A person's go-ahead for the card's current step. The board header is what the server accepts. */
-  approveStep: async (id: string, body: { step: string; note?: string }) => {
+  approveStep: async (id: string, body: { step: string; note?: string; assertion?: unknown }) => {
     const { data } = await axios.post(`${API_URL}/items/${id}/approvals`, body, { headers: { 'x-agenfk-ui': '1' } });
     return data;
   },
   /** A person's pass of one blocked check, with the reason they wrote. */
-  overrideCheck: async (id: string, body: { step: string; checkId: string; reason: string }) => {
+  overrideCheck: async (id: string, body: { step: string; checkId: string; reason: string; assertion?: unknown }) => {
     const { data } = await axios.post(`${API_URL}/items/${id}/overrides`, body, { headers: { 'x-agenfk-ui': '1' } });
+    return data;
+  },
+  /** Passkeys enrolled on this board (CGLAB-383). */
+  getPasskeyStatus: async (): Promise<{ enrolled: boolean; credentials: Array<{ id: string; createdAt?: string | null }> }> => {
+    const { data } = await axios.get(`${API_URL}/webauthn/status`);
+    return data;
+  },
+  /** A single-use challenge bound to one act: a signature over it authorises that act only. */
+  passkeyChallenge: async (act: Record<string, string>): Promise<{ challenge: string; allowCredentials: string[] }> => {
+    const { data } = await axios.post(`${API_URL}/webauthn/challenge`, act, { headers: { 'x-agenfk-ui': '1' } });
+    return data;
+  },
+  enrollPasskey: async (registration: unknown, assertion?: unknown) => {
+    const { data } = await axios.post(`${API_URL}/webauthn/credentials`, { registration, ...(assertion ? { assertion } : {}) }, { headers: { 'x-agenfk-ui': '1' } });
     return data;
   },
   bulkUpdateItems: async (items: { id: string; updates: Partial<AgEnFKItem> }[]) => {
