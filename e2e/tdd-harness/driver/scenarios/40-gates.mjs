@@ -10,14 +10,11 @@
  * person. The passkey store is server-wide, so the scenario that needs NO
  * passkey enrolled runs first, and one authenticator is enrolled once, after it.
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { api, sh, HOME } from '../lib.mjs';
+import { api, sh } from '../lib.mjs';
 import { newProject, newCard, card, verify, update, outcomeOf, verdictOf, write } from '../cards.mjs';
-import { softAuthenticator } from '../authenticator.mjs';
-
-const board = (method, path, body) => api(method, path, body, { board: true });
-const AUTHOR = { client: 'claude-code', sessionId: 'author-session', agentId: null };
+import { board, AUTHOR, enroll, signed, transcript, token, record, commitWork, firstCommit } from '../gates.mjs';
 
 const flowWith = checks => [
   { name: 'TODO', label: 'To Do', order: 0, isAnchor: true },
@@ -50,54 +47,6 @@ const refusedWith = (code, r, why) => ({
 });
 
 const s = (check, name, expected, run) => ({ check, name, expected, run });
-
-// ── The passkey ─────────────────────────────────────────────────────────────
-const authenticator = softAuthenticator();
-let enrolled = false;
-async function enroll() {
-  if (enrolled) return;
-  const { body: { challenge } } = await board('POST', '/webauthn/challenge', { purpose: 'enroll' });
-  const r = await board('POST', '/webauthn/credentials', { registration: authenticator.register(challenge) });
-  if (r.status !== 201) throw new Error(`enrolment refused (${r.status}): ${JSON.stringify(r.body)}`);
-  enrolled = true;
-}
-/** A signature over exactly this act. */
-async function signed(act) {
-  const { body: { challenge } } = await board('POST', '/webauthn/challenge', act);
-  return authenticator.assert(challenge);
-}
-
-// ── Review transcripts ──────────────────────────────────────────────────────
-let tseq = 0;
-/**
- * A reviewer's session log where Claude Code writes one, timestamped now (after
- * the commits it reviews). `agentId` makes it a sub-agent of `sessionId`;
- * `tools` are tool calls it made.
- */
-function transcript({ sessionId = `reviewer-${++tseq}`, agentId = null, tools = [] } = {}) {
-  const dir = join(HOME, '.claude', 'projects', '-work');
-  mkdirSync(dir, { recursive: true });
-  const now = new Date(Date.now() + 1000).toISOString();
-  const lines = [{ sessionId, timestamp: now, ...(agentId ? { isSidechain: true, agentId } : {}) }];
-  for (const t of tools) lines.push({ sessionId, timestamp: now, message: { content: [{ type: 'tool_use', ...t }] } });
-  const text = lines.map(l => JSON.stringify(l)).join('\n') + '\n';
-  if (!agentId) { const f = join(dir, `${sessionId}.jsonl`); writeFileSync(f, text); return f; }
-  writeFileSync(join(dir, `${sessionId}.jsonl`), JSON.stringify({ sessionId, timestamp: now }) + '\n');
-  mkdirSync(join(dir, sessionId, 'subagents'), { recursive: true });
-  const f = join(dir, sessionId, 'subagents', `agent-${agentId}.jsonl`);
-  writeFileSync(f, text);
-  return f;
-}
-const token = () => sh(`cat ${join(HOME, '.agenfk', 'verify-token')}`);
-/** Record a review the way `agenfk review record` does. */
-const record = (id, body) => api('POST', `/items/${id}/review-records`, { findings: [], ...body }, { headers: { 'x-agenfk-internal': token() } });
-/** Some committed work on WORK, then the range from the card's start to it. */
-function commitWork(dir, n = 1) {
-  write(dir, { [`src/work${n}.js`]: `export const w${n} = ${n};\n` });
-  sh(`git add -A && git commit -qm work${n}`, dir);
-  return sh('git rev-parse HEAD', dir);
-}
-const firstCommit = dir => sh('git rev-list --max-parents=0 HEAD', dir);
 
 const APPROVE = [{ id: 'human-approval' }];
 const REVIEW = [{ id: 'review-record' }];

@@ -35,3 +35,37 @@ describe('harness report', () => {
     expect(r.summary).toMatch(/no scenarios ran/i);
   });
 });
+
+/**
+ * T6: the coverage table. For every check in the catalogue, what the run saw
+ * it do - counting only scenarios that got what they expected. A check never
+ * seen passing, or never seen refusing (fail, warn, unavailable), is a hole
+ * in the harness, and the run says so and fails.
+ */
+describe('coverage', () => {
+  const r = (check: string, outcome: string, actual = outcome) => ({ scenario: `${check} ${outcome}`, check, expected: outcome, actual, detail: '' });
+
+  it('lists, per catalogue check, the outcomes seen as expected', () => {
+    const out = evaluate([r('tree-clean', 'pass'), r('tree-clean', 'fail'), r('tree-clean', 'unavailable')], { catalogue: ['tree-clean'] });
+    expect(out.coverage).toEqual([{ check: 'tree-clean', outcomes: ['fail', 'pass', 'unavailable'] }]);
+    expect(out.exitCode).toBe(0);
+  });
+
+  it('fails the run for a check never seen passing, or never seen refusing', () => {
+    const out = evaluate([r('a', 'pass'), r('b', 'fail'), r('c', 'warn'), r('c', 'pass')], { catalogue: ['a', 'b', 'c', 'd'] });
+    expect(out.gaps).toEqual(['a: never seen refusing', 'b: never seen passing', 'd: never exercised']);
+    expect(out.exitCode).toBe(1);
+    expect(out.lines.join('\n')).toMatch(/d: never exercised/);
+  });
+
+  it('does not count a scenario that got the wrong outcome', () => {
+    const out = evaluate([r('a', 'pass'), r('a', 'fail', 'pass')], { catalogue: ['a'] });
+    expect(out.coverage).toEqual([{ check: 'a', outcomes: ['pass'] }]);
+  });
+
+  it('counts overridden and refused as refusing, and ignores rows for things that are not checks', () => {
+    const out = evaluate([r('a', 'pass'), r('a', 'refused'), r('override', 'overridden')], { catalogue: ['a'] });
+    expect(out.gaps).toEqual([]);
+    expect(out.coverage.map((c: any) => c.check)).toEqual(['a']);
+  });
+});
