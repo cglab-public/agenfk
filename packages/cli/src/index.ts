@@ -17,6 +17,7 @@ import os from 'os';
 import { stageJsonMigration } from './db-migration.js';
 import { followValidateRun } from './verifyRun.js';
 import { buildPrBody, type GateEvent } from './humanGates.js';
+import { registryFlowToLocal } from './registryFlowFile.js';
 import { buildUiOpenUrl, resolveDashboardUrl } from './uiUrl.js';
 import { registerHubCommands } from './commands/hub.js';
 import { toonEncode } from './toon.js';
@@ -4793,24 +4794,6 @@ function getFlowRegistryRepo(): string {
   return 'cglab-public/agenfk-flows';
 }
 
-function serializeFlowToRegistry(flow: any): object {
-  const sorted = [...(flow.steps || [])].sort((a: any, b: any) => a.order - b.order);
-  return {
-    schemaVersion: '1',
-    name: flow.name,
-    description: flow.description || undefined,
-    author: flow.author || undefined,
-    version: flow.version || '1.0.0',
-    steps: sorted.map((s: any) => ({
-      name: s.name,
-      label: s.label,
-      order: s.order,
-      isSpecial: s.isSpecial || false,
-      exitCriteria: s.exitCriteria || undefined,
-    })),
-  };
-}
-
 // ── Flow Registry Commands ─────────────────────────────────────────────────────
 
 flowCommand
@@ -4906,18 +4889,8 @@ flowCommand
         return;
       }
 
-      const newFlow = {
-        name: parsed.name,
-        description: parsed.description,
-        steps: parsed.steps.map((s: any) => ({
-          id: randomUUID(),
-          name: s.name,
-          label: s.label,
-          order: s.order,
-          isSpecial: s.isSpecial || false,
-          exitCriteria: s.exitCriteria || undefined,
-        })),
-      };
+      // The step contract travels with the flow (CGLAB-385).
+      const newFlow = registryFlowToLocal(parsed, randomUUID);
 
       const { data: created } = await axios.post(`${API_URL}/flows`, newFlow);
       console.log(chalk.green(`\nFlow installed: ${created.name} (ID: ${created.id})`));

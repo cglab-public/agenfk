@@ -19,5 +19,6 @@ export * from './dispatch';
 export * from './flowChecks';
 export * from './flowPresets';
 export * from './flowContract';
+export * from './registryFlow';
 
 export * from './requestBudget.js';

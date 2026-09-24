@@ -9,7 +9,7 @@ import { parseActor, parseFindings, readTranscriptIdentity } from './reviewRecor
 import * as passkeys from './passkeys';
 import { evaluateChecks, judgeReview, formatCheckResults, needsCapture, needsEntryRecord, type CheckResult } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract } from "@agenfk/core";
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -4407,6 +4407,12 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
 
     const targetPath = path.join(flowsDir, filename);
     const fileExists = fs.existsSync(targetPath);
+    // CGLAB-385: never replace a registry flow's roles/checks with a copy that has none.
+    if (fileExists) {
+      let registrySteps: unknown;
+      try { registrySteps = JSON.parse(fs.readFileSync(targetPath, 'utf8'))?.steps; } catch { /* unreadable: nothing to protect */ }
+      if (wouldStripContracts(registrySteps, flow.steps)) return res.status(409).json({ error: STRIPPED_PUBLISH_MESSAGE });
+    }
 
     // Auto-increment patch version on re-publish; persist updated version back to local flow
     let version = (flow as any).version || '1.0.0';
@@ -4432,6 +4438,8 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
             isSpecial: s.isSpecial,
             isAnchor: s.isAnchor,
             order: s.order,
+            // CGLAB-385: the step contract travels with the flow.
+            ...stepContractFields(s),
           })),
       },
       null,

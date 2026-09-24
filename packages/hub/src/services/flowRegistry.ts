@@ -21,6 +21,7 @@
  *    partial failure (rate limit, revoked token) must be recoverable without
  *    the admin flipping the setting back and forth.
  */
+import { STRIPPED_PUBLISH_MESSAGE, stepContractFields, wouldStripContracts } from '@agenfk/core';
 import { encryptSecret, decryptSecret } from '../crypto.js';
 import type { HubDb } from '../db/types.js';
 
@@ -305,6 +306,8 @@ export function serializeRegistryFlow(flow: any, author: string): string {
       exitCriteria: s.exitCriteria ?? '',
       isSpecial: s.isSpecial ?? false,
       isAnchor: s.isAnchor ?? false,
+      // CGLAB-385: the step contract travels with the flow.
+      ...stepContractFields(s),
     }));
   return JSON.stringify({
     schemaVersion: '1',
@@ -520,7 +523,14 @@ export async function publishFlowPullRequest(
   const onBase = await readFile(baseSha);
   if (!onBase.ok) return fail(502, `GitHub returned ${onBase.status} reading flows/${filename} on ${repo}`);
   let registryVersion: unknown;
-  try { registryVersion = onBase.file ? JSON.parse(onBase.file.text)?.version : undefined; } catch { /* unreadable */ }
+  let registrySteps: unknown;
+  try {
+    const onRegistry = onBase.file ? JSON.parse(onBase.file.text) : undefined;
+    registryVersion = onRegistry?.version;
+    registrySteps = onRegistry?.steps;
+  } catch { /* unreadable */ }
+  // CGLAB-385: an older agenfk's copy must not strip the registry flow's contract.
+  if (wouldStripContracts(registrySteps, flow?.steps)) return fail(409, STRIPPED_PUBLISH_MESSAGE);
 
   // 2. The flow's own branch, and any pull request open FROM it.
   const branchRef = await call(`${api}/git/ref/heads/${headBranch}`);
