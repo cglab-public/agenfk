@@ -39,6 +39,12 @@ transitions instead of trusting the agent. Major version because forward moves a
 
 - Codex verifies record the author (`CODEX_THREAD_ID`).
 - Malformed test records on a card no longer make verify answer 500.
+- **The hub now sees every closed card.** A parent closed by the roll-up when its last child closes, a card
+  closed by sibling propagation, and a card on a custom flow whose last step is not named DONE all emit
+  `item.closed` (and `step.transitioned`). Before, none of them reached the hub, so its closed counts
+  (`items_closed`, the Org and User pages) were low; expect them to rise after upgrading. (On a flow with a
+  review step the roll-up stops a parent there, and the parent's own verify closes it - that was counted
+  already.) Every step move verify makes now reaches the hub as `step.transitioned`, not only command runs.
 - The authority routes (passkeys, approvals, overrides) are rate limited; transcript paths are checked on the
   resolved path; PR-body table cells escape backslashes.
 

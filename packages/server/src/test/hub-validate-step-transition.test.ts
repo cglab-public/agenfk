@@ -90,4 +90,98 @@ describe('closing a card emits the hub closure events', () => {
     expect((await agent().get(`/items/${id}`)).body.status).toBe('TEST');
     expect((await outboxFor(id, 300)).some(e => e.type === 'item.closed')).toBe(false);
   });
+
 });
+
+/** A project on its own flow, in its own clean repository. */
+async function projectOn(steps: any[]) {
+  const f = await agent().post('/flows').send({ name: `close-flow-${++seq}`, steps });
+  expect(f.status, JSON.stringify(f.body)).toBe(201);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-hub-close-'));
+  dirs.push(dir);
+  execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: dir, shell: '/bin/sh' });
+  const p = await agent().post('/projects').send({ name: `close-${++seq}` });
+  await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: dir, verifyCommand: 'exit 0' } as never);
+  return { projectId: p.body.id as string, dir };
+}
+const st = (name: string, order: number, extra: Record<string, unknown> = {}) => ({ id: `${name}-${order}-${seq}`, name, label: name, order, ...extra });
+const make = async (projectId: string, type: string, status: string, parentId?: string) => {
+  const c = await agent().post('/items').send({ type, title: `${type}-${++seq}`, projectId, ...(parentId ? { parentId } : {}) });
+  await storage.updateItem(c.body.id, { status } as any);
+  return c.body.id as string;
+};
+const verify = (id: string) => agent().post(`/items/${id}/validate`).set({ 'x-agenfk-internal': VERIFY_TOKEN! }).send({ evidence: 'green' });
+
+describe('every way a card reaches the end of its flow is a closure the hub sees (BUG a829ab35)', () => {
+  it('a custom exit step not named DONE: item.closed names the step it closed on', async () => {
+    const { projectId } = await projectOn([st('TODO', 0, { isAnchor: true }), st('WORK', 1), st('SHIPPED', 2, { isAnchor: true })]);
+    const id = await make(projectId, 'TASK', 'WORK');
+    const res = await verify(id);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect((await agent().get(`/items/${id}`)).body.status).toBe('SHIPPED');
+    const closed = (await outboxFor(id)).find(e => e.type === 'item.closed');
+    expect(closed?.payload).toMatchObject({ fromStatus: 'WORK', toStatus: 'SHIPPED', itemType: 'TASK' });
+  });
+
+  it('a parent closed by the roll-up when its last child closes: step.transitioned and item.closed', async () => {
+    const { projectId } = await projectOn([st('TODO', 0, { isAnchor: true }), st('WORK', 1), st('DONE', 2, { isAnchor: true })]);
+    const parent = await make(projectId, 'STORY', 'WORK');
+    const child = await make(projectId, 'TASK', 'WORK', parent);
+    expect((await verify(child)).status).toBe(200);
+    expect((await agent().get(`/items/${parent}`)).body.status).toBe('DONE');
+    const events = await outboxFor(parent);
+    expect(events.find(e => e.type === 'step.transitioned')?.payload).toMatchObject({ fromStatus: 'WORK', toStatus: 'DONE', itemType: 'STORY' });
+    expect(events.find(e => e.type === 'item.closed')?.payload).toMatchObject({ fromStatus: 'WORK', toStatus: 'DONE', itemType: 'STORY' });
+  });
+
+  it('a card closed by sibling propagation: step.transitioned and item.closed', async () => {
+    const { projectId, dir } = await projectOn([st('TODO', 0, { isAnchor: true }), st('WORK', 1), st('DONE', 2, { isAnchor: true })]);
+    const parent = await make(projectId, 'STORY', 'WORK');
+    const done = await make(projectId, 'TASK', 'WORK', parent);
+    const next = await make(projectId, 'TASK', 'WORK', parent);
+    const head = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
+    await storage.updateItem(done, { status: 'DONE', tests: [{ id: 't1', command: 'exit 0', status: 'PASSED', executedAt: new Date(), commit: head }] } as any);
+    const res = await verify(next);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.message).toMatch(/sibling propagation/i);
+    const events = await outboxFor(next);
+    expect(events.find(e => e.type === 'step.transitioned')?.payload).toMatchObject({ toStatus: 'DONE' });
+    expect(events.find(e => e.type === 'item.closed')?.payload).toMatchObject({ fromStatus: 'WORK', toStatus: 'DONE', itemType: 'TASK' });
+  });
+
+  it('a parent closes once: a later roll-up over a closed parent emits nothing more', async () => {
+    const { projectId } = await projectOn([st('TODO', 0, { isAnchor: true }), st('WORK', 1), st('DONE', 2, { isAnchor: true })]);
+    const parent = await make(projectId, 'STORY', 'WORK');
+    const child = await make(projectId, 'TASK', 'WORK', parent);
+    expect((await verify(child)).status).toBe(200);
+    expect((await outboxFor(parent)).filter(e => e.type === 'item.closed')).toHaveLength(1);
+    // A second child finishing runs the roll-up again over the already-closed parent.
+    const late = await make(projectId, 'TASK', 'WORK', parent);
+    expect((await verify(late)).status).toBe(200);
+    await new Promise(r => setTimeout(r, 300));
+    expect((await outboxFor(parent, 300)).filter(e => e.type === 'item.closed')).toHaveLength(1);
+  });
+
+  it('a mid-flow move with no command is a step.transitioned the hub sees too', async () => {
+    const { projectId } = await projectOn([st('TODO', 0, { isAnchor: true }), st('PLAN', 1), st('WORK', 2), st('DONE', 3, { isAnchor: true })]);
+    const id = await make(projectId, 'TASK', 'PLAN');
+    expect((await verify(id)).status).toBe(200);
+    await new Promise(r => setTimeout(r, 300));
+    const moved = (await outboxFor(id, 300)).find(e => e.type === 'step.transitioned');
+    expect(moved?.payload).toMatchObject({ fromStatus: 'PLAN', toStatus: 'WORK', itemType: 'TASK' });
+  });
+
+  it('the child\'s close is recorded before its parent\'s', async () => {
+    const { projectId } = await projectOn([st('TODO', 0, { isAnchor: true }), st('WORK', 1), st('DONE', 2, { isAnchor: true })]);
+    const parent = await make(projectId, 'STORY', 'WORK');
+    const child = await make(projectId, 'TASK', 'WORK', parent);
+    expect((await verify(child)).status).toBe(200);
+    await outboxFor(parent);
+    const db: any = (storage as any)['database'];
+    const order = (db.prepare('SELECT payload FROM hub_outbox ORDER BY rowid').all() as { payload: string }[])
+      .map(r => JSON.parse(r.payload)).filter(e => e.type === 'item.closed' && (e.itemId === child || e.itemId === parent)).map(e => e.itemId);
+    expect(order).toEqual([child, parent]);
+  });
+
+});
+

@@ -810,6 +810,7 @@ const syncParentStatus = async (parentId: string) => {
     console.log(`[${timestamp}] [AUTO_SYNC] Updating parent ${parent.id} (${parent.title}) to ${newStatus}`);
     await storage.updateItem(parent.id, { status: newStatus });
     io.emit('items_updated');
+    recordMoveEvents(parent, parent.status, newStatus, parentFlow);
 
     if (parent.parentId) {
       await syncParentStatus(parent.parentId);
@@ -1594,6 +1595,32 @@ export function isCompletionStep(toStatus: string, flow: TransitionFlow): boolea
   const steps = flowProgression(flow);
   const exit = steps[steps.length - 1];
   return !!exit && exit.name === toStatus && isBoundaryStep(exit);
+}
+
+/**
+ * A card moved: the hub sees the move and, when the move ends the flow, the
+ * closure (BUG a829ab35). Every route that lands a card on its flow's end -
+ * verify, sibling propagation, the parent roll-up - goes through this, and
+ * "the end" is the flow's own exit step, not the word DONE: the hub counts
+ * closed cards by `item.closed`, so a close it is not told about is a close
+ * that never happened on its dashboards.
+ */
+function recordMoveEvents(item: { id: string; projectId: string; type: string }, from: string, to: string, flow: TransitionFlow): void {
+  if (to === from) return;
+  recordHubEvent({
+    type: 'step.transitioned',
+    projectId: item.projectId,
+    itemId: item.id,
+    payload: { fromStatus: from, toStatus: to, itemType: item.type },
+  });
+  if (isCompletionStep(to, flow) && !isCompletionStep(from, flow)) {
+    recordHubEvent({
+      type: 'item.closed',
+      projectId: item.projectId,
+      itemId: item.id,
+      payload: { fromStatus: from, toStatus: to, itemType: item.type },
+    });
+  }
 }
 
 /**
@@ -5498,9 +5525,8 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
     }
 
     // No close handling here: PUT refuses every route into DONE (CGLAB-377), so it
-    // can never close a card. Closing emits item.closed from validate_progress
-    // (literal DONE only, today; sibling-propagated and parent-rolled-up closes
-    // and custom exit steps emit none, which is a separate gap).
+    // can never close a card. The routes that can - verify, sibling propagation,
+    // the parent roll-up - all report it through recordMoveEvents.
     res.json(withJiraWarning(updated, externalRef.warning));
   } catch (error) {
     res.status(404).json({ error: "Item not found" });
@@ -6060,6 +6086,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     if (leftTodo.refused) return;
     res = leftTodo.res;
     const movedToCoding = await storage.updateItem(itemId, { status: codingStep.name as Status, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment] } as any);
+    recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, codingStep.name, activeFlow);
     // Entering the first working step is where a worktree earns its keep.
     await ensureWorktreeForItem(movedToCoding, true);
     io.emit('items_updated');
@@ -6228,6 +6255,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         const updates: any = { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), sibComment], tests: [...testRecords(item.tests), { id: uuidv4(), command: resolvedCommand, output: `Sibling propagation: verified by ${passedSibling.id}`, status: 'PASSED', executedAt: new Date(), commit: siblingTest.commit }], ...(isExitStep ? { failureCount: 0 } : {}) };
         const updated = await storage.updateItem(itemId, updates);
         io.emit('items_updated');
+        recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
         if (updated.parentId) await syncParentStatus(updated.parentId);
         // Awaited, unlike before: the response describes what the commit did,
         // so it cannot be written before the commit has been attempted. No
@@ -6255,6 +6283,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         if (left.refused) return;
         res = left.res;
         const updated = await storage.updateItem(itemId, { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), sibComment], ...(isExitStep ? { failureCount: 0 } : {}) } as any);
+        recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
         // Sibling propagation moves the item into a working step exactly like
         // a verify does. It is the same transition; only the reason differs.
         await ensureWorktreeForItem(updated, true);
@@ -6273,6 +6302,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     if (left.refused) return;
     res = left.res;
     const updated = await storage.updateItem(itemId, { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment] } as any);
+    recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
     await ensureWorktreeForItem(updated, true);
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId);
@@ -6435,6 +6465,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       }
       const updated = await storage.updateItem(itemId, updates);
       io.emit('items_updated');
+      // Before the roll-up: the child's move is recorded ahead of the parent's.
+      recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
       if (updated.parentId) await syncParentStatus(updated.parentId);
       // HEAD just before our own close commit. If it moved during the run,
       // another agent landed work this green never covered, so no commit is
@@ -6487,22 +6519,6 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       itemId,
       payload: { fromStatus: item.status, toStatus: nextStatus, command: resolvedCommand },
     });
-    if (nextStatus !== item.status) {
-      recordHubEvent({
-        type: 'step.transitioned',
-        projectId: item.projectId,
-        itemId,
-        payload: { fromStatus: item.status, toStatus: nextStatus, itemType: item.type },
-      });
-      if (nextStatus === Status.DONE && item.status !== Status.DONE) {
-        recordHubEvent({
-          type: 'item.closed',
-          projectId: item.projectId,
-          itemId,
-          payload: { fromStatus: item.status, toStatus: Status.DONE, itemType: item.type },
-        });
-      }
-    }
     recordHubEvent({
       type: 'test.logged',
       projectId: item.projectId,
