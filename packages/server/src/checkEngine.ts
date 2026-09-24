@@ -18,7 +18,7 @@
  */
 import * as path from 'path';
 import { insideRoot, isTestPath } from './stepRecords';
-import { CHECK_CATALOGUE, type CheckSeverity, type RecordName, type ResolvedCheck } from '@agenfk/core';
+import { CHECK_CATALOGUE, checkDef, type CheckSeverity, type RecordName, type ResolvedCheck } from '@agenfk/core';
 
 export type CheckOutcome = 'pass' | 'fail' | 'unavailable' | 'n/a' | 'deferred';
 
@@ -483,7 +483,7 @@ export function evaluateChecks(resolved: readonly ResolvedCheck[], ctx: EngineCo
       results.push({ ...base, outcome: 'deferred', blocking: false, detail: "enforced on this transition by the project's verify command" });
       continue;
     }
-    const evaluate = EVALUATORS[c.id];
+    const evaluate = EVALUATORS[c.id] ?? EVALUATORS[c.id.split(':')[0]];
     const verdict: Verdict = evaluate
       ? (() => { try { return evaluate(ctx, c.params); } catch (e: any) { return { outcome: 'unavailable' as const, detail: `the check itself failed: ${e?.message ?? e}` }; } })()
       : { outcome: 'unavailable', detail: `'${c.id}' is not implemented on this server` };
@@ -500,12 +500,12 @@ export function evaluateChecks(resolved: readonly ResolvedCheck[], ctx: EngineCo
 
 /** Does any applicable check need a test-report capture? */
 export function needsCapture(resolved: readonly ResolvedCheck[]): boolean {
-  return resolved.some(c => c.applicable && c.id !== 'server-owned-verify' && CHECK_CATALOGUE[c.id]?.needsCapture);
+  return resolved.some(c => c.applicable && c.id !== 'server-owned-verify' && checkDef(c.id)?.needsCapture);
 }
 
 /** Does any applicable check read the step's entry record? */
 export function needsEntryRecord(resolved: readonly ResolvedCheck[]): boolean {
-  return resolved.some(c => c.applicable && CHECK_CATALOGUE[c.id]?.requires(c.params).includes('stepEntryTests'));
+  return resolved.some(c => c.applicable && checkDef(c.id)?.requires(c.params).includes('stepEntryTests'));
 }
 
 const MARK: Record<CheckOutcome, string> = { pass: '✅', fail: '❌', unavailable: '⛔', 'n/a': '➖', deferred: '⏩' };

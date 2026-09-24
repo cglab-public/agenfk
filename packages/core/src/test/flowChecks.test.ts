@@ -12,6 +12,7 @@ import {
   CHECK_CATALOGUE,
   ROLE_BUILTINS,
   STEP_ROLES,
+  checkDef,
   flowChecksErrors,
   hasStepContracts,
   mergeStepContracts,
@@ -305,5 +306,69 @@ describe('persistence helpers', () => {
       const incoming = [{ id: 'id-A', name: 'A', label: 'A', order: 0, role: 'testing' }];
       expect(mergeStepContracts(incoming, stored())[0].role).toBe('testing');
     });
+  });
+});
+
+/**
+ * efcacdeb (C1) — custom checks. A command the server runs (argv, no shell)
+ * and an instruction the coding agent carries out and reports. Each is named,
+ * so a step can carry several, and they stay apart by name.
+ */
+describe('custom checks', () => {
+  const flowWith = (checks: unknown[]) => [
+    step('START', 0, { isAnchor: true }),
+    step('WORK', 1, { checks }),
+    step('NEXT', 2),
+    step('END', 3, { isAnchor: true }),
+  ];
+  const LINT = { id: 'command-check', params: { name: 'lint', argv: ['npm', 'run', 'lint'] } };
+  const DOCS = { id: 'agent-check', params: { name: 'docs', instruction: 'Check the README documents every new CLI flag.' } };
+
+  it('are in the catalogue, blocking by default', () => {
+    expect(CHECK_CATALOGUE['command-check'].defaultSeverity).toBe('block');
+    expect(CHECK_CATALOGUE['agent-check'].defaultSeverity).toBe('block');
+  });
+
+  it('resolve under their name, so two on one step stay apart', () => {
+    const steps = flowWith([LINT, { id: 'command-check', params: { name: 'types', argv: ['npx', 'tsc', '--noEmit'] } }, DOCS]);
+    expect(flowChecksErrors(steps)).toEqual([]);
+    const ids = resolveStepChecks(steps, 'WORK').map(c => c.id);
+    expect(ids).toEqual(expect.arrayContaining(['command-check:lint', 'command-check:types', 'agent-check:docs']));
+  });
+
+  it('carry their argv, approval and instruction to the engine', () => {
+    const [cmd] = resolveStepChecks(flowWith([{ ...LINT, params: { ...LINT.params, approval: 'person' } }]), 'WORK').filter(c => c.id.startsWith('command-check'));
+    expect(JSON.parse(cmd.params.argv)).toEqual(['npm', 'run', 'lint']);
+    expect(cmd.params.approval).toBe('person');
+    const [agent] = resolveStepChecks(flowWith([DOCS]), 'WORK').filter(c => c.id.startsWith('agent-check'));
+    expect(agent.params.instruction).toBe(DOCS.params.instruction);
+    // Approval is optional: none unless the check asks for it.
+    expect(resolveStepChecks(flowWith([LINT]), 'WORK').find(c => c.id === 'command-check:lint')!.params.approval).toBe('none');
+  });
+
+  it('checkDef maps a resolved id back to its catalogue entry', () => {
+    expect(checkDef('command-check:lint')).toBe(CHECK_CATALOGUE['command-check']);
+    expect(checkDef('suite-green')).toBe(CHECK_CATALOGUE['suite-green']);
+    expect(checkDef('nope:x')).toBeUndefined();
+  });
+
+  it.each([
+    ['no name', { id: 'command-check', params: { argv: ['npm', 'test'] } }, /name/],
+    ['a name that is not a slug', { id: 'command-check', params: { name: 'Lint It!', argv: ['npm'] } }, /name/],
+    ['no argv', { id: 'command-check', params: { name: 'lint' } }, /argv/],
+    ['argv as a shell line', { id: 'command-check', params: { name: 'lint', argv: 'npm run lint && rm -rf /' } }, /argv/],
+    ['an empty argv', { id: 'command-check', params: { name: 'lint', argv: [] } }, /argv/],
+    ['an argv with a non-string', { id: 'command-check', params: { name: 'lint', argv: ['npm', 3] } }, /argv/],
+    ['an unknown approval', { id: 'command-check', params: { name: 'lint', argv: ['npm'], approval: 'maybe' } }, /approval/],
+    ['no instruction', { id: 'agent-check', params: { name: 'docs' } }, /instruction/],
+    ['an empty instruction', { id: 'agent-check', params: { name: 'docs', instruction: '  ' } }, /instruction/],
+  ])('refuses %s, naming the step and the check', (_label, check, why) => {
+    const errors = flowChecksErrors(flowWith([check])).join('\n');
+    expect(errors).toMatch(why as RegExp);
+    expect(errors).toMatch(/WORK/);
+  });
+
+  it('refuses two custom checks of one kind with the same name on a step', () => {
+    expect(flowChecksErrors(flowWith([LINT, LINT])).join('\n')).toMatch(/lint.*more than once|twice|same name/i);
   });
 });

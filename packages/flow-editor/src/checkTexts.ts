@@ -34,6 +34,8 @@ export const CHECK_TEXTS: Record<string, CheckText> = {
   'review-record': { title: 'Independent review', stops: 'authors reviewing their own work, and shipping with open findings', must: 'Record a review by someone else, with every finding fixed or rejected with a reason' },
   'human-approval': { title: 'A person approves', stops: 'agents moving on without a person\'s say-so', must: 'Wait for a person to approve on the board' },
   'server-owned-verify': { title: 'Project verify command passes', stops: 'passing "true" as the verify command', must: 'Pass the project\'s own verify command' },
+  'command-check': { title: 'A command the flow defines passes', stops: 'moving on while the team\'s own check (lint, types, a script) fails', must: 'Pass the flow\'s command, run by the server in the card\'s tree' },
+  'agent-check': { title: 'The agent carried out an instruction', stops: 'moving on without doing what the step asks', must: 'Carry out the step\'s instruction and report it (agent-reported)' },
 };
 
 /** A check's words; one the editor does not know yet falls back to the server's description. */

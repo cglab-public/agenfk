@@ -46,11 +46,18 @@ export interface CheckParamDef {
   values: readonly string[];
   default: string;
   description: string;
+  /**
+   * What the param holds (efcacdeb): one of `values` (enum, the default), a
+   * name slug, an argv list (carried to the engine as its JSON), or free text.
+   */
+  kind?: 'enum' | 'name' | 'argv' | 'text';
+  /** Must be given: there is no sensible default (a custom check's name, argv or instruction). */
+  required?: boolean;
 }
 
 export interface CheckDef {
   id: string;
-  group: 'git' | 'tests' | 'review' | 'approvals';
+  group: 'git' | 'tests' | 'review' | 'approvals' | 'custom';
   /** What the check requires, in words the flow editor shows. */
   description: string;
   defaultSeverity: CheckSeverity;
@@ -125,6 +132,20 @@ export const CHECK_CATALOGUE: Record<string, CheckDef> = {
       signature: { values: ['none', 'passkey'], default: 'none', description: "passkey: the approval, and any override on this step, must be signed with a passkey enrolled on the board (fingerprint, face or PIN), which an agent cannot produce; none: the board's approval is enough." },
     },
     description: 'A person approved in the UI before the card leaves this step. An agent cannot approve.' }),
+  // efcacdeb — custom checks, named so a step can carry several.
+  'command-check': def({ id: 'command-check', group: 'custom', defaultSeverity: 'block',
+    params: {
+      name: { kind: 'name', required: true, values: [], default: '', description: 'A short name for the check (lint, types): it tells two custom checks on one step apart.' },
+      argv: { kind: 'argv', required: true, values: [], default: '', description: 'The command, as a list: the program and each argument, run without a shell in the card\'s tree. It passes on exit code 0.' },
+      approval: { values: ['none', 'person'], default: 'none', description: "none: it runs as the flow defines it; person: this exact command runs only after a person approves it on the board with a passkey, and any change to it asks again." },
+    },
+    description: "A command the flow defines, which the server runs in the card's tree: it passes when the command exits 0. Only flows from the org's hub or made on this machine may carry one." }),
+  'agent-check': def({ id: 'agent-check', group: 'custom', defaultSeverity: 'block',
+    params: {
+      name: { kind: 'name', required: true, values: [], default: '', description: 'A short name for the check (docs, changelog): it tells two custom checks on one step apart.' },
+      instruction: { kind: 'text', required: true, values: [], default: '', description: 'What the coding agent must do or check before the card may leave the step.' },
+    },
+    description: 'An instruction the coding agent carries out and reports as passed or failed when it verifies. Its result is labelled agent-reported: the server did not check it.' }),
   'server-owned-verify': def({ id: 'server-owned-verify', group: 'tests', defaultSeverity: 'block',
     description: "The project's own verify command passes. The server runs it; a caller cannot substitute another." }),
 };
@@ -172,11 +193,40 @@ export function hasStepContracts(steps: readonly AnyStep[]): boolean {
   return steps.some(s => (s.role !== undefined && s.role !== null) || (Array.isArray(s.checks) && s.checks.length > 0));
 }
 
+/** The catalogue entry behind a resolved check id: a custom check resolves as `<id>:<name>`. */
+export function checkDef(id: string): CheckDef | undefined {
+  if (Object.prototype.hasOwnProperty.call(CHECK_CATALOGUE, id)) return CHECK_CATALOGUE[id];
+  const base = id.split(':')[0];
+  return base !== id && Object.prototype.hasOwnProperty.call(CHECK_CATALOGUE, base) ? CHECK_CATALOGUE[base] : undefined;
+}
+
+/** Params as the engine reads them: strings, an argv list as its JSON. */
 function withDefaults(d: CheckDef, params: unknown): Record<string, string> {
   const given = params && typeof params === 'object' ? (params as Record<string, unknown>) : {};
   const out: Record<string, string> = {};
-  for (const [k, p] of Object.entries(d.params)) out[k] = typeof given[k] === 'string' ? (given[k] as string) : p.default;
+  for (const [k, p] of Object.entries(d.params)) {
+    const v = given[k];
+    out[k] = p.kind === 'argv' ? (Array.isArray(v) ? JSON.stringify(v) : p.default) : typeof v === 'string' ? v : p.default;
+  }
   return out;
+}
+
+/** A custom check resolves under its name, so two on one step - and their overrides - stay apart. */
+const resolvedId = (d: CheckDef, params: Record<string, string>) => (d.params.name?.kind === 'name' && params.name ? `${d.id}:${params.name}` : d.id);
+
+/** Why a param's value is refused, or null. */
+function paramError(p: CheckParamDef, v: unknown): string | null {
+  switch (p.kind ?? 'enum') {
+    case 'name':
+      return typeof v === 'string' && /^[a-z0-9][a-z0-9-]{0,39}$/.test(v) ? null : 'must be a short name: lowercase letters, digits and dashes (e.g. lint)';
+    case 'argv':
+      return Array.isArray(v) && v.length > 0 && v.length <= 64 && v.every(a => typeof a === 'string' && a.length > 0 && a.length <= 4096)
+        ? null : 'must be a list: the program and each argument as a string, e.g. ["npm", "run", "lint"] (no shell line)';
+    case 'text':
+      return typeof v === 'string' && v.trim().length > 0 && v.length <= 4000 ? null : 'must be a non-empty text of at most 4000 characters';
+    default:
+      return typeof v === 'string' && p.values.includes(v) ? null : `must be one of ${p.values.join(', ')}`;
+  }
 }
 
 const refsOf = (s: AnyStep): StepCheckRef[] =>
@@ -190,14 +240,15 @@ function contractOf(s: AnyStep, produced: ReadonlySet<RecordName>): ResolvedChec
     const d = CHECK_CATALOGUE[r.id];
     if (!d) return;
     const params = withDefaults(d, r.params);
+    const id = resolvedId(d, params);
     const missing = d.requires(params).filter(rec => !ENGINE_RECORDS.has(rec) && !produced.has(rec));
     const severity: CheckSeverity = source === 'flow' && (r.severity === 'warn' || r.severity === 'block') ? r.severity : d.defaultSeverity;
     // A flow extra identical to a built-in runs once; a different one (a
     // stricter mode, a different severity) runs as well. Named by the flow, it
     // is the flow's: a built-in that could not apply is then a save-time error.
-    const same = out.find(c => c.id === r.id && c.severity === severity && JSON.stringify(c.params) === JSON.stringify(params));
+    const same = out.find(c => c.id === id && c.severity === severity && JSON.stringify(c.params) === JSON.stringify(params));
     if (same) { same.source = source === 'flow' ? 'flow' : same.source; return; }
-    out.push({ id: r.id, params, severity, source, step: name, applicable: missing.length === 0, ...(missing.length ? { missing } : {}) });
+    out.push({ id, params, severity, source, step: name, applicable: missing.length === 0, ...(missing.length ? { missing } : {}) });
   };
   if (isRole(s.role)) for (const r of ROLE_BUILTINS[s.role]) push(r, 'role');
   for (const r of refsOf(s)) push(r, 'flow');
@@ -206,7 +257,7 @@ function contractOf(s: AnyStep, produced: ReadonlySet<RecordName>): ResolvedChec
 
 /** Records a step's applicable checks produce. */
 const producedBy = (checks: readonly ResolvedCheck[]): RecordName[] =>
-  checks.filter(c => c.applicable).flatMap(c => CHECK_CATALOGUE[c.id].produces(c.params));
+  checks.filter(c => c.applicable).flatMap(c => checkDef(c.id)?.produces(c.params) ?? []);
 
 /**
  * The checks that run when a card LEAVES `stepName`: the universal ones, the
@@ -292,6 +343,7 @@ export function flowChecksErrors(steps: unknown): string[] {
       if (!Array.isArray(s.checks)) {
         errors.push(`Step ${name}: checks must be a list of { id, params?, severity? }.`);
       } else {
+        const named = new Set<string>();
         for (const c of s.checks as unknown[]) {
           if (!c || typeof c !== 'object' || typeof (c as any).id !== 'string') {
             errors.push(`Step ${name}: each check must be an object with an id, e.g. { "id": "suite-green" }.`);
@@ -310,10 +362,21 @@ export function flowChecksErrors(steps: unknown): string[] {
             } else {
               for (const [k, v] of Object.entries(r.params)) {
                 const p = d.params[k];
-                if (!p) errors.push(`Step ${name}: check '${r.id}' has no param '${k}'${Object.keys(d.params).length ? ` (params: ${Object.keys(d.params).join(', ')})` : ''}.`);
-                else if (typeof v !== 'string' || !p.values.includes(v)) errors.push(`Step ${name}: check '${r.id}' param '${k}' must be one of ${p.values.join(', ')}.`);
+                if (!p) { errors.push(`Step ${name}: check '${r.id}' has no param '${k}'${Object.keys(d.params).length ? ` (params: ${Object.keys(d.params).join(', ')})` : ''}.`); continue; }
+                const why = paramError(p, v);
+                if (why) errors.push(`Step ${name}: check '${r.id}' param '${k}' ${why}.`);
               }
             }
+          }
+          // efcacdeb: a custom check's name, argv or instruction has no default.
+          const given = r.params && typeof r.params === 'object' && !Array.isArray(r.params) ? (r.params as Record<string, unknown>) : {};
+          for (const [k, p] of Object.entries(d.params)) {
+            if (p.required && given[k] === undefined) errors.push(`Step ${name}: check '${r.id}' needs the param '${k}': ${p.description}`);
+          }
+          if (d.params.name?.kind === 'name' && typeof given.name === 'string') {
+            const key = `${r.id}:${given.name}`;
+            if (named.has(key)) errors.push(`Step ${name}: check '${r.id}' named '${given.name}' is there more than once; give each its own name.`);
+            named.add(key);
           }
         }
       }
