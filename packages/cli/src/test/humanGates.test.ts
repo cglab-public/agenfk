@@ -23,6 +23,14 @@ describe('formatHumanGates', () => {
     expect(md).toMatch(/spike card, no issue/);
   });
 
+  it('escapes a backslash, so a reason ending in one cannot unescape the column pipe (CodeQL)', () => {
+    const md = formatHumanGates([{ ...override, reason: 'path C:\\ | next' }]);
+    const row = md.split('\n').find(l => l.includes('Fix the picker'))!;
+    expect(row).toContain('path C:\\\\ \\| next');
+    // The row still has exactly its own column separators: every other pipe is escaped.
+    expect(row.replace(/\\\\/g, '').replace(/\\\|/g, '').split('|').length).toBe(md.split('\n').find(l => /^\|/.test(l))!.split('|').length);
+  });
+
   it('lists approvals too, with their note', () => {
     const md = formatHumanGates([approval, override]);
     expect(md).toMatch(/DISCOVERY/);

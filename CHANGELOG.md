@@ -2,6 +2,46 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.1] — 2026-09-24
+
+Beta, cumulative over `1.1.21-beta.12`. Deterministic flow adherence (CGLAB-376): the server now enforces step
+transitions instead of trusting the agent. Major version because forward moves and the final command change.
+
+### Breaking
+
+- **Forward moves go through `agenfk verify` only.** A forward `update --status` is refused (409) with a message
+  naming `agenfk verify <id>`, and the internal token no longer lets anything land DONE.
+- **The final step runs the project's own verify command.** A command passed to verify there is ignored, with a
+  warning on the reply (never a 400, so older skills keep working).
+
+### New
+
+- **Step roles and a record-based check engine**: tree-clean, on-card-branch, jira-key-valid, the TDD red/green
+  and test-surface checks, test-set identity, suite-green. Step snapshots and a test-report adapter record what
+  each check needs.
+- **Roles on the shipped DEFAULT and TDD flows**, and an independent review record (`agenfk review record`)
+  checked against the reviewer's transcript.
+- **Human gates on the board**: approve, and override a check with a reason; both appear on the PR. Optional
+  passkey (WebAuthn) signing, set per step.
+- **Friendly flow editor** (Kanban and Hub): role picker, check gallery, approvals, inline validation with
+  one-click fixes, templates.
+- **Per-step auto commit** (`autoCommit` / `requireCommit`): commits the card's staged, claimed work as it leaves
+  a step, only once the advance is certain.
+
+### Backwards compatibility
+
+- Older CLIs, servers and editors keep working: unknown step fields are dropped by old installs, and an edit that
+  omits them keeps the stored ones. A publish never strips a registry flow's roles, checks or commit settings;
+  removing them on purpose takes `agenfk flow publish <id> --allow-removing-checks`.
+- The MCP `create_flow` / `update_flow` tools carry the step contract.
+
+### Fixes
+
+- Codex verifies record the author (`CODEX_THREAD_ID`).
+- Malformed test records on a card no longer make verify answer 500.
+- The authority routes (passkeys, approvals, overrides) are rate limited; transcript paths are checked on the
+  resolved path; PR-body table cells escape backslashes.
+
 ## [1.1.21-beta.12] — 2026-09-22
 
 Beta, cumulative over `1.1.21-beta.11`. Proxy-derived URLs, and the flaky test suite fixed at its root (CGLAB-371).

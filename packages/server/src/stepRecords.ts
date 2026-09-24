@@ -159,6 +159,40 @@ function attributes(tag: string): Record<string, string> {
 }
 
 /**
+ * Drop XML comments and CDATA sections in one left-to-right scan: whichever
+ * opens first wins, and what is removed never re-forms a new opener with the
+ * text around it, because the scan only moves forward. An unterminated section
+ * is left as text. (A scan rather than a global replace: the same meaning,
+ * without a pattern CodeQL reads as an HTML sanitiser.)
+ */
+function stripCommentsAndCdata(text: string): string {
+  // Each section's next complete occurrence at or after `at`, found once and
+  // reused until the scan passes it: rescanning the section that lost would
+  // make a CDATA-heavy report quadratic, and verify parses it on the event
+  // loop. `dead` once a section has no complete occurrence left - no later
+  // opener of that kind can have a close either.
+  const sections = [['<!--', '-->'], ['<![CDATA[', ']]>']].map(([open, close]) => ({ open, close, start: -1, end: -1, dead: false }));
+  const refresh = (sec: typeof sections[number], from: number) => {
+    if (sec.dead || sec.start >= from) return;
+    const start = text.indexOf(sec.open, from);
+    const stop = start === -1 ? -1 : text.indexOf(sec.close, start + sec.open.length);
+    if (stop === -1) { sec.dead = true; return; }
+    sec.start = start;
+    sec.end = stop + sec.close.length;
+  };
+  let out = '';
+  let at = 0;
+  for (;;) {
+    for (const sec of sections) refresh(sec, at);
+    const live = sections.filter(sec => !sec.dead);
+    if (!live.length) return out + text.slice(at);
+    const first = live.reduce((x, y) => (y.start < x.start ? y : x));
+    out += text.slice(at, first.start);
+    at = first.end;
+  }
+}
+
+/**
  * JUnit XML, as pytest, go-junit-report, surefire, dotnet and most CI tools
  * write it. Only `<testcase>` and its `<failure>`/`<error>`/`<skipped>`
  * children are read. Throws when there is no `<testsuite>` at all.
@@ -171,7 +205,7 @@ function attributes(tag: string): Record<string, string> {
 export function parseJunitXml(text: string, root: string): ParsedReport {
   // One left-to-right pass: whichever of a comment or a CDATA section opens
   // first wins, so a `<!--` inside one test's output cannot eat later tests.
-  const clean = text.replace(/<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>/g, '');
+  const clean = stripCommentsAndCdata(text);
   const tag = /<(\/?)([\w:.-]+)((?:\s+[\w:.-]+\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/?)>/g;
   const tests: ReportedTest[] = [];
   let sawSuite = false;

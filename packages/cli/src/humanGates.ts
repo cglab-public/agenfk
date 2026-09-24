@@ -20,7 +20,9 @@ export interface GateEvent {
 }
 
 /** One table cell: no pipe or newline may break the row. */
-const cell = (s: unknown) => String(s ?? '').replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ').trim();
+// Backslashes first: a reason ending in `\` would otherwise turn the escaped
+// pipe after it back into a column separator.
+const cell = (s: unknown) => String(s ?? '').replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ').trim();
 
 export function formatHumanGates(events: readonly GateEvent[]): string {
   if (!events.length) return '';

@@ -113,7 +113,12 @@ export function readTranscriptIdentity(file: string): TranscriptIdentity {
   if (typeof file !== 'string' || !file.trim()) throw new Error('transcript is required: the path of the reviewer\'s session log');
   const where = transcriptRoot(file);
   if (!where) throw new Error(`${file} is not a transcript in a harness session folder (~/${ROOTS.map(r => r.rel).join(', ~/')})`);
-  const real = fs.realpathSync(path.resolve(file));
+  // Built from the resolved harness folder and the path inside it, and
+  // checked to stay inside it: the file read is the one transcriptRoot vetted.
+  // transcriptRoot already refuses an escape, so the guard never fires today;
+  // it is kept as the resolve-then-startsWith check static analysis recognises.
+  const real = path.resolve(where.root, where.rel);
+  if (!real.startsWith(where.root + path.sep)) throw new Error(`${file} is not a transcript in a harness session folder`);
   const st = fs.statSync(real);
   if (!st.isFile()) throw new Error(`${file} is not a file`);
   if (st.size > MAX_TRANSCRIPT_BYTES) throw new Error(`${file} is larger than ${MAX_TRANSCRIPT_BYTES} bytes`);

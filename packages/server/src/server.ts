@@ -1971,8 +1971,8 @@ const limitExpensive = rateLimit({
      * always a loop in something the same person is writing.
      */
     res.status(429).json({
-      error: `Too many requests to ${req.path}. This route does real work per call - a process, `
-        + `a directory walk, or a network fetch - and is capped at ${EXPENSIVE_ROUTE_LIMIT} a minute. `
+      error: `Too many requests to ${req.path}. This route is capped at ${EXPENSIVE_ROUTE_LIMIT} a minute: `
+        + 'it does real work per call, or records a person\'s authority. '
         + 'If this was not a loop, say so on the card.',
     });
   },
@@ -2622,7 +2622,7 @@ app.post("/webauthn/challenge", (req: any, res: any) => {
   res.json({ challenge: passkeys.issueChallenge(act), rpId: passkeys.RP_ID, allowCredentials: creds.map(c => c.id) });
 });
 
-app.post("/webauthn/credentials", (req: any, res: any) => {
+app.post("/webauthn/credentials", limitExpensive, (req: any, res: any) => {
   if (refuseUnlessBoard(req, res)) return;
   const reg = req.body?.registration;
   let cred: ReturnType<typeof passkeys.verifyRegistration>;
@@ -2643,7 +2643,7 @@ app.post("/webauthn/credentials", (req: any, res: any) => {
   res.status(201).json({ id: stored.id, createdAt: stored.createdAt });
 });
 
-app.delete("/webauthn/credentials/:credId", (req: any, res: any) => {
+app.delete("/webauthn/credentials/:credId", limitExpensive, (req: any, res: any) => {
   if (refuseUnlessBoard(req, res)) return;
   const id = req.params.credId;
   if (!passkeys.loadCredentials().some(c => c.id === id)) return res.status(404).json({ error: 'No such passkey.' });
@@ -2725,7 +2725,7 @@ app.get("/items/:id/gate-events", asyncHandler(async (req: any, res: any) => {
   res.json(events);
 }));
 
-app.post("/items/:id/approvals", asyncHandler(async (req: any, res: any) => {
+app.post("/items/:id/approvals", limitExpensive, asyncHandler(async (req: any, res: any) => {
   if (refuseUnlessBoard(req, res)) return;
   const target = await gateTarget(req, res);
   if (!target) return;
@@ -2749,7 +2749,7 @@ app.post("/items/:id/approvals", asyncHandler(async (req: any, res: any) => {
   res.status(201).json(rec);
 }));
 
-app.post("/items/:id/overrides", asyncHandler(async (req: any, res: any) => {
+app.post("/items/:id/overrides", limitExpensive, asyncHandler(async (req: any, res: any) => {
   if (refuseUnlessBoard(req, res)) return;
   const checkId = req.body?.checkId;
   const reason = gateText(req.body?.reason);
