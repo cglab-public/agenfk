@@ -4,7 +4,7 @@
  */
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error - plain ESM module, run by node inside the container
-import { outcomeOf } from '../driver/cards.mjs';
+import { outcomeOf, verdictOf } from '../driver/cards.mjs';
 
 const card = (results: unknown[], step = 'WORK') => ({ status: step, lastChecks: { step, results } });
 
@@ -25,5 +25,35 @@ describe('outcomeOf', () => {
     const c = { status: 'NEXT', lastChecks: { step: 'WORK', results: [{ id: 'tree-clean', outcome: 'pass', detail: '', blocking: false }] } };
     expect(outcomeOf(c, 'tree-clean', 'NEXT').outcome).toBe('absent');
     expect(outcomeOf(c, 'tree-clean', 'WORK').outcome).toBe('pass');
+  });
+});
+
+/**
+ * What a scenario compares: the verdict AND what it did to the card. A warning
+ * lets the card move; a blocking verdict holds it; a block that let the card
+ * move anyway is its own outcome, never an expected one.
+ */
+describe('verdictOf', () => {
+  it('passes a pass through', () => {
+    expect(verdictOf({ outcome: 'pass', blocking: false }, true)).toBe('pass');
+  });
+  it('a blocking fail or unavailable that held the card is fail / unavailable', () => {
+    const v = verdictOf;
+    expect(v({ outcome: 'fail', blocking: true }, false)).toBe('fail');
+    expect(v({ outcome: 'unavailable', blocking: true }, false)).toBe('unavailable');
+  });
+  it('a non-blocking fail is a warning, a non-blocking unavailable is soft', () => {
+    const v = verdictOf;
+    expect(v({ outcome: 'fail', blocking: false }, true)).toBe('warn');
+    expect(v({ outcome: 'unavailable', blocking: false }, true)).toBe('unavailable-soft');
+  });
+  it('a blocking verdict whose card moved anyway is named as such', () => {
+    const v = verdictOf;
+    expect(v({ outcome: 'fail', blocking: true }, true)).toBe('fail-but-moved');
+    expect(v({ outcome: 'unavailable', blocking: true }, true)).toBe('unavailable-but-moved');
+  });
+  it('keeps absent, n/a, deferred and overridden as they are', () => {
+    const v = verdictOf;
+    for (const o of ['absent', 'n/a', 'deferred', 'overridden']) expect(v({ outcome: o, blocking: false }, true)).toBe(o);
   });
 });

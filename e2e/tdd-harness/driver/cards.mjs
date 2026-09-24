@@ -2,13 +2,14 @@
  * Projects, cards and verify, the way an agent meets them.
  *
  * Every scenario gets its own sample project: a git repository holding a tiny
- * node package whose tests run on node:test and write junit-xml, the project
- * wired to its own flow. Nothing is shared between scenarios, so each check is
+ * package on one of the runners in runners.mjs, writing that runner's test
+ * report, the project wired to its own flow. Nothing is shared between scenarios, so each check is
  * seen in isolation.
  */
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { api, sh, HOME } from './lib.mjs';
+import { RUNNERS, kit } from './runners.mjs';
 
 /** One check's verdict as verify recorded it on the card: `absent` when it did not run. */
 export function outcomeOf(card, checkId, step) {
@@ -20,20 +21,24 @@ export function outcomeOf(card, checkId, step) {
   return { outcome: r.outcome, detail: r.detail, blocking: r.blocking };
 }
 
+/**
+ * A verdict and what it did to the card, as one word a scenario expects. A
+ * blocking fail or unavailable holds the card; a non-blocking one (a `warn`
+ * check, or a card that predates checks) lets it move. A block whose card
+ * moved anyway is its own outcome, and never an expected one.
+ */
+export function verdictOf(o, moved) {
+  if (o.outcome !== 'fail' && o.outcome !== 'unavailable') return o.outcome;
+  if (o.blocking) return moved ? `${o.outcome}-but-moved` : o.outcome;
+  return o.outcome === 'fail' ? 'warn' : 'unavailable-soft';
+}
+
 const token = () => readFileSync(join(HOME, '.agenfk', 'verify-token'), 'utf8').trim();
 const internal = () => ({ 'x-agenfk-internal': token() });
 
-/** The sample package: one module and one green test. */
-export const SAMPLE = {
-  'package.json': JSON.stringify({ name: 'sample', version: '1.0.0', type: 'module' }, null, 2) + '\n',
-  '.gitignore': '.reports/\n',
-  'src/math.js': 'export const add = (a, b) => a + b;\n',
-  'test/math.test.js': "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { add } from '../src/math.js';\n\ntest('adds', () => assert.equal(add(2, 3), 5));\n",
-};
-// No path argument: node 22 runs a `test/` argument as a FILE (one failing
-// test named "test"); with none it finds the *.test.js files itself. The
-// reporter does not create its directory, and .reports/ is gitignored.
-export const TEST_COMMAND = 'mkdir -p .reports && node --test --test-reporter=junit --test-reporter-destination=.reports/junit.xml';
+/** The node sample: what the plumbing and git scenarios use. */
+export const SAMPLE = kit('node').sample();
+export const TEST_COMMAND = RUNNERS.node.command;
 
 export function write(dir, files) {
   for (const [rel, text] of Object.entries(files)) {
@@ -46,17 +51,19 @@ export function write(dir, files) {
 let seq = 0;
 /**
  * A fresh project on its own flow. `steps` is the flow; `testReport: false`
- * leaves the project without one (per-test checks are then unavailable).
+ * leaves the project without one (per-test checks are then unavailable), and
+ * `declare: false` leaves its test report without declared test paths.
  */
-export async function newProject({ steps, files = SAMPLE, testReport = true, verifyCommand = TEST_COMMAND, root = true } = {}) {
+export async function newProject({ steps, runner = 'node', files = kit(runner).sample(), testReport = true, declare = true, verifyCommand = RUNNERS[runner].command, root = true } = {}) {
   const n = ++seq;
   const dir = `/work/projects/p${n}`;
   mkdirSync(dir, { recursive: true });
   write(dir, files);
+  RUNNERS[runner].setup(dir);
   sh('git init -q && git add -A && git commit -qm initial', dir);
   const flow = await api('POST', '/flows', { name: `harness-flow-${n}`, steps });
   if (flow.status !== 201) throw new Error(`flow refused (${flow.status}): ${JSON.stringify(flow.body)}`);
-  const project = await api('POST', '/projects', { name: `harness-${n}` });
+  const project = await api('POST', '/projects', { name: `harness-${n}-${runner}` });
   if (project.status >= 300) throw new Error(`project refused (${project.status}): ${JSON.stringify(project.body)}`);
   const id = project.body.id;
   const must = async (label, p) => { const r = await p; if (r.status >= 300) throw new Error(`${label} refused (${r.status}): ${JSON.stringify(r.body)}`); return r; };
@@ -65,10 +72,15 @@ export async function newProject({ steps, files = SAMPLE, testReport = true, ver
   await must('flow', api('POST', `/projects/${id}/flow`, { flowId: flow.body.id }));
   if (verifyCommand) await must('verify command', api('PUT', `/projects/${id}/verify-command`, { verifyCommand }, { headers: internal() }));
   if (testReport) {
-    await must('test report', api('PUT', `/projects/${id}/test-report`, { format: 'junit-xml', command: TEST_COMMAND, reportPath: '.reports/junit.xml' }, { headers: internal() }));
+    // `declare: false` leaves out the test paths a runner's report cannot name.
+    const surface = declare && RUNNERS[runner].surface ? { surface: RUNNERS[runner].surface } : {};
+    await must('test report', setTestReport(id, { ...RUNNERS[runner].report, command: RUNNERS[runner].command, ...surface }));
   }
-  return { id, dir, flowId: flow.body.id };
+  return { id, dir, flowId: flow.body.id, flow: flow.body, runner };
 }
+
+/** Replace the project's test report setting (a scenario may break it mid-walk). */
+export const setTestReport = (projectId, setting) => api('PUT', `/projects/${projectId}/test-report`, setting, { headers: internal() });
 
 /** A card on the project; `status` places it on a step directly (setup, not a transition). */
 export async function newCard(project, { type = 'TASK', title, parentId, status, ...rest } = {}) {
@@ -125,4 +137,42 @@ export async function checkOnWork(checkId, { params, project: projectOpts = {}, 
   // move is its own outcome, and never an expected one.
   const actual = o.outcome === 'fail' && o.blocking && c.status !== 'WORK' ? 'fail-but-moved' : o.outcome;
   return { actual, detail: `${o.detail ?? ''} [verify ${r.status}, card on ${c.status}]`, card: c };
+}
+
+/**
+ * Walk a card through a flow and read one check's verdict on leaving `at`.
+ *
+ * The card is verified off every step before `at`; `work[step]` runs while
+ * the card is on that step, before it is verified off it. Every step before
+ * `at` must let the card go - a refusal there is a broken scenario, not a
+ * verdict. `predates: true` walks the card to `at` on the same flow with no
+ * checks at all and only then gives the steps theirs, so the card is on `at`
+ * with no entry record and no records from earlier steps: a card that
+ * predates checks.
+ */
+export async function walk(checkId, { steps, at, runner = 'node', project: projectOpts = {}, card: cardOpts = {}, before, work = {}, predates = false, command } = {}) {
+  const project = await newProject({ steps: predates ? steps.map(({ checks, role, ...s }) => s) : steps, runner, ...projectOpts });
+  const k = kit(runner);
+  const id = await newCard(project, cardOpts);
+  const ctx = { project, id, dir: project.dir, kit: k, write: files => write(project.dir, files), sh: cmd => sh(cmd, project.dir) };
+  if (before) await before(ctx);
+  const order = [...steps].sort((x, y) => x.order - y.order).map(s => s.name);
+  for (const step of order.slice(0, order.indexOf(at))) {
+    if (work[step]) await work[step](ctx);
+    const r = await verify(id);
+    const c = await card(id);
+    if (r.status !== 200 || c.status === step) throw new Error(`${step} -> next refused (${r.status}): ${JSON.stringify(r.body).slice(0, 400)}`);
+  }
+  if (predates) {
+    // The flow as the scenario wrote it, by the stored steps' ids: the card is already on `at`.
+    const stored = project.flow.steps;
+    const given = new Map(steps.map(s => [s.name, s]));
+    const put = await api('PUT', `/flows/${project.flowId}`, { steps: stored.map(s => ({ ...s, ...(given.get(s.name)?.checks ? { checks: given.get(s.name).checks } : {}), ...(given.get(s.name)?.role ? { role: given.get(s.name).role } : {}) })) });
+    if (put.status >= 300) throw new Error(`flow update refused (${put.status}): ${JSON.stringify(put.body)}`);
+  }
+  if (work[at]) await work[at](ctx);
+  const r = await verify(id, command ? { command } : {});
+  const c = await card(id);
+  const o = outcomeOf(c, checkId, at);
+  return { actual: verdictOf(o, c.status !== at), detail: `${o.detail ?? ''} [verify ${r.status}, card on ${c.status}]`, card: c, response: r };
 }
