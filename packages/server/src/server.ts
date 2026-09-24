@@ -793,6 +793,8 @@ const syncParentStatus = async (parentId: string) => {
     if (parentIdx !== null) {
       for (let i = parentIdx; i < laggard; i++) {
         if (resolveStepChecks(parentFlow.steps, ordered[i].name).some(c => c.id === 'review-record' && c.applicable)) { laggard = i; break; }
+        // CGLAB-382: nor past a go-ahead the parent has not been given.
+        if (!(await approvalSatisfied(parent, parentFlow.steps, ordered[i].name))) { laggard = i; break; }
       }
     }
     if (parentIdx !== null && laggard > parentIdx) {
@@ -1648,6 +1650,11 @@ function forwardMoveRefusal(itemId: string, fromStatus: string, toStatus: string
  * verify, so it says so: no evidence, no checks. A backward move is a rollback,
  * which later steps' records depend on (CGLAB-379), so it is never silent.
  */
+/** A forward drag on the board skipped verify and the step's checks: kept on the card, and listed on the PR (CGLAB-382). */
+function manualAdvanceRecord(fromStatus: string, toStatus: string) {
+  return { id: uuidv4(), step: fromStatus, kind: 'manual-advance', to: toStatus, at: new Date().toISOString(), head: null, clean: false, by: 'board' };
+}
+
 function statusMoveComment(fromStatus: string, toStatus: string, forward: boolean, fromBoard: boolean) {
   return forward
     ? { id: uuidv4(), author: 'Board', timestamp: new Date(),
@@ -2498,6 +2505,30 @@ app.put("/projects/:id/test-report", asyncHandler(async (req: any, res: any) => 
  * forge one, and a rollback over the step drops them like the step's other
  * records: a card that comes back needs a fresh go-ahead.
  */
+/** A card's approvals of one step, as the board recorded them. */
+const approvalsAt = (card: any, step: string) => (card?.stepRecords ?? [])
+  .filter((r: any) => r?.kind === 'approval' && r.step === step)
+  .map((r: any) => ({ by: String(r.by ?? 'board'), at: String(r.at), ...(r.note ? { note: String(r.note) } : {}) }));
+
+/** Approvals of the same step on a card's ancestors, nearest first. */
+async function ancestorApprovals(card: any, step: string): Promise<Array<{ by: string; at: string; note?: string; from: string }>> {
+  const out: Array<{ by: string; at: string; note?: string; from: string }> = [];
+  let cur: any = card?.parentId ? await storage.getItem(card.parentId) : null;
+  for (let depth = 0; cur && depth < 16; depth++) {
+    for (const a of approvalsAt(cur, step).reverse()) out.push({ ...a, from: cur.id });
+    cur = cur.parentId ? await storage.getItem(cur.parentId) : null;
+  }
+  return out;
+}
+
+/** Would the card's human-approval check on this step pass? False when the step asks for one nobody gave. */
+async function approvalSatisfied(card: any, steps: any[], step: string): Promise<boolean> {
+  const check = resolveStepChecks(steps, step).find(c => c.id === 'human-approval' && c.applicable);
+  if (!check) return true;
+  if (approvalsAt(card, step).length) return true;
+  return check.params.appliesTo !== 'every-card' && (await ancestorApprovals(card, step)).length > 0;
+}
+
 function refuseUnlessBoard(req: any, res: any): boolean {
   if (req.headers['x-agenfk-internal'] !== undefined || req.headers['x-agenfk-ui'] !== '1') {
     res.status(403).json({ error: 'Approvals and overrides are made by a person on the board (agenfk ui), never by an agent.' });
@@ -2544,10 +2575,16 @@ app.get("/items/:id/gates", asyncHandler(async (req: any, res: any) => {
   const here = (item.stepRecords ?? []).filter((r: any) => r?.step === item.status);
   const overrides: Record<string, any> = {};
   for (const r of here) if (r.kind === 'override' && typeof r.check === 'string') overrides[r.check] = { id: r.id, by: r.by, at: r.at, reason: r.reason };
+  const approval = resolveStepChecks(flow.steps, item.status).find(c => c.id === 'human-approval' && c.applicable);
+  // A go-ahead given at a parent covers its children, unless the step asks every card for its own.
+  const inherited = approval && approval.params.appliesTo !== 'every-card' ? await ancestorApprovals(item, item.status) : [];
   res.json({
     step: item.status,
-    approvalRequired: resolveStepChecks(flow.steps, item.status).some(c => c.id === 'human-approval' && c.applicable),
-    approvals: here.filter((r: any) => r.kind === 'approval').map((r: any) => ({ id: r.id, by: r.by, at: r.at, ...(r.note ? { note: r.note } : {}) })),
+    approvalRequired: !!approval,
+    approvals: [
+      ...here.filter((r: any) => r.kind === 'approval').map((r: any) => ({ id: r.id, by: r.by, at: r.at, ...(r.note ? { note: r.note } : {}) })),
+      ...inherited,
+    ],
     overrides,
     lastChecks: item.lastChecks?.step === item.status ? item.lastChecks : null,
   });
@@ -2562,9 +2599,9 @@ app.get("/items/:id/gate-events", asyncHandler(async (req: any, res: any) => {
   for (let seen = 0; queue.length && seen < 5000; seen++) {
     const card = queue.shift();
     for (const r of card.stepRecords ?? []) {
-      if (r?.kind !== 'approval' && r?.kind !== 'override') continue;
+      if (r?.kind !== 'approval' && r?.kind !== 'override' && r?.kind !== 'manual-advance') continue;
       events.push({
-        itemId: card.id, title: card.title, step: r.step, kind: r.kind, by: r.by, at: r.at,
+        itemId: card.id, title: card.title, step: r.step, kind: r.kind, by: r.by, at: r.at, ...(r.to ? { to: r.to } : {}),
         ...(r.note ? { note: r.note } : {}), ...(r.check ? { check: r.check, reason: r.reason } : {}),
       });
     }
@@ -2601,11 +2638,11 @@ app.post("/items/:id/overrides", asyncHandler(async (req: any, res: any) => {
     return res.status(400).json({ error: `Step ${item.status} does not run the check '${checkId}'.` });
   }
   const last = item.lastChecks;
-  const blocking = last?.step === item.status && (last.results ?? []).some((r: any) => r.id === checkId && r.blocking);
-  if (!blocking) {
+  const blocked = last?.step === item.status ? (last.results ?? []).find((r: any) => r.id === checkId && r.blocking) : undefined;
+  if (!blocked) {
     return res.status(409).json({ error: `'${checkId}' is not blocking this card on ${item.status}. Only a check that blocked the card's last verify can be overridden.` });
   }
-  const rec = { id: uuidv4(), step: item.status, kind: 'override', at: new Date().toISOString(), head: null, clean: false, by: 'board', check: checkId, reason };
+  const rec = { id: uuidv4(), step: item.status, kind: 'override', at: new Date().toISOString(), head: null, clean: false, by: 'board', check: checkId, reason, detail: String(blocked.detail ?? '') };
   await appendGateRecord(item, rec, `### Check overridden\n\n**Step**: ${item.status}\n**Check**: ${checkId} — a person passed it on the board.\n\n**Reason**: ${reason}`);
   recordHubEvent({ type: 'check.overridden', projectId: item.projectId, itemId: item.id, payload: { step: item.status, check: checkId, reason, by: 'board' } });
   res.status(201).json(rec);
@@ -4942,6 +4979,8 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
       bulkMoveComment = move.comment;
       if (isMoveBack(currentItem.status, currentItem.previousStatus, status, bulkFlow)) {
         bulkRolledBack = recordsAfterRollback((currentItem as any).stepRecords, status, bulkFlow);
+      } else if (fromBoard && isForwardMove(currentItem.status, status, bulkFlow, currentItem.previousStatus)) {
+        bulkRolledBack = [...((currentItem as any).stepRecords ?? []), manualAdvanceRecord(currentItem.status, status)];
       }
     }
 
@@ -5006,6 +5045,7 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
     if (bulkMoveComment) updates.comments = [...(comments ?? currentItem.comments ?? []), bulkMoveComment];
     if (bulkFlow) updates.previousStatus = bulkPreviousAfter;
     if (bulkRolledBack) updates.stepRecords = bulkRolledBack;
+    if (bulkFlow) updates.lastChecks = null;
     if (sortOrder !== undefined) updates.sortOrder = sortOrder;
 
     Object.assign(updates, bulkRef.updates);
@@ -5139,6 +5179,8 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
     previousAfter = previousStatusAfter(currentItem.status, status, activeFlow, currentItem.previousStatus);
     if (isMoveBack(currentItem.status, currentItem.previousStatus, status, activeFlow)) {
       rolledBackRecords = recordsAfterRollback((currentItem as any).stepRecords, status, activeFlow);
+    } else if (fromBoard && isForwardMove(currentItem.status, status, activeFlow, currentItem.previousStatus)) {
+      rolledBackRecords = [...((currentItem as any).stepRecords ?? []), manualAdvanceRecord(currentItem.status, status)];
     }
     statusChanged = true;
   }
@@ -5233,6 +5275,8 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   if (moveComment) updates.comments = [...(comments ?? currentItem.comments ?? []), moveComment];
   if (statusChanged) updates.previousStatus = previousAfter;
   if (rolledBackRecords) updates.stepRecords = rolledBackRecords;
+  // The last verify's checks belong to the step the card just left (CGLAB-382 review).
+  if (statusChanged) updates.lastChecks = null;
   if (sortOrder !== undefined) updates.sortOrder = sortOrder;
   if (branchName !== undefined) updates.branchName = branchName;
   if (prUrl !== undefined) updates.prUrl = prUrl;
@@ -5664,9 +5708,10 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const reportPath = typeof project?.testReport?.reportPath === 'string' ? project.testReport.reportPath : null;
   // People's approvals and overrides of THIS step (CGLAB-382); a rollback over it dropped older ones.
   const here = records.filter(r => r?.step === item.status);
-  const approvals = here.filter(r => r.kind === 'approval').map(r => ({ by: String(r.by ?? 'board'), at: String(r.at), ...(r.note ? { note: String(r.note) } : {}) }));
+  const approvals = approvalsAt({ stepRecords: here }, item.status);
+  const inheritedApprovals = resolved.some(c => c.id === 'human-approval' && c.applicable) ? await ancestorApprovals(item, item.status) : [];
   const overrides: Record<string, { id: string; by: string; at: string; reason: string }> = {};
-  for (const r of here) if (r.kind === 'override' && typeof r.check === 'string') overrides[r.check] = { id: String(r.id), by: String(r.by ?? 'board'), at: String(r.at), reason: String(r.reason ?? '') };
+  for (const r of here) if (r.kind === 'override' && typeof r.check === 'string') overrides[r.check] = { id: String(r.id), by: String(r.by ?? 'board'), at: String(r.at), reason: String(r.reason ?? ''), ...(typeof r.detail === 'string' ? { detail: r.detail } : {}) };
   const review = resolved.some(c => c.id === 'review-record' && c.applicable) ? await reviewEvidence(item, root) : undefined;
   // Whoever is advancing the card now is an author too, though no step record carries them yet.
   if (review && actor && !review.authors.some((a: any) => a.sessionId === actor.sessionId && a.agentId === (actor.agentId ?? null))) {
@@ -5690,6 +5735,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     entryHead: prev ? (lastOf(r => r?.kind === 'exit' && r.step === prev.name)?.head ?? null) : null,
     records: produced,
     approvals,
+    inheritedApprovals,
     overrides,
   });
   const at = new Date().toISOString();

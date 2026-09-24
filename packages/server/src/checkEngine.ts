@@ -37,7 +37,7 @@ export interface CheckResult {
 }
 
 /** A person's pass of one blocked check, with the reason they wrote (CGLAB-382). */
-export interface Override { id: string; by: string; at: string; reason: string }
+export interface Override { id: string; by: string; at: string; reason: string; detail?: string }
 
 type ReportedTest = { name: string; file: string; status: 'passed' | 'failed' | 'skipped'; failure?: 'assertion' | 'error' };
 
@@ -101,6 +101,8 @@ export interface EngineContext {
   records: Partial<Record<RecordName, unknown>>;
   /** People's approvals of the card's current step, made from the board (CGLAB-382). */
   approvals?: Array<{ by: string; at: string; note?: string }>;
+  /** Approvals of the same step on the card's ancestors, nearest first: a breakdown approved at its parent. */
+  inheritedApprovals?: Array<{ by: string; at: string; note?: string; from: string }>;
   /** People's overrides of the current step's checks, by check id (CGLAB-382). */
   overrides?: Record<string, Override>;
 }
@@ -398,11 +400,12 @@ export const EVALUATORS: Record<string, Evaluator> = {
     return judgeReview(r, ctx.root, ctx.git, { bindTree: true });
   },
 
-  'human-approval': ctx => {
+  'human-approval': (ctx, p) => {
     const a = (ctx.approvals ?? [])[(ctx.approvals ?? []).length - 1];
-    return a
-      ? { outcome: 'pass', detail: `approved on the board at ${a.at}${a.note ? `: ${a.note}` : ''}` }
-      : { outcome: 'fail', detail: `waiting for a person to approve this step on the board (agenfk ui --open ${ctx.item.id}). An agent cannot approve.` };
+    if (a) return { outcome: 'pass', detail: `approved on the board at ${a.at}${a.note ? `: ${a.note}` : ''}` };
+    const up = p.appliesTo === 'every-card' ? undefined : (ctx.inheritedApprovals ?? [])[0];
+    if (up) return { outcome: 'pass', detail: `approved with its parent ${up.from.slice(0, 8)} on the board at ${up.at}` };
+    return { outcome: 'fail', detail: `waiting for a person to approve this step on the board (agenfk ui --open ${ctx.item.id}). An agent cannot approve.` };
   },
 
   'suite-green': ctx => {
@@ -465,7 +468,9 @@ export function evaluateChecks(resolved: readonly ResolvedCheck[], ctx: EngineCo
       : { outcome: 'unavailable', detail: `'${c.id}' is not implemented on this server` };
     const blocks = c.severity === 'block' && (verdict.outcome === 'fail' || (verdict.outcome === 'unavailable' && !verdict.soft));
     // A person's override lifts the block; the verdict itself stays on record.
-    const overridden = blocks ? ctx.overrides?.[c.id] : undefined;
+    // It covers the verdict it was given against: a different failure needs its own.
+    const o = blocks ? ctx.overrides?.[c.id] : undefined;
+    const overridden = o && (o.detail === undefined || o.detail === verdict.detail) ? o : undefined;
     results.push({ ...base, outcome: verdict.outcome, detail: verdict.detail, blocking: blocks && !overridden, ...(overridden ? { overridden } : {}) });
     if (verdict.outcome === 'pass' && verdict.produces) Object.assign(produced, verdict.produces);
   }

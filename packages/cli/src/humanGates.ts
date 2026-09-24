@@ -7,7 +7,9 @@ export interface GateEvent {
   itemId: string;
   title: string;
   step: string;
-  kind: 'approval' | 'override';
+  kind: 'approval' | 'override' | 'manual-advance';
+  /** On a manual-advance: the step the board moved the card to. */
+  to?: string;
   by: string;
   at: string;
   note?: string;
@@ -20,19 +22,25 @@ const cell = (s: unknown) => String(s ?? '').replace(/\|/g, '\\|').replace(/\s*\
 
 export function formatHumanGates(events: readonly GateEvent[]): string {
   if (!events.length) return '';
-  const sorted = [...events].sort((a, b) => (a.kind === b.kind ? a.at.localeCompare(b.at) : a.kind === 'override' ? -1 : 1));
+  // What a reviewer must look at first: checks a person passed, then steps the board skipped, then approvals.
+  const rank = { override: 0, 'manual-advance': 1, approval: 2 } as const;
+  const sorted = [...events].sort((a, b) => (rank[a.kind] - rank[b.kind]) || a.at.localeCompare(b.at));
   const rows = sorted.map(e => {
-    const gate = e.kind === 'override' ? `🔓 overrode \`${cell(e.check)}\`` : '✅ approved';
-    const why = e.kind === 'override' ? e.reason : e.note;
+    const gate = e.kind === 'override' ? `🔓 overrode \`${cell(e.check)}\``
+      : e.kind === 'manual-advance' ? `⏭ moved to ${cell(e.to)} on the board` : '✅ approved';
+    const why = e.kind === 'override' ? e.reason : e.kind === 'manual-advance' ? 'dragged forward: verify and the step checks were skipped' : e.note;
     return `| ${cell(e.title)} | ${cell(e.step)} | ${gate} | ${cell(why) || '—'} | ${cell(e.at)} |`;
   });
   const overrides = events.filter(e => e.kind === 'override').length;
+  const skipped = events.filter(e => e.kind === 'manual-advance').length;
+  const lead = [
+    overrides ? `A person passed ${overrides} blocked check${overrides === 1 ? '' : 's'} on the board.` : '',
+    skipped ? `${skipped} step${skipped === 1 ? ' was' : 's were'} skipped by a drag on the board, without verify.` : '',
+  ].filter(Boolean).join(' ');
   return [
     '## Human gates',
     '',
-    overrides
-      ? `A person passed ${overrides} blocked check${overrides === 1 ? '' : 's'} on the board. Review ${overrides === 1 ? 'it' : 'them'} with the reason given.`
-      : 'Approvals a person gave on the board.',
+    lead ? `${lead} Review them with the reason given.` : 'Approvals a person gave on the board.',
     '',
     '| Card | Step | Gate | Reason / note | When |',
     '| --- | --- | --- | --- | --- |',

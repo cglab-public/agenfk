@@ -38,6 +38,15 @@ describe('UI API Client', () => {
     );
   });
 
+  it('sends approvals and overrides with the board header the server requires (CGLAB-382)', async () => {
+    mockedAxios.post.mockResolvedValue({ data: {} });
+    await api.approveStep('i1', { step: 'PLAN' });
+    await api.overrideCheck('i1', { step: 'WORK', checkId: 'suite-green', reason: 'flaky' });
+    const board = expect.objectContaining({ headers: expect.objectContaining({ 'x-agenfk-ui': '1' }) });
+    expect(mockedAxios.post).toHaveBeenCalledWith(expect.stringContaining('/items/i1/approvals'), { step: 'PLAN' }, board);
+    expect(mockedAxios.post).toHaveBeenCalledWith(expect.stringContaining('/items/i1/overrides'), { step: 'WORK', checkId: 'suite-green', reason: 'flaky' }, board);
+  });
+
   it('should update item', async () => {
     mockedAxios.put.mockResolvedValue({ data: {} });
     await api.updateItem('i1', { status: 'DONE' } as any);

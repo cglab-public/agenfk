@@ -435,7 +435,7 @@ export interface StepRecord {
    * `approval` / `override`: a person's go-ahead for the step, or their pass of
    * one blocked check with a reason (CGLAB-382). Made from the board only.
    */
-  kind: 'exit' | 'capture' | 'record' | 'approval' | 'override';
+  kind: 'exit' | 'capture' | 'record' | 'approval' | 'override' | 'manual-advance';
   at: string;
   head: string | null;
   clean: boolean;
@@ -466,6 +466,10 @@ export interface StepRecord {
   /** On an `override`: the check it passes, and why. */
   check?: string;
   reason?: string;
+  /** On an `override`: the verdict it was given against; a different failure is not covered. */
+  detail?: string;
+  /** On a `manual-advance`: the step the board moved the card to, skipping verify. */
+  to?: string;
 }
 
 /** One check's verdict on a verify (CGLAB-380). */

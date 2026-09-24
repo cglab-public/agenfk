@@ -43,6 +43,16 @@ describe('formatHumanGates', () => {
   });
 });
 
+describe('board moves on the PR (CGLAB-382 review)', () => {
+  it('lists a forward drag on the board, which skipped the step checks', () => {
+    const md = formatHumanGates([{ itemId: 'c3', title: 'Dragged', step: 'PLAN', kind: 'manual-advance', to: 'WORK', by: 'board', at: '2026-09-24T11:00:00.000Z' }]);
+    expect(md).toMatch(/Dragged/);
+    expect(md).toMatch(/PLAN/);
+    expect(md).toMatch(/WORK/);
+    expect(md).toMatch(/skipp/i);
+  });
+});
+
 describe('buildPrBody', () => {
   it('appends the human gates to the body given', () => {
     expect(buildPrBody('Body text', [override])).toMatch(/^Body text\n\n## Human gates/);

@@ -119,6 +119,7 @@ export const CHECK_CATALOGUE: Record<string, CheckDef> = {
     params: { appliesTo: { values: ['parent', 'every-card'], default: 'parent', description: 'parent: a card with children, or with none above it, needs a review, and its children pass with it; every-card: every card needs its own.' } },
     description: 'An independent reviewer, not the author, recorded a review covering the card\'s commits, and every finding is fixed or rejected with a reason.' }),
   'human-approval': def({ id: 'human-approval', group: 'approvals', defaultSeverity: 'block',
+    params: { appliesTo: { values: ['parent', 'every-card'], default: 'parent', description: "parent: a card passes with its parent's go-ahead for the same step, so approving a breakdown approves its children; every-card: each card needs its own." } },
     description: 'A person approved in the UI before the card leaves this step. An agent cannot approve.' }),
   'server-owned-verify': def({ id: 'server-owned-verify', group: 'tests', defaultSeverity: 'block',
     description: "The project's own verify command passes. The server runs it; a caller cannot substitute another." }),

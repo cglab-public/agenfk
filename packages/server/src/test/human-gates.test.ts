@@ -284,3 +284,79 @@ describe('CGLAB-382: GET /items/:id/gate-events (what the PR shows)', () => {
     expect((await agent().get('/items/nope/gate-events')).status).toBe(404);
   });
 });
+
+describe('CGLAB-382 review fixes', () => {
+  const gates = async (id: string) => (await agent().get(`/items/${id}/gates`)).body;
+  async function family(steps = gatedFlow()) {
+    const parent = await setup('PLAN', {}, steps);
+    await storage.updateItem(parent, { type: 'STORY' } as any);
+    const p = await item(parent);
+    const c = await agent().post('/items').send({ type: 'TASK', title: 'child', projectId: p.projectId, parentId: parent });
+    await storage.updateItem(c.body.id, { status: 'PLAN', externalId: 'ABC-9' } as any);
+    return { parent, child: c.body.id as string };
+  }
+
+  it("a child's progress never carries its parent past the parent's own approval step", async () => {
+    const { parent, child } = await family();
+    expect((await approve(child)).status).toBe(201);
+    expect((await validate(child)).status).toBe(200);
+    expect((await item(parent)).status).toBe('PLAN');
+  });
+
+  it('once the parent is approved, its children pass that step with it', async () => {
+    const { parent, child } = await family();
+    expect((await approve(parent)).status).toBe(201);
+    const res = await validate(child);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(byId((await item(child)).stepRecords.find((r: any) => r.kind === 'exit' && r.step === 'PLAN').checks, 'human-approval').outcome).toBe('pass');
+  });
+
+  it("the board shows a child as approved with its parent", async () => {
+    const { parent, child } = await family();
+    await approve(parent, { note: 'breakdown ok' });
+    const g = await gates(child);
+    expect(g.approvals).toEqual([expect.objectContaining({ from: parent, note: 'breakdown ok' })]);
+  });
+
+  it('an approved parent is carried forward by its children as before', async () => {
+    const { parent, child } = await family();
+    await approve(parent);
+    await validate(child);
+    expect((await item(parent)).status).toBe('WORK');
+  });
+
+  it("appliesTo every-card: a child needs its own go-ahead even when the parent has one", async () => {
+    const steps = gatedFlow();
+    (steps[1] as any).checks = [{ id: 'human-approval', params: { appliesTo: 'every-card' } }];
+    const { parent, child } = await family(steps);
+    await approve(parent);
+    expect((await validate(child)).status).toBe(422);
+  });
+
+  it('a forward drag on the board is listed on the PR as a skipped step', async () => {
+    const id = await setup('PLAN');
+    const drag = await agent().put(`/items/${id}`).set(board()).send({ status: 'WORK' });
+    expect(drag.status, JSON.stringify(drag.body)).toBe(200);
+    const events = (await agent().get(`/items/${id}/gate-events`)).body;
+    expect(events).toEqual([expect.objectContaining({ kind: 'manual-advance', step: 'PLAN', to: 'WORK' })]);
+  });
+
+  it('an override covers the verdict it was given against, not a later different failure', async () => {
+    const id = await setup('WORK');
+    await validate(id);
+    await override(id, { checkId: 'jira-key-valid', reason: 'no issue for this spike' });
+    await storage.updateItem(id, { externalId: 'not-a-key' } as any);
+    const res = await validate(id);
+    expect(res.status).toBe(422);
+    expect(byId(res.body.checks, 'jira-key-valid')).toMatchObject({ blocking: true });
+  });
+
+  it("a rollback clears the last verify's checks, so the board never shows the earlier visit's", async () => {
+    const id = await setup('PLAN', { externalId: 'ABC-3' });
+    await approve(id);
+    await validate(id);
+    await agent().put(`/items/${id}`).send({ status: 'PLAN' });
+    expect((await gates(id)).lastChecks).toBeNull();
+    expect((await override(id, { checkId: 'human-approval', reason: 'stale' })).status).toBe(409);
+  });
+});
