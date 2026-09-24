@@ -7,7 +7,7 @@
  * a problem, with a one-click fix where there is one. A host without the
  * contract route (an older server) sees the editor exactly as before.
  */
-import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, cleanup, within, configure } from '@testing-library/react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -29,7 +29,7 @@ const orphan = () => flowOf([
   s('DONE', 2, { isAnchor: true }),
 ]);
 
-function mount(flow: Flow, contract = true, extra: Record<string, unknown> = {}) {
+function mount(flow: Flow, contract = true, extra: Record<string, unknown> = {}, contractDelayMs = 0) {
   const onClose = vi.fn();
   const updateFlow = vi.fn(async (_id: string, payload: Partial<Flow>) => ({ ...flow, ...payload } as Flow));
   const flowClient: FlowClient = {
@@ -39,7 +39,10 @@ function mount(flow: Flow, contract = true, extra: Record<string, unknown> = {})
     updateFlow,
     deleteFlow: async () => {},
     setProjectFlow: async () => {},
-    ...(contract ? { getFlowContract: vi.fn(async (steps: FlowStep[]) => describeFlowContract(steps) as any) } : {}),
+    ...(contract ? { getFlowContract: vi.fn(async (steps: FlowStep[]) => {
+      if (contractDelayMs) await new Promise(r => setTimeout(r, contractDelayMs));
+      return describeFlowContract(steps) as any;
+    }) } : {}),
   };
   const registryClient: RegistryClient = { browseRegistry: async () => [], installFromRegistry: async () => flow };
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -56,6 +59,10 @@ const ready = async () => {
   await waitFor(() => expect(screen.getByTestId('step-contract-btn-1')).toBeTruthy());
 };
 afterEach(() => cleanup());
+// Every test here waits for the server's contract, which the editor asks for
+// after a 250ms debounce. Testing Library's 1s default left a loaded 2-vCPU CI
+// runner no margin, and a CI run failed on it; a real hang still fails at 5s.
+configure({ asyncUtilTimeout: 5000 });
 
 const column = async (index: number) => within(await screen.findByTestId(`step-row-${index}`));
 
@@ -133,6 +140,15 @@ describe('flow editor: contracts', () => {
     fireEvent.click(await screen.findByRole('button', { name: /remove this check/i }));
     await waitFor(() => expect(screen.queryByTestId('flow-contract-problems')).toBeNull());
     expect((screen.getByTestId('save-flow-btn') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('still works when the contract answer is slow, as on a loaded CI runner', async () => {
+    // The editor asks after a 250ms debounce and a slow runner adds the rest:
+    // a CI run failed the test above this way (1s was the whole budget).
+    mount(orphan(), true, {}, 1200);
+    await ready();
+    fireEvent.click(await screen.findByRole('button', { name: /remove this check/i }));
+    await waitFor(() => expect(screen.queryByTestId('flow-contract-problems')).toBeNull());
   });
 
   it('or by adding a Writing-tests step before it', async () => {
