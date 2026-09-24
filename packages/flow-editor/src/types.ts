@@ -46,7 +46,7 @@ export interface ResolvedCheck {
 export interface FlowContract {
   valid: boolean;
   errors: string[];
-  steps: Array<{ name: string; role: string | null; checks: ResolvedCheck[]; produces: string[] }>;
+  steps: Array<{ name: string; role: string | null; checks: ResolvedCheck[]; produces: string[]; consumes?: string[] }>;
   roles: Array<{ id: string; builtins: StepCheckRef[] }>;
   catalogue: Array<{
     id: string;

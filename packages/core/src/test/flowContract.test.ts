@@ -32,6 +32,8 @@ describe('describeFlowContract', () => {
     expect(specs.checks.map(k => k.id)).toContain('some-new-test-red');
     expect(specs.produces).toEqual(expect.arrayContaining(['redSet', 'testSurface', 'authoredTests']));
     expect(c.steps[2].checks.find(k => k.id === 'red-set-passes-by-name')).toMatchObject({ applicable: true, source: 'role' });
+    expect(c.steps[2].consumes).toEqual(expect.arrayContaining(['redSet', 'testSurface', 'authoredTests']));
+    expect(c.steps[1].consumes).toEqual([]);
   });
 
   it("shows a role built-in that has nothing to check as not applicable, naming the missing record", () => {

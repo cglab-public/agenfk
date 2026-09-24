@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback, createContext, useContext } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import mermaid from 'mermaid';
 import type { Flow, FlowStep, RegistryFlow, FlowClient, RegistryClient } from './types';
 import { extractApiError } from './apiError';
 import { flowDefinitionIssues, stepIssue, withStepIds } from './flowDefinition';
+import { ContractProblems, RecordsLane, StepContractButton, StepContractDialog, TemplatePicker } from './FlowContractSection';
 import { ExitCriteriaEditorModal } from './ExitCriteriaEditorModal';
 import { estimateTokenCount } from './estimateTokens';
 
@@ -235,6 +236,9 @@ function serializeDefinition(
       ...(s?.color ? { color: s.color } : {}),
       ...(s?.icon ? { icon: s.icon } : {}),
       ...(s?.isAnchor ? { isAnchor: true } : {}),
+      // CGLAB-384: a change to a role or a check is a change to the flow.
+      ...(typeof s?.role === 'string' && s.role ? { role: s.role } : {}),
+      ...(Array.isArray(s?.checks) && s.checks.length ? { checks: s.checks } : {}),
     }))
     .sort((a, b) => a.order - b.order);
   return JSON.stringify({ name, description, steps: canonical });
@@ -421,6 +425,37 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
     setSteps(prev => [...prev, makeBlankStep(prev.length)]);
   }, []);
 
+  // ── Step contracts (CGLAB-384) ─────────────────────────────────────────────
+  // The server says what the draft's steps mean, with the functions that
+  // validate a save and run verify. A host without the route sees none of it.
+  const hasContract = typeof flowClient.getFlowContract === 'function';
+  const contractInput = steps.map((s, i) => ({ id: s.id, name: s.name, label: s.label, order: i, isAnchor: s.isAnchor, role: s.role, checks: s.checks }));
+  const { data: contract } = useQuery({
+    queryKey: ['flow-contract', JSON.stringify(contractInput)],
+    queryFn: () => flowClient.getFlowContract!(contractInput as FlowStep[]),
+    enabled: hasContract,
+    placeholderData: keepPreviousData,
+  });
+  const [contractStepIndex, setContractStepIndex] = useState<number | null>(null);
+  const stepContractOf = (index: number) => contract?.steps.find(c => c.name === steps[index]?.name);
+  const removeCheck = useCallback((index: number, checkId: string) => {
+    setSteps(prev => prev.map((s, i) => (i === index ? { ...s, checks: (s.checks ?? []).filter(c => c.id !== checkId) } : s)));
+  }, []);
+  const addWritingTestsBefore = useCallback((index: number) => {
+    setSteps(prev => {
+      const taken = new Set(prev.map(s => s.name.toUpperCase()));
+      let name = 'WRITE_TESTS';
+      for (let n = 2; taken.has(name); n++) name = `WRITE_TESTS_${n}`;
+      const added: FlowStep = { ...makeBlankStep(index), name, label: 'Write tests', role: 'test-authoring' };
+      const next = [...prev.slice(0, index), added, ...prev.slice(index)];
+      return next.map((s, i) => ({ ...s, order: i }));
+    });
+  }, []);
+  const applyTemplate = useCallback((templateSteps: FlowStep[]) => {
+    setSteps(templateSteps.map((s, i) => ({ ...s, id: generateUUID(), order: i })));
+    setContractStepIndex(null);
+  }, []);
+
   const removeStep = useCallback((index: number) => {
     setSteps(prev => {
       const next = prev.filter((_, i) => i !== index);
@@ -524,7 +559,9 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   // BUG 269eeec8 (c): mirror the Hub's definition contract so a payload it would
   // reject never leaves the browser, and the reason is pinned to its step.
   const definitionIssues = flowDefinitionIssues(name, steps);
-  const isSaveDisabled = isBusy || reservedNameError || definitionIssues.length > 0;
+  // The server's contract check: a flow it would refuse is not sent.
+  const contractInvalid = hasContract && !!contract && !contract.valid;
+  const isSaveDisabled = isBusy || reservedNameError || definitionIssues.length > 0 || contractInvalid;
 
   /**
    * Whether this panel can write its definition at all. The two read-only
@@ -711,6 +748,8 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             <label className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
               Steps
             </label>
+            <div className="flex items-center gap-4">
+            {!isReadOnly && hasContract && <TemplatePicker onApply={applyTemplate} />}
             {!isReadOnly && (
               <button
                 data-testid="add-step-btn"
@@ -722,6 +761,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                 Add Step
               </button>
             )}
+            </div>
           </div>
 
           {/* Kanban-style: one column per step, horizontally scrollable */}
@@ -932,11 +972,30 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                         </div>
                       </>
                     )}
+                    {hasContract && contract && (
+                      <StepContractButton index={index} step={step} stepContract={stepContractOf(index)} onOpen={() => setContractStepIndex(index)} />
+                    )}
                   </div>
                 </div>
               );
             })}
           </div>
+          {hasContract && contract && (
+            <div className="space-y-3 mt-3">
+              <ContractProblems steps={steps} contract={contract} disabled={isReadOnly} onRemoveCheck={removeCheck} onAddWritingTestsBefore={addWritingTestsBefore} />
+              <RecordsLane steps={steps} contract={contract} />
+            </div>
+          )}
+          {hasContract && contract && contractStepIndex !== null && steps[contractStepIndex] && (
+            <StepContractDialog
+              step={steps[contractStepIndex]}
+              stepContract={stepContractOf(contractStepIndex)}
+              contract={contract}
+              disabled={isReadOnly}
+              onChange={patch => updateStep(contractStepIndex, patch)}
+              onClose={() => setContractStepIndex(null)}
+            />
+          )}
           {/* Reserved name global error */}
           {silentIssues.length > 0 && (
             <ul data-testid="flow-definition-issues" className="text-sm text-red-600 dark:text-red-400 mt-1 list-disc pl-5">
