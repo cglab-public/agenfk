@@ -46,6 +46,47 @@ export interface TestSurface {
   readonly files: Record<string, string>;
   /** Named files that could not be found in the tree: the surface is then incomplete. */
   readonly missing: string[];
+  /** When a name is no file and nothing is declared: directories that look like tests, to declare. */
+  readonly suggested?: string[];
+}
+
+/** Conventional test locations and names. */
+const TEST_PATH = [
+  /(^|\/)(tests?|__tests__|specs?)\//,
+  /\.(test|spec)\.[cm]?[jt]sx?$/,
+  /(^|\/)test_[^/]*\.py$/,
+  /_test\.(py|go)$/,
+  /(Test|Tests)\.(java|kt|cs)$/,
+];
+/** A test file by convention, or under one of the project's own test paths. */
+export function isTestPath(file: string, extra: readonly string[] = []): boolean {
+  if (TEST_PATH.some(re => re.test(file))) return true;
+  return extra.some(p => {
+    const base = p.replace(/^\.\//, '').replace(/\/+$/, '');
+    return file === base || file.startsWith(`${base}/`);
+  });
+}
+
+/** Never part of a surface, wherever they sit: bytecode, caches, OS files. */
+const JUNK_NAMES = new Set(['node_modules', '.git', '__pycache__', '.pytest_cache', '.mypy_cache', '.DS_Store', 'Thumbs.db']);
+/** A directory that holds tests by its name: test/, specs/, Calc.Tests/, FooTests/. */
+const TEST_DIR = /^(tests?|__tests__|specs?|testdata)$|[.]?(Unit|Integration)?Tests?$/;
+
+/**
+ * The directories that look like they hold tests, for a person to declare
+ * (9afdba7d): the nearest test-named directory above each test file, or the
+ * file's own directory. A suggestion only - never used as the surface.
+ */
+export function suggestTestDirs(paths: readonly string[]): string[] {
+  const out = new Set<string>();
+  for (const p of paths) {
+    const segs = p.split('/');
+    if (!isTestPath(p) || segs.some(x => JUNK_NAMES.has(x))) continue;
+    const i = segs.slice(0, -1).findIndex(x => TEST_DIR.test(x));
+    const dir = i >= 0 ? segs.slice(0, i + 1).join('/') : segs.slice(0, -1).join('/');
+    if (dir) out.add(dir);
+  }
+  return [...out].sort().slice(0, 8);
 }
 
 /** Runner configuration that decides which tests run and how: part of the surface. */
@@ -282,13 +323,25 @@ export function parseJunitXml(text: string, root: string): ParsedReport {
  * symlink - is left out. A named file that cannot be found is listed in
  * `missing` (a dotted pytest classname is first tried as a path), so a check
  * can tell an incomplete surface from a complete one.
+ *
+ * The project's declared test paths (`extra`) are the authority on where its
+ * tests live (9afdba7d). Some reports name no file at all - node:test writes
+ * classname="test" (a directory), xUnit a namespace and class - and every way
+ * of guessing which files stand for such a name was defeated in review. So a
+ * name with no `/` and no file behind it leaves the surface incomplete unless
+ * paths are declared; `suggested` then lists the directories that look like
+ * tests (from `listTree`), for a person to declare. A missing PATH is always
+ * missing; an empty name claims nothing. `exclude` paths (the report the
+ * capture writes) are never hashed, nor are caches, bytecode and OS files.
  */
-export function surfaceOf(root: string, files: readonly string[], extra: readonly string[] = []): TestSurface {
+export function surfaceOf(root: string, files: readonly string[], extra: readonly string[] = [], opts: { listTree?: () => readonly string[]; exclude?: readonly string[] } = {}): TestSurface {
   const out: Record<string, string> = {};
   const missing: string[] = [];
   const base = path.resolve(root);
   const inside = (abs: string) => insideRoot(base, abs);
+  const excluded = new Set((opts.exclude ?? []).map(e => toPosix(path.normalize(e))));
   const hashFile = (abs: string, rel: string): boolean => {
+    if (excluded.has(rel)) return false;
     try {
       if (!fs.statSync(abs).isFile()) return false;
       out[rel] = crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex');
@@ -301,26 +354,30 @@ export function surfaceOf(root: string, files: readonly string[], extra: readonl
   // and the walk stops at SURFACE_WALK_CAP files, marking the surface incomplete.
   let walked = 0;
   let capped = false;
+  let walkHashed = 0;
   const walk = (abs: string) => {
     if (capped) return;
-    const rel = inside(abs);
-    if (!rel) return;
+    // The root itself is a declared path too ('.'): insideRoot refuses it, as it should for a report path.
+    const rel = path.resolve(abs) === base ? '' : inside(abs);
+    if (rel === null) return;
     let st: fs.Stats;
     try { st = fs.lstatSync(abs); } catch { return; }
     if (st.isSymbolicLink()) return;
     if (st.isFile()) {
       if (++walked > SURFACE_WALK_CAP) { capped = true; return; }
-      hashFile(abs, rel);
+      if (rel && hashFile(abs, rel)) walkHashed++;
       return;
     }
     if (!st.isDirectory()) return;
     for (const e of fs.readdirSync(abs)) {
-      if (e === 'node_modules' || e === '.git') continue;
+      if (JUNK_NAMES.has(e)) continue;
       walk(path.join(abs, e));
     }
   };
 
+  const unnamed: string[] = [];
   for (const name of new Set(files)) {
+    if (!name) continue;
     const candidates = [name];
     // pytest's xunit2 report names a module or a class, not a file:
     // tests.test_a -> tests/test_a.py, tests.test_a.TestK -> tests/test_a.py
@@ -333,19 +390,27 @@ export function surfaceOf(root: string, files: readonly string[], extra: readonl
       const rel = inside(abs);
       return rel !== null && hashFile(abs, rel);
     });
-    if (!found) missing.push(name);
+    if (!found) (name.includes('/') ? missing : unnamed).push(name);
   }
   for (const cfg of RUNNER_CONFIGS) {
     const abs = path.resolve(base, cfg);
     const rel = inside(abs);
     if (rel) hashFile(abs, rel);
   }
+  // A declared path that yields no file - absent, empty, outside the tree - is
+  // missing: an empty surface compared with an empty one proves nothing.
   for (const e of extra) {
-    const abs = path.resolve(base, e);
-    if (!fs.existsSync(abs)) missing.push(e); else walk(abs);
+    const before = walkHashed;
+    walk(path.resolve(base, e));
+    if (walkHashed === before) missing.push(e);
   }
   if (capped) missing.push(`(more than ${SURFACE_WALK_CAP} files under the extra paths)`);
-  return { files: out, missing };
+  let suggested: string[] | undefined;
+  if (unnamed.length && !extra.length) {
+    missing.push(...unnamed);
+    try { suggested = suggestTestDirs(opts.listTree?.() ?? []); } catch { suggested = []; }
+  }
+  return { files: out, missing, ...(suggested ? { suggested } : {}) };
 }
 
 /** What changed from `before` to `after`: `added x`, `deleted y`, `edited z`. */

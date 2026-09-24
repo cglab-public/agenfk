@@ -1938,12 +1938,14 @@ program
   .option('--test-report-format <format>', 'How per-test results are read: vitest-json | junit-xml (with --test-report-command and --test-report-path)')
   .option('--test-report-command <cmd>', 'Command that runs the suite and writes the report')
   .option('--test-report-path <path>', 'Where that command writes the report, relative to the project root')
+  .option('--test-report-surface <paths>', 'Comma-separated test paths (files or directories) the report cannot name, so test-surface-frozen can see them; "none" clears them')
   .option('--test-report <none>', 'Pass "none" to clear the test report setting')
   .action(async (id, options) => {
     try {
       const updates: Record<string, unknown> = {};
       const wantsTestReport = options.testReport !== undefined || options.testReportFormat !== undefined
-        || options.testReportCommand !== undefined || options.testReportPath !== undefined;
+        || options.testReportCommand !== undefined || options.testReportPath !== undefined
+        || options.testReportSurface !== undefined;
       if (options.name !== undefined) updates.name = options.name;
       if (options.description !== undefined) updates.description = options.description;
       if (options.verifyCommand === undefined && options.projectRoot === undefined
@@ -1967,9 +1969,35 @@ program
           return;
         }
         const token = fs.readFileSync(tokenPath, 'utf8').trim();
-        const body = options.testReport === 'none'
-          ? { testReport: null }
-          : { format: options.testReportFormat, command: options.testReportCommand, reportPath: options.testReportPath };
+        let body: Record<string, unknown>;
+        if (options.testReport === 'none' && options.testReportSurface !== undefined) {
+          console.error(chalk.red('Error: --test-report none clears the whole setting, surface included; pass --test-report-surface on its own to change only the test paths.'));
+          process.exit(1);
+          return;
+        }
+        if (options.testReport === 'none') {
+          body = { testReport: null };
+        } else {
+          // The server replaces the whole setting: merge the flags given onto
+          // the stored one, so changing one part never drops the others (9afdba7d).
+          const { data: current } = await axios.get(`${API_URL}/projects/${id}`);
+          const stored = (current as any)?.testReport ?? {};
+          const merged: Record<string, unknown> = {
+            format: options.testReportFormat ?? stored.format,
+            command: options.testReportCommand ?? stored.command,
+            reportPath: options.testReportPath ?? stored.reportPath,
+          };
+          const surface = options.testReportSurface === undefined
+            ? stored.surface
+            : options.testReportSurface === 'none' ? undefined : String(options.testReportSurface).split(',').map(p => p.trim()).filter(Boolean);
+          if (surface !== undefined) merged.surface = surface;
+          if (!merged.format || !merged.command || !merged.reportPath) {
+            console.error(chalk.red('Error: this project has no test report to change yet. Set one with --test-report-format, --test-report-command and --test-report-path.'));
+            process.exit(1);
+            return;
+          }
+          body = merged;
+        }
         ({ data } = await axios.put(`${API_URL}/projects/${id}/test-report`, body, { headers: { 'x-agenfk-internal': token } }));
       }
       // verifyCommand is a privileged shell string — set it via the internal

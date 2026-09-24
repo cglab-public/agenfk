@@ -81,6 +81,22 @@ fs.writeFileSync('report.json',JSON.stringify({testResults}));
 process.exit(testResults.some(t=>t.status==='failed')?1:0);
 `;
 
+/**
+ * The same toy runner writing junit-xml the way node:test does: every testcase
+ * says classname="<dir>" and no file (9afdba7d). `node junit.cjs <dir> [report]`
+ * reads <dir>/* and writes the report (default report.xml), stamped with the
+ * time of the run as real runners stamp theirs.
+ */
+const JUNIT_RUNNER = `const fs=require('fs'),path=require('path');
+const dir=process.argv[2]||'tests';
+const impl=fs.existsSync('src/impl.json')?JSON.parse(fs.readFileSync('src/impl.json','utf8')):{};
+let bad=false,xml='<testsuites><testsuite name="t" timestamp="'+process.hrtime.bigint()+'">';
+for(const f of fs.readdirSync(dir))for(const l of fs.readFileSync(path.join(dir,f),'utf8').split('\\n').filter(l=>l.startsWith('T '))){
+const [,n,kv]=l.split(' ');const [k,v]=kv.split('=');xml+='<testcase classname="'+dir+'" name="'+n+'">';
+if(impl[k]!==v){bad=true;xml+='<failure message="AssertionError: expected"/>';}xml+='</testcase>';}
+fs.writeFileSync(process.argv[3]||'report.xml',xml+'</testsuite></testsuites>');process.exit(bad?1:0);
+`;
+
 function makeRepo(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-engine-tests-'));
   repos.push(dir);
@@ -88,6 +104,7 @@ function makeRepo(): string {
   fs.mkdirSync(path.join(dir, 'tests'));
   fs.mkdirSync(path.join(dir, 'src'));
   fs.writeFileSync(path.join(dir, 'runner.cjs'), RUNNER);
+  fs.writeFileSync(path.join(dir, 'junit.cjs'), JUNIT_RUNNER);
   fs.writeFileSync(path.join(dir, 'tests/a.test.js'), 'T add_works add=ok\n');
   fs.writeFileSync(path.join(dir, 'src/impl.json'), JSON.stringify({ add: 'ok' }));
   fs.writeFileSync(path.join(dir, '.gitignore'), 'report.*\n');
@@ -178,6 +195,161 @@ const refused = async (id: string, check: string) => {
   expect(c.blocking).toBe(true);
   return c;
 };
+
+describe('9afdba7d: a junit report that names no file: the project declares its test paths', () => {
+  const frozen = (params: Record<string, string> = { mode: 'strict', since: 'step-entry' }) => [
+    s('START', 0, { isAnchor: true }),
+    s('WORK', 1, { checks: [{ id: 'test-surface-frozen', params }] }),
+    s('NEXT', 2),
+    s('END', 3, { isAnchor: true }),
+  ];
+  const report = (command: string, reportPath = 'report.xml', surface?: string[]) => ({ format: 'junit-xml', command, reportPath, ...(surface ? { surface } : {}) });
+  async function onWork(dir: string, command: string, { reportPath = 'report.xml', surface, before }: { reportPath?: string; surface?: string[]; before?: (pid: string) => Promise<void> } = {}) {
+    const pid = await project(await flow(frozen()), { projectRoot: dir, verifyCommand: command, testReport: report(command, reportPath, surface) });
+    if (before) await before(pid);
+    const id = await card(pid, 'START');
+    const r = await validate(id);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect((await item(id)).status).toBe('WORK');
+    return { id, pid };
+  }
+  /** A repo whose tests live where no convention looks: checks/, with tests/ gone. */
+  function offConvention(): string {
+    const dir = makeRepo();
+    fs.mkdirSync(path.join(dir, 'checks'));
+    write(dir, 'checks/a.js', 'T add_works add=ok\n');
+    execSync('git rm -rq tests && git add . && git commit -qm checks', { cwd: dir, shell: '/bin/sh' });
+    return dir;
+  }
+
+  it('refuses an edit to a declared test file the report never named', async () => {
+    const dir = makeRepo();
+    const { id } = await onWork(dir, 'node junit.cjs tests', { surface: ['tests'] });
+    write(dir, 'tests/a.test.js', 'T add_works add=ok\n// edited\n');
+    const c = await refused(id, 'test-surface-frozen');
+    expect(c.outcome).toBe('fail');
+    expect(c.detail).toMatch(/edited tests\/a\.test\.js/);
+  });
+
+  it('passes the same tree untouched', async () => {
+    const dir = makeRepo();
+    const { id } = await onWork(dir, 'node junit.cjs tests', { surface: ['tests'] });
+    const r = await validate(id);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(byId((await item(id)).lastChecks.results, 'test-surface-frozen').outcome).toBe('pass');
+  });
+
+  it('blocks when nothing is declared, and names the command with the directories that look like tests', async () => {
+    const dir = makeRepo();
+    const { id, pid } = await onWork(dir, 'node junit.cjs tests');
+    const c = await refused(id, 'test-surface-frozen');
+    expect(c.outcome).toBe('unavailable');
+    expect(c.detail).toContain(`agenfk update-project ${pid} --test-report-surface tests (suggested`);
+  });
+
+  it('declaring paths off the conventions unblocks it, and then sees an edit there', async () => {
+    const dir = offConvention();
+    const { id } = await onWork(dir, 'node junit.cjs checks', { surface: ['checks'] });
+    write(dir, 'checks/a.js', 'T add_works add=ok\n// edited\n');
+    const c = await refused(id, 'test-surface-frozen');
+    expect(c.outcome).toBe('fail');
+    expect(c.detail).toMatch(/edited checks\/a\.js/);
+  });
+
+  it("another card's claim does not hide an edit to the tests", async () => {
+    const dir = makeRepo();
+    const { id } = await onWork(dir, 'node junit.cjs tests', { surface: ['tests'], before: async pid => { await card(pid, 'START', { claims: ['tests/'] }); } });
+    write(dir, 'tests/a.test.js', 'T add_works add=ok\n// edited\n');
+    const c = await refused(id, 'test-surface-frozen');
+    expect(c.outcome).toBe('fail');
+  });
+
+  it('never counts the report the capture writes inside a declared test directory', async () => {
+    const dir = makeRepo();
+    const { id } = await onWork(dir, 'node junit.cjs tests tests/junit.xml', { reportPath: 'tests/junit.xml', surface: ['tests'] });
+    const r = await validate(id);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(byId((await item(id)).lastChecks.results, 'test-surface-frozen').outcome).toBe('pass');
+  });
+
+  it('a base recorded incomplete stays so after declaring mid-card, and says to re-enter the step', async () => {
+    const dir = makeRepo();
+    const { id, pid } = await onWork(dir, 'node junit.cjs tests');
+    await storage.updateProject(pid, { testReport: report('node junit.cjs tests', 'report.xml', ['tests']) } as any);
+    const c = await refused(id, 'test-surface-frozen');
+    expect(c.outcome).toBe('unavailable');
+    expect(c.detail).toMatch(/re-enter/i);
+  });
+
+  it('warns, and does not compare, when the declared paths changed since the base', async () => {
+    const dir = offConvention();
+    fs.mkdirSync(path.join(dir, 'more'));
+    write(dir, 'more/b.js', 'T add_works add=ok\n');
+    execSync('git add . && git commit -qm more', { cwd: dir, shell: '/bin/sh' });
+    const { id, pid } = await onWork(dir, 'node junit.cjs checks', { surface: ['checks'] });
+    await storage.updateProject(pid, { testReport: report('node junit.cjs checks', 'report.xml', ['checks', 'more']) } as any);
+    const r = await validate(id);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    const c = byId((await item(id)).lastChecks.results, 'test-surface-frozen');
+    expect(c.outcome).toBe('unavailable');
+    expect(c.blocking).toBe(false);
+  });
+
+  /** SPECS writes a red test and freezes the tests; CODE runs a strict freeze since then. Vitest-style report: every name a file. */
+  async function frozenAtCode(surface?: string[]) {
+    const dir = makeRepo();
+    const steps = [
+      s('START', 0, { isAnchor: true }),
+      s('SPECS', 1, { checks: [{ id: 'some-new-test-red' }] }),
+      s('CODE', 2, { checks: [{ id: 'test-surface-frozen', params: { mode: 'strict' } }] }),
+      s('NEXT', 3),
+      s('END', 4, { isAnchor: true }),
+    ];
+    const pid = await project(await flow(steps), { projectRoot: dir, verifyCommand: 'node runner.cjs', testReport: { ...REPORT, ...(surface ? { surface } : {}) } });
+    const id = await card(pid, 'START');
+    expect((await validate(id)).status).toBe(200);
+    write(dir, 'tests/mul.test.js', 'T mul_works mul=12\n');
+    expect((await validate(id)).status).toBe(200);
+    impl(dir, { add: 'ok', mul: '12' });
+    return { dir, id, pid };
+  }
+  const softly = async (id: string) => {
+    const r = await validate(id);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    const c = byId((await item(id)).lastChecks.results, 'test-surface-frozen');
+    expect(c.outcome).toBe('unavailable');
+    expect(c.blocking).toBe(false);
+  };
+
+  it('warns, and does not compare, when the tests were frozen by an older server', async () => {
+    const { id } = await frozenAtCode();
+    // As an older server froze it: a bare map of what the report named.
+    const it0: any = await storage.getItem(id);
+    await storage.updateItem(id, { stepRecords: it0.stepRecords.map((r: any) => (r.kind === 'record' && r.name === 'testSurface' ? { ...r, value: {} } : r)) } as any);
+    await softly(id);
+  });
+
+  it('warns, and does not compare, when the declared paths changed since the tests were frozen', async () => {
+    const { dir, id, pid } = await frozenAtCode();
+    fs.mkdirSync(path.join(dir, 'helpers'));
+    write(dir, 'helpers/h.js', 'x');
+    execSync('git add . && git commit -qm helpers', { cwd: dir, shell: '/bin/sh' });
+    await storage.updateProject(pid, { testReport: { ...REPORT, surface: ['helpers'] } } as any);
+    await softly(id);
+  });
+
+  it('warns, and does not compare, when the entry surface was recorded by an older server', async () => {
+    const dir = makeRepo();
+    const { id } = await onWork(dir, 'node junit.cjs tests', { surface: ['tests'] });
+    const it0: any = await storage.getItem(id);
+    await storage.updateItem(id, { stepRecords: it0.stepRecords.map((r: any) => (r.kind === 'capture' ? { ...r, surface: { files: {} }, surfaceScope: undefined } : r)) } as any);
+    const r = await validate(id);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    const c = byId((await item(id)).lastChecks.results, 'test-surface-frozen');
+    expect(c.outcome).toBe('unavailable');
+    expect(c.blocking).toBe(false);
+  });
+});
 
 describe('CGLAB-380: test checks', () => {
   it('the honest TDD path reaches the end, and the red set is recorded by name', async () => {

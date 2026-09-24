@@ -336,6 +336,124 @@ describe('CGLAB-379: test report readers', () => {
       }
     });
 
+    /*
+     * 9afdba7d: node:test's junit report says classname="test" (a directory)
+     * and xUnit's says "Sample.Tests.MathTests" (a namespace and class): no
+     * file at all, so the surface was empty and a frozen surface compared two
+     * empty ones. Guessing which files stand for such a name - by name, or by
+     * scanning the tree - was defeated three ways in review. The project's
+     * DECLARED test paths are the authority: walked in full, they are the
+     * surface, with the files the report names added. A name that is no file
+     * leaves the surface incomplete unless paths are declared; the directories
+     * that look like tests are offered as a suggestion, never used.
+     */
+    const tree = (files: Record<string, string>) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-surface-'));
+      for (const [f, t] of Object.entries(files)) { fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true }); fs.writeFileSync(path.join(dir, f), t); }
+      return dir;
+    };
+    const within = async (files: Record<string, string>, fn: (mod: any, dir: string, listTree: () => string[]) => void) => {
+      const mod = await load();
+      const dir = tree(files);
+      try { fn(mod, dir, () => Object.keys(files)); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    };
+
+    it('is the declared test paths, walked in full - fixtures included - plus what the report names', () => within(
+      { 'test/a.test.js': 'a', 'test/fixtures/data.json': 'd', 'src/x.js': 'x' },
+      (mod, dir) => {
+        const s = mod.surfaceOf(dir, ['test'], ['test']);
+        expect(Object.keys(s.files).sort()).toEqual(['test/a.test.js', 'test/fixtures/data.json']);
+        expect(s.missing).toEqual([]);
+        fs.writeFileSync(path.join(dir, 'test/fixtures/data.json'), 'weakened');
+        expect(mod.surfaceOf(dir, ['test'], ['test']).files['test/fixtures/data.json']).not.toBe(s.files['test/fixtures/data.json']);
+      },
+    ));
+
+    it("declaring '.' holds the test files at the root: the root itself is walked", () => within(
+      { 'a.test.js': 'a', 'lib/b.js': 'b' },
+      (mod, dir) => {
+        for (const decl of ['.', './']) {
+          const s = mod.surfaceOf(dir, ['test'], [decl]);
+          expect(Object.keys(s.files).sort()).toEqual(['a.test.js', 'lib/b.js']);
+          expect(s.missing).toEqual([]);
+        }
+      },
+    ));
+
+    it('a declared path that yields no file leaves the surface incomplete, never silently empty', () => within(
+      { 'a.test.js': 'a', 'empty/.keep': '' },
+      (mod, dir) => {
+        fs.rmSync(path.join(dir, 'empty/.keep'));
+        expect(mod.surfaceOf(dir, ['test'], ['empty']).missing).toEqual(['empty']);
+      },
+    ));
+
+    it('is completed by declared paths whatever the report names look like', () => within(
+      { 'Sample.Specs/CalculatorFacts.cs': 'c' },
+      (mod, dir) => {
+        const s = mod.surfaceOf(dir, ['Sample.Tests.MathTests+Inner', 'Sample.Tests.Box`1', 'Sample.Tests.MathTests(1)'], ['Sample.Specs']);
+        expect(Object.keys(s.files)).toEqual(['Sample.Specs/CalculatorFacts.cs']);
+        expect(s.missing).toEqual([]);
+      },
+    ));
+
+    it('without declared paths, holds only what the report names, when it names files', () => within(
+      { 'tests/a.test.ts': 'a', 'tests/b.test.ts': 'b' },
+      (mod, dir, listTree) => {
+        const s = mod.surfaceOf(dir, ['tests/a.test.ts'], [], { listTree });
+        expect(Object.keys(s.files)).toEqual(['tests/a.test.ts']);
+        expect(s.missing).toEqual([]);
+      },
+    ));
+
+    it('without declared paths, a name that is no file leaves it incomplete, however many test files the tree has', () => within(
+      { 'test/a.test.js': 'a', 'other/UtilTests.cs': 'u', 'Sample.Tests/CalculatorShould.cs': 'c' },
+      (mod, dir, listTree) => {
+        expect(mod.surfaceOf(dir, ['test'], [], { listTree }).missing).toEqual(['test']);
+        expect(mod.surfaceOf(dir, ['Sample.Tests.CalculatorShould'], [], { listTree }).missing).toEqual(['Sample.Tests.CalculatorShould']);
+      },
+    ));
+
+    it('suggests the directories that look like tests, for a person to declare', () => within(
+      { 'test/a.test.js': 'a', 'test/unit/b.test.js': 'b', 'packages/x/tests/c.test.ts': 'c', 'Calc.Tests/MathTests.cs': 'm', 'src/y.js': 'y' },
+      (mod, dir, listTree) => {
+        const s = mod.surfaceOf(dir, ['test'], [], { listTree });
+        expect(s.suggested).toEqual(['Calc.Tests', 'packages/x/tests', 'test']);
+        expect(Object.keys(s.files)).toEqual([]);
+      },
+    ));
+
+    it('skips bytecode, caches and OS files inside a declared path', () => within(
+      { 'tests/test_a.py': 'a', 'tests/__pycache__/test_a.cpython-311.pyc': 'b', 'tests/.pytest_cache/v': 'c', 'tests/.DS_Store': 'd' },
+      (mod, dir) => {
+        expect(Object.keys(mod.surfaceOf(dir, [], ['tests']).files)).toEqual(['tests/test_a.py']);
+      },
+    ));
+
+    it('never covers a named PATH that is gone, declared paths or not', () => within(
+      { 'tests/a.test.ts': 'a' },
+      (mod, dir) => {
+        expect(mod.surfaceOf(dir, ['tests/gone.test.ts'], ['tests']).missing).toEqual(['tests/gone.test.ts']);
+      },
+    ));
+
+    it('never hashes an excluded path: the report the capture itself writes', () => within(
+      { 'tests/a.test.js': 'a', 'tests/junit.xml': '<testsuite/>' },
+      (mod, dir) => {
+        const s = mod.surfaceOf(dir, ['tests'], ['tests'], { exclude: ['./tests/junit.xml'] });
+        expect(Object.keys(s.files)).toEqual(['tests/a.test.js']);
+      },
+    ));
+
+    it('an empty name claims nothing: it neither adds to the surface nor leaves it incomplete', () => within(
+      { 'src/x.js': 'x' },
+      (mod, dir) => {
+        const s = mod.surfaceOf(dir, [''], []);
+        expect(s.missing).toEqual([]);
+        expect(s.files).toEqual({});
+      },
+    ));
+
     it('describes what changed between two surfaces', async () => {
       const mod = await load();
       const a = { files: { 'x.test.ts': '1', 'y.test.ts': '2' } };

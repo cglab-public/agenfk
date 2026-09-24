@@ -17,7 +17,7 @@
  * - deferred: enforced elsewhere on this transition (the project verify command).
  */
 import * as path from 'path';
-import { insideRoot } from './stepRecords';
+import { insideRoot, isTestPath } from './stepRecords';
 import { CHECK_CATALOGUE, type CheckSeverity, type RecordName, type ResolvedCheck } from '@agenfk/core';
 
 export type CheckOutcome = 'pass' | 'fail' | 'unavailable' | 'n/a' | 'deferred';
@@ -51,6 +51,13 @@ export interface CaptureRecord {
   brokenFiles?: Array<{ file: string; message: string }>;
   surface?: { files: Record<string, string> };
   surfaceComplete?: boolean;
+  surfaceMissing?: string[];
+  /** 'declared' when built from the project's declared test paths (9afdba7d); absent on older captures. */
+  surfaceScope?: string;
+  /** The declared test paths the surface was built from. */
+  surfaceDeclared?: string[];
+  /** Directories that look like tests, when a name is no file and none are declared. */
+  surfaceSuggested?: string[];
   parseError?: string;
 }
 
@@ -59,7 +66,7 @@ export interface EngineContext {
   root: string | null;
   /** `git <args>`; throws on failure. */
   git: (args: string[]) => string;
-  item: { id: string; type: string; externalId?: string | null };
+  item: { id: string; type: string; externalId?: string | null; projectId?: string };
   /** The card's branch: its own, else its nearest ancestor's. */
   cardBranch: string | null;
   /** JIRA keys on the card and its ancestors, nearest first. */
@@ -151,22 +158,6 @@ function authoredTests(ctx: EngineContext): ReportedTest[] | Verdict {
 }
 
 const JIRA_KEY = /^[A-Z][A-Z0-9]+-\d+$/;
-
-/** Conventional test locations and names, plus the project's own test paths. */
-const TEST_PATH = [
-  /(^|\/)(tests?|__tests__|specs?)\//,
-  /\.(test|spec)\.[cm]?[jt]sx?$/,
-  /(^|\/)test_[^/]*\.py$/,
-  /_test\.(py|go)$/,
-  /(Test|Tests)\.(java|kt|cs)$/,
-];
-function isTestPath(file: string, extra: readonly string[]): boolean {
-  if (TEST_PATH.some(re => re.test(file))) return true;
-  return extra.some(p => {
-    const base = p.replace(/^\.\//, '').replace(/\/+$/, '');
-    return file === base || file.startsWith(`${base}/`);
-  });
-}
 
 /** The tests this step added: named now, not at the step's entry. */
 function newTests(ctx: EngineContext): { added: ReportedTest[]; now: ReportedTest[]; capture: CaptureRecord } | Verdict {
@@ -316,7 +307,7 @@ export const EVALUATORS: Record<string, Evaluator> = {
     return {
       outcome: 'pass',
       detail: `${red.length} of ${d.added.length} new test(s) red: ${list(red)}`,
-      produces: { redSet: red, testSurface: d.capture.surface?.files ?? {}, authoredTests: d.now.map(t => t.name) },
+      produces: { redSet: red, testSurface: { files: d.capture.surface?.files ?? {}, scope: d.capture.surfaceScope ?? null, complete: d.capture.surfaceComplete !== false, declared: d.capture.surfaceDeclared ?? [] }, authoredTests: d.now.map(t => t.name) },
     };
   },
 
@@ -363,19 +354,41 @@ export const EVALUATORS: Record<string, Evaluator> = {
   'test-surface-frozen': (ctx, p) => {
     const now = currentTests(ctx);
     if (isVerdict(now)) return now;
+    // An incomplete surface cannot show that nothing changed: the files it
+    // could not find are exactly the ones an edit would hide in (9afdba7d).
+    const pid = ctx.item.projectId ?? '<projectId>';
+    const suggested = now.capture.surfaceSuggested ?? [];
+    if (now.capture.surfaceComplete === false) {
+      const missing = now.capture.surfaceMissing ?? [];
+      return { outcome: 'unavailable', detail: `the test surface is incomplete, so a change to the tests cannot be seen: ${list(missing)}. The report names tests by something that is no file, and the project declares no test paths. Declare where its tests live: agenfk update-project ${pid} --test-report-surface ${suggested.length ? `${suggested.join(',')} (suggested from the directories that look like tests - check them)` : '<path>[,<path>]'} - or a person can override this check on the board.` };
+    }
+    const incompleteBase = `the tests were recorded with an incomplete surface, so there is nothing to compare this run against. Declare the test paths (agenfk update-project ${pid} --test-report-surface <path>[,<path>]) and then re-enter the step where the record was taken, or a person can override this check on the board.`;
+    const sameDeclared = (a: unknown) => JSON.stringify([...(Array.isArray(a) ? a : [])].sort()) === JSON.stringify([...(now.capture.surfaceDeclared ?? [])].sort());
+    const declaredChanged = "the project's declared test paths changed since the tests were recorded, so the two surfaces hold different files and cannot be compared. Re-enter the step where the record was taken to record it again.";
     let base: Record<string, string>;
     if (p.since === 'step-entry') {
       const e = ctx.entry;
       if (!e?.surface) return { outcome: 'unavailable', soft: true, detail: 'no entry record with a test surface: the card entered this step before checks recorded one (it predates checks)' };
+      if (e.surfaceScope !== now.capture.surfaceScope) return { outcome: 'unavailable', soft: true, detail: "the entry record's test surface was recorded by an older server, so it cannot be compared with this one. Re-enter the step to record a new one." };
+      if (e.surfaceComplete === false) return { outcome: 'unavailable', detail: incompleteBase };
+      if (!sameDeclared(e.surfaceDeclared)) return { outcome: 'unavailable', soft: true, detail: declaredChanged };
       base = e.surface.files;
     } else {
-      const frozen = ctx.records.testSurface;
+      const frozen = ctx.records.testSurface as { files?: unknown; scope?: unknown; complete?: unknown; declared?: unknown } | undefined;
       if (!frozen || typeof frozen !== 'object') return { outcome: 'unavailable', soft: true, detail: "no 'testSurface' record: the step that writes tests did not produce one for this card (it entered that step before checks, or its tests could not be judged there)" };
-      base = frozen as Record<string, string>;
+      // An older server froze a bare map of what the report named (9afdba7d).
+      if (typeof frozen.scope !== 'string' || !frozen.files || typeof frozen.files !== 'object' || frozen.scope !== now.capture.surfaceScope) {
+        return { outcome: 'unavailable', soft: true, detail: 'the tests were frozen by an older server, so the freeze cannot be compared with this run. Re-enter the step that writes tests to freeze them again.' };
+      }
+      if (frozen.complete === false) return { outcome: 'unavailable', detail: incompleteBase };
+      if (!sameDeclared(frozen.declared)) return { outcome: 'unavailable', soft: true, detail: declaredChanged };
+      base = frozen.files as Record<string, string>;
     }
     const cur = now.capture.surface?.files ?? {};
     const changes: string[] = [];
-    for (const f of new Set([...Object.keys(base), ...Object.keys(cur)])) {
+    // Only the report the capture writes is left out. Other cards' claims are
+    // not: a claim on the tests would otherwise hide an edit to them.
+    for (const f of [...new Set([...Object.keys(base), ...Object.keys(cur)])].filter(f => !ctx.ignoredPaths.some(ig => within(f, ig)))) {
       if (!(f in cur)) changes.push(`deleted ${f}`);
       else if (!(f in base)) { if (p.mode === 'strict') changes.push(`added ${f}`); }
       else if (base[f] !== cur[f]) changes.push(`edited ${f}`);

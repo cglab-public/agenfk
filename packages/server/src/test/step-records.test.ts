@@ -312,13 +312,26 @@ describe('CGLAB-379: step records', () => {
       expect(res.body.tests.map((t: any) => t.name)).toEqual(['tests/a.test.js > y']);
     });
 
-    it('marks the surface incomplete when a file the report names cannot be found', async () => {
+    // 9afdba7d: a name that is no file needs the project's declared test
+    // paths; without them the surface is incomplete, whatever the tree holds.
+    const noFileReport = `node -e "require('fs').writeFileSync('report.xml','<testsuite><testcase classname=\\'nowhere.test_x\\' name=\\'t\\'/></testsuite>')"`;
+    it('marks the surface incomplete when a name the report gives is no file and no test paths are declared', async () => {
       const { dir } = makeRepo();
-      const cmd = `node -e "require('fs').writeFileSync('report.xml','<testsuite><testcase classname=\\'nowhere.test_x\\' name=\\'t\\'/></testsuite>')"`;
-      const p = await project({ projectRoot: dir, testReport: { format: 'junit-xml', command: cmd, reportPath: 'report.xml' } });
+      const p = await project({ projectRoot: dir, testReport: { format: 'junit-xml', command: noFileReport, reportPath: 'report.xml' } });
       const res = await agent().post(`/items/${await card(p, 'IN_PROGRESS')}/step-records/capture`).set(internal());
       expect(res.body.available).toBe(true);
       expect(res.body.surfaceComplete).toBe(false);
+      expect(res.body.surfaceMissing).toEqual(['nowhere.test_x']);
+      expect(res.body.surfaceSuggested).toEqual(['tests']);
+    });
+
+    it('the declared test paths complete it, and are recorded with it', async () => {
+      const { dir } = makeRepo();
+      const p = await project({ projectRoot: dir, testReport: { format: 'junit-xml', command: noFileReport, reportPath: 'report.xml', surface: ['tests'] } });
+      const res = await agent().post(`/items/${await card(p, 'IN_PROGRESS')}/step-records/capture`).set(internal());
+      expect(res.body.surfaceComplete).toBe(true);
+      expect(Object.keys(res.body.surface.files)).toContain('tests/a.test.js');
+      expect(res.body.surfaceDeclared).toEqual(['tests']);
     });
 
     it('discards the capture when the card moved while the command ran', async () => {

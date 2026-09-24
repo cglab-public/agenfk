@@ -2520,7 +2520,7 @@ app.put("/projects/:id/test-report", asyncHandler(async (req: any, res: any) => 
     ...(changed ? { testReportChanges: [...(before.testReportChanges ?? []), { from: previous, to: next, at: new Date().toISOString() }] } : {}),
   } as any);
   if (changed) {
-    const shown = (t: TestReportSetting | null) => (t ? `${t.format} from \`${t.command}\` (${t.reportPath})` : '(none)');
+    const shown = (t: TestReportSetting | null) => (t ? `${t.format} from \`${t.command}\` (${t.reportPath})${t.surface?.length ? `, test paths ${t.surface.join(', ')}` : ''}` : '(none)');
     await noteGateChangeOnCards(before, 'Project test report changed', `From ${shown(previous)} to ${shown(next)}. Checks that read per-test results now use it.`);
   }
   io.emit('items_updated');
@@ -2975,13 +2975,21 @@ async function captureStepRecord(item: any): Promise<CaptureOutcome> {
       // listed; a check that needs it finds it missing, never passed. The rest
       // of the report stays usable - real suites do carry the odd duplicate.
       const ambiguous = new Set(parsed.duplicateNames);
-      const surface = surfaceOf(root, [...new Set([...parsed.tests.map(t => t.file), ...parsed.brokenFiles.map(b => b.file)])], setting.surface ?? []);
+      // The project's declared test paths are the surface (9afdba7d); the tree is listed only to suggest some
+      // when a name is no file and none are declared. The report this run wrote is never hashed.
+      const listTree = () => execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, maxBuffer: 256 * 1024 * 1024 }).split('\0').filter(Boolean);
+      const surface = surfaceOf(root, [...new Set([...parsed.tests.map(t => t.file), ...parsed.brokenFiles.map(b => b.file)])], setting.surface ?? [], { listTree, exclude: reportRel ? [reportRel] : [] });
       record.available = true;
       record.tests = parsed.tests.filter(t => !ambiguous.has(t.name));
       if (ambiguous.size) record.duplicateNames = [...ambiguous];
       record.brokenFiles = parsed.brokenFiles;
       record.surface = { files: surface.files };
       record.surfaceComplete = surface.missing.length === 0;
+      // Which files a surface holds changed with 9afdba7d: an older capture cannot be compared with a newer one,
+      // nor one taken under different declared paths.
+      record.surfaceScope = 'declared';
+      record.surfaceDeclared = [...(setting.surface ?? [])];
+      if (surface.suggested) record.surfaceSuggested = surface.suggested;
       if (surface.missing.length) record.surfaceMissing = surface.missing;
     } catch (e: any) {
       record.parseError = `could not use the ${setting.format} report at ${setting.reportPath}: ${e?.message ?? e}`;
