@@ -26,6 +26,8 @@ const PARALLEL_INCLUDE = [
   'packages/ui/src/test/**/*.{test,spec}.{ts,tsx}',
   'packages/flow-editor/src/test/**/*.{test,spec}.{ts,tsx}',
   'packages/desktop/src/test/**/*.{test,spec}.{ts,tsx}',
+  // The TDD harness's pure logic; the harness itself runs in Docker (npm run e2e:tdd).
+  'e2e/tdd-harness/test/**/*.{test,spec}.{ts,tsx}',
 ];
 
 const SERIAL_INCLUDE = [
