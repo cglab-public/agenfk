@@ -251,10 +251,12 @@ export function parseJunitXml(text: string, root: string): ParsedReport {
   const tests: ReportedTest[] = [];
   const brokenFiles: Array<{ file: string; message: string }> = [];
   let sawSuite = false;
-  let open: { attrs: Record<string, string>; failed?: 'assertion' | 'error'; skipped?: boolean; body?: string } | null = null;
+  let open: { attrs: Record<string, string>; failed?: 'assertion' | 'error'; skipped?: boolean; body?: string; errorMessage?: string; errorBody?: string } | null = null;
+  let errorFrom = -1;
   let failureFrom = -1;
   const close = () => {
     failureFrom = -1;
+    errorFrom = -1;
     if (!open) return;
     /*
      * node --test writes a test file whose process exits before it finishes
@@ -272,6 +274,18 @@ export function parseJunitXml(text: string, root: string): ParsedReport {
       open = null;
       return;
     }
+    /*
+     * pytest writes a test module that fails to import as ONE testcase with an
+     * empty classname, named after the module, holding <error message=
+     * "collection failure"> (c77c1bd3). It is a broken file, never a test.
+     */
+    if (open.errorMessage === 'collection failure' && !open.attrs.classname && name) {
+      const e = (open.errorBody ?? '').split('\n').reverse().find(l => /^E\s+\S/.test(l));
+      const moduleFile = /[/\\]|\.py$/.test(name) ? name : `${name.split('.').join('/')}.py`;
+      brokenFiles.push({ file: relativeTo(root, moduleFile), message: e ? e.replace(/^E\s+/, '').trim() : 'collection failure' });
+      open = null;
+      return;
+    }
     const file = open.attrs.file ? relativeTo(root, open.attrs.file) : (open.attrs.classname ?? '');
     const status: ReportedStatus = open.failed ? 'failed' : open.skipped ? 'skipped' : 'passed';
     tests.push({ name: `${file} > ${open.attrs.name ?? ''}`, file, status, ...(open.failed ? { failure: open.failed } : {}) });
@@ -285,6 +299,11 @@ export function parseJunitXml(text: string, root: string): ParsedReport {
       close(); // an unclosed testcase ends where the next begins
       open = { attrs: attributes(attrText) };
       if (selfClosing) close();
+      continue;
+    }
+    if (open && closing && name === 'error' && errorFrom >= 0) {
+      open.errorBody = decodeEntities(clean.slice(errorFrom, m.index));
+      errorFrom = -1;
       continue;
     }
     if (open && closing && name === 'failure' && failureFrom >= 0) {
@@ -305,7 +324,11 @@ export function parseJunitXml(text: string, root: string): ParsedReport {
     }
     if (!open || closing) continue;
     if (name === 'failure') { open.failed = open.failed ?? 'assertion'; if (!selfClosing) failureFrom = (m.index ?? 0) + m[0].length; }
-    else if (name === 'error') open.failed = 'error';
+    else if (name === 'error') {
+      open.failed = 'error';
+      open.errorMessage = attributes(attrText).message;
+      if (!selfClosing) errorFrom = (m.index ?? 0) + m[0].length;
+    }
     else if (name === 'skipped') open.skipped = true;
   }
   close();

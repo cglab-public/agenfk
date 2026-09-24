@@ -105,6 +105,36 @@ describe('CGLAB-379: test report readers', () => {
     const THROW = "[Error [ERR_TEST_FAILURE]: Cannot read properties of null] {\n  code: 'ERR_TEST_FAILURE',\n  failureType: 'testCodeFailure',\n  cause: TypeError: Cannot read properties of null (reading 'x')\n}";
     const BROKEN = "[Error: test failed] { code: 'ERR_TEST_FAILURE', failureType: 'testCodeFailure', cause: 'test failed', exitCode: 1, signal: null }";
 
+    /*
+     * c77c1bd3: pytest 9.1.1 writes a test module that fails to import as ONE
+     * testcase with an empty classname, named after the module, holding
+     * <error message="collection failure">, and stops the run there. Read as
+     * a test, it was a new red test that could start the TDD cycle.
+     */
+    const PYTEST_COLLECTION = `<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest" errors="1" failures="0" skipped="0" tests="1" time="0.039"><testcase classname="" name="tests.test_broken" time="0.000"><error message="collection failure">ImportError while importing test module '/p/tests/test_broken.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.11/importlib/__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+tests/test_broken.py:1: in &lt;module&gt;
+    import nope
+E   ModuleNotFoundError: No module named 'nope'</error></testcase></testsuite></testsuites>`;
+
+    it('pytest: a module that fails to collect is a broken file, never a test', async () => {
+      const mod = await load();
+      const r = mod.parseJunitXml(PYTEST_COLLECTION, '/p');
+      expect(r.tests).toEqual([]);
+      expect(r.brokenFiles).toEqual([{ file: 'tests/test_broken.py', message: "ModuleNotFoundError: No module named 'nope'" }]);
+    });
+
+    it('pytest: a real test that errors in setup stays a test, with an error', async () => {
+      const mod = await load();
+      const xml = '<testsuite><testcase classname="tests.test_a" name="test_x"><error message="failed on setup with &quot;fixture \'db\' not found&quot;">E   fixture \'db\' not found</error></testcase></testsuite>';
+      const r = mod.parseJunitXml(xml, '/p');
+      expect(r.brokenFiles).toEqual([]);
+      expect(r.tests).toEqual([{ name: 'tests.test_a > test_x', file: 'tests.test_a', status: 'failed', failure: 'error' }]);
+    });
+
     it("node:test: reads an assertion failure from the body's cause line", async () => {
       const mod = await load();
       const r = mod.parseJunitXml(`<testsuites>${nodeCase('asserts', ASSERT)}</testsuites>`, '/repo');
