@@ -135,6 +135,29 @@ E   ModuleNotFoundError: No module named 'nope'</error></testcase></testsuite></
       expect(r.tests).toEqual([{ name: 'tests.test_a > test_x', file: 'tests.test_a', status: 'failed', failure: 'error' }]);
     });
 
+    /*
+     * 51d5ba1b: every <failure> without node:test's wrapper read as an
+     * assertion, so red-is-assertion never warned on pytest or xUnit. Each
+     * runner names the class its own way - shapes from pytest 9.1.1, xUnit
+     * 2.9.3 through JunitXml.TestLogger 6.1.0, and surefire.
+     */
+    const failureOf = async (failure: string) => {
+      const mod = await load();
+      return mod.parseJunitXml(`<testsuite><testcase classname="c" name="t">${failure}</testcase></testsuite>`, '/p').tests[0].failure;
+    };
+    it.each([
+      ['pytest assertion', '<failure message="assert 5 == 6&#10; +  where 5 = add(2, 3)">&gt;   def test_red(): assert add(2, 3) == 6\nE   assert 5 == 6\n\ntests/test_math.py:3: AssertionError</failure>', 'assertion'],
+      ['pytest assertion with a message', '<failure message="AssertionError: totals differ&#10;assert 5 == 6">E   AssertionError: totals differ\n\ntests/test_math.py:3: AssertionError</failure>', 'assertion'],
+      ['pytest error', '<failure message="AttributeError: \'NoneType\' object has no attribute \'boom\'">&gt;   def test_error(): None.boom\nE   AttributeError: \'NoneType\' object has no attribute \'boom\'\n\ntests/test_math.py:4: AttributeError</failure>', 'error'],
+      ['xUnit assertion', '<failure type="failure" message="Assert.Equal() Failure: Values differ&#xA;Expected: 6&#xA;Actual:   5">at Sample.Tests.MathTests.Red() in /p/test/MathTests.cs:line 5</failure>', 'assertion'],
+      ['xUnit error', '<failure type="failure" message="System.NullReferenceException : Object reference not set to an instance of an object.">at Sample.Tests.MathTests.Error() in /p/test/MathTests.cs:line 6</failure>', 'error'],
+      ['surefire assertion', '<failure type="org.opentest4j.AssertionFailedError" message="expected: &lt;6&gt; but was: &lt;5&gt;">org.opentest4j.AssertionFailedError: expected: &lt;6&gt; but was: &lt;5&gt;</failure>', 'assertion'],
+      ['surefire error reported as a failure', '<failure type="java.lang.IllegalStateException" message="not ready">java.lang.IllegalStateException: not ready</failure>', 'error'],
+      ['an unknown runner that names nothing', '<failure message="boom"/>', 'assertion'],
+    ])('%s', async (_label, failure, expected) => {
+      expect(await failureOf(failure)).toBe(expected);
+    });
+
     it("node:test: reads an assertion failure from the body's cause line", async () => {
       const mod = await load();
       const r = mod.parseJunitXml(`<testsuites>${nodeCase('asserts', ASSERT)}</testsuites>`, '/repo');

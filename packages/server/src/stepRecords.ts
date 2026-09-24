@@ -154,6 +154,29 @@ function classify(message: string): FailureClass {
   return /AssertionError|expected .* to /i.test(message) ? 'assertion' : 'error';
 }
 
+/** An exception class, as a runner names one: a dotted name, or one ending in Error/Exception. */
+const CLASS_NAME = /^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)*$/;
+const namesClass = (s: string) => CLASS_NAME.test(s) && (s.includes('.') || /(Error|Exception)$/.test(s));
+const isAssertionClass = (s: string) => /Assert|ComparisonFailure|ExpectationFailed/.test(s);
+
+/**
+ * A JUnit <failure> without node:test's wrapper, classified from the runner's
+ * own signal (51d5ba1b), in order: a type attribute that names a class
+ * (surefire), then a class the message starts with - pytest's
+ * `AttributeError: ...`, xUnit's `System.NullReferenceException : ...`. A
+ * failure that names no class (pytest's `assert 5 == 6`, xUnit's
+ * `Assert.Equal() Failure`, an unknown runner) stays an assertion: that is
+ * what a <failure> claims.
+ */
+export function classifyJunitFailure(type: string | undefined, message: string | undefined): FailureClass {
+  const t = (type ?? '').trim();
+  if (namesClass(t)) return isAssertionClass(t) ? 'assertion' : 'error';
+  const m = (message ?? '').trim();
+  const named = /^([A-Za-z_$][\w$.]*)\s*:/.exec(m);
+  if (named && namesClass(named[1])) return isAssertionClass(named[1]) ? 'assertion' : 'error';
+  return 'assertion';
+}
+
 /** Vitest's `--reporter=json` output. Throws when the text is not one. */
 export function parseVitestJson(text: string, root: string): ParsedReport {
   const data = JSON.parse(text);
@@ -251,7 +274,7 @@ export function parseJunitXml(text: string, root: string): ParsedReport {
   const tests: ReportedTest[] = [];
   const brokenFiles: Array<{ file: string; message: string }> = [];
   let sawSuite = false;
-  let open: { attrs: Record<string, string>; failed?: 'assertion' | 'error'; skipped?: boolean; body?: string; errorMessage?: string; errorBody?: string } | null = null;
+  let open: { attrs: Record<string, string>; failed?: 'assertion' | 'error'; skipped?: boolean; body?: string; failureType?: string; failureMessage?: string; errorMessage?: string; errorBody?: string } | null = null;
   let errorFrom = -1;
   let failureFrom = -1;
   const close = () => {
@@ -320,10 +343,17 @@ export function parseJunitXml(text: string, root: string): ParsedReport {
       let wrapper: RegExpExecArray | null = null;
       for (const w of open.body.matchAll(/failureType: '(\w+)',\s*cause: (?:([A-Za-z_$][\w$]*)(?:\s*\[[A-Z0-9_]+\])?:|')/g)) wrapper = w;
       if (wrapper) open.failed = wrapper[1] === 'testCodeFailure' && wrapper[2] === 'AssertionError' ? 'assertion' : 'error';
+      else open.failed = classifyJunitFailure(open.failureType, open.failureMessage);
       continue;
     }
     if (!open || closing) continue;
-    if (name === 'failure') { open.failed = open.failed ?? 'assertion'; if (!selfClosing) failureFrom = (m.index ?? 0) + m[0].length; }
+    if (name === 'failure') {
+      const a = attributes(attrText);
+      open.failureType = a.type;
+      open.failureMessage = a.message;
+      if (selfClosing) open.failed = open.failed ?? classifyJunitFailure(a.type, a.message);
+      else { open.failed = open.failed ?? 'assertion'; failureFrom = (m.index ?? 0) + m[0].length; }
+    }
     else if (name === 'error') {
       open.failed = 'error';
       open.errorMessage = attributes(attrText).message;
