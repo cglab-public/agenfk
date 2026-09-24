@@ -23,6 +23,11 @@ describe('ColumnContractBadges', () => {
     expect(screen.getByText(/8 checks/)).toBeTruthy();
   });
 
+  it('shows no count for a flow whose checks only warn (a flow from before roles)', () => {
+    const { container } = render(<ColumnContractBadges step={{ id: 's', name: 'X', label: 'X', order: 1 }} checkCount={0} />);
+    expect(container.textContent).toBe('');
+  });
+
   it('marks a step that waits for a person, and one that needs a passkey', () => {
     render(<ColumnContractBadges step={{ id: 's', name: 'X', label: 'X', order: 1, checks: [{ id: 'human-approval', params: { signature: 'passkey' } }] }} />);
     expect(screen.getByLabelText(/a person must approve/i)).toBeTruthy();

@@ -66,8 +66,10 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
       return [t.title, t.stops, c.description].some(x => x.toLowerCase().includes(q));
     });
 
-  // What an agent must do: the applicable blocking checks, then the warnings.
-  const preview = (stepContract?.checks ?? []).filter(c => c.applicable);
+  // What an agent must do: exactly what verify runs to leave the step, the
+  // blocking checks first, then the warnings.
+  const terminal = !!stepContract?.terminal;
+  const preview = (stepContract?.onLeave ?? stepContract?.checks ?? []).filter(c => c.applicable);
   const musts = preview.filter(c => c.severity === 'block').map(c => {
     const must = checkText(c.id, catalogue.get(c.id)?.description).must;
     return c.id === 'human-approval' && c.params.signature === 'passkey' ? `${must}, signed with a passkey` : must;
@@ -148,7 +150,14 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
         {extras.map(ref => {
           const d = catalogue.get(ref.id);
           const t = checkText(ref.id, d?.description);
-          const warn = ref.severity === 'warn';
+          // Shown and stored against the check's own default: a warn-by-default
+          // check is Warn until the flow says Block, and Block is then stored.
+          const byDefault = d?.defaultSeverity ?? 'block';
+          const warn = (ref.severity ?? byDefault) === 'warn';
+          const setSeverity = (sev: 'block' | 'warn') => {
+            const { severity: _s, ...rest } = ref;
+            replace(ref.id, sev === byDefault ? rest : { ...rest, severity: sev });
+          };
           return (
             <div key={ref.id} className={clsx('space-y-2', chip)}>
               <div className="flex items-start gap-2">
@@ -175,12 +184,12 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
               ))}
               <div className="flex gap-1 text-xs" role="group" aria-label={`If ${t.title} fails`}>
                 <button type="button" disabled={disabled} aria-pressed={!warn} aria-label={`Block the step: ${t.title}`}
-                  onClick={() => { const { severity: _s, ...rest } = ref; replace(ref.id, rest); }}
+                  onClick={() => setSeverity('block')}
                   className={clsx('px-2 py-1 rounded-md border', !warn ? 'bg-slate-800 text-white dark:bg-slate-200 dark:text-slate-900' : 'border-slate-200 dark:border-slate-600')}>
                   Block the step
                 </button>
                 <button type="button" disabled={disabled} aria-pressed={warn} aria-label={`Only warn: ${t.title}`}
-                  onClick={() => replace(ref.id, { ...ref, severity: 'warn' })}
+                  onClick={() => setSeverity('warn')}
                   className={clsx('px-2 py-1 rounded-md border', warn ? 'bg-slate-800 text-white dark:bg-slate-200 dark:text-slate-900' : 'border-slate-200 dark:border-slate-600')}>
                   Only warn
                 </button>
@@ -266,7 +275,8 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
       {/* What an agent must do */}
       <div data-testid="contract-preview" className="space-y-1 rounded-lg bg-slate-50 dark:bg-slate-900 px-3 py-2">
         <div className={section}>What an agent must do to leave this step</div>
-        {musts.length === 0 && warns.length === 0 && <div className="text-xs text-slate-400">Nothing is checked here.</div>}
+        {terminal && <div className="text-xs text-slate-500 dark:text-slate-400">Cards never leave this step: its checks are checked when a card moves into this step, and listed on the step before it.</div>}
+        {!terminal && musts.length === 0 && warns.length === 0 && <div className="text-xs text-slate-400">Nothing is checked here.</div>}
         <ul className="list-disc pl-5 text-xs space-y-0.5">
           {musts.map((m, i) => <li key={`m${i}`}>{m}</li>)}
           {warns.map((w, i) => <li key={`w${i}`} className="text-slate-500">Warning only: {w}</li>)}

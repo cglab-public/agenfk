@@ -54,6 +54,13 @@ describe('describeFlowContract', () => {
     expect(c.steps[3].checks.some(k => k.id === 'server-owned-verify')).toBe(true);
   });
 
+  it("lists, per step, exactly the checks verify runs to leave it (the terminal step's included on the step before)", () => {
+    const c = describeFlowContract(tdd());
+    const leave = (i: number) => c.steps[i].onLeave.map(k => k.id);
+    expect(leave(2)).toEqual(expect.arrayContaining(['red-set-passes-by-name', 'server-owned-verify']));
+    expect(c.steps[3].onLeave).toEqual([]);
+  });
+
   it('carries every role with its built-ins, and every catalogue check with its params', () => {
     const c = describeFlowContract(tdd());
     expect(c.roles.map(r => r.id)).toEqual([...STEP_ROLES]);

@@ -6,7 +6,7 @@
  * template picker. All of it reads the server's contract; none of it is shown
  * when the host has no contract route.
  */
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { KeyRound, UserCheck, X, LayoutTemplate, AlertTriangle } from 'lucide-react';
 import { StepContractPanel } from './StepContractPanel';
 import { checkText, RECORD_TEXTS, ROLE_TEXTS } from './checkTexts';
@@ -25,7 +25,8 @@ export const StepContractButton: React.FC<{
   onOpen: () => void;
 }> = ({ index, step, stepContract, onOpen }) => {
   const role = typeof step.role === 'string' ? ROLE_TEXTS[step.role] : undefined;
-  const count = (stepContract?.checks ?? []).filter(c => c.applicable).length;
+  // What verify runs to leave the step and blocks on; warn-only checks are not counted.
+  const count = (stepContract?.onLeave ?? stepContract?.checks ?? []).filter(c => c.applicable && c.severity === 'block').length;
   const approval = approvalOf(step);
   return (
     <button
@@ -55,9 +56,17 @@ export const StepContractDialog: React.FC<{
   readOnlyNote?: string;
   onChange: (patch: Partial<FlowStep>) => void;
   onClose: () => void;
-}> = ({ step, stepContract, contract, disabled, readOnlyNote, onChange, onClose }) => (
-  <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/50 p-4" role="dialog" aria-modal="true" aria-label={`Checks for ${step.label || step.name}`}
-    onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } }}>
+}> = ({ step, stepContract, contract, disabled, readOnlyNote, onChange, onClose }) => {
+  // Capture phase on window, like ExitCriteriaEditorModal: the editor closes on
+  // a bubble-phase window Escape (discarding unsaved edits), and focus often
+  // drops to <body> after a pick unmounts the clicked button.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [onClose]);
+  return (
+  <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/50 p-4" role="dialog" aria-modal="true" aria-label={`Checks for ${step.label || step.name}`}>
     <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl bg-white dark:bg-slate-900 shadow-xl">
       <div className="flex items-center gap-2 px-5 py-3 border-b border-slate-200 dark:border-slate-700">
         <div className="flex-1">
@@ -76,7 +85,8 @@ export const StepContractDialog: React.FC<{
       </div>
     </div>
   </div>
-);
+  );
+};
 
 /** What steps hand to each other: each record, where it is made and where it is read. */
 export const RecordsLane: React.FC<{ steps: FlowStep[]; contract: FlowContract }> = ({ steps, contract }) => {

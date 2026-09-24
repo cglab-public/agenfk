@@ -46,7 +46,8 @@ export interface ResolvedCheck {
 export interface FlowContract {
   valid: boolean;
   errors: string[];
-  steps: Array<{ name: string; role: string | null; checks: ResolvedCheck[]; produces: string[]; consumes?: string[] }>;
+  /** `onLeave`: what verify runs to leave the step (absent from an older server: use `checks`). */
+  steps: Array<{ name: string; role: string | null; checks: ResolvedCheck[]; onLeave?: ResolvedCheck[]; terminal?: boolean; produces: string[]; consumes?: string[] }>;
   roles: Array<{ id: string; builtins: StepCheckRef[] }>;
   catalogue: Array<{
     id: string;

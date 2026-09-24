@@ -66,6 +66,15 @@ describe('board column contracts', () => {
     expect(within(plan).getByLabelText(/a person must approve/i)).toBeTruthy();
   });
 
+  it('a flow from before roles shows no badges: its universal checks only warn', async () => {
+    vi.mocked(api.getProjectFlow).mockResolvedValue({ ...FLOW, steps: FLOW.steps.map(({ role: _r, checks: _c, ...s }: any) => s) } as never);
+    mount();
+    const specs = await screen.findByTestId('column-header-SPECS');
+    await waitFor(() => expect(api.getFlowContract).toHaveBeenCalled());
+    await new Promise(r => setTimeout(r, 50));
+    expect(within(specs).queryByText(/checks?/)).toBeNull();
+  });
+
   it('an older server without the contract route still shows the role and the approval', async () => {
     vi.mocked(api.getFlowContract).mockRejectedValue(new Error('404'));
     mount();

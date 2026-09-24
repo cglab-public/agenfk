@@ -429,10 +429,17 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   // The server says what the draft's steps mean, with the functions that
   // validate a save and run verify. A host without the route sees none of it.
   const hasContract = typeof flowClient.getFlowContract === 'function';
-  const contractInput = steps.map((s, i) => ({ id: s.id, name: s.name, label: s.label, order: i, isAnchor: s.isAnchor, role: s.role, checks: s.checks }));
+  // Only what the contract reads, debounced: a label or a keystroke in a name
+  // is not a new question for the server.
+  const contractKey = JSON.stringify(steps.map((s, i) => ({ id: s.id, name: s.name, order: i, isAnchor: s.isAnchor, role: s.role, checks: s.checks })));
+  const [askedKey, setAskedKey] = useState(contractKey);
+  useEffect(() => {
+    const t = setTimeout(() => setAskedKey(contractKey), 250);
+    return () => clearTimeout(t);
+  }, [contractKey]);
   const { data: contract } = useQuery({
-    queryKey: ['flow-contract', JSON.stringify(contractInput)],
-    queryFn: () => flowClient.getFlowContract!(contractInput as FlowStep[]),
+    queryKey: ['flow-contract', askedKey],
+    queryFn: () => flowClient.getFlowContract!(JSON.parse(askedKey).map((s: FlowStep) => ({ ...s, label: s.name })) as FlowStep[]),
     enabled: hasContract,
     placeholderData: keepPreviousData,
   });

@@ -79,6 +79,13 @@ describe('StepContractPanel', () => {
     expect(onChange).toHaveBeenLastCalledWith({ checks: [{ id: 'has-children', severity: 'warn' }] });
   });
 
+  it('shows a warn-by-default check as Warn, and stores Block explicitly when chosen', () => {
+    const onChange = show(flow({ checks: [{ id: 'red-is-assertion' }] }));
+    expect(screen.getByRole('button', { name: /only warn: fails on an assertion/i }).getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: /block the step: fails on an assertion/i }));
+    expect(onChange).toHaveBeenLastCalledWith({ checks: [{ id: 'red-is-assertion', severity: 'block' }] });
+  });
+
   it('removes an added check', () => {
     const onChange = show(flow({ checks: [{ id: 'jira-key-valid' }] }));
     fireEvent.click(screen.getByRole('button', { name: /remove linked to a jira/i }));
@@ -115,6 +122,16 @@ describe('StepContractPanel', () => {
   it('says the go-ahead must be signed when the step asks for a passkey', () => {
     show(flow({ checks: [{ id: 'human-approval', params: { signature: 'passkey' } }] }));
     expect(screen.getByTestId('contract-preview').textContent).toMatch(/signed with a passkey/i);
+  });
+
+  it("the step before the end lists what the move into the end runs too", () => {
+    show(flow(), 2);
+    expect(screen.getByTestId('contract-preview').textContent).toMatch(/project's own verify command/);
+  });
+
+  it('the terminal step says it is checked on the move into it, not on leaving', () => {
+    show(flow(), 3);
+    expect(screen.getByTestId('contract-preview').textContent).toMatch(/checked when a card moves into this step/i);
   });
 
   it('read-only: shows the contract, offers no controls', () => {

@@ -30,6 +30,7 @@ const orphan = () => flowOf([
 ]);
 
 function mount(flow: Flow, contract = true, extra: Record<string, unknown> = {}) {
+  const onClose = vi.fn();
   const updateFlow = vi.fn(async (_id: string, payload: Partial<Flow>) => ({ ...flow, ...payload } as Flow));
   const flowClient: FlowClient = {
     listFlows: async () => [flow],
@@ -38,16 +39,16 @@ function mount(flow: Flow, contract = true, extra: Record<string, unknown> = {})
     updateFlow,
     deleteFlow: async () => {},
     setProjectFlow: async () => {},
-    ...(contract ? { getFlowContract: async (steps: FlowStep[]) => describeFlowContract(steps) as any } : {}),
+    ...(contract ? { getFlowContract: vi.fn(async (steps: FlowStep[]) => describeFlowContract(steps) as any) } : {}),
   };
   const registryClient: RegistryClient = { browseRegistry: async () => [], installFromRegistry: async () => flow };
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   render(
     <QueryClientProvider client={qc}>
-      <FlowEditorModal isOpen onClose={() => {}} projectId="p1" initialFlowId="f1" flowClient={flowClient} registryClient={registryClient} {...extra} />
+      <FlowEditorModal isOpen onClose={onClose} projectId="p1" initialFlowId="f1" flowClient={flowClient} registryClient={registryClient} {...extra} />
     </QueryClientProvider>,
   );
-  return { updateFlow };
+  return { updateFlow, onClose, flowClient };
 }
 /** The flow has loaded (until then the panel shows a blank new flow) and its contract has arrived. */
 const ready = async () => {
@@ -149,12 +150,36 @@ describe('flow editor: contracts', () => {
   it('a change to a role alone makes the flow dirty', async () => {
     mount(good());
     await ready();
-    fireEvent.click(await screen.findByTestId('step-contract-btn-1'));
+    fireEvent.click(screen.getByTestId('save-flow-btn'));
+    await waitFor(() => expect(screen.getByTestId('save-flow-btn').textContent).toMatch(/saved/i));
+    fireEvent.click(screen.getByTestId('step-contract-btn-1'));
     const panel = await screen.findByTestId('step-contract');
     fireEvent.click(within(panel).getByRole('button', { name: /change role/i }));
     fireEvent.click(within(panel).getByRole('button', { name: /no role/i }));
     fireEvent.click(screen.getByRole('button', { name: /close step checks/i }));
     expect(screen.getByTestId('save-flow-btn').textContent).not.toMatch(/saved/i);
+  });
+
+  it('Escape after a pick closes only the step dialog, never the editor', async () => {
+    const { onClose } = mount(good());
+    await ready();
+    fireEvent.click(screen.getByTestId('step-contract-btn-2'));
+    const panel = await screen.findByTestId('step-contract');
+    fireEvent.click(within(panel).getByRole('button', { name: /change role/i }));
+    fireEvent.click(within(panel).getByRole('button', { name: /^Review/ }));
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: /checks for build/i })).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('does not ask the server again for a label edit, which the contract does not read', async () => {
+    const { flowClient } = mount(good());
+    await ready();
+    await new Promise(r => setTimeout(r, 400)); // the loaded flow's own (debounced) request settles first
+    const before = (flowClient.getFlowContract as any).mock.calls.length;
+    fireEvent.change(screen.getAllByPlaceholderText('e.g. In Progress')[1], { target: { value: 'Build it' } });
+    await new Promise(r => setTimeout(r, 400));
+    expect((flowClient.getFlowContract as any).mock.calls.length).toBe(before);
   });
 
   it('starts from a template in one click', async () => {

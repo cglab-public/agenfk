@@ -646,9 +646,12 @@ export const KanbanBoard: React.FC = () => {
     enabled: !!activeFlow,
     retry: false,
   });
+  // What verify runs, and blocks on, to leave the column: warn-only checks
+  // (all a flow from before roles has) are not counted, so they add no badge.
+  type ContractStep = { name: string; checks: Array<{ applicable: boolean; severity: string }>; onLeave?: Array<{ applicable: boolean; severity: string }> };
   const checkCountOf = (name: string): number | undefined => {
-    const st = (flowContract as { steps?: Array<{ name: string; checks: Array<{ applicable: boolean }> }> } | undefined)?.steps?.find(x => x.name === name);
-    return st ? st.checks.filter(c => c.applicable).length : undefined;
+    const st = (flowContract as { steps?: ContractStep[] } | undefined)?.steps?.find(x => x.name === name);
+    return st ? (st.onLeave ?? st.checks).filter(c => c.applicable && c.severity === 'block').length : undefined;
   };
 
   const flowStepByStatus = React.useMemo((): Record<string, FlowStep> => {
