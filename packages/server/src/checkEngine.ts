@@ -16,6 +16,8 @@
  * - n/a: a role built-in whose record no earlier step produces.
  * - deferred: enforced elsewhere on this transition (the project verify command).
  */
+import * as path from 'path';
+import { insideRoot } from './stepRecords';
 import { CHECK_CATALOGUE, type CheckSeverity, type RecordName, type ResolvedCheck } from '@agenfk/core';
 
 export type CheckOutcome = 'pass' | 'fail' | 'unavailable' | 'n/a' | 'deferred';
@@ -71,7 +73,9 @@ export interface EngineContext {
     childCount: number;
     /** Children that carry a review record of their own. */
     childrenReviewed: number;
-    records: Array<{ reviewer: { client: string; sessionId: string; agentId: string | null }; range: { from: string; to: string } }>;
+    records: Array<{ reviewer: { client: string; sessionId: string; agentId: string | null; edits?: string[]; advancedCards?: boolean }; range: { from: string; to: string }; tree?: string | null }>;
+    /** The tree's content state now (null when unreadable or not the card being verified). */
+    currentTree?: string | null;
     /** Every author identity recorded on the card and its descendants. */
     authors: Array<{ client: string; sessionId: string; agentId: string | null }>;
     /** HEAD when the card's work began (its first step's exit record). */
@@ -176,6 +180,43 @@ function cardsOwn(ctx: EngineContext, files: string[]): string[] {
 }
 
 const isVerdict = (x: unknown): x is Verdict => !!x && typeof x === 'object' && 'outcome' in (x as any);
+
+type ReviewEvidence = NonNullable<EngineContext['review']>;
+
+/**
+ * Is the card's latest review an independent review of its work? Also used,
+ * without the tree comparison, to decide whether a CHILD's review counts.
+ */
+export function judgeReview(r: ReviewEvidence, root: string | null, git: (args: string[]) => string, opts: { bindTree: boolean }): Verdict {
+  const rec = r.records[r.records.length - 1];
+  if (!rec) {
+    if (r.childCount > 0 && r.childrenReviewed === r.childCount) return { outcome: 'pass', detail: `each of its ${r.childCount} child cards carries an independent review` };
+    // Nobody who advanced this card used a harness whose transcripts the
+    // server reads (Cursor, Gemini, OpenCode, an older agenfk): there is no
+    // way to record a checkable review, so it warns rather than strands it.
+    if (!r.authors.length) return { outcome: 'unavailable', soft: true, detail: 'no independent review is recorded, and no author identity either: this harness cannot record a checkable review. Review the change independently all the same.' };
+    return { outcome: 'fail', detail: 'no independent review is recorded. Have a separate agent review the diff, then: agenfk review record <id> --transcript <reviewer session log> --range <from>..<to> --findings <json>' };
+  }
+  const who = `${rec.reviewer.client} session ${rec.reviewer.sessionId}${rec.reviewer.agentId ? `, agent ${rec.reviewer.agentId}` : ''}`;
+  const same = (a: { sessionId: string; agentId: string | null }, b: { sessionId: string; agentId: string | null }) => a.sessionId === b.sessionId && (a.agentId ?? null) === (b.agentId ?? null);
+  if (r.authors.some(a => same(a, rec.reviewer))) return { outcome: 'fail', detail: `not independent: the reviewer (${who}) is an author of this card` };
+  if (!root) return { outcome: 'unavailable', detail: 'the card has no tree to check the review against' };
+  if (rec.reviewer.advancedCards) return { outcome: 'fail', detail: `not independent: the reviewer (${who}) ran agenfk verify, so it is an author, not a reviewer` };
+  // Resolved through symlinks, even for a file that no longer exists.
+  const inTree = (rec.reviewer.edits ?? []).filter(f => insideRoot(root, path.resolve(root, f)) !== null);
+  if (inTree.length) return { outcome: 'fail', detail: `not independent: the reviewer (${who}) edited the card's tree (${list(inTree)}), so it is an author, not a reviewer` };
+  const isAncestor = (a: string, b: string) => { try { git(['-C', root, 'merge-base', '--is-ancestor', a, b]); return true; } catch { return false; } };
+  if (r.startHead && !isAncestor(rec.range.from, r.startHead)) {
+    return { outcome: 'fail', detail: `the review starts at ${rec.range.from.slice(0, 12)}, after the card's work began at ${r.startHead.slice(0, 12)}: it does not cover all of it` };
+  }
+  const missed = r.descendantCommits.filter(c => !isAncestor(c, rec.range.to));
+  if (missed.length) return { outcome: 'fail', detail: `the review ends at ${rec.range.to.slice(0, 12)} and misses work committed later: ${list(missed.map(c => c.slice(0, 12)))}. Review again over the whole range.` };
+  if (opts.bindTree && rec.tree && r.currentTree && rec.tree !== r.currentTree) {
+    return { outcome: 'fail', detail: 'the tree changed after the review was recorded: fix the findings first, then record the review of the final tree' };
+  }
+  if (!r.authors.length) return { outcome: 'unavailable', soft: true, detail: 'no author identity is recorded for this card (advanced by an older agenfk or an unknown harness), so independence cannot be shown' };
+  return { outcome: 'pass', detail: `reviewed by ${who} over ${rec.range.from.slice(0, 12)}..${rec.range.to.slice(0, 12)}` };
+}
 
 export const EVALUATORS: Record<string, Evaluator> = {
   'tree-clean': ctx => {
@@ -345,23 +386,7 @@ export const EVALUATORS: Record<string, Evaluator> = {
     if (!r) return { outcome: 'unavailable', detail: 'no review evidence was gathered' };
     const isParent = r.childCount > 0 || !r.hasParent;
     if (p.appliesTo !== 'every-card' && !isParent) return { outcome: 'pass', detail: 'reviewed with its parent: reviews happen at the parent card' };
-    const rec = r.records[r.records.length - 1];
-    if (!rec) {
-      if (r.childCount > 0 && r.childrenReviewed === r.childCount) return { outcome: 'pass', detail: `each of its ${r.childCount} child cards carries an independent review` };
-      return { outcome: 'fail', detail: 'no independent review is recorded. Have a separate agent review the diff, then: agenfk review record <id> --transcript <reviewer session log> --range <from>..<to> --findings <json>' };
-    }
-    const same = (a: { sessionId: string; agentId: string | null }, b: { sessionId: string; agentId: string | null }) => a.sessionId === b.sessionId && (a.agentId ?? null) === (b.agentId ?? null);
-    const clash = r.authors.find(a => same(a, rec.reviewer));
-    if (clash) return { outcome: 'fail', detail: `not independent: the reviewer (${rec.reviewer.client} session ${rec.reviewer.sessionId}${rec.reviewer.agentId ? `, agent ${rec.reviewer.agentId}` : ''}) is an author of this card` };
-    if (!ctx.root) return { outcome: 'unavailable', detail: 'the card has no tree to check the reviewed range in' };
-    const isAncestor = (a: string, b: string) => { try { ctx.git(['-C', ctx.root!, 'merge-base', '--is-ancestor', a, b]); return true; } catch { return false; } };
-    if (r.startHead && !isAncestor(rec.range.from, r.startHead)) {
-      return { outcome: 'fail', detail: `the review starts at ${rec.range.from.slice(0, 12)}, after the card's work began at ${r.startHead.slice(0, 12)}: it does not cover all of it` };
-    }
-    const missed = r.descendantCommits.filter(c => !isAncestor(c, rec.range.to));
-    if (missed.length) return { outcome: 'fail', detail: `the review ends at ${rec.range.to.slice(0, 12)} and misses child work committed later: ${list(missed.map(c => c.slice(0, 12)))}. Review again over the whole range.` };
-    if (!r.authors.length) return { outcome: 'unavailable', soft: true, detail: 'no author identity is recorded for this card (advanced by an older agenfk or an unknown harness), so independence cannot be shown' };
-    return { outcome: 'pass', detail: `reviewed by ${rec.reviewer.client} session ${rec.reviewer.sessionId}${rec.reviewer.agentId ? `, agent ${rec.reviewer.agentId}` : ''} over ${rec.range.from.slice(0, 12)}..${rec.range.to.slice(0, 12)}` };
+    return judgeReview(r, ctx.root, ctx.git, { bindTree: true });
   },
 
   'suite-green': ctx => {

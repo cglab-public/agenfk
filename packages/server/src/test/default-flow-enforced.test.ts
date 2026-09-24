@@ -47,7 +47,9 @@ async function cardOnDefaultFlow(status: string, extra: Record<string, unknown> 
   await storage.updateItem(c.body.id, { status } as any);
   return c.body.id as string;
 }
-const validate = (id: string) => agent().post(`/items/${id}/validate`).set({ 'x-agenfk-internal': VERIFY_TOKEN! }).send({ evidence: 'ok' });
+// Sent as the CLI sends it: the author running this verify (CGLAB-381).
+const validate = (id: string) => agent().post(`/items/${id}/validate`).set({ 'x-agenfk-internal': VERIFY_TOKEN! })
+  .send({ evidence: 'ok', actor: { client: 'claude-code', sessionId: 'the-author' } });
 const check = (body: any, id: string) => (body.checks ?? []).find((c: any) => c.id === id);
 
 describe('CGLAB-381: the default flow is enforced', () => {

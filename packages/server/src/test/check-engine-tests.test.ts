@@ -104,6 +104,7 @@ async function reviewed(id: string, dir: string) {
   const head = execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
   const tdir = path.join(home, '.claude', 'projects', '-repo', 'sess', 'subagents');
   fs.mkdirSync(tdir, { recursive: true });
+  fs.writeFileSync(path.join(home, '.claude', 'projects', '-repo', 'sess.jsonl'), JSON.stringify({ sessionId: 'sess', timestamp: '2099-01-01T00:00:00.000Z' }) + '\n');
   const t = path.join(tdir, `agent-${id.slice(0, 8)}.jsonl`);
   fs.writeFileSync(t, JSON.stringify({ isSidechain: true, agentId: id.slice(0, 8), sessionId: 'sess', timestamp: '2099-01-01T00:00:00.000Z' }) + '\n');
   const r = await agent().post(`/items/${id}/review-records`).set(internal()).send({ transcript: t, range: `${first}..${head}`, findings: [] });

@@ -25,8 +25,14 @@ export interface Identity {
 
 export interface TranscriptIdentity extends Identity {
   transcript: string;
-  /** The latest timestamp in the transcript: when it was last written. */
+  /** The latest timestamp in the transcript's records. */
   lastAt: string | null;
+  /** When the file itself was last written. */
+  mtime: string;
+  /** Files the reviewer's tool calls edited: a reviewer that edits the card's tree is an author. */
+  edits: string[];
+  /** Whether the reviewer ran `agenfk verify` (or a status move): advancing cards is an author's act. */
+  advancedCards: boolean;
 }
 
 export interface Finding {
@@ -44,16 +50,56 @@ const ROOTS: Array<{ client: string; rel: string }> = [
 const realOr = (p: string) => { try { return fs.realpathSync(p); } catch { return null; } };
 
 /** Which harness folder a transcript lives in, judged on its REAL path; null when none. */
-export function transcriptRoot(file: string): { client: string } | null {
+export function transcriptRoot(file: string): { client: string; root: string; rel: string } | null {
   const real = realOr(path.resolve(file));
   if (!real) return null;
   for (const r of ROOTS) {
     const root = realOr(path.join(os.homedir(), r.rel));
     if (!root) continue;
     const rel = path.relative(root, real);
-    if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return { client: r.client };
+    if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return { client: r.client, root, rel };
   }
   return null;
+}
+
+/**
+ * Does the file sit where its harness writes a transcript for the identity it
+ * names? Claude Code: `<project>/<session>.jsonl`, or a sub-agent's
+ * `<project>/<session>/subagents/agent-<id>.jsonl` beside an existing parent
+ * `<project>/<session>.jsonl`. pi and Codex name the session in the file name.
+ * A cheap bar, not a proof: any agent running as the user can write a file
+ * that passes it (noted on CGLAB-383).
+ */
+function layoutError(where: { client: string; root: string; rel: string }, sessionId: string, agentId: string | null): string | null {
+  const parts = where.rel.split(path.sep);
+  const base = parts[parts.length - 1];
+  if (where.client === 'claude-code') {
+    if (agentId) {
+      const ok = parts.length === 4 && parts[1] === sessionId && parts[2] === 'subagents' && base === `agent-${agentId}.jsonl`;
+      if (!ok) return `the sub-agent transcript's layout does not match its session ${sessionId} and agent ${agentId} (<project>/<session>/subagents/agent-<id>.jsonl)`;
+      if (!fs.existsSync(path.join(where.root, parts[0], `${sessionId}.jsonl`))) return `no parent session transcript ${sessionId}.jsonl sits beside the sub-agent's folder`;
+      return null;
+    }
+    return parts.length === 2 && base === `${sessionId}.jsonl` ? null : `the transcript's name does not match its session ${sessionId} (<project>/<session>.jsonl)`;
+  }
+  return base.includes(sessionId) ? null : `the transcript's name does not match its session ${sessionId}`;
+}
+
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'edit', 'write', 'apply_patch']);
+const SHELL_TOOLS = new Set(['Bash', 'bash', 'shell', 'exec_command', 'local_shell']);
+const ADVANCES = /\bagenfk\s+(verify\b|update\b[^\n]*--status\b)/;
+
+/** Walk a record for tool calls: `{ name, input }` (Claude, pi) or `{ name, arguments }` (Codex). */
+function toolCalls(rec: unknown, out: Array<{ name: string; input: any }>, depth = 0): void {
+  if (!rec || typeof rec !== 'object' || depth > 8) return;
+  if (Array.isArray(rec)) { for (const x of rec) toolCalls(x, out, depth + 1); return; }
+  const o = rec as any;
+  if (typeof o.name === 'string' && (o.input !== undefined || o.arguments !== undefined)) {
+    let input = o.input ?? o.arguments;
+    if (typeof input === 'string') { try { input = JSON.parse(input); } catch { input = { command: input }; } }
+    out.push({ name: o.name, input: input ?? {} });
+  }
+  for (const v of Object.values(o)) if (v && typeof v === 'object') toolCalls(v, out, depth + 1);
 }
 
 /** Largest transcript read, so a huge file cannot pin the server. */
@@ -74,11 +120,13 @@ export function readTranscriptIdentity(file: string): TranscriptIdentity {
   let sessionId: string | null = null;
   let agentId: string | null = null;
   let lastAt: string | null = null;
+  const calls: Array<{ name: string; input: any }> = [];
   for (const raw of fs.readFileSync(real, 'utf8').split('\n')) {
     if (!raw.trim()) continue;
     let rec: any;
     try { rec = JSON.parse(raw); } catch { continue; }
     if (!rec || typeof rec !== 'object') continue;
+    toolCalls(rec, calls);
     if (!sessionId) {
       if (typeof rec.sessionId === 'string') sessionId = rec.sessionId;
       else if (rec.type === 'session' && typeof rec.id === 'string') sessionId = rec.id;
@@ -89,7 +137,14 @@ export function readTranscriptIdentity(file: string): TranscriptIdentity {
     if (ts && !Number.isNaN(Date.parse(ts)) && (!lastAt || Date.parse(ts) > Date.parse(lastAt))) lastAt = ts;
   }
   if (!sessionId) throw new Error(`${file} names no session: it is not a transcript`);
-  return { client: where.client, sessionId, agentId, transcript: real, lastAt };
+  const layout = layoutError(where, sessionId, agentId);
+  if (layout) throw new Error(`${file}: ${layout}`);
+  const edits = [...new Set(calls.filter(c => EDIT_TOOLS.has(c.name))
+    .map(c => c.input?.file_path ?? c.input?.path ?? c.input?.notebook_path)
+    .filter((f): f is string => typeof f === 'string'))];
+  const commandOf = (c: { input: any }) => (Array.isArray(c.input?.command) ? c.input.command.join(' ') : c.input?.command);
+  const advancedCards = calls.some(c => SHELL_TOOLS.has(c.name) && typeof commandOf(c) === 'string' && ADVANCES.test(commandOf(c)));
+  return { client: where.client, sessionId, agentId, transcript: real, lastAt, mtime: st.mtime.toISOString(), edits, advancedCards };
 }
 
 /** Findings as recorded: each fixed, or rejected with a reason. Throws on anything else. */

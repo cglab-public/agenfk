@@ -75,12 +75,16 @@ function makeRepo(): { dir: string; base: string; tip: string } {
 
 const line = (o: Record<string, unknown>) => JSON.stringify(o) + '\n';
 /** A Claude Code sub-agent transcript under the sandboxed ~/.claude/projects. */
-function claudeSubagentTranscript(session: string, agentId: string, lastAt: string): string {
-  const dir = path.join(home, '.claude', 'projects', '-repo', session, 'subagents');
+function claudeSubagentTranscript(session: string, agentId: string, lastAt: string, opts: { toolUses?: Array<Record<string, unknown>>; parent?: boolean } = {}): string {
+  const proj = path.join(home, '.claude', 'projects', '-repo');
+  const dir = path.join(proj, session, 'subagents');
   fs.mkdirSync(dir, { recursive: true });
+  // The parent session's own transcript: a sub-agent's log sits beside it.
+  if (opts.parent !== false) fs.writeFileSync(path.join(proj, `${session}.jsonl`), line({ type: 'user', sessionId: session, timestamp: '2026-01-01T00:00:00.000Z' }));
   const f = path.join(dir, `agent-${agentId}.jsonl`);
   fs.writeFileSync(f,
     line({ type: 'user', isSidechain: true, agentId, sessionId: session, timestamp: '2026-01-01T00:00:00.000Z', message: { role: 'user', content: 'review' } })
+    + (opts.toolUses ?? []).map(u => line({ type: 'assistant', isSidechain: true, agentId, sessionId: session, timestamp: '2026-01-01T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'tool_use', ...u }] } })).join('')
     + line({ type: 'assistant', isSidechain: true, agentId, sessionId: session, timestamp: lastAt, message: { role: 'assistant', content: 'findings' } }));
   return f;
 }
@@ -148,6 +152,50 @@ describe('CGLAB-381: review records', () => {
     fs.mkdirSync(path.dirname(link), { recursive: true });
     fs.symlinkSync(target, link);
     expect((await record(id, { transcript: link, range: `${base}..${tip}`, findings: [] })).status).toBe(400);
+  });
+
+  it('refuses a Claude transcript whose session does not match the folder it sits in', async () => {
+    const { dir, base, tip } = makeRepo();
+    const id = await cardIn(dir);
+    const d = path.join(home, '.claude', 'projects', '-repo', 'real-sess', 'subagents');
+    fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(home, '.claude', 'projects', '-repo', 'real-sess.jsonl'), line({ sessionId: 'real-sess', timestamp: FUTURE }));
+    const t = path.join(d, 'agent-x1.jsonl');
+    fs.writeFileSync(t, line({ isSidechain: true, agentId: 'x1', sessionId: 'someone-else', timestamp: FUTURE }));
+    const res = await record(id, { transcript: t, range: `${base}..${tip}`, findings: [] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/layout|does not match/);
+  });
+
+  it('refuses a sub-agent transcript with no parent session beside it', async () => {
+    const { dir, base, tip } = makeRepo();
+    const id = await cardIn(dir);
+    const t = claudeSubagentTranscript('lonely', 'x2', FUTURE, { parent: false });
+    expect((await record(id, { transcript: t, range: `${base}..${tip}`, findings: [] })).status).toBe(400);
+  });
+
+  it('refuses a transcript whose FILE was last written before the tip commit, whatever its content claims', async () => {
+    const { dir, base, tip } = makeRepo();
+    const id = await cardIn(dir);
+    const t = claudeSubagentTranscript('sess-old-file', 'x3', FUTURE);
+    const past = new Date('2000-01-01T00:00:00Z');
+    fs.utimesSync(t, past, past);
+    const res = await record(id, { transcript: t, range: `${base}..${tip}`, findings: [] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/before/);
+  });
+
+  it('records what the reviewer edited and whether it advanced cards, from its tool calls', async () => {
+    const { dir, base, tip } = makeRepo();
+    const id = await cardIn(dir);
+    const t = claudeSubagentTranscript('sess-acts', 'x4', FUTURE, { toolUses: [
+      { name: 'Edit', input: { file_path: path.join(dir, 'a.txt') } },
+      { name: 'Bash', input: { command: 'agenfk verify abc --evidence x' } },
+    ] });
+    const res = await record(id, { transcript: t, range: `${base}..${tip}`, findings: [] });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(res.body.reviewer.edits).toEqual([path.join(dir, 'a.txt')]);
+    expect(res.body.reviewer.advancedCards).toBe(true);
   });
 
   it('refuses a transcript last written before the range\'s tip commit: it cannot have reviewed it', async () => {

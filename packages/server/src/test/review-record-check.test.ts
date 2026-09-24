@@ -70,12 +70,16 @@ function makeRepo(): { dir: string; base: string; tip: string } {
 
 const line = (o: Record<string, unknown>) => JSON.stringify(o) + '\n';
 /** A Claude Code sub-agent transcript under the sandboxed ~/.claude/projects. */
-function claudeSubagentTranscript(session: string, agentId: string, lastAt: string): string {
-  const dir = path.join(home, '.claude', 'projects', '-repo', session, 'subagents');
+function claudeSubagentTranscript(session: string, agentId: string, lastAt: string, opts: { toolUses?: Array<Record<string, unknown>>; parent?: boolean } = {}): string {
+  const proj = path.join(home, '.claude', 'projects', '-repo');
+  const dir = path.join(proj, session, 'subagents');
   fs.mkdirSync(dir, { recursive: true });
+  // The parent session's own transcript: a sub-agent's log sits beside it.
+  if (opts.parent !== false) fs.writeFileSync(path.join(proj, `${session}.jsonl`), line({ type: 'user', sessionId: session, timestamp: '2026-01-01T00:00:00.000Z' }));
   const f = path.join(dir, `agent-${agentId}.jsonl`);
   fs.writeFileSync(f,
     line({ type: 'user', isSidechain: true, agentId, sessionId: session, timestamp: '2026-01-01T00:00:00.000Z', message: { role: 'user', content: 'review' } })
+    + (opts.toolUses ?? []).map(u => line({ type: 'assistant', isSidechain: true, agentId, sessionId: session, timestamp: '2026-01-01T00:00:01.000Z', message: { role: 'assistant', content: [{ type: 'tool_use', ...u }] } })).join('')
     + line({ type: 'assistant', isSidechain: true, agentId, sessionId: session, timestamp: lastAt, message: { role: 'assistant', content: 'findings' } }));
   return f;
 }
@@ -211,5 +215,76 @@ describe('CGLAB-381: the review-record check', () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     const r = (await agent().get(`/items/${id}`)).body.lastChecks.results.find((c: any) => c.id === 'review-record');
     expect(r).toMatchObject({ outcome: 'unavailable', blocking: false });
+  });
+
+  describe('story review findings (CGLAB-381)', () => {
+    it('whoever is running this verify counts as an author: they cannot review themselves', async () => {
+      const { base, tip, pid } = await setup();
+      const id = await cardAt(pid, base, 'LOOK', { stepRecords: [{ step: 'START', kind: 'exit', at: 't', head: base, clean: true }] });
+      await record(id, piTranscript('pi-verifier', FUTURE), `${base}..${tip}`);
+      const res = await agent().post(`/items/${id}/validate`).set(internal()).send({ evidence: 'ok', actor: { client: 'pi', sessionId: 'pi-verifier' } });
+      expect(res.status).toBe(422);
+      expect(reviewCheck(res.body).detail).toMatch(/author/);
+    });
+
+    it('an epic does not pass on children whose records the author wrote for itself', async () => {
+      const { base, tip, pid } = await setup();
+      const pi = { client: 'pi', sessionId: 'pi-author', agentId: null };
+      const epic = await cardAt(pid, base, 'LOOK', { stepRecords: [{ step: 'START', kind: 'exit', at: 't', head: base, clean: true, actor: pi }] }, 'EPIC');
+      for (const n of [1, 2]) {
+        const story = await cardAt(pid, base, 'DONE', { parentId: epic, stepRecords: [{ step: 'START', kind: 'exit', at: 't', head: base, clean: true, actor: pi }] }, 'STORY');
+        expect((await record(story, piTranscript('pi-author', FUTURE), `${base}..${tip}`)).status).toBe(201);
+        void n;
+      }
+      const res = await validate(epic);
+      expect(res.status).toBe(422);
+      expect(reviewCheck(res.body).detail).toMatch(/no independent review/);
+    });
+
+    it('a review is of the tree as it was recorded: a change afterwards needs the review recorded again', async () => {
+      const { dir, base, tip, pid } = await setup();
+      const id = await cardAt(pid, base);
+      expect((await record(id, claudeSubagentTranscript('author-sess', 'rev-tree', FUTURE), `${base}..${tip}`)).status).toBe(201);
+      fs.writeFileSync(path.join(dir, 'late.txt'), 'written after the review');
+      const res = await validate(id);
+      expect(res.status).toBe(422);
+      expect(reviewCheck(res.body).detail).toMatch(/changed/);
+    });
+
+    it('a reviewer that edited the card\'s tree is an author, not a reviewer', async () => {
+      const { dir, base, tip, pid } = await setup();
+      const id = await cardAt(pid, base);
+      const t = claudeSubagentTranscript('author-sess', 'coder', FUTURE, { toolUses: [{ name: 'Write', input: { file_path: path.join(dir, 'impl.js') } }] });
+      expect((await record(id, t, `${base}..${tip}`)).status).toBe(201);
+      const res = await validate(id);
+      expect(res.status).toBe(422);
+      expect(reviewCheck(res.body).detail).toMatch(/edited|author/);
+    });
+
+    it('a reviewer that ran agenfk verify is an author, not a reviewer', async () => {
+      const { base, tip, pid } = await setup();
+      const id = await cardAt(pid, base);
+      const t = claudeSubagentTranscript('author-sess', 'verifier', FUTURE, { toolUses: [{ name: 'Bash', input: { command: `agenfk verify ${id} --evidence done` } }] });
+      await record(id, t, `${base}..${tip}`);
+      expect((await validate(id)).status).toBe(422);
+    });
+
+    it('a reviewer may write its probes outside the card\'s tree', async () => {
+      const { base, tip, pid } = await setup();
+      const id = await cardAt(pid, base);
+      const t = claudeSubagentTranscript('author-sess', 'prober', FUTURE, { toolUses: [{ name: 'Write', input: { file_path: path.join(os.tmpdir(), 'scratch', 'probe.test.ts') } }] });
+      await record(id, t, `${base}..${tip}`);
+      const res = await validate(id);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+    });
+
+    it('with no review and no author from a harness the server can read (Cursor, Gemini, OpenCode), it warns instead of stranding the card', async () => {
+      const { base, pid } = await setup();
+      const id = await cardAt(pid, base, 'LOOK', { stepRecords: [{ step: 'START', kind: 'exit', at: 't', head: base, clean: true }] });
+      const res = await validate(id);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const r = (await agent().get(`/items/${id}`)).body.lastChecks.results.find((c: any) => c.id === 'review-record');
+      expect(r).toMatchObject({ outcome: 'unavailable', blocking: false });
+    });
   });
 });

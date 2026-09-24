@@ -6,7 +6,7 @@ import { commitStagedForCard, resolveCommitRoot } from './closeCommit';
 import { mayPropagate, readCleanTreeSha, readHead, readTreeStatus } from './propagation';
 import { insideRoot, parseJunitXml, parseVitestJson, surfaceOf } from './stepRecords';
 import { parseActor, parseFindings, readTranscriptIdentity } from './reviewRecords';
-import { evaluateChecks, formatCheckResults, needsCapture, needsEntryRecord, type CheckResult } from './checkEngine';
+import { evaluateChecks, judgeReview, formatCheckResults, needsCapture, needsEntryRecord, type CheckResult } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
@@ -2528,13 +2528,19 @@ app.post("/items/:id/review-records", asyncHandler(async (req: any, res: any) =>
   try { git(['merge-base', '--is-ancestor', from, to]); } catch {
     return res.status(400).json({ error: `range ${body.range}: ${m[1]} is not an ancestor of ${m[2]}` });
   }
-  if (!reviewer.lastAt || Date.parse(reviewer.lastAt) < Date.parse(tipAt)) {
-    return res.status(400).json({ error: `The transcript was last written ${reviewer.lastAt ?? 'at no recorded time'}, before the range's tip commit (${tipAt}): it cannot have reviewed it.` });
+  // Both the records' own clock and the file's: either written before the
+  // tip means the transcript cannot have reviewed it.
+  const last = [reviewer.lastAt, reviewer.mtime].map(t => (t ? Date.parse(t) : NaN));
+  if (last.some(t => Number.isNaN(t) || t < Date.parse(tipAt))) {
+    return res.status(400).json({ error: `The transcript was last written ${reviewer.lastAt ?? 'at no recorded time'} (file: ${reviewer.mtime}), before the range's tip commit (${tipAt}): it cannot have reviewed it.` });
   }
   const rec = {
     id: uuidv4(), at: new Date().toISOString(),
-    reviewer: { client: reviewer.client, sessionId: reviewer.sessionId, agentId: reviewer.agentId, transcript: reviewer.transcript },
+    reviewer: { client: reviewer.client, sessionId: reviewer.sessionId, agentId: reviewer.agentId, transcript: reviewer.transcript, edits: reviewer.edits, advancedCards: reviewer.advancedCards },
     range: { from, to }, findings,
+    // The tree as reviewed, uncommitted work included: a change after this
+    // needs the review recorded again (CGLAB-381 review).
+    tree: treeContentState(root, null),
   };
   const fresh: any = await storage.getItem(item.id);
   await storage.updateItem(item.id, { reviewRecords: [...(fresh?.reviewRecords ?? []), rec] } as any);
@@ -5418,7 +5424,7 @@ async function branchOfCard(item: any): Promise<string | null> {
  * tree, its review records, every author identity on it and its descendants,
  * where its work began, and its descendants' close commits.
  */
-async function reviewEvidence(item: any, root: string | null) {
+async function reviewEvidence(item: any, root: string | null, depth = 0): Promise<any> {
   const descendants: any[] = [];
   const queue = [item.id];
   while (queue.length && descendants.length < 5000) {
@@ -5445,15 +5451,32 @@ async function reviewEvidence(item: any, root: string | null) {
       } catch { /* no history to read: nothing to require */ }
     }
   }
-  return {
+  const evidence = {
     hasParent: !!item.parentId,
     childCount: children.length,
-    childrenReviewed: children.filter(c => Array.isArray(c.reviewRecords) && c.reviewRecords.length > 0).length,
+    childrenReviewed: 0,
     records: Array.isArray(item.reviewRecords) ? item.reviewRecords : [],
     authors,
     startHead: firstExit?.head ?? null,
     descendantCommits,
+    currentTree: root && depth === 0 ? treeContentState(root, null) : null,
   };
+  // A child counts only when its OWN latest review passes the same test, over
+  // its own authors and commits - having a record is not enough (CGLAB-381
+  // review). Its tree has moved on since, so the tree is not compared.
+  for (const c of children) {
+    if (!Array.isArray(c.reviewRecords) || !c.reviewRecords.length) continue;
+    const e = await reviewEvidence(c, root, depth + 1);
+    e.descendantCommits = [...new Set([...e.descendantCommits, ...ownCloseCommits(c.id, root)])];
+    if (judgeReview(e, root, args => gitRun.run(args), { bindTree: false }).outcome === 'pass') evidence.childrenReviewed++;
+  }
+  return evidence;
+}
+
+/** The close commits of one card, found by the `[<id>]` its close commit message carries. */
+function ownCloseCommits(id: string, root: string | null): string[] {
+  if (!root) return [];
+  try { return gitRun.run(['-C', root, 'log', '--format=%H', '--fixed-strings', `--grep=[${id}]`]).trim().split('\n').filter(Boolean); } catch { return []; }
 }
 
 /** JIRA keys on a card and its ancestors, nearest first. */
@@ -5487,7 +5510,7 @@ function deferredToCommand(flow: { steps: any[] }, status: string, project: any)
   return final && !project?.testReport && project?.verifyCommand ? ['suite-green'] : [];
 }
 
-async function runStepGate(item: any, flow: { steps: any[] }, root: string | null): Promise<StepGate> {
+async function runStepGate(item: any, flow: { steps: any[] }, root: string | null, actor?: { client: string; sessionId: string; agentId: string | null } | null): Promise<StepGate> {
   const sorted = sortedFlowSteps(flow as any);
   const index = sorted.findIndex(st => st.name === item.status);
   const next = sorted[index + 1];
@@ -5515,6 +5538,10 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     .flatMap(o => o.claims as string[]);
   const reportPath = typeof project?.testReport?.reportPath === 'string' ? project.testReport.reportPath : null;
   const review = resolved.some(c => c.id === 'review-record' && c.applicable) ? await reviewEvidence(item, root) : undefined;
+  // Whoever is advancing the card now is an author too, though no step record carries them yet.
+  if (review && actor && !review.authors.some((a: any) => a.sessionId === actor.sessionId && a.agentId === (actor.agentId ?? null))) {
+    review.authors.push({ client: actor.client, sessionId: actor.sessionId, agentId: actor.agentId ?? null });
+  }
   const outcome = evaluateChecks(resolved, {
     review,
     root,
@@ -5655,7 +5682,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       void (async () => {
         const fresh: any = await storage.getItem(itemId);
         if (!fresh) return recorder.status(404).json({ status: item.status, message: '❌ Item was deleted while the checks ran.' });
-        const g = await runStepGate(fresh, activeFlow, effectiveRoot ?? null);
+        const g = await runStepGate(fresh, activeFlow, effectiveRoot ?? null, opts?.actor);
         if (g.blocked) return refuseOnChecks(recorder, fresh, g);
         return handleValidateProgress(itemId, command, recorder, undefined, undefined, { gate: g, run, actor: opts?.actor });
       })()
@@ -5669,7 +5696,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         });
       return;
     }
-    gate = await runStepGate(item, activeFlow, effectiveRoot ?? null);
+    gate = await runStepGate(item, activeFlow, effectiveRoot ?? null, opts?.actor);
     if (gate.blocked) return refuseOnChecks(res, item, gate);
     // The gate may have written a capture and produced records: build the
     // exit record on top of what is stored now, not on the copy read above.
