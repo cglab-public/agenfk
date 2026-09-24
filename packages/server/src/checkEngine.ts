@@ -55,6 +55,10 @@ export interface EngineContext {
   item: { id: string; type: string; externalId?: string | null };
   /** The card's branch: its own, else its nearest ancestor's. */
   cardBranch: string | null;
+  /** JIRA keys on the card and its ancestors, nearest first. */
+  cardKeys: string[];
+  /** Extra paths that count as test files (the test report's surface). */
+  testPaths: string[];
   children: Array<{ id: string; type: string; status: string }>;
   /** This verify's capture, when a check needed one. */
   capture: CaptureRecord | null;
@@ -109,6 +113,24 @@ function authoredTests(ctx: EngineContext): ReportedTest[] | Verdict {
   return names.map(name => ({ name: String(name), file: '', status: 'passed' as const }));
 }
 
+const JIRA_KEY = /^[A-Z][A-Z0-9]+-\d+$/;
+
+/** Conventional test locations and names, plus the project's own test paths. */
+const TEST_PATH = [
+  /(^|\/)(tests?|__tests__|specs?)\//,
+  /\.(test|spec)\.[cm]?[jt]sx?$/,
+  /(^|\/)test_[^/]*\.py$/,
+  /_test\.(py|go)$/,
+  /(Test|Tests)\.(java|kt|cs)$/,
+];
+function isTestPath(file: string, extra: readonly string[]): boolean {
+  if (TEST_PATH.some(re => re.test(file))) return true;
+  return extra.some(p => {
+    const base = p.replace(/^\.\//, '').replace(/\/+$/, '');
+    return file === base || file.startsWith(`${base}/`);
+  });
+}
+
 const isVerdict = (x: unknown): x is Verdict => !!x && typeof x === 'object' && 'outcome' in (x as any);
 
 export const EVALUATORS: Record<string, Evaluator> = {
@@ -130,6 +152,42 @@ export const EVALUATORS: Record<string, Evaluator> = {
     return current === ctx.cardBranch
       ? { outcome: 'pass', detail: current }
       : { outcome: 'fail', detail: `the tree is on ${current ? `'${current}'` : 'a detached HEAD'}, but the card's branch is '${ctx.cardBranch}'. Run: git checkout ${ctx.cardBranch}` };
+  },
+
+  'jira-key-valid': ctx => {
+    const key = ctx.cardKeys[0];
+    if (!key) return { outcome: 'fail', detail: 'no JIRA key on this card or its parents. Link one: agenfk update <id> --jira-item <KEY>' };
+    if (!JIRA_KEY.test(key)) return { outcome: 'fail', detail: `'${key}' is not a JIRA key (PROJ-123)` };
+    if (ctx.cardBranch && !ctx.cardKeys.some(k => ctx.cardBranch!.includes(k))) {
+      return { outcome: 'fail', detail: `the branch '${ctx.cardBranch}' carries none of the card's keys (${ctx.cardKeys.join(', ')}). Name it feat/${key}_<description> or fix/${key}_<description>` };
+    }
+    return { outcome: 'pass', detail: ctx.cardBranch ? `${key}, carried by '${ctx.cardBranch}'` : key };
+  },
+
+  'has-children': (ctx, p) => {
+    const types = (p.types || 'EPIC').split(',');
+    if (!types.includes(ctx.item.type)) return { outcome: 'pass', detail: `applies only to ${types.join(', ')} cards` };
+    return ctx.children.length
+      ? { outcome: 'pass', detail: `${ctx.children.length} child card(s)` }
+      : { outcome: 'fail', detail: `this ${ctx.item.type} has no child cards yet. Break it down first.` };
+  },
+
+  'only-test-files-changed': ctx => {
+    if (!ctx.root) return { outcome: 'unavailable', detail: 'the card has no tree (no project root, no worktree)' };
+    if (!ctx.entryHead) return { outcome: 'unavailable', soft: true, detail: 'no entry commit: the card entered this step before checks recorded one (it predates checks)' };
+    let changed: string[];
+    try {
+      const diff = ctx.git(['-C', ctx.root, 'diff', '--name-only', ctx.entryHead]);
+      const untracked = ctx.git(['-C', ctx.root, 'ls-files', '--others', '--exclude-standard']);
+      changed = [...new Set([...diff.split('\n'), ...untracked.split('\n')].map(l => l.trim()).filter(Boolean))];
+    } catch (e: any) {
+      return { outcome: 'unavailable', detail: `git could not list the changes since ${ctx.entryHead.slice(0, 12)}: ${e?.message ?? e}` };
+    }
+    if (!changed.length) return { outcome: 'fail', detail: 'nothing changed in this step: no test was written' };
+    const other = changed.filter(f => !isTestPath(f, ctx.testPaths));
+    return other.length
+      ? { outcome: 'fail', detail: `non-test files changed: ${list(other)}. This step writes tests only; the code comes in the next step.` }
+      : { outcome: 'pass', detail: `${changed.length} test file(s) changed` };
   },
 
   'suite-green': ctx => {

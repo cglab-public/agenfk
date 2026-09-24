@@ -5346,6 +5346,17 @@ async function branchOfCard(item: any): Promise<string | null> {
   return null;
 }
 
+/** JIRA keys on a card and its ancestors, nearest first. */
+async function keysOfCard(item: any): Promise<string[]> {
+  const keys: string[] = [];
+  let cur: any = item;
+  for (let depth = 0; cur && depth < 16; depth++) {
+    if (typeof cur.externalId === 'string' && cur.externalId.trim()) keys.push(cur.externalId.trim());
+    cur = cur.parentId ? await storage.getItem(cur.parentId) : null;
+  }
+  return keys;
+}
+
 /**
  * Run the checks for leaving the card's current step (CGLAB-380), and record
  * the outcome on the card (`lastChecks`) and, when they pass, the records they
@@ -5372,11 +5383,14 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const produced: Record<string, unknown> = {};
   for (const r of records) if (r?.kind === 'record' && earlier.has(r.step) && typeof r.name === 'string') produced[r.name] = r.value;
 
+  const project: any = await storage.getProject(item.projectId);
   const outcome = evaluateChecks(resolved, {
     root,
     git: args => gitRun.run(args),
     item,
     cardBranch: await branchOfCard(item),
+    cardKeys: await keysOfCard(item),
+    testPaths: Array.isArray(project?.testReport?.surface) ? project.testReport.surface : [],
     children: (await storage.listItems({ parentId: item.id } as any)) as any,
     capture,
     captureError,
