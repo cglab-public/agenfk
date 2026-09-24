@@ -6,7 +6,7 @@ import { commitStagedForCard, resolveCommitRoot } from './closeCommit';
 import { mayPropagate, readCleanTreeSha, readHead, readTreeStatus } from './propagation';
 import { insideRoot, parseJunitXml, parseVitestJson, surfaceOf } from './stepRecords';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState } from "@agenfk/core";
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -3530,7 +3530,10 @@ function flowStepsError(steps: any): string | null {
     if (typeof s.name !== 'string' || !s.name.trim()) return "each step requires a name";
     if (typeof s.order !== 'number' || Number.isNaN(s.order)) return "each step requires a numeric order";
   }
-  return null;
+  // CGLAB-380: roles and checks, including that every record a check needs is
+  // produced by an earlier step.
+  const contractErrors = flowChecksErrors(steps);
+  return contractErrors.length ? contractErrors.join(' ') : null;
 }
 
 /**
@@ -3587,15 +3590,19 @@ app.put("/flows/:id", asyncHandler(async (req: any, res: any) => {
     const { name, description, version, steps } = req.body;
     // Only validate steps when the caller is actually replacing them — a
     // rename-only PUT must keep working.
+    // A step that omits role/checks keeps the stored ones (CGLAB-380): an
+    // older editor must never wipe a contract. Validated AFTER the merge, since
+    // that is the flow that would be stored.
+    const merged = Array.isArray(steps) ? mergeStepContracts(steps, existing.steps as any) : steps;
     if (steps !== undefined) {
-      const stepsError = flowStepsError(steps);
+      const stepsError = flowStepsError(merged);
       if (stepsError) return res.status(400).json({ error: stepsError });
     }
     const updates: Partial<Flow> = {};
     if (name !== undefined) updates.name = name;
     if (description !== undefined) updates.description = description;
     if (version !== undefined) updates.version = version;
-    if (steps !== undefined) updates.steps = normalizeSteps(steps);
+    if (steps !== undefined) updates.steps = normalizeSteps(merged);
 
     const updated = await storage.updateFlow(req.params.id, updates);
     io.emit('flow:updated', { flowId: updated.id });
@@ -3740,11 +3747,15 @@ app.post("/registry/flows/install", asyncHandler(async (req: any, res: any) => {
         });
       }
       const body = await r.json();
+      // Through the step whitelist, and validated, like every other path.
+      const hubSteps = normalizeFlowSteps((body.flow?.steps ?? []).map((s: any) => ({ ...s, id: uuidv4() })), () => uuidv4());
+      const hubStepsError = flowStepsError(hubSteps);
+      if (hubStepsError) return res.status(422).json({ error: `The registry flow cannot be installed: ${hubStepsError}` });
       const created = await storage.createFlow({
         id: uuidv4(),
         name: body.flow?.name ?? filename,
         description: body.flow?.description,
-        steps: (body.flow?.steps ?? []).map((s: any) => ({ ...s, id: uuidv4() })),
+        steps: hubSteps,
         createdAt: new Date(),
         updatedAt: new Date(),
       });
@@ -3785,12 +3796,18 @@ app.post("/registry/flows/install", asyncHandler(async (req: any, res: any) => {
         order: i + 1,
         exitCriteria: s.exitCriteria ?? '',
         isSpecial: s.isSpecial ?? false,
+        ...(s.role !== undefined ? { role: s.role } : {}),
+        ...(s.checks !== undefined ? { checks: s.checks } : {}),
       }));
     const steps = [
       { id: uuidv4(), name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
       ...middle,
       { id: uuidv4(), name: 'DONE', label: 'Done', order: middle.length + 1, exitCriteria: '', isAnchor: true },
     ];
+    // CGLAB-380: a community flow's roles and checks are validated like any
+    // other; an invalid one is refused whole, never installed with parts dropped.
+    const registryStepsError = flowStepsError(steps);
+    if (registryStepsError) return res.status(422).json({ error: `The registry flow cannot be installed: ${registryStepsError}` });
 
     // Create flow in local storage (no projectId — registry flows are global)
     const newFlow = await storage.createFlow({

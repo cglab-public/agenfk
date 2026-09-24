@@ -287,6 +287,8 @@ export function migrateCardsToFlow(
  */
 export const FLOW_STEP_FIELDS = [
   'id', 'name', 'label', 'order', 'exitCriteria', 'color', 'icon', 'isAnchor', 'isSpecial',
+  // CGLAB-380: what the step IS and what it adds. Validated by flowChecksErrors.
+  'role', 'checks',
 ] as const;
 
 /**

@@ -16,5 +16,6 @@ export * from './fanOut';
 export * from './circuitBreaker';
 export * from './baseDrift';
 export * from './dispatch';
+export * from './flowChecks';
 
 export * from './requestBudget.js';

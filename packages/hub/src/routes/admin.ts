@@ -5,7 +5,7 @@ import { issueApiKey } from '../auth/apiKey.js';
 import { encryptSecret } from '../crypto.js';
 import { createPasswordUser, hashPassword } from '../auth/password.js';
 import { randomUUID } from 'crypto';
-import { DEFAULT_FLOW } from '@agenfk/core';
+import { DEFAULT_FLOW, mergeStepContracts } from '@agenfk/core';
 import { getAgenfkReleases, resetAgenfkReleaseCache } from '../services/githubReleases.js';
 import { compareSemver } from '../util/semver.js';
 import { isOnboardingKeyLabel } from '../util/keyLabel.js';
@@ -1459,7 +1459,14 @@ export function adminRouter(ctx: HubServerContext): Router {
     );
     if (!existing) return res.status(404).json({ error: 'Flow not found' });
     if (parentOwned(existing)) return res.status(409).json({ error: PARENT_FLOW_LOCKED });
-    const definition = req.body?.definition;
+    let definition = req.body?.definition;
+    // CGLAB-380: a step that omits role/checks keeps the stored ones, so an
+    // older hub-ui never wipes a contract. Validated after the merge.
+    if (definition && typeof definition === 'object' && Array.isArray(definition.steps)) {
+      let stored: any[] | undefined;
+      try { stored = JSON.parse(existing.definition_json)?.steps; } catch { stored = undefined; }
+      definition = { ...definition, steps: mergeStepContracts(definition.steps, stored) };
+    }
     const err = validateDefinition(definition);
     if (err) return res.status(400).json({ error: err });
     await ctx.db.run(

@@ -595,6 +595,10 @@ export interface FlowStep {
   isAnchor?: boolean;     // True for TODO (first) and DONE (last) — cannot be deleted or reordered
   /** @deprecated Use isAnchor instead. Kept for backwards compatibility. */
   isSpecial?: boolean;    // True for terminal steps like DONE, BLOCKED, ARCHIVED
+  /** What the step is (CGLAB-380): brings built-in checks. See flowChecks.ts. */
+  role?: import('./flowChecks').StepRole | null;
+  /** Checks the flow adds to this step (CGLAB-380). A flow can add, never remove. */
+  checks?: import('./flowChecks').StepCheckRef[] | null;
 }
 
 export interface Flow {
