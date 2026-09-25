@@ -20,6 +20,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PtyRegistry, MAX_SESSIONS_PER_WINDOW } from '../main/ptyRegistry';
 import { HIGH_WATERMARK } from '../main/flowControl';
+import * as os from 'os';
 
 interface FakePty {
   pid: number;
@@ -1243,5 +1244,23 @@ describe('the card as the first prompt', () => {
     const reg = seeding({ promptFor, resolveProjectCwd: async () => ({ cwd: '/checkout/p1' }) });
     await reg.spawn({ projectId: 'p1', agentId: 'claude-code', windowId: 1, cols: 80, rows: 24 } as never);
     expect(promptFor).not.toHaveBeenCalled();
+  });
+});
+
+describe('a shell with no target', () => {
+  it('runs the user shell in home and registers no run', async () => {
+    const runs: unknown[] = [];
+    const r = new PtyRegistry({
+      spawn: spawner as never,
+      // A shell with nowhere to point must not go looking for a worktree.
+      resolveCwd: async () => { throw new Error('a shell with no target must not resolve a worktree'); },
+      emit: () => {},
+      registerRun: (x: unknown) => { runs.push(x); },
+    });
+    await r.spawn({ agentId: 'shell', windowId: 1, cols: 80, rows: 24 } as never);
+    expect(spawned[0].file).toBe(process.env.SHELL || '/bin/sh');
+    expect(spawned[0].cwd).toBe(os.homedir());
+    // No card means no run to follow.
+    expect(runs).toHaveLength(0);
   });
 });

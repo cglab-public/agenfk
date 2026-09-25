@@ -182,6 +182,30 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  */
 export const HERDR_AGENT_ID = 'herdr';
 
+/**
+ * A plain shell, in the user's home directory.
+ *
+ * The third target, and the one with no card and no project: a terminal is a
+ * useful thing to open before any repository is chosen. Like `herdr` it is
+ * DELIBERATELY NOT IN `AGENTS` — it is not something to start on a card, and
+ * offering it beside Claude Code would invite somebody to pick a shell where
+ * they meant an agent. The spawn path checks this id by equality and skips the
+ * worktree, the card prompt, tmux and the run registration.
+ */
+export const SHELL_AGENT_ID = 'shell';
+
+/**
+ * The command that opens the user's own shell.
+ *
+ * `$SHELL` is what the person's terminal already is; no per-platform table of
+ * guesses. `/bin/sh` is the fallback for the environments that do not export
+ * it (a GUI launch on some setups), which is a shell on every Unix we ship to.
+ * No arguments: an interactive login shell is what a terminal window is.
+ */
+export function resolveShellCommand(): { file: string; args: string[] } {
+  return { file: process.env.SHELL || '/bin/sh', args: [] };
+}
+
 const AGENTS: ReadonlyArray<AgentEntry> = [
   {
     // 'claude-code', not 'claude'. This is the SAME vocabulary the server's

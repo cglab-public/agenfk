@@ -132,6 +132,20 @@ describe('arguments are validated before anything is done with them', () => {
     expect(registry.spawn).not.toHaveBeenCalled();
     expect(registry.write).not.toHaveBeenCalled();
   });
+  it('allows a shell with NO target: that is the home shell', async () => {
+    // The one spawn with neither a card nor an objective. It runs the user's
+    // own shell in $HOME, which is why it needs no target.
+    await spawn({ agentId: 'shell', cols: 80, rows: 24 });
+    expect(spawnCalls[0]).toMatchObject({ agentId: 'shell' });
+    expect(spawnCalls[0].itemId).toBe('');
+    expect(spawnCalls[0].projectId).toBeUndefined();
+  });
+
+  it('still refuses a missing target for every other agent', async () => {
+    await expect(spawn({ agentId: 'claude-code', cols: 80, rows: 24 }))
+      .rejects.toThrow(/itemId or projectId/);
+    expect(registry.spawn).not.toHaveBeenCalled();
+  });
 });
 
 describe('the channels that exist', () => {

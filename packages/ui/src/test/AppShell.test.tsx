@@ -1918,3 +1918,25 @@ describe('opening a project terminal from the sidebar', () => {
     expect(ptyCalls.requests[0]).not.toHaveProperty('itemId');
   });
 });
+
+/*
+ * A terminal with nothing chosen yet (57a42471): the user's own shell in
+ * `$HOME`, opened directly — no agent dialog, no project.
+ */
+describe('opening the home shell from the sidebar', () => {
+  it('opens a shell with no card and no project, without a dialog', async () => {
+    renderShell();
+    const nav = await screen.findByRole('navigation', { name: /work/i });
+    fireEvent.click(within(nav).getByRole('button', { name: 'Open shell' }));
+
+    // Nothing to ask: the shell is the user's own, so no picker.
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await waitFor(() => expect(ptyCalls.spawned.length).toBe(1));
+    expect(ptyCalls.requests[0]).toMatchObject({ agentId: 'shell' });
+    expect(ptyCalls.requests[0]).not.toHaveProperty('itemId');
+    expect(ptyCalls.requests[0]).not.toHaveProperty('projectId');
+    // And the terminal view is the one showing.
+    await waitFor(() =>
+      expect(document.getElementById('panel-terminal')!.hasAttribute('hidden')).toBe(false));
+  });
+});

@@ -16,6 +16,7 @@
  */
 import React from 'react';
 import { activityFromScreen, SCREEN_RULES, TAIL_LINES, type ScreenActivity } from '../screenActivity';
+import { SHELL_AGENT_ID } from '../agentIds';
 import { Terminal as XTerm, type ITerminalAddon, type Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
@@ -388,10 +389,11 @@ export function TerminalPane({
 
     // The renderer sends an item and an agent, never a path and never a
     // command. Keep it that way.
-    if (!itemId && !projectId) {
+    if (!itemId && !projectId && agentId !== SHELL_AGENT_ID) {
       // Refused here rather than sent: main would answer "no directory", and
       // the pane would report a worktree problem for a caller that named
-      // nothing to open.
+      // nothing to open. The shell is the one caller that names no target on
+      // purpose — it runs in the user's home directory.
       setError('This terminal has no card and no project, so there is nowhere to open it.');
       return;
     }
@@ -405,7 +407,7 @@ export function TerminalPane({
        * process's exclusivity check ("itemId and projectId are exclusive").
        * The field is only a target when there is no card.
        */
-      ...(itemId ? { itemId } : { projectId }),
+      ...(itemId ? { itemId } : projectId ? { projectId } : {}),
       agentId,
       autoApprove: autoApprove === true,
       persist: persist === true,

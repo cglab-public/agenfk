@@ -40,6 +40,7 @@ import {
 } from './customSound';
 import { detectEditors, editorUrlFor } from './editors';
 import { detectAgents, __resetAgentDetectionCache } from './detectAgents.js';
+import { SHELL_AGENT_ID } from './agents.js';
 import { HIGH_WATERMARK } from './flowControl.js';
 
 /** Minimal shape of `ipcMain` so tests need no Electron. */
@@ -179,12 +180,21 @@ export function registerPtyIpc(
      */
     const projectId = req.projectId === undefined ? '' : asString(req.projectId, 'projectId');
     const itemId = req.itemId === undefined ? '' : asString(req.itemId, 'itemId');
-    if (!itemId && !projectId) throw new Error('itemId or projectId is required');
+    const agentId = asString(req.agentId, 'agentId');
+    /*
+     * A card, an objective, OR the user's own shell — which needs neither.
+     * The shell is the only target that runs in `$HOME` with nothing chosen
+     * yet, so requiring a project for it would make it unreachable exactly
+     * when it is wanted (before any repository is open).
+     */
+    if (!itemId && !projectId && agentId !== SHELL_AGENT_ID) {
+      throw new Error('itemId or projectId is required');
+    }
     if (itemId && projectId) throw new Error('itemId and projectId are exclusive');
     return registry.spawn({
       itemId,
       projectId: projectId || undefined,
-      agentId: asString(req.agentId, 'agentId'),
+      agentId,
       windowId: senderWindowId(event),
       cols: asSize(req.cols, 'cols'),
       rows: asSize(req.rows, 'rows'),

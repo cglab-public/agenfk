@@ -16,7 +16,7 @@
  * nor the reaping need real processes to test.
  */
 import { randomUUID } from 'crypto';
-import { resolveAgentCommand, canDictateSessionId, HERDR_AGENT_ID } from './agents.js';
+import { resolveAgentCommand, canDictateSessionId, HERDR_AGENT_ID, resolveShellCommand } from './agents.js';
 import { TitleReader, activityFromTitle } from './agentState.js';
 import { buildPtyEnv } from './ptyEnv.js';
 import { envWithoutHerdr, herdrAttachCommand } from './herdrAttach.js';
@@ -308,6 +308,15 @@ export class PtyRegistry {
       ?? (canDictateSessionId(req.agentId) ? randomUUID() : undefined);
 
     const attaching = req.agentId === HERDR_AGENT_ID;
+    /*
+     * The user's own shell: no card, no project, runs in `$HOME`.
+     *
+     * Decided by the ABSENCE of a target, not by the agent id — `shell` is
+     * also a picker choice, and picking it for a card must keep the card's
+     * worktree and its `bash -l`. A `shell` with nowhere to point IS the home
+     * shell.
+     */
+    const isShell = !req.itemId && !req.projectId;
 
     /*
      * Two sources, one variable. An attach cannot come from `resolveAgentCommand`
@@ -320,22 +329,24 @@ export class PtyRegistry {
      * else started, possibly mid-edit, and a fresh prompt would interrupt work
      * already happening.
      */
-    const prompt = !attaching && req.resume !== true && req.itemId && this.deps.promptFor
+    const prompt = !attaching && !isShell && req.resume !== true && req.itemId && this.deps.promptFor
       // A card that cannot be read still gets a terminal. Failing the spawn
       // over the convenience would be the worse trade.
       ? await this.deps.promptFor(req.itemId).catch(() => null)
       : null;
 
-    const command = attaching
-      ? herdrAttachCommand()
-      : resolveAgentCommand(req.agentId, {
-          // Only on a FIRST launch. Resuming means the conversation already
-          // exists — handing it the card again would start it over.
-          prompt: req.resume === true ? undefined : (prompt ?? undefined),
-          autoApprove: req.autoApprove === true,
-          agentSessionId,
-          resume: req.resume === true,
-        });
+    const command = isShell
+      ? resolveShellCommand()
+      : attaching
+        ? herdrAttachCommand()
+        : resolveAgentCommand(req.agentId, {
+            // Only on a FIRST launch. Resuming means the conversation already
+            // exists — handing it the card again would start it over.
+            prompt: req.resume === true ? undefined : (prompt ?? undefined),
+            autoApprove: req.autoApprove === true,
+            agentSessionId,
+            resume: req.resume === true,
+          });
     /*
      * An ATTACH resolves nothing.
      *
@@ -359,11 +370,13 @@ export class PtyRegistry {
     if (onObjective && !this.deps.resolveProjectCwd) {
       throw new Error('This build cannot open a session on an objective.');
     }
-    const { cwd } = attaching
+    const { cwd } = isShell
       ? { cwd: homedir() }
-      : onObjective
-        ? await this.deps.resolveProjectCwd!(req.projectId!)
-        : await this.deps.resolveCwd(req.itemId);
+      : attaching
+        ? { cwd: homedir() }
+        : onObjective
+          ? await this.deps.resolveProjectCwd!(req.projectId!)
+          : await this.deps.resolveCwd(req.itemId);
 
     // Inside tmux when we can. The session name is derived from the card and
     // the agent, so reopening ATTACHES to the one still running rather than
@@ -376,11 +389,13 @@ export class PtyRegistry {
      * the modes are argv TEMPLATES, not a base plus a switch — codex's resume
      * is a SUBCOMMAND (`codex resume <id>`), so there is no flag to remove.
      */
-    const freshCommand = attaching
-      // There is no "fresh" attach. The session exists or it does not, and a
-      // retry that started something new would be the opposite of attaching.
+    const freshCommand = isShell
       ? command
-      : resolveAgentCommand(req.agentId, {
+      : attaching
+        // There is no "fresh" attach. The session exists or it does not, and a
+        // retry that started something new would be the opposite of attaching.
+        ? command
+        : resolveAgentCommand(req.agentId, {
           // The prompt belongs to the FIRST launch. A retry that is really a
           // resume must not start the conversation over with it.
           prompt: prompt ?? undefined,
@@ -397,7 +412,7 @@ export class PtyRegistry {
      * two objectives would resolve to the same name and the second would
      * attach to the first's agent instead of starting its own.
      */
-    const useTmux = !attaching && !onObjective
+    const useTmux = !attaching && !isShell && !onObjective
       && this.deps.tmux?.available === true && req.persist === true;
     /*
      * Under tmux the agent line only appears inside `new-session`, which
@@ -502,7 +517,7 @@ export class PtyRegistry {
        * transcript backs, which is the same lie the tree rows refuse when they
        * carry a `herdr:` id instead of a real one.
        */
-      if (!attaching) {
+      if (!attaching && !isShell) {
         // A run belongs to a card. An objective has none yet — that is the
         // whole point — so there is nothing to register against.
         if (req.itemId) {
