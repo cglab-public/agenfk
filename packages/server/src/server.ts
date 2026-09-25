@@ -5,11 +5,11 @@ import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
 import { commitStagedForCard, resolveCommitRoot } from './closeCommit';
 import { mayPropagate, readCleanTreeSha, readHead, readTreeStatus } from './propagation';
-import { insideRoot, parseJunitXml, parseVitestJson, surfaceOf } from './stepRecords';
+import { insideRoot, isTestPath, parseJunitXml, parseVitestJson, surfaceOf } from './stepRecords';
 import { parseActor, parseFindings, readTranscriptIdentity } from './reviewRecords';
 import * as passkeys from './passkeys';
 import { argvHash, awaitsPersonApproval, judgeCommandChecks, type CommandApproval } from './commandChecks';
-import { suggestTestReport } from './testReportHint';
+import { suggestTestReport, withTestFiles } from './testReportHint';
 import { countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, needsCapture, needsEntryRecord, parseAgentReports, type AgentReport, type CheckResult } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
@@ -3235,7 +3235,7 @@ function treeFilesState(root: string, excludeRel: string | null): string | null 
  * record, or to a refusal.
  */
 type CaptureOutcome = { record: any } | { status: number; error: string; message: string };
-async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) => void }): Promise<CaptureOutcome> {
+async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) => void; lazyOver?: any }): Promise<CaptureOutcome> {
   const project: any = await storage.getProject(item.projectId);
   const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
   if (!root) {
@@ -3258,6 +3258,14 @@ async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) 
    * the tree may have changed during a whole suite run, and another waiter may
    * already be the new owner.
    */
+  const lazy = setting && opts?.lazyOver ? lazyPlan(root, setting, opts.lazyOver) : null;
+  if (lazy) {
+    const out = await runCapture(item, root, setting, command, readCleanTreeSha(root, gitRun), { ...opts, lazy });
+    if (out !== LAZY_FALLBACK) return out;
+    // The partial run could not stand for the whole suite. The tree may have
+    // changed meanwhile, so it is read afresh below, reuse and single-flight included.
+    opts?.onOutput?.('[agenfk] the partial run cannot stand for the whole suite: running all of it\n');
+  }
   for (let attempt = 0; ; attempt++) {
     const cleanSha = readCleanTreeSha(root, gitRun);
     const reused = await reusableCapture(item, project, root, cleanSha);
@@ -3340,8 +3348,118 @@ export async function stampCloseGreen(itemId: string, root: string, sha: string)
 /** Captures running now, by what they capture: see SINGLE-FLIGHT in captureStepRecord. */
 const capturesInFlight = new Map<string, Promise<{ out: CaptureOutcome; itemId: string }>>();
 
+/** What a lazy capture runs and merges over (acceaa54). */
+interface LazyPlan { entry: any; ran: string[]; changed: string[]; command: string }
+
+/** A file named as a test file itself - not a helper, fixture, setup or snapshot that happens to live beside tests. */
+const TEST_FILE_NAME = /(\.(test|spec)\.[cm]?[jt]sx?$)|(-test\.[cm]?[jt]s$)|((^|\/)test(-[^/]+)?\.[cm]?[jt]s$)|((^|\/)test_[^/]+\.py$)|(_test\.py$)/;
+/** Past this many files a partial run buys little, and the command line gets long. */
+const LAZY_MAX_FILES = 200;
+
+/**
+ * Files changed in the whole repository since `head`, committed or not:
+ * `inside` as paths relative to `root`, and whether anything changed OUTSIDE
+ * `root` (a project in a subdirectory still imports its neighbours, so a
+ * change there is a code change). Renames count as a deletion plus an
+ * addition, so a rename cannot hide the file it removed; NUL-separated so no
+ * name is mis-split. Null: git failed.
+ */
+function changedSince(root: string, head: string, reportRel: string | null): { inside: string[]; outside: boolean } | null {
+  try {
+    const run = (args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 64 * 1024 * 1024 });
+    const prefix = run(['rev-parse', '--show-prefix']).trim();
+    const diff = run(['diff', '--no-renames', '--name-only', '-z', head]).split('\0');
+    const untracked = run(['ls-files', '-z', '--others', '--exclude-standard', '--full-name', '--', ':/']).split('\0');
+    let outside = false;
+    const inside = new Set<string>();
+    for (const f of [...diff, ...untracked]) {
+      if (!f) continue;
+      if (!f.startsWith(prefix)) { outside = true; continue; }
+      const rel = f.slice(prefix.length);
+      if (rel !== reportRel) inside.add(rel);
+    }
+    return { inside: [...inside].sort(), outside };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * acceaa54 — a capture that can run only the changed test files, or null for
+ * the whole suite. All of these, or null:
+ *  - the step's entry capture is per-test, taken on a CLEAN tree in this tree
+ *    with the report setting as it is now - so "changed since" is exactly what
+ *    git reports against its head;
+ *  - nothing changed outside `root`, and EVERY file changed since then is
+ *    itself a test file: under the test surface AND named as one (a test file
+ *    that exports helpers for others is the rare case this misses). A helper,
+ *    fixture, setup file, snapshot or runner config changes OTHER files'
+ *    results, so it means the whole suite. Anyone's changes count, not just
+ *    this card's: another agent's code change moves the other tests too;
+ *  - a changed test file still exists, no name could read as an option, and
+ *    the runner takes a file list (withTestFiles).
+ * Files git ignores (a rebuilt dist/, node_modules) are not seen, exactly as
+ * reuse of a clean green does not see them.
+ */
+function lazyPlan(root: string, setting: TestReportSetting, entry: any): LazyPlan | null {
+  if (!(entry?.kind === 'capture' && entry.root === root && entry.available === true && entry.clean === true && typeof entry.head === 'string'
+    && Array.isArray(entry.tests) && !entry.lazy && ranAsSetNow(entry, setting))) return null;
+  const since = changedSince(root, entry.head, insideRoot(root, path.resolve(root, setting.reportPath)));
+  if (!since || since.outside) return null;
+  const changed = since.inside;
+  if (!changed.length || changed.length > LAZY_MAX_FILES) return null;
+  // Named as a test file itself: a file the runner merely picked up (a helper it reported as broken) does not count.
+  if (!changed.every(f => isTestPath(f, setting.surface ?? []) && TEST_FILE_NAME.test(f) && !f.startsWith('-'))) return null;
+  const ran = changed.filter(f => fs.existsSync(path.join(root, f)));
+  let scripts: Record<string, string> = {};
+  try { scripts = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))?.scripts ?? {}; } catch { /* none */ }
+  const command = withTestFiles(setting.command, scripts, ran);
+  return command ? { entry, ran, changed, command } : null;
+}
+
+/** One run at a time per report file: two runs writing one report would read each other's results. */
+const reportLocks = new Map<string, Promise<unknown>>();
+async function withReportLock<T>(key: string, fn: () => Promise<T>, onOutput?: (chunk: string) => void): Promise<T> {
+  const held = reportLocks.get(key);
+  if (held) onOutput?.('[agenfk] another capture is writing this tree\'s test report: waiting for it to finish\n');
+  const prior = held ?? Promise.resolve();
+  const mine = prior.catch(() => undefined).then(fn);
+  const tail = mine.catch(() => undefined);
+  reportLocks.set(key, tail);
+  try { return await mine; }
+  finally { if (reportLocks.get(key) === tail) reportLocks.delete(key); }
+}
+
 /** The run and the record, once no reuse applies. */
-async function runCapture(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts?: { onOutput?: (chunk: string) => void }): Promise<CaptureOutcome> {
+/** runCapture's answer when a lazy run cannot stand for the whole suite: the caller captures the ordinary way. */
+const LAZY_FALLBACK = Symbol('lazy-fallback');
+
+async function runCapture(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts: { onOutput?: (chunk: string) => void; lazy: LazyPlan }): Promise<CaptureOutcome | typeof LAZY_FALLBACK>;
+async function runCapture(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts?: { onOutput?: (chunk: string) => void }): Promise<CaptureOutcome>;
+async function runCapture(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts?: { onOutput?: (chunk: string) => void; lazy?: LazyPlan }): Promise<CaptureOutcome | typeof LAZY_FALLBACK> {
+  const lockKey = `${root}\0${setting?.reportPath ?? ''}`;
+  const record = await withReportLock(lockKey, () => runAndRead(item, root, setting, command, cleanSha, opts, opts?.lazy), opts?.onOutput);
+  if (record === null) return LAZY_FALLBACK;
+  // The card may have moved while the command ran: a record for a step it
+  // no longer occupies (or was rolled back over) must not be written.
+  const fresh: any = await storage.getItem(item.id);
+  if (!fresh || fresh.status !== item.status) {
+    return { status: 409, error: 'CARD_MOVED', message: `The card moved (${item.status} -> ${fresh?.status ?? 'deleted'}) while the capture ran; nothing was recorded.` };
+  }
+  await storage.updateItem(item.id, { stepRecords: [...(fresh.stepRecords ?? []), record] } as any);
+  // Only a per-test capture is ever reused (an exit code alone comes from a close's test record); never a merged one.
+  if (record.available && record.clean && record.exitCode === 0 && !record.lazy) noteGreen(item.projectId, root, record.head, item.id);
+  return { record };
+}
+
+/**
+ * Run the command and read its report into a capture record. With a lazy plan,
+ * null when the partial run cannot stand for the whole suite: the tree is not
+ * what the plan saw, the runner failed without failing a test it ran, or a
+ * file it ran is missing from its report (a runner that reports no file path,
+ * as pytest's default JUnit does, cannot be merged by file).
+ */
+async function runAndRead(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts: { onOutput?: (chunk: string) => void } | undefined, lazy: LazyPlan | undefined): Promise<any | null> {
   const record: any = {
     step: item.status, kind: 'capture', at: new Date().toISOString(),
     head: readHead(root, gitRun), clean: cleanSha !== null,
@@ -3365,17 +3483,49 @@ async function runCapture(item: any, root: string, setting: TestReportSetting | 
   }
   const reportRel = reportAbs ? insideRoot(root, reportAbs) : null;
   const stateBefore = treeContentState(root, reportRel);
-  record.exitCode = await runForExitCode(command, root, verifyMaxMs(), opts?.onOutput);
+  // The plan was made before the run was fenced: the tree must still be what it saw.
+  if (lazy && JSON.stringify(changedSince(root, lazy.entry.head, reportRel)) !== JSON.stringify({ inside: lazy.changed, outside: false })) return null;
+  if (lazy) {
+    // acceaa54: only the changed test files run; the rest keep their entry results.
+    Object.assign(record, { lazy: true, ranFiles: lazy.ran, lazyCommand: lazy.command, mergedOver: { step: lazy.entry.step, at: lazy.entry.at, head: lazy.entry.head } });
+    opts?.onOutput?.(`[agenfk] only test files changed since this step began: running ${lazy.ran.length} of them over the entry results\n`);
+  }
+  record.exitCode = await runForExitCode(lazy ? lazy.command : command, root, verifyMaxMs(), opts?.onOutput);
   const stateAfter = treeContentState(root, reportRel);
   if (setting && reportAbs) {
     try {
       if (stateBefore === null || stateAfter === null) throw new Error('the tree could not be read (not a git repository, no commit yet, or git failed), so the results cannot be tied to it');
-      if (stateAfter !== stateBefore) throw new Error('the tree changed while the command ran, so the results cannot be tied to it');
+      if (stateAfter !== stateBefore) {
+        if (lazy) return null;
+        throw new Error('the tree changed while the command ran, so the results cannot be tied to it');
+      }
       // What the run saw, without HEAD: a close that commits exactly this can re-stamp it (e99b5015).
       record.filesState = stateAfter.slice(stateAfter.indexOf(':') + 1);
       if (!insideTree(reportAbs)) throw new Error('the report resolves outside the tree');
       const text = fs.readFileSync(reportAbs, 'utf8');
-      const parsed = setting.format === 'vitest-json' ? parseVitestJson(text, root) : parseJunitXml(text, root);
+      let parsed = setting.format === 'vitest-json' ? parseVitestJson(text, root) : parseJunitXml(text, root);
+      if (lazy) {
+        const changed = new Set(lazy.changed), ran = new Set(lazy.ran);
+        const ranTests = parsed.tests.filter(t => ran.has(t.file));
+        const ranBroken = parsed.brokenFiles.filter(b => ran.has(b.file));
+        // Every file it ran must be in its report, under that very path.
+        const reported = new Set<string>([...ranTests.map(t => t.file), ...ranBroken.map(b => b.file)]);
+        if (lazy.ran.some(f => !reported.has(f))) return null;
+        // A non-zero exit no test it ran explains (no files found, an unhandled error, a coverage gate): not mergeable.
+        const ranFailed = ranTests.some(t => t.status === 'failed') || ranBroken.length > 0;
+        if (record.exitCode !== 0 && !ranFailed) return null;
+        // The entry's results for every file that did not change, this run's for the files it ran.
+        const tests = [...(lazy.entry.tests ?? []).filter((t: any) => !changed.has(t.file)), ...ranTests];
+        const counts = new Map<string, number>();
+        for (const t of tests) counts.set(t.name, (counts.get(t.name) ?? 0) + 1);
+        parsed = {
+          tests,
+          brokenFiles: [...(lazy.entry.brokenFiles ?? []).filter((b: any) => !changed.has(b.file)), ...ranBroken],
+          duplicateNames: [...new Set([...parsed.duplicateNames, ...(lazy.entry.duplicateNames ?? []), ...[...counts].filter(([, n]) => n > 1).map(([name]) => name)])],
+        };
+        const failing = parsed.tests.some(t => t.status === 'failed') || parsed.brokenFiles.length > 0;
+        record.exitCode = failing ? (record.exitCode || 1) : record.exitCode;
+      }
       // A name two tests share cannot be compared by name, so it is left out and
       // listed; a check that needs it finds it missing, never passed. The rest
       // of the report stays usable - real suites do carry the odd duplicate.
@@ -3400,16 +3550,7 @@ async function runCapture(item: any, root: string, setting: TestReportSetting | 
       record.parseError = `could not use the ${setting.format} report at ${setting.reportPath}: ${e?.message ?? e}`;
     }
   }
-  // The card may have moved while the command ran: a record for a step it
-  // no longer occupies (or was rolled back over) must not be written.
-  const fresh: any = await storage.getItem(item.id);
-  if (!fresh || fresh.status !== item.status) {
-    return { status: 409, error: 'CARD_MOVED', message: `The card moved (${item.status} -> ${fresh?.status ?? 'deleted'}) while the capture ran; nothing was recorded.` };
-  }
-  await storage.updateItem(item.id, { stepRecords: [...(fresh.stepRecords ?? []), record] } as any);
-  // Only a per-test capture is ever reused (an exit code alone comes from a close's test record).
-  if (record.available && record.clean && record.exitCode === 0) noteGreen(item.projectId, root, record.head, item.id);
-  return { record };
+  return record;
 }
 
 /**
@@ -3438,7 +3579,7 @@ function indexProjectGreens(projectId: string): Promise<void> {
     scan = (async () => {
       // The tree each green RAN in is on its record: a card's current tree may be another by now.
       for (const card of (await storage.listItems({ projectId } as any)) as any[]) {
-        for (const r of card.stepRecords ?? []) if (r?.kind === 'capture' && r.available === true && r.clean === true && r.exitCode === 0 && !r.reusedFrom) noteGreen(projectId, r.root, r.head, card.id);
+        for (const r of card.stepRecords ?? []) if (r?.kind === 'capture' && r.available === true && r.clean === true && r.exitCode === 0 && !r.reusedFrom && !r.lazy) noteGreen(projectId, r.root, r.head, card.id);
         for (const x of testRecords(card.tests)) if (x.status === 'PASSED' && x.commit) noteGreen(projectId, x.commitRoot, x.commit, card.id);
       }
     })();
@@ -3459,8 +3600,12 @@ function isOwnGreenRun(r: any, setting: TestReportSetting, root: string): boolea
 
 /** isOwnGreenRun, green or not. */
 function isOwnRun(r: any, setting: TestReportSetting, root: string): boolean {
-  return r?.kind === 'capture' && r.root === root && r.available === true && !r.reusedFrom
-    && r.command === setting.command && r.format === setting.format && r.surfaceScope === 'declared'
+  return r?.kind === 'capture' && r.root === root && r.available === true && !r.reusedFrom && !r.lazy && ranAsSetNow(r, setting);
+}
+
+/** A capture taken with the report setting as it is now: command, format and declared surface. */
+function ranAsSetNow(r: any, setting: TestReportSetting): boolean {
+  return r.command === setting.command && r.format === setting.format && r.surfaceScope === 'declared'
     && JSON.stringify(r.surfaceDeclared ?? []) === JSON.stringify(setting.surface ?? []);
 }
 
@@ -6613,7 +6758,11 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const entryHeld = !opts?.personFirst && nextNeedsPerTestEntry && !project?.testReport && !holdOverridden;
   if (!opts?.personFirst && (needsCapture(resolved.filter(c => !deferToCommand.includes(c.id))) || (next && !entryHeld && needsEntryRecord(resolveStepChecks(flow.steps, next.name))))) {
     const run = opts?.run;
-    const out = await captureStepRecord(item, run ? { onOutput: chunk => appendRunOutput(run, chunk) } : undefined);
+    // acceaa54: the capture this step entered with, for a test-only change to run over.
+    const prevStep = sorted[index - 1];
+    const before: any[] = ((await storage.getItem(item.id)) as any)?.stepRecords ?? [];
+    const lazyOver = prevStep ? [...before].reverse().find((r: any) => r?.kind === 'capture' && r.step === prevStep.name) ?? null : null;
+    const out = await captureStepRecord(item, { ...(run ? { onOutput: (chunk: string) => appendRunOutput(run, chunk) } : {}), lazyOver });
     if ('error' in out) captureError = out.message; else capture = out.record;
   }
   const records: any[] = ((await storage.getItem(item.id)) as any)?.stepRecords ?? [];

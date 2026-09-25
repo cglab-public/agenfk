@@ -72,3 +72,52 @@ function suggestOne(cmd: string, scripts: Record<string, string>): SuggestedRepo
   const f = flagsFor(cmd);
   return f ? { format: f.format, reportPath: f.reportPath, command: `${cmd} ${f.flags}` } : null;
 }
+
+/**
+ * acceaa54 — `command` made to run only `files`, or null when that is not
+ * certain. Only the runners whose file arguments are known (vitest, pytest,
+ * `node --test`), as the command's last `&&` part or as an npm script that is
+ * the runner alone. A runner may treat a name as a filter and run a little
+ * more; the caller keeps only the results for the files it asked for.
+ */
+export function withTestFiles(command: string, scripts: Record<string, string>, files: readonly string[]): string | null {
+  if (!files.length) return null;
+  // The files are single-quoted for a POSIX shell; cmd.exe would read the quotes as part of the name.
+  if (process.platform === 'win32') return null;
+  if (/[|;`&\n\r'"\\]|\$\(/.test(command.replace(/&&/g, ''))) return null;
+  const parts = command.split('&&').map(p => p.trim());
+  if (parts.some(p => /^cd\s/.test(p))) return null;
+  const last = parts[parts.length - 1];
+  const quoted = files.map(f => `'${f.replace(/'/g, `'\\''`)}'`).join(' ');
+  if (/^(npm|pnpm|yarn|bun)\b/.test(last)) {
+    if (/(^|\s)(-w|--workspace|--prefix|-C)(\s|=|$)/.test(last)) return null;
+    const pm = /^npm\s+(?:run\s+)?([\w:.-]+)(\s|$)/.exec(last) ?? /^npm\s+test(\s|$)/.exec(last);
+    if (!pm) return null;
+    const script = scripts[pm[1] ?? 'test'];
+    if (typeof script !== 'string' || /&&|\|\||[|;`&\n'"\\]|\$\(/.test(script) || !runnerWithoutTargets(script)) return null;
+    // Flags the command adds after `--` must not name targets either.
+    const passed = /(^|\s)--(\s|$)/.exec(last);
+    if (passed && last.slice(passed.index + passed[0].length).split(/\s+/).some(t => t && !t.startsWith('-'))) return null;
+    // npm hands everything after `--` to the END of the script.
+    const withFiles = passed ? `${last} ${quoted}` : `${last} -- ${quoted}`;
+    return [...parts.slice(0, -1), withFiles].join(' && ');
+  }
+  if (!runnerWithoutTargets(last)) return null;
+  return [...parts.slice(0, -1), `${last} ${quoted}`].join(' && ');
+}
+
+/**
+ * A known runner that names no targets of its own. With targets, the files
+ * handed to it could be ones the configured command never runs (pytest and
+ * `node --test` run any path they are given), so the partial run would count
+ * tests the whole suite does not have. `vitest run` is the one word allowed.
+ */
+function runnerWithoutTargets(cmd: string): boolean {
+  const tokens = cmd.trim().split(/\s+/);
+  const at = tokens.findIndex(t => /(^|\/)vitest(\.[cm]?js)?$/.test(t) || /(^|\/)pytest$/.test(t) || t === '--test');
+  if (at < 0) return false;
+  if (tokens[at] === '--test' && !/(^|\/)node$/.test(tokens[at - 1] ?? '')) return false;
+  // A run already narrowed by git state or a shard is not the whole suite's run of those files.
+  if (tokens.some(t => /^--(changed|shard|related|onlyChanged|lf|last-failed)(=|$)/.test(t))) return false;
+  return tokens.slice(at + 1).every((t, i) => t.startsWith('-') || (i === 0 && t === 'run' && /vitest/.test(tokens[at])));
+}
