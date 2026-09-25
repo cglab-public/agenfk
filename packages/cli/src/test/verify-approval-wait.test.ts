@@ -118,6 +118,46 @@ describe('verify waits for a person\'s approval', () => {
     expect(out()).toMatch(/Item moved to CREATE_UNIT_TESTS/);
   });
 
+  const CARD = { id: FULL_ID, projectId: 'p-1', title: 'Fix the picker', status: 'DISCOVERY' };
+  /** `serve`, plus the card itself for GET /items/<id>. */
+  function serveWithCard(gateSeq: number[]) {
+    let n = 0;
+    mockedAxios.get.mockImplementation(async (url: string) => {
+      if (String(url).includes('/gates')) return gates(gateSeq[Math.min(n++, gateSeq.length - 1)]) as any;
+      if (String(url).endsWith(`/items/${FULL_ID}`)) return { data: CARD } as any;
+      return { data: {} } as any;
+    });
+  }
+  const blockAt = () => { const o = out(); return { o, at: o.indexOf('APPROVAL NEEDED') }; };
+
+  it('asks for the approval in the chat: prints the APPROVAL NEEDED block before it waits (8a62a8c2)', async () => {
+    mockedAxios.post.mockRejectedValueOnce(refusal(APPROVAL_ONLY)).mockResolvedValueOnce(passed as any);
+    serveWithCard([0, 0, 1]);
+    await program.parseAsync(['node', 'agenfk', 'verify', FULL_ID, '--evidence', 'x']);
+    const { o, at } = blockAt();
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(at).toBeLessThan(o.indexOf('Waiting up to'));
+    expect(o).toContain(`[${FULL_ID.slice(0, 8)}] Fix the picker`);
+    expect(o).toMatch(new RegExp(`item=${FULL_ID}[^\\s]*view=overview|view=overview[^\\s]*item=${FULL_ID}`));
+    expect(o).toContain(`agenfk ui --open ${FULL_ID} --details`);
+  });
+
+  it('prints the block again when it gives up at the deadline (8a62a8c2)', async () => {
+    mockedAxios.post.mockRejectedValueOnce(refusal(APPROVAL_ONLY));
+    serveWithCard([0]);
+    await program.parseAsync(['node', 'agenfk', 'verify', FULL_ID, '--evidence', 'x', '--wait-minutes', '0']);
+    expect(out().split('APPROVAL NEEDED').length - 1).toBe(2);
+  });
+
+  it('prints the block in CI too, where nothing waits (8a62a8c2)', async () => {
+    process.env.CI = 'true';
+    mockedAxios.post.mockRejectedValueOnce(refusal(APPROVAL_ONLY));
+    serveWithCard([0]);
+    await program.parseAsync(['node', 'agenfk', 'verify', FULL_ID, '--evidence', 'x']);
+    expect(out()).toContain('APPROVAL NEEDED');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
   it('does not wait when another check blocks too: it fails at once, as before', async () => {
     mockedAxios.post.mockRejectedValueOnce(refusal([...APPROVAL_ONLY, { id: 'suite-green', outcome: 'fail', blocking: true, detail: '1 failing' }]));
     await program.parseAsync(['node', 'agenfk', 'verify', FULL_ID, '--evidence', 'x']);
@@ -208,7 +248,7 @@ describe('verify waits for a person\'s approval', () => {
     process.env.CI = 'true';
     mockedAxios.post.mockRejectedValueOnce(refusal(cmdWaiting));
     await program.parseAsync(['node', 'agenfk', 'verify', FULL_ID, '--evidence', 'x']);
-    expect(out()).toMatch(/approve the command npm run lint on the board/);
+    expect(out()).toMatch(/approve the command npm run lint on \[/);
     expect(out()).not.toMatch(/approve this step/);
   });
 

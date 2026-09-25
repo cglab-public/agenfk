@@ -10,7 +10,7 @@ import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT, setTeleme
 import { checkClaudeCodeEnforcement, checkPiEnforcement } from './enforcement.js';
 import { execSync, execFileSync, spawn, spawnSync } from 'child_process';
 import { chooseOpenTarget } from './openTarget.js';
-import { onlyApprovalBlocks, waitAllowed, waitForApproval, alreadySatisfied, commandWaitedOn, approvedAt, type BlockingCheck, type GatesSnapshot } from './approvalWait.js';
+import { onlyApprovalBlocks, waitAllowed, waitForApproval, alreadySatisfied, commandWaitedOn, approvedAt, approvalNeededBlock, type BlockingCheck, type GatesSnapshot } from './approvalWait.js';
 import { parseCheckFlags } from './agentChecksFlag.js';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
@@ -4057,8 +4057,15 @@ program
       const commands = (r.checks ?? []).filter(c => c.blocking).map(commandWaitedOn).filter((c): c is NonNullable<typeof c> => c !== null);
       const stepBlocks = (r.checks ?? []).some(c => c.blocking && c.id === 'human-approval');
       const what = [stepBlocks ? 'this step' : '', ...commands.map(c => `the command ${c.command ?? ''}`.trim())].filter(Boolean).join(' and ');
+      // 8a62a8c2: the request for the approval, in the chat - the agent relays it to the person.
+      const askForApproval = async () => {
+        let card: any = null;
+        try { card = (await axios.get(`${API_URL}/items/${targetId}`, { timeout: 10000 })).data; } catch { /* the block still names the card */ }
+        const url = buildUiOpenUrl(resolveDashboardUrl(path.resolve(__dirname, '../../..')), targetId, card?.projectId ?? findProjectId(process.cwd()), { view: 'overview' });
+        console.log(chalk.yellow(approvalNeededBlock({ what, itemId: targetId, title: typeof card?.title === 'string' ? card.title : undefined, url })));
+      };
       if (!canWait) {
-        console.error(chalk.yellow(`A person must approve ${what} on the board: agenfk ui --open ${targetId} --details`));
+        await askForApproval();
         process.exit(1);
         return;
       }
@@ -4074,6 +4081,7 @@ program
         spawnSync(process.execPath, [process.argv[1], 'ui', '--open', targetId, '--details'], { stdio: 'inherit' });
         opened = true;
       }
+      await askForApproval();
       console.log(chalk.cyan(`⏳ Waiting up to ${waitMinutes} min for a person to approve ${what} on the board…`));
       const outcome = await waitForApproval({
         step: before?.step ?? '',
@@ -4091,7 +4099,8 @@ program
         return;
       }
       if (outcome === 'timeout') {
-        console.error(chalk.yellow(`Still waiting for a person's approval (agenfk ui --open ${targetId} --details). Once it is given, run the same agenfk verify again: it waits again and carries on.`));
+        await askForApproval();
+        console.error(chalk.yellow(`Still waiting for a person's approval. Once it is given, run the same agenfk verify again: it waits again and carries on.`));
         process.exit(1);
         return;
       }

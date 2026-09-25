@@ -115,3 +115,35 @@ export function alreadySatisfied(checks: readonly BlockingCheck[] | undefined, g
     return w ? approvedAt(g, w.hash) !== null : false;
   });
 }
+
+/**
+ * 8a62a8c2 — the request for a person's approval, as the chat shows it.
+ *
+ * A person who closed the board's tab, or never saw it open, still has to be
+ * asked: the agent relays this block to them as it is. It is a REQUEST, never
+ * an approval - only a person approves, on the board - so nothing in it may be
+ * read as "the user said yes".
+ */
+export function approvalNeededBlock(o: { what: string; itemId: string; title?: string; url: string }): string {
+  const rule = '━'.repeat(60);
+  const title = o.title ? oneLine(o.title) : '';
+  return [
+    `━━━ APPROVAL NEEDED ${'━'.repeat(40)}`,
+    `A person must approve ${o.what} on [${o.itemId.slice(0, 8)}]${title ? ` ${title}` : ''}.`,
+    `Open it on the board:  ${o.url}`,
+    `Tab closed? Reopen it: agenfk ui --open ${o.itemId} --details`,
+    'Agent: relay this block to the user as it is. Only a person can approve, on the board.',
+    rule,
+  ].join('\n');
+}
+
+/**
+ * A card title as one plain line (8a62a8c2 review): a title comes from JIRA,
+ * GitHub or any agent, and a newline or an escape sequence in it could forge a
+ * line inside a block the agent is told to relay as it is.
+ */
+export function oneLine(s: string, max = 120): string {
+  // eslint-disable-next-line no-control-regex
+  const plain = s.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, '').replace(/\x1b[@-_]/g, '').replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return plain.length > max ? `${plain.slice(0, max - 1)}…` : plain;
+}
