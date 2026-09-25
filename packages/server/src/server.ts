@@ -46,6 +46,7 @@ import { exec, execFile, execSync, execFileSync, spawn } from "child_process";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import { readGitStatus } from './gitStatus.js';
+import { openHubJiraSession, fetchHubJiraStatus, clearHubJiraStatusCache, startHubJiraOAuth, completeHubJiraOAuth, disconnectHubJira, ASK_HUB_ADMIN, CONNECT_FROM_BOARD, type JiraSession, type HubTarget } from './jira/hubJira.js';
 
 // The local API server is for this machine only. It binds to loopback by
 // default (override with AGENFK_HOST) and only accepts browser requests from
@@ -4886,43 +4887,36 @@ export const resolveJiraReference = async (
     };
   }
 
-  const tokenData = loadJiraToken();
-  if (!tokenData) {
+  // Hub-joined: this user's connection on the hub, never a local token.
+  let session: JiraSession | null;
+  try {
+    session = await openJiraSession();
+  } catch (err: any) {
+    return {
+      kind: 'link',
+      externalId: key,
+      externalUrl: keptBrowseUrl(key, current),
+      warning: `Linked '${key}' without verifying it — the hub could not be reached (${err?.code || err?.message || 'unknown error'}).`,
+    };
+  }
+  if (!session) {
     // Disconnected: the key is all we can honestly assert. But re-linking the
     // SAME key while offline must not destroy the URL already on the card —
-    // that would silently strip the badge's href.
-    //
-    // Compared case-insensitively because `key` is normalised to upper case
-    // while a raw externalId is stored verbatim, so 'cglab-163' on the card
-    // would otherwise not match 'CGLAB-163' and the URL would be dropped.
-    //
-    // NOTE on provenance: the item carries no record of whether its stored URL
-    // was derived from a JIRA token or supplied raw by a caller, so this cannot
-    // claim the URL was ever "verified" — only that it is the URL already on
-    // the card and that it is shaped like a browse link for this exact key.
-    // That shape check is why a leftover URL for a DIFFERENT issue is dropped.
-    const sameKey = (current?.externalId ?? '').trim().toUpperCase() === key;
-    const keepUrl =
-      sameKey && current?.externalUrl && isJiraBrowseUrlFor(current.externalUrl, key)
-        ? current.externalUrl
-        : null;
-    return { kind: 'link', externalId: key, externalUrl: keepUrl };
+    // that would silently strip the badge's href (see keptBrowseUrl).
+    const bare: JiraResolution = { kind: 'link', externalId: key, externalUrl: keptBrowseUrl(key, current) };
+    // Joined but not connected: same bare link, but say why and what fixes it.
+    const hub = joinedHub();
+    return hub ? { ...bare, warning: `Linked '${key}' without verifying it — ${await hubNotConnectedMessage(hub)}` } : bare;
   }
 
-  const rawBrowseUrl = `${tokenData.cloudUrl}/browse/${key}`;
+  const rawBrowseUrl = `${session.cloudUrl}/browse/${key}`;
   // The derived URL is stored and rendered as an href like any other, so it
   // goes through the same guard. cloudUrl comes from the OAuth resource list
   // unchecked, so a resource without a url yields the literal
   // 'undefined/browse/KEY' — which is not a URL at all, and must not be stored.
   const browseUrl = isSafeExternalUrl(rawBrowseUrl) ? rawBrowseUrl : null;
   try {
-    await jiraApiRequest(
-      tokenData,
-      'get',
-      `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/issue/${encodeURIComponent(key)}?fields=summary`,
-      undefined,
-      JIRA_HTTP_TIMEOUT_MS,
-    );
+    await session.get(`issue/${encodeURIComponent(key)}?fields=summary`, JIRA_HTTP_TIMEOUT_MS);
     return { kind: 'link', externalId: key, externalUrl: browseUrl };
   } catch (err: any) {
     const status = err?.response?.status;
@@ -4942,6 +4936,24 @@ export const resolveJiraReference = async (
     };
   }
 };
+
+/**
+ * The browse URL already on a card, kept when re-linking the SAME key without
+ * a connection. Compared case-insensitively because `key` is normalised to
+ * upper case while a raw externalId is stored verbatim. The card carries no
+ * record of where its URL came from, so this cannot claim it was verified -
+ * only that it is shaped like a browse link for this exact key, which is why a
+ * leftover URL for a DIFFERENT issue is dropped.
+ */
+function keptBrowseUrl(
+  key: string,
+  current?: { externalId?: string | null; externalUrl?: string | null },
+): string | null {
+  const sameKey = (current?.externalId ?? '').trim().toUpperCase() === key;
+  return sameKey && current?.externalUrl && isJiraBrowseUrlFor(current.externalUrl, key)
+    ? current.externalUrl
+    : null;
+}
 
 /** Attach an unverified-link warning to a response body, when there is one.
  *  Both item write paths need this, and the shape must stay identical between
@@ -7021,6 +7033,8 @@ app.post('/internal/hub/reload', asyncHandler(async (req: any, res: any) => {
   }
   const changed = hubClient.reloadConfig();
   if (changed) startHubSubsystems();
+  // A rejoin or repoint may change which org's JIRA this installation sees.
+  clearHubJiraStatusCache();
   res.json({
     ok: true,
     changed,
@@ -7340,6 +7354,122 @@ const refreshJiraToken = async (tokenData: JiraTokenData): Promise<JiraTokenData
   return refreshPromise;
 };
 
+/** The hub this installation is joined to, or null. Joined means JIRA is the hub's. */
+function joinedHub(): HubTarget | null {
+  const cfg = hubClient.isEnabled ? hubClient.hubConfig : null;
+  return cfg ? { url: cfg.url, token: cfg.token } : null;
+}
+
+/** A local `agenfk jira setup` connection as a JiraSession, or null. */
+function localJiraSession(): JiraSession | null {
+  const tokenData = loadJiraToken();
+  if (!tokenData) return null;
+  return {
+    source: 'local',
+    cloudId: tokenData.cloudId,
+    cloudUrl: tokenData.cloudUrl,
+    email: tokenData.email,
+    async get(apiPath: string, timeoutMs?: number) {
+      const { data } = await jiraApiRequest(
+        tokenData,
+        'get',
+        `https://api.atlassian.com/ex/jira/${encodeURIComponent(tokenData.cloudId)}/rest/api/3/${apiPath}`,
+        undefined,
+        timeoutMs,
+      );
+      return { data };
+    },
+  };
+}
+
+/**
+ * The JIRA connection to use (CGLAB-412): when joined, this user's own
+ * connection held by the hub - with NO fallback to a local token or config,
+ * so no JIRA credential is ever used from the laptop - else the local one.
+ * Null when there is none; throws when the hub cannot say.
+ */
+async function openJiraSession(): Promise<JiraSession | null> {
+  const hub = joinedHub();
+  return hub ? openHubJiraSession(hub) : localJiraSession();
+}
+
+/**
+ * Why a joined user has no connection, in terms of what fixes it: no app on
+ * the hub is an admin's job; an app without this user's grant is theirs.
+ */
+async function hubNotConnectedMessage(hub: HubTarget): Promise<string> {
+  try {
+    return notConnectedMessageFor(await fetchHubJiraStatus(hub));
+  } catch {
+    return CONNECT_FROM_BOARD;
+  }
+}
+
+function notConnectedMessageFor(status: { configured: boolean; lastError?: string | null }): string {
+  if (!status.configured) return ASK_HUB_ADMIN;
+  return status.lastError === 'refresh_rejected' ? JIRA_CONNECTION_EXPIRED : CONNECT_FROM_BOARD;
+}
+
+const JIRA_CONNECTION_EXPIRED = 'Your JIRA connection expired or was revoked. Use Connect JIRA on the board to reconnect.';
+
+/**
+ * When this server last sent a browser off to connect JIRA through the hub.
+ * The callback accepts a completion code only while such a connect is
+ * pending: a code minted for someone ELSE's flow, loaded into this user's
+ * browser by a hostile page, must not bind the other person's JIRA account to
+ * this installation.
+ */
+let hubJiraConnectStartedAt = 0;
+const HUB_JIRA_CONNECT_WINDOW_MS = 15 * 60 * 1000;
+const LOOPBACK_PEERS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+
+/** For routes that need a connection: the session, or a response saying why there is none. */
+async function requireJiraSession(res: any): Promise<JiraSession | null> {
+  let session: JiraSession | null;
+  try {
+    session = await openJiraSession();
+  } catch (err: any) {
+    res.status(502).json({ error: 'The hub could not be reached for JIRA.', detail: err?.message });
+    return null;
+  }
+  if (session) return session;
+  const hub = joinedHub();
+  if (hub) res.status(409).json({ error: await hubNotConnectedMessage(hub) });
+  else res.status(401).json({ error: 'Not connected to JIRA' });
+  return null;
+}
+
+/** A card's browse link, or null when the site URL would not make a safe href. */
+function safeBrowseUrl(cloudUrl: string, key: string): string | null {
+  const url = `${cloudUrl}/browse/${key}`;
+  return isSafeExternalUrl(url) ? url : null;
+}
+
+/**
+ * Where the browser lands after a JIRA connect. When we serve the UI
+ * ourselves there is nothing on 5173, so redirecting there would dump the user
+ * on a connection-refused page after the connect succeeded; same origin means
+ * a relative redirect works.
+ */
+function jiraUiBase(): string {
+  return process.env.JIRA_UI_URL || (servedUiDir ? '/' : 'http://localhost:5173');
+}
+
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/**
+ * This server's own OAuth callback, as the browser reaches it - the hub sends
+ * the browser back here with the completion code. Only a loopback origin
+ * qualifies (the hub refuses anything else too): a code must never be handed
+ * to a host that is not this machine.
+ */
+function loopbackCallbackUrl(req: any): string | null {
+  const host = String(req.get?.('host') ?? '');
+  let u: URL;
+  try { u = new URL(`http://${host}`); } catch { return null; }
+  return LOOPBACK_HOSTS.has(u.hostname) ? `http://${u.host}/jira/oauth/callback` : null;
+}
+
 const jiraApiRequest = async (
   tokenData: JiraTokenData,
   method: string,
@@ -7393,7 +7523,21 @@ const adfToText = (node: any): string => {
 // Both OAuth legs are bounded by the same per-route budget as the other routes
 // that do real work per call: authorize reads the stored client config and
 // mints state, callback exchanges a code with Atlassian (CodeQL #135).
-app.get("/jira/oauth/authorize", limitExpensive, (req: any, res: any) => {
+app.get("/jira/oauth/authorize", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const hub = joinedHub();
+  if (hub) {
+    // Joined: the user connects their own JIRA through the hub's app.
+    const back = (reason: string) => res.redirect(`${jiraUiBase()}?jira=error&reason=${encodeURIComponent(reason)}`);
+    const returnTo = loopbackCallbackUrl(req);
+    if (!returnTo) return back('not_loopback');
+    try {
+      const authorizeUrl = await startHubJiraOAuth(hub, returnTo);
+      hubJiraConnectStartedAt = Date.now();
+      return res.redirect(authorizeUrl);
+    } catch (err: any) {
+      return back(err?.code || 'hub_unreachable');
+    }
+  }
   const jiraConfig = loadJiraConfig();
   if (!jiraConfig.clientId || !jiraConfig.clientSecret) {
     return res.status(503).json({
@@ -7416,14 +7560,32 @@ app.get("/jira/oauth/authorize", limitExpensive, (req: any, res: any) => {
     prompt: 'consent',
   });
   res.redirect(`https://auth.atlassian.com/authorize?${params}`);
-});
+}));
 
 app.get("/jira/oauth/callback", limitExpensive, asyncHandler(async (req: any, res: any) => {
-  const { code, state, error } = req.query;
-  // When we serve the UI ourselves there is nothing on 5173, so redirecting
-  // there would dump the user on a connection-refused page *after* the token
-  // exchange already succeeded. Same origin means a relative redirect works.
-  const uiBase = process.env.JIRA_UI_URL || (servedUiDir ? '/' : 'http://localhost:5173');
+  const { code, state, error, completion } = req.query;
+  const uiBase = jiraUiBase();
+
+  const hub = joinedHub();
+  if (hub) {
+    // Joined: the hub already exchanged the code and holds the token pending.
+    // Redeeming the completion with THIS installation's key is what binds it.
+    const back = (reason: string) => res.redirect(`${uiBase}?jira=error&reason=${encodeURIComponent(reason)}`);
+    const pendingConnect = Date.now() - hubJiraConnectStartedAt < HUB_JIRA_CONNECT_WINDOW_MS;
+    hubJiraConnectStartedAt = 0;
+    // The Host check on authorize is about the header; this is about who is
+    // actually connected, which a proxied or 0.0.0.0-bound setup can differ on.
+    if (!LOOPBACK_PEERS.has(String(req.socket?.remoteAddress ?? ''))) return back('not_loopback');
+    if (error) return back(String(error));
+    if (typeof completion !== 'string' || !completion) return back('missing_params');
+    if (!pendingConnect) return back('no_pending_connect');
+    try {
+      await completeHubJiraOAuth(hub, completion);
+    } catch (err: any) {
+      return back(err?.code || 'hub_unreachable');
+    }
+    return res.redirect(`${uiBase}?jira=connected`);
+  }
 
   if (error) {
     return res.redirect(`${uiBase}?jira=error&reason=${encodeURIComponent(String(error))}`);
@@ -7488,11 +7650,24 @@ app.get("/jira/oauth/callback", limitExpensive, asyncHandler(async (req: any, re
 }));
 
 app.get("/jira/status", asyncHandler(async (req: any, res: any) => {
+  const hub = joinedHub();
+  if (hub) {
+    try {
+      const status = await fetchHubJiraStatus(hub);
+      return res.json({ ...status, ...(status.connected ? {} : { message: notConnectedMessageFor(status) }) });
+    } catch (err: any) {
+      return res.json({
+        source: 'hub', configured: false, connected: false,
+        reason: err?.code || 'hub_unreachable', message: err?.message,
+      });
+    }
+  }
   const jiraConfig = loadJiraConfig();
   const configured = !!(jiraConfig.clientId && jiraConfig.clientSecret);
   const tokenData = loadJiraToken();
   if (!tokenData) {
     return res.json({
+      source: 'local',
       configured,
       connected: false,
       ...(configured ? {} : { message: "Run 'agenfk jira setup' to configure JIRA integration." }),
@@ -7502,22 +7677,18 @@ app.get("/jira/status", asyncHandler(async (req: any, res: any) => {
   if (configured) {
     const valid = await validateJiraToken(tokenData);
     if (!valid) {
-      return res.json({ configured, connected: false, reason: 'token_expired' });
+      return res.json({ source: 'local', configured, connected: false, reason: 'token_expired' });
     }
   }
-  res.json({ configured, connected: true, cloudId: tokenData.cloudId, email: tokenData.email });
+  res.json({ source: 'local', configured, connected: true, cloudId: tokenData.cloudId, cloudUrl: tokenData.cloudUrl, email: tokenData.email });
 }));
 
 app.get("/jira/projects", asyncHandler(async (req: any, res: any) => {
-  const tokenData = loadJiraToken();
-  if (!tokenData) return res.status(401).json({ error: "Not connected to JIRA" });
+  const jira = await requireJiraSession(res);
+  if (!jira) return;
 
   try {
-    const { data } = await jiraApiRequest(
-      tokenData,
-      'get',
-      `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/project/search?maxResults=50`
-    );
+    const { data } = await jira.get('project/search?maxResults=50');
     const projects = (data.values || []).map((p: any) => ({
       id: p.id,
       key: p.key,
@@ -7531,8 +7702,8 @@ app.get("/jira/projects", asyncHandler(async (req: any, res: any) => {
 }));
 
 app.get("/jira/projects/:key/issues", asyncHandler(async (req: any, res: any) => {
-  const tokenData = loadJiraToken();
-  if (!tokenData) return res.status(401).json({ error: "Not connected to JIRA" });
+  const jira = await requireJiraSession(res);
+  if (!jira) return;
 
   const { key } = req.params;
   const { summary, statusCategory } = req.query;
@@ -7568,15 +7739,11 @@ app.get("/jira/projects/:key/issues", asyncHandler(async (req: any, res: any) =>
     
     const jql = encodeURIComponent(jqlParts.join(' AND ') + ' ORDER BY created DESC');
     const fields = 'summary,issuetype,status,priority';
-    const apiUrl = `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/search/jql?jql=${jql}&maxResults=50&fields=${fields}`;
-    
-    console.log(`[JIRA] Requesting: ${apiUrl}`);
-    
-    const { data } = await jiraApiRequest(
-      tokenData,
-      'get',
-      apiUrl
-    );
+    const apiPath = `search/jql?jql=${jql}&maxResults=50&fields=${fields}`;
+
+    console.log(`[JIRA] Requesting (${jira.source}): ${apiPath}`);
+
+    const { data } = await jira.get(apiPath);
     const issues = (data.issues || []).map((issue: any) => ({
       id: issue.id,
       key: issue.key,
@@ -7596,8 +7763,8 @@ app.get("/jira/projects/:key/issues", asyncHandler(async (req: any, res: any) =>
 }));
 
 app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
-  const tokenData = loadJiraToken();
-  if (!tokenData) return res.status(401).json({ error: "Not connected to JIRA" });
+  const jira = await requireJiraSession(res);
+  if (!jira) return;
 
   const { projectId, items } = req.body;
   if (!projectId || !Array.isArray(items) || items.length === 0) {
@@ -7619,14 +7786,13 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
       continue;
     }
     try {
-      const { data: issue } = await jiraApiRequest(
-        tokenData,
-        'get',
-        `https://api.atlassian.com/ex/jira/${encodeURIComponent(tokenData.cloudId)}/rest/api/3/issue/${encodeURIComponent(issueKey)}?fields=summary,description,issuetype`
-      );
+      // JIRA keys are case-insensitive, but the hub relay only accepts the
+      // canonical upper-case form - normalise so a joined import of 'acme-7'
+      // behaves like an unjoined one.
+      const { data: issue } = await jira.get(`issue/${encodeURIComponent(issueKey.toUpperCase())}?fields=summary,description,issuetype`);
       const type = requestedType || mapJiraTypeToAgEnFK(issue.fields.issuetype?.name || 'Task');
       const description = adfToText(issue.fields.description);
-      const externalUrl = `${tokenData.cloudUrl}/browse/${issueKey}`;
+      const externalUrl = safeBrowseUrl(jira.cloudUrl, issueKey);
 
       const newItem: any = {
         id: uuidv4(),
@@ -7649,14 +7815,14 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
       // If this is an Epic, also import its child stories
       if (issue.fields.issuetype?.name?.toLowerCase() === 'epic') {
         try {
-          const searchBase = `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/search/jql`;
+          const searchBase = 'search/jql';
           const childFields = 'summary,description,issuetype';
 
           // Try next-gen (team-managed) projects first: parent = KEY
           let childIssues: any[] = [];
           const jqlNextGen = encodeURIComponent(`parent = ${issueKey} ORDER BY created ASC`);
           console.log(`[JIRA] Fetching children of Epic ${issueKey} with JQL: parent = ${issueKey}`);
-          const { data: nextGenData } = await jiraApiRequest(tokenData, 'get', `${searchBase}?jql=${jqlNextGen}&maxResults=100&fields=${childFields}`);
+          const { data: nextGenData } = await jira.get(`${searchBase}?jql=${jqlNextGen}&maxResults=100&fields=${childFields}`);
           childIssues = nextGenData.issues || [];
           console.log(`[JIRA] next-gen child query returned ${childIssues.length} issues`);
 
@@ -7664,7 +7830,7 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
           if (childIssues.length === 0) {
             const jqlClassic = encodeURIComponent(`"Epic Link" = ${issueKey} ORDER BY created ASC`);
             console.log(`[JIRA] Trying classic Epic Link fallback for ${issueKey}`);
-            const { data: classicData } = await jiraApiRequest(tokenData, 'get', `${searchBase}?jql=${jqlClassic}&maxResults=100&fields=${childFields}`);
+            const { data: classicData } = await jira.get(`${searchBase}?jql=${jqlClassic}&maxResults=100&fields=${childFields}`);
             childIssues = classicData.issues || [];
             console.log(`[JIRA] classic Epic Link query returned ${childIssues.length} issues`);
           }
@@ -7684,7 +7850,7 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
               status: 'TODO',
               implementationPlan: '',
               externalId: childKey,
-              externalUrl: `${tokenData.cloudUrl}/browse/${childKey}`,
+              externalUrl: safeBrowseUrl(jira.cloudUrl, childKey),
               createdAt: new Date(),
               updatedAt: new Date(),
             };
@@ -7707,10 +7873,20 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
   res.json({ imported, errors });
 }));
 
-app.post("/jira/disconnect", (req: any, res: any) => {
+app.post("/jira/disconnect", asyncHandler(async (req: any, res: any) => {
+  const hub = joinedHub();
+  if (hub) {
+    // Joined: drop this user's connection on the hub; there is no local token to delete.
+    try {
+      await disconnectHubJira(hub);
+    } catch (err: any) {
+      return res.status(502).json({ error: 'The hub could not disconnect JIRA.', detail: err?.message });
+    }
+    return res.json({ disconnected: true });
+  }
   deleteJiraToken();
   res.json({ disconnected: true });
-});
+}));
 
 // ── GitHub Import Routes (read-only) ──────────────────────────────────────────
 
