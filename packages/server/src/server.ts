@@ -6299,7 +6299,17 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const deferToApproval = opts?.personFirst
     ? resolved.filter(c => c.applicable && (needsCapture([c]) || (c.id.startsWith('command-check:') && !waitingOn.includes(c)))).map(c => c.id)
     : [];
-  if (!opts?.personFirst && (needsCapture(resolved.filter(c => !deferToCommand.includes(c.id))) || (next && needsEntryRecord(resolveStepChecks(flow.steps, next.name))))) {
+  // 5a8d22e6: the next step's BLOCKING checks read a per-test entry baseline this project cannot record.
+  const nextNeedsPerTestEntry = !!next && needsEntryRecord(resolveStepChecks(flow.steps, next.name).filter(c => c.severity === 'block'));
+  const entryHoldDetail = next ? `${next.name} judges its tests against the per-test results recorded as the card enters it, and this project records none` : '';
+  // One read decides both the capture and the hold (review): a person's override of it, as the hold will honour it.
+  const holdOverride = [...(((await storage.getItem(item.id)) as any)?.stepRecords ?? [])].reverse().find((r: any) =>
+    r?.step === item.status && r.kind === 'override' && r.check === ENTRY_BASELINE && (!stepWantsPasskey(flow as Flow, item.status) || r.authority === 'passkey')
+    && (r.detail === undefined || r.detail === entryHoldDetail));
+  const holdOverridden = !!holdOverride;
+  // 8876747c: held anyway, the next step's entry capture could only be an exit code - so it is not run.
+  const entryHeld = !opts?.personFirst && nextNeedsPerTestEntry && !project?.testReport && !holdOverridden;
+  if (!opts?.personFirst && (needsCapture(resolved.filter(c => !deferToCommand.includes(c.id))) || (next && !entryHeld && needsEntryRecord(resolveStepChecks(flow.steps, next.name))))) {
     const run = opts?.run;
     const out = await captureStepRecord(item, run ? { onOutput: chunk => appendRunOutput(run, chunk) } : undefined);
     if ('error' in out) captureError = out.message; else capture = out.record;
@@ -6373,12 +6383,11 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
    * verifying again records a baseline its next step can use.
    */
   // Only for checks that would BLOCK there: a warn-only one never held a card (review).
-  if (!opts?.personFirst && next && capture && capture.available === false && !capture.parseError && !project?.testReport
-    && needsEntryRecord(resolveStepChecks(flow.steps, next.name).filter(c => c.severity === 'block'))) {
-    const detail = `${next.name} judges its tests against the per-test results recorded as the card enters it, and this project records none`;
+  if (!opts?.personFirst && next && nextNeedsPerTestEntry && !project?.testReport
+    && (capture ? capture.available === false && !capture.parseError : !captureError)) {
+    const detail = entryHoldDetail;
     // A person can still pass it with a reason (a runner that cannot write a report): no card is stranded.
-    const o = overrides[ENTRY_BASELINE];
-    const overridden = o && (o.detail === undefined || o.detail === detail) ? o : undefined;
+    const overridden = holdOverride ? overrides[ENTRY_BASELINE] ?? { id: String(holdOverride.id), by: String(holdOverride.by ?? 'board'), at: String(holdOverride.at), reason: String(holdOverride.reason ?? '') } : undefined;
     outcome.results.push({
       id: ENTRY_BASELINE, step: item.status, source: 'universal', severity: 'block', params: {}, outcome: 'unavailable', blocking: !overridden, detail,
       ...(overridden ? { overridden } : { meta: { code: 'NO_TEST_REPORT' } }),

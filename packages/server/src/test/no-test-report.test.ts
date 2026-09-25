@@ -151,6 +151,37 @@ describe('5a8d22e6 review: held where the fix still works', () => {
     expect(entry).toMatchObject({ available: true });
   });
 
+  it('holds at once, without running a suite it could not use (8876747c)', async () => {
+    const t = await entering();
+    const runs = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-ntr-runs-')), 'runs');
+    dirs.push(path.dirname(runs));
+    await storage.updateProject(t.pid, { verifyCommand: `echo run >> ${runs}` } as never);
+    const res = await validate(t.id);
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect((res.body.checks as any[]).find(c => c.id === 'entry-baseline')).toMatchObject({ blocking: true });
+    expect(fs.existsSync(runs)).toBe(false);
+  });
+
+  it("still runs the suite when the step's OWN checks need it, and holds as well (8876747c)", async () => {
+    const f = await agent().post('/flows').send({ name: `ntr-own-${++seq}`, steps: [
+      s('START', 0, { isAnchor: true }), s('PLAN', 1, { checks: [{ id: 'suite-green' }] }), s('TESTS', 2, { checks: [{ id: 'new-tests-exist' }] }), s('END', 3, { isAnchor: true }),
+    ] });
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-ntr-own-'));
+    dirs.push(repo);
+    execSync('git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one', { cwd: repo, shell: '/bin/sh' });
+    const runs = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-ntr-runs-')), 'runs');
+    dirs.push(path.dirname(runs));
+    const p = await agent().post('/projects').send({ name: `ntr-own-${++seq}` });
+    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: `echo run >> ${runs}` } as never);
+    const c = await agent().post('/items').send({ type: 'TASK', title: `ntr-own-${++seq}`, projectId: p.body.id });
+    await storage.updateItem(c.body.id, { status: 'PLAN' } as any);
+    const res = await validate(c.body.id);
+    expect(res.status).toBe(422);
+    expect((res.body.checks as any[]).find(x => x.id === 'suite-green')).toMatchObject({ outcome: 'pass' });
+    expect((res.body.checks as any[]).find(x => x.id === 'entry-baseline')).toMatchObject({ blocking: true });
+    expect(fs.readFileSync(runs, 'utf8').trim().split('\n')).toHaveLength(1);
+  });
+
   it('does not hold the card for per-test checks that would only warn there (review 2)', async () => {
     const t = await entering({ id: 'new-tests-born-green' });
     const res = await validate(t.id);
@@ -164,6 +195,8 @@ describe('5a8d22e6 review: held where the fix still works', () => {
     expect(o.status, JSON.stringify(o.body)).toBe(201);
     const res = await validate(t.id);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
+    // Passed on, the card still records the entry capture it can have (8876747c review).
+    expect(((await agent().get(`/items/${t.id}`)).body.stepRecords ?? []).some((r: any) => r.kind === 'capture' && r.step === 'PLAN')).toBe(true);
   });
 
   it('carries error and fix through a background run too (the CLI follows those)', async () => {
