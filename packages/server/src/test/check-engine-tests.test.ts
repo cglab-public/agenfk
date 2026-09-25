@@ -599,11 +599,23 @@ describe('CGLAB-380: test checks', () => {
     it('in a shared tree, files another active card claims are not this card\'s change', async () => {
       const { dir, id } = await atSpecs();
       const pid = (await item(id)).projectId;
-      await card(pid, 'BUILD', { claims: ['src/sibling.js'] });
+      // A sibling that got to BUILD the way cards do: through verify, which leaves an exit record.
+      await card(pid, 'BUILD', { claims: ['src/sibling.js'], stepRecords: [{ kind: 'exit', step: 'SPECS', at: new Date().toISOString() }] });
       honestTests(dir);
       write(dir, 'src/sibling.js', 'theirs');
       const r = await validate(id);
       expect(r.status, JSON.stringify(r.body)).toBe(200);
+    });
+
+    // 5b48b96b re-review: TODO -> BLOCKED needs no verify, so a claim made there is free and must excuse nothing.
+    it('a claim held by a card that never left a step through verify does not make the change another card\'s', async () => {
+      const { dir, id } = await atSpecs();
+      const pid = (await item(id)).projectId;
+      await card(pid, 'BLOCKED', { claims: ['src/sibling.js'] });
+      honestTests(dir);
+      write(dir, 'src/sibling.js', 'theirs');
+      const c = await refused(id, 'only-test-files-changed');
+      expect(c.detail).toMatch(/src\/sibling\.js/);
     });
 
     it('an unclaimed source change is still refused', async () => {

@@ -48,6 +48,26 @@ Beta, cumulative over `2.0.0-beta.3`: everything in beta.3, plus the changes bel
   something outside the tree - a remote, a PR, the clock - opts out with the new param `share: none`.
 - **Approvals and overrides stay per card.** Nothing a person gives is shared.
 
+### Siblings in one tree are judged on their own tests
+
+- **A test in a file another active card claims is that card's.** The per-test checks judged the whole shared tree: a
+  sibling's legitimately red test blocked this card's `suite-green`, so siblings could only leave their coding step one
+  after another, and `new-tests-exist` / `some-new-test-red` counted every sibling's new tests - a card that wrote none
+  passed on another's red one. The new-test checks now count only the card's own tests; `suite-green` and
+  `no-broken-test-files` leave a sibling's unfinished tests to it; `test-set-identical` and `test-count-not-lower`
+  compare the card's own tests. `test-surface-frozen` is not relaxed: a new file under a claim can load on its own (a
+  `conftest.py`, an `init()`) and mask the tests.
+- **A regression still blocks.** A sibling's test that passed when the card entered the step and now fails - or is gone
+  - counts as before, whoever claims its file (a claim costs nothing, so it excuses no deletion); so does an edit to, or
+  deletion of, an existing test file. Only a card working beside this one counts as "another card": not its own
+  ancestors, and not a card that never left a step through verify (whatever its status - BLOCKED and PAUSED need no
+  verify). A parent that claims its children's files leaves their tests shared between them, as before this change.
+- **Where it applies.** It needs a per-test entry record, so it acts on steps whose entry is captured (the TDD flow's);
+  elsewhere a sibling's red test still blocks. A runner that names tests by class rather than file (pytest via JUnit)
+  cannot be matched to a claim and keeps the old behaviour, broken modules included. A non-zero exit is taken as explained by a sibling's red
+  tests only when nothing of this card's fails, and never for a killed or timed-out run; the final verify command still
+  runs the whole suite and needs exit 0 (a flow with `verifyAt: parent` runs it once at the parent).
+
 ## [2.0.0-beta.3] — 2026-09-25
 
 Beta, cumulative over `2.0.0-beta.2`: everything in beta.2, plus the changes below. It is about one thing: a

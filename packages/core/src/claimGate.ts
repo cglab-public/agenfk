@@ -34,6 +34,11 @@ export interface ClaimHolder {
    * nobody can say, and an unknown tree collides with every tree.
    */
   readonly tree?: string | null;
+  /**
+   * 5b48b96b: has the card ever left a step through verify (an exit record)?
+   * A status cannot say: BLOCKED and PAUSED are reachable straight from TODO.
+   */
+  readonly started?: boolean;
 }
 
 export interface ClaimGateResult {
@@ -83,6 +88,30 @@ const trimSeparators = (t: string): string => {
   while (end > 0 && (t[end - 1] === '/' || t[end - 1] === '\\')) end--;
   return t.slice(0, end);
 };
+
+/**
+ * 5b48b96b — the claims of OTHER cards that make a path theirs, not this card's,
+ * in this card's checks. Only a card working beside it counts:
+ *  - not the card itself, nor one of its ANCESTORS: a parent claiming its
+ *    children's directory would make every child's own tests foreign, and a
+ *    child cannot claim them back (claims are exclusive);
+ *  - not a card that has NOT STARTED - never left a step through verify, whatever
+ *    its status (BLOCKED and PAUSED need no verify): a claim there costs
+ *    nothing, so it must excuse nothing;
+ *  - not a finished card (stillHolds), and only in this card's tree.
+ * Every option is required: the caller decides who its ancestors are, and a
+ * default would hide passing the wrong one. A holder without `started` has not.
+ */
+export function foreignClaimsFor(
+  item: { id: string },
+  holders: readonly ClaimHolder[],
+  opts: { itemTree: string | null; ancestorIds: ReadonlySet<string> },
+): string[] {
+  return holders
+    .filter(o => o.id !== item.id && !opts.ancestorIds.has(o.id) && Array.isArray(o.claims) && stillHolds(o.status)
+      && o.started === true && sameClaimTree(opts.itemTree, o.tree))
+    .flatMap(o => [...(o.claims ?? [])]);
+}
 
 export function sameClaimTree(a: string | null | undefined, b: string | null | undefined): boolean {
   const norm = (t: string | null | undefined): string => (typeof t === 'string' ? trimSeparators(t.trim()) : '');

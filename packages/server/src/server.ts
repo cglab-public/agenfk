@@ -12,7 +12,7 @@ import { argvHash, awaitsPersonApproval, judgeCommandChecks, type CommandApprova
 import { suggestTestReport, withTestFiles } from './testReportHint';
 import { countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, needsCapture, needsEntryRecord, parseAgentReports, type AgentReport, type CheckResult } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, foreignClaimsFor, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -1126,7 +1126,8 @@ async function claimHoldersIn(projectId: string, projectRoot: string | null | un
     }
   }
   const treeOf = (item: any) => claimTreeOf(item, id => byId.get(id), projectRoot ?? null);
-  return { holders: all.map(i => ({ id: i.id, status: String(i.status), claims: i.claims, tree: treeOf(i) })), treeOf };
+  const started = (i: any) => Array.isArray(i.stepRecords) && i.stepRecords.some((r: any) => r?.kind === 'exit');
+  return { holders: all.map(i => ({ id: i.id, status: String(i.status), claims: i.claims, tree: treeOf(i), started: started(i) })), treeOf };
 }
 
 /**
@@ -6884,9 +6885,13 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   // Only cards in THIS tree (aaa01834): a claim in another worktree says nothing about files here.
   const { holders: claimHolders, treeOf: claimTree } = await claimHoldersIn(item.projectId, (project as any)?.projectRoot);
   const hereTree = claimTree(item);
-  const foreignClaims = claimHolders
-    .filter(o => o.id !== item.id && Array.isArray(o.claims) && stillHolds(o.status) && sameClaimTree(hereTree, o.tree))
-    .flatMap(o => o.claims as string[]);
+  // 5b48b96b review: not the card's ancestors, and not a card that never left a step (foreignClaimsFor).
+  const ancestorIds = new Set<string>();
+  for (let p = item.parentId, hops = 0; p && hops < 64 && !ancestorIds.has(p); hops++) {
+    ancestorIds.add(p);
+    p = ((await storage.getItem(p)) as any)?.parentId ?? null;
+  }
+  const foreignClaims = foreignClaimsFor(item, claimHolders, { itemTree: hereTree, ancestorIds });
   const reportPath = typeof project?.testReport?.reportPath === 'string' ? project.testReport.reportPath : null;
   // People's approvals and overrides of THIS step (CGLAB-382); a rollback over it dropped older ones.
   const here = records.filter(r => r?.step === item.status);
