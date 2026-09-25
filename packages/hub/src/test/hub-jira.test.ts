@@ -446,6 +446,35 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub JIRA (%s)', (backend) => {
       expect(g.body.connectedCount).toBe(1);
     });
 
+    it('hiding a person and retiring an installation also delete their JIRA tokens, at once', async () => {
+      vi.stubGlobal('fetch', atlassianFake().fn);
+      await configure();
+      const now = new Date().toISOString();
+      for (const [id, email] of [['inst-alice', 'alice@acme.test'], ['inst-bob', 'bob@acme.test']]) {
+        await db.run('INSERT INTO installations (id, org_id, first_seen, last_seen, git_email) VALUES (?, ?, ?, ?, ?)', [id, 'org-a', now, now, email]);
+      }
+      await connect(keyA);
+      await connect(keyA2, 'code-b');
+      const hide = await supertest(__server).post('/v1/admin/hidden-users').set('Cookie', cookieAdmin).send({ userKey: 'alice@acme.test' });
+      expect(hide.status).toBe(201);
+      // Checked straight in the table: no admin read has swept anything yet.
+      expect(await db.get('SELECT key_hash FROM jira_connections WHERE key_hash = ?', [hashToken(keyA)])).toBeUndefined();
+      const retire = await supertest(__server).post('/v1/admin/installations/inst-bob/retire').set('Cookie', cookieAdmin);
+      expect(retire.status).toBe(200);
+      expect(await db.get('SELECT key_hash FROM jira_connections WHERE key_hash = ?', [hashToken(keyA2)])).toBeUndefined();
+    });
+
+    it('an expired flow holding a token is swept by the next start', async () => {
+      await configure();
+      await db.run(
+        `INSERT INTO jira_oauth_pending (state, org_id, key_hash, return_to, completion_hash, token_enc, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        ['old-state', 'org-a', hashToken(keyA), RETURN_TO, 'h', encryptSecret('{"access_token":"x","refresh_token":"y"}', SECRET), '2000-01-01T00:00:00.000Z'],
+      );
+      await start(keyA2);
+      expect(await db.get('SELECT state FROM jira_oauth_pending WHERE state = ?', ['old-state'])).toBeUndefined();
+    });
+
     it('a key revoked by any other route is swept when an admin looks', async () => {
       vi.stubGlobal('fetch', atlassianFake().fn);
       await configure();
@@ -659,5 +688,38 @@ describe.each<Backend>(['sqlite', 'postgres'])('hub JIRA (%s)', (backend) => {
       expect(r.status).toBe(502);
       expect(r.body.code).toBe('jira_unreachable');
     });
+  });
+});
+
+/**
+ * The redirect URI is the hub's CANONICAL public URL when one is configured:
+ * the admin registers what the admin page shows, and every installation's
+ * start must send Atlassian that same URI, whatever hostname it joined by.
+ */
+describe('hub JIRA callback URL with AGENFK_HUB_PUBLIC_URL', () => {
+  let db: HubDb;
+  let server: any;
+  beforeEach(async () => {
+    db = await openSqliteDb(':memory:');
+    const out = await createHubApp({
+      dbPath: ':memory:', secretKey: SECRET, sessionSecret: 's', defaultOrgId: 'org-a', db,
+      publicUrl: 'https://hub.public.test',
+    } as any);
+    server = out.app.listen(0);
+  });
+  afterEach(async () => {
+    await drainApp(server);
+    await new Promise<void>(r => server.close(() => r()));
+    await db.close();
+  });
+
+  it('uses the public URL for both the admin page and every start', async () => {
+    await createPasswordUser(db, 'org-a', 'admin@x', 'longenough1', 'admin');
+    const cookie = await loginAs(server, 'admin@x', 'longenough1');
+    const key = await issueApiKey(db, 'org-a', 'k', { installationId: 'inst' });
+    const put = await supertest(server).put('/v1/admin/jira').set('Cookie', cookie).send({ clientId: 'cid', clientSecret: 's' });
+    expect(put.body.redirectUri).toBe('https://hub.public.test/v1/jira/oauth/callback');
+    const r = await supertest(server).post('/v1/jira/oauth/start').set('Authorization', `Bearer ${key}`).send({ returnTo: RETURN_TO });
+    expect(new URL(r.body.authorizeUrl).searchParams.get('redirect_uri')).toBe('https://hub.public.test/v1/jira/oauth/callback');
   });
 });

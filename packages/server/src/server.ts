@@ -7571,11 +7571,13 @@ app.get("/jira/oauth/callback", limitExpensive, asyncHandler(async (req: any, re
     // Joined: the hub already exchanged the code and holds the token pending.
     // Redeeming the completion with THIS installation's key is what binds it.
     const back = (reason: string) => res.redirect(`${uiBase}?jira=error&reason=${encodeURIComponent(reason)}`);
-    const pendingConnect = Date.now() - hubJiraConnectStartedAt < HUB_JIRA_CONNECT_WINDOW_MS;
-    hubJiraConnectStartedAt = 0;
     // The Host check on authorize is about the header; this is about who is
     // actually connected, which a proxied or 0.0.0.0-bound setup can differ on.
+    // Checked BEFORE the pending connect is consumed, so a stray remote hit
+    // cannot cancel the user's own connect.
     if (!LOOPBACK_PEERS.has(String(req.socket?.remoteAddress ?? ''))) return back('not_loopback');
+    const pendingConnect = Date.now() - hubJiraConnectStartedAt < HUB_JIRA_CONNECT_WINDOW_MS;
+    hubJiraConnectStartedAt = 0;
     if (error) return back(String(error));
     if (typeof completion !== 'string' || !completion) return back('missing_params');
     if (!pendingConnect) return back('no_pending_connect');

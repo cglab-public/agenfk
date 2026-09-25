@@ -68,6 +68,7 @@ let hubConnected = true;
 let hubConfigured = true;
 let hubLastError: string | null = null;
 let completeStatus = 200;
+let startRefusal: string | null = null;
 let hubPosts: Array<{ url: string; body: any }> = [];
 let hubDown = false;
 let hubKeyRejected = false;
@@ -92,6 +93,7 @@ function stubHub() {
       hubPosts.push({ url, body });
       if (rest === 'oauth/start') {
         if (!hubConfigured) return reply(409, { code: 'jira_not_configured', error: 'not configured' });
+        if (startRefusal) return reply(403, { code: startRefusal, error: 'refused' });
         return reply(200, { authorizeUrl: `https://auth.atlassian.com/authorize?state=st&return=${encodeURIComponent(body.returnTo)}` });
       }
       if (rest === 'oauth/complete') {
@@ -159,6 +161,7 @@ describe('JIRA routes on a hub-joined installation', () => {
     hubConfigured = true;
     hubLastError = null;
     completeStatus = 200;
+    startRefusal = null;
     hubPosts = [];
     hubDown = false;
     hubKeyRejected = false;
@@ -240,6 +243,12 @@ describe('JIRA routes on a hub-joined installation', () => {
       expect(r.status).toBe(302);
       expect(r.headers.location).toMatch(/[?&]jira=error&reason=not_loopback/);
       expect(hubPosts).toHaveLength(0);
+    });
+
+    it('authorize with a shared hub key lands on the board with key_not_personal', async () => {
+      startRefusal = 'key_not_personal';
+      const r = await agent().get('/jira/oauth/authorize');
+      expect(r.headers.location).toMatch(/[?&]jira=error&reason=key_not_personal/);
     });
 
     it('authorize with no JIRA app on the hub returns to the board with a reason', async () => {

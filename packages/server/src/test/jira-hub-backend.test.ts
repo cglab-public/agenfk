@@ -206,6 +206,11 @@ describe('per-user OAuth through the hub', () => {
     expect(f.calls[0]).toMatchObject({ method: 'POST', auth: 'Bearer agk_test', body: { returnTo: RETURN_TO } });
   });
 
+  it('start carries a shared-key refusal through, so the board can say "run agenfk hub login"', async () => {
+    stubFetch({ [`${HUB.url}/v1/jira/oauth/start`]: { status: 403, body: { code: 'key_not_personal', error: 'x' } } });
+    await expect(startHubJiraOAuth(HUB, RETURN_TO)).rejects.toMatchObject({ code: 'key_not_personal' });
+  });
+
   it('start maps the hub\'s refusal to a code (no app configured on the hub)', async () => {
     stubFetch({ [`${HUB.url}/v1/jira/oauth/start`]: { status: 409, body: { code: 'jira_not_configured', error: 'x' } } });
     await expect(startHubJiraOAuth(HUB, RETURN_TO)).rejects.toMatchObject({ code: 'jira_not_configured' });

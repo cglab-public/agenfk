@@ -47,6 +47,7 @@ export type HubJiraErrorCode =
   | 'completion_key_mismatch'
   | 'invalid_completion'
   | 'invalid_return_to'
+  | 'key_not_personal'
   | 'jira_auth_failed'
   | 'jira_unreachable'
   | 'not_relayed'
@@ -212,7 +213,9 @@ export async function openHubJiraSession(hub: HubTarget): Promise<JiraSession | 
 /** A hub-side refusal of an OAuth call, carried by its code (never an axios-shaped response). */
 function oauthError(status: number, data: any): HubJiraError {
   if (status === 401) return new HubJiraError('hub_auth_failed', 'The hub rejected this installation\'s key.');
-  const known: HubJiraErrorCode[] = ['jira_not_configured', 'completion_key_mismatch', 'invalid_completion', 'invalid_return_to'];
+  const known: HubJiraErrorCode[] = [
+    'jira_not_configured', 'completion_key_mismatch', 'invalid_completion', 'invalid_return_to', 'key_not_personal',
+  ];
   const code = known.includes(data?.code) ? data.code as HubJiraErrorCode : 'jira_error';
   return new HubJiraError(code, data?.error || `Hub JIRA request failed (HTTP ${status})`);
 }

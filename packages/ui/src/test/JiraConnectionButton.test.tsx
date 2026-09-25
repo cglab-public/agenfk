@@ -181,6 +181,17 @@ describe('JiraConnectionButton on a hub-joined installation', () => {
     expect(screen.queryByTestId('jira-hub-unconnected')).toBeNull();
   });
 
+  it('gives every hub callback reason a sentence, never the raw code', async () => {
+    vi.mocked(api.getJiraStatus).mockResolvedValue({ source: 'hub', configured: true, connected: false });
+    for (const reason of ['no_accessible_site', 'missing_code', 'not_configured', 'jira_unreachable', 'key_not_personal']) {
+      window.history.replaceState({}, '', `/?jira=error&reason=${reason}`);
+      const { unmount } = render(<JiraConnectionButton />, { wrapper: wrapper(makeQueryClient()) });
+      const toast = await screen.findByTestId('jira-toast');
+      expect(toast.textContent, reason).not.toContain(reason);
+      unmount();
+    }
+  });
+
   it('explains hub-specific connect failures from the callback', async () => {
     vi.mocked(api.getJiraStatus).mockResolvedValue({ source: 'hub', configured: true, connected: false });
     window.history.replaceState({}, '', '/?jira=error&reason=completion_key_mismatch');

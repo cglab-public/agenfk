@@ -39,6 +39,10 @@ export const JiraConnectionButton: React.FC = () => {
         hub_unreachable: 'The hub could not be reached. Try again shortly.',
         hub_auth_failed: "The hub rejected this installation's key. Run 'agenfk hub login'.",
         access_denied: 'JIRA access was not granted.',
+        no_accessible_site: 'No JIRA sites found on this account.',
+        missing_code: 'JIRA did not complete the sign-in. Please try again.',
+        not_configured: 'JIRA is not configured on your hub. Ask a hub admin to configure it.',
+        jira_unreachable: 'JIRA could not be reached. Try again shortly.',
         no_pending_connect: 'That JIRA connection was not started from this board. Click Connect JIRA to start one.',
         key_not_personal: "This installation's hub key is shared, and JIRA connects per person. Run 'agenfk hub login' first.",
       };
