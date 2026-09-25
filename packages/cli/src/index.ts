@@ -2356,10 +2356,40 @@ const jiraCommand = program
   .command('jira')
   .description('JIRA integration commands');
 
+/**
+ * The hub this installation is joined to, or null (CGLAB-412). Same rule as
+ * the server's hubClient.loadHubConfig - AGENFK_HUB_* env vars override
+ * ~/.agenfk/hub.json, and url, token and orgId must all be present - so the
+ * CLI and the server never disagree about whether JIRA is the hub's.
+ */
+function joinedHubUrl(): string | null {
+  // Mirrors readHubConfigFile: the file counts only as a whole - url, token
+  // and orgId all strings - before any env var overrides a field of it.
+  let file: { url: string; token: string; orgId: string } | null = null;
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.agenfk', 'hub.json'), 'utf8'));
+    if (raw && typeof raw.url === 'string' && typeof raw.token === 'string' && typeof raw.orgId === 'string') file = raw;
+  } catch { /* not joined via file */ }
+  const url = process.env.AGENFK_HUB_URL || file?.url;
+  const token = process.env.AGENFK_HUB_TOKEN || file?.token;
+  const orgId = process.env.AGENFK_HUB_ORG || file?.orgId;
+  return url && token && orgId ? String(url) : null;
+}
+
+/** On a joined installation the JIRA app is configured on the hub, by an admin: say so and stop. */
+function refuseLocalJiraSetupWhenJoined(): void {
+  const hubUrl = joinedHubUrl();
+  if (!hubUrl) return;
+  console.error(chalk.red(`\nJIRA is managed by your hub (${hubUrl}).`));
+  console.error(chalk.white('Ask a hub admin to configure it on the hub (Admin → JIRA), then use Connect JIRA on your board.'));
+  process.exit(1);
+}
+
 jiraCommand
   .command('setup')
   .description('Configure JIRA OAuth integration (Client ID & Secret)')
   .action(async () => {
+    refuseLocalJiraSetupWhenJoined();
     const readline = await import('readline');
 
     const ask = (rl: any, question: string, hidden = false): Promise<string> => {
@@ -2446,6 +2476,35 @@ jiraCommand
   .action(async () => {
     console.log(chalk.blue('\nJIRA Integration Status\n'));
 
+    const hubUrl = joinedHubUrl();
+    if (hubUrl) {
+      // Joined: the connection is the hub's, so local config and token files
+      // are irrelevant - ask the server, which asks the hub.
+      console.log(chalk.white(`  Source:        hub (${hubUrl})`));
+      try {
+        const { data } = await axios.get(`${API_URL}/jira/status`, { timeout: 5000 });
+        if (data.connected) {
+          console.log(chalk.green(`  Connection:    ✓ Connected to ${data.cloudUrl}`));
+          if (data.email) console.log(chalk.gray(`    Account:   ${data.email}`));
+        } else if (data.reason === 'hub_unreachable') {
+          console.log(chalk.yellow('  Connection:    ✗ Hub not reachable'));
+        } else if (data.reason === 'hub_auth_failed') {
+          console.log(chalk.yellow('  Connection:    ✗ The hub rejected this installation\'s key'));
+          console.log(chalk.white('    Run: agenfk hub login'));
+        } else if (data.configured) {
+          console.log(chalk.yellow('  Connection:    ✗ Your JIRA account is not connected'));
+          console.log(chalk.white('    Use "Connect JIRA" on the board (it connects through your hub).'));
+        } else {
+          console.log(chalk.yellow('  Connection:    ✗ JIRA is not configured on the hub'));
+          console.log(chalk.white('    Ask a hub admin to configure it on the hub (Admin → JIRA).'));
+        }
+      } catch {
+        console.log(chalk.gray('  Connection:    (server not reachable - try: agenfk up)'));
+      }
+      console.log('');
+      return;
+    }
+
     // Config check
     const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
     let jiraConfig: any = null;
@@ -2499,6 +2558,19 @@ jiraCommand
   .command('disconnect')
   .description('Remove stored JIRA OAuth token')
   .action(async () => {
+    if (joinedHubUrl()) {
+      // Joined: the token lives on the hub. Drop THIS user's connection there,
+      // through the server; the local token file is not ours to touch.
+      try {
+        await axios.post(`${API_URL}/jira/disconnect`, {}, { timeout: 15000 });
+        console.log(chalk.green('Disconnected your JIRA account from the hub.'));
+      } catch (error: any) {
+        console.error(chalk.red('Error:'), error.response?.data?.error || error.message);
+        console.error(chalk.yellow('Is the API server running? Try: agenfk up'));
+        process.exit(1);
+      }
+      return;
+    }
     const tokenPath = path.join(os.homedir(), '.agenfk', 'jira-token.json');
     if (!fs.existsSync(tokenPath)) {
       console.log(chalk.yellow('No JIRA token found — already disconnected.'));

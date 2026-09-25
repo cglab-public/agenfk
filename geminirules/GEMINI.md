@@ -196,7 +196,7 @@ This is the full workflow surface. Each row notes the equivalent MCP tool (avail
 | Install/uninstall workflow rules & skills | `agenfk skills install [-g/--global][-p/--project]` · `agenfk skills uninstall [-g/--global][-p/--project]` · `agenfk skills status` |
 | Enable/disable telemetry | `agenfk config set telemetry <true\|false>` |
 | Set the community flow registry (local only — a Hub-connected org follows its admin's setting) | `agenfk config set flowRegistry <owner/repo>` |
-| Configure JIRA OAuth | `agenfk jira setup` · `agenfk jira status` · `agenfk jira disconnect` |
+| Configure JIRA OAuth | `agenfk jira setup` · `agenfk jira status` · `agenfk jira disconnect` (hub-joined installations: a hub admin configures the org's Atlassian app once — Admin → JIRA — and each user connects their own JIRA from the board through the hub; `setup` refuses locally, `disconnect` drops your hub connection, `status` shows it) |
 | Configure GitHub Issues import | `agenfk github setup [--owner <owner>][--repo <repo>]` · `agenfk github status` · `agenfk github disconnect` |
 
 ### Linking a card to a JIRA item
@@ -224,6 +224,17 @@ a badge linking straight to the issue.
   this usable offline and in CI. If JIRA is connected but unreachable the link
   still goes through and the command prints a warning that it could not be
   verified; treat that as unconfirmed, not as success.
+- **On a hub-joined installation, JIRA goes through the hub.** A hub admin
+  registers the org's Atlassian app once (hub Admin → JIRA) and sets its
+  Distribution status to *Sharing* in the Atlassian developer console (an
+  unshared app can only be authorised by its contributors); each user then
+  connects their OWN JIRA account with "Connect JIRA" on the board, so JIRA's
+  permissions apply per person. The token is held encrypted on the hub and no
+  JIRA credential is stored locally. `agenfk jira setup` exits with an error
+  telling you to ask a hub admin, `agenfk jira disconnect` drops your hub
+  connection, and a local JIRA setup left on the machine is ignored. Until
+  you connect, `--jira-item` stores the key unverified (with a warning),
+  exactly as offline.
 - **Leaving the flag off never changes an existing link**, so an ordinary
   `agenfk update <id> --title "..."` cannot silently drop a card's JIRA
   reference.

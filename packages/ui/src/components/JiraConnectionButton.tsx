@@ -31,6 +31,16 @@ export const JiraConnectionButton: React.FC = () => {
         token_exchange_failed: 'JIRA authentication failed. Please try again.',
         invalid_state: 'OAuth session expired. Please try again.',
         missing_params: 'OAuth callback missing parameters.',
+        // Joined to a hub: the connect runs through the hub's Atlassian app.
+        jira_not_configured: 'JIRA is not configured on your hub. Ask a hub admin to configure it.',
+        completion_key_mismatch: 'That JIRA connection was started from a different installation. Start again from this board.',
+        invalid_completion: 'The JIRA connection link expired. Start again from this board.',
+        not_loopback: 'Open the board on localhost to connect JIRA.',
+        hub_unreachable: 'The hub could not be reached. Try again shortly.',
+        hub_auth_failed: "The hub rejected this installation's key. Run 'agenfk hub login'.",
+        access_denied: 'JIRA access was not granted.',
+        no_pending_connect: 'That JIRA connection was not started from this board. Click Connect JIRA to start one.',
+        key_not_personal: "This installation's hub key is shared, and JIRA connects per person. Run 'agenfk hub login' first.",
       };
       setToast({ type: 'error', message: messages[reason] || `JIRA error: ${reason}` });
       params.delete('jira');
@@ -56,6 +66,8 @@ export const JiraConnectionButton: React.FC = () => {
     retry: 3,
     retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 10_000),
   });
+
+  const isHub = jiraStatus?.source === 'hub';
 
   const disconnectMutation = useMutation({
     mutationFn: api.disconnectJira,
@@ -95,7 +107,11 @@ export const JiraConnectionButton: React.FC = () => {
           <Loader2 size={16} className="animate-spin" />
         </div>
       ) : jiraStatus?.connected ? (
-        <div className="flex items-center gap-1.5" data-testid="jira-connected">
+        <div
+          className="flex items-center gap-1.5"
+          data-testid="jira-connected"
+          title={isHub ? `JIRA via your hub${jiraStatus.email ? ` as ${jiraStatus.email}` : ''}` : undefined}
+        >
           <div className="flex items-center gap-1.5 px-2 py-1 bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-700 rounded-md text-xs font-medium text-emerald-700 dark:text-emerald-400">
             <CheckCircle size={12} />
             <span>JIRA</span>
@@ -110,6 +126,23 @@ export const JiraConnectionButton: React.FC = () => {
             <Unlink size={14} />
           </button>
         </div>
+      ) : isHub && !jiraStatus?.configured ? (
+        // Joined to a hub that has no JIRA app yet: only an admin can fix that.
+        // With an app, the ordinary Connect below runs through the hub.
+        <button
+          disabled
+          title={jiraStatus?.reason === 'hub_auth_failed'
+            ? "The hub rejected this installation's key. Run 'agenfk hub login'."
+            : jiraStatus?.reason === 'hub_unreachable'
+              ? 'The hub cannot be reached right now, so JIRA is unavailable.'
+              : 'JIRA is managed by your hub. Ask your hub admin to connect JIRA.'}
+          aria-label="JIRA not connected on the hub"
+          data-testid="jira-hub-unconnected"
+          className="flex items-center gap-1.5 px-2 py-1 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md text-xs font-medium text-slate-400 cursor-not-allowed"
+        >
+          <Link size={12} />
+          <span>JIRA</span>
+        </button>
       ) : jiraStatus?.configured === false ? (
         <button
           disabled

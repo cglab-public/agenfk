@@ -389,7 +389,7 @@ export const api = {
       throw e;
     }
   },
-  getJiraStatus: async (): Promise<{ configured: boolean; connected: boolean; cloudId?: string; email?: string; message?: string; reason?: string }> => {
+  getJiraStatus: async (): Promise<{ source?: 'hub' | 'local'; configured: boolean; connected: boolean; cloudId?: string; cloudUrl?: string; email?: string; message?: string; reason?: string }> => {
     const { data } = await axios.get(`${API_URL}/jira/status`);
     return data;
   },
