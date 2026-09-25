@@ -67,6 +67,8 @@ export interface CustomCheckRow {
   detail?: string;
   /** A command check: did the server actually run it? */
   ran?: boolean;
+  /** A command check whose pass another card's run at the same tree state gave it (3ffc9651). */
+  reusedFrom?: { itemId: string; at: string };
   /** An agent check: did the agent actually report it? */
   reported?: boolean;
   /** Who let a command that asks for a person run, as recorded when it ran. */
@@ -87,7 +89,7 @@ export function formatCustomChecks(rows: readonly CustomCheckRow[]): string {
     // Whose word the result is, from what the check did - never from the kind alone.
     const how = r.overridden ? `🔓 overridden by ${cell(r.overridden.by)}: ${cell(r.overridden.reason)}`
       : r.kind === 'command'
-        ? (r.ran ? `server ran it${r.approval ? `; approved by ${cell(r.approval.by)}${r.approval.authority === 'passkey' ? ' 🔐' : ''}` : ''}` : `not run: ${cell(r.detail ?? '')}`)
+        ? (r.reusedFrom ? `server ran it for [${cell(r.reusedFrom.itemId.slice(0, 8))}] at this same tree state; shared${r.approval ? `; approved by ${cell(r.approval.by)}${r.approval.authority === 'passkey' ? ' 🔐' : ''}` : ''}` : r.ran ? `server ran it${r.approval ? `; approved by ${cell(r.approval.by)}${r.approval.authority === 'passkey' ? ' 🔐' : ''}` : ''}` : `not run: ${cell(r.detail ?? '')}`)
         : (r.reported ? 'agent-reported (not checked by the server)' : 'not reported by the agent');
     const outcome = r.outcome === 'pass' ? '✅ pass' : `❌ ${cell(r.outcome)}`;
     return `| ${cell(r.title)} | ${cell(r.step)} | \`${cell(r.check)}\` | ${outcome} | ${how} | ${cell(r.note ?? '') || '—'} |`;

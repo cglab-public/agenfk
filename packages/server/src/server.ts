@@ -2973,7 +2973,7 @@ app.get("/items/:id/custom-checks", asyncHandler(async (req: any, res: any) => {
         latest.set(`${r.step}\u0000${id}`, {
           itemId: card.id, title: card.title, step: r.step, check: id.slice(id.indexOf(':') + 1), kind,
           outcome: c.outcome, at: r.at,
-          ...(kind === 'command' ? { ran: m.ran === true } : { reported: m.reported === true }),
+          ...(kind === 'command' ? { ran: m.ran === true, ...(m.reusedFrom ? { reusedFrom: m.reusedFrom } : {}) } : { reported: m.reported === true }),
           ...(m.note ? { note: m.note } : {}),
           ...(typeof c.detail === 'string' ? { detail: c.detail } : {}),
           ...(m.approval ? { approval: m.approval } : {}),
@@ -3201,27 +3201,110 @@ function treeContentState(root: string, excludeRel: string | null): string | nul
  * a capture on the dirty tree can be tied to the commit that follows it.
  */
 function treeFilesState(root: string, excludeRel: string | null): string | null {
+  return treeFiles(root, excludeRel)?.hash ?? null;
+}
+
+/** A file's content as git names a blob, so a digest read from disk equals the index's for the same bytes. */
+const blobSha = (content: Buffer): string => crypto.createHash('sha1').update(`blob ${content.length}\0`).update(content).digest('hex');
+
+/**
+ * Every tracked and untracked (non-ignored) file of the tree, as one hash,
+ * `excludeRel` aside. 3ffc9651 review: read the way git reads it, so the cost
+ * is the files that changed, not the tree - a tracked file git's stat cache
+ * says is unchanged is its index blob; one that differs, and every untracked
+ * file, is read and named as git would name it, so the same bytes give the
+ * same digest either way. The executable bit is content (e99b5015).
+ *
+ * A submodule counts by the commit it is checked out at. One with work of its
+ * own (or an untracked nested repository) is content this does not hash, so
+ * `shareable` is false: the hash still fences a run, but no green or pass may
+ * be shared on it. `index` names what is staged, for a command that reads it.
+ */
+function treeFiles(root: string, excludeRel: string | null): { hash: string; shareable: boolean; index: string } | null {
   try {
-    const git = (args: string[]) => execFileSync('git', ['-C', root, ...args], { maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
-    const files = git(['ls-files', '-z', '--cached', '--others', '--exclude-standard']).toString().split('\0').filter(Boolean).sort();
-    const h = crypto.createHash('sha256');
-    for (const rel of new Set(files)) {
-      if (rel === excludeRel) continue;
+    const git = (args: string[], cwd = root) => execFileSync('git', ['-C', cwd, ...args], { maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+    const staged = git(['ls-files', '-z', '-s']);
+    const changed = new Set(git(['diff', '--no-renames', '--name-only', '-z']).split('\0').filter(Boolean));
+    const untracked = git(['ls-files', '-z', '--others', '--exclude-standard']).split('\0').filter(Boolean);
+    const entries = new Map<string, string>();
+    let shareable = true;
+    const fromDisk = (rel: string): string => {
       const abs = path.join(root, rel);
-      let digest = 'absent';
       try {
         const st = fs.lstatSync(abs);
-        digest = st.isSymbolicLink() ? `link:${fs.readlinkSync(abs)}`
-          // The executable bit is content too: a script's tests can depend on it (e99b5015).
-          : st.isFile() ? `${crypto.createHash('sha1').update(fs.readFileSync(abs)).digest('hex')}:${st.mode & 0o111 ? 'x' : '-'}` : 'other';
-      } catch { /* deleted: 'absent' */ }
-      h.update(`\0${rel}\0${digest}`);
+        if (st.isSymbolicLink()) return `120000:${blobSha(Buffer.from(fs.readlinkSync(abs)))}`;
+        if (st.isFile()) return `${st.mode & 0o111 ? '100755' : '100644'}:${blobSha(fs.readFileSync(abs))}`;
+        if (st.isDirectory()) {
+          // A submodule, or a repository nested in the tree: its commit, and whether it holds work of its own.
+          if (!fs.existsSync(path.join(abs, '.git'))) return 'dir';
+          const head = git(['rev-parse', 'HEAD'], abs).trim();
+          const own = git(['status', '--porcelain'], abs).trim();
+          if (!own) return `160000:${head}`;
+          // Its work is not hashed: marked, so this state never equals the clean one at the same commit.
+          shareable = false;
+          return `160000:${head}:dirty:${crypto.createHash('sha1').update(own).digest('hex')}`;
+        }
+        return 'other';
+      } catch { return 'absent'; }
+    };
+    for (const line of staged.split('\0')) {
+      if (!line) continue;
+      const tab = line.indexOf('\t');
+      const rel = line.slice(tab + 1);
+      if (rel === excludeRel || changed.has(rel) || entries.has(rel)) continue;
+      const [mode, sha] = line.slice(0, tab).split(' ');
+      entries.set(rel, `${mode}:${sha}`);
     }
-    return h.digest('hex');
+    for (const rel of [...changed, ...untracked]) {
+      const clean = rel.endsWith('/') ? rel.slice(0, -1) : rel;
+      if (clean === excludeRel) continue;
+      // `ls-files --others` names a nested repository as `dir/`: its content is not listed, so nothing is shared.
+      if (rel.endsWith('/')) shareable = false;
+      entries.set(clean, fromDisk(clean));
+    }
+    const h = crypto.createHash('sha256');
+    for (const rel of [...entries.keys()].sort()) h.update(`\0${rel}\0${entries.get(rel)}`);
+    return { hash: h.digest('hex'), shareable, index: crypto.createHash('sha256').update(staged).digest('hex') };
   } catch {
     return null;
   }
 }
+
+/** The project's test report as a path inside `root`, which no tree state counts: it is what a run writes. */
+const reportRelOf = (root: string, project: any): string | null =>
+  typeof project?.testReport?.reportPath === 'string' ? insideRoot(root, path.resolve(root, project.testReport.reportPath)) : null;
+
+/**
+ * 3ffc9651 — the state of a tree, clean or dirty: the content of every tracked
+ * and untracked (non-ignored) file, the report aside. Two cards that read the
+ * same state run on the same inputs, so a green or a command check's pass taken
+ * at it speaks for both. Null: cannot say, and nothing is shared.
+ *
+ * NOT HEAD. A sibling's close commit commits files without changing them, and
+ * keying on HEAD made every close break reuse for the next sibling (the TDD
+ * simulation ran the verify command once per sibling). What the tests read is
+ * the files; e99b5015 already leaves HEAD out when it re-stamps a close green.
+ * A command that reads git metadata (a changed-files-only runner) sees a
+ * narrower world at another commit, never content it did not see. Files git
+ * ignores are not seen, exactly as a clean green does not see them.
+ */
+const treeStateOf = (root: string, project: any): string | null => {
+  const t = treeFiles(root, reportRelOf(root, project));
+  return t && t.shareable ? t.hash : null;
+};
+/**
+ * The state a command check's pass is shared at (3ffc9651 review): the files,
+ * AND what is staged, AND HEAD. The suite reads files; an arbitrary command may
+ * read the index (a staged-files linter, a secret scan) or the branch, and every
+ * card stages its own files before it closes.
+ */
+const commandStateOf = (root: string, project: any): string | null => {
+  const t = treeFiles(root, reportRelOf(root, project));
+  const head = t && t.shareable ? readHead(root, gitRun) : null;
+  return t && head ? `${head}\0${t.index}\0${t.hash}` : null;
+};
+/** A capture record's state, as treeStateOf reads it; null for a record that did not fence its run. */
+const stateOfRecord = (r: any): string | null => (typeof r?.filesState === 'string' ? r.filesState : null);
 
 /**
  * Capture a test report for the card's CURRENT step, in the tree its commands
@@ -3248,12 +3331,13 @@ async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) 
   }
 
   /*
-   * SINGLE-FLIGHT (e99b5015): a capture of a CLEAN tree that starts while an
-   * identical one runs - same tree, commit, command, format and surface -
-   * waits for it and takes its record. Two suites in one tree share its
-   * on-disk sandbox, and that gave real false failures. A dirty tree is never
-   * shared: its content is the card's own. Only a GREEN is shared: a red or
-   * unreadable run may be a flake, and N cards' baselines should not inherit
+   * SINGLE-FLIGHT (e99b5015): a capture that starts while an identical one
+   * runs - same tree, state, command, format and surface - waits for it and
+   * takes its record. Two suites in one tree share its on-disk sandbox, and
+   * that gave real false failures. The state is every file's content
+   * (3ffc9651), so a dirty tree is shared too when its content is the same:
+   * the uncommitted work is the tree's, and both cards see it alike. Only a
+   * GREEN is shared: a red or unreadable run may be a flake, and N cards' baselines should not inherit
    * one. After any wait that yields nothing to share, the capture starts OVER -
    * the tree may have changed during a whole suite run, and another waiter may
    * already be the new owner.
@@ -3268,14 +3352,17 @@ async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) 
   }
   for (let attempt = 0; ; attempt++) {
     const cleanSha = readCleanTreeSha(root, gitRun);
-    const reused = await reusableCapture(item, project, root, cleanSha);
+    // 3ffc9651: the tree's state, dirty or not - what reuse and single-flight key on.
+    const state = treeStateOf(root, project);
+    const reused = await reusableCapture(item, project, root, cleanSha, state);
     if (reused) {
       const fresh: any = await storage.getItem(item.id);
       if (!fresh || fresh.status !== item.status) return { status: 409, error: 'CARD_MOVED', message: `The card moved (${item.status} -> ${fresh?.status ?? 'deleted'}); nothing was recorded.` };
       await storage.updateItem(item.id, { stepRecords: [...(fresh.stepRecords ?? []), reused] } as any);
       return { record: reused };
     }
-    const flightKey = cleanSha ? [item.projectId, root, cleanSha, command, setting?.format ?? 'exit-code', setting?.reportPath ?? '', JSON.stringify(setting?.surface ?? [])].join('\0') : null;
+    // Only a per-test capture is shared, and only one whose run can be tied to the state it waited on.
+    const flightKey = state ? [item.projectId, root, state, command, setting?.format ?? 'exit-code', setting?.reportPath ?? '', JSON.stringify(setting?.surface ?? [])].join('\0') : null;
     // Bounded: a tree that keeps changing under us stops waiting and runs.
     if (!flightKey || attempt >= 8) return runCapture(item, root, setting, command, cleanSha, opts);
     const running = capturesInFlight.get(flightKey);
@@ -3284,7 +3371,8 @@ async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) 
       let theirs: { out: CaptureOutcome; itemId: string } | null = null;
       try { theirs = await running; } catch { /* its crash is not this card's: start over */ }
       const rec = theirs && 'record' in theirs.out ? theirs.out.record : null;
-      if (theirs && rec && rec.available === true && rec.exitCode === 0) {
+      // Its run fenced the tree: its record's state is the one it ran on, which must be the one waited on.
+      if (theirs && rec && rec.available === true && rec.exitCode === 0 && stateOfRecord(rec) === state) {
         const fresh: any = await storage.getItem(item.id);
         if (!fresh || fresh.status !== item.status) return { status: 409, error: 'CARD_MOVED', message: `The card moved (${item.status} -> ${fresh?.status ?? 'deleted'}); nothing was recorded.` };
         const shared = { ...rec, step: item.status, at: new Date().toISOString(), reusedFrom: { itemId: theirs.itemId, step: rec.step, at: rec.at } };
@@ -3449,6 +3537,8 @@ async function runCapture(item: any, root: string, setting: TestReportSetting | 
   await storage.updateItem(item.id, { stepRecords: [...(fresh.stepRecords ?? []), record] } as any);
   // Only a per-test capture is ever reused (an exit code alone comes from a close's test record); never a merged one.
   if (record.available && record.clean && record.exitCode === 0 && !record.lazy) noteGreen(item.projectId, root, record.head, item.id);
+  // 3ffc9651: and by its state, clean or dirty.
+  if (record.available && record.exitCode === 0 && !record.lazy) noteGreen(item.projectId, root, stateOfRecord(record), item.id);
   return { record };
 }
 
@@ -3579,7 +3669,10 @@ function indexProjectGreens(projectId: string): Promise<void> {
     scan = (async () => {
       // The tree each green RAN in is on its record: a card's current tree may be another by now.
       for (const card of (await storage.listItems({ projectId } as any)) as any[]) {
-        for (const r of card.stepRecords ?? []) if (r?.kind === 'capture' && r.available === true && r.clean === true && r.exitCode === 0 && !r.reusedFrom && !r.lazy) noteGreen(projectId, r.root, r.head, card.id);
+        for (const r of card.stepRecords ?? []) if (r?.kind === 'capture' && r.available === true && r.exitCode === 0 && !r.reusedFrom && !r.lazy) {
+          if (r.clean === true) noteGreen(projectId, r.root, r.head, card.id);
+          noteGreen(projectId, r.root, stateOfRecord(r), card.id);
+        }
         for (const x of testRecords(card.tests)) if (x.status === 'PASSED' && x.commit) noteGreen(projectId, x.commitRoot, x.commit, card.id);
       }
     })();
@@ -3618,26 +3711,33 @@ function ranAsSetNow(r: any, setting: TestReportSetting): boolean {
  * results (same format and declared surface); without one, a PASSED test
  * record stamped with that commit (what a close stamps) - the exit code is all
  * a capture would have known. Null: capture it.
+ *
+ * 3ffc9651: a per-test green also transfers at the same `state` - every
+ * file's content - so a DIRTY tree reuses a green taken on exactly its
+ * content, the card's own included. Only a run that fenced its tree carries a
+ * state (its filesState), so a run that saw the tree change never matches.
  */
-async function reusableCapture(item: any, project: any, root: string, sha: string | null): Promise<any | null> {
-  if (!sha) return null;
+async function reusableCapture(item: any, project: any, root: string, sha: string | null, state: string | null = null): Promise<any | null> {
+  if (!sha && !state) return null;
   const setting: TestReportSetting | undefined = project?.testReport;
   const command = setting?.command ?? project?.verifyCommand;
   if (!command) return null;
   await indexProjectGreens(item.projectId);
   const candidates: any[] = [];
-  for (const id of greensAt.get(greenKey(item.projectId, root, sha)) ?? []) {
+  const ids = new Set<string>([...(sha ? greensAt.get(greenKey(item.projectId, root, sha)) ?? [] : []), ...(state ? greensAt.get(greenKey(item.projectId, root, state)) ?? [] : [])]);
+  for (const id of ids) {
     const card: any = await storage.getItem(id);
     if (card && card.projectId === item.projectId) candidates.push(card);
   }
-  const base = { step: item.status, kind: 'capture', at: new Date().toISOString(), head: sha, clean: true, command, root };
+  const base = { step: item.status, kind: 'capture', at: new Date().toISOString(), head: sha ?? readHead(root, gitRun), clean: sha !== null, command, root };
   if (setting) {
-    const same = (r: any) => isOwnGreenRun(r, setting, root) && r.clean === true && r.head === sha;
+    const same = (r: any) => isOwnGreenRun(r, setting, root) && ((sha !== null && r.clean === true && r.head === sha) || (state !== null && stateOfRecord(r) === state));
     let best: { card: any; r: any } | null = null;
     for (const card of candidates) for (const r of card.stepRecords ?? []) if (same(r) && (!best || String(r.at) > String(best.r.at))) best = { card, r };
     if (!best) return null;
     return { ...best.r, ...base, reusedFrom: { itemId: best.card.id, step: best.r.step, at: best.r.at } };
   }
+  if (!sha) return null;
   let found: { card: any; t: any } | null = null;
   for (const card of candidates) for (const x of testRecords(card.tests)) {
     if (x.status === 'PASSED' && x.commit === sha && x.commitRoot === root && x.command === command && (!found || String(x.executedAt) > String(found.t.executedAt))) found = { card, t: x };
@@ -6443,7 +6543,8 @@ function sanitizeCallerTests(incoming: unknown, stored: any[] | undefined): any 
   // A record is an object; null, numbers and strings are dropped (BUG 93d9fbd0).
   return incoming.filter((t: any) => !!t && typeof t === 'object' && !Array.isArray(t)).map((t: any) => {
     if (byId.has(t.id)) return byId.get(t.id);
-    const { commit: _dropped, commitRoot: _droppedRoot, ...rest } = t;
+    // treeState (3ffc9651) spends a green exactly like a commit does.
+    const { commit: _dropped, commitRoot: _droppedRoot, treeState: _droppedState, ...rest } = t;
     return rest;
   });
 }
@@ -6501,6 +6602,12 @@ const staysOn = (status: string) => `\n\nThe advance was refused. Item stays on 
 interface StepGate {
   results: CheckResult[];
   blocked: boolean;
+  /**
+   * 3ffc9651 review: the step it judged. A gate is handed to a later call (a
+   * slow gate's background re-entry, a sibling that waited on another's final
+   * verify); if the card moved meanwhile, its verdict is about another step.
+   */
+  step: string;
   /** 281adef0: the parent this gate judged the card's suite as deferred to; the close follows it. */
   deferredTo?: string;
 }
@@ -6799,7 +6906,11 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   // efcacdeb: command checks run here, before the engine, in the card's tree.
   const commandChecks = resolved.filter(c => c.applicable && c.id.startsWith('command-check:') && !deferToApproval.includes(c.id));
   const commandResults = commandChecks.length
-    ? await judgeCommandChecks(commandChecks, { root, origin: (flow as any).origin, approvals: Array.isArray(project?.commandApprovals) ? project.commandApprovals : [], timeoutMs: verifyMaxMs() })
+    ? await judgeCommandChecks(commandChecks, {
+      root, origin: (flow as any).origin, approvals: Array.isArray(project?.commandApprovals) ? project.commandApprovals : [], timeoutMs: verifyMaxMs(),
+      // 3ffc9651: a pass is shared by this project's cards at the same state of this tree.
+      ...(root ? { share: { scope: `${item.projectId}\0${root}`, itemId: item.id, state: () => commandStateOf(root, project) } } : {}),
+    })
     : undefined;
   const outcome = evaluateChecks(resolved, {
     ...(commandResults ? { commandResults } : {}),
@@ -6859,7 +6970,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     }),
     ...(made.length ? { stepRecords: [...(latest?.stepRecords ?? []), ...made] } : {}),
   } as any);
-  return { results: outcome.results, blocked: outcome.blocked, ...(toParent ? { deferredTo: toParent.id } : {}) };
+  return { results: outcome.results, blocked: outcome.blocked, step: item.status, ...(toParent ? { deferredTo: toParent.id } : {}) };
 }
 
 /** Refuse a transition on the step's checks, in verify's failure shape plus `checks[]`. */
@@ -6925,7 +7036,7 @@ function runRecorder(run: ValidateRun) {
   };
 }
 
-async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string, asyncRun?: ValidateRun, opts?: { gate?: StepGate; run?: ValidateRun; actor?: ReturnType<typeof parseActor>; agentReports?: Record<string, AgentReport> }) {
+async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string, asyncRun?: ValidateRun, opts?: { gate?: StepGate; run?: ValidateRun; actor?: ReturnType<typeof parseActor>; agentReports?: Record<string, AgentReport>; joined?: boolean }) {
   const item = await storage.getItem(itemId);
   if (!item) return res.status(404).json({ error: "Item not found" });
 
@@ -7016,6 +7127,10 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     r0.status(422).json({ status: item.status, message: `❌ The card cannot close yet. ${describeStrays(item, strays)}${staysOn(item.status)}` });
     return { refused: true };
   };
+  // A gate judged on another step answers nothing here: the card moved (a rollback onto a step a person approves, say).
+  if (opts?.gate && opts.gate.step !== item.status) {
+    return res.status(409).json({ status: item.status, error: 'CARD_MOVED', message: `⚠️ The card moved (${opts.gate.step} → ${item.status}) while its verify waited; nothing was applied. Run verify again from ${item.status}.${nowOn(item.status)}` });
+  }
   if (!opts?.gate) {
     const early = await checkStrays(res);
     if (early.refused) return;
@@ -7285,6 +7400,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   const exitCriteria = (currentFlowStep.step as any).exitCriteria as string | undefined;
 
   // ── Sibling propagation ───────────────────────────────────────────────────
+  // 3ffc9651: what an identical sibling run in flight is keyed on, when propagation found nothing yet.
+  let siblingFlightKey: string | null = null;
   if (item.parentId) {
     const siblings = await storage.listItems({ parentId: item.parentId });
     // For final step (→ DONE), check siblings already DONE with same verifyCommand
@@ -7314,10 +7431,12 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       const gateRoot = effectiveRoot;
       const sharesRoot = !!gateRoot;
       const treeSha = sharesRoot ? readCleanTreeSha(gateRoot, gitRun) : null;
+      // 3ffc9651: or at this very STATE, dirty or not - every file's content, as the green recorded it.
+      const treeState = sharesRoot ? treeStateOf(gateRoot, project) : null;
       let pass: { sibling: any; test: any } | null = null;
       let refusal = treeSha
         ? 'no sibling green is tied to this commit'
-        : 'this tree is not clean at a commit, so no sibling green can be tied to it';
+        : treeState ? 'no sibling green is tied to this tree state' : 'the state of this tree cannot be read, so no sibling green can be tied to it';
       for (const s of siblings) {
         if (pass || s.id === item.id || s.status !== Status.DONE) continue;
         // Same checkout as the one the command runs in, or nothing transfers.
@@ -7326,15 +7445,23 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         // rollback has an older record that must not shadow the current one.
         for (const test of testRecords(s.tests)) {
           if (pass || test.status !== 'PASSED' || test.command !== resolvedCommand) continue;
+          if (treeState && test.treeState === treeState && test.commitRoot === gateRoot) { pass = { sibling: s, test }; continue; }
           const gate = mayPropagate(treeSha, test);
           if (gate.allowed) pass = { sibling: s, test };
-          else refusal = gate.reason ?? refusal;
+          else if (treeSha || !test.treeState) refusal = gate.reason ?? refusal;
+          else refusal = 'the tree changed since the sibling verified: its content is not the state the green was recorded at';
         }
       }
       if (pass) {
+        // Asked again: a re-entry (a slow gate, a sibling that waited) skipped the early check, and a close happened since.
+        const strays = await checkStrays(res);
+        if (strays.refused) return;
+        res = strays.res;
         const { sibling: passedSibling, test: siblingTest } = pass;
-        const sibComment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).\n**Command**: \`${resolvedCommand}\` at \`${String(siblingTest.commit).slice(0, 12)}\``, timestamp: new Date() };
-        const updates: any = { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), sibComment], tests: [...testRecords(item.tests), { id: uuidv4(), command: resolvedCommand, output: `Sibling propagation: verified by ${passedSibling.id}`, status: 'PASSED', executedAt: new Date(), commit: siblingTest.commit }], ...(isExitStep ? { failureCount: 0 } : {}) };
+        const where = siblingTest.commit ? `\`${String(siblingTest.commit).slice(0, 12)}\`` : `\`${String(siblingTest.treeState).slice(0, 12)}\` with the same uncommitted content`;
+        const sibComment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).\n**Command**: \`${resolvedCommand}\` at ${where}`, timestamp: new Date() };
+        const inherited = { ...(siblingTest.commit ? { commit: siblingTest.commit } : {}), ...(siblingTest.treeState ? { treeState: siblingTest.treeState } : {}), commitRoot: gateRoot };
+        const updates: any = { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), sibComment], tests: [...testRecords(item.tests), { id: uuidv4(), command: resolvedCommand, output: `Sibling propagation: verified by ${passedSibling.id}`, status: 'PASSED', executedAt: new Date(), ...inherited }], ...(isExitStep ? { failureCount: 0 } : {}) };
         const updated = await storage.updateItem(itemId, updates);
         io.emit('items_updated');
         recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
@@ -7349,6 +7476,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.${describePush(gitResult)}${nowOn(nextStatus)}`, output: 'Sibling propagation' });
       }
       console.warn(`[VALIDATE] Sibling propagation refused for ${itemId}: ${refusal}`);
+      if (treeState && gateRoot) siblingFlightKey = [item.projectId, item.parentId, gateRoot, resolvedCommand, treeState].join('\0');
     } else if (!isFinalStep) {
       // "A sibling is further along" runs nothing, so it may only carry a step
       // that needs no command. On a boundary step mid-flow the project's
@@ -7434,6 +7562,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   const gateRoot = runRoot ?? null;
   const headBeforeRun = gateRoot ? readHead(gateRoot, gitRun) : null;
   const statusBeforeRun = gateRoot ? readTreeStatus(gateRoot, gitRun) : null;
+  // 3ffc9651: and every file's content, so a green on a DIRTY tree can be tied to a state too.
+  const filesBeforeRun = gateRoot && endsFlow ? treeFiles(gateRoot, reportRelOf(gateRoot, project)) : null;
 
   // try/finally around the spawn, not just the awaited result: spawn() throws
   // SYNCHRONOUSLY on a bad argument (a NUL byte in the command, a non-string
@@ -7590,12 +7720,23 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         preCommitStatus === statusBeforeRun
       ) {
         const verifiedSha = readCleanTreeSha(gateRoot, gitRun);
-        if (verifiedSha) {
+        /*
+         * 3ffc9651: the STATE this green speaks for, dirty tree or not - every
+         * file's content, which must be what the run
+         * started on (the close commits files, it does not change them). A
+         * sibling reading the same state propagates it.
+         */
+        const filesNow = filesBeforeRun ? treeFiles(gateRoot, reportRelOf(gateRoot, project)) : null;
+        const treeState = filesNow && filesBeforeRun && filesNow.shareable && filesNow.hash === filesBeforeRun.hash ? filesNow.hash : null;
+        if (verifiedSha || treeState) {
           const current = await storage.getItem(itemId);
           const tests = testRecords(current?.tests).map((t: any) =>
-            t.id === testId ? { ...t, commit: verifiedSha, commitRoot: gateRoot } : t,
+            t.id === testId ? { ...t, ...(verifiedSha ? { commit: verifiedSha } : {}), ...(treeState ? { treeState } : {}), commitRoot: gateRoot } : t,
           );
           await storage.updateItem(itemId, { tests });
+          io.emit('items_updated');
+        }
+        if (verifiedSha) {
           noteGreen(item.projectId, gateRoot, verifiedSha, itemId);
           // e99b5015: and its per-test capture, so the next card's baseline runs nothing.
           try { await stampCloseGreen(itemId, gateRoot, verifiedSha); }
@@ -7649,6 +7790,32 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   }
   }; // end runCommandAndFinalize
 
+  /*
+   * 3ffc9651: SINGLE-FLIGHT for the final verify among siblings. Siblings
+   * closing at once, in one tree at one state, each ran the command: nothing
+   * was DONE yet for propagation to find. The first to get here runs it; a
+   * sibling arriving meanwhile waits for that run to finish (its close commit
+   * and stamp included), then decides again from the top with the step's
+   * checks already judged - it propagates the green if the state still
+   * matches, and runs its own otherwise, never waiting a second time.
+   */
+  const runOrJoin = async (res2: any, run: ValidateRun | undefined, bare: any): Promise<unknown> => {
+    const key = siblingFlightKey;
+    if (!key) return runCommandAndFinalize(res2, run);
+    const theirs = finalVerifiesInFlight.get(key);
+    if (theirs && !opts?.joined) {
+      if (run) run.output = `${run.output ?? ''}[agenfk] a sibling is running the same command on this same tree state: waiting for its result\n`;
+      await theirs;
+      // Its evidence is already on the card: the first pass recorded it.
+      return handleValidateProgress(itemId, command, bare, undefined, undefined, { ...opts, gate, run, joined: true });
+    }
+    const mine = runCommandAndFinalize(res2, run);
+    const settled = mine.then(() => undefined, () => undefined);
+    finalVerifiesInFlight.set(key, settled);
+    try { return await mine; }
+    finally { if (finalVerifiesInFlight.get(key) === settled) finalVerifiesInFlight.delete(key); }
+  };
+
   if (asyncRun) {
     const run = asyncRun;
     const runId = run.runId;
@@ -7661,7 +7828,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     });
     markRunStarted(run, item.status);
     const recorder = runRecorder(run);
-    void runCommandAndFinalize(commandNote ? withNote(recorder, commandNote) : recorder, run)
+    void runOrJoin(commandNote ? withNote(recorder, commandNote) : recorder, run, recorder)
       .catch((err: any) => {
         run.status = 'failed';
         run.message = `Internal error during background validation: ${err?.message || err}`;
@@ -7676,8 +7843,11 @@ async function handleValidateProgress(itemId: string, command: string | undefine
 
   // `opts.run`: the background run a slow gate already answered 202 for, so
   // the command's output still streams to whoever follows it.
-  return runCommandAndFinalize(res, opts?.run);
+  return runOrJoin(res, opts?.run, bareRes);
 }
+
+/** Final verifies running now, by project, parent, tree, command and state: see runOrJoin. */
+const finalVerifiesInFlight = new Map<string, Promise<void>>();
 
 // Live status/output of a background validate run. Registered before use in
 // the CLI follow loop; unknown ids 404 (a restarted server forgets runs — the

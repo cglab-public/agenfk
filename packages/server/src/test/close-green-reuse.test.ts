@@ -232,16 +232,17 @@ describe('e99b5015 (2): identical captures are single-flight', () => {
     expect(shared[0].tests).toEqual((shared[0] === ra.body ? rb.body : ra.body).tests);
   });
 
-  it('a dirty tree is not shared: each card\'s uncommitted work is its own', async () => {
+  // 3ffc9651: a dirty tree is shared when its CONTENT is the same - the uncommitted work is the tree's, seen alike by both.
+  it('a dirty tree with the same content is shared: one run, the waiting card takes its record', async () => {
     const t = await setup(800);
     fs.writeFileSync(path.join(t.repo, 'feature.js'), 'module.exports = 1;\n');
     const [a, b] = [await t.card(), await t.card()];
     const [ra, rb] = await Promise.all([capture(a), capture(b)]);
     expect(ra.status).toBe(200);
     expect(rb.status).toBe(200);
-    expect(t.count()).toBe(2);
-    expect(ra.body.reusedFrom).toBeUndefined();
-    expect(rb.body.reusedFrom).toBeUndefined();
+    expect(t.count()).toBe(1);
+    expect([ra.body, rb.body].filter(r => r.reusedFrom)).toHaveLength(1);
+    expect([ra.body, rb.body].every(r => r.clean === false)).toBe(true);
   });
 
   it('a red run is not shared: the waiting card runs its own, after the first finishes', async () => {

@@ -112,6 +112,14 @@ describe('formatCustomChecks (C3b)', () => {
     expect(docs).toContain('README \\| has it');
   });
 
+  // 3ffc9651: a pass another card's run gave this one says so, naming that card - not "not run", not "ran it" for this card.
+  it('a shared command-check pass names the card whose run it was', () => {
+    const md = formatCustomChecks([{ ...cmd, ran: false, approval: undefined, reusedFrom: { itemId: 'abcdef1234567890', at: '2026-09-25T09:00:00.000Z' }, detail: 'reused: lint exited 0 in the run of card abcdef12' }]);
+    const lint = md.split('\n').find(l => l.includes('`lint`'))!;
+    expect(lint).toMatch(/server ran it for \[abcdef12\] at this same tree state; shared/);
+    expect(lint).not.toMatch(/not run/);
+  });
+
   it('never says the server ran a command that did not run, or that the agent reported what it did not (C3b review)', () => {
     const md = formatCustomChecks([
       { ...cmd, check: 'waiting', ran: false, outcome: 'overridden', overridden: { by: 'board', reason: 'no linter on CI' }, detail: 'waiting for a person to approve the command' },

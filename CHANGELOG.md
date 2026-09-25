@@ -29,6 +29,25 @@ Beta, cumulative over `2.0.0-beta.3`: everything in beta.3, plus the changes bel
   and any flow can still add it to a step explicitly. `red-set-passes-by-name` and `test-count-not-lower` still stop a
   red test from disappearing.
 
+### Cards in one tree share step-check work at the same tree state
+
+- **Reuse no longer needs a clean tree.** A test capture, the final verify's sibling propagation and single-flight
+  waiting all used to key on a clean commit, so one untracked file anywhere in a shared worktree made every card run
+  everything again: three siblings walking one flow ran the suite 9 times where a clean tree ran it twice. They now key
+  on the tree's state - the content of every tracked and untracked (non-ignored) file - so cards that see the same
+  content share one green, the card's own earlier one included. Content that differs, or that changed while the
+  command ran, still runs its own. HEAD is not part of it: a sibling's close commit commits files without changing
+  them, and must not make the next sibling run everything again.
+- **The final verify runs once for siblings closing together.** A sibling that reaches its final verify while another
+  runs the same command on the same tree state waits for that run, then propagates its green (or runs its own if it
+  failed or the tree moved). In a TDD simulation of three siblings the project's verify command now runs once, not
+  three times.
+- **Command checks share a pass the same way.** A command check sees only its argv and its tree, so the project's
+  cards reaching it at the same tree state take one run's pass (named in the result and on the PR as the card whose
+  run it was), and a card arriving while it runs waits for it. A failure is never shared. A check whose command reads
+  something outside the tree - a remote, a PR, the clock - opts out with the new param `share: none`.
+- **Approvals and overrides stay per card.** Nothing a person gives is shared.
+
 ## [2.0.0-beta.3] — 2026-09-25
 
 Beta, cumulative over `2.0.0-beta.2`: everything in beta.2, plus the changes below. It is about one thing: a

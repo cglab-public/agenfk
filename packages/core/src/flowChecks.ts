@@ -142,6 +142,7 @@ export const CHECK_CATALOGUE: Record<string, CheckDef> = {
       name: { kind: 'name', required: true, values: [], default: '', description: 'A short name for the check (lint, types): it tells two custom checks on one step apart.' },
       argv: { kind: 'argv', required: true, values: [], default: '', description: 'The command, as a list: the program and each argument, run without a shell in the card\'s tree. It passes on exit code 0.' },
       approval: { values: ['none', 'person'], default: 'none', description: "none: it runs as the flow defines it; person: this exact command runs only after a person approves it on the board with a passkey, and any change to it asks again." },
+      share: { values: ['tree', 'none'], default: 'tree', description: "tree: a pass is shared, for ten minutes, by the project's cards that reach it at the same HEAD, index and file content, so the command runs once; none: it runs for every card - for a command that reads something outside the tree (a remote, a PR, the network, the clock)." },
     },
     description: "A command the flow defines, which the server runs in the card's tree: it passes when the command exits 0. Only flows from the org's hub or made on this machine may carry one." }),
   'agent-check': def({ id: 'agent-check', group: 'custom', defaultSeverity: 'block',
