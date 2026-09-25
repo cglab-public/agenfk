@@ -2,6 +2,50 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.3] — 2026-09-25
+
+Beta, cumulative over `2.0.0-beta.2`: everything in beta.2, plus the changes below. It is about one thing: a
+person asked for an approval is shown the card at once, and nobody waits on a suite that cannot help.
+
+### Approvals
+
+- **`--no-wait` and `AGENFK_NO_BROWSER` are gone.** When only a person's approval holds a card, `agenfk verify`
+  always opens the card on the board and waits for it (not in `CI`, where no person can approve). An old script
+  passing `--no-wait` still runs: the flag is ignored with a warning, and verify waits all the same.
+- **The approval is asked for first.** While a step waits for a person - its own approval, or a command waiting for
+  theirs - verify answers at once, before any test capture or command check runs; cheap checks are still judged, so
+  they can be seen and overridden while approving. The slow ones show as "deferred" and run on the verify after
+  the approval.
+- **The request reaches the chat.** Verify prints an `APPROVAL NEEDED` block naming the card, its link and how to
+  reopen it if the board's tab was closed - before it waits, again at the deadline, and in CI. The rules tell agents
+  to relay it as it is, to run a verify that may wait in the background where their harness can, and never to
+  claim or relay an approval: only a person approves, on the board. Card titles are shown as one plain line.
+
+### Seeing a verify run
+
+- **A running verify is on the card, animated, with the card closed**: "Verifying… 1m 12s" with a spinner (still
+  under reduced motion), one shared clock for the whole board. The card's Overview shows the run's latest output.
+- **The chat is no longer silent while the suite runs.** A step's test capture now streams its output to whoever
+  follows the run, like the verify command always did; a runner's leftover process no longer holds a run open.
+
+### Fewer suite runs
+
+- **A green on record is reused as the entry baseline.** When a card enters a step on a clean tree at a commit a run
+  of the same command already went green in (the commit a close stamps, or an earlier per-test capture), in the same
+  tree of the same project, that run is the baseline and no suite runs. Records now carry the tree they ran in.
+
+### A missing test report
+
+- **`NO_TEST_REPORT` is the agent's to fix.** A refusal for want of per-test results now says so once, with a ready
+  `agenfk update-project <id> --test-report-...` command built from the project's own verify command (vitest,
+  `npm test` over vitest, pytest, `node --test`; nothing is made up for other runners), and warns when the report
+  path is not git-ignored. The rules tell agents to run it and verify again rather than ask for an override.
+- **It is raised on the way in.** A card is held before entering a step whose blocking checks judge its tests
+  against a per-test baseline the project cannot record - where setting the report still gives that card a real
+  baseline - instead of letting those checks degrade to warnings. No suite runs for a hold. A person can still pass
+  the hold on the board (a runner that writes no report), and overrides given against the old wording still count.
+- The board labels a deferred check "deferred" (its detail says to what), not "run by the verify command".
+
 ## [2.0.0-beta.2] — 2026-09-25
 
 Beta, cumulative over `2.0.0-beta.1`: everything in beta.1, plus the changes below.
