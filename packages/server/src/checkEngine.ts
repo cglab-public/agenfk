@@ -118,6 +118,13 @@ export interface EngineContext {
   foreignClaims: string[];
   /** Checks enforced by the project verify command on this transition, not judged here. */
   deferToCommand: string[];
+  /**
+   * 281adef0: the card closes without running the project's suite, because its
+   * flow runs it once at the top-level card and this parent is still open. The
+   * checks the suite would have settled say so, rather than claiming the verify
+   * command enforced them.
+   */
+  deferredToParent?: { id: string; title: string };
   /** For review-record (CGLAB-381): the card's place and its review evidence. */
   review?: {
     hasParent: boolean;
@@ -536,7 +543,10 @@ export function evaluateChecks(resolved: readonly ResolvedCheck[], ctx: EngineCo
       continue;
     }
     if (c.id === 'server-owned-verify' || ctx.deferToCommand.includes(c.id)) {
-      results.push({ ...base, outcome: 'deferred', blocking: false, detail: "enforced on this transition by the project's verify command" });
+      const detail = ctx.deferredToParent
+        ? `not run on this card: the flow runs the project's suite once, at the top-level card, and [${ctx.deferredToParent.id.substring(0, 8)}] "${ctx.deferredToParent.title}" is still open`
+        : "enforced on this transition by the project's verify command";
+      results.push({ ...base, outcome: 'deferred', blocking: false, detail });
       continue;
     }
     const evaluate = EVALUATORS[c.id] ?? EVALUATORS[c.id.split(':')[0]];

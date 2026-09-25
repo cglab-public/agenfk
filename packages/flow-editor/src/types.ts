@@ -77,6 +77,8 @@ export interface Flow {
   hubVersion?: number;
   /** Hub-only: whether the flow is offered in the org-wide flow picker. */
   orgAvailable?: boolean;
+  /** Where the project's suite runs: every card's final step ('leaf', default) or once at the top-level card ('parent'). */
+  verifyAt?: 'leaf' | 'parent';
 }
 
 export interface RegistryFlow {

@@ -150,6 +150,13 @@ describe('POST /registry/flows/publish with a hub connection (CGLAB-367)', () =>
     expect(typeof publishCalls[0].body.publisher).toBe('string');
   });
 
+  it('sends the flow-level verifyAt to the hub (281adef0)', async () => {
+    await agent().put(`/flows/${flowId}`).send({ verifyAt: 'parent' });
+    await agent().post('/registry/flows/publish').send({ flowId });
+    expect(publishCalls[0].body.flow.verifyAt).toBe('parent');
+    await agent().put(`/flows/${flowId}`).send({ verifyAt: 'leaf' });
+  });
+
   it('never runs the laptop\'s gh when the hub publishes', async () => {
     await agent().post('/registry/flows/publish').send({ flowId });
     expect(ghPathTried()).toBe(false);

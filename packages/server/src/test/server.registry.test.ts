@@ -180,6 +180,16 @@ function makeRegistryFlowContent(steps: object[]) {
 }
 
 describe('POST /registry/flows/install — anchor handling', () => {
+  it('keeps the flow-level verifyAt of the registry flow (281adef0)', async () => {
+    vi.mocked(axios.get).mockResolvedValue({ data: { content: Buffer.from(JSON.stringify({
+      name: 'Parent Verify Flow', verifyAt: 'parent',
+      steps: [{ name: 'WORK', label: 'Work', order: 1, exitCriteria: '' }],
+    })).toString('base64') } });
+    const res = await agent().post('/registry/flows/install').send({ filename: 'parent-verify.json' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.verifyAt).toBe('parent');
+  });
+
   beforeAll(async () => {
     process.env.AGENFK_DB_PATH = INSTALL_DB;
     if (fs.existsSync(INSTALL_DB)) fs.unlinkSync(INSTALL_DB);

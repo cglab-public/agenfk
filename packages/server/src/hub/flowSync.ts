@@ -137,6 +137,10 @@ async function reconcileProjectFlowInner(args: ReconcileProjectArgs): Promise<Re
     // channel whose untrustworthiness is the whole reason it exists. Duplicate
     // step ids and empty names got through here too.
     steps: normalizeFlowSteps(remote.steps ?? [], () => randomUUID()),
+    // 281adef0: where the flow runs the suite travels with it, BOTH ways - written
+    // every sync, because updateFlow merges and an omitted key would keep 'parent'
+    // after the org turned it off. Anything unknown is the default.
+    verifyAt: remote.verifyAt === 'parent' ? 'parent' : 'leaf',
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
     source: 'hub',

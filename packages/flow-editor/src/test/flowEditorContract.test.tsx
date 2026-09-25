@@ -223,3 +223,31 @@ describe('flow editor: contracts', () => {
     expect(steps.find(x => x.name === 'REFACTOR')!.role).toBe('refactoring');
   });
 });
+
+/**
+ * 281adef0 — where the flow runs the project's suite: at every card's final
+ * step (the default) or once, at the top-level card. A flow-level toggle.
+ */
+describe('flow editor: verifyAt', () => {
+  it('shows the flow\'s setting and saves a change', async () => {
+    const { updateFlow } = mount(good());
+    await ready();
+    const toggle = screen.getByTestId('flow-verify-at-parent') as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByTestId('save-flow-btn'));
+    await waitFor(() => expect(updateFlow).toHaveBeenCalled());
+    expect(updateFlow.mock.calls[0][1].verifyAt).toBe('parent');
+  });
+
+  it('loads a flow that already verifies at the parent as checked, and unchecking saves leaf', async () => {
+    const { updateFlow } = mount({ ...good(), verifyAt: 'parent' });
+    await ready();
+    const toggle = screen.getByTestId('flow-verify-at-parent') as HTMLInputElement;
+    await waitFor(() => expect(toggle.checked).toBe(true));
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByTestId('save-flow-btn'));
+    await waitFor(() => expect(updateFlow).toHaveBeenCalled());
+    expect(updateFlow.mock.calls[0][1].verifyAt).toBe('leaf');
+  });
+});

@@ -149,7 +149,7 @@ export function flowsRouter(ctx: HubServerContext): Router {
       // Normalise exactly as the hub admin install and the local server do, so
       // a flow behaves the same however it arrived, contract included.
       const steps = registryInstallSteps(flowData.steps, randomUUID);
-      res.json({ repo, flow: { name: flowData.name ?? filename.replace('.json', ''), description: flowData.description ?? '', steps } });
+      res.json({ repo, flow: { name: flowData.name ?? filename.replace('.json', ''), description: flowData.description ?? '', steps, ...(flowData.verifyAt === 'parent' ? { verifyAt: 'parent' } : {}) } });
     } catch (e: any) {
       res.status(502).json({ error: 'Failed to install flow', detail: e?.message });
     }

@@ -646,6 +646,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 required: ["name", "order"],
               },
             },
+            verifyAt: { type: "string", enum: ["leaf", "parent"], description: "Where the project's suite runs: 'leaf' (default) on every card's final step, or 'parent' once at the top-level card - a card with an open parent then closes without its own run." },
             projectId: { type: "string", description: "Optional: if provided, immediately activate the new flow for this project." },
           },
           required: ["name", "steps"],
@@ -660,6 +661,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             id: { type: "string", description: "The flow ID to update." },
             name: { type: "string" },
             description: { type: "string" },
+            verifyAt: { type: "string", enum: ["leaf", "parent"], description: "Where the project's suite runs: 'leaf' (default) on every card's final step, or 'parent' once at the top-level card - a card with an open parent then closes without its own run." },
             steps: {
               type: "array",
               items: {
@@ -1143,6 +1145,7 @@ async function callToolHandler(request: any): Promise<any> {
           name: z.string(),
           description: z.string().optional(),
           steps: z.array(FlowStepToolSchema),
+          verifyAt: z.enum(['leaf', 'parent']).optional(),
           projectId: z.string().optional(),
         }).parse(request.params.arguments);
         const { projectId, ...flowBody } = args;
@@ -1159,6 +1162,7 @@ async function callToolHandler(request: any): Promise<any> {
           name: z.string().optional(),
           description: z.string().optional(),
           steps: z.array(FlowStepToolSchema).optional(),
+          verifyAt: z.enum(['leaf', 'parent']).optional(),
         }).parse(request.params.arguments);
         const { id, ...updates } = args;
         try {

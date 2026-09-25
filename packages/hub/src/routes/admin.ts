@@ -1823,6 +1823,8 @@ export function adminRouter(ctx: HubServerContext): Router {
         name: flowData.name ?? filename.replace('.json', ''),
         description: flowData.description ?? '',
         steps,
+        // 281adef0: where the flow runs the suite travels with it.
+        ...(flowData.verifyAt === 'parent' ? { verifyAt: 'parent' } : {}),
       };
 
       const id = randomUUID();

@@ -670,6 +670,8 @@ export interface Flow {
   hubVersion?: number;
   /** 'registry' when installed from the community registry: its command checks never run (efcacdeb). */
   origin?: 'registry';
+  /** Where the project's suite runs: every card's final step ('leaf', default) or once at the top-level card ('parent'). See verifyAt.ts. */
+  verifyAt?: 'leaf' | 'parent';
 }
 
 export interface PauseSnapshot {

@@ -10,7 +10,7 @@ import * as passkeys from './passkeys';
 import { argvHash, judgeCommandChecks, type CommandApproval } from './commandChecks';
 import { evaluateChecks, judgeReview, formatCheckResults, needsCapture, needsEntryRecord, parseAgentReports, type AgentReport, type CheckResult } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave } from "@agenfk/core";
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -801,6 +801,17 @@ const syncParentStatus = async (parentId: string) => {
         if (!(await approvalSatisfied(parent, parentFlow.steps, ordered[i].name))) { laggard = i; break; }
       }
     }
+    /*
+     * 281adef0: on a flow that runs the suite once at the top-level card, the
+     * parent's own final verify IS that run. Walking it onto the exit step here
+     * would close it - and every child that deferred to it - with the suite run
+     * nowhere. It stops one step short; only verify moves it on.
+     */
+    const owed = children.some(c => (c as any).suiteDeferredTo === parent.id);
+    const endName = sortedFlowSteps(parentFlow as any).slice(-1)[0]?.name;
+    // Keyed on what HAPPENED (a child deferred to it), not on the flow's setting now:
+    // turning 'parent' off must not let the owed run slip.
+    if ((owed || flowVerifyAt(parentFlow) === 'parent') && ordered[laggard]?.name === endName && laggard > 0) laggard -= 1;
     if (parentIdx !== null && laggard > parentIdx) {
       newStatus = ordered[laggard].name as Status;
     }
@@ -4134,11 +4145,13 @@ app.post("/flows/contract", (req: any, res: any) => {
 });
 
 app.post("/flows", asyncHandler(async (req: any, res: any) => {
-  const { name, description, version, steps } = req.body;
+  const { name, description, version, steps, verifyAt } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
 
   const stepsError = flowStepsError(steps);
   if (stepsError) return res.status(400).json({ error: stepsError });
+  const verifyAtProblem = verifyAtError(verifyAt);
+  if (verifyAtProblem) return res.status(400).json({ error: verifyAtProblem });
 
   // Always force `source = 'local'` on REST-driven creation. The reconciler
   // writes hub-managed rows directly via storage.createFlow(); this route is
@@ -4152,6 +4165,7 @@ app.post("/flows", asyncHandler(async (req: any, res: any) => {
     createdAt: new Date(),
     updatedAt: new Date(),
     source: 'local',
+    ...(verifyAt ? { verifyAt } : {}),
   };
 
   const created = await storage.createFlow(flow);
@@ -4172,7 +4186,9 @@ app.put("/flows/:id", asyncHandler(async (req: any, res: any) => {
     return res.status(409).json({ error: HUB_MANAGED_FLOW_MSG });
   }
   try {
-    const { name, description, version, steps } = req.body;
+    const { name, description, version, steps, verifyAt } = req.body;
+    const verifyAtProblem = verifyAtError(verifyAt);
+    if (verifyAtProblem) return res.status(400).json({ error: verifyAtProblem });
     // Only validate steps when the caller is actually replacing them — a
     // rename-only PUT must keep working.
     // A step that omits role/checks keeps the stored ones (CGLAB-380): an
@@ -4188,6 +4204,7 @@ app.put("/flows/:id", asyncHandler(async (req: any, res: any) => {
     if (description !== undefined) updates.description = description;
     if (version !== undefined) updates.version = version;
     if (steps !== undefined) updates.steps = normalizeSteps(merged);
+    if (verifyAt !== undefined && verifyAt !== null) updates.verifyAt = verifyAt;
 
     const updated = await storage.updateFlow(req.params.id, updates);
     io.emit('flow:updated', { flowId: updated.id });
@@ -4343,6 +4360,7 @@ app.post("/registry/flows/install", asyncHandler(async (req: any, res: any) => {
         name: body.flow?.name ?? filename,
         description: body.flow?.description,
         steps: hubSteps,
+        ...(flowVerifyAt(body.flow) === 'parent' ? { verifyAt: 'parent' as const } : {}),
         createdAt: new Date(),
         updatedAt: new Date(),
       });
@@ -4383,6 +4401,7 @@ app.post("/registry/flows/install", asyncHandler(async (req: any, res: any) => {
       name: flowData.name ?? filename.replace('.json', ''),
       description: flowData.description,
       steps,
+      ...(flowVerifyAt(flowData) === 'parent' ? { verifyAt: 'parent' as const } : {}),
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -4467,6 +4486,7 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
             name: flow.name,
             description: flow.description ?? '',
             version: (flow as any).version || '1.0.0',
+            ...(flowVerifyAt(flow) === 'parent' ? { verifyAt: 'parent' } : {}),
             // The registry's fields only: local step ids and cosmetics stay here.
             steps: [...flow.steps].sort((a: any, b: any) => a.order - b.order).map((st: any) => ({
               name: st.name,
@@ -4626,6 +4646,7 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
         description: flow.description ?? '',
         author: ghUser,
         version,
+        ...(flowVerifyAt(flow) === 'parent' ? { verifyAt: 'parent' } : {}),
         steps: flow.steps
           .sort((a: any, b: any) => a.order - b.order)
           .map((s: any) => ({
@@ -5903,7 +5924,12 @@ const staysOn = (status: string) => `\n\nThe advance was refused. Item stays on 
 // step, errors) responds synchronously as before — the route discards the
 // unused reservation in that case.
 /** What the step's checks decided (CGLAB-380), carried into the transition that follows them. */
-interface StepGate { results: CheckResult[]; blocked: boolean }
+interface StepGate {
+  results: CheckResult[];
+  blocked: boolean;
+  /** 281adef0: the parent this gate judged the card's suite as deferred to; the close follows it. */
+  deferredTo?: string;
+}
 
 /** The branch a card works on: its own, else its nearest ancestor's (branches live on top-level items). */
 async function branchOfCard(item: any): Promise<string | null> {
@@ -5999,11 +6025,45 @@ async function keysOfCard(item: any): Promise<string[]> {
  * that ends the flow the command runs anyway, so with no per-test report a
  * `suite-green` capture would only run the same suite twice.
  */
-function deferredToCommand(flow: { steps: any[] }, status: string, project: any): string[] {
+function deferredToCommand(flow: { steps: any[] }, status: string, project: any, toParent?: unknown): string[] {
+  // 281adef0: deferred to the parent, the suite runs nowhere on this card - not
+  // as a capture, not as the command - so whatever it would settle is deferred.
+  if (toParent) return ['suite-green'];
   const sorted = sortedFlowSteps(flow as any);
   const next = sorted[sorted.findIndex(st => st.name === status) + 1];
   const final = !next || next.name === Status.DONE || isBoundaryStep(next);
   return final && !project?.testReport && project?.verifyCommand ? ['suite-green'] : [];
+}
+
+/**
+ * The parent a card's close defers the project's suite to (281adef0), or null
+ * when the card must run it itself. One answer for the step gate and the close:
+ *  - the flow says verifyAt 'parent', and this move ENDS the flow (a mid-flow
+ *    boundary still runs the command it requires);
+ *  - the parent is in the SAME project (a moved card keeps a parentId into its
+ *    old project, whose verify runs a different command in a different tree);
+ *  - the parent is still open: not released, not on its flow's exit step;
+ *  - and no verify of the parent is running now: that run may not see this
+ *    card's close commit, so the card runs its own.
+ * The roll-up never walks such a parent onto its exit step (syncParentStatus),
+ * so its own final verify - the one run - always happens.
+ */
+async function parentToDeferTo(item: any, flow: { steps: any[]; verifyAt?: unknown }): Promise<any | null> {
+  if (flowVerifyAt(flow) !== 'parent' || !item?.parentId) return null;
+  const sorted = sortedFlowSteps(flow as any);
+  const index = sorted.findIndex(st => st.name === item.status);
+  if (index < 0 || !leavingEndsFlow(sorted as any, index)) return null;
+  const parent: any = await storage.getItem(item.parentId);
+  if (!parent || parent.projectId !== item.projectId) return null;
+  // Open AND being worked: a paused or blocked parent may never come back to run it.
+  if (!stillHolds(String(parent.status)) || INACTIVE_STATUSES.has(String(parent.status).toUpperCase()) || parent.status === sorted[sorted.length - 1]?.name) return null;
+  if (activeValidateRunByItem.has(parent.id)) return null;
+  // The parent's verify tests the PARENT's tree: a child whose work lives in another one runs its own.
+  const project: any = await storage.getProject(item.projectId);
+  const childRoot = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
+  const parentRoot = resolveCommitRoot(await withEffectiveWorktree(parent), project?.projectRoot).root;
+  if (!childRoot || childRoot !== parentRoot) return null;
+  return parent;
 }
 
 async function runStepGate(item: any, flow: { steps: any[] }, root: string | null, actor?: { client: string; sessionId: string; agentId: string | null } | null, agentReports?: Record<string, AgentReport>): Promise<StepGate> {
@@ -6011,7 +6071,8 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const index = sorted.findIndex(st => st.name === item.status);
   const next = sorted[index + 1];
   const project: any = await storage.getProject(item.projectId);
-  const deferToCommand = deferredToCommand(flow, item.status, project);
+  const toParent = await parentToDeferTo(item, flow);
+  const deferToCommand = deferredToCommand(flow, item.status, project, toParent);
   const resolved = resolveStepChecks(flow.steps, item.status);
   let capture: any = null;
   let captureError: string | undefined;
@@ -6066,6 +6127,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     ignoredPaths: reportPath && root ? [insideRoot(root, path.resolve(root, reportPath)) ?? reportPath] : [],
     foreignClaims,
     deferToCommand,
+    ...(toParent ? { deferredToParent: { id: toParent.id, title: toParent.title } } : {}),
     children: (await storage.listItems({ parentId: item.id } as any)) as any,
     capture,
     captureError,
@@ -6089,7 +6151,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     }),
     ...(made.length ? { stepRecords: [...(latest?.stepRecords ?? []), ...made] } : {}),
   } as any);
-  return { results: outcome.results, blocked: outcome.blocked };
+  return { results: outcome.results, blocked: outcome.blocked, ...(toParent ? { deferredTo: toParent.id } : {}) };
 }
 
 /** Refuse a transition on the step's checks, in verify's failure shape plus `checks[]`. */
@@ -6440,6 +6502,38 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // note, and the CLI prints both.
   const bareRes = res;
   if (commandNote) res = withNote(res, commandNote);
+  /*
+   * 281adef0: a flow with verifyAt 'parent' runs the project's suite once, at
+   * the top-level card. A card whose parent is still OPEN closes here without
+   * it - the parent's own final verify runs the suite over everything its
+   * children did. A card whose parent has already finished runs its own:
+   * nobody else would, and nothing may land unverified. No PASSED test is
+   * recorded for a run that did not happen.
+   */
+  // The gate's decision stands: if it judged the suite as the card's own, the close runs it.
+  // Asked again even when it deferred - the parent may have started its own verify since.
+  const deferTo = isFinalStep && (!gate || gate.deferredTo) ? await parentToDeferTo(item, activeFlow) : null;
+  if (deferTo) {
+    // The re-entry from a background gate skipped the early stray check: ask here too.
+    const strays = await checkStrays(res);
+    if (strays.refused) return;
+    res = strays.res;
+    const note = `The project's suite was not run for this card: the flow runs it once, at the top-level card, and [${deferTo.id.substring(0, 8)}] "${deferTo.title}" is still open. Its verify runs the suite over everything its children did, or defers it again to its own parent.`;
+    const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (suite deferred to the parent)\n\n**Step**: ${item.status} → ${nextStatus}\n\n${note}`, timestamp: new Date() };
+    const left = await commitOnLeave(res);
+    if (left.refused) return;
+    res = left.res;
+    // The marker the roll-up reads: this parent owes a suite run, whatever its flow says later.
+    const updated = await storage.updateItem(itemId, { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment], suiteDeferredTo: deferTo.id, ...(isExitStep ? { failureCount: 0 } : {}) } as any);
+    recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
+    io.emit('items_updated');
+    if (updated.parentId) await syncParentStatus(updated.parentId);
+    const gitResult = process.env.NODE_ENV !== 'test' && !process.env.VITEST
+      ? await autoGitCommit(updated, (project as any)?.projectRoot)
+      : undefined;
+    return res.json({ status: nextStatus, message: `✅ Validation Passed (suite deferred to the parent)!\n\n${note}\nItem moved to ${nextStatus}.${describePush(gitResult)}${nowOn(nextStatus)}` });
+  }
+
   if (isFinalStep && !resolvedCommand) {
     return res.status(400).json({
       error: "NO_VERIFY_COMMAND",

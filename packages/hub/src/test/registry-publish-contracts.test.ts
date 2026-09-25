@@ -38,6 +38,11 @@ const publish = (fetchImpl: any, flow: any, extra: { allowContractRemoval?: bool
 afterEach(() => vi.restoreAllMocks());
 
 describe('registry file keeps the step contract', () => {
+  it('serializeRegistryFlow writes verifyAt when it is parent, and nothing for the default (281adef0)', () => {
+    expect(JSON.parse(serializeRegistryFlow({ ...rich, verifyAt: 'parent' }, 'me')).verifyAt).toBe('parent');
+    expect(JSON.parse(serializeRegistryFlow({ ...rich, verifyAt: 'leaf' }, 'me')).verifyAt).toBeUndefined();
+  });
+
   it('serializeRegistryFlow carries role and checks', () => {
     const out = JSON.parse(serializeRegistryFlow(rich, 'me'));
     expect(out.steps[1]).toMatchObject({ role: 'test-authoring', checks: [{ id: 'jira-key-valid' }] });
