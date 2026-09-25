@@ -85,9 +85,9 @@ only thing standing between two agents and one file.
 | --- | --- | --- |
 | Overlap logic | `packages/core/src/claims.ts` | Can these two paths collide? Pure. |
 | The gate | `packages/core/src/claimGate.ts` | Turns an overlap into a refusal. Pure. |
-| Pre-edit check | `packages/core/src/gatekeeper.ts` | Refuses to AUTHORIZE a card whose declared claims run into another card's. CLI and server inherit one verdict. It does not see the file being written. |
+| Pre-edit check | `packages/core/src/gatekeeper.ts` | Compares the caller's declared scope and observed `cwd` (`scopeAt`) with holders' declared scopes. The CLI supplies `cwd`; REST declaration checks use declared scopes, and MCP does not check claims. It does not see the file being written. |
 | Mechanical block | `bin/agenfk-gatekeeper.mjs` | The PreToolUse hook. Refuses an edit to a file held by a PARKED card (TODO/PAUSED/BLOCKED). **Cannot** refuse when the holder is active: it receives a tool call, not an agent identity. |
-| Declaration | `PUT /items/:id` (`packages/server/src/server.ts`) | Validates, refuses a glob, refuses a claim another card holds (409). |
+| Declaration | `PUT /items/:id` (`packages/server/src/server.ts`) | Validates, refuses a glob, refuses a claim another card holds **in the same tree** (409). |
 | Close | `packages/server/src/closeCommit.ts` | Commits only the closing card's files out of the shared index. |
 
 ### Two failure directions, and both are silent
@@ -112,6 +112,49 @@ constrained to two shapes where overlap is exact (a directory, or an exact
 file), and anything else is **reported as rejected** rather than quietly
 skipped. A glob compared as a literal is a claim on a file named `**`: it
 protects nothing while looking like it protects everything.
+
+### Only the same tree collides
+
+Two cards in **different worktrees** write to separate checkouts. Git combines
+their changes when integrated and reports conflicts when it cannot reconcile
+them automatically. Scoping by the whole project refused overlaps between cards that never
+shared a checkout — it forced one card per file, and shared files (tests,
+barrels, `package.json`) became serialization points.
+
+The key is the **effective worktree** (`claimScopes` in `claimGate.ts`): the
+card's own `worktreePath`, else its nearest ancestor's (a child is refused its
+own, so siblings share the parent's), else the project — which is one shared
+tree for every card without a worktree. The declaration gate and the step gate
+use it directly.
+
+**The CLI pre-edit gate also considers where the caller IS.** `scopeAt` resolves the
+directory the agent is standing in (`cwd`) to the worktree containing it, so an
+agent whose card owns a worktree but who edits the MAIN checkout contends with
+cards declared in that checkout. Holders still use only their declared scope:
+a holder declared in a separate worktree but actually working in MAIN can be
+missed by the next caller. This asymmetry remains open (N6).
+
+An **unknown** key on either side still contends: a tree that cannot be compared
+is not evidence of isolation.
+
+**`cwd` is not the file**: the gate sees
+where the process stands, not the path about to be written, so an agent standing
+in its worktree can write an ABSOLUTE path into the main checkout without the
+CLI detecting that destination. The edit hook sees the file but checks only
+parked holders, not active ones, and does not yet scope by worktree. The **MCP
+gatekeeper** (`packages/server/src/index.ts`) still checks no claims at all.
+
+Scope changes also need follow-up: removing a parent's worktree checks the
+parent's claims but not the claims of children that inherit its tree; reparent
+and detach do not validate all affected claims in their resulting scopes.
+These operations can leave overlapping ownership in one tree. The scoping
+implementation remains work in progress (card `fbd84ff3`).
+
+Claims remain file- or directory-wide within one worktree. Two stories can
+touch the same file sequentially after ownership is released; simultaneous
+edits to different regions of that file are still refused. Allowing those
+edits safely in a shared tree requires coordinated patch application and
+commit attribution; worktree scoping alone does not provide that behavior.
 
 ### A paused card still holds its files
 

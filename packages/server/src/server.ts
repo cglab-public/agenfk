@@ -12,7 +12,7 @@ import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import {
   readProjectFile,
   approvalFor,
-  commandFingerprint, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave } from "@agenfk/core";
+  commandFingerprint, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimScopes, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -4209,6 +4209,28 @@ app.delete("/items/:id/worktree", limitExpensive, asyncHandler(async (req: any, 
   if (!item) return res.status(404).json({ error: "Item not found" });
   if (!item.worktreePath) return res.json({ removed: false });
 
+  /*
+   * Removing the worktree drops the card back into the PROJECT tree. If its
+   * claims collide with a card already working there, the scope change would
+   * create exactly the silent overwrite claims exist to prevent — so refuse,
+   * and let the person narrow or release the claim first (N4).
+   */
+  const siblings = await storage.listItems({ projectId: item.projectId, limit: 1_000_000 });
+  const afterRemoval = siblings.map((i: any) =>
+    (i.id === item.id ? { ...i, worktreePath: undefined } : i));
+  const scopesAfter = claimScopes(afterRemoval as any[]);
+  const claimGate = gateOnClaims(
+    { id: item.id, claims: item.claims, scope: scopesAfter.get(item.id) },
+    siblings
+      .filter((i: any) => i.id !== item.id)
+      .map((i: any) => ({ id: i.id, status: i.status, claims: i.claims, scope: scopesAfter.get(i.id) })),
+  );
+  if (!claimGate.authorized) {
+    return res.status(409).json({
+      error: `Cannot remove this card's worktree: in the project tree its claims collide.\n\n${claimGate.message}`,
+    });
+  }
+
   try {
     const repoRoot = await repoRootForItem(item);
     // Removal takes the checkout, never the branch: committed work always
@@ -5617,9 +5639,11 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
       });
     }
     const siblings = await storage.listItems({ projectId: currentItem.projectId, limit: 1_000_000 });
+    // One pass: a per-holder recomputation would walk every parent chain N times.
+    const scopes = claimScopes([...siblings, currentItem] as any[]);
     const gate = gateOnClaims(
-      { id: currentItem.id, claims },
-      siblings.map((i: any) => ({ id: i.id, status: i.status, claims: i.claims })),
+      { id: currentItem.id, claims, scope: scopes.get(currentItem.id) },
+      siblings.map((i: any) => ({ id: i.id, status: i.status, claims: i.claims, scope: scopes.get(i.id) })),
     );
     if (!gate.authorized) {
       return res.status(409).json({ error: gate.message });
@@ -5911,6 +5935,19 @@ app.post("/items/:id/move", asyncHandler(async (req: any, res: any) => {
     return res.status(404).json({ error: "Target project not found" });
   }
 
+  /*
+   * A child moves WITH its parent, never alone. It shares the parent's project,
+   * branch and worktree; moving the child by itself left `parentId` pointing at
+   * another project, and then the tree resolver (`effectiveWorktreePath`) and
+   * the claim-scope resolver disagreed about where the card works (N5). Refuse
+   * rather than create that split.
+   */
+  if ((item as any).parentId) {
+    return res.status(400).json({
+      error: "A child item cannot be moved on its own — it shares its parent's project, branch and worktree. Move the parent, or detach the child first.",
+    });
+  }
+
   const sourceProjectId = item.projectId;
   const movedCount = await moveToProjectRecursively(req.params.id, targetProjectId);
 
@@ -6195,8 +6232,16 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   // In a shared worktree the tree holds other cards' work too (MULTI_AGENT.md):
   // what another active card has claimed is theirs, not this card's change.
   const others: any[] = (await storage.listItems({ projectId: item.projectId, limit: 1_000_000 } as any)) as any;
+  /*
+   * Only claims from the SAME tree. A card in its own worktree cannot have
+   * touched a file in this one, so its claims are not "foreign work" here —
+   * subtracting them would hide changes this card actually made.
+   */
+  const scopeOf = claimScopes([...others, item]);
+  const mineScope = scopeOf.get(item.id);
   const foreignClaims = others
     .filter(o => o.id !== item.id && Array.isArray(o.claims) && stillHolds(String(o.status)))
+    .filter(o => scopeOf.get(o.id) === mineScope)
     .flatMap(o => o.claims as string[]);
   const reportPath = typeof project?.testReport?.reportPath === 'string' ? project.testReport.reportPath : null;
   // People's approvals and overrides of THIS step (CGLAB-382); a rollback over it dropped older ones.

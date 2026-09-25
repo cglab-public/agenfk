@@ -23,7 +23,7 @@
  * would drift the way the gatekeeper's status names drifted before it.
  */
 import { describe, it, expect } from 'vitest';
-import { gateOnClaims, type ClaimHolder } from '../claimGate';
+import { gateOnClaims, claimScopes, scopeAt, type ClaimHolder } from '../claimGate';
 
 /** A card holding files, in whatever step the test needs. */
 const holder = (id: string, status: string, claims: string[]): ClaimHolder =>
@@ -240,5 +240,142 @@ describe('the sentence an agent reads once', () => {
   it('still says where a path sits when it is genuinely inside another claim', () => {
     const r = gateOnClaims({ id: 'mine', claims: ['packages/ui/App.tsx'] }, [holder('theirs', 'IN_PROGRESS', ['packages/ui/'])]);
     expect(r.message).toMatch(/is inside packages\/ui/);
+  });
+});
+
+describe('only the same tree can collide (worktree scope)', () => {
+  it('refuses two cards sharing a worktree', () => {
+    const result = gateOnClaims(
+      { id: 'mine', claims: ['src/a.ts'], scope: '/wt/1' },
+      [{ id: 'theirs', status: 'IN_PROGRESS', claims: ['src/a.ts'], scope: '/wt/1' }],
+    );
+    expect(result.authorized).toBe(false);
+  });
+
+  it('allows the same path in two DIFFERENT worktrees', () => {
+    /*
+     * Separate trees: git gives a merge conflict that a person resolves, which
+     * is the recoverable case this mechanism is NOT for. Refusing here forced
+     * one card per file across cards that never shared a checkout.
+     */
+    const result = gateOnClaims(
+      { id: 'mine', claims: ['src/a.ts'], scope: '/wt/1' },
+      [{ id: 'theirs', status: 'IN_PROGRESS', claims: ['src/a.ts'], scope: '/wt/2' }],
+    );
+    expect(result.authorized).toBe(true);
+  });
+
+  it('still contends when a scope is unknown', () => {
+    // A key we cannot compare is not evidence of isolation. Failing open here
+    // loses work in silence, which is the one direction this must not have.
+    expect(gateOnClaims(
+      { id: 'mine', claims: ['src/a.ts'] },
+      [{ id: 'theirs', status: 'IN_PROGRESS', claims: ['src/a.ts'], scope: '/wt/2' }],
+    ).authorized).toBe(false);
+    expect(gateOnClaims(
+      { id: 'mine', claims: ['src/a.ts'], scope: '/wt/1' },
+      [{ id: 'theirs', status: 'IN_PROGRESS', claims: ['src/a.ts'] }],
+    ).authorized).toBe(false);
+  });
+
+  it('keeps the project-wide default when neither side has a scope', () => {
+    expect(gateOnClaims(
+      { id: 'mine', claims: ['src/a.ts'] },
+      [{ id: 'theirs', status: 'IN_PROGRESS', claims: ['src/a.ts'] }],
+    ).authorized).toBe(false);
+  });
+});
+
+describe('claimScopes — which tree a card actually works in', () => {
+  it("uses the item's own worktree", () => {
+    const s = claimScopes([{ id: 'a', projectId: 'p', worktreePath: '/wt/a' }]);
+    expect(s.get('a')).toBe('/wt/a');
+  });
+
+  it("makes a child share its parent's worktree", () => {
+    // `shouldAutoWorktree` refuses a child its own, so this is the ordinary
+    // sibling case: same tree, they must still collide there.
+    const s = claimScopes([
+      { id: 'epic', projectId: 'p', worktreePath: '/wt/epic' },
+      { id: 'story', projectId: 'p', parentId: 'epic' },
+    ]);
+    expect(s.get('story')).toBe('/wt/epic');
+  });
+
+  it('falls back to the project when nothing has a worktree', () => {
+    const s = claimScopes([
+      { id: 'a', projectId: 'p' },
+      { id: 'b', projectId: 'p' },
+    ]);
+    expect(s.get('a')).toBe(s.get('b'));
+  });
+
+  it('does not hang on a parent cycle', () => {
+    const s = claimScopes([
+      { id: 'a', projectId: 'p', parentId: 'b' },
+      { id: 'b', projectId: 'p', parentId: 'a' },
+    ]);
+    expect(s.get('a')).toBe('project:p');
+  });
+});
+
+describe('scopeAt — the tree the caller is standing in', () => {
+  const items = [
+    { id: 'epic', projectId: 'p', worktreePath: '/wt/epic' },
+    { id: 'story', projectId: 'p', parentId: 'epic' },
+    { id: 'solo', projectId: 'p', worktreePath: '/wt/solo' },
+  ];
+
+  it('resolves a directory inside a worktree to that worktree', () => {
+    expect(scopeAt('/wt/epic/src/deep', items, 'p')).toBe('/wt/epic');
+  });
+
+  it('resolves a directory inside NO worktree to the project tree', () => {
+    // The main checkout. A card with a worktree editing here must contend with
+    // the cards working here, or the race comes back.
+    expect(scopeAt('/repo/packages/ui', items, 'p')).toBe('project:p');
+  });
+
+  it('picks the INNER worktree when one is nested in another', () => {
+    const nested = [...items, { id: 'inner', projectId: 'p', worktreePath: '/wt/epic/inner' }];
+    expect(scopeAt('/wt/epic/inner/src', nested, 'p')).toBe('/wt/epic/inner');
+  });
+
+  it('does not treat a sibling directory as inside (segment boundary)', () => {
+    expect(scopeAt('/wt/epic-legacy', items, 'p')).toBe('project:p');
+  });
+});
+
+describe('the caller is checked against BOTH trees (declared and cwd)', () => {
+  it('still collides with holders in the DECLARED worktree when the shell sits in the repo root', () => {
+    // The N1 regression: scoping by cwd alone dropped the card's own siblings.
+    const result = gateOnClaims(
+      { id: 'mine', claims: ['src/x.ts'], scope: '/wt/epic', cwdScope: 'project:p' },
+      [{ id: 'sib', status: 'IN_PROGRESS', claims: ['src/x.ts'], scope: '/wt/epic' }],
+    );
+    expect(result.authorized).toBe(false);
+  });
+
+  it('also collides with holders in the tree the cwd names', () => {
+    const result = gateOnClaims(
+      { id: 'mine', claims: ['src/x.ts'], scope: '/wt/epic', cwdScope: 'project:p' },
+      [{ id: 'main', status: 'IN_PROGRESS', claims: ['src/x.ts'], scope: 'project:p' }],
+    );
+    expect(result.authorized).toBe(false);
+  });
+});
+
+describe('scopeAt on Windows paths', () => {
+  it('resolves a Windows worktree, not only a Unix one', () => {
+    // `startsWith('/')` skipped every `C:\…` tree, so on Windows every agent
+    // fell back to the project scope and siblings stopped colliding.
+    const items = [{ id: 'a', projectId: 'p', worktreePath: 'C:\\wt\\a' }];
+    expect(scopeAt('C:\\wt\\a\\src', items, 'p')).toBe('C:/wt/a');
+  });
+
+  it('treats a trailing slash as the same tree', () => {
+    const items = [{ id: 'a', projectId: 'p', worktreePath: '/wt/a/' }];
+    expect(claimScopes(items).get('a')).toBe('/wt/a');
+    expect(scopeAt('/wt/a/src', items, 'p')).toBe('/wt/a');
   });
 });

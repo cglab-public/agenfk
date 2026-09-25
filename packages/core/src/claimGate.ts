@@ -29,6 +29,104 @@ export interface ClaimHolder {
   /** Where the card sits in its flow. Decides whether it still holds files. */
   readonly status: string;
   readonly claims?: readonly Claim[];
+  /**
+   * The tree this card actually works in. Only cards sharing it can collide —
+   * see `gateOnClaims`.
+   */
+  readonly scope?: string;
+}
+
+export interface ScopeItem {
+  readonly id: string;
+  readonly projectId?: string | null;
+  readonly parentId?: string | null;
+  readonly worktreePath?: string | null;
+}
+
+/**
+ * The tree each item works in, as a comparable key.
+ *
+ * A child shares its nearest ancestor's worktree (`shouldAutoWorktree` refuses
+ * a child its own), so the key is the effective worktree: the item's own path,
+ * else the parent's, recursively — else the PROJECT, which is one shared tree
+ * for every card that has no worktree of its own.
+ *
+ * Pure, and here rather than in the server, because the CLI's gatekeeper and
+ * the server's declaration route must reach the SAME key or the two gates
+ * disagree — one refusing what the other allows.
+ */
+export function claimScopes(items: readonly ScopeItem[]): Map<string, string> {
+  const byId = new Map(items.map(i => [i.id, i]));
+  const memo = new Map<string, string>();
+  const visiting = new Set<string>();
+  const resolve = (id: string): string => {
+    const cached = memo.get(id);
+    if (cached !== undefined) return cached;
+    const it = byId.get(id);
+    const fallback = `project:${it?.projectId ?? ''}`;
+    // A parent cycle must not hang the gate; the fallback is the conservative
+    // answer (same project = same tree = contend).
+    if (!it || visiting.has(id)) return fallback;
+    visiting.add(id);
+    // Normalised, so `/wt` and `/wt/` are one key rather than two trees.
+    const wt = typeof it.worktreePath === 'string' ? normaliseTree(it.worktreePath) : '';
+    const key = wt || (it.parentId && byId.has(it.parentId) ? resolve(it.parentId) : fallback);
+    visiting.delete(id);
+    memo.set(id, key);
+    return key;
+  };
+  const out = new Map<string, string>();
+  for (const i of items) out.set(i.id, resolve(i.id));
+  return out;
+}
+
+/** One spelling of a tree path, so two habits cannot invent two trees. */
+const normaliseTree = (p: string): string => p.trim().replace(/\\/g, '/').replace(/\/+$/, '');
+
+/**
+ * Is this a path that names a filesystem root, on ANY platform?
+ *
+ * `startsWith('/')` is a Unix-only test: on Windows every worktree is
+ * `C:\…`, so every scope was skipped and every agent fell back to the project
+ * — the isolation vanished exactly where it was needed.
+ */
+const isAbsoluteTree = (p: string): boolean => /^([A-Za-z]:)?\//.test(p) || /^\/\//.test(p);
+
+/**
+ * The tree the caller is ACTUALLY in, from its working directory.
+ *
+ * The declared worktree is not enough on its own. Nothing stops an agent whose
+ * card carries a worktree from editing the MAIN checkout — and scoping the
+ * gate by the DECLARED tree then authorizes it alongside a main-tree card, so
+ * the silent overwrite the mechanism exists to prevent comes back. The edit
+ * happens in the directory the caller is standing in, so that is the tree the
+ * gate has to compare against.
+ *
+ * The LONGEST containing worktree wins, so a nested checkout resolves to the
+ * inner one; a directory in no worktree is the project's own tree, which is
+ * exactly the `project:<id>` scope `claimScopes` gives to cards without one.
+ *
+ * A LIMIT, stated because it matters: `cwd` is where the PROCESS is, not the
+ * file about to be written. An agent standing in its worktree that writes an
+ * absolute path into the main checkout is not caught here — only the edit hook,
+ * which sees the file, can catch that.
+ */
+export function scopeAt(
+  cwd: string,
+  items: readonly ScopeItem[],
+  projectId?: string | null,
+): string {
+  const scopes = claimScopes(items);
+  const here = normaliseTree(cwd);
+  let best: string | undefined;
+  for (const scope of new Set(scopes.values())) {
+    if (!isAbsoluteTree(scope)) continue;
+    const tree = normaliseTree(scope);
+    if (here === tree || here.startsWith(tree + '/')) {
+      if (best === undefined || tree.length > normaliseTree(best).length) best = scope;
+    }
+  }
+  return best ?? `project:${projectId ?? ''}`;
 }
 
 export interface ClaimGateResult {
@@ -104,7 +202,14 @@ function explain(conflicts: readonly ClaimConflict[], rejected: readonly Claim[]
  * into a sequence of them, each invalidating the last.
  */
 export function gateOnClaims(
-  asking: { readonly id: string; readonly claims?: readonly Claim[] },
+  asking: {
+    readonly id: string;
+    readonly claims?: readonly Claim[];
+    /** The tree its card DECLARES. */
+    readonly scope?: string;
+    /** The tree the caller is standing in, when we know it. */
+    readonly cwdScope?: string;
+  },
   holders: readonly ClaimHolder[],
 ): ClaimGateResult {
   const wanted = asking.claims ?? [];
@@ -114,8 +219,22 @@ export function gateOnClaims(
     return { authorized: true, conflicts: [], rejected: [], message: '' };
   }
 
+  /*
+   * A UNION, not a swap.
+   *
+   * Scoping by the declared tree alone missed an agent editing the main
+   * checkout; scoping by `cwd` alone missed one who edits its own worktree by
+   * ABSOLUTE path from a shell that sits in the repo root — both ordinary. The
+   * agent may be in either tree, so it has to contend with the holders of
+   * both. An empty set means neither tree is known, and then everything
+   * contends.
+   */
+  const askingScopes = new Set(
+    [asking.scope, asking.cwdScope].filter((s): s is string => s !== undefined),
+  );
   const held = holders
     .filter(h => stillHolds(h.status))
+    .filter(h => askingScopes.size === 0 || h.scope === undefined || askingScopes.has(h.scope))
     .map(h => ({ itemId: h.id, claims: h.claims }));
 
   const { conflicts, rejected } = findClaimConflicts(wanted, held, asking.id);

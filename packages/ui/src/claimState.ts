@@ -80,6 +80,42 @@ export interface ClaimCard {
   readonly id: string;
   readonly status: string;
   readonly claims?: readonly string[];
+  /** For claim scoping — see `claimScopes`. Mirrors core's `ScopeItem`. */
+  readonly projectId?: string | null;
+  readonly parentId?: string | null;
+  readonly worktreePath?: string | null;
+}
+
+/**
+ * The tree each card works in, keyed for comparison. Mirrors core's
+ * `claimScopes` (this file cannot import core — see the header).
+ *
+ * Two cards in DIFFERENT worktrees cannot overwrite each other: git gives a
+ * merge conflict a person resolves, which is the recoverable case claims are
+ * not for. Only cards sharing a tree contend.
+ */
+export function scopesOf(cards: readonly ClaimCard[]): Map<string, string> {
+  const byId = new Map(cards.map(c => [c.id, c]));
+  const memo = new Map<string, string>();
+  const visiting = new Set<string>();
+  const resolve = (id: string): string => {
+    const cached = memo.get(id);
+    if (cached !== undefined) return cached;
+    const card = byId.get(id);
+    const fallback = `project:${card?.projectId ?? ''}`;
+    if (!card || visiting.has(id)) return fallback;
+    visiting.add(id);
+    const wt = typeof card.worktreePath === 'string'
+      ? card.worktreePath.trim().replace(/\\/g, '/').replace(/\/+$/, '')
+      : '';
+    const key = wt || (card.parentId && byId.has(card.parentId) ? resolve(card.parentId) : fallback);
+    visiting.delete(id);
+    memo.set(id, key);
+    return key;
+  };
+  const out = new Map<string, string>();
+  for (const c of cards) out.set(c.id, resolve(c.id));
+  return out;
 }
 
 export interface CardClaimState {
@@ -113,6 +149,17 @@ export function claimStateOf(cardId: string, all: readonly ClaimCard[]): CardCla
   if (!owns.length) return EMPTY;
 
   /*
+   * ONLY the same tree. A card in another worktree cannot collide with this
+   * one — and reporting it as `held` would show the user a conflict the server
+   * would not refuse. An unknown scope on either side still contends, matching
+   * `gateOnClaims`: a key we cannot compare is not evidence of isolation.
+   */
+  const scopes = scopesOf(all);
+  const mine = scopes.get(cardId);
+  const sameTree = (c: ClaimCard): boolean =>
+    mine === undefined || scopes.get(c.id) === undefined || scopes.get(c.id) === mine;
+
+  /*
    * De-duplicated: one card holding a directory produces a conflict per file
    * beneath it, and a row reading "held by a, a, a" is noise where "held by a"
    * is the fact.
@@ -126,12 +173,14 @@ export function claimStateOf(cardId: string, all: readonly ClaimCard[]): CardCla
   const rejected = [...new Set([
     ...owns.filter(c => !wellFormed(c)),
     ...all.filter(c => !RELEASED.has(c.status.toUpperCase()))
+         .filter(sameTree)
          .flatMap(c => (c.claims ?? []).filter(x => !wellFormed(x))),
   ])];
 
   const heldBy = [...new Set(
     all
       .filter(c => c.id !== cardId && !RELEASED.has(c.status.toUpperCase()))
+      .filter(sameTree)
       .filter(c => (c.claims ?? []).some(theirs => owns.some(mine => collide(mine, theirs))))
       .map(c => c.id),
   )];

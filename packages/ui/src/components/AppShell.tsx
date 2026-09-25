@@ -2251,7 +2251,14 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
    */
   const { data: allItemsForClaims = [] } = useQuery<AgEnFKItem[]>({
     queryKey: ['items-claims'],
-    queryFn: () => api.listItems(),
+    /*
+     * ARCHIVED INCLUDED, deliberately. The chip scopes a claim by the card's
+     * EFFECTIVE worktree, which can be an ancestor's — and an archived parent
+     * is still that ancestor. Without it the child falls back to the project
+     * scope here and disagrees with the server, the same divergence the CLI
+     * had. The cost is a bigger payload; freshness still comes from the socket.
+     */
+    queryFn: () => api.listItems({ includeArchived: true }),
     /*
      * Measured after review: `GET /items` returns FULL records - description,
      * comments, history - and on this machine that is 582 items and 8.1 MB,

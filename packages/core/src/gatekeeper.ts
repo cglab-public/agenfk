@@ -9,7 +9,7 @@
  * CREATE_UNIT_TESTS). Centralising the logic here kills that drift.
  */
 
-import { gateOnClaims } from './claimGate';
+import { gateOnClaims, claimScopes, scopeAt } from './claimGate';
 
 export interface GatekeeperFlow {
   /** Flow name, echoed back so the caller can see which flow is governing. */
@@ -25,6 +25,10 @@ export interface GatekeeperItem {
   branchName?: string;
   /** Paths this item owns while worked. See claimGate.ts. */
   claims?: string[];
+  /** Where the item's tree comes from — for scoping claims. See `claimScopes`. */
+  projectId?: string | null;
+  parentId?: string | null;
+  worktreePath?: string | null;
 }
 
 /** Statuses that are never considered "active working" steps regardless of flow. */
@@ -292,6 +296,17 @@ export interface GatekeeperDecisionOptions {
   intent?: string;
   /** Advisory role label (coding/review/testing/...). Echoed, NOT used as a status gate. */
   role?: string;
+  /**
+   * The caller's working directory.
+   *
+   * Claims are scoped by the tree the caller is IN, not only the one its card
+   * declares: an agent editing the main checkout must contend with the cards
+   * working there, whatever worktree its card owns. Omitted means "unknown" —
+   * the gate then falls back to the declared tree.
+   */
+  cwd?: string;
+  /** The project the caller resolved, for the no-worktree scope key. */
+  projectId?: string | null;
 }
 
 /**
@@ -369,9 +384,16 @@ export function decideGatekeeperAuthorization(
    * files must not be handed to somebody else - it finds out on resume, which
    * is the worst moment. claimGate decides release by terminal status instead.
    */
+  const scopes = claimScopes(items);
+  /*
+   * BOTH trees, not one. The declared worktree catches a card whose agent edits
+   * it by absolute path from a shell sitting elsewhere; the cwd catches an
+   * agent editing the main checkout. `gateOnClaims` unions them.
+   */
+  const cwdScope = opts?.cwd ? scopeAt(opts.cwd, items, opts.projectId) : undefined;
   const gate = gateOnClaims(
-    { id: task.id, claims: task.claims },
-    items.map(i => ({ id: i.id, status: i.status, claims: i.claims })),
+    { id: task.id, claims: task.claims, scope: scopes.get(task.id), cwdScope },
+    items.map(i => ({ id: i.id, status: i.status, claims: i.claims, scope: scopes.get(i.id) })),
   );
   if (!gate.authorized) {
     return {

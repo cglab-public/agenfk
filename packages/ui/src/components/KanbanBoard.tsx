@@ -17,6 +17,7 @@ import { isDesktop } from '../desktop';
 import { useActiveProject } from '../ActiveProject';
 import { CardDetailModal } from './CardDetailModal';
 import { ItemTypeBadge, ITEM_TYPE_VISUAL } from './ItemTypeSquare';
+import { ColumnContractBadges } from './ColumnContractBadges';
 import { CardAnimationWrapper } from '../animations/CardAnimationWrapper';
 import '../animations'; // Side-effect: registers all easter egg animations
 import { useEasterEggs } from '../useEasterEggs';

@@ -3755,7 +3755,10 @@ program
   .option('--json', 'Output as JSON')
   .action(async (options) => {
     try {
-      const { data: items } = await axios.get(`${API_URL}/items`);
+      // includeArchived: the claim gate scopes by tree, and the server's own
+      // gate reads storage (which does not filter). A missing archived parent
+      // made the CLI and the server resolve a child to DIFFERENT trees.
+      const { data: items } = await axios.get(`${API_URL}/items?includeArchived=true`);
       const projectId = findProjectId(process.cwd());
       const projectItems = projectId ? items.filter((i: any) => i.projectId === projectId) : items;
 
@@ -3807,6 +3810,11 @@ program
         itemId: options.itemId,
         intent: options.intent,
         role: options.role,
+        // Claims are checked against the tree this process is standing in, not
+        // only the one the card declares — an agent editing the main checkout
+        // must contend with the cards working there.
+        cwd: process.cwd(),
+        projectId,
       });
 
       /*

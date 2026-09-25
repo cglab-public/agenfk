@@ -216,3 +216,62 @@ describe('claims it cannot read', () => {
     }
   });
 });
+
+describe('claims are scoped to the tree', () => {
+  it('does NOT report held for a card in another worktree', () => {
+    // Two separate checkouts: git resolves the overlap, so the sidebar must not
+    // show a conflict the server would not refuse.
+    const state = claimStateOf('a', [
+      { id: 'a', status: 'IN_PROGRESS', claims: ['src/x.ts'], projectId: 'p', worktreePath: '/wt/a' },
+      { id: 'b', status: 'IN_PROGRESS', claims: ['src/x.ts'], projectId: 'p', worktreePath: '/wt/b' },
+    ]);
+    expect(state.heldBy).toEqual([]);
+  });
+
+  it('reports held for a child sharing its parent worktree', () => {
+    const state = claimStateOf('a', [
+      { id: 'a', status: 'IN_PROGRESS', claims: ['src/x.ts'], projectId: 'p', worktreePath: '/wt/a' },
+      { id: 'b', status: 'IN_PROGRESS', claims: ['src/x.ts'], projectId: 'p', parentId: 'a' },
+    ]);
+    expect(state.heldBy).toEqual(['b']);
+  });
+
+  it('treats no worktree as the PROJECT tree, not as unknown', () => {
+    // Two cards with no worktree both work in the project root, so they still
+    // collide there — this is not a fail-open, it is the root being a tree.
+    const root = claimStateOf('a', [
+      { id: 'a', status: 'IN_PROGRESS', claims: ['src/x.ts'], projectId: 'p' },
+      { id: 'b', status: 'IN_PROGRESS', claims: ['src/x.ts'], projectId: 'p' },
+    ]);
+    expect(root.heldBy).toEqual(['b']);
+    // And a root card does NOT collide with one in a worktree: different trees.
+    const mixed = claimStateOf('a', [
+      { id: 'a', status: 'IN_PROGRESS', claims: ['src/x.ts'], projectId: 'p' },
+      { id: 'b', status: 'IN_PROGRESS', claims: ['src/x.ts'], projectId: 'p', worktreePath: '/wt/b' },
+    ]);
+    expect(mixed.heldBy).toEqual([]);
+  });
+});
+
+describe('the scope copy agrees with core', () => {
+  it('gives the same tree key as claimScopes on every case that matters', async () => {
+    // The same obligation `collide` carries: a copy that DRIFTS is worse than
+    // either sharing or not.
+    const { claimScopes } = await import('@agenfk/core');
+    const { scopesOf } = await import('../claimState');
+    const cases = [
+      [{ id: 'a', status: 'IN_PROGRESS', projectId: 'p', worktreePath: '/wt/a' }],
+      [{ id: 'epic', status: 'IN_PROGRESS', projectId: 'p', worktreePath: '/wt/epic' },
+       { id: 'sib', status: 'IN_PROGRESS', projectId: 'p', parentId: 'epic' }],
+      [{ id: 'a', status: 'IN_PROGRESS', projectId: 'p' }, { id: 'b', status: 'IN_PROGRESS', projectId: 'p' }],
+      [{ id: 'a', status: 'IN_PROGRESS', projectId: 'p', worktreePath: 'C:\\wt\\a' }],
+    ];
+    for (const cards of cases) {
+      const mine = scopesOf(cards as never);
+      const core = claimScopes(cards as never);
+      for (const id of core.keys()) {
+        expect(mine.get(id), `scope copy drifted on ${id}`).toBe(core.get(id));
+      }
+    }
+  });
+});

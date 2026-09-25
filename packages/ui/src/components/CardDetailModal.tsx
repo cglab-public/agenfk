@@ -16,6 +16,7 @@ import { api } from '../api';
 import { RunsPanel, type AgentRun } from './RunsPanel';
 import { ItemTypeSquare, ItemTypeBadge, itemTypeHint } from './ItemTypeSquare';
 import { ItemTypePicker } from './ItemTypePicker';
+import { StepChecksPanel } from './StepChecksPanel';
 
 interface CardDetailModalProps {
   item: AgEnFKItem;

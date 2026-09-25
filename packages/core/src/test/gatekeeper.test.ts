@@ -841,3 +841,35 @@ describe('stepCommitsOnLeave: one answer to "does leaving this step commit?"', (
   });
 });
 
+
+describe('the claim gate uses the tree the caller is in', () => {
+  it("refuses a collision inside the card's DECLARED worktree even when the shell is at the repo root", () => {
+    const items: GatekeeperItem[] = [
+      { id: 'epic', status: 'IN_PROGRESS', type: 'TASK', worktreePath: '/wt/epic' },
+      { id: 'sib', status: 'IN_PROGRESS', type: 'TASK', parentId: 'epic', claims: ['packages/ui/src/App.tsx'] },
+      { id: 'me', status: 'IN_PROGRESS', type: 'TASK', worktreePath: '/wt/epic', claims: ['packages/ui/src/App.tsx'] },
+    ];
+    const d = decideGatekeeperAuthorization(items, tddFlow, { itemId: 'me', cwd: '/repo' });
+    expect(d.authorized).toBe(false);
+    expect(d.message).toMatch(/CLAIM CONFLICT/);
+  });
+
+  it("refuses a MAIN-checkout collision when the card's own worktree is elsewhere", () => {
+    const items: GatekeeperItem[] = [
+      { id: 'main', status: 'IN_PROGRESS', type: 'TASK', claims: ['src/x.ts'] },
+      { id: 'me', status: 'IN_PROGRESS', type: 'TASK', worktreePath: '/wt/me', claims: ['src/x.ts'] },
+    ];
+    // The agent is editing the main checkout despite owning a worktree.
+    const d = decideGatekeeperAuthorization(items, tddFlow, { itemId: 'me', cwd: '/repo' });
+    expect(d.authorized).toBe(false);
+  });
+
+  it('allows the same path in two separate worktrees', () => {
+    const items: GatekeeperItem[] = [
+      { id: 'a', status: 'IN_PROGRESS', type: 'TASK', worktreePath: '/wt/a', claims: ['src/x.ts'] },
+      { id: 'b', status: 'IN_PROGRESS', type: 'TASK', worktreePath: '/wt/b', claims: ['src/x.ts'] },
+    ];
+    const d = decideGatekeeperAuthorization(items, tddFlow, { itemId: 'a', cwd: '/wt/a/src' });
+    expect(d.authorized).toBe(true);
+  });
+});
