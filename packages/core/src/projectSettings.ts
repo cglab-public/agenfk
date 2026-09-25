@@ -22,7 +22,17 @@ import type { Project } from './types';
  * hiding what cannot be edited here is exactly how an inferred value stays
  * wrong for four projects.
  */
-export type SettingOrigin = 'set-here' | 'inherited' | 'inferred' | 'cli-only' | 'main-only';
+export type SettingOrigin =
+  | 'set-here' | 'inherited' | 'inferred' | 'cli-only' | 'main-only'
+  /**
+   * Declared by the repository, in `.agenfk/project.json`.
+   *
+   * The strongest origin there is, and the only one that is the same for
+   * everyone who clones. A row with this origin must not offer to be edited
+   * here: the next read of the file would put it back, and a control that
+   * silently loses is worse than no control.
+   */
+  | 'from-file';
 
 export interface ProjectSettingRow {
   key: string;
@@ -42,6 +52,14 @@ export interface ProjectSettingRow {
 export interface ProjectSettingsContext {
   /** The name of the flow this project uses, or null when it inherits one. */
   flowName: string | null;
+  /**
+   * Which settings the repository's own file decided, and where that file is.
+   *
+   * Empty when there is no file, or when it declares nothing — which is not
+   * the same as declaring empty values.
+   */
+  fromFile?: readonly string[];
+  filePath?: string;
   /** Where worktrees are cut, before the project's own folder is appended. */
   worktreeRoot: string;
   /** Used only to recognise a project rooted at the home directory. */
@@ -55,7 +73,28 @@ export function describeProjectSettings(
   const root = project.projectRoot?.replace(/\/+$/, '') || null;
   const home = ctx.homeDir?.replace(/\/+$/, '');
 
-  return [
+  /*
+   * THE FILE OVERRIDES THE ROW, and says so.
+   *
+   * A setting the repository declares is the same for everyone who clones it,
+   * so it outranks whatever this machine happens to remember — and the screen
+   * must stop offering to edit it, because the next read would put it back.
+   */
+  const declared = new Set(ctx.fromFile ?? []);
+  const withFile = (row: ProjectSettingRow): ProjectSettingRow => (
+    declared.has(row.key)
+      ? {
+        ...row,
+        origin: 'from-file',
+        from: ctx.filePath
+          ? `Declared by the repository, in ${ctx.filePath}.`
+          : 'Declared by the repository, in its project file.',
+        how: undefined,
+      }
+      : row
+  );
+
+  return ([
     {
       key: 'projectRoot',
       label: 'Project folder',
@@ -116,5 +155,5 @@ export function describeProjectSettings(
       origin: 'set-here',
       from: 'The one thing on this page the screen itself owns.',
     },
-  ];
+  ] as ProjectSettingRow[]).map(withFile);
 }

@@ -242,3 +242,179 @@ describe('projects with no git', () => {
     expect(await resolveWorktree('i1', d as never)).toEqual({ cwd: '/wt/card', branchName: 'feat/x' });
   });
 });
+
+
+/*
+ * A repository with nothing to branch from.
+ *
+ * Reported from the app: pressing a card in a freshly `git init`-ed project
+ * answered with git's `--orphan` hint page. `git worktree add` needs a commit
+ * to base the new branch on; an unborn HEAD has none.
+ */
+describe('a repository with no commits yet', () => {
+  const deps = (over: Record<string, unknown> = {}) => ({
+    port: 3000,
+    get: vi.fn(async () => { throw new Error('the server should not be asked'); }),
+    post: vi.fn(async () => { throw new Error('the server should not be asked'); }),
+    isRepo: vi.fn(() => true),
+    hasCommits: vi.fn(() => false),
+    exists: vi.fn(() => true),
+    projectRoot: vi.fn(async () => '/Users/me/agenfk/myles-marketplace-web'),
+    ...over,
+  });
+
+  it('opens in the project root instead of failing', async () => {
+    expect(await resolveWorktree('i1', deps() as never)).toEqual({
+      cwd: '/Users/me/agenfk/myles-marketplace-web',
+      branchName: null,
+    });
+  });
+
+  it('does not ask the server for a worktree it cannot cut', async () => {
+    const d = deps();
+    await resolveWorktree('i1', d as never);
+    expect(d.post).not.toHaveBeenCalled();
+    expect(d.hasCommits).toHaveBeenCalledWith('/Users/me/agenfk/myles-marketplace-web');
+  });
+
+  it('goes back to worktrees as soon as there is a commit', async () => {
+    // The first commit made in that root is all it takes; nothing else has to
+    // be undone.
+    const d = deps({
+      hasCommits: vi.fn(() => true),
+      get: vi.fn(async () => ({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({ path: '/wt/card', branchName: 'feat/x', exists: true }),
+      })),
+    });
+    expect(await resolveWorktree('i1', d as never)).toEqual({ cwd: '/wt/card', branchName: 'feat/x' });
+  });
+});
+
+
+/*
+ * The race that made the fallback fail exactly when it was needed.
+ *
+ * The no-git check used to run BEFORE asking the server, and the check needs
+ * an HTTP call of its own — so one second after `agenfk restart`, with the
+ * server still booting, the lookup answered nothing, the check gave up, and
+ * the request went on to fail with a message about git. Asking the server
+ * first and softening its refusal afterwards has no such window.
+ */
+describe('when the project lookup is not answered yet', () => {
+  it('falls back once the lookup works, even though it failed the first time', async () => {
+    let attempt = 0;
+    const d = {
+      port: 3000,
+      get: vi.fn(async () => ({
+        status: 400, contentType: 'application/json',
+        body: JSON.stringify({ error: 'not a git repository: /Users/me/Documents/Default Project' }),
+      })),
+      post: vi.fn(),
+      isRepo: vi.fn(() => false),
+      exists: vi.fn(() => true),
+      projectRoot: vi.fn(async () => {
+        // The first call lands while the server is still coming up.
+        attempt += 1;
+        return attempt === 1 ? null : '/Users/me/Documents/Default Project';
+      }),
+    };
+    // First attempt: nothing to fall back to, so the server's sentence stands.
+    await expect(resolveWorktree('i1', d as never)).rejects.toThrow(/not a git repository/);
+    // Second: the same refusal, and now the root can be read.
+    expect(await resolveWorktree('i1', d as never)).toEqual({
+      cwd: '/Users/me/Documents/Default Project',
+      branchName: null,
+    });
+  });
+
+  it('keeps the server’s words when the root cannot be read at all', async () => {
+    const d = {
+      port: 3000,
+      get: vi.fn(async () => ({
+        status: 400, contentType: 'application/json',
+        body: JSON.stringify({ error: 'Project has no projectRoot. Set it before creating a worktree.' }),
+      })),
+      post: vi.fn(),
+      isRepo: vi.fn(() => false),
+      exists: vi.fn(() => true),
+      projectRoot: vi.fn(async () => { throw new Error('the server is down'); }),
+    };
+    await expect(resolveWorktree('i1', d as never)).rejects.toThrow(/has no projectRoot/);
+  });
+
+  it('does not soften a refusal about a real repository', async () => {
+    // A checkout that git recognises and that has commits: whatever went wrong
+    // there is not the no-git case, and hiding it in the project root would
+    // put an agent on the wrong branch — the thing this module exists for.
+    const d = {
+      port: 3000,
+      get: vi.fn(async () => ({
+        status: 400, contentType: 'application/json',
+        body: JSON.stringify({ error: 'git worktree add failed: index.lock exists' }),
+      })),
+      post: vi.fn(),
+      isRepo: vi.fn(() => true),
+      hasCommits: vi.fn(() => true),
+      exists: vi.fn(() => true),
+      projectRoot: vi.fn(async () => '/checkout/agenfk'),
+    };
+    await expect(resolveWorktree('i1', d as never)).rejects.toThrow(/index\.lock/);
+  });
+});
+
+
+/*
+ * A branch that is already checked out.
+ *
+ * git allows ONE worktree per branch. Reopening a card whose branch sits in the
+ * main clone answered "fatal: 'feat/…' is already used by worktree at
+ * /Users/…/myles-marketplace-web" — a refusal that names its own answer: that
+ * path is where this card's work is.
+ */
+describe('a branch already checked out somewhere', () => {
+  const deps = (over: Record<string, unknown> = {}) => ({
+    port: 3000,
+    get: vi.fn(async () => ({
+      status: 400, contentType: 'application/json',
+      body: JSON.stringify({
+        error: "git worktree add failed: 'feat/x' is already used by worktree at /checkout/myles",
+      }),
+    })),
+    post: vi.fn(),
+    isRepo: vi.fn(() => true),
+    hasCommits: vi.fn(() => true),
+    exists: vi.fn(() => true),
+    projectRoot: vi.fn(async () => '/checkout/myles'),
+    itemBranch: vi.fn(async () => 'feat/x'),
+    worktreeFor: vi.fn(() => '/checkout/myles'),
+    ...over,
+  });
+
+  it('opens where the branch is, instead of reporting the refusal', async () => {
+    const d = deps();
+    expect(await resolveWorktree('i1', d as never)).toEqual({
+      cwd: '/checkout/myles',
+      branchName: 'feat/x',
+    });
+    expect(d.worktreeFor).toHaveBeenCalledWith('/checkout/myles', 'feat/x');
+  });
+
+  it('keeps the refusal when the branch is out NOWHERE this app can see', async () => {
+    // Then the failure is about something else, and inventing a directory is
+    // the "plausible wrong answer" this module exists to refuse.
+    await expect(resolveWorktree('i1', deps({ worktreeFor: vi.fn(() => null) }) as never))
+      .rejects.toThrow(/already used by worktree/);
+  });
+
+  it('keeps the refusal when the card has no branch to look for', async () => {
+    await expect(resolveWorktree('i1', deps({ itemBranch: vi.fn(async () => null) }) as never))
+      .rejects.toThrow(/already used by worktree/);
+  });
+
+  it('never reaches this for a project with no git, which is answered earlier', async () => {
+    const d = deps({ isRepo: vi.fn(() => false) });
+    expect(await resolveWorktree('i1', d as never)).toEqual({ cwd: '/checkout/myles', branchName: null });
+    expect(d.worktreeFor).not.toHaveBeenCalled();
+  });
+});

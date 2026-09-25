@@ -54,7 +54,17 @@ export interface NewTerminalDialogProps {
    * Absent means nothing is running, which is the ordinary case and still says
    * Create.
    */
-  readonly existing?: { readonly agentId: string; readonly where: 'herdr' | 'agenfk' };
+  /**
+   * Where the agent already working on this card is, when there is one.
+   *
+   * THREE PLACES, not two. `agenfk` means a terminal THIS app holds — the only
+   * case where "continue" can take you to it. `outside` is an agent running in
+   * a session we do not host (a CLI somebody started in their own terminal,
+   * another machine): the card is busy, and opening here starts a SECOND agent
+   * in the same worktree. Saying "already open in an AgEnFK terminal" there
+   * was false, and it is the sentence that made the dialog read as a bug.
+   */
+  readonly existing?: { readonly agentId: string; readonly where: 'herdr' | 'agenfk' | 'outside' };
   readonly onCreate: (req: NewTerminalRequest) => Promise<void>;
   readonly onClose: () => void;
   readonly listAgents: () => Promise<AgentInfo[]>;
@@ -124,7 +134,13 @@ export function NewTerminalDialog({
         aria-modal="true"
         aria-label={`Open a terminal on ${cardTitle}`}
         onKeyDown={onKeyDown}
-        className="w-full max-w-md animate-[popIn_140ms_cubic-bezier(0.2,0,0,1)] rounded-2xl border border-border-soft bg-nav-surface shadow-2xl motion-reduce:animate-none"
+        /*
+         * `bg-surface`, opaque. `bg-nav-surface` is a 72%-alpha token for the
+         * bars and rails, which sit over a blurred backdrop — a DIALOG floats
+         * over a terminal, so the agent's output showed through the sentence
+         * asking which agent to open. Same mistake the fleet sheet had.
+         */
+        className="w-full max-w-md animate-[popIn_140ms_cubic-bezier(0.2,0,0,1)] rounded-2xl border border-border-soft bg-surface shadow-2xl motion-reduce:animate-none"
       >
         <div className="flex items-start gap-3 border-b border-border-soft px-5 py-4">
           <div className="min-w-0 flex-1">
@@ -143,7 +159,9 @@ export function NewTerminalDialog({
               <p data-testid="existing-session" className="mt-1 text-[11px] text-ink-tertiary">
                 {existing.where === 'herdr'
                   ? `Already running in herdr as ${existing.agentId}.`
-                  : `Already open in an AgEnFK terminal as ${existing.agentId}.`}
+                  : existing.where === 'outside'
+                    ? `${existing.agentId} is already working on this card, in a session outside AgEnFK. Opening here starts a second agent in the same worktree.`
+                    : `Already open in an AgEnFK terminal as ${existing.agentId}.`}
               </p>
             )}
           </div>

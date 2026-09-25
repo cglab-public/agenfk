@@ -1,5 +1,7 @@
 import React from 'react';
-import { Folder, LayoutGrid, List, Play, Settings2, Sparkles } from 'lucide-react';
+import { Check, ChevronDown, Folder, LayoutGrid, List, ListFilter, Play, Settings2, Sparkles, Terminal as TerminalIcon } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { OrgFlowPicker } from './OrgFlowPicker';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api';
 import type { AgEnFKItem, Project } from '../types';
@@ -23,8 +25,8 @@ import { ItemType } from '../types';
  * four is the defect this design went through three rounds to remove.
  *
  * TWO TABS, and only two. A tab bar whose other tabs have nothing behind them
- * is the door-with-no-room this product has already drawn three times; Agents
- * and Pull requests arrive when each has content of its own.
+ * is the door-with-no-room this product has already drawn three times; Pull
+ * requests arrives when it has content of its own.
  */
 export interface ProjectPageProps {
   readonly project: Project;
@@ -40,11 +42,19 @@ export interface ProjectPageProps {
   /** How many agent sessions are running in this project right now. */
   readonly runningAgents?: number;
   /**
-   * Which of these cards already have a session, so a row can say OPEN rather
-   * than START. Spawning a second agent in the same worktree is possible from
-   * the tab bar, and is not what pressing a card's own button means.
+   * What is already working on each card, and therefore what its button means.
+   *
+   * THREE SITUATIONS, where the button had two. The work can be in a terminal
+   * this app owns, in a conversation this app owns — a subagent's run whose
+   * session is one of ours — or somewhere else entirely: another machine,
+   * another client, a pane this app never opened. Only the last of those is
+   * "nothing here is on it", and only it may offer to start.
+   *
+   * `ours` means this app can take you to it. `elsewhere` means an agent is on
+   * the card and we are not hosting it, so offering Start would open a SECOND
+   * agent in the same worktree.
    */
-  readonly runningItemIds?: readonly string[];
+  readonly working?: Readonly<Record<string, 'ours' | 'elsewhere'>>;
   /**
    * Start work on this card — the press that this page did not have.
    *
@@ -58,11 +68,30 @@ export interface ProjectPageProps {
    * where the button is, not whether there is one.
    */
   readonly onStartAgent?: (item: AgEnFKItem) => void;
+  /** Show what an agent we do not host is doing: its run, read-only. */
+  readonly onShowRuns?: (item: AgEnFKItem) => void;
+  /**
+   * The project's active flow, for the state filter.
+   *
+   * The states are NOT a fixed list. This project may run the TDD flow —
+   * DISCOVERY, CREATE_UNIT_TESTS, REFACTOR — where another runs the default,
+   * and offering a hard-coded set would name states this project does not have
+   * while hiding the ones it does. Absent means "only the types can filter",
+   * which is honest rather than a guess.
+   */
+  readonly flow?: { steps: readonly { name: string; order: number; isSpecial?: boolean }[] } | null;
   readonly onOpenBoard?: (projectId: string) => void;
   readonly onOpenCard?: (item: AgEnFKItem) => void;
   readonly onAsk?: (projectId: string) => void;
-  /** Write a card by hand — the fallback the panel offers from inside. */
-  readonly onNewCard?: (projectId: string) => void;
+  /**
+   * Open an ordinary terminal on this project, with no card.
+   *
+   * The second way to start work, and the one that needs no screen at all: the
+   * agent runs in the checkout and writes the card itself with the CLI. The
+   * proposal panel is the other — it shows you the tree before anything is
+   * written. Neither replaces the other (artifact aca414c7 §05).
+   */
+  readonly onOpenTerminal?: () => void;
 }
 
 /**
@@ -84,29 +113,206 @@ function depthOf(item: AgEnFKItem, byId: Map<string, AgEnFKItem>): number {
   return depth;
 }
 
+/**
+ * Where a value came from, in a sentence.
+ *
+ * The screen used to print the model's own slug — SET HERE, CLI ONLY,
+ * MAIN ONLY — which is vocabulary, not language. Worse, the only one that read
+ * like an invitation ("set here") sat on rows where nothing could be pressed.
+ * These say the same facts as sentences, and the ACTION is a control beside
+ * them rather than a word pretending to be one.
+ */
+const ORIGIN_TEXT: Record<string, string> = {
+  'from-file': 'Declared by the repository.',
+  'set-here': 'Chosen for this project.',
+  inherited: 'Inherited — this project has not chosen one.',
+  inferred: 'Guessed from the project, not set by anyone.',
+  'cli-only': 'Only the CLI can set this.',
+  'main-only': 'Only the desktop app can set this.',
+};
+
+/** A switch. Two states, both visible, and the label says which is which. */
+function Toggle(
+  { testId, on, busy, onToggle }: {
+    testId: string; on: boolean; busy?: boolean; onToggle: () => void;
+  },
+) {
+  return (
+    <button
+      type="button"
+      data-testid={testId}
+      role="switch"
+      aria-checked={on}
+      disabled={busy}
+      onClick={onToggle}
+      className={`relative h-5 w-9 shrink-0 rounded-full border transition-colors disabled:opacity-50 ${
+        on ? 'border-border-brand bg-brand' : 'border-border-soft bg-canvas'
+      }`}
+    >
+      <span
+        className={`absolute top-0.5 h-3.5 w-3.5 rounded-full transition-all ${
+          on ? 'left-[1.15rem] bg-navy' : 'left-0.5 bg-ink-tertiary'
+        }`}
+      />
+    </button>
+  );
+}
+
+/**
+ * One filter control, as a menu.
+ *
+ * Portalled for the same reason the project and agent pickers are: absolutely
+ * positioned inside the list it filters, it is clipped by the first scrolling
+ * ancestor — which here is the list itself. And dismissed the way they are,
+ * with the menu counted as inside: a press on an option must not unmount the
+ * option before the click reaches it.
+ */
+function FilterMenu(
+  { testId, label, value, options, onChange }: {
+    testId: string;
+    label: string;
+    value: string;
+    options: readonly { value: string; label: string }[];
+    onChange: (next: string) => void;
+  },
+) {
+  const [open, setOpen] = React.useState(false);
+  const buttonRef = React.useRef<HTMLButtonElement>(null);
+  const listRef = React.useRef<HTMLUListElement>(null);
+  const [anchor, setAnchor] = React.useState<{ top: number; left: number } | null>(null);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const place = (): void => {
+      const rect = buttonRef.current?.getBoundingClientRect();
+      if (rect) setAnchor({ top: rect.bottom + 6, left: rect.left });
+    };
+    place();
+    const onDown = (e: MouseEvent): void => {
+      const target = e.target as Node;
+      if (buttonRef.current?.contains(target) || listRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      setOpen(false);
+    };
+    window.addEventListener('scroll', place, true);
+    window.addEventListener('resize', place);
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey, true);
+    return () => {
+      window.removeEventListener('scroll', place, true);
+      window.removeEventListener('resize', place);
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey, true);
+    };
+  }, [open]);
+
+  const chosen = options.find(o => o.value === value);
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        data-testid={testId}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen(o => !o)}
+        className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold ${
+          value
+            ? 'border-border-brand bg-chip text-accent-text'
+            : 'border-border-soft bg-canvas text-ink-secondary hover:text-ink'
+        }`}
+      >
+        <ListFilter size={12} />
+        {chosen ? chosen.label : label}
+        <ChevronDown size={12} className="text-ink-tertiary" />
+      </button>
+      {open && anchor && createPortal(
+        <ul
+          ref={listRef}
+          role="listbox"
+          aria-label={label}
+          style={{ position: 'fixed', top: anchor.top, left: anchor.left, minWidth: 200 }}
+          className="z-[60] max-h-[20rem] overflow-y-auto rounded-xl border border-border-soft bg-surface py-1 shadow-2xl"
+        >
+          {options.map(o => (
+            <li key={o.value || 'all'}>
+              <button
+                type="button"
+                role="option"
+                aria-selected={o.value === value}
+                data-testid={`${testId}-${o.value || 'all'}`}
+                onClick={() => { onChange(o.value); setOpen(false); }}
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs ${
+                  o.value === value ? 'bg-chip text-ink' : 'text-ink-secondary hover:bg-chip hover:text-ink'
+                }`}
+              >
+                <span className="min-w-0 flex-1 truncate">{o.label}</span>
+                {o.value === value && <Check size={13} className="shrink-0 text-accent-text" />}
+              </button>
+            </li>
+          ))}
+        </ul>,
+        document.body,
+      )}
+    </>
+  );
+}
+
 export function ProjectPage({
-  project, cards, runningAgents = 0, runningItemIds = [], onOpenBoard, onOpenCard, onAsk,
-  onNewCard, onStartAgent,
+  project, cards, runningAgents = 0, working = {}, onOpenBoard, onOpenCard, onAsk,
+  onStartAgent, onShowRuns, onOpenTerminal, flow,
 }: ProjectPageProps) {
   const [tab, setTab] = React.useState<'cards' | 'settings'>('cards');
+  const [changingFlow, setChangingFlow] = React.useState(false);
+  const [togglingWorktree, setTogglingWorktree] = React.useState(false);
+  const [typeFilter, setTypeFilter] = React.useState<string>('');
+  const [statusFilter, setStatusFilter] = React.useState<string>('');
+  const filtering = Boolean(typeFilter || statusFilter);
+
+  /*
+   * ANCHORS INCLUDED, unlike the board.
+   *
+   * The board hides `isSpecial` steps as columns because TODO and DONE are
+   * where work waits rather than happens. Filtering is the opposite case: on a
+   * project with 135 cards most of them ARE in those two, and a state filter
+   * that cannot name them is a filter for the small half.
+   */
+  const statuses = React.useMemo(
+    () => [...(flow?.steps ?? [])].sort((a, b) => a.order - b.order).map(s => s.name),
+    [flow],
+  );
+
+  const shown = React.useMemo(
+    () => cards.filter(c =>
+      (!typeFilter || String(c.type) === typeFilter)
+      && (!statusFilter || String(c.status) === statusFilter)),
+    [cards, typeFilter, statusFilter],
+  );
   const byId = React.useMemo(() => new Map(cards.map(c => [c.id, c])), [cards]);
   const root = project.projectRoot;
 
   // Asked for only when the tab is opened: most visits are about the cards,
   // and this answer walks the flow and the filesystem defaults to build itself.
-  const { data: settings } = useQuery({
+  const { data: settings, refetch: refetchSettings } = useQuery({
     queryKey: ['project-settings', project.id],
     queryFn: () => api.projectSettings(project.id),
     enabled: tab === 'settings',
   });
 
+  /*
+   * How many of how many, once a filter is on. "135 cards" over a list of
+   * three is the same lie the old "in flight" count told, in the other
+   * direction — one number describing a different set than the rows under it.
+   */
+  const count = filtering
+    ? `${shown.length} of ${cards.length} ${cards.length === 1 ? 'card' : 'cards'}`
+    : `${cards.length} ${cards.length === 1 ? 'card' : 'cards'}`;
+
   const summary = [
-    /*
-     * The count says what the list IS. It said "in flight" while showing every
-     * card, which is the same mismatch that made this page look empty — one
-     * number describing a different set than the rows under it.
-     */
-    `${cards.length} ${cards.length === 1 ? 'card' : 'cards'}`,
     // Omitted rather than shown as zero: "0 agents running" is a fact nobody
     // needs, competing for the same line as one that matters.
     runningAgents > 0 ? `${runningAgents} ${runningAgents === 1 ? 'agent' : 'agents'} running` : null,
@@ -162,26 +368,62 @@ export function ProjectPage({
 
       <div className="min-h-0 flex-1 overflow-auto scrollbar-slim px-5 pb-4">
         {tab === 'settings' ? (
+          <>
+          {settings?.fileProblems?.length ? (
+            /* What the file ASKED FOR and could not have. A hand-edited key
+               that does nothing has to say so, or somebody spends an afternoon
+               on it. */
+            <ul data-testid="setting-file-problems" className="mb-3 flex flex-col gap-1 rounded-xl border border-border-soft bg-canvas px-4 py-3">
+              {settings.fileProblems.map(problem => (
+                <li key={problem} className="text-[11px] text-ink-tertiary">{problem}</li>
+              ))}
+            </ul>
+          ) : null}
           <ul data-testid="project-settings" className="flex flex-col">
             {(settings?.rows ?? []).map(row => (
               <li key={row.key} data-testid={`setting-${row.key}`} className="border-b border-border-soft py-4 last:border-b-0">
                 <div className="flex items-center gap-2.5">
                   <span className="text-sm font-semibold text-ink">{row.label}</span>
-                  {/* The badge says whether this screen may change the value —
-                      and when it may not, the row still shows the value,
-                      because that is the part worth seeing. */}
-                  <span
-                    data-testid={`setting-origin-${row.key}`}
-                    className={`rounded-full border px-2 py-0.5 font-mono text-[9.5px] uppercase tracking-wider ${
-                      row.origin === 'set-here'
-                        ? 'border-border-brand bg-chip text-accent-text'
-                        : row.origin === 'cli-only' || row.origin === 'main-only'
-                          ? 'border-border-soft text-danger-text'
-                          : 'border-border-soft text-ink-tertiary'
-                    }`}
-                  >
-                    {row.origin.replace('-', ' ')}
-                  </span>
+                  <span className="flex-1" />
+                  {/*
+                   * THE ACTION, where the badge used to promise one. Only for
+                   * the rows this screen may actually write: the others keep
+                   * their value and their command, because hiding what cannot
+                   * be edited here is how a wrong project root stayed
+                   * invisible in four projects.
+                   */}
+                  {row.key === 'flow' && row.origin !== 'from-file' && (
+                    <button
+                      type="button"
+                      data-testid="setting-change-flow"
+                      onClick={() => setChangingFlow(true)}
+                      className="shrink-0 rounded-lg border border-border-soft bg-canvas px-2.5 py-1 text-[11px] font-semibold text-ink"
+                    >
+                      Change…
+                    </button>
+                  )}
+                  {/*
+                    * NOT OFFERED when the repository declared it. The next read
+                    * of the file puts the value back, so a control here would
+                    * lose silently — which is worse than no control. The row
+                    * still shows the value and says where it came from.
+                    */}
+                  {row.key === 'autoWorktree' && row.origin !== 'from-file' && (
+                    <Toggle
+                      testId="setting-toggle-autoWorktree"
+                      on={row.value === 'on'}
+                      busy={togglingWorktree}
+                      onToggle={async () => {
+                        setTogglingWorktree(true);
+                        try {
+                          await api.updateProject(project.id, { autoWorktree: row.value !== 'on' });
+                          await refetchSettings();
+                        } finally {
+                          setTogglingWorktree(false);
+                        }
+                      }}
+                    />
+                  )}
                 </div>
                 <p className="mt-1 text-xs text-ink-tertiary">{row.description}</p>
                 <p className={`mt-2 truncate rounded-lg border px-3 py-2 font-mono text-[11px] ${
@@ -196,7 +438,12 @@ export function ProjectPage({
                     {row.warning}
                   </p>
                 )}
-                <p className="mt-1.5 text-[11px] text-ink-tertiary">{row.from}</p>
+                <p data-testid={`setting-origin-${row.key}`} className="mt-1.5 text-[11px] text-ink-tertiary">
+                  {row.from}
+                  {ORIGIN_TEXT[row.origin] && row.from !== ORIGIN_TEXT[row.origin]
+                    ? ` ${ORIGIN_TEXT[row.origin]}`
+                    : ''}
+                </p>
                 {row.how && (
                   <p data-testid={`setting-how-${row.key}`} className="mt-1 font-mono text-[11px] text-ink-tertiary">
                     {row.how}
@@ -205,7 +452,38 @@ export function ProjectPage({
               </li>
             ))}
           </ul>
-        ) : cards.length === 0 ? (
+          </>
+        ) : (
+          <>
+            {/* Only when there is something to filter: a control that can only
+                produce the empty list it is already showing is noise. */}
+            {cards.length > 0 && (
+              <div data-testid="project-filters" className="flex items-center gap-2">
+                <FilterMenu
+                  testId="project-filter-type"
+                  label="Type"
+                  value={typeFilter}
+                  onChange={setTypeFilter}
+                  options={[
+                    { value: '', label: 'All types' },
+                    ...Object.values(ItemType).map(t => ({ value: String(t), label: String(t) })),
+                  ]}
+                />
+                {statuses.length > 0 && (
+                  <FilterMenu
+                    testId="project-filter-status"
+                    label="State"
+                    value={statusFilter}
+                    onChange={setStatusFilter}
+                    options={[
+                      { value: '', label: 'All states' },
+                      ...statuses.map(name => ({ value: name, label: name })),
+                    ]}
+                  />
+                )}
+              </div>
+            )}
+            {cards.length === 0 ? (
           /* The moment this page exists for: the two doors, and nothing else
              to read instead of deciding. */
           <div data-testid="project-page-empty" className="rounded-xl border border-dashed border-border-soft px-5 py-10 text-center">
@@ -215,12 +493,32 @@ export function ProjectPage({
               anything is created.
             </p>
           </div>
+        ) : shown.length === 0 ? (
+          /* A DIFFERENT SENTENCE from "no cards yet": there are cards, and the
+             filter is what emptied the list. Saying the project is empty when
+             135 rows are one click away sends people looking for the bug. */
+          <div data-testid="project-page-no-match" className="rounded-xl border border-dashed border-border-soft px-5 py-10 text-center">
+            <p className="text-sm font-semibold text-ink">No card matches this filter.</p>
+            <button
+              type="button"
+              data-testid="project-filter-clear"
+              onClick={() => { setTypeFilter(''); setStatusFilter(''); }}
+              className="mt-2 text-xs font-semibold text-accent-text underline underline-offset-2"
+            >
+              Clear the filter
+            </button>
+          </div>
         ) : (
           <ul className="flex flex-col gap-1.5">
-            {cards.map(card => {
-              const live = runningItemIds.includes(card.id);
+            {shown.map(card => {
+              const on = working[card.id];
               return (
-              <li key={card.id} className="flex items-center gap-1.5" style={{ marginLeft: `${depthOf(card, byId) * 18}px` }}>
+              /*
+               * FLAT WHILE FILTERED. The indent means "child of the row above";
+               * with the ancestors filtered out it would draw a child of
+               * nothing, which is a worse answer than a flat list.
+               */
+              <li key={card.id} className="flex items-center gap-1.5" style={{ marginLeft: `${filtering ? 0 : depthOf(card, byId) * 18}px` }}>
                 <button
                   type="button"
                   data-testid={`project-card-${card.id}`}
@@ -240,29 +538,52 @@ export function ProjectPage({
                   <button
                     type="button"
                     data-testid={`project-card-start-${card.id}`}
-                    aria-label={live
-                      ? `Open the running terminal for ${card.title}`
-                      : `Start an agent on ${card.title}`}
-                    title={live ? 'Open the running terminal' : 'Start an agent on this card'}
-                    onClick={() => onStartAgent(card)}
+                    aria-label={
+                      on === 'ours' ? `Open the agent working on ${card.title}`
+                        : on === 'elsewhere' ? `See the run working on ${card.title}`
+                          : `Start an agent on ${card.title}`
+                    }
+                    title={
+                      on === 'ours' ? 'Open the agent working on this card'
+                        : on === 'elsewhere' ? 'An agent is already working on this card, elsewhere'
+                          : 'Start an agent on this card'
+                    }
+                    onClick={() => {
+                      // Never a spawn while something is already on the card:
+                      // that is a second agent in the same worktree.
+                      if (on === 'elsewhere') onShowRuns?.(card);
+                      else onStartAgent(card);
+                    }}
                     className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-2 text-[11px] font-semibold ${
-                      live
+                      on
                         ? 'border-border-brand bg-chip text-accent-text'
                         : 'border-border-soft bg-canvas text-ink-secondary hover:text-ink'
                     }`}
                   >
-                    {live
+                    {on
                       ? <span data-testid={`project-card-live-${card.id}`} className="h-1.5 w-1.5 rounded-full bg-brand" />
                       : <Play size={12} />}
-                    {live ? 'Open' : 'Start'}
+                    {on === 'ours' ? 'Open' : on === 'elsewhere' ? 'Running' : 'Start'}
                   </button>
                 )}
               </li>
               );
             })}
           </ul>
+            )}
+          </>
         )}
       </div>
+
+      {/* The flow picker this row is about. Mounted only while it is open:
+          it has its own queries, and this page is not the place to hold them. */}
+      {changingFlow && (
+        <OrgFlowPicker
+          open
+          projectId={project.id}
+          onClose={() => { setChangingFlow(false); void refetchSettings(); }}
+        />
+      )}
 
       <footer className="flex items-center gap-2 border-t border-border-soft bg-canvas px-5 py-3">
         {/*
@@ -284,10 +605,32 @@ export function ProjectPage({
         >
           <Sparkles size={14} /> New task
         </button>
+        {onOpenTerminal && (
+          /*
+           * THE OTHER WAY IN, and deliberately the quieter one.
+           *
+           * "New task" proposes and shows you the tree before anything is
+           * written; this opens an ordinary terminal on the project and lets
+           * the agent write the card itself with the CLI. Same room, different
+           * doors — one for the person who wants to review first, one for the
+           * person who already knows and would rather just talk to the agent.
+           */
+          <button
+            type="button"
+            data-testid="project-page-terminal"
+            onClick={onOpenTerminal}
+            /* `bg-surface`, not `bg-canvas`: the footer IS canvas, so the
+               button dissolved into it and read as transparent. */
+            className="flex items-center gap-2 rounded-lg border border-border-soft bg-surface px-3 py-1.5 text-xs font-semibold text-ink-secondary hover:text-ink"
+          >
+            <TerminalIcon size={14} /> Open a terminal
+          </button>
+        )}
         <span className="flex-1" />
         {/* Information, not a third button competing with the two doors. */}
         <span data-testid="project-page-summary" className="truncate text-[11px] text-ink-tertiary">
-          {summary}
+          <span data-testid="project-page-count">{count}</span>
+          {summary ? ` · ${summary}` : ''}
         </span>
       </footer>
     </div>

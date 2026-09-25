@@ -95,3 +95,36 @@ describe('a setting with a fixed set of legal values', () => {
     expect(isLegalSettingValue('__proto__' as keyof AppSettings, true)).toBe(false);
   });
 });
+
+describe('pinned projects, the one LIST setting', () => {
+  it('defaults to nothing pinned', () => {
+    expect(DEFAULT_APP_SETTINGS.pinnedProjects).toEqual([]);
+  });
+
+  it('defaults the board to following project switches', () => {
+    // Off is the behaviour every install had before this setting existed; it
+    // is an opt-in override, not a new default.
+    expect(DEFAULT_APP_SETTINGS.boardPinned).toBe(false);
+  });
+
+  it('accepts an array of strings', () => {
+    expect(isLegalSettingValue('pinnedProjects', ['p1', 'p2'])).toBe(true);
+    expect(isLegalSettingValue('pinnedProjects', [])).toBe(true);
+  });
+
+  it('refuses an object, which `typeof` would let through', () => {
+    // The reason this key needs its own rule: `typeof [] === 'object'`, so the
+    // generic comparison accepts `{}` too — and the sidebar would then iterate
+    // a non-array during render.
+    expect(isLegalSettingValue('pinnedProjects', { p1: true })).toBe(false);
+    expect(isLegalSettingValue('pinnedProjects', null)).toBe(false);
+    expect(isLegalSettingValue('pinnedProjects', 'p1')).toBe(false);
+  });
+
+  it('refuses an array holding anything but strings', () => {
+    // "Rendered keys must be strings" is the actual contract, and a number id
+    // would reach React as a wrong-typed key.
+    expect(isLegalSettingValue('pinnedProjects', ['p1', 42])).toBe(false);
+    expect(isLegalSettingValue('pinnedProjects', [null])).toBe(false);
+  });
+});

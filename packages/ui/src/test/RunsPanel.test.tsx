@@ -111,6 +111,24 @@ describe('RunsPanel', () => {
     expect(screen.queryByText(/pi ·\s*$/)).toBeNull();
   });
 
+  /*
+   * A run whose actor is absent or unrecognised is what an older record looks
+   * like. The run row reads LANE[run.actor] with a `|| LANE.worker` fallback;
+   * without it that is a read on undefined and the whole panel goes white.
+   *
+   * Moved here from the deleted runsPanelWiring.test.tsx (396c8350): the shell
+   * screen that used to drive it is gone, but RunsPanel itself is still
+   * mounted by the card detail modal, so the guard stays covered.
+   */
+  it('draws a run with no actor as a worker rather than taking the screen down', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'REFACTOR', status: 'running', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([] as any);
+    renderPanel();
+    expect(await screen.findByRole('button', { name: /REFACTOR/ })).toBeDefined();
+  });
+
   // CGLAB-20: the un-proxied /agent-runs route served the SPA index.html, so
   // axios handed back an HTML string. RunsPanel must degrade to an empty state
   // rather than throw "a.map is not a function" and white-screen the whole app.

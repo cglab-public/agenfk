@@ -48,6 +48,16 @@ function App() {
      */
     const pin = (): void => {
       if (window.scrollY !== 0 || window.scrollX !== 0) window.scrollTo(0, 0);
+      /*
+       * AND AGAIN ON THE NEXT FRAME. An animated scroll keeps running after
+       * this handler: the instant correction lands mid-flight, the animation
+       * carries on to its target, and no further event fires — so the window
+       * stayed moved with nothing left to trigger the pin. Re-checking on the
+       * following frame catches exactly that ending.
+       */
+      requestAnimationFrame(() => {
+        if (window.scrollY !== 0 || window.scrollX !== 0) window.scrollTo(0, 0);
+      });
     };
     window.addEventListener('scroll', pin, { passive: true });
     return () => {

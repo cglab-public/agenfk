@@ -163,3 +163,42 @@ describe('dismissing', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 });
+
+
+/*
+ * Opaque, because it floats over a terminal.
+ *
+ * `bg-nav-surface` is a 72%-alpha token for bars and rails, which sit over a
+ * blurred backdrop. This dialog does not: the agent's own output showed
+ * through the sentence asking which agent to open.
+ */
+it('does not let what is behind it show through', () => {
+  renderDialog();
+  const panel = screen.getByRole('dialog');
+  expect(panel.className).toContain('bg-surface');
+  expect(panel.className).not.toContain('bg-nav-surface');
+});
+
+
+/*
+ * Where the agent actually is.
+ *
+ * The dialog said "Already open in an AgEnFK terminal" for any row on the
+ * card — including a run recorded by the hook for an agent running in
+ * somebody's own shell. So the person read "it is already open here" beside a
+ * button offering to open it, which is the sentence that made this screen read
+ * as broken.
+ */
+it('says when the agent is running outside this app, and what opening does', () => {
+  renderDialog({ existing: { agentId: 'claude-code', where: 'outside' } });
+  const said = screen.getByTestId('existing-session').textContent ?? '';
+  expect(said).toMatch(/outside AgEnFK/i);
+  expect(said).toMatch(/second agent in the same worktree/i);
+  expect(said).not.toMatch(/already open in an agenfk terminal/i);
+});
+
+it('still says "already open" when this app really holds the terminal', () => {
+  renderDialog({ existing: { agentId: 'claude-code', where: 'agenfk' } });
+  expect(screen.getByTestId('existing-session').textContent)
+    .toMatch(/already open in an agenfk terminal/i);
+});

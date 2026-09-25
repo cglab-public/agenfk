@@ -149,6 +149,16 @@ export interface SessionRow {
    */
   readonly hasTerminal: boolean;
   /**
+   * The agent conversation this row belongs to, when it names one.
+   *
+   * A run recorded by the hook carries the worker's own session id, and our
+   * terminals are HANDED that id when they spawn — so the two can be matched.
+   * That match is what tells a card worked by a subagent apart from a card
+   * worked somewhere this app cannot reach: the first opens the session that
+   * hosts it, the second must not offer to start a second agent.
+   */
+  readonly agentSessionId?: string;
+  /**
    * Whether this terminal's process has ended.
    *
    * Only meaningful with `hasTerminal`. It decides whether the row is shown at

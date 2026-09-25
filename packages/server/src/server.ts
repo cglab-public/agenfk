@@ -9,7 +9,10 @@ import { parseActor, parseFindings, readTranscriptIdentity } from './reviewRecor
 import * as passkeys from './passkeys';
 import { evaluateChecks, judgeReview, formatCheckResults, needsCapture, needsEntryRecord, type CheckResult } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave } from "@agenfk/core";
+import {
+  readProjectFile,
+  approvalFor,
+  commandFingerprint, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -2143,13 +2146,101 @@ app.get("/decompositions/contract", asyncHandler(async (req: any, res: any) => {
  * changes here — several of these fields are deliberately unreachable from a
  * browser, and the answer says so, with the command that does change them.
  */
+
+/**
+ * What a project's own checkout declares about itself.
+ *
+ * `.agenfk/project.json` is checked into the repository, so what it says is
+ * the same for everyone who clones it — which is why it outranks the stored
+ * row. Reading it is deliberately forgiving: the file is hand-edited, an
+ * unreadable one is "no opinion" rather than an error, and what was ignored
+ * travels back to the screen instead of into a log nobody opens.
+ *
+ * `name` and `description` are NOT applied here. They are the project's
+ * identity on the board, several projects can share a checkout across
+ * machines, and renaming somebody's row from a file they pulled is a surprise
+ * this has no reason to spring.
+ */
+function readDeclaredSettings(projectRoot?: string | null): {
+  settings: Record<string, unknown>;
+  keys: string[];
+  path?: string;
+  problems: string[];
+} {
+  if (!projectRoot) return { settings: {}, keys: [], problems: [] };
+  const rel = path.join('.agenfk', 'project.json');
+  const full = path.join(projectRoot, rel);
+  let raw: string;
+  try {
+    raw = fs.readFileSync(full, 'utf8');
+  } catch {
+    // No file is the ordinary case, not a fault.
+    return { settings: {}, keys: [], problems: [] };
+  }
+  const { value, problems } = readProjectFile(raw);
+  const { flow, name, description, ...applies } = value.settings;
+  void name; void description;
+  const settings: Record<string, unknown> = { ...applies };
+  const keys = Object.keys(applies);
+  // The flow is declared by NAME or by hub id, and resolving it needs the
+  // store — done by the caller, which is why it is reported but not applied.
+  if (flow) problems.push(`This repository asks for the flow "${flow}".`);
+  return { settings, keys, path: rel, problems };
+}
+
+/**
+ * "I have read this command and I am willing to run it here."
+ *
+ * Behind the internal token, like `verifyCommand` itself: this is the decision
+ * to execute a shell string that arrived with a repository, and an
+ * unauthenticated local route could make it on the user's behalf — which is
+ * precisely the shape of the bug that put verifyCommand behind the token in
+ * the first place (e60e20aa).
+ *
+ * Stored per exact command. A pull that edits it asks again, because what was
+ * read and approved is the string, not the field.
+ */
+app.post("/projects/:id/approve-file-command", asyncHandler(async (req: any, res: any) => {
+  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const project: any = await storage.getProject(req.params.id);
+  if (!project) return res.status(404).json({ error: "Project not found" });
+  const command = typeof req.body?.command === 'string' ? req.body.command : '';
+  if (!command.trim()) return res.status(400).json({ error: "command is required" });
+
+  const fingerprint = commandFingerprint(command);
+  const approved: string[] = Array.isArray(project.approvedFileCommands)
+    ? project.approvedFileCommands
+    : [];
+  if (!approved.includes(fingerprint)) {
+    await storage.updateProject(project.id, {
+      approvedFileCommands: [...approved, fingerprint],
+    } as any);
+  }
+  res.json({ approved: true, fingerprint });
+}));
+
 app.get("/projects/:id/settings", asyncHandler(async (req: any, res: any) => {
   const project = await storage.getProject(req.params.id);
   if (!project) return res.status(404).json({ error: "Project not found" });
   const flow = project.flowId ? await storage.getFlow(project.flowId) : null;
+  /*
+   * What the REPOSITORY declares about itself, read from its own checkout.
+   *
+   * The server stays the single owner of state — this is an input it reads,
+   * not a second writer. A file that cannot be read at all is simply no
+   * opinion: the stored settings stand, exactly as before this existed.
+   */
+  const declared = readDeclaredSettings(project.projectRoot);
   res.json({
     projectId: project.id,
-    rows: describeProjectSettings(project, {
+    /* The problems belong in the answer, not in a log nobody opens: a typo in
+       a hand-edited file is only fixable by the person who wrote it. */
+    fileProblems: declared.problems,
+    rows: describeProjectSettings({ ...project, ...declared.settings } as any, {
+      fromFile: declared.keys,
+      filePath: declared.path,
       // The name of the flow actually in force — the default's name when the
       // project has not chosen one, so the row reads as a value rather than as
       // a blank with a badge.
@@ -6377,15 +6468,47 @@ async function handleValidateProgress(itemId: string, command: string | undefine
    * reply, never a 400, because older skills still pass one - and it cannot
    * stand in for a missing project command either. Intermediate steps keep
    * the optional caller command: there it can only add a check.
+   *
+   * THE COMMAND MAY HAVE ARRIVED WITH THE REPOSITORY.
+   *
+   * `.agenfk/project.json` is what makes a project's configuration travel, and
+   * it is also a way for a clone to hand this machine a string it will run. So
+   * a verifyCommand that came from the file runs only after somebody on this
+   * machine has read it — once per exact command, because a pull that edits it
+   * is a new thing to read.
+   *
+   * The file wins over the stored row, here as on the settings screen. A
+   * command passed in the call is ignored on the final step (CGLAB-378) and
+   * kept on intermediate steps, where it can only add a check.
    */
   const projectVerifyCommand = (project as any)?.verifyCommand as string | undefined;
-  const resolvedCommand = isFinalStep ? projectVerifyCommand : command;
-  const ignoredCommand = isFinalStep && command && command !== projectVerifyCommand ? command : undefined;
-  const commandNote = ignoredCommand ? ignoredCommandNote(ignoredCommand, projectVerifyCommand) : undefined;
+  const declaredHere = readDeclaredSettings((project as any)?.projectRoot);
+  const fileVerify = typeof declaredHere.settings.verifyCommand === 'string'
+    ? String(declaredHere.settings.verifyCommand)
+    : null;
+  const projectVerify = fileVerify ?? projectVerifyCommand;
+  if (isFinalStep && !command && fileVerify && projectVerify === fileVerify) {
+    const verdict = approvalFor(
+      { key: 'verifyCommand', command: fileVerify },
+      ((project as any)?.approvedFileCommands ?? []) as string[],
+    );
+    if (!verdict.allowed) {
+      return res.status(400).json({
+        error: 'COMMAND_NEEDS_APPROVAL',
+        message: verdict.reason,
+        fingerprint: verdict.fingerprint,
+        command: fileVerify,
+      });
+    }
+  }
+  const resolvedCommand = isFinalStep ? projectVerify : command;
+  const ignoredCommand = isFinalStep && command && command !== projectVerify ? command : undefined;
+  const commandNote = ignoredCommand ? ignoredCommandNote(ignoredCommand, projectVerify) : undefined;
   // The async 202 is sent on the bare response: the run's outcome carries the
   // note, and the CLI prints both.
   const bareRes = res;
   if (commandNote) res = withNote(res, commandNote);
+
   if (isFinalStep && !resolvedCommand) {
     return res.status(400).json({
       error: "NO_VERIFY_COMMAND",

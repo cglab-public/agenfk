@@ -81,6 +81,10 @@ export interface AppSettingsDto {
   attentionSound: boolean;
   soundTiming: SoundTimingDto;
   osNotifications: boolean;
+  /** Projects pinned to the top of the sidebar, in pin order (server-side, SQLite). */
+  pinnedProjects: string[];
+  /** Keep the board on the chosen project instead of following project_switched. */
+  boardPinned: boolean;
 }
 
 export const api = {
@@ -219,9 +223,18 @@ export const api = {
    */
   projectSettings: async (projectId: string) => {
     const { data } = await axios.get(`${API_URL}/projects/${projectId}/settings`);
-    return data as { projectId: string; rows: Array<{
+    return data as { projectId: string;
+      /*
+       * What the repository's own `.agenfk/project.json` asked for and could
+       * not have — a key that does nothing has to say so on screen, or
+       * somebody spends an afternoon on it.
+       */
+      fileProblems?: string[];
+      rows: Array<{
       key: string; label: string; description: string; value: string | null;
-      origin: 'set-here' | 'inherited' | 'inferred' | 'cli-only' | 'main-only';
+      /* `from-file` is the strongest: declared by the repository, identical
+         for everyone who clones, and therefore not editable here. */
+      origin: 'set-here' | 'inherited' | 'inferred' | 'cli-only' | 'main-only' | 'from-file';
       from: string; how?: string; warning?: string;
     }> };
   },
@@ -611,6 +624,27 @@ export const api = {
       throw e;
     }
   },
+  /**
+   * The mutable half of a project.
+   *
+   * `autoWorktree` is on the server's allowlist because it is a boolean with
+   * no execution semantics; `projectRoot` (a cwd) and `verifyCommand` (a shell
+   * string this machine later runs) are deliberately NOT, and this client must
+   * not pretend otherwise. See bug e60e20aa.
+   */
+  updateProject: async (
+    id: string,
+    updates: { name?: string; description?: string; autoWorktree?: boolean },
+  ): Promise<unknown> => {
+    try {
+      const { data } = await axios.put(`${API_URL}/projects/${id}`, updates);
+      return data;
+    } catch (e) {
+      console.error('API Error updating project', id, e);
+      throw e;
+    }
+  },
+
   setProjectFlow: async (projectId: string, flowId: string | null): Promise<void> => {
     try {
       await axios.post(`${API_URL}/projects/${projectId}/flow`, { flowId });

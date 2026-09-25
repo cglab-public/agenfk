@@ -32,7 +32,7 @@ import type { SessionState } from '../sessionRow';
 import { agentLabel } from '../agentLabels';
 import { WorktreePanel } from './WorktreePanel';
 import { useGitStatus, type WorktreeView } from '../gitStatus';
-import { Columns2, X, Plus, GitBranch, FileDiff, Activity } from 'lucide-react';
+import { Columns2, X, Plus, GitBranch, FileDiff } from 'lucide-react';
 import { TerminalPane } from './TerminalPane';
 import { HERDR_AGENT_ID } from '../herdrTreeRows';
 import { EmptyState } from './EmptyState';
@@ -42,7 +42,14 @@ import { EditorIcon } from './EditorIcon';
 export interface TerminalSession {
   /** Stable per open terminal, not per card: a card may have more than one. */
   readonly id: string;
-  readonly itemId: string;
+  /**
+   * The card this session is for — or the project, when there is none yet.
+   *
+   * EXACTLY ONE. A session on a project is how work starts without a card:
+   * the agent runs in the project's checkout and writes the card itself. Its
+   * tab is named after the project until a card exists.
+   */
+  readonly itemId?: string;
   readonly title: string;
   readonly agentId: string;
   readonly autoApprove: boolean;
@@ -248,15 +255,6 @@ export interface TerminalTabProps {
    * something to start doing on somebody's behalf.
    */
   readonly showWorktree?: boolean;
-  /**
-   * Whether the run feed is showing below the terminal.
-   *
-   * Passed in rather than owned here: the feed is a sibling of the terminal in
-   * the shell's column, so the shell is the only thing that can say. Undefined
-   * means the caller does not offer the control at all.
-   */
-  readonly runsOpen?: boolean;
-  readonly onToggleRuns?: () => void;
 }
 
 /**
@@ -328,8 +326,6 @@ export function TerminalTab({
   editors,
   onOpenInEditor,
   showWorktree,
-  runsOpen,
-  onToggleRuns,
 }: TerminalTabProps): React.ReactElement {
   // Seeded from storage in the initializer, so there is no first paint with
   // the panel open for someone who closed it.
@@ -577,29 +573,11 @@ export function TerminalTab({
               {(git?.changed ?? 0)} / {(git?.staged ?? 0)}
             </button>
 
-            {/* Runs in the same group, because it answers the same kind of
-                question - "show me something beside the terminal" - and it is
-                the only other thing competing for that space. Docked below it
-                costs the terminal 192px whether or not anything is running,
-                and until now the only way to reclaim that was to send Runs to
-                its own screen, which is not the same as closing it. */}
-            {onToggleRuns && (
-              <button
-                type="button"
-                aria-pressed={runsOpen === true}
-                onClick={onToggleRuns}
-                title={runsOpen ? 'Hide the run feed' : 'Show the run feed below the terminal'}
-                className={clsx(
-                  'flex shrink-0 items-center gap-1.5 rounded border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide transition-colors',
-                  runsOpen
-                    ? 'border-brand bg-canvas font-semibold text-ink'
-                    : 'border-border-soft text-ink-tertiary hover:border-brand hover:text-ink',
-                )}
-              >
-                <Activity size={11} />
-                Runs
-              </button>
-            )}
+            {
+              /* DELETED: the Runs toggle (396c8350). The feed this opened is
+                 gone with the Agents screen; the agent rows under the cards
+                 are what shows what is running. */
+            }
           </div>
         )}
 
@@ -609,7 +587,7 @@ export function TerminalTab({
           <button
             key={editor.id}
             type="button"
-            onClick={() => onOpenInEditor?.(current.itemId, editor.id)}
+            onClick={() => current.itemId && onOpenInEditor?.(current.itemId, editor.id)}
             className="flex shrink-0 items-center gap-1.5 rounded border border-border-soft px-2 py-0.5 font-mono text-[10px] text-ink-secondary transition-colors hover:border-brand hover:text-ink"
           >
             <EditorIcon editorId={editor.id} />
@@ -904,13 +882,14 @@ export function TerminalTab({
           <div className="min-h-0 flex-1">
           <TerminalPane
             itemId={session.itemId}
+            projectId={session.projectId}
             agentId={session.agentId}
             autoApprove={session.autoApprove}
             persist={session.persist}
             agentSessionId={session.agentSessionId}
             resume={session.resume}
             onSpawned={agentSessionId => onSpawned?.(session.id, agentSessionId)}
-            onOutput={() => onOutput?.(session.itemId)}
+            onOutput={() => session.itemId && onOutput?.(session.itemId)}
             onExited={code => onExited?.(session.id, code)}
             onActivity={a => onActivity?.(session.id, a)}
             onScreenActivity={a => onScreenActivity?.(session.id, a)}

@@ -115,3 +115,49 @@ describe('what it never does', () => {
     expect(JSON.stringify(rows)).not.toMatch(/token|secret|password/i);
   });
 });
+
+
+/*
+ * A setting the repository declares.
+ *
+ * `.agenfk/project.json` travels with the repo, so what it says is the same
+ * for everyone who clones it — which is why it outranks this machine's stored
+ * row, and why the screen must stop offering to edit it: the next read of the
+ * file would put it back.
+ */
+describe('settings declared by the repository', () => {
+  const ctx = {
+    flowName: 'TDD Flow',
+    worktreeRoot: '/wt',
+    fromFile: ['autoWorktree', 'verifyCommand'],
+    filePath: '.agenfk/project.json',
+  };
+
+  it('marks the declared rows, and names the file', () => {
+    const rows = describeProjectSettings(
+      { id: 'p1', name: 'agenfk', projectRoot: '/checkout/agenfk', verifyCommand: 'npm test' } as never,
+      ctx,
+    );
+    const verify = rows.find(r => r.key === 'verifyCommand')!;
+    expect(verify.origin).toBe('from-file');
+    expect(verify.from).toContain('.agenfk/project.json');
+  });
+
+  it('stops offering the command that would be overwritten on the next read', () => {
+    const rows = describeProjectSettings(
+      { id: 'p1', name: 'agenfk', verifyCommand: 'npm test' } as never,
+      ctx,
+    );
+    expect(rows.find(r => r.key === 'verifyCommand')!.how).toBeUndefined();
+    // And a row the file says nothing about keeps its instructions.
+    expect(rows.find(r => r.key === 'setupCommand')!.how).toContain('agenfk update-project');
+  });
+
+  it('leaves every row alone when there is no file', () => {
+    const rows = describeProjectSettings(
+      { id: 'p1', name: 'agenfk', verifyCommand: 'npm test' } as never,
+      { flowName: 'TDD Flow', worktreeRoot: '/wt' },
+    );
+    expect(rows.some(r => r.origin === 'from-file')).toBe(false);
+  });
+});

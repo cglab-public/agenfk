@@ -113,8 +113,8 @@ describe('the sidebar Flows entry', () => {
     expect(workRow(/flows/i)).toBeDefined();
     expect(screen.queryByRole('button', { name: /inbox/i })).toBeNull();
     expect(document.getElementById('panel-inbox')).toBeNull();
-    // Agents is a placeholder with its own card and is deliberately untouched.
-    expect(workRow(/agents/i)).toBeDefined();
+    // The Agents row was removed (396c8350) with the screen it opened.
+    expect(within(workNav()).queryByRole('button', { name: /agents/i })).toBeNull();
   });
 
   it('opens the flow editor on the open project', async () => {

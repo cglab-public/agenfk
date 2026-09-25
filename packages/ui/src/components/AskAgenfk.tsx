@@ -57,15 +57,7 @@ export interface AskAgenfkProps {
    * onto the screen they started from is how "where did it go?" begins.
    */
   readonly onProjectAdded?: (projectId: string) => void;
-  /**
-   * Write the card by hand instead.
-   *
-   * The former sibling door, moved inside: proposing needs an agent that is
-   * installed, authenticated and answering, and this is the path that works
-   * without one. A single door with no fallback would leave a machine with no
-   * agent unable to create anything at all.
-   */
-  readonly onWriteByHand?: (projectId: string) => void;
+
   readonly onClose?: () => void;
 }
 
@@ -74,7 +66,7 @@ export function seedCommand(objective: string): string {
   return `agenfk analyze ${JSON.stringify(objective.trim())} --proposal`;
 }
 
-export function AskAgenfk({ projectId, onCreated, onProjectAdded, onWriteByHand, onClose }: AskAgenfkProps) {
+export function AskAgenfk({ projectId, onCreated, onProjectAdded, onClose }: AskAgenfkProps) {
   /** The project the cards are created in, and the one the agent runs in. */
   const [target, setTarget] = React.useState(projectId);
   const [projects, setProjects] = React.useState<Array<{ id: string; name: string; projectRoot?: string }>>([]);
@@ -378,20 +370,11 @@ export function AskAgenfk({ projectId, onCreated, onProjectAdded, onWriteByHand,
         </button>
         {/* What is actually run, for the person who wants to run it
             themselves — or to see that the app is not doing something else. */}
-        {onWriteByHand && (
-          <p className="mt-2 text-[11px] text-ink-tertiary">
-            Know exactly what you want?{' '}
-            <button
-              type="button"
-              data-testid="ask-by-hand"
-              onClick={() => onWriteByHand(target)}
-              className="font-semibold text-accent-text underline underline-offset-2"
-            >
-              Write the card yourself
-            </button>{' '}
-            — no agent needed.
-          </p>
-        )}
+        {/*
+          * The by-hand door is gone with the form it opened (82345ab9). What
+          * replaced it is not this panel: it is the terminal on the project,
+          * where the agent writes the card with the CLI.
+          */}
         <pre data-testid="ask-command" className="mt-2 overflow-x-auto font-mono text-[11px] text-ink-tertiary">
           {objective.trim() ? seedCommand(objective) : 'agenfk analyze "<objective>" --proposal'}
         </pre>

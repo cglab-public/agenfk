@@ -147,10 +147,24 @@ describe('opening a terminal for a card', () => {
   it('never sends a directory or a command', async () => {
     // The renderer has no business naming either. If it ever did, the closed
     // list and the worktree resolution in the main process would be decoration.
+    //
+    // EXACTLY ONE TARGET, and for a card that is `itemId`. Sending both broke
+    // every ordinary terminal — `projectId` was already on a session, scoping
+    // the remembered row on restore — against main's own exclusivity check.
     renderPane();
     await waitFor(() => expect(bridge.spawn).toHaveBeenCalled());
     const req = bridge.spawn.mock.calls[0][0];
-    expect(Object.keys(req).sort()).toEqual(['agentId', 'autoApprove', 'cols', 'itemId', 'persist', 'rows']);
+    expect(Object.keys(req).sort())
+      .toEqual(['agentId', 'autoApprove', 'cols', 'itemId', 'persist', 'rows']);
+  });
+
+  it('never sends both targets, whatever the session carries', async () => {
+    // The regression this pins: a card session that also knows its project.
+    renderPane({ projectId: 'p1' });
+    await waitFor(() => expect(bridge.spawn).toHaveBeenCalled());
+    const req = bridge.spawn.mock.calls[0][0] as Record<string, unknown>;
+    expect(req.itemId).toBe('i1');
+    expect('projectId' in req).toBe(false);
   });
 
   it('leaves exactly one live shell under StrictMode double-mount', async () => {
@@ -578,5 +592,35 @@ describe('the size the session is told', () => {
     unmount();
     await act(async () => { resolveSpawn({ sessionId: 'sess-1', agentSessionId: undefined }); });
     expect(bridge.resize).not.toHaveBeenCalled();
+  });
+});
+
+
+/*
+ * A terminal with no card.
+ *
+ * The challenge this answers: create a task by opening an ordinary terminal —
+ * no form, no proposal screen. The agent creates the card itself with the CLI,
+ * which is what the rules already tell it to do, and the board hears about it
+ * over the socket.
+ *
+ * The main process has handled this since 07923f92 (`onObjective`); what was
+ * missing was any way to ask for it, so the path was built and unreachable.
+ */
+describe('a session on a project, with no card', () => {
+  it('spawns with the project and no item', async () => {
+    renderPane({ itemId: undefined, projectId: 'p1' });
+    await waitFor(() => expect(bridge.spawn).toHaveBeenCalled());
+    const req = bridge.spawn.mock.calls[0][0] as Record<string, unknown>;
+    expect(req.projectId).toBe('p1');
+    expect(req.itemId).toBeUndefined();
+  });
+
+  it('still refuses to open with neither', async () => {
+    // A session belongs to a card or to a project. Neither is a terminal
+    // nobody can attribute — and main would resolve no directory for it.
+    renderPane({ itemId: undefined, projectId: undefined });
+    await waitFor(() => screen.getByRole('alert'));
+    expect(bridge.spawn).not.toHaveBeenCalled();
   });
 });

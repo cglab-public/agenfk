@@ -21,21 +21,21 @@
 import React from 'react';
 import { clsx } from 'clsx';
 import { agentLabel } from '../agentLabels';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, Book, Check, ChevronDown, ChevronRight, Folder, FolderOpen, GitBranch, LayoutGrid, ListFilter, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, Settings, SquareTerminal, type LucideIcon } from 'lucide-react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { Book, Check, ChevronDown, ChevronRight, Folder, FolderOpen, GitBranch, LayoutGrid, ListFilter, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, Settings, SquareTerminal, type LucideIcon } from 'lucide-react';
 import { useSocketEvent, useSocket } from '../SocketContext';
 import { AgenfkWordmark } from './AgenfkWordmark';
 import { desktopInfo } from '../desktop';
 import { claimStateOf, claimChipLabel, claimChipTitle } from '../claimState';
 import { FleetSheet } from './FleetSheet';
+import { workingByItem, sessionForItem, adoptions } from '../workingSessions';
 import { mayFanOutLocal } from '../fleetPlan';
 import { useActiveProject } from '../ActiveProject';
 import {
-  readPinned, togglePinned, sortProjectsByPin,
+  sortProjectsByPin,
   readExpanded, toggleExpanded, writeExpanded,
   readProjectSort, writeProjectSort, readAgentFilter, writeAgentFilter, orderProjects, type ProjectSort,
 } from '../sidebarPrefs';
-import { NewProjectButton } from './NewProjectButton';
 import { api } from '../api';
 import { herdrAttachSession, shouldFocusOnAttach, herdrSessionRows, herdrProjectRows, type OwnedPane, type ProjectPaneRow } from '../herdrTreeRows';
 import { HerdrMark } from './HerdrMark';
@@ -74,7 +74,6 @@ const isoOrUndefined = (ms: number | undefined): string | undefined =>
   ms === undefined ? undefined : new Date(ms).toISOString();
 import type { SessionRow, SessionState } from '../sessionRow';
 import { LiveAgents } from '../liveAgents';
-import { EmptyState } from './EmptyState';
 import { ReadmeModal } from './ReadmeModal';
 import { FlowEditorModal } from './FlowEditorModal';
 import { WhatsNewModal } from './WhatsNewModal';
@@ -84,7 +83,6 @@ import { ProjectPage } from './ProjectPage';
 import { AskAgenfk } from './AskAgenfk';
 import { CardStateDot } from './CardStateDot';
 import { CardProcessRow } from './CardProcessRow';
-import { RunsPanel } from './RunsPanel';
 import { ORDER, SessionStateIndicator } from './sessionPresentation';
 import { AgentIcon } from './AgentIcon';
 import {
@@ -105,22 +103,16 @@ import { clampSidebarWidth, sidebarIsResizable, SIDEBAR_MIN_PX, SIDEBAR_MAX_PX, 
  * Every view here is reached from the sidebar or from a session, and each one
  * is a panel that stays mounted and is hidden rather than unmounted.
  */
-type ViewId = 'kanban' | 'terminal' | 'settings' | 'agents' | 'project';
+type ViewId = 'kanban' | 'terminal' | 'settings' | 'project';
 
 /**
  * The WORK group at the top of the sidebar (CGLAB-164).
  *
  * Navigation belongs beside the thing being navigated, not in a strip floating
  * over the content — so picking a view moved here. `Tasks` is the board, which
- * is the view that is always there; `Agents` is the run feed, and is no longer
- * a placeholder for it. It used to say the feed "is not here yet" beside a
- * Runs TAB that showed the feed, which was the same destination described two
- * ways. The tab is gone and Agents is what it was standing in for.
- *
- * Agents is therefore also THE way to open Runs. With no tab to click it is
- * the only one, which is why it is an ordinary always-visible sidebar row
- * rather than a control on the feed itself: a button that appears only once
- * the thing it opens is already open is not a way in.
+ * is the view that is always there. The `Agents` row that used to live here
+ * went with the screen it opened (396c8350): what shows what is running is the
+ * agent rows under the cards.
  *
  * Not every row here is a view. `Flows` opens the flow editor over whatever you
  * are looking at and leaves you there, which is why the rows carry a `kind`:
@@ -143,12 +135,11 @@ const WORK_ROWS: WorkRow[] = [
   // GitBranch, the same icon the board's Manage Flow button uses: one concept,
   // two routes to it, and a second glyph would read as a second feature.
   { kind: 'action', id: 'flows', label: 'Flows', Icon: GitBranch },
-  { kind: 'view', id: 'agents', label: 'Agents', Icon: Activity },
   /*
-   * Sessions this product did NOT start. Its own row rather than a filter on
-   * Agents, because the two answer different questions: Agents is "what did we
-   * run", this is "what is running". On the machine this was built for the
-   * second list held twenty-four panes and the first could show none of them.
+   * DELETED: the Agents row (396c8350). It opened the run feed as a dedicated
+   * screen, which was never defined and never used; the agent rows under the
+   * cards are what actually shows what is running. The runs themselves stay -
+   * AgentRun is still written and still read by the card detail modal.
    */
 ];
 
@@ -157,7 +148,6 @@ type Connection = 'connecting' | 'connected' | 'offline';
 const SIDEBAR_KEY = 'agenfk_shell_sidebar';
 /** Separate from SIDEBAR_KEY: collapsing must not forget the width you chose. */
 const SIDEBAR_WIDTH_KEY = 'agenfk_shell_sidebar_width';
-const RUNS_DOCK_KEY = 'agenfk_runs_dock';
 
 /**
  * When this run of the app began.
@@ -170,46 +160,20 @@ const RUNS_DOCK_KEY = 'agenfk_runs_dock';
  */
 const APP_STARTED_AT = Date.now();
 
-/**
- * Where the run feed sits.
- *
- * A CLOSED set, and that is the design rather than a limitation. Free layout
- * becomes window management: state that is hard to persist and easy to leave
- * unusable, for flexibility nobody asked for. Two positions give nearly all of
- * the perceived freedom at a fraction of that cost.
- *
- * `bottom` exists because live logs are something you follow WHILE looking at
- * the board, and a full screen makes that a choice between them.
- *
- * `screen` was called `tab` until the tab strip was removed. Only the name
- * changed: it always meant "the whole of the main column", and the column is
- * now reached from the sidebar's Agents row instead of from a tab.
- */
-type RunsDock = 'screen' | 'bottom';
-const RUNS_DOCKS: RunsDock[] = ['screen', 'bottom'];
-
-function readRunsDock(): RunsDock {
-  try {
-    const stored = JSON.parse(localStorage.getItem(RUNS_DOCK_KEY) ?? 'null');
-    // An unrecognised zone — another version, or a hand-edited value — must
-    // not put the view nowhere. `"tab"` is the one that matters in practice:
-    // every build with a tab strip wrote it, so it is in the storage of
-    // everyone upgrading, and it needs no case of its own because it is not a
-    // zone this build has and `screen` is where it meant to point anyway.
-    return RUNS_DOCKS.includes(stored) ? stored : 'screen';
-  } catch { return 'screen'; }
-}
 
 /*
  * WHAT THE TAB STRIP TOOK WITH IT.
  *
- * Kanban left the bar for the sidebar's Tasks, Terminal followed it, and Runs
- * - the last tab - became the Agents screen. A bar with nothing in it orders
- * nothing, so everything built to order it is gone: the `agenfk_shell_tabs`
- * order and the reader that repaired it across versions, `moveTab` and its
- * module, the drag reorder, the move-left button, the live region that
- * announced a tab's new position, and the `visibleOrder` filter that kept the
- * announcement's count honest while Runs was docked away.
+ * Kanban left the bar for the sidebar's Tasks and Terminal followed it. A bar
+ * with nothing in it orders nothing, so everything built to order it is gone:
+ * the `agenfk_shell_tabs` order and the reader that repaired it across
+ * versions, `moveTab` and its module, the drag reorder, the move-left button,
+ * and the live region that announced a tab's new position.
+ *
+ * The Agents row and the Runs dock went the same way (396c8350): the feed had
+ * a screen, a docked strip and a stored position (`agenfk_runs_dock`), all of
+ * which promised a defined view that never existed. Only the data - AgentRun,
+ * read by the card detail modal - survives.
  *
  * Written down because a deleted mechanism leaves nothing behind to notice. If
  * two top-level views ever have to be on screen at once, this is the list to
@@ -228,31 +192,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // CLI, so it must not happen before the user asks — but once it has, the
   // session outlives every view switch.
   const [terminalOpened, setTerminalOpened] = React.useState(false);
-  const [runsDock, setRunsDock] = React.useState<RunsDock>(() => readRunsDock());
-  const moveRunsTo = React.useCallback((dock: RunsDock, navigate = false) => {
-    setRunsDock(dock);
-    try { localStorage.setItem(RUNS_DOCK_KEY, JSON.stringify(dock)); } catch { /* a lost preference */ }
-    // Sending the feed to the strip while its own screen is the one showing
-    // would leave the main area empty; the board is the only view that is
-    // always there. Bringing it back the other way has to navigate TO it, or
-    // the control reports success while the user still sees the board.
-    setActive(cur => {
-      if (dock === 'bottom') return cur === 'agents' ? 'kanban' : cur;
-      /*
-       * Only when the CALLER asks. Navigating on every undock was one
-       * behaviour shared between two opposite promises: the dock strip's arrow
-       * says "put Runs back on its own screen" and must go there, while the
-       * terminal bar's toggle says "hide the run feed" and must leave you
-       * exactly where you are. Pressing hide used to land you on the
-       * full-height feed with the terminal gone.
-       */
-      return navigate ? 'agents' : cur;
-    });
-  }, []);
   // Same latch idea as the terminal, for a much smaller reason: no request goes
   // out for a screen the user has never opened.
   const [settingsOpened, setSettingsOpened] = React.useState(false);
-  const { activeProjectId, focusedItemId, newItemRequest, setActiveProjectId, markProjectWorked, focusItem, terminalRequest, requestNewItem } = useActiveProject();
+  const { activeProjectId, focusedItemId, setActiveProjectId, markProjectWorked, focusItem, terminalRequest } = useActiveProject();
   /**
    * The installation's settings, for the tmux default the dialog starts from.
    *
@@ -328,7 +271,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
    * next. One question at a time, and every card gets asked.
    */
   const [pendingQueue, setPendingQueue] = React.useState<
-    { itemId: string; title: string; agentId?: string; branchName?: string | null }[]
+    { itemId?: string; projectId?: string; title: string; agentId?: string; branchName?: string | null }[]
   >([]);
   const pending = pendingQueue[0] ?? null;
   /**
@@ -343,11 +286,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
    */
   const enqueuePending = React.useCallback(
     (
-      entry: { itemId: string; title: string; agentId?: string; branchName?: string | null },
+      entry: { itemId?: string; projectId?: string; title: string; agentId?: string; branchName?: string | null },
       allowSecond = false,
     ): void => {
       setPendingQueue(prev => (
-        !allowSecond && prev.some(p => p.itemId === entry.itemId) ? prev : [...prev, entry]
+        // Deduplicated on the TARGET, which is a card or a project. Two
+        // requests for a terminal on the same project are the same request.
+        !allowSecond && prev.some(p => (
+          entry.itemId ? p.itemId === entry.itemId : p.projectId === entry.projectId
+        )) ? prev : [...prev, entry]
       ));
     },
     [],
@@ -368,29 +315,33 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [sessions, setSessions] = React.useState<TerminalSession[]>([]);
   const [activeSession, setActiveSession] = React.useState<string | null>(null);
   /**
-   * Whose runs the feed shows.
+   * The agent conversation each session was handed at spawn, by session id.
    *
-   * The terminal you are watching first, and the card you last navigated to
-   * otherwise. Following the terminal ALONE was the first attempt and it was
-   * wrong in the way that matters: a run recorded by the Claude Code hook has
-   * no terminal of ours at all, and those are precisely the runs this feed
-   * exists for - the sub-agent dispatches nothing else on screen shows. The
-   * feed would have stayed empty for its own main use.
+   * KEPT OFF THE SESSION ON PURPOSE. `agentSessionId` is a prop of
+   * `TerminalPane`, so writing it back into session state goes undefined ->
+   * uuid, tears the pane down and spawns a SECOND agent (see `rememberSession`).
    *
-   * Null only when neither is set, which is the one state in which "no agent
-   * runs open" is a true thing to say rather than a placeholder.
+   * But the matching rules — `workingByItem`, `sessionForItem` and
+   * `adoptions`, all in workingSessions.ts — identify a run's owner by exactly
+   * that conversation id. Dropping it made every freshly opened terminal
+   * unmatchable: a run on a card read `elsewhere` ("Running"), and a terminal
+   * opened on a project could never adopt the card its agent wrote.
+   *
+   * So it is remembered HERE, keyed by session, and this map is the only thing
+   * the matchers see. The restored path keeps its id on the session itself and
+   * needs no entry.
    */
-  const runsItemId = React.useMemo(() => {
-    const watched = sessions.find(s => s.id === activeSession)?.itemId;
-    if (watched) return watched;
-    /*
-     * `focusedItemId` is NONCED - `<id>#<n>` - so that clicking the same row
-     * twice still counts as a new navigation. Consumers that need the id take
-     * the part before the `#`; the board is the other one, and it keys its
-     * one-shot guard on the WHOLE string for exactly the opposite reason.
-     */
-    return focusedItemId ? focusedItemId.split('#')[0] : null;
-  }, [sessions, activeSession, focusedItemId]);
+  const [conversationsBySession, setConversationsBySession] =
+    React.useState<Record<string, string>>({});
+  /** Sessions with any conversation id the shell holds, so the matchers see it. */
+  const sessionsWithConversation = React.useMemo(
+    () => sessions.map(s => (
+      s.agentSessionId || !conversationsBySession[s.id]
+        ? s
+        : { ...s, agentSessionId: conversationsBySession[s.id] }
+    )),
+    [sessions, conversationsBySession],
+  );
   /**
    * The pane layout, as a TREE, owned here (7a717cb8, 3b).
    *
@@ -455,11 +406,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
    * rarely-rendered branch ships.
    */
   const itemsWithATerminal = React.useMemo(
-    () => new Set(sessions.map(s => s.itemId)),
+    // Card-less sessions are not cards with a terminal; they are terminals
+    // waiting for the card their agent is about to write.
+    () => new Set(sessions.map(s => s.itemId).filter(Boolean) as string[]),
     [sessions],
   );
 
   const sessionSeq = React.useRef(0);
+
+  /**
+   * A terminal on the PROJECT, with no card.
+   *
+   * The way work starts without a form: the agent opens in the project's
+   * checkout and writes the card itself with the CLI, which is what the
+   * workflow rules already tell it to do. No worktree is cut — there is no
+   * card to cut one from, and cutting one would mean creating the card this
+   * terminal exists to let the agent propose.
+   */
+  const requestProjectTerminal = React.useCallback((projectId: string, title: string): void => {
+    setActiveProjectId(projectId);
+    markProjectWorked(projectId);
+    enqueuePending({ projectId, title });
+  }, [setActiveProjectId, markProjectWorked, enqueuePending]);
 
   const requestTerminal = React.useCallback((item: AgEnFKItem): void => {
     setActiveProjectId(item.projectId);
@@ -727,6 +695,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         // produced "Unknown agent" the first time one reached a spawn.
         agentId: run.harness ?? 'claude-code',
         agentLabel: run.harness ? agentLabel(run.harness) : 'agent',
+        // The worker's own conversation id. Matched against our sessions to
+        // tell "a subagent inside a terminal we have" from "an agent we
+        // cannot reach".
+        agentSessionId: run.sessionId,
         // A run that ENDED badly stays failed however long ago it was: a
         // failure that ages into 'idle' is a failure nobody sees. Recency only
         // decides between running and idle.
@@ -751,10 +723,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       });
     }
 
-    for (const open of sessions) {
+    for (const open of sessionsWithConversation) {
+      /*
+       * A session with no card belongs to a project, and the rail is a list of
+       * WORK — a row keyed by a card that does not exist yet would be a row
+       * with nothing to open. It appears once the card does (c8e29c9e).
+       */
+      if (!open.itemId) continue;
       byAgent.set(key(open.itemId, open.agentId), {
         runId: open.id,
         itemId: open.itemId,
+        agentSessionId: open.agentSessionId,
         projectId: open.projectId,
         title: open.title,
         agentId: open.agentId,
@@ -861,7 +840,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const theirs = herdrSessionRows(herdrPanes)
       .filter(r => !ours.some(o => o.itemId === r.itemId && o.agentId === r.agentId));
     return [...ours, ...theirs];
-  }, [runs, sessions, live, liveItems, liveTick, graceTick, herdrPanes]);
+  }, [runs, sessionsWithConversation, live, liveItems, liveTick, graceTick, herdrPanes]);
 
   /*
    * THE CLOCK THAT MAKES `unverifiable` REACHABLE (CGLAB-195).
@@ -930,19 +909,34 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // Matched on the AGENT too: with two terminals on one card, matching by
     // card alone activated whichever was first regardless of which row was
     // clicked.
-    const open = sessions.find(s => s.itemId === row.itemId && s.agentId === row.agentId);
-    if (open) {
-      setActiveSession(open.id);
+    const own = sessions.find(s => s.itemId === row.itemId && s.agentId === row.agentId);
+    if (own) {
+      setActiveSession(own.id);
       setTerminalOpened(true);
       setActive('terminal');
       return;
     }
-    // No terminal of ours for this card — a run recorded by the hook, or one
-    // from a previous launch. Offer to open one ON THAT CARD rather than
+    /*
+     * THE SESSION THAT HOSTS IT, before offering to make another.
+     *
+     * A subagent reports its own run against the card it is working on, while
+     * the terminal it lives in belongs to the PARENT. Matching by card alone
+     * found nothing and the row offered a new terminal — for work already on
+     * screen, one tab away.
+     */
+    const host = sessionForItem(row.itemId, sessionRows, sessions);
+    if (host) {
+      setActiveSession(host);
+      setTerminalOpened(true);
+      setActive('terminal');
+      return;
+    }
+    // Nothing of ours is showing this work — a run recorded by the hook, or
+    // one from a previous launch. Offer to open one ON THAT CARD rather than
     // silently doing nothing; the dialog names the card so it is clear this
     // starts a session rather than resuming the one that is running.
     enqueuePending({ itemId: row.itemId, title: row.title, agentId: row.agentId });
-  }, [sessions]);
+  }, [sessions, sessionRows, enqueuePending]);
 
   /**
    * Take the board to a card.
@@ -981,19 +975,49 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     enabled: Boolean(pageProjectId),
   });
   /*
-   * Cards this app has a TERMINAL for — not cards with activity.
+   * What is already working on each card, and which session shows it.
    *
-   * The row's button and the row's press have to answer the same question. A
-   * run started outside this app (the hook writes an AgentRun) or a herdr pane
-   * produces a `sessionRows` entry with no pty of ours, so labelling from
-   * "running" said "Open the running terminal" while the press fell through to
-   * "which agent?" and started a SECOND agent in the same worktree.
+   * Both from ONE rule, in workingSessions.ts, because computing them apart is
+   * exactly how the label and the press came to disagree: the label matched a
+   * run's conversation against our sessions, the press looked for a session
+   * whose `itemId` was the card, and a subagent's session belongs to the
+   * PARENT card — so "Open" on a child tried to spawn.
    */
-  const runningItemIds = React.useMemo(
-    // The set this shell already keeps for exactly this question.
-    () => [...itemsWithATerminal].filter(Boolean) as string[],
-    [itemsWithATerminal],
+  const working = React.useMemo(
+    () => workingByItem(sessionRows, sessionsWithConversation),
+    [sessionRows, sessionsWithConversation],
   );
+  /*
+   * A terminal opened on a PROJECT takes the card its agent wrote.
+   *
+   * Until it does, that work is invisible: no row in the tree, no run to read
+   * and no card to attribute its tokens to — which is exactly what a person
+   * sees after opening a card-less terminal and watching it create cards.
+   *
+   * Matched on the CONVERSATION rather than on timing: the hook stamps each
+   * run with the session it belongs to, and that id is the one this terminal
+   * was given at spawn. "The first card created after this opened" would be
+   * wrong the moment two agents work in one project.
+   */
+  React.useEffect(() => {
+    const taken = adoptions(sessionsWithConversation, sessionRows);
+    if (!taken.length) return;
+    setSessions(prev => prev.map(s => {
+      const mine = taken.find(t => t.sessionId === s.id);
+      return mine ? { ...s, itemId: mine.itemId, title: mine.title ?? s.title } : s;
+    }));
+  }, [sessionsWithConversation, sessionRows]);
+
+  const openSessionFor = React.useCallback(
+    (itemId: string) => sessionForItem(itemId, sessionRows, sessionsWithConversation),
+    [sessionRows, sessionsWithConversation],
+  );
+  const { data: pageFlow } = useQuery({
+    queryKey: ['project-flow', pageProjectId],
+    queryFn: () => api.getProjectFlow(pageProjectId as string),
+    enabled: Boolean(pageProjectId),
+    staleTime: 30_000,
+  });
   const pageAgents = React.useMemo(
     () => sessionRows.filter(r => r.state === 'running'
       && pageCards.some(card => card.id === r.itemId)).length,
@@ -1038,6 +1062,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       // recording it again would double the remembered terminals on every
       // launch until the tenth one opens a wall of them.
       if (!session || session.resume || session.recordId) return;
+      /*
+       * Kept for the MATCHERS, before any early return that is about
+       * persistence. A terminal on a project is deliberately not remembered
+       * across launches (`if (!session.itemId)` below), but its conversation
+       * id is exactly what lets a run on a card it hosts read as ours and lets
+       * the session adopt that card.
+       */
+      if (agentSessionId) {
+        setConversationsBySession(prev => (
+          prev[sessionId] ? prev : { ...prev, [sessionId]: agentSessionId }
+        ));
+      }
+      /*
+       * Only a card's session is remembered across launches. A session on a
+       * project is a conversation about a card that does not exist yet —
+       * restoring it would reopen an agent with nothing to resume and no work
+       * to point at.
+       */
+      if (!session.itemId) return;
       void api.recordTerminalSession({
         itemId: session.itemId,
         projectId: session.projectId,
@@ -1108,6 +1151,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // on the next launch would be the app arguing with them.
     const closing = sessionsRef.current.find(s => s.id === id);
     if (closing?.recordId) void api.forgetTerminalSession(closing.recordId).catch(() => {});
+    // The conversation id is only needed while the tab exists; dropping it
+    // keeps the map from growing for the life of the window.
+    setConversationsBySession(prev => {
+      if (!prev[id]) return prev;
+      const { [id]: _closed, ...rest } = prev;
+      return rest;
+    });
     /*
      * Removes the session. Which tab becomes active is NOT decided here.
      *
@@ -1396,9 +1446,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // and never on mount: whatever view the user is on stays selected until they
   // actually ask for a card.
   React.useEffect(() => {
-    if (!focusedItemId && !newItemRequest) return;
+    // Only focusing a card reaches the board now: the new-item request went
+    // with the form it used to open (82345ab9).
+    if (!focusedItemId) return;
     setActive('kanban');
-  }, [focusedItemId, newItemRequest]);
+  }, [focusedItemId]);
 
   // One place, so the latch cannot be missed by a new route into the view -
   // the sessions rail, the sidebar's card list and the board all reach it.
@@ -1616,10 +1668,35 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                  * card already has one, otherwise ask WHICH AGENT. Both
                  * decisions live there; the page only supplies the card.
                  */
-                onStartAgent={requestTerminal}
-                runningItemIds={runningItemIds}
+                onStartAgent={item => {
+                  /*
+                   * The session that is already showing this work, whether it
+                   * was opened ON this card or hosts the subagent doing it.
+                   * Only when there is none does this become a spawn.
+                   */
+                  const open = openSessionFor(item.id);
+                  if (open) {
+                    setActiveSession(open);
+                    setTerminalOpened(true);
+                    setActive('terminal');
+                    return;
+                  }
+                  requestTerminal(item);
+                }}
+                /*
+                 * An agent we do not host: the card's own runs, read-only.
+                 * Never a spawn — that is the whole point of the third state.
+                 */
+                onShowRuns={item => { setActiveProjectId(item.projectId); setActive('kanban'); revealOnBoard({ itemId: item.id, projectId: item.projectId }); }}
+                onOpenTerminal={() => requestProjectTerminal(pageProject.id, pageProject.name)}
+                working={working}
+                /*
+                 * The project's own flow, so the state filter names the states
+                 * THIS project has. Same query key the board uses, so it is
+                 * one cache entry and one request.
+                 */
+                flow={pageFlow ?? null}
                 onAsk={projectId => setAsking(projectId)}
-                onNewCard={projectId => { setActive('kanban'); requestNewItem(projectId); }}
               />
             )}
           </div>
@@ -1723,11 +1800,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 onClose={closeSession}
                 editors={editors}
                 showWorktree
-                /* The feed is the terminal's sibling in this column, so the
-                   shell is the only thing that can say whether it is showing
-                   or move it. */
-                runsOpen={runsDock === 'bottom'}
-                onToggleRuns={() => moveRunsTo(runsDock === 'bottom' ? 'screen' : 'bottom')}
                 onOpenInEditor={(itemId, editorId) => {
                   // Fire and forget: failing to open an editor must not
                   // disturb the terminal the user is working in.
@@ -1776,117 +1848,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             )}
           </div>
 
-          {/*
-            THE AGENTS SCREEN IS THE RUN FEED.
-
-            It used to be a placeholder that said the feed "is not here yet",
-            sitting beside a Runs TAB that showed the feed - the same
-            destination described two ways, 200px apart, which reads as a
-            rendering fault rather than as two features. The tab is gone and
-            this is what it was standing in for.
-
-            A REGION, not a tabpanel: no tab controls it any more. The sidebar
-            row that opens it is an ordinary button, and a tabpanel with no
-            owning tab reports a tablist with nothing selected.
-          */}
-          <div
-            role="region"
-            id="panel-agents"
-            aria-label="Agents"
-            tabIndex={0}
-            hidden={active !== 'agents'}
-            className="flex min-h-0 flex-1 flex-col"
-          >
-            <header className="flex shrink-0 items-center gap-2 border-b border-border-soft px-4 py-2">
-              <h2 className="font-mono text-[10px] font-bold uppercase tracking-wide text-ink-tertiary">
-                Runs
-              </h2>
-              {/* A BUTTON, not a drag target: a drag-only affordance is
-                  unreachable without a pointer. It lived in the tab strip
-                  until the strip was removed, and belongs on the thing it
-                  moves anyway - which also makes it symmetric with the control
-                  on the docked strip that sends the feed back here. */}
-              {runsDock === 'screen' && (
-                <button
-                  onClick={() => moveRunsTo('bottom')}
-                  aria-label="Dock Runs below the board"
-                  title="Dock Runs below the board"
-                  className="ml-auto rounded px-2 py-1 font-mono text-[10px] text-ink-tertiary transition-colors hover:text-ink"
-                >
-                  Runs ↓
-                </button>
-              )}
-            </header>
-            <div className="min-h-0 flex-1 overflow-auto scrollbar-slim p-6">
-              {runsDock === 'screen' ? (
-                /* The real feed, following the session you are watching.
-
-                   Both of these were a hand-written EmptyState saying "No
-                   agent runs open" whatever was running - missing wiring
-                   wearing an empty case's clothes, which is the worst kind,
-                   because the app looks finished while telling you nothing.
-
-                   Following the ACTIVE SESSION rather than, say, the focused
-                   card: a feed pinned to something else is the same defect
-                   again, quieter - a panel confidently showing the wrong
-                   thing. With no session there is genuinely nothing to show,
-                   and that is the one time this empty state is true. */
-                runsItemId ? (
-                  <RunsPanel itemId={runsItemId} />
-                ) : (
-                  <EmptyState
-                    title="No agent runs open"
-                    body="Open a terminal on a card to follow its agent here."
-                  />
-                )
-              ) : (
-                /* Says where the feed went rather than showing an empty
-                   screen. Landing on nothing after clicking Agents reads as a
-                   broken app, and the way back has to be visible from the
-                   state the user is in - which is this one, because the strip
-                   they docked it to is behind the board they are not on. */
-                <EmptyState
-                  title="Runs is docked below the board"
-                  body="It is the strip under the board, so a live log can be watched while the board is being read."
-                />
-              )}
-            </div>
-          </div>
-
-          {/* Below the board, in the same column, so both are visible at once —
-              which is the whole reason the previous card called a full screen
-              the wrong place for a live log. */}
-          {runsDock === 'bottom' && (
-            <section
-              data-testid="runs-dock"
-              aria-label="Runs"
-              className="flex h-48 shrink-0 flex-col border-t border-border-soft bg-nav-surface"
-            >
-              <header className="flex items-center gap-2 border-b border-border-soft px-3 py-1.5">
-                <h2 className="font-mono text-[10px] font-bold uppercase tracking-wide text-ink-tertiary">
-                  Runs
-                </h2>
-                <button
-                  onClick={() => moveRunsTo('screen', true)}
-                  aria-label="Put Runs back to its own screen"
-                  title="Put Runs back to its own screen"
-                  className="ml-auto rounded px-1.5 font-mono text-[10px] text-ink-tertiary transition-colors hover:text-ink"
-                >
-                  ↑
-                </button>
-              </header>
-              <div className="min-h-0 flex-1 overflow-auto scrollbar-slim p-4">
-                {runsItemId ? (
-                  <RunsPanel itemId={runsItemId} />
-                ) : (
-                  <EmptyState
-                    title="No agent runs open"
-                    body="Open a terminal on a card to follow its agent here."
-                  />
-                )}
-              </div>
-            </section>
-          )}
         </main>
       </div>
 
@@ -1982,7 +1943,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className="max-h-full w-full max-w-2xl overflow-auto rounded-2xl border border-border-soft bg-surface shadow-2xl">
             <AskAgenfk
               projectId={asking}
-              onWriteByHand={projectId => { setAsking(null); setActive('kanban'); requestNewItem(projectId); }}
               /*
                * LAND ON THE RESULT. Closing onto the screen they started from
                * meant the cards they had just approved were somewhere else,
@@ -2016,46 +1976,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           projectNames={projectNames}
           currentItemId={sessions.find(s => s.id === activeSession)?.itemId}
           /*
-           * The way out of an empty picker (CGLAB-164).
-           *
-           * `requestNewItem` is the route the sidebar's `+` already takes:
-           * it stamps the project as worked, selects it, and the board turns
-           * the request into the blank draft. Reusing it rather than opening
-           * a modal from here keeps ONE way into a new card, and the picker
-           * closes first so the draft is not opened underneath a dialog.
+           * The way out of an empty picker, which is now the door that
+           * PROPOSES (82345ab9). Writing a card by hand went with the manual
+           * form, and the picker closes first so the panel is not opened
+           * underneath a dialog.
            *
            * THE TERMINAL'S project wins over the sidebar's selection, and that
            * order is not arbitrary. This dialog is opened from the terminal
-           * strip and every row in it is about that terminal's world; pressing
-           * Create a card here means "a card for the thing I am looking at".
-           * Preferring the sidebar's selection filed it in the other repo AND
-           * re-pointed the board to follow, leaving the person somewhere they
-           * did not ask to be, holding a card they then have to move.
-           *
-           * The remembered project is the fallback, for a restored row that
-           * carries none — including a first launch, where restoring a terminal
-           * does not select a project and nothing else here would. With neither
-           * there is genuinely nowhere to put a card, and the picker hides the
-           * door rather than drawing one onto nothing.
-           *
-           * The seed is whatever was typed into the picker's search box: a
-           * phrase that found no card is usually the title of the card that
-           * does not exist yet, and making someone type it twice is the
-           * friction this whole change is about.
+           * strip and every row in it is about that terminal's world.
            */
-          onCreateCard={(() => {
-            // `||`, not `??`: a row that arrives with an EMPTY projectId is
-            // not "a project", and `??` would keep it, fail the check below
-            // and hide the door on a screen that knows perfectly well which
-            // project is open.
-            const intoProject = sessions.find(s => s.id === activeSession)?.projectId
-              || activeProjectId;
-            if (!intoProject) return undefined;
-            return (seedTitle?: string) => {
-              setPickingCard(false);
-              requestNewItem(intoProject, seedTitle);
-            };
-          })()}
           onAsk={(() => {
             const intoProject = sessions.find(s => s.id === activeSession)?.projectId
               || activeProjectId;
@@ -2117,7 +2046,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               r => r.itemId === pending.itemId && r.state !== 'failed',
             );
             if (!live) return undefined;
-            const where = (live as { source?: string }).source === 'herdr' ? 'herdr' : 'agenfk';
+            /*
+             * THREE PLACES, not two. A herdr pane is reachable through herdr;
+             * a row with a terminal of ours is in this app; anything else is a
+             * run recorded by the hook, in somebody's own shell — so the
+             * dialog must not call it "already open here".
+             */
+            const where = (live as { source?: string }).source === 'herdr'
+              ? 'herdr'
+              : live.hasTerminal ? 'agenfk' : 'outside';
             return { agentId: live.agentId, where } as const;
           })()}
           listAgents={listAgentsFromBridge}
@@ -2140,10 +2077,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             // api mock lacked the method — must never stop the terminal from
             // opening. Ordering is the guarantee here, not the try/catch.
             sessionSeq.current += 1;
-            const id = `${pending.itemId}#${sessionSeq.current}`;
+            /*
+             * EXACTLY ONE of card and project, so the pane knows which
+             * directory to open. A project terminal has no card yet; sending
+             * both would fail main's exclusivity check, and sending neither
+             * would leave it with no directory at all.
+             */
+            const id = `${pending.itemId ?? pending.projectId ?? 'project'}#${sessionSeq.current}`;
             setSessions(prev => [...prev, {
               id,
-              itemId: pending.itemId,
+              ...(pending.itemId ? { itemId: pending.itemId } : { projectId: pending.projectId }),
               title: pending.title,
               agentId,
               autoApprove,
@@ -2164,7 +2107,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             // mock missing the method, which is exactly how this seam stayed
             // unverified for a round. And `as never` was suppressing the one
             // compile-time check that would catch a field rename.
-            if (agentId !== pending.agentId) {
+            // Only a card can carry a remembered agent; a project terminal has
+            // no item to write it onto.
+            if (pending.itemId && agentId !== pending.agentId) {
               void api.updateItem(pending.itemId, { agentId }).catch(() => {});
             }
           }}
@@ -2301,7 +2246,25 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
    * button competing for a row this narrow.
    */
   const [cardMenu, setCardMenu] = React.useState<{ item: AgEnFKItem; x: number; y: number } | null>(null);
-  const [pinned, setPinned] = React.useState<string[]>(() => readPinned());
+  /*
+   * Pinned projects come from the SERVER (SQLite), not localStorage.
+   *
+   * The UI is served on http://127.0.0.1:<port>, and the port moves when it is
+   * taken — localStorage is origin-scoped, so a pin made on one port was gone
+   * on the next. Read through the shared `['settings']` cache so the shell's
+   * other readers of the same object stay in step.
+   */
+  const { data: sidebarSettings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  const pinned = sidebarSettings?.pinnedProjects ?? [];
+  const pinProjects = useMutation({
+    // The whole list, not a toggle: the order IS the data, and a toggle route
+    // would need the server to know the current order anyway.
+    mutationFn: (next: string[]) => api.updateSettings({ pinnedProjects: next }),
+    onSuccess: settled => { queryClient.setQueryData(['settings'], settled); },
+  });
+  const togglePinnedProject = (id: string): void => {
+    pinProjects.mutate(pinned.includes(id) ? pinned.filter(x => x !== id) : [...pinned, id]);
+  };
   const [expanded, setExpanded] = React.useState<string[]>(() => readExpanded());
 
   /**
@@ -2687,7 +2650,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                   {/*
                     The label goes away on the rail, the ICON DOES NOT.
                     Collapsing used to take this whole nav with it, so the only
-                    way to Tasks, Flows or Agents was to expand first - a rail
+                    way to Tasks or Flows was to expand first - a rail
                     that offers nothing is a rail nobody leaves open.
                   */}
                   {open && label}
@@ -2714,7 +2677,6 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
             onToggleAgent={toggleAgentFilter}
             onClearAgents={() => setAgentFilter(writeAgentFilter([]))}
           />
-          <NewProjectButton onCreated={id => setActiveProjectId(id)} />
         </div>
       </div>
       {/* What the SESSIONS section carried that the tree cannot.
@@ -2989,7 +2951,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                 <Plus size={11} />
               </button>
               <button
-                onClick={() => setPinned(togglePinned(project.id))}
+                onClick={() => togglePinnedProject(project.id)}
                 aria-label={isPinned ? `Unpin project ${project.name}` : `Pin project ${project.name}`}
                 title={isPinned ? 'Unpin' : 'Pin to top'}
                 // Visible on hover, and always for a pinned one — otherwise
@@ -3627,8 +3589,8 @@ function SortMenu({
  *
  * A stated empty state for a sidebar row whose screen did not exist yet, so
  * that a nav row never landed on nothing. It had two users: Inbox, retired
- * when Flows took its place, and Agents, which now renders the run feed it was
- * standing in for. With no row left waiting on a screen there is nothing for
+ * when Flows took its place, and Agents, removed entirely with the run-feed
+ * screen it stood in for (396c8350). With no row left waiting on a screen there is nothing for
  * it to hold, and a helper with no caller is a shape for the next placeholder
  * to be poured into rather than questioned.
  */

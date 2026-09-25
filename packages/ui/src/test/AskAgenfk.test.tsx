@@ -424,37 +424,12 @@ describe('the way in when there is no project yet', () => {
   });
 });
 
-// ── The path that needs no agent ───────────────────────────────────────────
-// Proposing needs an agent installed, authenticated and answering. It is now
-// the only door on the project page, so the hand-written path had to survive
-// somewhere — inside, next to the place the panel already explains itself when
-// it cannot reach one.
-describe('writing the card yourself', () => {
-  it('offers the way out, with the project that is selected', async () => {
-    const onWriteByHand = vi.fn();
-    render(<AskAgenfk projectId="p1" onWriteByHand={onWriteByHand} />);
-    fireEvent.click(await screen.findByTestId('ask-by-hand'));
-    expect(onWriteByHand).toHaveBeenCalledWith('p1');
-  });
+/*
+ * The by-hand door is gone with the form it opened (82345ab9). The path that
+ * needs no proposal is now a terminal on the project, where the agent writes
+ * the card with the CLI.
+ */
 
-  it('hands over the project the person chose, not the one passed in', async () => {
-    const onWriteByHand = vi.fn();
-    render(<AskAgenfk projectId="p1" onWriteByHand={onWriteByHand} />);
-    await waitFor(() => screen.getByTestId('ask-project'));
-    fireEvent.click(screen.getByTestId('ask-project'));
-    fireEvent.click(screen.getByTestId('ask-project-option-p2'));
-    fireEvent.click(screen.getByTestId('ask-by-hand'));
-    expect(onWriteByHand).toHaveBeenCalledWith('p2');
-  });
-
-  it('is absent when the host has nowhere to send them', async () => {
-    // A control that calls nothing is the dead button this panel has already
-    // been twice.
-    render(<AskAgenfk projectId="p1" />);
-    await waitFor(() => screen.getByTestId('ask-objective'));
-    expect(screen.queryByTestId('ask-by-hand')).toBeNull();
-  });
-});
 
 // ── Watching the run, not just waiting for it ──────────────────────────────
 // "The agent is working on it" cannot distinguish thinking from wedged from a

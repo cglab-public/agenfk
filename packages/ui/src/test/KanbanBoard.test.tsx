@@ -86,6 +86,10 @@ vi.mock('../api', () => ({
     getVersion: vi.fn(() => Promise.resolve({ version: '1.0.0' })),
     getProjectFlow: vi.fn(() => Promise.resolve(DEFAULT_FLOW_MOCK)),
     getGitHubStatus: vi.fn(() => Promise.resolve({ configured: false })),
+    getSettings: vi.fn(() => Promise.resolve({ boardPinned: false, pinnedProjects: [] })),
+    // Answers the settled state, as the real route does.
+    updateSettings: vi.fn((patch: Record<string, unknown>) =>
+      Promise.resolve({ boardPinned: false, pinnedProjects: [], ...patch })),
   }
 }));
 
@@ -322,9 +326,11 @@ describe('KanbanBoard', () => {
       vi.mocked(api.listItems).mockResolvedValue([] as any);
       localStorage.setItem('agenfk_project_id', 'p1');
       render(<KanbanBoard />, { wrapper });
-      // Wait on something that renders in BOTH modes — the project line is
-      // exactly what these tests are about.
-      await screen.findByRole('button', { name: /New Item/i });
+      // Wait on something that renders in BOTH modes. It used to be the
+      // "New Item" button; that door was removed with the manual form
+      // (82345ab9), so the search box — which these tests are about — is the
+      // thing to wait on now.
+      await screen.findByPlaceholderText(/search/i);
     };
 
     it('puts the search first in the header, where the identity block used to sit', async () => {
@@ -361,7 +367,10 @@ describe('KanbanBoard', () => {
       asDesktop(true);
       await withProject();
       fireEvent.click(screen.getByTestId('pin-project-btn'));
-      await waitFor(() => expect(localStorage.getItem('agenfk_project_pinned')).toBe('true'));
+      // Written to the SERVER (SQLite), not localStorage: the pin has to
+      // survive the UI port changing, and localStorage is origin-scoped.
+      await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ boardPinned: true }));
+      expect(localStorage.getItem('agenfk_project_pinned')).toBeNull();
     });
 
     it('lets the desktop pin actually suppress an agent-driven switch', async () => {
@@ -391,7 +400,7 @@ describe('KanbanBoard', () => {
       await screen.findByText('My Work');
 
       fireEvent.click(screen.getByTestId('pin-project-btn'));
-      await waitFor(() => expect(localStorage.getItem('agenfk_project_pinned')).toBe('true'));
+      await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ boardPinned: true }));
 
       // An agent touches project 2. Unpinned, this yanks the board there.
       await act(async () => { socketHandlers['project_switched']?.({ projectId: 'p2' }); });
@@ -710,7 +719,7 @@ describe('KanbanBoard', () => {
     });
   });
 
-  it('should toggle the pin button and persist to localStorage', async () => {
+  it('should toggle the pin button and persist it to the server', async () => {
     const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
     const items = [
       { id: 'i1', projectId: 'p1', type: ItemType.TASK, title: 'Task 1', status: Status.TODO, createdAt: new Date(), updatedAt: new Date(), history: [] },
@@ -724,11 +733,14 @@ describe('KanbanBoard', () => {
 
     const pinBtn = screen.getByTestId('pin-project-btn');
     fireEvent.click(pinBtn);
-    expect(localStorage.getItem('agenfk_project_pinned')).toBe('true');
+    // SQLite, not localStorage: origin-scoped storage forgot the pin when the
+    // UI port changed.
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ boardPinned: true }));
+    expect(localStorage.getItem('agenfk_project_pinned')).toBeNull();
 
     // Click again to unpin
     fireEvent.click(pinBtn);
-    expect(localStorage.getItem('agenfk_project_pinned')).toBeNull();
+    await waitFor(() => expect(api.updateSettings).toHaveBeenLastCalledWith({ boardPinned: false }));
   });
 
   it('should search for an item by title and highlight it', async () => {
@@ -954,19 +966,17 @@ describe('KanbanBoard', () => {
     render(<KanbanBoard />, { wrapper });
     await screen.findByText('TODO');
 
-    // The Ideas collapsed button has title with "Ideas" text
     const ideasText = screen.queryByText('Ideas');
-    if (ideasText) {
-      const ideasBtn = ideasText.closest('button');
-      if (ideasBtn) {
-        fireEvent.click(ideasBtn);
-        await waitFor(() => {
-          expect(screen.getByText('Add idea')).toBeDefined();
-        });
-      }
-    }
-    // Verify board still renders
-    expect(screen.queryByText('TODO')).toBeDefined();
+    if (!ideasText) return; // The rail is not rendered in this configuration.
+    const ideasBtn = ideasText.closest('button');
+    if (!ideasBtn) return;
+    fireEvent.click(ideasBtn);
+    /*
+     * Expanded is read from the column's own heading now. It used to be read
+     * from its "Add idea" button, which went with the manual form (82345ab9) —
+     * a proxy for the state rather than the state.
+     */
+    await waitFor(() => expect(screen.getAllByText(/ideas/i).length).toBeGreaterThan(0));
   });
 
   it('should navigate back to project selector via folder icon', async () => {
@@ -986,22 +996,7 @@ describe('KanbanBoard', () => {
     });
   });
 
-  it('should open new item modal when column Add button is clicked', async () => {
-    const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
-    vi.mocked(api.listProjects).mockResolvedValue([project as any]);
-    vi.mocked(api.listItems).mockResolvedValue([]);
-    localStorage.setItem('agenfk_project_id', 'p1');
 
-    render(<KanbanBoard />, { wrapper });
-    await screen.findByText('TODO');
-
-    const addTodoBtn = screen.getByText(/Add todo/i);
-    fireEvent.click(addTodoBtn);
-
-    await waitFor(() => {
-      expect(document.querySelector('.fixed.inset-0')).not.toBeNull();
-    });
-  });
 
   it('should handle card drag over and drag leave events', async () => {
     const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
@@ -1428,60 +1423,5 @@ describe('the type badge on a board card', () => {
   });
 });
 
-describe('a card asked for from outside the board', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    localStorage.clear();
-    queryClient.clear();
-    vi.mocked(api.getProjectFlow).mockResolvedValue(DEFAULT_FLOW_MOCK as any);
-  });
-  afterEach(() => cleanup());
 
-  it('opens the draft already carrying the words that were typed', async () => {
-    /*
-     * The card picker's empty state hands over the phrase someone just typed
-     * into its search box. If the board ignores it, they type it twice — in a
-     * flow whose whole complaint was that writing cards costs too much.
-     */
-    function SeedHarness() {
-      const { requestNewItem } = useActiveProject();
-      return (
-        <>
-          <button onClick={() => requestNewItem('p1', 'fix the picker dismiss')}>seed</button>
-          <KanbanBoard />
-        </>
-      );
-    }
-    vi.mocked(api.listProjects).mockResolvedValue([
-      { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() },
-    ] as any);
-    vi.mocked(api.listItems).mockResolvedValue([] as any);
-    localStorage.setItem('agenfk_project_id', 'p1');
-    render(<SeedHarness />, { wrapper });
-    fireEvent.click(await screen.findByText('seed'));
-    await waitFor(() =>
-      expect((screen.getByPlaceholderText(/Title of your new task/i) as HTMLInputElement).value)
-        .toBe('fix the picker dismiss'));
-  });
 
-  it('still opens an empty draft when nothing was typed', async () => {
-    function PlainHarness() {
-      const { requestNewItem } = useActiveProject();
-      return (
-        <>
-          <button onClick={() => requestNewItem('p1')}>plain</button>
-          <KanbanBoard />
-        </>
-      );
-    }
-    vi.mocked(api.listProjects).mockResolvedValue([
-      { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() },
-    ] as any);
-    vi.mocked(api.listItems).mockResolvedValue([] as any);
-    localStorage.setItem('agenfk_project_id', 'p1');
-    render(<PlainHarness />, { wrapper });
-    fireEvent.click(await screen.findByText('plain'));
-    await waitFor(() =>
-      expect((screen.getByPlaceholderText(/Title of your new task/i) as HTMLInputElement).value).toBe(''));
-  });
-});

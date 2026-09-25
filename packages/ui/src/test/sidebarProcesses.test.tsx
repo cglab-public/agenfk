@@ -106,33 +106,12 @@ const renderShell = () => render(
  * AppShell.tsx, which says what the machinery was.
  */
 
-/**
- * Where the Runs view lives (CGLAB-176, resettled here).
- *
- * It can still sit in two places, and the reason for the pair is unchanged:
- * live logs are something you follow WHILE looking at the board, so a
- * full-height screen makes that a choice between them - but a strip is too
- * small to read a log in, so the full screen has to stay available.
- *
- * WHAT CHANGED is the first position's name and its route. It was `tab`,
- * meaning a tab in the view strip. The strip is gone, and the same whole-column
- * view is now the Agents screen, opened from the sidebar. `screen` is that
- * position under an honest name, and a stored `"tab"` is read as it.
- *
- * Which makes the sidebar row load-bearing rather than convenient: with no tab
- * to click it is the only way in, and the control that docks the feed away
- * lives on the feed itself. A view whose only route is a button inside it
- * cannot be opened at all.
- *
- * The constraint that shapes the implementation is the one it always was:
- * moving it must not REMOUNT the board. The board is `children`, and moving a
- * subtree to a different DOM parent unmounts and remounts it - losing scroll
- * position, open menus and any edit in flight. So the board stays where it is
- * and the strip appears beneath it, in the same column.
+/*
+ * DELETED: the Runs view's two positions and its `agenfk_runs_dock` preference
+ * (396c8350). The Agents screen and the docked strip are gone with the row
+ * that opened them; this file keeps the SESSIONS-section removal it was
+ * resettled for.
  */
-const agentsRow = async () => screen.findByRole('button', { name: /^agents$/i });
-const runsScreen = () => document.getElementById('panel-agents')!;
-
 
 describe('the SESSIONS section', () => {
   it('is gone from the sidebar', async () => {

@@ -44,6 +44,27 @@ export interface WorktreeDeps {
   readonly projectRoot?: (itemId: string) => Promise<string | null>;
   /** Whether that directory is there at all. Absent means "do not check". */
   readonly exists?: (dir: string) => boolean;
+  /**
+   * Where a branch is ALREADY checked out, if it is.
+   *
+   * git allows one worktree per branch, so a card whose branch is checked out
+   * in the main clone — or in a worktree somebody cut by hand — cannot get a
+   * second one. That is not a failure to report: the work for that branch is
+   * in that directory, and it is the directory this card means.
+   */
+  readonly worktreeFor?: (root: string, branch: string) => string | null;
+  /** The card's branch, for the lookup above. */
+  readonly itemBranch?: (itemId: string) => Promise<string | null>;
+  /**
+   * Whether the repository has a commit yet.
+   *
+   * `git worktree add` needs something to base the new branch on, and a fresh
+   * `git init` has an UNBORN HEAD — a ref that names a branch with no commits.
+   * git's own answer to this is a page of hints about `--orphan`, which is a
+   * true answer to a question nobody asked: the person pressed a button on a
+   * card. Absent means "do not check".
+   */
+  readonly hasCommits?: (dir: string) => boolean;
 }
 
 export interface ResolvedWorktree {
@@ -105,6 +126,48 @@ function parseJson(res: HttpResponse | null, what: string): unknown {
  * failure. That is the exact shape of BUG b68254ec.
  */
 export async function resolveWorktree(itemId: string, deps: WorktreeDeps): Promise<ResolvedWorktree> {
+  try {
+    return await fromServer(itemId, deps);
+  } catch (e) {
+    /*
+     * THE SERVER DECIDES FIRST, and only then do we soften its refusal.
+     *
+     * This check used to run BEFORE asking, and that made it a race: the
+     * lookup it needs is itself an HTTP call, so a server still booting — the
+     * ordinary case one second after `agenfk restart` — answered nothing, the
+     * check gave up, and the request went on to fail for a reason about git.
+     *
+     * Asking afterwards has no such window. A refusal is already in hand, the
+     * root can be looked up at leisure, and if THAT fails the server's own
+     * sentence is what the person sees.
+     */
+    const root = deps.projectRoot ? await deps.projectRoot(itemId).catch(() => null) : null;
+    if (!root || !deps.isRepo || deps.exists?.(root) === false) throw e;
+    /*
+     * Not a repository, or a repository with nothing to branch FROM. Both open
+     * in the project root, for the same reason: there is no branch to be wrong
+     * about. The first commit made there turns the next card's terminal into
+     * an ordinary worktree, with nothing to undo.
+     */
+    if (!deps.isRepo(root) || deps.hasCommits?.(root) === false) {
+      return { cwd: root, branchName: null };
+    }
+    /*
+     * THE BRANCH IS ALREADY OUT SOMEWHERE, which is git's own rule rather than
+     * a fault: one worktree per branch. Reopening a card whose branch sits in
+     * the main clone answers "already used by worktree at <path>" — a refusal
+     * that names its own answer, because that path IS this card's directory.
+     */
+    if (deps.worktreeFor && deps.itemBranch) {
+      const branch = await deps.itemBranch(itemId).catch(() => null);
+      const held = branch ? deps.worktreeFor(root, branch) : null;
+      if (branch && held) return { cwd: held, branchName: branch };
+    }
+    throw e;
+  }
+}
+
+async function fromServer(itemId: string, deps: WorktreeDeps): Promise<ResolvedWorktree> {
   /*
    * NOT EVERY PROJECT IS A REPOSITORY, and that is not a failure.
    *
@@ -119,20 +182,6 @@ export async function resolveWorktree(itemId: string, deps: WorktreeDeps): Promi
    * be wrong about — there is no git at all — and the root is the only
    * directory this card could ever mean.
    */
-  if (deps.isRepo && deps.projectRoot) {
-    const root = await deps.projectRoot(itemId);
-    /*
-     * A root that is not there is NOT the no-git case: opening a pty in a
-     * missing directory fails with a raw errno, where the server would have
-     * said "Project has no projectRoot" — the sentence `reasonFrom` exists to
-     * preserve. Anything but a directory git recognises falls through to the
-     * server, which is the side that decides.
-     */
-    if (root && deps.exists?.(root) !== false && !deps.isRepo(root)) {
-      return { cwd: root, branchName: null };
-    }
-  }
-
   // The item id is the renderer's only input on this path. encodeURIComponent
   // keeps it a single path segment, so it can never change which endpoint is
   // called — only which item is asked about.

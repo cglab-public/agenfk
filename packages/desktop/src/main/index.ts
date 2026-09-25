@@ -441,6 +441,22 @@ async function boot(): Promise<void> {
        * it is true for a subdirectory of a checkout and for a bare repository,
        * both of which `git worktree add` accepts and a `.git` lookup refuses.
        */
+      /*
+       * Is there anything to branch from? A fresh `git init` has an unborn
+       * HEAD, and `git worktree add` answers that with a page of hints about
+       * `--orphan` — a true answer to a question nobody asked.
+       */
+      const hasAnyCommit = (dir: string): boolean => {
+        try {
+          execFileSync('git', ['rev-parse', '--verify', 'HEAD'], {
+            cwd: dir, stdio: 'ignore', env: process.env,
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
       const isGitCheckout = (dir: string): boolean => {
         try {
           execFileSync('git', ['rev-parse', '--git-dir'], {
@@ -480,6 +496,36 @@ async function boot(): Promise<void> {
            */
           isRepo: isGitCheckout,
           exists: dir => existsSync(dir),
+          hasCommits: hasAnyCommit,
+          /*
+           * git's own register of which branch is where. One worktree per
+           * branch is its rule, so when it refuses a second one this says
+           * where the first is — and that is the card's directory.
+           */
+          worktreeFor: (root, branch) => {
+            try {
+              const out = execFileSync('git', ['worktree', 'list', '--porcelain'], {
+                cwd: root, env: process.env, encoding: 'utf8',
+              });
+              let current: string | null = null;
+              for (const line of out.split('\n')) {
+                if (line.startsWith('worktree ')) current = line.slice('worktree '.length).trim();
+                else if (line.startsWith('branch ') && current) {
+                  // `branch refs/heads/<name>`
+                  if (line.slice('branch '.length).trim() === `refs/heads/${branch}`) return current;
+                }
+              }
+              return null;
+            } catch {
+              return null;
+            }
+          },
+          itemBranch: async id => {
+            const res = await httpGet(port, `/items/${encodeURIComponent(id)}`);
+            if (!res || res.status >= 300) return null;
+            const branch = JSON.parse(res.body || '{}')?.branchName;
+            return typeof branch === 'string' && branch ? branch : null;
+          },
           projectRoot: async id => {
             const res = await httpGet(port, `/items/${encodeURIComponent(id)}`);
             if (!res || res.status >= 300) return null;
@@ -714,6 +760,36 @@ async function boot(): Promise<void> {
            */
           isRepo: isGitCheckout,
           exists: dir => existsSync(dir),
+          hasCommits: hasAnyCommit,
+          /*
+           * git's own register of which branch is where. One worktree per
+           * branch is its rule, so when it refuses a second one this says
+           * where the first is — and that is the card's directory.
+           */
+          worktreeFor: (root, branch) => {
+            try {
+              const out = execFileSync('git', ['worktree', 'list', '--porcelain'], {
+                cwd: root, env: process.env, encoding: 'utf8',
+              });
+              let current: string | null = null;
+              for (const line of out.split('\n')) {
+                if (line.startsWith('worktree ')) current = line.slice('worktree '.length).trim();
+                else if (line.startsWith('branch ') && current) {
+                  // `branch refs/heads/<name>`
+                  if (line.slice('branch '.length).trim() === `refs/heads/${branch}`) return current;
+                }
+              }
+              return null;
+            } catch {
+              return null;
+            }
+          },
+          itemBranch: async id => {
+            const res = await httpGet(port, `/items/${encodeURIComponent(id)}`);
+            if (!res || res.status >= 300) return null;
+            const branch = JSON.parse(res.body || '{}')?.branchName;
+            return typeof branch === 'string' && branch ? branch : null;
+          },
           projectRoot: async id => {
             const res = await httpGet(port, `/items/${encodeURIComponent(id)}`);
             if (!res || res.status >= 300) return null;

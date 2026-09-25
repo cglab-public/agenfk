@@ -7,9 +7,10 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
-import { app, initStorage } from '../server';
+import { app, initStorage, VERIFY_TOKEN } from '../server';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 
 const TEST_DB = path.resolve('./project-settings-route-test-db.sqlite');
 let server: import('http').Server;
@@ -67,4 +68,141 @@ it('changes nothing', async () => {
   await request(server).get(`/projects/${projectId}/settings`);
   const after = await request(server).get(`/projects/${projectId}`);
   expect(after.body).toEqual(before.body);
+});
+
+
+/*
+ * A repository that declares its own settings.
+ *
+ * `.agenfk/project.json` is checked in, so what it says is the same for
+ * everyone who clones — which is why it outranks the stored row, and why the
+ * answer has to say WHERE the value came from and what it ignored.
+ */
+describe('GET /projects/:id/settings with a project file', () => {
+  /**
+   * A project pointed at a real folder.
+   *
+   * Through the storage rather than the route: `projectRoot` is deliberately
+   * behind an internal token, and this suite is about what the file does, not
+   * about how the root is written.
+   */
+  const projectRootedAt = async (root: string, name: string): Promise<string> => {
+    const created = await request(server).post('/projects').send({ name });
+    // Through the internal-token route, which is the only way a root is ever
+    // written — the same door the desktop uses (bug e60e20aa).
+    await request(server)
+      .put(`/projects/${created.body.id}/project-root`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ projectRoot: root });
+    return created.body.id as string;
+  };
+
+  const write = (root: string, body: unknown): void => {
+    fs.mkdirSync(path.join(root, '.agenfk'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.agenfk', 'project.json'), JSON.stringify(body));
+  };
+
+  it('lets the file decide, and names it', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-declared-'));
+    write(root, { projectId: 'x', autoWorktree: true, verifyCommand: 'npm test' });
+    const id = await projectRootedAt(root, 'declared');
+    const res = await request(server).get(`/projects/${id}/settings`);
+    const verify = res.body.rows.find((r: { key: string }) => r.key === 'verifyCommand');
+    expect(verify.value).toBe('npm test');
+    expect(verify.origin).toBe('from-file');
+    expect(verify.from).toContain('.agenfk/project.json');
+  });
+
+  it('reports what it ignored instead of swallowing it', async () => {
+    // The file is hand-edited; a key that does nothing has to say so, or
+    // somebody spends an afternoon on it.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-declared-'));
+    write(root, { projectId: 'x', projectRoot: '/somewhere/else', futureThing: 1 });
+    const id = await projectRootedAt(root, 'declared-2');
+    const res = await request(server).get(`/projects/${id}/settings`);
+    expect(res.body.fileProblems.join(' ')).toMatch(/projectRoot/);
+    expect(res.body.fileProblems.join(' ')).toMatch(/futureThing/);
+    // And the machine's own root is untouched by what the file asked for.
+    const rootRow = res.body.rows.find((r: { key: string }) => r.key === 'projectRoot');
+    expect(rootRow.value).toBe(root);
+  });
+
+  it('is unchanged for a project with no file at all', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-declared-'));
+    const id = await projectRootedAt(root, 'plain');
+    const res = await request(server).get(`/projects/${id}/settings`);
+    expect(res.body.fileProblems).toEqual([]);
+    expect(res.body.rows.some((r: { origin: string }) => r.origin === 'from-file')).toBe(false);
+  });
+});
+
+
+/*
+ * A verify command that arrived with the repository.
+ *
+ * The file is what makes a project's configuration travel; it is also a way
+ * for a clone to hand this machine a string it will run on verify. So one
+ * that came from the file runs only after somebody here has read it — once per
+ * exact command, because a pull that edits it is a new thing to read.
+ */
+describe('approving a command declared by the repository', () => {
+  const write = (root: string, body: unknown): void => {
+    fs.mkdirSync(path.join(root, '.agenfk'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.agenfk', 'project.json'), JSON.stringify(body));
+  };
+
+  const cardOn = async (projectId: string): Promise<string> => {
+    const created = await request(server).post('/items').send({
+      projectId, type: 'TASK', title: 'a card', status: 'TODO',
+    });
+    return created.body.id as string;
+  };
+
+  it('refuses to run it until it has been approved, and shows what it is', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-approve-'));
+    write(root, { projectId: 'x', verifyCommand: 'echo from-the-repo' });
+    const created = await request(server).post('/projects').send({ name: 'approve-me' });
+    await request(server)
+      .put(`/projects/${created.body.id}/project-root`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ projectRoot: root });
+
+    const itemId = await cardOn(created.body.id);
+    // Walk to the last step, where the verify command is what runs.
+    // The validate endpoint is itself behind the internal token — it runs a
+    // shell string, which is the same reason this approval exists.
+    const step = () => request(server)
+      .post(`/items/${itemId}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ evidence: 'walking' });
+    let res = await step();
+    for (let i = 0; i < 6 && res.status === 200; i += 1) res = await step();
+    expect(res.body.error).toBe('COMMAND_NEEDS_APPROVAL');
+    expect(res.body.message).toContain('echo from-the-repo');
+    expect(res.body.fingerprint).toBeTruthy();
+  });
+
+  it('is approved per exact command, through the token route', async () => {
+    const created = await request(server).post('/projects').send({ name: 'approver' });
+    const res = await request(server)
+      .post(`/projects/${created.body.id}/approve-file-command`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ command: 'echo from-the-repo' });
+    expect(res.status).toBe(200);
+    expect(res.body.approved).toBe(true);
+
+    const project = await request(server).get(`/projects/${created.body.id}`);
+    expect(project.body.approvedFileCommands).toContain(res.body.fingerprint);
+  });
+
+  it('refuses the approval itself without the internal token', async () => {
+    // Approving is the decision to RUN a string that came with a repository.
+    // An unauthenticated local route could make it on the user's behalf, which
+    // is the shape of the bug that put verifyCommand behind the token.
+    const created = await request(server).post('/projects').send({ name: 'no-token' });
+    const res = await request(server)
+      .post(`/projects/${created.body.id}/approve-file-command`)
+      .send({ command: 'echo anything' });
+    expect(res.status).toBe(401);
+  });
 });

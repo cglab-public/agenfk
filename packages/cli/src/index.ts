@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import { harnessActor, resolveFromOptions } from './harnessModel.js';
 import figlet from 'figlet';
 import axios from 'axios';
-import { decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, isHubRelease, isUpgrade, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
+import { readProjectFile, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, isHubRelease, isUpgrade, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
 import { writeActiveWork } from './activeWork.js';
 import { resolveItemIdPrefix } from './resolveItemId.js';
 import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT, setTelemetryEnabled } from '@agenfk/telemetry';
@@ -1923,6 +1923,76 @@ program
       console.log(chalk.gray(`   Restored status: ${status}`));
     } catch (error: any) {
       console.error(chalk.red('Error resuming work:'), error.response?.data?.error || error.message);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('approve-file-command <projectId>')
+  .description('Approve a verify/setup command that this project declares in .agenfk/project.json')
+  .option('-y, --yes', 'approve without being asked to confirm')
+  .action(async (projectId: string, options: { yes?: boolean }) => {
+    /*
+     * The way OUT of the refusal.
+     *
+     * A project may declare its own verifyCommand in the repository, which is
+     * what lets configuration travel — and is also how cloning a repo could
+     * hand this machine a command it runs. So the server refuses to run one
+     * until somebody here has read it, and this is where that reading happens.
+     *
+     * The command is PRINTED before anything is approved. An approval flow
+     * that does not show what it approves is a confirmation dialog with the
+     * text removed.
+     */
+    try {
+      const { data: project } = await axios.get(`${API_URL}/projects/${projectId}`);
+      const root = project?.projectRoot;
+      if (!root) {
+        console.error(chalk.red('This project has no folder, so it declares nothing.'));
+        process.exit(1);
+        return;
+      }
+      const filePath = path.join(root, '.agenfk', 'project.json');
+      if (!fs.existsSync(filePath)) {
+        console.error(chalk.red(`No project file at ${filePath}.`));
+        process.exit(1);
+        return;
+      }
+      const { value, problems } = readProjectFile(fs.readFileSync(filePath, 'utf8'));
+      for (const problem of problems) console.log(chalk.gray(`  ${problem}`));
+      const commands = (['verifyCommand', 'setupCommand'] as const)
+        .map(key => ({ key, command: value.settings[key] }))
+        .filter((c): c is { key: 'verifyCommand' | 'setupCommand'; command: string } => Boolean(c.command));
+      if (commands.length === 0) {
+        console.log(chalk.gray('This repository declares no commands, so there is nothing to approve.'));
+        return;
+      }
+
+      console.log(chalk.bold(`\n${filePath} declares:`));
+      for (const { key, command } of commands) console.log(`  ${chalk.cyan(key)}: ${command}`);
+
+      if (!options.yes) {
+        console.log(chalk.yellow('\nRead them. Re-run with --yes to let this machine run them.'));
+        return;
+      }
+
+      const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
+      if (!fs.existsSync(tokenPath)) {
+        console.error(chalk.red('Error: ~/.agenfk/verify-token not found. Run npm run install:framework first.'));
+        process.exit(1);
+        return;
+      }
+      const token = fs.readFileSync(tokenPath, 'utf8').trim();
+      for (const { key, command } of commands) {
+        const { data } = await axios.post(
+          `${API_URL}/projects/${projectId}/approve-file-command`,
+          { command },
+          { headers: { 'x-agenfk-internal': token } },
+        );
+        console.log(chalk.green(`✅ ${key} approved (${data.fingerprint})`));
+      }
+    } catch (error) {
+      console.error(chalk.red('Error approving:'), (error as Error).message);
       process.exit(1);
     }
   });

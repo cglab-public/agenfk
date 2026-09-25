@@ -25,7 +25,7 @@ import type { ITerminalOptions } from '@xterm/xterm';
 /** The slice of the preload surface this component uses. */
 export interface TerminalBridge {
   spawn(req: {
-    itemId: string; agentId: string; cols: number; rows: number;
+    itemId?: string; projectId?: string; agentId: string; cols: number; rows: number;
     autoApprove?: boolean; persist?: boolean;
     agentSessionId?: string; resume?: boolean;
   }): Promise<{ sessionId: string; agentSessionId?: string }>;
@@ -57,7 +57,17 @@ interface FitLike extends ITerminalAddon {
 }
 
 export interface TerminalPaneProps {
-  readonly itemId: string;
+  /**
+   * The card this terminal belongs to — or the project, when there is no card
+   * yet. EXACTLY ONE of the two: a session with neither cannot be attributed
+   * and main would have no directory to resolve for it.
+   *
+   * A session on a project is how a task gets created by opening an ordinary
+   * terminal: the agent runs in the project's checkout and writes the card
+   * itself, which is what the workflow rules already tell it to do.
+   */
+  readonly itemId?: string;
+  readonly projectId?: string;
   readonly agentId: string;
   /** Run the agent with its own permission prompts disabled. */
   readonly autoApprove?: boolean;
@@ -129,6 +139,7 @@ const OUTPUT_REPORT_MS = 2000;
 
 export function TerminalPane({
   itemId,
+  projectId,
   agentId,
   autoApprove,
   persist,
@@ -377,8 +388,25 @@ export function TerminalPane({
 
     // The renderer sends an item and an agent, never a path and never a
     // command. Keep it that way.
+    if (!itemId && !projectId) {
+      // Refused here rather than sent: main would answer "no directory", and
+      // the pane would report a worktree problem for a caller that named
+      // nothing to open.
+      setError('This terminal has no card and no project, so there is nowhere to open it.');
+      return;
+    }
     api.spawn({
-      itemId, agentId,
+      /*
+       * EXACTLY ONE, and the card wins.
+       *
+       * `projectId` was already on a session before this pane could open one —
+       * it scopes a REMEMBERED row on restore — so sending both fields
+       * unconditionally made every ordinary card terminal fail the main
+       * process's exclusivity check ("itemId and projectId are exclusive").
+       * The field is only a target when there is no card.
+       */
+      ...(itemId ? { itemId } : { projectId }),
+      agentId,
       autoApprove: autoApprove === true,
       persist: persist === true,
       // Only when there is one AND we mean to resume it. Asking to resume
@@ -442,7 +470,14 @@ export function TerminalPane({
     // onSpawned is deliberately NOT a dependency: it is a reporting channel,
     // and an unstable identity would tear the terminal down and start a second
     // agent in the same worktree.
-  }, [itemId, agentId, autoApprove, persist, agentSessionId, resume, bridge, createTerminal, createFitAddon]);
+    //
+    // `itemId`, `projectId` and `agentSessionId` are deliberately NOT here
+    // either, for the same reason. A pane's TARGET is fixed when it spawns:
+    // adopting a card (itemId going project -> card) or learning the
+    // conversation id after the fact must not kill the agent and start a
+    // second one in the worktree. The pane is keyed by session id in
+    // TerminalTab, so a different session still mounts its own pane and spawns.
+  }, [agentId, autoApprove, persist, resume, bridge, createTerminal, createFitAddon]);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-[#14181b]">

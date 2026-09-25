@@ -47,8 +47,13 @@ Object.defineProperty(window, 'matchMedia', {
   })),
 });
 
-// Mock scrollIntoView (jsdom has no layout)
-window.HTMLElement.prototype.scrollIntoView = vi.fn();
+// Mock scrollIntoView (jsdom has no layout). The ARGUMENTS are kept: what a
+// reveal asks for decides whether the whole window moves — see the test at the
+// end of this file.
+const scrollCalls: Array<Record<string, unknown> | undefined> = [];
+window.HTMLElement.prototype.scrollIntoView = vi.fn(function (arg?: unknown) {
+  scrollCalls.push(arg as Record<string, unknown> | undefined);
+}) as never;
 
 const DEFAULT_FLOW_MOCK = {
   id: 'default',
@@ -244,5 +249,31 @@ describe('KanbanBoard deep-link (?item / ?project)', () => {
     expect(input.value).toBe('');
     const card = document.getElementById('card-task-1');
     expect(card?.className ?? '').not.toContain('search-highlight');
+  });
+
+/*
+ * Revealing a card must not move the WINDOW.
+ *
+ * Reported from use: clicking through to a card far down the board slid the
+ * whole screen, status bar and all, and it did not come back. `block: 'center'`
+ * obliges every scrollable ancestor to move — the document included — and
+ * `behavior: 'smooth'` makes it an animation the app's scroll-pin cannot win
+ * against: the pin corrects instantly, the animation carries on to its target,
+ * and no further scroll event fires to trigger it again.
+ */
+  it('asks only for what has to move, and never animates', async () => {
+  // Drives its OWN reveal. Reading calls left by earlier tests would make this
+  // pass or fail on run order, which is the kind of test this file keeps
+  // finding bugs in.
+    scrollCalls.length = 0;
+    window.history.pushState({}, '', '/?item=task-1&project=p2');
+    render(<KanbanBoard />, { wrapper });
+    await waitFor(() => expect(document.getElementById('card-task-1')).not.toBeNull());
+
+    await waitFor(() => expect(scrollCalls.length).toBeGreaterThan(0));
+    for (const arg of scrollCalls) {
+    expect(arg?.block).not.toBe('center');
+    expect(arg?.behavior).not.toBe('smooth');
+  }
   });
 });

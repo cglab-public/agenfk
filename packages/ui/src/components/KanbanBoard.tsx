@@ -504,9 +504,6 @@ const stripDeepLinkParams = () => {
  * else: a draft genuinely has no id or timestamps until it is saved, so it is
  * not an AgEnFKItem yet and no honest type says otherwise.
  */
-const blankDraft = (projectId: string, status: Status, title = ''): AgEnFKItem =>
-  ({ type: ItemType.TASK, status, title, description: '', projectId } as unknown as AgEnFKItem);
-
 export const KanbanBoard: React.FC = () => {
   const queryClient = useQueryClient();
   const { theme, toggleTheme } = useTheme();
@@ -525,7 +522,19 @@ export const KanbanBoard: React.FC = () => {
   // so a project made from the UI could never have a description — while
   // `POST /projects` accepted one the whole time (CGLAB-164).
   const [newProjectDescription, setNewProjectDescription] = useState('');
-  const [isPinned, setIsPinned] = useState<boolean>(() => localStorage.getItem('agenfk_project_pinned') === 'true');
+  /*
+   * The board pin lives in the SERVER (SQLite), not localStorage.
+   *
+   * Same reason the sidebar pins moved: the UI is served on
+   * http://127.0.0.1:<port>, localStorage is origin-scoped, and the pin
+   * vanished when the port changed.
+   */
+  const { data: boardSettings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  const isPinned = boardSettings?.boardPinned === true;
+  const setBoardPin = useMutation({
+    mutationFn: (next: boolean) => api.updateSettings({ boardPinned: next }),
+    onSuccess: settled => { queryClient.setQueryData(['settings'], settled); },
+  });
   const [confirmDeleteProjectId, setConfirmDeleteProjectId] = useState<string | null>(null);
   const [isPickerOpen, setIsPickerOpen] = useState(false);
 
@@ -550,15 +559,7 @@ export const KanbanBoard: React.FC = () => {
   }, []);
 
   const togglePin = () => {
-    setIsPinned(prev => {
-      const next = !prev;
-      if (next) {
-        localStorage.setItem('agenfk_project_pinned', 'true');
-      } else {
-        localStorage.removeItem('agenfk_project_pinned');
-      }
-      return next;
-    });
+    setBoardPin.mutate(!isPinned);
   };
   const [isJiraImportOpen, setIsJiraImportOpen] = useState(false);
   const [isGitHubImportOpen, setIsGitHubImportOpen] = useState(false);
@@ -1314,7 +1315,24 @@ export const KanbanBoard: React.FC = () => {
     setTimeout(() => {
       const element = document.getElementById(`card-${item.id}`);
       if (element) {
-        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        /*
+         * `nearest`, and never `center`, and never smooth.
+         *
+         * `center` obliges EVERY scrollable ancestor to move — including the
+         * document — so revealing a card far down the board slid the whole
+         * window, status bar and all. The app installs a pin that snaps the
+         * document back (App.tsx), written after a measured case where it
+         * travelled 386px and nothing could return it; but a pin loses to an
+         * ANIMATION: it scrolls instantly while the smooth run continues to
+         * its target, and once the animation ends there is no further event
+         * for the pin to react to. The window stays moved, with no scrollbar
+         * to move it back.
+         *
+         * `nearest` scrolls only what has to move — which, for a card inside a
+         * scrolling column, is the column. The other two callers in this file
+         * already used it.
+         */
+        element.scrollIntoView({ block: 'nearest', inline: 'nearest' });
       }
     }, item.status === Status.ARCHIVED || chain.length > 0 ? 400 : 100);
 
@@ -1382,21 +1400,10 @@ export const KanbanBoard: React.FC = () => {
   }, [focusedItemId, items, isFetchingItems, isLoadingFlow, activeFlow]);
 
   // A new card asked for from outside the board — the sidebar's per-project +.
-  // Opens the very same blank draft the header's New Item button does, so
-  // there is one create flow rather than two that can drift apart.
-  useEffect(() => {
-    if (!newItemRequest) return;
-    const projectId = newItemRequest.slice(0, newItemRequest.lastIndexOf('#'));
-    // The draft opens holding whatever the caller already had. The card
-    // picker's empty state sends the phrase that matched no card — dropping it
-    // meant typing it a second time, in the one flow whose complaint is that
-    // writing a card costs too much.
-    setSelectedItem(blankDraft(projectId, Status.TODO, newItemTitle ?? ''));
-    // `newItemTitle` is deliberately not a dependency: it is set in the same
-    // batch as the request and read here, and listing it would re-open the
-    // draft on its own.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [newItemRequest]);
+  /*
+   * The blank draft is gone (82345ab9). `newItemRequest` no longer opens
+   * anything here, and the callers that used to raise it were removed with it.
+   */
 
   const handleSearchNav = (direction: 'prev' | 'next') => {
     if (searchMatches.length === 0) return;
@@ -1921,13 +1928,17 @@ agenfk update-project <id> --setup-command "npm ci"`}
               </button>
             </div>
 
-            <button 
-              onClick={() => setSelectedItem(blankDraft(selectedProjectId!, Status.TODO))}
-              className="bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 px-4 py-2 rounded-xl font-bold text-sm flex items-center gap-2 transition-all active:scale-95 whitespace-nowrap"
-            >
-              <Plus size={18} />
-              <span>New Item</span>
-            </button>
+            {/*
+              * NEW ITEM IS GONE, and with it every other way into the blank
+              * draft: the column placeholders, the sidebar's `+`, and the form
+              * itself. Work is created by describing it — the panel proposes a
+              * tree you approve, or you open a terminal and the agent writes
+              * the card with the CLI.
+              *
+              * The cost, stated because it is real: on a machine with no agent
+              * installed there is no longer a way to create a card from this
+              * interface. The CLI is that way.
+              */}
           </div>
         </div>
 
@@ -2052,9 +2063,6 @@ agenfk update-project <id> --setup-command "npm ci"`}
                         ))}
                       </AnimatePresence>
                     {/* v8 ignore start */}
-                    <button onClick={() => setSelectedItem(blankDraft(selectedProjectId!, Status.IDEAS))} className="w-full py-1.5 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-lg text-slate-400 dark:text-slate-500 text-xs font-medium hover:border-border-brand hover:text-accent-text transition-all flex items-center justify-center gap-1.5">
-                      <Plus size={14} /> Add idea
-                    </button>
                     {/* v8 ignore stop */}
                   </div>
                 </div>
@@ -2126,9 +2134,6 @@ agenfk update-project <id> --setup-command "npm ci"`}
                       </CardAnimationWrapper>
                     ))}
                   </AnimatePresence>
-                <button onClick={() => setSelectedItem(blankDraft(selectedProjectId!, status as Status))} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-sm font-medium hover:border-border-brand hover:text-accent-text hover:bg-chip transition-all flex items-center justify-center gap-2">
-                  <Plus size={16} /> Add {columnLabel.toLowerCase()}
-                </button>
               </div>
             </div>
             );
@@ -2220,9 +2225,6 @@ agenfk update-project <id> --setup-command "npm ci"`}
                           />
                         ))}
                       </AnimatePresence>
-                    <button onClick={() => setSelectedItem(blankDraft(selectedProjectId!, Status.BLOCKED))} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-xs font-medium hover:border-red-300 dark:hover:border-red-700 hover:text-red-500 dark:hover:text-red-400 transition-all flex items-center justify-center gap-2 mt-2">
-                      <Plus size={16} /> Add blocked
-                    </button>
                   </div>
                 </div>
               )}
