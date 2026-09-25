@@ -45,7 +45,7 @@ const code = (check, name, expected, { params, work = {}, ...opts } = {}) => ({
   check, name, expected,
   opts: { steps: steps({ specs: RED_SPECS, code: [{ id: check, ...(params ? { params } : {}) }] }), at: 'CODE', work: { SPECS: addRed, ...work }, ...opts },
 });
-const noReport = { project: { testReport: false } };
+const noReport = { project: { testReport: false }, passEntryHold: true };
 
 // dotnet: a test file that does not compile fails the whole build, so there is
 // no report to read at all - the capture is unusable, and a blocking check
@@ -66,6 +66,12 @@ const cases = [
   specs('no-broken-test-files', 'passes when every test file loads', 'pass', { work: { SPECS: addRed } }),
   specs('no-broken-test-files', 'blocks a test file that fails to load', { default: 'fail', ...BROKEN_DOTNET }, { work: { SPECS: addBroken } }),
   specs('no-broken-test-files', 'blocks when there is no test report', 'unavailable', { ...noReport, work: { SPECS: addRed } }),
+
+  // entry-baseline (5a8d22e6): the server's hold on the way INTO a step whose blocking checks need a per-test baseline
+  { check: 'entry-baseline', name: 'holds the card on the way into a step whose blocking checks need per-test results the project cannot record', expected: 'unavailable',
+    opts: { steps: steps({ specs: [{ id: 'new-tests-exist' }] }), at: 'TODO', project: { testReport: false } } },
+  { check: 'entry-baseline', name: 'does not hold it when those checks would only warn there', expected: 'absent',
+    opts: { steps: steps({ specs: [{ id: 'new-tests-born-green' }] }), at: 'TODO', project: { testReport: false } } },
 
   // new-tests-exist
   specs('new-tests-exist', 'passes when a test was added', 'pass', { work: { SPECS: addRed } }),

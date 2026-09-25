@@ -201,6 +201,8 @@ defines none, so this is the common case — empty criteria never mean "no work"
    4. Retry `agenfk verify <itemId> --evidence "<evidence>"`.
    5. Only if no config files exist and the stack cannot be detected, ask the developer.
 
+   If verify reports `NO_TEST_REPORT`, per-test results the project does not record are needed - by the step's checks, or by the step the card is entering (its baseline is recorded on the way in) - and that is yours to fix, not a person's to override: run the `agenfk update-project` command the refusal gives (built from the project's own verify command), add the report path to `.gitignore` if the refusal says it is not ignored, and run the same verify again. Where it gives no command, set a report for the project's runner yourself (`vitest-json`, or `junit-xml` from any runner that writes JUnit XML); only a runner that can write neither is a reason to ask a person to pass the check on the board.
+
 **Stage this item's work before that final verify.** The DONE transition makes a
 `close(<type>)` commit of whatever is in the git index, and the server stages nothing for
 you — `git add` the files belonging to THIS item (new files included; they are the ones

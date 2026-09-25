@@ -9,6 +9,7 @@ import { insideRoot, parseJunitXml, parseVitestJson, surfaceOf } from './stepRec
 import { parseActor, parseFindings, readTranscriptIdentity } from './reviewRecords';
 import * as passkeys from './passkeys';
 import { argvHash, awaitsPersonApproval, judgeCommandChecks, type CommandApproval } from './commandChecks';
+import { suggestTestReport } from './testReportHint';
 import { countedApproval, evaluateChecks, judgeReview, formatCheckResults, needsCapture, needsEntryRecord, parseAgentReports, type AgentReport, type CheckResult } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
@@ -2943,7 +2944,8 @@ app.post("/items/:id/overrides", limitExpensive, asyncHandler(async (req: any, r
   const target = await gateTarget(req, res);
   if (!target) return;
   const { item, flow } = target;
-  if (!resolveStepChecks(flow.steps, item.status).some(c => c.id === checkId)) {
+  // The server's own entry hold is no flow check, but a person may pass it like one (5a8d22e6 review).
+  if (checkId !== ENTRY_BASELINE && !resolveStepChecks(flow.steps, item.status).some(c => c.id === checkId)) {
     return res.status(400).json({ error: `Step ${item.status} does not run the check '${checkId}'.` });
   }
   const last = item.lastChecks;
@@ -6279,6 +6281,9 @@ function awaitingPersonCommands(resolved: ReturnType<typeof resolveStepChecks>, 
   return resolved.filter(c => c.applicable && c.id.startsWith('command-check:') && awaitsPersonApproval(c, approvals));
 }
 
+/** 5a8d22e6: the server's own hold for a per-test entry baseline the project cannot record. */
+const ENTRY_BASELINE = 'entry-baseline';
+
 async function runStepGate(item: any, flow: { steps: any[] }, root: string | null, actor?: { client: string; sessionId: string; agentId: string | null } | null, agentReports?: Record<string, AgentReport>, opts?: { personFirst?: boolean; run?: ValidateRun }): Promise<StepGate> {
   const sorted = sortedFlowSteps(flow as any);
   const index = sorted.findIndex(st => st.name === item.status);
@@ -6319,7 +6324,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const here = records.filter(r => r?.step === item.status);
   const approvals = approvalsAt({ stepRecords: here }, item.status);
   const inheritedApprovals = resolved.some(c => c.id === 'human-approval' && c.applicable) ? await ancestorApprovals(item, item.status) : [];
-  const overrides: Record<string, { id: string; by: string; at: string; reason: string }> = {};
+  const overrides: Record<string, { id: string; by: string; at: string; reason: string; detail?: string }> = {};
   // On a step that asks for a passkey, only signed overrides lift a check.
   const signedOnly = stepWantsPasskey(flow as Flow, item.status);
   for (const r of here) if (r.kind === 'override' && typeof r.check === 'string' && (!signedOnly || r.authority === 'passkey')) overrides[r.check] = { id: String(r.id), by: String(r.by ?? 'board'), at: String(r.at), reason: String(r.reason ?? ''), ...(typeof r.detail === 'string' ? { detail: r.detail } : {}) };
@@ -6360,6 +6365,26 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     inheritedApprovals,
     overrides,
   });
+  /*
+   * 5a8d22e6 review: the step being ENTERED judges its tests against the
+   * per-test results recorded now. With no test report there are none, and
+   * setting one later cannot bring them back - those checks would only ever
+   * warn on this card. So the card is held HERE, where setting the report and
+   * verifying again records a baseline its next step can use.
+   */
+  // Only for checks that would BLOCK there: a warn-only one never held a card (review).
+  if (!opts?.personFirst && next && capture && capture.available === false && !capture.parseError && !project?.testReport
+    && needsEntryRecord(resolveStepChecks(flow.steps, next.name).filter(c => c.severity === 'block'))) {
+    const detail = `${next.name} judges its tests against the per-test results recorded as the card enters it, and this project records none`;
+    // A person can still pass it with a reason (a runner that cannot write a report): no card is stranded.
+    const o = overrides[ENTRY_BASELINE];
+    const overridden = o && (o.detail === undefined || o.detail === detail) ? o : undefined;
+    outcome.results.push({
+      id: ENTRY_BASELINE, step: item.status, source: 'universal', severity: 'block', params: {}, outcome: 'unavailable', blocking: !overridden, detail,
+      ...(overridden ? { overridden } : { meta: { code: 'NO_TEST_REPORT' } }),
+    } as any);
+    if (!overridden) outcome.blocked = true;
+  }
   const at = new Date().toISOString();
   const latest: any = await storage.getItem(item.id);
   const made = outcome.blocked ? [] : Object.entries(outcome.produced).map(([name, value]) => ({ step: item.status, kind: 'record', name, value, at, head: null, clean: false }));
@@ -6375,8 +6400,30 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
 }
 
 /** Refuse a transition on the step's checks, in verify's failure shape plus `checks[]`. */
+/**
+ * 5a8d22e6 — checks held up only because the project records no per-test
+ * results: the agent's to fix, not a person's to override. One line, with the
+ * command that fixes it where the project's runner makes it certain.
+ */
+async function noTestReportFix(item: any, gate: StepGate): Promise<{ line: string; fix: string | null } | null> {
+  if (!gate.results.some(r => r.blocking && (r as any).meta?.code === 'NO_TEST_REPORT')) return null;
+  const project: any = await storage.getProject(item.projectId);
+  const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
+  let scripts: Record<string, string> = {};
+  try { if (root) scripts = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).scripts ?? {}; } catch { /* not a node project */ }
+  const s = suggestTestReport(String(project?.verifyCommand ?? ''), scripts);
+  const fix = s ? `agenfk update-project ${item.projectId} --test-report-format ${s.format} --test-report-command "${s.command.replace(/(["\\$`])/g, '\\$1')}" --test-report-path ${s.reportPath}` : null;
+  // check-ignore exits 1 for "not ignored"; anything else (not a repository, git failed) says nothing.
+  const ignored = !(s && root) || spawnSync('git', ['-C', root, 'check-ignore', '-q', s.reportPath], { stdio: 'ignore', timeout: 5000 }).status !== 1;
+  const line = fix
+    ? `🔧 NO_TEST_REPORT: per-test results are needed (by these checks, or by the step the card is entering) and this project records none. Set a test report, then run the same agenfk verify again:\n   ${fix}${ignored ? '' : `\n   ⚠️ ${s!.reportPath} is not ignored by git: add it to .gitignore, or every report leaves the tree dirty.`}`
+    : `🔧 NO_TEST_REPORT: per-test results are needed (by these checks, or by the step the card is entering) and this project records none. Set a test report for its runner - agenfk update-project ${item.projectId} --test-report-format vitest-json|junit-xml --test-report-command "<a command that writes the report>" --test-report-path <where it is written> - then run the same agenfk verify again.`;
+  return { line, fix };
+}
+
 async function refuseOnChecks(res: any, item: any, gate: StepGate) {
   const text = formatCheckResults(gate.results);
+  const noReport = await noTestReportFix(item, gate);
   const fresh: any = await storage.getItem(item.id);
   await storage.updateItem(item.id, { comments: [...(fresh?.comments ?? []), { id: uuidv4(), author: 'ValidateTool', content: `### Checks FAILED\n\n**Step**: ${item.status} (advance refused — the card stays here)\n\n${text}`, timestamp: new Date() }] });
   io.emit('items_updated');
@@ -6388,8 +6435,9 @@ async function refuseOnChecks(res: any, item: any, gate: StepGate) {
   });
   return res.status(422).json({
     status: item.status,
-    message: `❌ Checks failed: the card cannot leave ${item.status} yet.\n\n${text}${staysOn(item.status)}`,
+    message: `❌ Checks failed: the card cannot leave ${item.status} yet.\n\n${noReport ? `${noReport.line}\n\n` : ''}${text}${staysOn(item.status)}`,
     checks: gate.results,
+    ...(noReport ? { error: 'NO_TEST_REPORT', fix: noReport.fix } : {}),
   });
 }
 
@@ -6403,6 +6451,9 @@ function runRecorder(run: ValidateRun) {
       run.itemStatus = payload?.status;
       run.message = payload?.message;
       if (Array.isArray(payload?.checks)) run.checks = payload.checks;
+      // 5a8d22e6: a named cause and its fix reach whoever follows the run, not only a sync caller.
+      if (typeof payload?.error === 'string') (run as any).error = payload.error;
+      if (payload && 'fix' in payload) (run as any).fix = payload.fix;
       // Keep the live full output when we have it; fall back to the preview.
       if (!run.output && payload?.output) run.output = payload.output;
       run.finishedAt = new Date();

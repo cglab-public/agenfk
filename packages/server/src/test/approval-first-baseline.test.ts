@@ -55,15 +55,17 @@ let seq = 0;
 const s = (name: string, order: number, extra: Record<string, unknown> = {}) => ({ id: `${name}-${order}`, name, label: name, order, ...extra });
 
 /**
- * START -> PLAN (a person's go-ahead, plus `planChecks`) -> TESTS (reads the
- * entry record) -> END. The verify command appends a line to a file OUTSIDE
+ * START -> PLAN (a person's go-ahead, the suite, plus `planChecks`) -> TESTS -> END.
+ * PLAN's suite-green makes leaving it capture - the capture the reuse is about.
+ * (A step whose checks read a PER-TEST entry baseline is held earlier on a
+ * project without a test report, 5a8d22e6; that is tested there.) The verify command appends a line to a file OUTSIDE
  * the repository, so every run is counted and none dirties the tree.
  */
 async function setup(planChecks: unknown[] = []) {
   const f = await agent().post('/flows').send({ name: `af-${++seq}`, steps: [
     s('START', 0, { isAnchor: true }),
-    s('PLAN', 1, { role: 'planning', checks: [{ id: 'human-approval' }, ...planChecks] }),
-    s('TESTS', 2, { role: 'planning', checks: [{ id: 'existing-tests-still-green' }] }),
+    s('PLAN', 1, { role: 'planning', checks: [{ id: 'human-approval' }, { id: 'suite-green' }, ...planChecks] }),
+    s('TESTS', 2, { role: 'planning' }),
     s('END', 3, { isAnchor: true }),
   ] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
@@ -121,7 +123,7 @@ describe('961f301d (2): a missing approval is answered first', () => {
   });
 
   it('still judges the cheap checks, so a person can see and override them while approving; slow ones are deferred', async () => {
-    const t = await setup([{ id: 'jira-key-valid' }, { id: 'suite-green' }]);
+    const t = await setup([{ id: 'jira-key-valid' }]);
     const res = await validate(t.id);
     expect(res.status, JSON.stringify(res.body)).toBe(422);
     expect(blockingIds(res.body.checks).sort()).toEqual(['human-approval', 'jira-key-valid']);
@@ -331,9 +333,6 @@ describe('961f301d review 2: a green belongs to the tree it ran in', () => {
     // 2. A card closes through verify: its green is stamped with the clean commit.
     const closing = await agent().post('/items').send({ type: 'TASK', title: `af-close-${++seq}`, projectId: t.pid });
     await storage.updateItem(closing.body.id, { status: 'TESTS' } as any);
-    // (This toy flow's TESTS step wants a per-test report the project has not got: a person passes that check.)
-    expect((await validate(closing.body.id)).status).toBe(422);
-    expect((await agent().post(`/items/${closing.body.id}/overrides`).set(board()).send({ checkId: 'existing-tests-still-green', reason: 'toy project, no report' })).status).toBe(201);
     const done = await validate(closing.body.id);
     expect(done.status, JSON.stringify(done.body)).toBe(200);
     expect((await item(closing.body.id)).tests.find((x: any) => x.commit)).toBeDefined();

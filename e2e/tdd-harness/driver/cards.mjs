@@ -149,8 +149,12 @@ export async function checkOnWork(checkId, { params, project: projectOpts = {}, 
  * checks at all and only then gives the steps theirs, so the card is on `at`
  * with no entry record and no records from earlier steps: a card that
  * predates checks.
+ *
+ * `passEntryHold: true` plays the person who, on a project with no test
+ * report, passes the server's `entry-baseline` hold (5a8d22e6) on the way in,
+ * so the scenario can see the step's own verdict without one.
  */
-export async function walk(checkId, { steps, at, runner = 'node', project: projectOpts = {}, card: cardOpts = {}, before, work = {}, predates = false, command } = {}) {
+export async function walk(checkId, { steps, at, runner = 'node', project: projectOpts = {}, card: cardOpts = {}, before, work = {}, predates = false, command, passEntryHold = false } = {}) {
   const project = await newProject({ steps: predates ? steps.map(({ checks, role, ...s }) => s) : steps, runner, ...projectOpts });
   const k = kit(runner);
   const id = await newCard(project, cardOpts);
@@ -159,7 +163,13 @@ export async function walk(checkId, { steps, at, runner = 'node', project: proje
   const order = [...steps].sort((x, y) => x.order - y.order).map(s => s.name);
   for (const step of order.slice(0, order.indexOf(at))) {
     if (work[step]) await work[step](ctx);
-    const r = await verify(id);
+    let r = await verify(id);
+    const held = r.status === 422 && (r.body?.checks ?? []).filter(x => x.blocking).every(x => x.id === 'entry-baseline');
+    if (held && passEntryHold) {
+      const o = await api('POST', `/items/${id}/overrides`, { checkId: 'entry-baseline', reason: 'harness: no test report on purpose' }, { board: true });
+      if (o.status !== 201) throw new Error(`entry-baseline override refused (${o.status}): ${JSON.stringify(o.body)}`);
+      r = await verify(id);
+    }
     const c = await card(id);
     if (r.status !== 200 || c.status === step) throw new Error(`${step} -> next refused (${r.status}): ${JSON.stringify(r.body).slice(0, 400)}`);
   }

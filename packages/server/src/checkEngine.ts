@@ -52,6 +52,8 @@ export interface CheckMeta {
   waiting?: { kind: 'command-approval'; hash: string; command: string };
   reported?: boolean;
   note?: string;
+  /** 5a8d22e6: a cause the refusal names once, with its fix, for every check it holds up. */
+  code?: 'NO_TEST_REPORT';
 }
 
 /** The coding agent's report of one agent check (efcacdeb). */
@@ -184,16 +186,17 @@ type Evaluator = (ctx: EngineContext, params: Record<string, string>) => Verdict
 const LISTED = 5;
 const list = (xs: readonly string[]) => xs.slice(0, LISTED).join(' | ') + (xs.length > LISTED ? ` | …and ${xs.length - LISTED} more` : '');
 
+/** The no-report detail before 5a8d22e6, which overrides given earlier were matched against. */
+const LEGACY_NO_REPORT_DETAIL = 'per-test results are unavailable: this project has no test report set (agenfk update-project <id> --test-report-format vitest-json|junit-xml ...), so only the exit code is known';
+
 /** Per-test results of this verify's capture, or why there are none. */
 function currentTests(ctx: EngineContext): { tests: ReportedTest[]; capture: CaptureRecord } | Verdict {
   const c = ctx.capture;
   if (!c) return { outcome: 'unavailable', detail: ctx.captureError ?? 'no test report was captured' };
   if (!c.available || !c.tests) {
-    return {
-      outcome: 'unavailable',
-      detail: c.parseError
-        ?? 'per-test results are unavailable: this project has no test report set (agenfk update-project <id> --test-report-format vitest-json|junit-xml ...), so only the exit code is known',
-    };
+    if (c.parseError) return { outcome: 'unavailable', detail: c.parseError };
+    // The fix is named once, in the refusal (5a8d22e6), not in every check it holds up.
+    return { outcome: 'unavailable', detail: 'no per-test results: this project has no test report set, so only the exit code is known', meta: { code: 'NO_TEST_REPORT' } };
   }
   return { tests: c.tests, capture: c };
 }
@@ -577,7 +580,8 @@ export function evaluateChecks(resolved: readonly ResolvedCheck[], ctx: EngineCo
     // A person's override lifts the block; the verdict itself stays on record.
     // It covers the verdict it was given against: a different failure needs its own.
     const o = blocks ? ctx.overrides?.[c.id] : undefined;
-    const overridden = o && (o.detail === undefined || o.detail === verdict.detail) ? o : undefined;
+    // 5a8d22e6 changed the no-report detail: an override given against the old wording still covers it.
+    const overridden = o && (o.detail === undefined || o.detail === verdict.detail || (verdict.meta?.code === 'NO_TEST_REPORT' && o.detail === LEGACY_NO_REPORT_DETAIL)) ? o : undefined;
     results.push({ ...base, outcome: verdict.outcome, detail: verdict.detail, blocking: blocks && !overridden, ...(overridden ? { overridden } : {}), ...(c.id.startsWith('agent-check:') ? { agentReported: true } : {}), ...(verdict.meta ? { meta: verdict.meta } : {}) });
     if (verdict.outcome === 'pass' && verdict.produces) Object.assign(produced, verdict.produces);
   }
