@@ -2,9 +2,9 @@
 
 All notable changes to AgEnFK are documented here.
 
-## [2.0.0-beta.2] — 2026-09-24
+## [2.0.0-beta.2] — 2026-09-25
 
-Beta, cumulative over `2.0.0-beta.1`: everything in beta.1, plus the fixes below.
+Beta, cumulative over `2.0.0-beta.1`: everything in beta.1, plus the changes below.
 
 ### Dark and light mode
 
@@ -30,6 +30,65 @@ Beta, cumulative over `2.0.0-beta.1`: everything in beta.1, plus the fixes below
   (`items_closed`, the Org and User pages) were low; expect them to rise after upgrading. (On a flow with a
   review step the roll-up stops a parent there, and the parent's own verify closes it - that was counted
   already.) Every step move verify makes now reaches the hub as `step.transitioned`, not only command runs.
+
+### Checks on the board
+
+- **A Checks tab on every card** lists its check runs, approvals and overrides by date, with each check's status.
+  The server keeps every verify's check results on the card (bounded) and serves them with the approvals.
+- **Each column shows its step's role** under the step name.
+- **`agenfk verify` waits for a person.** When the only thing holding a card is a person's approval - of the step,
+  or of a command a custom check wants to run - verify opens the board on the card's Overview (where the approval
+  is given) and waits up to 9 minutes, then verifies again by itself. `--no-wait`, `CI` or `AGENFK_NO_BROWSER=1`
+  turn it off; `--wait-minutes <n>` changes the wait. It wakes only for the approval it is waiting on, and stops
+  if a person moves the card on the board meanwhile.
+- **`agenfk ui --open <id> --details`** opens the card itself on its Overview tab instead of only highlighting it.
+  Every "a person must approve this" hint now gives that form.
+
+### Custom checks
+
+- **Two new check kinds a flow step can carry**: a *command check* (an argv list the server runs in the card's
+  tree, without a shell; it passes on exit 0, can ask for a person's passkey approval of the exact command, and
+  never runs from a flow installed from the community registry) and an *agent check* (an instruction the coding
+  agent carries out and reports). The flow editor adds and edits both.
+- **Agents report agent checks with `agenfk verify <id> --check <name>=pass|fail --check-note <name>=<text>`**
+  (repeatable; MCP: `validate_progress` with `agentChecks`). A malformed flag is refused before anything is sent.
+- **The PR body gets a Custom checks section**: each result, whether the server ran it or took the agent's word,
+  and who approved a command. A command that never ran, an override and an unreported agent check say so.
+
+### Where the suite runs
+
+- **A flow can run the project's suite once, at the top-level card** (`verifyAt: parent`, a flow-level setting;
+  a toggle in the flow editor, a field on the MCP flow tools). A card whose parent is still open then closes
+  without its own run, and the parent's final verify runs the suite over everything its children did. A child
+  whose parent has already finished, is paused or blocked, lives in another project, or whose work is in another
+  worktree runs its own; so does a child whose parent's verify is already running. The roll-up never closes a
+  parent a child deferred to - its own verify has to run - even if the flow is switched back to `leaf`. The default
+  (`leaf`) is unchanged: every card runs it. Carried by registry install/publish and the hub flow sync.
+- Known limits: a parent trashed, deleted or detached after children deferred to it leaves those children DONE
+  without a suite run; and a synchronous REST verify of the parent is not guarded against a child deferring
+  meanwhile (the CLI and MCP always verify asynchronously, which is guarded).
+
+### Claims
+
+- **Claims lock files only between cards in the same worktree.** Cards in different worktrees meet at worst as a
+  merge conflict, so a claim no longer refuses them; a card whose worktree cannot be told stays strict. (Claims
+  mechanism: 819e7192.)
+- **A card does not close with ownerless staged files.** The move that ends a card's flow is refused while files
+  are staged outside its claims that no other card in the same worktree claims; the reply lists them and gives
+  the `--claims` or `git restore --staged` fix. A working card in that worktree that claims nothing may own them,
+  so then it is a note instead. A step that must commit refuses the same way. Cards without claims are unaffected.
+
+### Test reports (JUnit)
+
+- JUnit reports from `node:test`, pytest and xUnit are read correctly: a file that fails to load or a pytest
+  collection error is a broken file (not a new red test), and errors are no longer read as assertion failures.
+- **`node:test` and xUnit projects must declare their test paths** (`agenfk update-project <id> --test-report-surface <paths>`): their JUnit reports
+  name no file, so without it the test surface is empty and the surface-freeze check cannot see edits.
+
+### Contributors
+
+- `npm run e2e:tdd` builds this tree's server and CLI into a container with a temp HOME and walks a full TDD
+  cycle through every check, the human gates (a software WebAuthn authenticator) and the review record.
 
 ### Security
 
