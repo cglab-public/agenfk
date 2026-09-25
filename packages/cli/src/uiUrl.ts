@@ -45,11 +45,20 @@ export function resolveDashboardUrl(rootDir: string): string {
  * the id into the box). `&project=<projectId>` — appended only when a
  * project resolves — makes the board open on the project the item belongs to,
  * since the board's default project otherwise comes from localStorage.
+ * `&view=overview` makes the board also open the card, on Overview: where a
+ * person approves a step (c8e35fb8).
  */
-export function buildUiOpenUrl(base: string, itemId: string, projectId?: string | null): string {
+export function buildUiOpenUrl(
+  base: string,
+  itemId: string,
+  projectId?: string | null,
+  /** `view: 'overview'` opens the card itself on its Overview tab (c8e35fb8). */
+  opts: { view?: 'overview' } = {},
+): string {
   const params = new URLSearchParams();
   params.set('item', itemId);
   if (projectId) params.set('project', projectId);
+  if (opts.view) params.set('view', opts.view);
   const separator = base.includes('?') ? '&' : '?';
   return `${base}${separator}${params.toString()}`;
 }

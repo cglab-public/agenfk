@@ -965,8 +965,9 @@ program
   .command('ui')
   .description('Open the dashboard: the desktop app when there is one, otherwise the browser')
   .option('--open <itemId>', 'Open the dashboard with that item highlighted (deep-links the Search Box to the item id)')
+  .option('--details', 'With --open: open the card itself, on its Overview tab (where a step is approved), instead of only highlighting it')
   .option('--web', 'Force the browser, even when the desktop app is installed or running')
-  .action(async (options: { open?: string; web?: boolean }) => {
+  .action(async (options: { open?: string; web?: boolean; details?: boolean }) => {
     console.log(chalk.cyan('🌐 Opening UI...'));
 
     const rootDir = path.resolve(__dirname, '../../..');
@@ -989,7 +990,7 @@ program
       // NOT FOUND for a perfectly valid item.
       let projectId = await resolveItemProjectId(itemId);
       if (!projectId) projectId = findProjectId(process.cwd());
-      uiUrl = buildUiOpenUrl(base, itemId, projectId);
+      uiUrl = buildUiOpenUrl(base, itemId, projectId, options.details ? { view: 'overview' } : {});
     }
 
     console.log(chalk.white(`Dashboard: ${uiUrl}`));
@@ -3966,14 +3967,15 @@ program
       console.error(chalk.red(`\n❌ ${r.message || 'Validation failed.'}`));
       if (!onlyApprovalBlocks(r.checks)) { process.exit(1); return; }
       if (!canWait) {
-        console.error(chalk.yellow(`A person must approve this step on the board: agenfk ui --open ${targetId}`));
+        console.error(chalk.yellow(`A person must approve this step on the board: agenfk ui --open ${targetId} --details`));
         process.exit(1);
         return;
       }
       let before: { step?: string; approvals?: unknown[] } | null = null;
       try { before = await gatesNow(); } catch { /* the wait polls again */ }
       if (!opened) {
-        spawnSync(process.execPath, [process.argv[1], 'ui', '--open', targetId], { stdio: 'inherit' });
+        // --details: the approval is given on the card's Overview, so open it there.
+        spawnSync(process.execPath, [process.argv[1], 'ui', '--open', targetId, '--details'], { stdio: 'inherit' });
         opened = true;
       }
       console.log(chalk.cyan(`⏳ Waiting up to ${waitMinutes} min for a person to approve ${before?.step ?? 'this step'} on the board…`));
@@ -3986,7 +3988,7 @@ program
         deadlineMs: waitMinutes * 60_000,
       });
       if (outcome === 'timeout') {
-        console.error(chalk.yellow(`Still waiting for a person's approval (agenfk ui --open ${targetId}). Once it is given, run the same agenfk verify again: it waits again and carries on.`));
+        console.error(chalk.yellow(`Still waiting for a person's approval (agenfk ui --open ${targetId} --details). Once it is given, run the same agenfk verify again: it waits again and carries on.`));
         process.exit(1);
         return;
       }

@@ -106,6 +106,15 @@ describe('buildUiOpenUrl', () => {
     expect(decoded).toBe('a b&c');
   });
 
+  it('asks the board to open the card on Overview when view is given (c8e35fb8)', () => {
+    const url = buildUiOpenUrl(base, 'abc-123', 'proj-1', { view: 'overview' });
+    expect(new URLSearchParams(url.split('?')[1]).get('view')).toBe('overview');
+  });
+
+  it('carries no view by default: a plain --open only highlights', () => {
+    expect(buildUiOpenUrl(base, 'abc-123', 'proj-1')).not.toContain('view=');
+  });
+
   it('joins with & when the base URL already carries a query string', () => {
     expect(buildUiOpenUrl('http://localhost:5173?theme=dark', 'abc-123', 'proj-1')).toBe(
       'http://localhost:5173?theme=dark&item=abc-123&project=proj-1'
@@ -117,6 +126,11 @@ describe('agenfk ui --open command', () => {
   it('declares the --open <itemId> option', () => {
     const longs = uiCommand().options.map((o: any) => o.long);
     expect(longs).toContain('--open');
+  });
+
+  it('declares --details, which opens the card instead of only highlighting it', () => {
+    const longs = uiCommand().options.map((o: any) => o.long);
+    expect(longs).toContain('--details');
   });
 });
 
@@ -173,6 +187,21 @@ describe('agenfk ui --open browser launch', () => {
     // contract under test is the query string, not the port.
     expect(urls.every((u) => u.startsWith('http://localhost:'))).toBe(true);
     expect(urls[0]).toContain('?item=item-123&project=proj-1');
+  });
+
+  it('--details adds view=overview to the launched URL', async () => {
+    realCwd = process.cwd();
+    tmpCwd = makeTmpDir('agenfk-ui-open-cwd-');
+    process.chdir(tmpCwd);
+    try {
+      await program.parseAsync(['node', 'agenfk', 'ui', '--web', '--open', 'item-789', '--details']);
+    } finally {
+      // Commander keeps option values on the shared program between parses.
+      uiCommand().setOptionValue('details', undefined);
+    }
+    const urls = launchedUrls().filter((u) => u.includes('?item=item-789'));
+    expect(urls.length).toBeGreaterThan(0);
+    expect(new URLSearchParams(urls[0].split('?')[1]).get('view')).toBe('overview');
   });
 
   it('launches with only ?item when no project resolves (server unreachable, no cwd project)', async () => {

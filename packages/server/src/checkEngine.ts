@@ -453,7 +453,7 @@ export const EVALUATORS: Record<string, Evaluator> = {
     const up = p.appliesTo === 'every-card' ? undefined : (ctx.inheritedApprovals ?? []).filter(counts)[0];
     if (up) return { outcome: 'pass', detail: `approved with its parent ${up.from.slice(0, 8)} on the board at ${up.at}` };
     const how = p.signature === 'passkey' ? ', signed with a passkey' : '';
-    return { outcome: 'fail', detail: `waiting for a person to approve this step on the board${how} (agenfk ui --open ${ctx.item.id}). An agent cannot approve.` };
+    return { outcome: 'fail', detail: `waiting for a person to approve this step on the board${how} (agenfk ui --open ${ctx.item.id} --details). An agent cannot approve.` };
   },
 
   // efcacdeb: carried out by the coding agent and reported on verify; the server takes its word, labelled.

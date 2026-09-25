@@ -1318,6 +1318,14 @@ export const KanbanBoard: React.FC = () => {
     deepLinkAppliedRef.current = true;
     setSearchTerm(itemId);
     runSearch(itemId);
+    // ?view=overview (c8e35fb8): open the card itself, on Overview - where a
+    // person approves a step - not only highlight it. Exact id or unique prefix.
+    if (getUrlParam('view') === 'overview') {
+      const want = itemId.toLowerCase();
+      const hits = items.filter((i: AgEnFKItem) => i.id.toLowerCase().startsWith(want));
+      const card = hits.find((i: AgEnFKItem) => i.id.toLowerCase() === want) ?? (hits.length === 1 ? hits[0] : undefined);
+      if (card) setSelectedItem(card);
+    }
     stripDeepLinkParams();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, isLoadingFlow, activeFlow]);

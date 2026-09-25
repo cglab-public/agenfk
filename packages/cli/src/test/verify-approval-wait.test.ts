@@ -110,6 +110,8 @@ describe('verify waits for a person\'s approval', () => {
     await program.parseAsync(['node', 'agenfk', 'verify', FULL_ID, '--evidence', 'scope agreed']);
     expect(opened()).toHaveLength(1);
     expect(opened()[0][1]).toEqual(expect.arrayContaining(['ui', '--open', FULL_ID]));
+    // c8e35fb8: the approval is given on the card's Overview, so open the card there.
+    expect(opened()[0][1]).toContain('--details');
     expect(mockedAxios.post).toHaveBeenCalledTimes(2);
     expect(exitSpy).not.toHaveBeenCalledWith(1);
     expect(out()).toMatch(/Approved on the board/);
@@ -129,7 +131,7 @@ describe('verify waits for a person\'s approval', () => {
     await program.parseAsync(['node', 'agenfk', 'verify', FULL_ID, '--evidence', 'x', '--no-wait']);
     expect(opened()).toHaveLength(0);
     expect(exitSpy).toHaveBeenCalledWith(1);
-    expect(out()).toContain(`agenfk ui --open ${FULL_ID}`);
+    expect(out()).toContain(`agenfk ui --open ${FULL_ID} --details`);
   });
 
   it('in CI, neither opens a browser nor waits', async () => {
