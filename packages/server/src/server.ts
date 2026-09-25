@@ -10,7 +10,7 @@ import * as passkeys from './passkeys';
 import { argvHash, judgeCommandChecks, type CommandApproval } from './commandChecks';
 import { evaluateChecks, judgeReview, formatCheckResults, needsCapture, needsEntryRecord, parseAgentReports, type AgentReport, type CheckResult } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave } from "@agenfk/core";
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -997,6 +997,83 @@ export async function effectiveWorktreePath(
 async function withEffectiveWorktree<T extends object>(item: T): Promise<T> {
   const wt = await effectiveWorktreePath(item as any);
   return wt ? { ...item, worktreePath: wt } : item;
+}
+
+/**
+ * Every card in a project as a claim holder, carrying the tree it works in
+ * (aaa01834). Claims are per worktree: `gateOnClaims` compares a card only
+ * with holders in its own tree, and an unknown tree stays strict. One listing,
+ * resolved in memory, rather than a storage round-trip per ancestor.
+ */
+async function claimHoldersIn(projectId: string, projectRoot: string | null | undefined): Promise<{ holders: ClaimHolder[]; treeOf: (item: any) => string | null }> {
+  const all: any[] = (await storage.listItems({ projectId, limit: 1_000_000 } as any)) as any;
+  const byId = new Map<string, any>(all.map(i => [i.id, i]));
+  /*
+   * A card moved to another project keeps its parentId (move takes only
+   * descendants), and verify commits in THAT parent's worktree
+   * (effectiveWorktreePath reads any project). Resolve the same way, or claims
+   * and strays would be judged against a tree the commit never touches.
+   */
+  for (let round = 0; round < 32; round++) {
+    const missing = [...new Set([...byId.values()].map(i => i.parentId).filter((id: any) => id && !byId.has(id)))] as string[];
+    if (!missing.length) break;
+    for (const id of missing) {
+      const parent = await storage.getItem(id);
+      byId.set(id, parent ?? { id });
+    }
+  }
+  const treeOf = (item: any) => claimTreeOf(item, id => byId.get(id), projectRoot ?? null);
+  return { holders: all.map(i => ({ id: i.id, status: String(i.status), claims: i.claims, tree: treeOf(i) })), treeOf };
+}
+
+/**
+ * Staged files this card's close would leave behind with no owner (aaa01834).
+ *
+ * The close commit (and a step commit) takes only the card's claimed files.
+ * What else is staged is either another card's in the same tree - theirs, left
+ * alone - or nobody's, and a nobody's file sitting in the index after DONE is
+ * how a dirty tree reaches the next agent. Empty for a card that claims
+ * nothing, and when the index cannot be read: the commit then reports that.
+ */
+async function strayStagedFor(
+  item: any,
+  projectRoot: string | null | undefined,
+  isWorking: (status: string) => boolean,
+): Promise<{ strays: string[]; claimless: string[] }> {
+  const none = { strays: [], claimless: [] };
+  if (!Array.isArray(item?.claims) || !item.claims.length) return none;
+  const root = resolveCommitRoot(await withEffectiveWorktree(item), projectRoot).root;
+  if (!root) return none;
+  // --no-renames: with rename detection `--name-only` prints only a rename's
+  // DESTINATION, and the staged deletion of its source would be left behind
+  // unseen - exactly the ownerless file this looks for.
+  const listed = await git(['diff', '--cached', '--name-only', '--no-renames', '-z'], root);
+  if (!listed.ok) return none;
+  const staged = listed.out.split('\0').filter(Boolean);
+  if (!staged.length) return none;
+  const { holders, treeOf } = await claimHoldersIn(item.projectId, projectRoot);
+  const me = { id: item.id, claims: item.claims, tree: treeOf(item) };
+  const strays = strayStaged(staged, me, holders);
+  return { strays, claimless: strays.length ? claimlessNeighbours(me, holders, isWorking) : [] };
+}
+
+/** What an agent reads when strays stop it, and how to get past them. */
+function describeStrays(item: any, strays: readonly string[]): string {
+  const SHOWN = 20;
+  const list = strays.slice(0, SHOWN).map(f => `\`${f}\``).join(', ') + (strays.length > SHOWN ? ` and ${strays.length - SHOWN} more` : '');
+  // Every stray, not the ones listed: a partial command would be refused again.
+  const widened = [...(item.claims ?? []), ...strays].join(',');
+  return `Staged, but outside this card's claims and claimed by no other active card in this worktree: ${list}. `
+    + `The commit takes only claimed files, so these would stay staged with no owner. `
+    + `Claim them (\`agenfk update ${String(item.id).slice(0, 8)} --claims "${widened}"\`) or unstage them (\`git restore --staged <file>\`).`;
+}
+
+/** The note when a stray may belong to a card that claims nothing. */
+function describeUnowned(strays: readonly string[], claimless: readonly string[]): string {
+  const SHOWN = 20;
+  const list = strays.slice(0, SHOWN).map(f => `\`${f}\``).join(', ') + (strays.length > SHOWN ? ` and ${strays.length - SHOWN} more` : '');
+  return `Staged outside this card's claims, and not committed with it: ${list}. `
+    + `They may belong to ${claimless.map(id => String(id).slice(0, 8)).join(', ')}, which ${claimless.length === 1 ? 'works in this tree and claims' : 'work in this tree and claim'} nothing, so they are left staged for ${claimless.length === 1 ? 'it' : 'them'}.`;
 }
 
 /** realpath that canonicalises case on macOS; the input unchanged when it fails. */
@@ -5346,11 +5423,12 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
           + `safety it has not established.`,
       });
     }
-    const siblings = await storage.listItems({ projectId: currentItem.projectId, limit: 1_000_000 });
-    const gate = gateOnClaims(
-      { id: currentItem.id, claims },
-      siblings.map((i: any) => ({ id: i.id, status: i.status, claims: i.claims })),
-    );
+    // Per worktree (aaa01834): only cards in this card's tree can collide with it.
+    const claimProject = await storage.getProject(currentItem.projectId);
+    const { holders, treeOf } = await claimHoldersIn(currentItem.projectId, (claimProject as any)?.projectRoot);
+    // A PUT that also re-parents is judged in the tree the card is moving TO.
+    const movingTo = parentId !== undefined ? { ...currentItem, parentId: parentId === '' || parentId === null ? null : parentId } : currentItem;
+    const gate = gateOnClaims({ id: currentItem.id, claims, tree: treeOf(movingTo) }, holders);
     if (!gate.authorized) {
       return res.status(409).json({ error: gate.message });
     }
@@ -5904,9 +5982,11 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
 
   // In a shared worktree the tree holds other cards' work too (MULTI_AGENT.md):
   // what another active card has claimed is theirs, not this card's change.
-  const others: any[] = (await storage.listItems({ projectId: item.projectId, limit: 1_000_000 } as any)) as any;
-  const foreignClaims = others
-    .filter(o => o.id !== item.id && Array.isArray(o.claims) && stillHolds(String(o.status)))
+  // Only cards in THIS tree (aaa01834): a claim in another worktree says nothing about files here.
+  const { holders: claimHolders, treeOf: claimTree } = await claimHoldersIn(item.projectId, (project as any)?.projectRoot);
+  const hereTree = claimTree(item);
+  const foreignClaims = claimHolders
+    .filter(o => o.id !== item.id && Array.isArray(o.claims) && stillHolds(o.status) && sameClaimTree(hereTree, o.tree))
     .flatMap(o => o.claims as string[]);
   const reportPath = typeof project?.testReport?.reportPath === 'string' ? project.testReport.reportPath : null;
   // People's approvals and overrides of THIS step (CGLAB-382); a rollback over it dropped older ones.
@@ -6070,6 +6150,36 @@ async function handleValidateProgress(itemId: string, command: string | undefine
    * and then the transition - in the background run, exactly as it does the
    * command; a check that needs no capture only reads git and runs inline.
    */
+  /*
+   * aaa01834: the move that ENDS the flow is refused while staged files lie
+   * outside the card's claims and no other card in this tree claims them. The
+   * close commit takes only claimed files, so they would stay staged after
+   * DONE with nobody owning them. Refused with the card where it is.
+   *
+   * Unless a WORKING card in the same tree claims nothing (review): it is
+   * authorized everywhere, so the file may be its work, and both remedies the
+   * refusal offers would take that work from it. Then it is a note.
+   *
+   * Checked first - before the step's checks, which may run a whole suite -
+   * and again just before the move, because the index can change meanwhile.
+   */
+  const anchorNames = new Set(sorted.filter((st: any) => st.isAnchor).map((st: any) => String(st.name)));
+  const isWorkingStatus = (st: string) => !anchorNames.has(st);
+  const endsFlowHere = leavingEndsFlow(sorted as any, currentFlowStep.index);
+  const checkStrays = async (r0: any): Promise<{ refused: true } | { refused: false; res: any }> => {
+    if (!endsFlowHere) return { refused: false, res: r0 };
+    const { strays, claimless } = await strayStagedFor(item, (project as any)?.projectRoot, isWorkingStatus);
+    if (!strays.length) return { refused: false, res: r0 };
+    if (claimless.length) return { refused: false, res: withNote(r0, `⚠️ ${describeUnowned(strays, claimless)}`) };
+    r0.status(422).json({ status: item.status, message: `❌ The card cannot close yet. ${describeStrays(item, strays)}${staysOn(item.status)}` });
+    return { refused: true };
+  };
+  if (!opts?.gate) {
+    const early = await checkStrays(res);
+    if (early.refused) return;
+    res = early.res;
+  }
+
   let gate = opts?.gate;
   if (!gate && !(currentFlowStep.step.isAnchor && currentFlowStep.index !== 0)) {
     const nextName = sorted[currentFlowStep.index + 1]?.name;
@@ -6131,6 +6241,13 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const mode = stepCommitsOnLeave(sorted as any, item.status);
     if (!mode) return { res: r0 };
     const stepMessage = `step(${item.status}): ${item.title} [${item.id}]`;
+    // Read before the commit: afterwards the claimed files are gone from the index.
+    const { strays, claimless } = await strayStagedFor(item, (project as any)?.projectRoot, isWorkingStatus);
+    if (strays.length && !claimless.length && mode === 'required') {
+      r0.status(422).json({ status: item.status, message: `❌ This step requires a commit of the card's work when it leaves. ${describeStrays(item, strays)}${staysOn(item.status)}` });
+      return { refused: true };
+    }
+    const strayNote = strays.length ? `\n⚠️ ${claimless.length ? describeUnowned(strays, claimless) : describeStrays(item, strays)}` : '';
     const r = await autoGitCommit(item as any, (project as any)?.projectRoot, { message: stepMessage });
     const SHOWN = 20;
     const loose = r.unstaged.length
@@ -6138,7 +6255,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       : '';
     if (r.committed) {
       (exitRecord as any).commit = r.sha ?? null;
-      return { res: withNote(r0, `📌 Step commit ${r.sha ? r.sha.slice(0, 12) : ''}: "${stepMessage}".${loose}`) };
+      return { res: withNote(r0, `📌 Step commit ${r.sha ? r.sha.slice(0, 12) : ''}: "${stepMessage}".${loose}${strayNote}`) };
     }
     // Worded like the close commit's outcomes, about the step.
     const why = r.outcome === 'nothing-staged'
@@ -6149,7 +6266,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       r0.status(422).json({ status: item.status, message: `❌ This step requires a commit of the card's work when it leaves, and none was made: ${why}${loose}${staysOn(item.status)}` });
       return { refused: true };
     }
-    return { res: withNote(r0, `${r.outcome === 'failed' ? '❌' : '⚠️'} No step commit: ${why}${loose}`) };
+    return { res: withNote(r0, `${r.outcome === 'failed' ? '❌' : '⚠️'} No step commit: ${why}${loose}${strayNote}`) };
   };
 
   if (currentFlowStep.step.isAnchor) {
@@ -6528,6 +6645,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   }];
 
     if (passed) {
+      // The index may have changed while the command ran: ask again.
+      if ((await checkStrays(res2)).refused) return;
       const left = await commitOnLeave(res2);
       if (left.refused) return;
       res2 = left.res;

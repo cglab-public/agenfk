@@ -9,7 +9,7 @@
  * CREATE_UNIT_TESTS). Centralising the logic here kills that drift.
  */
 
-import { gateOnClaims } from './claimGate';
+import { gateOnClaims, claimTreeOf } from './claimGate';
 
 export interface GatekeeperFlow {
   /** Flow name, echoed back so the caller can see which flow is governing. */
@@ -25,6 +25,9 @@ export interface GatekeeperItem {
   branchName?: string;
   /** Paths this item owns while worked. See claimGate.ts. */
   claims?: string[];
+  /** Tree resolution for claims (aaa01834): own worktree, else an ancestor's. */
+  parentId?: string | null;
+  worktreePath?: string | null;
 }
 
 /** Statuses that are never considered "active working" steps regardless of flow. */
@@ -292,6 +295,8 @@ export interface GatekeeperDecisionOptions {
   intent?: string;
   /** Advisory role label (coding/review/testing/...). Echoed, NOT used as a status gate. */
   role?: string;
+  /** The project's root: the tree of a card with no worktree (aaa01834). */
+  projectRoot?: string | null;
 }
 
 /**
@@ -369,9 +374,13 @@ export function decideGatekeeperAuthorization(
    * files must not be handed to somebody else - it finds out on resume, which
    * is the worst moment. claimGate decides release by terminal status instead.
    */
+  // Claims are per worktree (aaa01834): each card carries the tree it works
+  // in, and an unknown tree stays strict. See sameClaimTree.
+  const byId = new Map(items.map(i => [i.id, i]));
+  const treeOf = (i: GatekeeperItem) => claimTreeOf(i, id => byId.get(id), opts.projectRoot);
   const gate = gateOnClaims(
-    { id: task.id, claims: task.claims },
-    items.map(i => ({ id: i.id, status: i.status, claims: i.claims })),
+    { id: task.id, claims: task.claims, tree: treeOf(task) },
+    items.map(i => ({ id: i.id, status: i.status, claims: i.claims, tree: treeOf(i) })),
   );
   if (!gate.authorized) {
     return {

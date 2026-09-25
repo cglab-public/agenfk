@@ -80,6 +80,36 @@ export interface ClaimCard {
   readonly id: string;
   readonly status: string;
   readonly claims?: readonly string[];
+  /** Tree resolution (aaa01834): own worktree, else an ancestor's, else the project root. */
+  readonly parentId?: string | null;
+  readonly worktreePath?: string | null;
+  readonly projectId?: string;
+}
+
+/**
+ * Mirrors `claimTreeOf` and `sameClaimTree` in packages/core/src/claimGate.ts
+ * (aaa01834): claims are per worktree, and an unknown tree collides with every
+ * tree. Pinned against core by the drift test, like `collide`.
+ */
+export function treeOf(card: ClaimCard, byId: ReadonlyMap<string, ClaimCard>, rootOf?: (projectId?: string) => string | null | undefined): string | null {
+  const seen = new Set<string>();
+  let cur: ClaimCard | undefined = card;
+  for (let depth = 0; cur && depth < 32; depth++) {
+    const wt = typeof cur.worktreePath === 'string' ? cur.worktreePath.trim() : '';
+    if (wt) return wt;
+    const parentId = cur.parentId;
+    if (!parentId || seen.has(parentId)) break;
+    seen.add(parentId);
+    cur = byId.get(parentId);
+  }
+  const root = rootOf?.(card.projectId);
+  return typeof root === 'string' && root.trim() ? root.trim() : null;
+}
+
+export function sameTree(a: string | null, b: string | null): boolean {
+  const norm = (t: string | null) => (t ?? '').trim().replace(/[\\/]+$/, '');
+  const x = norm(a), y = norm(b);
+  return !x || !y || x === y;
 }
 
 export interface CardClaimState {
@@ -107,10 +137,20 @@ const EMPTY: CardClaimState = { owns: [], heldBy: [], rejected: [] };
  * filtering by activity here would quietly drop the holders that matter most.
  * claimGate decides release by terminal status, and this defers to it.
  */
-export function claimStateOf(cardId: string, all: readonly ClaimCard[]): CardClaimState {
+export function claimStateOf(
+  cardId: string,
+  all: readonly ClaimCard[],
+  /** The project's root, for cards with no worktree. Unknown stays strict. */
+  rootOf?: (projectId?: string) => string | null | undefined,
+): CardClaimState {
   const card = all.find(c => c.id === cardId);
   const owns = card?.claims ?? [];
-  if (!owns.length) return EMPTY;
+  if (!owns.length || !card) return EMPTY;
+
+  // Only cards in this card's tree can hold its files (aaa01834).
+  const byId = new Map(all.map(c => [c.id, c]));
+  const mine = treeOf(card, byId, rootOf);
+  const here = all.filter(c => c.id === cardId || sameTree(mine, treeOf(c, byId, rootOf)));
 
   /*
    * De-duplicated: one card holding a directory produces a conflict per file
@@ -125,12 +165,12 @@ export function claimStateOf(cardId: string, all: readonly ClaimCard[]): CardCla
    */
   const rejected = [...new Set([
     ...owns.filter(c => !wellFormed(c)),
-    ...all.filter(c => !RELEASED.has(c.status.toUpperCase()))
+    ...here.filter(c => !RELEASED.has(c.status.toUpperCase()))
          .flatMap(c => (c.claims ?? []).filter(x => !wellFormed(x))),
   ])];
 
   const heldBy = [...new Set(
-    all
+    here
       .filter(c => c.id !== cardId && !RELEASED.has(c.status.toUpperCase()))
       .filter(c => (c.claims ?? []).some(theirs => owns.some(mine => collide(mine, theirs))))
       .map(c => c.id),

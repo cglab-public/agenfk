@@ -22,13 +22,18 @@
  * the gatekeeper's hardcoded status names drifted before it.
  */
 
-import { findClaimConflicts, type Claim, type ClaimConflict } from './claims';
+import { findClaimConflicts, claimsCollide, type Claim, type ClaimConflict } from './claims';
 
 export interface ClaimHolder {
   readonly id: string;
   /** Where the card sits in its flow. Decides whether it still holds files. */
   readonly status: string;
   readonly claims?: readonly Claim[];
+  /**
+   * The worktree the card works in (see `claimTreeOf`). Null or absent when
+   * nobody can say, and an unknown tree collides with every tree.
+   */
+  readonly tree?: string | null;
 }
 
 export interface ClaimGateResult {
@@ -60,6 +65,98 @@ const RELEASED_STATUSES = new Set(['DONE', 'TRASHED', 'ARCHIVED', 'IDEAS']);
 /** Does this card still own the files it declared? */
 export const stillHolds = (status: string): boolean =>
   !RELEASED_STATUSES.has(status.toUpperCase());
+
+/**
+ * Do two cards share a working tree, as far as claims are concerned? (aaa01834)
+ *
+ * Claims exist because two cards editing one file IN ONE TREE is a silent
+ * overwrite. Cards in different worktrees cannot race - they meet, at worst,
+ * as an ordinary merge conflict - so locking across trees only refuses work.
+ *
+ * An UNKNOWN tree answers yes. "Nobody can say where this card works" is not
+ * evidence that it works elsewhere, and treating it that way would fail open
+ * on exactly the cards this mechanism was written for.
+ */
+export function sameClaimTree(a: string | null | undefined, b: string | null | undefined): boolean {
+  const norm = (t: string | null | undefined): string => (typeof t === 'string' ? t.trim().replace(/[\\/]+$/, '') : '');
+  const x = norm(a), y = norm(b);
+  if (!x || !y) return true;
+  return x === y;
+}
+
+/**
+ * The tree a card works in: its own worktree, else its nearest ancestor's,
+ * else the project root. Null when none of those is known.
+ *
+ * Mirrors `effectiveWorktreePath` in the server, which resolves the same
+ * question for the close commit; this one takes a lookup rather than storage
+ * so the gatekeeper, the CLI and the claims route can share it. Bounded and
+ * cycle-safe for the same reason: a hand-edited parent loop must not hang.
+ */
+export function claimTreeOf<T extends { id?: string; parentId?: string | null; worktreePath?: string | null }>(
+  item: T,
+  lookup: (id: string) => T | undefined,
+  projectRoot?: string | null,
+): string | null {
+  const seen = new Set<string>();
+  let cur: T | undefined = item;
+  for (let depth = 0; cur && depth < 32; depth++) {
+    const wt = typeof cur.worktreePath === 'string' ? cur.worktreePath.trim() : '';
+    if (wt) return wt;
+    const parentId = cur.parentId;
+    if (!parentId || seen.has(parentId)) break;
+    seen.add(parentId);
+    cur = lookup(parentId);
+  }
+  const root = typeof projectRoot === 'string' ? projectRoot.trim() : '';
+  return root || null;
+}
+
+/**
+ * Staged files that belong to nobody (aaa01834).
+ *
+ * The close commit takes only a card's claimed files, so a file the card
+ * changed and forgot to claim stays staged after the card is DONE - and the
+ * next agent in the tree inherits it with no owner. Returns the staged paths
+ * that fall outside the card's claims AND outside every claim still held by
+ * another card in the same tree (those are that card's work, not a stray).
+ *
+ * A card that claims nothing has no strays: its commit takes the whole index,
+ * which is the behaviour every card had before claims existed.
+ */
+export function strayStaged(
+  staged: readonly string[],
+  card: { readonly id: string; readonly claims?: readonly Claim[]; readonly tree?: string | null },
+  holders: readonly ClaimHolder[],
+): string[] {
+  const mine = card.claims ?? [];
+  if (!mine.length) return [];
+  const theirs = holders
+    .filter(h => h.id !== card.id && stillHolds(h.status) && sameClaimTree(card.tree, h.tree))
+    .flatMap(h => h.claims ?? []);
+  return staged.filter(f => !mine.some(c => claimsCollide(f, c)) && !theirs.some(c => claimsCollide(f, c)));
+}
+
+/**
+ * Cards sharing this card's tree that are working and claim NOTHING (aaa01834
+ * review). A claimless card is authorized everywhere, so a staged file outside
+ * every claim may well be its work: ownership there is unknown, not absent.
+ * The close must not be refused over it - both ways out it would offer (claim
+ * the file, or unstage it) take that card's work away from it.
+ *
+ * `isWorking` is the caller's: whether a status counts as being worked is the
+ * flow's question (an unstarted TODO card has nothing staged), and this module
+ * has no flow.
+ */
+export function claimlessNeighbours(
+  card: { readonly id: string; readonly tree?: string | null },
+  holders: readonly ClaimHolder[],
+  isWorking: (status: string) => boolean,
+): string[] {
+  return holders
+    .filter(h => h.id !== card.id && !(h.claims ?? []).length && stillHolds(h.status) && isWorking(h.status) && sameClaimTree(card.tree, h.tree))
+    .map(h => h.id);
+}
 
 /**
  * What to say, given that the agent reads this once and acts on it.
@@ -104,7 +201,7 @@ function explain(conflicts: readonly ClaimConflict[], rejected: readonly Claim[]
  * into a sequence of them, each invalidating the last.
  */
 export function gateOnClaims(
-  asking: { readonly id: string; readonly claims?: readonly Claim[] },
+  asking: { readonly id: string; readonly claims?: readonly Claim[]; readonly tree?: string | null },
   holders: readonly ClaimHolder[],
 ): ClaimGateResult {
   const wanted = asking.claims ?? [];
@@ -114,8 +211,9 @@ export function gateOnClaims(
     return { authorized: true, conflicts: [], rejected: [], message: '' };
   }
 
+  // Only holders in the asking card's tree (aaa01834): see sameClaimTree.
   const held = holders
-    .filter(h => stillHolds(h.status))
+    .filter(h => stillHolds(h.status) && sameClaimTree(asking.tree, h.tree))
     .map(h => ({ itemId: h.id, claims: h.claims }));
 
   const { conflicts, rejected } = findClaimConflicts(wanted, held, asking.id);

@@ -791,6 +791,35 @@ describe('claim conflicts reach the gatekeeper', () => {
   });
 });
 
+describe('claims are per worktree through the gatekeeper (aaa01834)', () => {
+  const card = (id: string, status: string, extra: Partial<GatekeeperItem>): GatekeeperItem => ({ ...item(id, status), ...extra });
+
+  it("authorizes a card whose claim is held by a card in another worktree, resolving each through its parent", () => {
+    const d = decideGatekeeperAuthorization([
+      card('epicA', 'IN_PROGRESS', { type: 'EPIC', worktreePath: '/wt/a' }),
+      card('mine', 'IN_PROGRESS', { parentId: 'epicA', claims: ['packages/server/src/server.ts'] }),
+      card('epicB', 'IN_PROGRESS', { type: 'EPIC', worktreePath: '/wt/b', claims: ['packages/server/src/server.ts'] }),
+    ], tddFlow, { itemId: 'mine', projectRoot: '/repo' });
+    expect(d.authorized, d.message).toBe(true);
+  });
+
+  it('still refuses when both cards fall back to the project root', () => {
+    const d = decideGatekeeperAuthorization([
+      card('mine', 'IN_PROGRESS', { claims: ['a.ts'] }),
+      card('theirs', 'REVIEW', { claims: ['a.ts'] }),
+    ], tddFlow, { itemId: 'mine', projectRoot: '/repo' });
+    expect(d.authorized).toBe(false);
+  });
+
+  it('a card with its own worktree still collides with one at the root when the root is unknown', () => {
+    const d = decideGatekeeperAuthorization([
+      card('mine', 'IN_PROGRESS', { worktreePath: '/wt/a', claims: ['a.ts'] }),
+      card('theirs', 'REVIEW', { claims: ['a.ts'] }),
+    ], tddFlow, { itemId: 'mine' });
+    expect(d.authorized).toBe(false);
+  });
+});
+
 describe('the gatekeeper says when a step commits on leave (CGLAB-388 follow-up)', () => {
   const flowWith = (plan: Record<string, unknown>): GatekeeperFlow => ({
     name: 'Commit Flow',

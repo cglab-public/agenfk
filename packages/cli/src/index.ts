@@ -3731,10 +3731,18 @@ program
         }
       }
 
+      // Claims are per worktree (aaa01834): a card with no worktree of its own
+      // or an ancestor's works in the project root. Unknown stays strict.
+      let projectRoot: string | null = null;
+      if (projectId) {
+        try { projectRoot = (await axios.get(`${API_URL}/projects/${projectId}`, { timeout: 5000 })).data?.projectRoot ?? null; }
+        catch { /* unknown root: the gate stays strict */ }
+      }
       const decision = decideGatekeeperAuthorization(projectItems, activeFlow, {
         itemId: options.itemId,
         intent: options.intent,
         role: options.role,
+        projectRoot,
       });
 
       /*

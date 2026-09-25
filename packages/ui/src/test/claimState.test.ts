@@ -216,3 +216,45 @@ describe('claims it cannot read', () => {
     }
   });
 });
+
+/**
+ * Claims are per worktree (aaa01834), and the sidebar must say what the server
+ * says: a chip reading `held` for a card the gatekeeper authorizes sends
+ * somebody to renegotiate files nobody is racing for.
+ */
+describe('claims are per worktree in the sidebar', () => {
+  const at = (id: string, claims: string[], extra: Partial<ClaimCard>): ClaimCard => ({ id, status: 'IN_PROGRESS', claims, ...extra });
+
+  it('a card in another worktree does not hold this one', () => {
+    const state = claimStateOf('mine', [
+      at('epicA', [], { worktreePath: '/wt/a' }),
+      at('mine', ['x.ts'], { parentId: 'epicA' }),
+      at('theirs', ['x.ts'], { worktreePath: '/wt/b' }),
+    ]);
+    expect(state.heldBy).toEqual([]);
+  });
+
+  it('a card at the project root collides with one whose worktree IS the root', () => {
+    const state = claimStateOf('mine', [
+      at('mine', ['x.ts'], { projectId: 'p' }),
+      at('theirs', ['x.ts'], { worktreePath: '/repo' }),
+    ], () => '/repo');
+    expect(state.heldBy).toEqual(['theirs']);
+  });
+
+  it('agrees with the core gate across trees', async () => {
+    const { gateOnClaims, claimTreeOf } = await import('@agenfk/core');
+    const trees: Array<string | null> = ['/wt/a', '/wt/b', '/wt/a/', null];
+    for (const t1 of trees) for (const t2 of trees) {
+      const cards: ClaimCard[] = [
+        at('mine', ['x.ts'], { worktreePath: t1, projectId: 'p' }),
+        at('theirs', ['x.ts'], { worktreePath: t2, projectId: 'p' }),
+      ];
+      const byId = new Map(cards.map(c => [c.id, c]));
+      const coreTree = (c: ClaimCard) => claimTreeOf(c, (id: string) => byId.get(id), null);
+      const gateRefuses = !gateOnClaims({ id: 'mine', claims: ['x.ts'], tree: coreTree(cards[0]) },
+        cards.map(c => ({ id: c.id, status: c.status, claims: c.claims, tree: coreTree(c) }))).authorized;
+      expect(claimStateOf('mine', cards).heldBy.length > 0, `${t1} vs ${t2}`).toBe(gateRefuses);
+    }
+  });
+});

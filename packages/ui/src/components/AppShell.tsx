@@ -2621,7 +2621,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                              * a failure - it is the mechanism working, and the
                              * card is waiting rather than broken.
                              */
-                            const state = claimStateOf(item.id, allItemsForClaims as never);
+                            const state = claimStateOf(item.id, allItemsForClaims as never, pid => (projects as any[]).find(p => p.id === pid)?.projectRoot);
                             const label = claimChipLabel(state);
                             if (!label) return null;
                             return (
