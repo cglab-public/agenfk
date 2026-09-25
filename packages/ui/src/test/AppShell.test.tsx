@@ -1887,3 +1887,34 @@ describe('a card whose run belongs to a terminal this app opened', () => {
     expect(ptyCalls.spawned).toHaveLength(1);
   });
 });
+
+/*
+ * The second way to start work, from the sidebar (d450f6aa).
+ *
+ * The project page already opens a card-less terminal; the sidebar is where
+ * people are when they want to start talking to an agent, so the same door
+ * lives on top of the WORK group.
+ */
+describe('opening a project terminal from the sidebar', () => {
+  it('sits above Tasks and opens the dialog for the active project', async () => {
+    renderShell();
+    // An active project: the action needs one to have a checkout to run in.
+    fireEvent.click(await screen.findByRole('button', { name: 'horizon-lab' }));
+
+    const nav = screen.getByRole('navigation', { name: /work/i });
+    const labels = within(nav).getAllByRole('button').map(b => b.getAttribute('aria-label'));
+    expect(labels).toContain('Open terminal');
+    expect(labels.indexOf('Open terminal'), 'the terminal row must be above Tasks')
+      .toBeLessThan(labels.indexOf('Tasks'));
+
+    fireEvent.click(within(nav).getByRole('button', { name: 'Open terminal' }));
+    // The SAME dialog the project page opens, named for the project.
+    expect(await screen.findByRole('dialog', { name: /open a terminal on horizon-lab/i })).toBeTruthy();
+
+    // Create runs a shell in the PROJECT, with no card.
+    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
+    await waitFor(() => expect(ptyCalls.requests.length).toBe(1));
+    expect(ptyCalls.requests[0]).toMatchObject({ projectId: 'p2' });
+    expect(ptyCalls.requests[0]).not.toHaveProperty('itemId');
+  });
+});

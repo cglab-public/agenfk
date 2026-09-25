@@ -128,9 +128,15 @@ type ViewId = 'kanban' | 'terminal' | 'settings' | 'project';
  */
 type WorkRow =
   | { kind: 'view'; id: ViewId; label: string; Icon: LucideIcon }
-  | { kind: 'action'; id: 'flows'; label: string; Icon: LucideIcon };
+  | { kind: 'action'; id: 'flows' | 'terminal'; label: string; Icon: LucideIcon };
 
 const WORK_ROWS: WorkRow[] = [
+  /*
+   * The other way to start work, above the two destinations: talk to an agent
+   * in the project's own checkout and let it write the cards (d450f6aa). The
+   * project page has the same door; this is where people already are.
+   */
+  { kind: 'action', id: 'terminal', label: 'Open terminal', Icon: SquareTerminal },
   { kind: 'view', id: 'kanban', label: 'Tasks', Icon: LayoutGrid },
   // GitBranch, the same icon the board's Manage Flow button uses: one concept,
   // two routes to it, and a second glyph would read as a second feature.
@@ -1570,6 +1576,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           onSelectView={setActive}
           onOpenProject={projectId => { setPageProjectId(projectId); setActive('project'); }}
           onOpenFlows={() => setFlowsOpen(true)}
+          onOpenTerminal={() => {
+            const name = projectNames.get(activeProjectId ?? '');
+            if (activeProjectId && name) requestProjectTerminal(activeProjectId, name);
+          }}
         onOpenFleet={setFleetParentId}
         />
 
@@ -2198,9 +2208,16 @@ interface SidebarProps {
    * would put an app-wide surface inside the column it covers.
    */
   onOpenFlows: () => void;
+  /**
+   * Open a terminal on the ACTIVE project, with no card.
+   *
+   * Shell-owned like `onOpenFlows`: only the shell knows which project is
+   * active and how to enqueue a session for it.
+   */
+  onOpenTerminal: () => void;
 }
 
-function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResizeStart, onNudge, requestTerminal, sessionRows, herdrProject, openPane, onOpenPane, liveItems, openSession, openSettings, revealOnBoard, activeView, onSelectView, onOpenProject, onOpenFlows, onOpenFleet }: SidebarProps) {
+function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResizeStart, onNudge, requestTerminal, sessionRows, herdrProject, openPane, onOpenPane, liveItems, openSession, openSettings, revealOnBoard, activeView, onSelectView, onOpenProject, onOpenFlows, onOpenTerminal, onOpenFleet }: SidebarProps) {
   /*
    * EVERY item, only for the claim chips (CGLAB-190).
    *
@@ -2593,7 +2610,9 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                   type="button"
                   onClick={() => {
                     if (disabled) return;
-                    if (row.kind === 'view') onSelectView(row.id); else onOpenFlows();
+                    if (row.kind === 'view') onSelectView(row.id);
+                    else if (row.id === 'flows') onOpenFlows();
+                    else onOpenTerminal();
                   }}
                   // `aria-disabled`, not `disabled`. A disabled button is not
                   // focusable, so it can be neither tabbed to nor announced —
@@ -2614,7 +2633,10 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                    * control is dead beats being told what it is called.
                    */
                   title={
-                    disabled ? 'Open a project to edit its flow'
+                    disabled
+                      ? (row.kind === 'action' && row.id === 'terminal'
+                        ? 'Open a project to open a terminal here'
+                        : 'Open a project to edit its flow')
                     : !open ? label
                     : undefined
                   }
