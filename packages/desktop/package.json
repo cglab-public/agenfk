@@ -1,6 +1,6 @@
 {
   "name": "@agenfk/desktop",
-  "version": "2.0.0-beta.3",
+  "version": "2.0.0-beta.4",
   "private": true,
   "description": "AgEnFK Desktop — run agent orchestration as a native app",
   "main": "dist/main/index.js",
@@ -16,8 +16,8 @@
     "bundle:preload": "node scripts/bundle-preload.mjs"
   },
   "dependencies": {
-    "@agenfk/core": "2.0.0-beta.3",
-    "@agenfk/telemetry": "2.0.0-beta.3",
+    "@agenfk/core": "2.0.0-beta.4",
+    "@agenfk/telemetry": "2.0.0-beta.4",
     "@lydell/node-pty": "1.2.0-beta.15"
   },
   "devDependencies": {

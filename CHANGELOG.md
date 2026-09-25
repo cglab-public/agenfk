@@ -2,7 +2,7 @@
 
 All notable changes to AgEnFK are documented here.
 
-## [2.0.0-beta.4] — unreleased
+## [2.0.0-beta.4] — 2026-09-25
 
 Beta, cumulative over `2.0.0-beta.3`: everything in beta.3, plus the changes below.
 
@@ -28,6 +28,27 @@ Beta, cumulative over `2.0.0-beta.3`: everything in beta.3, plus the changes bel
   rightly changes the tests that pin the old behaviour. Refactoring keeps it (strict: its tests must stay identical),
   and any flow can still add it to a step explicitly. `red-set-passes-by-name` and `test-count-not-lower` still stop a
   red test from disappearing.
+
+### Fewer suite runs
+
+- **A close's green becomes the next card's baseline.** A card's last per-test capture, taken on its dirty tree just
+  before its close commit, is re-stamped as a green of that commit when the close leaves the tree holding exactly the
+  files it ran on, so the next card's entry baseline runs nothing. Identical captures that start at once are
+  single-flight: one runs, the others take its record.
+- **Lazy capture.** A step that changed only test files runs just those files, merged over its clean per-test entry
+  baseline; anything else - a helper, a fixture, a config, a change outside the project - runs the whole suite.
+
+### A card chooses where it runs
+
+- **`agenfk update <id> --worktree <path>|none|inherit`** picks the tree a card runs and commits in (a git worktree of
+  the repository, the project root, or its parent's), instead of re-parenting the card to move it.
+
+### Board and rules
+
+- **Calmer column headers:** a one-line title-case name with the card count, a muted second line (role, checks as an
+  icon and a number with the names on hover, approval), add and archive on hover.
+- **Review sub-agents are exempt from Standard Mode's single-agent rule:** an independent review asked for by a step
+  may be run by a separate agent.
 
 ### Cards in one tree share step-check work at the same tree state
 
