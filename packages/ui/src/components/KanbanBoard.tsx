@@ -16,6 +16,7 @@ import { useSocketEvent } from '../SocketContext';
 import { isDesktop } from '../desktop';
 import { useActiveProject } from '../ActiveProject';
 import { CardDetailModal } from './CardDetailModal';
+import { VerifyRunBadge } from './VerifyRunBadge';
 import { ColumnContractBadges, ColumnRole } from './ColumnContractBadges';
 import { CardAnimationWrapper } from '../animations/CardAnimationWrapper';
 import '../animations'; // Side-effect: registers all easter egg animations
@@ -355,6 +356,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
         </div>
       </div>
       <h3 className="font-semibold text-slate-800 dark:text-slate-100 text-[13px] leading-snug mb-1.5 group-hover:text-accent-text transition-colors">{item.title}</h3>
+      {item.activeRun && <div className="mb-1.5"><VerifyRunBadge run={item.activeRun} /></div>}
       {!item.parentId && (item.branchName || item.prUrl) && (
         <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
           {item.branchName && (

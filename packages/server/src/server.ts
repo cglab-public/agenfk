@@ -1,3 +1,4 @@
+import { StringDecoder } from 'string_decoder';
 import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
@@ -3055,15 +3056,39 @@ app.get("/items/:id/step-records", asyncHandler(async (req: any, res: any) => {
 }));
 
 /** Run `command` in `cwd` without blocking the server; resolves to its exit code (null on a kill). */
-function runForExitCode(command: string, cwd: string, maxMs: number): Promise<number | null> {
+function runForExitCode(command: string, cwd: string, maxMs: number, onOutput?: (chunk: string) => void): Promise<number | null> {
   return new Promise(resolve => {
     // Its own process group, killed whole: a runner's workers outlive a killed
     // shell, and a leftover one could write the NEXT capture's report.
-    const child = spawn(command, { shell: true, cwd, stdio: 'ignore', detached: true });
+    // 9569b4d7: its output streams to whoever follows the run - the agent's chat and the card - when asked.
+    const child = spawn(command, { shell: true, cwd, stdio: onOutput ? ['ignore', 'pipe', 'pipe'] : 'ignore', detached: true });
+    if (onOutput) for (const s of [child.stdout, child.stderr]) {
+      // Whole characters only: a chunk can end inside a multi-byte one.
+      const decoder = new StringDecoder('utf8');
+      s?.on('data', (d: Buffer) => { const text = decoder.write(d); if (text) onOutput(text); });
+    }
     const killGroup = () => { try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ } };
+    let grace: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+    const finish = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (grace) clearTimeout(grace);
+      killGroup();
+      resolve(code);
+    };
     const timer = setTimeout(killGroup, maxMs);
-    child.on('error', () => { clearTimeout(timer); resolve(null); });
-    child.on('close', code => { clearTimeout(timer); killGroup(); resolve(code); });
+    child.on('error', () => finish(null));
+    // With pipes, 'close' waits for every process holding them - a runner's
+    // leftover worker or server would hold the capture open (9569b4d7 review).
+    // The shell's exit is the answer: kill what it left, let stdio drain briefly.
+    child.on('exit', code => {
+      killGroup();
+      grace = setTimeout(() => finish(code), Math.min(KILL_GRACE_MS, 1000));
+      if (typeof grace.unref === 'function') grace.unref();
+    });
+    child.on('close', code => finish(code));
   });
 }
 
@@ -3110,7 +3135,7 @@ function treeContentState(root: string, excludeRel: string | null): string | nul
  * record, or to a refusal.
  */
 type CaptureOutcome = { record: any } | { status: number; error: string; message: string };
-async function captureStepRecord(item: any): Promise<CaptureOutcome> {
+async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) => void }): Promise<CaptureOutcome> {
   const project: any = await storage.getProject(item.projectId);
   const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
   if (!root) {
@@ -3154,7 +3179,7 @@ async function captureStepRecord(item: any): Promise<CaptureOutcome> {
   }
   const reportRel = reportAbs ? insideRoot(root, reportAbs) : null;
   const stateBefore = treeContentState(root, reportRel);
-  record.exitCode = await runForExitCode(command, root, verifyMaxMs());
+  record.exitCode = await runForExitCode(command, root, verifyMaxMs(), opts?.onOutput);
   const stateAfter = treeContentState(root, reportRel);
   if (setting && reportAbs) {
     try {
@@ -4950,7 +4975,7 @@ app.get("/items", asyncHandler(async (req: any, res: any) => {
     items = kept;
   }
 
-  res.json(items);
+  res.json(items.map(withActiveRun));
 }));
 
 app.post("/items/trash-archived", asyncHandler(async (req: any, res: any) => {
@@ -4971,7 +4996,19 @@ app.get("/items/:id", asyncHandler(async (req: any, res: any) => {
   if (!item) {
     return res.status(404).json({ error: "Item not found" });
   }
-  res.json(item);
+  res.json(withActiveRun(item));
+}));
+
+/**
+ * 9569b4d7: the verify running on a card and the tail of what it printed, for
+ * the board. No agent token: it is the project's own test output, which the
+ * card's comments already carry a preview of. 404 when nothing runs.
+ */
+app.get("/items/:id/active-run", asyncHandler(async (req: any, res: any) => {
+  const active = activeRunOf(req.params.id);
+  if (!active) return res.status(404).json({ error: 'NO_ACTIVE_RUN' });
+  const run = validateRuns.get(active.runId)!;
+  res.json({ ...active, output: run.tail ?? run.output.slice(-RUN_TAIL_BYTES) });
 }));
 
 /**
@@ -5944,8 +5981,38 @@ export interface ValidateRun {
   checks?: CheckResult[];
   startedAt: Date;
   finishedAt?: Date;
+  /** Answered 202 and running in the background; a sync fast path never sets it. */
+  started?: boolean;
+  /** The step the card was leaving when the run started (9569b4d7). */
+  step?: string;
+  /** The last few KiB of what the run printed, for the board (9569b4d7); `output` is the bounded head followers stream. */
+  tail?: string;
 }
 const validateRuns = new Map<string, ValidateRun>();
+/** 9569b4d7: how much of a run's latest output the board is shown. */
+const RUN_TAIL_BYTES = 8192;
+/** Append to a run's output: the bounded head for followers, and the rolling tail for the board. */
+function appendRunOutput(run: ValidateRun, chunk: string, headCap = 256 * 1024): void {
+  if (run.output.length < headCap) run.output += chunk.slice(0, headCap - run.output.length);
+  run.tail = ((run.tail ?? '') + chunk).slice(-RUN_TAIL_BYTES);
+}
+/** 9569b4d7: a run has started in the background - the board shows it on the card. */
+function markRunStarted(run: ValidateRun, step: string): void {
+  run.started = true;
+  run.step = step;
+  io.emit('items_updated');
+}
+/** The verify running on a card now, as item responses carry it; undefined when none runs. */
+function activeRunOf(itemId: string): { runId: string; step: string; startedAt: string } | undefined {
+  const runId = activeValidateRunByItem.get(itemId);
+  const run = runId ? validateRuns.get(runId) : undefined;
+  if (!run || run.status !== 'running' || !run.started) return undefined;
+  return { runId: run.runId, step: run.step ?? '', startedAt: new Date(run.startedAt).toISOString() };
+}
+const withActiveRun = <T extends { id: string }>(item: T): T => {
+  const activeRun = activeRunOf(item.id);
+  return activeRun ? { ...item, activeRun } : item;
+};
 const activeValidateRunByItem = new Map<string, string>();
 const VALIDATE_RUN_TTL_MS = 60 * 60 * 1000;
 // Prune on creation instead of timers — keeps tests deterministic and the map bounded.
@@ -6212,7 +6279,7 @@ function awaitingPersonCommands(resolved: ReturnType<typeof resolveStepChecks>, 
   return resolved.filter(c => c.applicable && c.id.startsWith('command-check:') && awaitsPersonApproval(c, approvals));
 }
 
-async function runStepGate(item: any, flow: { steps: any[] }, root: string | null, actor?: { client: string; sessionId: string; agentId: string | null } | null, agentReports?: Record<string, AgentReport>, opts?: { personFirst?: boolean }): Promise<StepGate> {
+async function runStepGate(item: any, flow: { steps: any[] }, root: string | null, actor?: { client: string; sessionId: string; agentId: string | null } | null, agentReports?: Record<string, AgentReport>, opts?: { personFirst?: boolean; run?: ValidateRun }): Promise<StepGate> {
   const sorted = sortedFlowSteps(flow as any);
   const index = sorted.findIndex(st => st.name === item.status);
   const next = sorted[index + 1];
@@ -6228,7 +6295,8 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     ? resolved.filter(c => c.applicable && (needsCapture([c]) || (c.id.startsWith('command-check:') && !waitingOn.includes(c)))).map(c => c.id)
     : [];
   if (!opts?.personFirst && (needsCapture(resolved.filter(c => !deferToCommand.includes(c.id))) || (next && needsEntryRecord(resolveStepChecks(flow.steps, next.name))))) {
-    const out = await captureStepRecord(item);
+    const run = opts?.run;
+    const out = await captureStepRecord(item, run ? { onOutput: chunk => appendRunOutput(run, chunk) } : undefined);
     if ('error' in out) captureError = out.message; else capture = out.record;
   }
   const records: any[] = ((await storage.getItem(item.id)) as any)?.stepRecords ?? [];
@@ -6455,17 +6523,17 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       || resolveStepChecks(activeFlow.steps, item.status).some(c => c.applicable && c.id.startsWith('command-check:'));
     if (slow && asyncRun) {
       const run = asyncRun;
-      (run as any).started = true;
       res.status(202).json({
         runId: run.runId,
         command: null,
         message: `⏳ Step checks and validation running in background (run ${run.runId.slice(0, 8)}…). Follow with GET /items/validate-runs/${run.runId}.`,
       });
+      markRunStarted(run, item.status);
       const recorder = runRecorder(run);
       void (async () => {
         const fresh: any = await storage.getItem(itemId);
         if (!fresh) return recorder.status(404).json({ status: item.status, message: '❌ Item was deleted while the checks ran.' });
-        const g = await runStepGate(fresh, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports);
+        const g = await runStepGate(fresh, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { run });
         if (g.blocked) return refuseOnChecks(recorder, fresh, g);
         return handleValidateProgress(itemId, command, recorder, undefined, undefined, { gate: g, run, actor: opts?.actor, agentReports: opts?.agentReports });
       })()
@@ -6476,6 +6544,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         })
         .finally(() => {
           if (activeValidateRunByItem.get(itemId) === run.runId) activeValidateRunByItem.delete(itemId);
+          io.emit('items_updated');
         });
       return;
     }
@@ -6898,7 +6967,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     // Live output for run followers is the capture's bounded head, so a verbose
     // command can't pin hundreds of MB in the run map — and now cannot pin them
     // anywhere else either. The full output is on disk, not in this process.
-    const onData = (d: Buffer) => { capture.write(d); if (run) run.output = capture.live(); };
+    // What the run already streamed (a capture's output, 9569b4d7) stays in front: followers read by offset.
+    const runBase = run?.output ?? '';
+    const onData = (d: Buffer) => { capture.write(d); if (run) { run.output = runBase + capture.live(); run.tail = ((run.tail ?? '') + d.toString()).slice(-RUN_TAIL_BYTES); } };
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
     child.on('exit', (c, sig) => { if (killed) finish(124, sig); });
@@ -7062,7 +7133,6 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   if (asyncRun) {
     const run = asyncRun;
     const runId = run.runId;
-    (run as any).started = true;
     // Answer immediately — the client follows the run instead of holding this
     // request open for the command's whole lifetime.
     bareRes.status(202).json({
@@ -7070,6 +7140,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       command: resolvedCommand,
       message: `⏳ Validation running in background (run ${runId.slice(0, 8)}…). Follow with GET /items/validate-runs/${runId}.`,
     });
+    markRunStarted(run, item.status);
     const recorder = runRecorder(run);
     void runCommandAndFinalize(commandNote ? withNote(recorder, commandNote) : recorder, run)
       .catch((err: any) => {
@@ -7079,6 +7150,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       })
       .finally(() => {
         if (activeValidateRunByItem.get(itemId) === runId) activeValidateRunByItem.delete(itemId);
+        io.emit('items_updated');
       });
     return;
   }
@@ -7445,7 +7517,7 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
     } finally {
       // A sync fast-path (anchor, sibling propagation, no-command, error)
       // responded without ever starting the command — discard the reservation.
-      if (!(run as any).started) {
+      if (!run.started) {
         validateRuns.delete(run.runId);
         if (activeValidateRunByItem.get(req.params.id) === run.runId) activeValidateRunByItem.delete(req.params.id);
       }

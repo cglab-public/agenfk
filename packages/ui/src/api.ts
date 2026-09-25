@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { AgEnFKItem, ItemType, Status, Flow, RegistryFlow } from './types'; // We need to copy types or import from core if possible, but symlinking in Vite monorepo can be tricky without proper setup.
+import { AgEnFKItem, ItemType, Status, Flow, RegistryFlow, ActiveRunOutput } from './types'; // We need to copy types or import from core if possible, but symlinking in Vite monorepo can be tricky without proper setup.
 import { API_URL } from './apiUrl';
 
 /** One check's verdict on a verify (CGLAB-380), as the server records it. */
@@ -334,6 +334,16 @@ export const api = {
   getGates: async (id: string): Promise<StepGates> => {
     const { data } = await axios.get(`${API_URL}/items/${id}/gates`);
     return data;
+  },
+  /** The verify running on the card and its latest output; null when none runs (9569b4d7). */
+  getActiveRun: async (id: string): Promise<ActiveRunOutput | null> => {
+    try {
+      const { data } = await axios.get(`${API_URL}/items/${id}/active-run`);
+      return data;
+    } catch (e) {
+      if (axios.isAxiosError(e) && e.response?.status === 404) return null;
+      throw e;
+    }
   },
   /** The card's history of checks, approvals and overrides, newest first (5ee2c3b1). */
   getCheckHistory: async (id: string): Promise<CheckHistoryEntry[]> => {
