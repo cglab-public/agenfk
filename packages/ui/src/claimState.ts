@@ -83,6 +83,8 @@ export interface ClaimCard {
   /** Tree resolution (aaa01834): own worktree, else an ancestor's, else the project root. */
   readonly parentId?: string | null;
   readonly worktreePath?: string | null;
+  /** 686fdbf6: the tree the card chose - 'root' or a checkout path. Wins over worktreePath. */
+  readonly worktreeChoice?: string | null;
   readonly projectId?: string;
 }
 
@@ -95,6 +97,9 @@ export function treeOf(card: ClaimCard, byId: ReadonlyMap<string, ClaimCard>, ro
   const seen = new Set<string>();
   let cur: ClaimCard | undefined = card;
   for (let depth = 0; cur && depth < 32; depth++) {
+    const chosen = typeof cur.worktreeChoice === 'string' ? cur.worktreeChoice.trim() : '';
+    if (chosen === 'root') break;
+    if (chosen) return chosen;
     const wt = typeof cur.worktreePath === 'string' ? cur.worktreePath.trim() : '';
     if (wt) return wt;
     const parentId = cur.parentId;

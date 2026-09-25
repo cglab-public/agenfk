@@ -312,8 +312,13 @@ describe('claims are per worktree', () => {
 });
 
 describe('claimTreeOf: which tree a card works in', () => {
-  const byId = new Map<string, { id: string; parentId?: string | null; worktreePath?: string | null }>([
+  const byId = new Map<string, { id: string; parentId?: string | null; worktreePath?: string | null; worktreeChoice?: string | null }>([
     ['epic', { id: 'epic', worktreePath: '/wt/feat-a' }],
+    ['atRoot', { id: 'atRoot', parentId: 'epic', worktreeChoice: 'root' }],
+    ['underRoot', { id: 'underRoot', parentId: 'atRoot' }],
+    ['epicAtRoot', { id: 'epicAtRoot', worktreePath: '/wt/made', worktreeChoice: 'root' }],
+    ['chose', { id: 'chose', parentId: 'epic', worktreeChoice: '/wt/chosen' }],
+    ['underChose', { id: 'underChose', parentId: 'chose' }],
     ['story', { id: 'story', parentId: 'epic' }],
     ['task', { id: 'task', parentId: 'story' }],
     ['loner', { id: 'loner' }],
@@ -328,6 +333,18 @@ describe('claimTreeOf: which tree a card works in', () => {
   });
   it('its own worktree wins over an ancestor\'s', () => {
     expect(claimTreeOf(byId.get('own')!, lookup, '/repo')).toBe('/wt/own');
+  });
+  // 686fdbf6: 'root' is the card's own choice, and it stops the walk.
+  it("a card that chose the project root is there, whatever its parent's worktree", () => {
+    expect(claimTreeOf(byId.get('atRoot')!, lookup, '/repo')).toBe('/repo');
+    expect(claimTreeOf(byId.get('underRoot')!, lookup, '/repo')).toBe('/repo');
+  });
+  it('a card that chose a checkout is in it, and so are its children', () => {
+    expect(claimTreeOf(byId.get('chose')!, lookup, '/repo')).toBe('/wt/chosen');
+    expect(claimTreeOf(byId.get('underChose')!, lookup, '/repo')).toBe('/wt/chosen');
+  });
+  it('the choice wins over a worktree the card itself carries', () => {
+    expect(claimTreeOf(byId.get('epicAtRoot')!, lookup, '/repo')).toBe('/repo');
   });
   it('a card with no worktree anywhere works in the project root', () => {
     expect(claimTreeOf(byId.get('loner')!, lookup, '/repo')).toBe('/repo');

@@ -561,6 +561,16 @@ export interface BaseItem {
    */
   worktreePath?: string;
   /**
+   * Where the card chose to run (686fdbf6), set by `agenfk update --worktree`:
+   * 'root' (the project root, whatever worktree its parents have) or the path
+   * of a checkout of the project's repository, as git lists it. Unset: its own
+   * worktree, else its nearest ancestor's. Kept apart from worktreePath on
+   * purpose: that one is a checkout agenfk CREATED and may remove or prune; a
+   * chosen tree may be a person's checkout or another card's worktree, and
+   * nothing that manages worktrees may touch it.
+   */
+  worktreeChoice?: string;
+  /**
    * Files and directories this item owns while it is being worked (819e7192).
    *
    * Only meaningful because several agents share one worktree: there, two of

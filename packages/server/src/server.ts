@@ -992,11 +992,16 @@ const IN_PROGRESS_HEADS = ['MERGE_HEAD', 'REBASE_HEAD', 'CHERRY_PICK_HEAD', 'REV
  * a request.
  */
 export async function effectiveWorktreePath(
-  item: { parentId?: string | null; worktreePath?: string | null } | null | undefined,
+  item: { parentId?: string | null; worktreePath?: string | null; worktreeChoice?: string | null } | null | undefined,
 ): Promise<string | undefined> {
   const seen = new Set<string>();
   let cur: any = item;
   for (let depth = 0; cur && depth < 32; depth++) {
+    // 686fdbf6: a card's (or an ancestor's) chosen tree settles the walk:
+    // 'root' is the project root, whatever worktree sits above it.
+    const chosen = typeof cur.worktreeChoice === 'string' ? cur.worktreeChoice.trim() : '';
+    if (chosen === 'root') return undefined;
+    if (chosen) return chosen;
     const wt = typeof cur.worktreePath === 'string' ? cur.worktreePath.trim() : '';
     if (wt) return wt;
     const parentId = cur.parentId;
@@ -1007,10 +1012,94 @@ export async function effectiveWorktreePath(
   return undefined;
 }
 
+/** Whether `tree` comes from a choice on the card or an ancestor, rather than a created worktree. */
+async function chosenBy(item: any, tree: string): Promise<boolean> {
+  const seen = new Set<string>();
+  let cur: any = item;
+  for (let depth = 0; cur && depth < 32; depth++) {
+    if (cur.worktreeChoice) return cur.worktreeChoice === tree;
+    if (cur.worktreePath) return false;
+    if (!cur.parentId || seen.has(cur.parentId) || !storage) return false;
+    seen.add(cur.parentId);
+    cur = await storage.getItem(cur.parentId);
+  }
+  return false;
+}
+
 /** The item as resolveCommitRoot should see it: carrying its effective worktree. */
 async function withEffectiveWorktree<T extends object>(item: T): Promise<T> {
   const wt = await effectiveWorktreePath(item as any);
-  return wt ? { ...item, worktreePath: wt } : item;
+  // Set either way: a card that chose the project root may still carry the
+  // worktree agenfk created for it, and that one is not where it runs.
+  return { ...item, worktreePath: wt };
+}
+
+/**
+ * The checkouts `git worktree list --porcelain` names. One record per
+ * checkout, separated by a blank line. A record flagged `bare` is the
+ * repository directory of a bare layout, not a checkout, so nothing inside it
+ * is "a different checkout". Paths are taken verbatim: trimming would turn a
+ * directory ending in a space into another one.
+ */
+function listedCheckouts(porcelain: string): string[] {
+  return porcelain.split(/\r?\n\r?\n/)
+    .map(rec => rec.split(/\r?\n/))
+    .filter(lines => !lines.includes('bare'))
+    .map(lines => lines.find(l => l.startsWith('worktree '))?.slice('worktree '.length) ?? '')
+    .filter(Boolean);
+}
+
+/**
+ * What `worktree` on PUT /items/:id asks for, as the updates to store
+ * (686fdbf6) - or why it is refused.
+ *
+ * `none`    - the project root, whatever the card's parents have.
+ * `inherit` - no choice of its own.
+ * a path    - a checkout of the project's own repository, stored as git LISTS
+ *             it. Matched against `git worktree list` run in a tree the
+ *             server already holds; the caller's string is compared, never
+ *             handed to git or the filesystem (the pattern placeCaller follows).
+ *
+ * The choice goes in worktreeChoice, never worktreePath: that field is the
+ * checkout agenfk created, which `worktree remove` and prune may delete.
+ */
+async function resolveWorktreeChoice(raw: unknown, item: any): Promise<{ updates: Record<string, unknown> } | { error: string }> {
+  if (raw === 'none') return { updates: { worktreeChoice: 'root' } };
+  if (raw === 'inherit') return { updates: { worktreeChoice: undefined } };
+  if (typeof raw !== 'string' || !raw.trim() || !path.isAbsolute(raw)) {
+    return { error: "worktree must be an absolute path to a checkout of this project's repository, 'none' (the project root) or 'inherit'." };
+  }
+  const project: any = await storage.getProject(item.projectId);
+  const candidates = [project?.projectRoot, await effectiveWorktreePath(item)]
+    .filter((d): d is string => typeof d === 'string' && !!d && fs.existsSync(d));
+  if (!candidates.length) return { error: 'Cannot check that path: this project has no known checkout to compare it with.' };
+  const list = await git(['worktree', 'list', '--porcelain'], candidates[0]);
+  if (!list.ok) return { error: `Cannot check that path: git worktree list failed in ${candidates[0]}.` };
+  // Lexical only: a trailing slash is dropped, a symlinked spelling is not followed.
+  const wanted = path.resolve(raw);
+  const match = listedCheckouts(list.out).find(d => d === wanted || realDir(d) === wanted);
+  // git still lists a checkout whose directory was deleted (a `prunable` record).
+  if (!match || !fs.existsSync(match)) {
+    return { error: `${wanted} is not a checkout of this project's repository (git worktree list in ${candidates[0]} does not list it). Use \`agenfk worktree create\` or \`git worktree add\` first.` };
+  }
+  return { updates: { worktreeChoice: match } };
+}
+
+/** The card as it will be after a PUT's re-parent and tree choice: what claims are judged against. */
+function movingTo(item: any, parentId: unknown, worktreeUpdates: Record<string, unknown>): any {
+  const moved = parentId !== undefined ? { ...item, parentId: parentId === '' || parentId === null ? null : parentId } : item;
+  return { ...moved, ...worktreeUpdates };
+}
+
+/**
+ * The tree a card itself says it runs in, for routes that show that tree: its
+ * chosen checkout, else the worktree agenfk created for it. A card that chose
+ * the project root has none of its own here.
+ */
+function ownTreeOf(item: any): string | undefined {
+  const chosen = typeof item?.worktreeChoice === 'string' ? item.worktreeChoice : '';
+  if (chosen === 'root') return undefined;
+  return chosen || item?.worktreePath || undefined;
 }
 
 /**
@@ -1190,15 +1279,7 @@ async function placeCaller(
     gitTopLevel(tested),
   ]);
   if (!list.ok || !testedTop) return { kind: 'unrelated' };
-  // One record per checkout, separated by a blank line. A record flagged
-  // `bare` is the repository directory of a bare layout, not a checkout, so
-  // nothing inside it is "a different checkout". Paths are taken verbatim:
-  // trimming would turn a directory ending in a space into another one.
-  const listed = list.out.split(/\r?\n\r?\n/)
-    .map(rec => rec.split(/\r?\n/))
-    .filter(lines => !lines.includes('bare'))
-    .map(lines => lines.find(l => l.startsWith('worktree '))?.slice('worktree '.length) ?? '')
-    .filter(Boolean);
+  const listed = listedCheckouts(list.out);
   // As git recorded them, and resolved: the caller may report either spelling.
   const checkouts = [...new Set([...listed, ...listed.map(realDir)])];
   const resolved = checkouts.map(realDir);
@@ -2101,7 +2182,7 @@ app.get("/items/:id/git-status", limitExpensive, asyncHandler(async (req: any, r
   const item: any = await storage.getItem(req.params.id);
   if (!item) return res.status(404).json({ error: "Item not found" });
 
-  const cwd = item.worktreePath;
+  const cwd = ownTreeOf(item);
   if (!cwd || !fs.existsSync(cwd)) {
     // Never the server's own cwd: that would report the state of whatever
     // repository the server happens to be running in — confidently, and about
@@ -2148,14 +2229,15 @@ app.get("/items/:id/git-status", limitExpensive, asyncHandler(async (req: any, r
 app.get("/items/:id/files", limitExpensive, asyncHandler(async (req: any, res: any) => {
   const item: any = await storage.getItem(req.params.id);
   if (!item) return res.status(404).json({ error: "Item not found" });
-  if (!item.worktreePath || !fs.existsSync(item.worktreePath)) {
+  const own = ownTreeOf(item);
+  if (!own || !fs.existsSync(own)) {
     return res.status(409).json({ error: "This item has no worktree on disk yet." });
   }
 
   let root: string;
   let target: string;
   try {
-    root = fs.realpathSync(item.worktreePath);
+    root = fs.realpathSync(own);
     const asked = typeof req.query?.path === 'string' && req.query.path ? req.query.path : root;
     // Resolved relative to the ROOT, never to the server's cwd.
     target = fs.realpathSync(path.resolve(root, asked));
@@ -2213,7 +2295,8 @@ app.get("/items/:id/files", limitExpensive, asyncHandler(async (req: any, res: a
 app.get("/items/:id/diff", limitExpensive, asyncHandler(async (req: any, res: any) => {
   const item: any = await storage.getItem(req.params.id);
   if (!item) return res.status(404).json({ error: "Item not found" });
-  if (!item.worktreePath || !fs.existsSync(item.worktreePath)) {
+  const own = ownTreeOf(item);
+  if (!own || !fs.existsSync(own)) {
     return res.status(409).json({ error: "This item has no worktree on disk yet." });
   }
   const asked = typeof req.query?.path === 'string' ? req.query.path : '';
@@ -2221,7 +2304,7 @@ app.get("/items/:id/diff", limitExpensive, asyncHandler(async (req: any, res: an
   const staged = req.query?.staged === 'true';
 
   let root: string;
-  try { root = fs.realpathSync(item.worktreePath); }
+  try { root = fs.realpathSync(own); }
   catch { return res.status(409).json({ error: "This item's worktree is not readable." }); }
 
   const safe = containedPath(root, path.resolve(root, asked));
@@ -4144,7 +4227,8 @@ app.post("/items/:id/worktree", limitExpensive, asyncHandler(async (req: any, re
     return res.status(400).json({ error: e.message });
   }
 
-  await storage.updateItem(item.id, { worktreePath: result.path, branchName } as any);
+  // A tree of its own supersedes a tree the card chose (686fdbf6).
+  await storage.updateItem(item.id, { worktreePath: result.path, branchName, worktreeChoice: undefined } as any);
   /*
    * Execution, not creation, is token-gated. Running an arbitrary project shell
    * string is at least as privileged as `verifyCommand`, and this route has no
@@ -4171,6 +4255,8 @@ app.get("/items/:id/worktree", limitExpensive, asyncHandler(async (req: any, res
     path: worktreePath,
     branchName: item.branchName ?? null,
     exists: worktreePath ? fs.existsSync(worktreePath) : false,
+    // 686fdbf6: where the card chose to run, which wins over `path`.
+    chosen: item.worktreeChoice ?? null,
   });
 }));
 
@@ -4184,6 +4270,15 @@ app.delete("/items/:id/worktree", limitExpensive, asyncHandler(async (req: any, 
   const item: any = await storage.getItem(req.params.id);
   if (!item) return res.status(404).json({ error: "Item not found" });
   if (!item.worktreePath) return res.json({ removed: false });
+  // 686fdbf6: removal is --force; a card that chose this checkout would lose its work.
+  const choosers = ((await storage.listItems({ projectId: item.projectId, limit: 1_000_000 } as any)) as any[])
+    .filter(o => o.id !== item.id && o.worktreeChoice === item.worktreePath);
+  if (choosers.length) {
+    return res.status(409).json({
+      error: `Refusing to remove ${item.worktreePath}: ${choosers.map(o => `card ${o.id}`).join(', ')} chose to run there. `
+        + 'Move those cards first (`agenfk update <id> --worktree inherit|none|<path>`).',
+    });
+  }
 
   try {
     const repoRoot = await repoRootForItem(item);
@@ -5608,7 +5703,7 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
 
 app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   console.log(`[API_DEBUG] PUT /items/${req.params.id} body keys: ${Object.keys(req.body).join(', ')}`);
-  const { title, description, status, type, parentId, context, implementationPlan, reviews, tests, comments, sortOrder, branchName, prUrl, prNumber, prStatus, claims, externalId, externalUrl } = req.body;
+  const { title, description, status, type, parentId, context, implementationPlan, reviews, tests, comments, sortOrder, branchName, prUrl, prNumber, prStatus, claims, externalId, externalUrl, worktree } = req.body;
   // BUG 93d9fbd0: a card's tests are a list of records; anything else is refused
   // before it is stored, where the verify path would trip over it.
   if (tests !== undefined && !Array.isArray(tests)) return res.status(400).json({ error: 'tests must be an array of test records' });
@@ -5616,6 +5711,14 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   const currentItem = await storage.getItem(req.params.id);
   if (!currentItem) {
     return res.status(404).json({ error: "Item not found" });
+  }
+
+  // 686fdbf6: where the card runs, chosen on the card - never by re-parenting it.
+  let worktreeUpdates: Record<string, unknown> = {};
+  if (worktree !== undefined) {
+    const choice = await resolveWorktreeChoice(worktree, currentItem);
+    if ('error' in choice) return res.status(400).json({ error: choice.error });
+    worktreeUpdates = choice.updates;
   }
 
   /*
@@ -5648,11 +5751,35 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
     // Per worktree (aaa01834): only cards in this card's tree can collide with it.
     const claimProject = await storage.getProject(currentItem.projectId);
     const { holders, treeOf } = await claimHoldersIn(currentItem.projectId, (claimProject as any)?.projectRoot);
-    // A PUT that also re-parents is judged in the tree the card is moving TO.
-    const movingTo = parentId !== undefined ? { ...currentItem, parentId: parentId === '' || parentId === null ? null : parentId } : currentItem;
-    const gate = gateOnClaims({ id: currentItem.id, claims, tree: treeOf(movingTo) }, holders);
+    // A PUT that also re-parents, or chooses a tree, is judged in the tree the card is moving TO.
+    const gate = gateOnClaims({ id: currentItem.id, claims, tree: treeOf(movingTo(currentItem, parentId, worktreeUpdates)) }, holders);
     if (!gate.authorized) {
       return res.status(409).json({ error: gate.message });
+    }
+  }
+  // 686fdbf6: moving to another tree must not land a card - or a descendant
+  // that follows it there - on files a card in that tree already holds.
+  if (worktree !== undefined) {
+    const claimProject = await storage.getProject(currentItem.projectId);
+    const { holders, treeOf } = await claimHoldersIn(currentItem.projectId, (claimProject as any)?.projectRoot);
+    const target = treeOf(movingTo(currentItem, parentId, worktreeUpdates));
+    const all: any[] = (await storage.listItems({ projectId: currentItem.projectId, limit: 1_000_000 } as any)) as any[];
+    // The card itself (unless this PUT sets its claims: judged above), then every
+    // descendant with no tree of its own, which follows it.
+    const movers: Array<{ id: string; claims: unknown }> = claims === undefined ? [{ id: currentItem.id, claims: (currentItem as any).claims }] : [];
+    const queue = [currentItem.id];
+    const seen = new Set(queue);
+    while (queue.length) {
+      const pid = queue.shift()!;
+      for (const c of all) {
+        if (c.parentId !== pid || seen.has(c.id) || c.worktreeChoice || c.worktreePath) continue;
+        seen.add(c.id); queue.push(c.id); movers.push({ id: c.id, claims: c.claims });
+      }
+    }
+    for (const m of movers) {
+      if (!Array.isArray(m.claims) || !m.claims.length) continue;
+      const gate = gateOnClaims({ id: m.id, claims: m.claims as string[], tree: target }, holders.filter(h => !seen.has(h.id) || h.id === m.id));
+      if (!gate.authorized) return res.status(409).json({ error: m.id === currentItem.id ? gate.message : `Card ${m.id}, which follows this one to the new tree: ${gate.message}` });
     }
   }
 
@@ -5747,7 +5874,7 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
 
   if (status === Status.ARCHIVED && currentItem.status !== Status.ARCHIVED) {
     await archiveRecursively(req.params.id);
-    if (hasExternalRefUpdate) await storage.updateItem(req.params.id, externalRef.updates as any);
+    if (hasExternalRefUpdate || Object.keys(worktreeUpdates).length) await storage.updateItem(req.params.id, { ...(externalRef.updates as any), ...worktreeUpdates } as any);
     io.emit('items_updated');
     if (currentItem.parentId) await syncParentStatus(currentItem.parentId);
     return respondWithStoredItem();
@@ -5756,7 +5883,7 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   if (status !== undefined && status !== Status.ARCHIVED && currentItem.status === Status.ARCHIVED) {
     await unarchiveRecursively(req.params.id);
     await storage.updateItem(req.params.id, {
-      status: status as Status, ...(externalRef.updates as any),
+      status: status as Status, ...(externalRef.updates as any), ...worktreeUpdates,
       ...(moveComment ? { comments: [...(currentItem.comments ?? []), moveComment] } : {}),
       ...(rolledBackRecords ? { stepRecords: rolledBackRecords } : {}),
     } as any);
@@ -5764,7 +5891,7 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
     return respondWithStoredItem();
   }
 
-  const updates: any = {};
+  const updates: any = { ...worktreeUpdates };
   if (title !== undefined) updates.title = title;
   if (description !== undefined) updates.description = description;
   if (status !== undefined) updates.status = status;
@@ -7316,7 +7443,7 @@ app.get("/items/validate-runs/:runId", asyncHandler(async (req: any, res: any) =
  * parent's branch by design, which is exactly why the CLI refuses it.
  */
 export function shouldAutoWorktree(item: any): boolean {
-  if (!item?.projectId || item.worktreePath) return false;
+  if (!item?.projectId || item.worktreePath || item.worktreeChoice) return false;
   if (item.type === 'EPIC') return false;
   if (item.parentId) return false;
   return true;
@@ -7513,6 +7640,13 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
     const item = cwdItem;
     const projRoot = (await storage.getProject(item.projectId) as any)?.projectRoot as string | undefined;
     const worktree = await effectiveWorktreePath(item);
+    // 686fdbf6: a tree the card (or an ancestor) chose that has since gone.
+    if (worktree && !fs.existsSync(worktree) && await chosenBy(item, worktree)) {
+      return res.status(409).json({
+        error: `Refusing to verify: card ${item.id} runs in ${worktree}, a tree chosen with --worktree, and that directory no longer exists. `
+          + 'Choose another: `agenfk update <id> --worktree inherit` (follow its parent), `--worktree none` (the project root) or `--worktree <path>`.',
+      });
+    }
     /*
      * Whether the RECORDED root can be trusted, judged from the stored value
      * alone. One that is missing, is $HOME or ~/.agenfk, or is a linked
@@ -7558,6 +7692,7 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
             + `${what}. That is a different checkout of the same repository, so the run would test `
             + 'code you are not editing and the close commit would read an index that is not yours. '
             + `Run agenfk verify from ${place.testedTop}, with your changes there.`
+            + ' To run the card somewhere else, choose its tree: `agenfk update <id> --worktree <path>` (a checkout of this repository), `--worktree none` (the project root) or `--worktree inherit`.'
             + (worktree ? '' : ' To give the card a tree of its own, run `agenfk worktree create <top-level item id>` and work in the directory it prints.'),
           callerRoot: place.checkout,
           testedRoot: place.testedTop,

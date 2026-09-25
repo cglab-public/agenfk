@@ -100,7 +100,7 @@ export function sameClaimTree(a: string | null | undefined, b: string | null | u
  * so the gatekeeper, the CLI and the claims route can share it. Bounded and
  * cycle-safe for the same reason: a hand-edited parent loop must not hang.
  */
-export function claimTreeOf<T extends { id?: string; parentId?: string | null; worktreePath?: string | null }>(
+export function claimTreeOf<T extends { id?: string; parentId?: string | null; worktreePath?: string | null; worktreeChoice?: string | null }>(
   item: T,
   lookup: (id: string) => T | undefined,
   projectRoot?: string | null,
@@ -108,6 +108,10 @@ export function claimTreeOf<T extends { id?: string; parentId?: string | null; w
   const seen = new Set<string>();
   let cur: T | undefined = item;
   for (let depth = 0; cur && depth < 32; depth++) {
+    // 686fdbf6: a card's own choice settles it, whatever is above it.
+    const chosen = typeof cur.worktreeChoice === 'string' ? cur.worktreeChoice.trim() : '';
+    if (chosen === 'root') break;
+    if (chosen) return chosen;
     const wt = typeof cur.worktreePath === 'string' ? cur.worktreePath.trim() : '';
     if (wt) return wt;
     const parentId = cur.parentId;

@@ -208,6 +208,8 @@ const UpdateItemSchema = z.object({
   // match and cycles.
   parentId: z.string().nullable().optional(),
   implementationPlan: z.string().optional(),
+  // 686fdbf6: where the card runs - an absolute checkout path, 'none' or 'inherit'.
+  worktree: z.string().optional(),
   // JIRA issue key to link, or "none" to unlink. zod strips unknown keys, so
   // without this the MCP surface silently could not link at all — and this repo
   // documents the CLI and MCP surfaces as interchangeable.
@@ -340,6 +342,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             type: { type: "string", enum: ["EPIC", "STORY", "TASK", "BUG"] },
             parentId: { type: ["string", "null"], description: "Re-parent the item under this id; null detaches it to top level." },
             implementationPlan: { type: "string" },
+            worktree: { type: "string", description: "Where the card runs: an ABSOLUTE path to a checkout of the project's repository, 'none' (the project root, whatever its parents have) or 'inherit' (clear the choice). Use this, never parentId, to move a card to another tree." },
             jiraItem: { type: "string", description: "JIRA issue key to link this card to, e.g. 'CGLAB-163'; pass 'none' to unlink. Reference only: the card keeps its own title and description. Omit to leave any existing link untouched." },
           },
           required: ["id"],
@@ -895,9 +898,13 @@ async function callToolHandler(request: any): Promise<any> {
          * see the header there for why a write in the wrong tree is worse than
          * a read in one.
          */
-        const branchHint = resolveBranchHint(task, {
-          run: args => execFileSync('git', args, { encoding: 'utf8' }),
-        });
+        // 686fdbf6: never switch branches in a tree the card chose - it may be
+        // a person's checkout or another card's worktree.
+        const branchHint = task?.worktreeChoice
+          ? `\nℹ️ This card runs in a tree it chose (${task.worktreeChoice === 'root' ? 'the project root' : task.worktreeChoice}); its branch is not switched there.`
+          : resolveBranchHint(task, {
+            run: args => execFileSync('git', args, { encoding: 'utf8' }),
+          });
 
         /*
          * The base moved underneath the agent (CGLAB-197).

@@ -93,6 +93,14 @@ describe('who gets an automatic worktree', () => {
       .send({ title: 'Already has one', type: 'TASK', projectId });
     expect(shouldAutoWorktree({ ...item.body, worktreePath: '/somewhere' })).toBe(false);
   });
+
+  // 686fdbf6: a card that chose where it runs gets no worktree made behind its back.
+  it('makes none for an item that chose its tree', async () => {
+    const item = await agent().post('/items')
+      .send({ title: 'Chose the root', type: 'TASK', projectId });
+    expect(shouldAutoWorktree({ ...item.body, worktreeChoice: 'root' })).toBe(false);
+    expect(shouldAutoWorktree({ ...item.body, worktreeChoice: '/some/checkout' })).toBe(false);
+  });
 });
 
 describe('when the worktree cannot be made', () => {

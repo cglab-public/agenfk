@@ -243,6 +243,19 @@ describe('which branch is measured, and from where', () => {
     });
   });
 
+  // 686fdbf6: a card that chose the project root measures there, keeping the branch it inherits.
+  it("a card that chose the project root measures in it, not in its epic's worktree", () => {
+    const epic = { id: 'e', branchName: 'feat/epic', worktreePath: '/wt/epic' };
+    expect(driftTargets({ id: 't', parentId: 'e', worktreeChoice: 'root' }, [epic], '/proj')).toEqual({ branch: 'feat/epic', repoRoot: '/proj' });
+    const story = { id: 's', parentId: 'e', worktreeChoice: 'root' };
+    expect(driftTargets({ id: 't', parentId: 's' }, [epic, story], '/proj')).toEqual({ branch: 'feat/epic', repoRoot: '/proj' });
+  });
+
+  it('a card that chose a checkout measures in that checkout', () => {
+    const epic = { id: 'e', branchName: 'feat/epic', worktreePath: '/wt/epic' };
+    expect(driftTargets({ id: 't', parentId: 'e', worktreeChoice: '/wt/chosen' }, [epic], '/proj')).toEqual({ branch: 'feat/epic', repoRoot: '/wt/chosen' });
+  });
+
   it('measures HEAD when no branch was ever recorded', () => {
     // Most EPIC-rooted trees never had a branch created by hand. Staying silent
     // would be the difference between firing for most projects and none.

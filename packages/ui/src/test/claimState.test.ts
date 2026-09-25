@@ -244,17 +244,25 @@ describe('claims are per worktree in the sidebar', () => {
 
   it('agrees with the core gate across trees', async () => {
     const { gateOnClaims, claimTreeOf } = await import('@agenfk/core');
-    const trees: Array<string | null> = ['/wt/a', '/wt/b', '/wt/a/', null];
-    for (const t1 of trees) for (const t2 of trees) {
+    // 686fdbf6: a card's chosen tree ('root' or a path) wins over its parent's worktree.
+    type Place = Partial<Pick<ClaimCard, 'worktreePath' | 'worktreeChoice'>>;
+    const places: Place[] = [
+      { worktreePath: '/wt/a' }, { worktreePath: '/wt/b' }, { worktreePath: '/wt/a/' }, {},
+      { worktreeChoice: 'root' }, { worktreeChoice: '/wt/a' }, { worktreePath: '/wt/b', worktreeChoice: '/wt/a' },
+      { worktreePath: '/wt/a', worktreeChoice: 'root' },
+    ];
+    for (const p1 of places) for (const p2 of places) {
       const cards: ClaimCard[] = [
-        at('mine', ['x.ts'], { worktreePath: t1, projectId: 'p' }),
-        at('theirs', ['x.ts'], { worktreePath: t2, projectId: 'p' }),
+        at('parent', [], { worktreePath: '/wt/b', projectId: 'p' }),
+        at('mine', ['x.ts'], { ...p1, parentId: 'parent', projectId: 'p' }),
+        at('theirs', ['x.ts'], { ...p2, projectId: 'p' }),
       ];
+      const t1 = JSON.stringify(p1), t2 = JSON.stringify(p2);
       const byId = new Map(cards.map(c => [c.id, c]));
-      const coreTree = (c: ClaimCard) => claimTreeOf(c, (id: string) => byId.get(id), null);
-      const gateRefuses = !gateOnClaims({ id: 'mine', claims: ['x.ts'], tree: coreTree(cards[0]) },
+      const coreTree = (c: ClaimCard) => claimTreeOf(c, (id: string) => byId.get(id), '/repo');
+      const gateRefuses = !gateOnClaims({ id: 'mine', claims: ['x.ts'], tree: coreTree(cards[1]) },
         cards.map(c => ({ id: c.id, status: c.status, claims: c.claims, tree: coreTree(c) }))).authorized;
-      expect(claimStateOf('mine', cards).heldBy.length > 0, `${t1} vs ${t2}`).toBe(gateRefuses);
+      expect(claimStateOf('mine', cards, () => '/repo').heldBy.length > 0, `${t1} vs ${t2}`).toBe(gateRefuses);
     }
   });
 });

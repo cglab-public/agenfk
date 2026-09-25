@@ -28,6 +28,7 @@ export interface GatekeeperItem {
   /** Tree resolution for claims (aaa01834): own worktree, else an ancestor's. */
   parentId?: string | null;
   worktreePath?: string | null;
+  worktreeChoice?: string | null;
 }
 
 /** Statuses that are never considered "active working" steps regardless of flow. */

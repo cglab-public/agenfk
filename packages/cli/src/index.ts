@@ -1744,6 +1744,7 @@ program
   .option('--claims <paths>', 'Comma-separated paths this card owns; pass an empty string to release them')
   .option('--external-id <key>', 'Issue key in another tracker, e.g. a JIRA key')
   .option('--external-url <url>', 'Link to that issue')
+  .option('--worktree <path>', "Where the card runs: a checkout of this repository, 'none' (the project root, whatever its parents have) or 'inherit' (clear the choice). Use this, never --parent, to move a card to another tree")
   .action(async (id, options) => {
     try {
       // Handle short ID
@@ -1781,6 +1782,15 @@ program
        * which is what every other `agenfk update` call in the world is doing.
        */
       if (options.externalId !== undefined) updates.externalId = options.externalId;
+      // 686fdbf6: a path is sent absolute, resolved from where the command runs.
+      if (options.worktree !== undefined) {
+        const w = String(options.worktree);
+        // Spelled as git lists it: the server matches the string, and on macOS
+        // /tmp is a link to /private/tmp. Resolving here is safe - it is the
+        // user's own process reading the user's own path.
+        const abs = path.resolve(process.cwd(), w);
+        updates.worktree = w === 'none' || w === 'inherit' ? w : (fs.existsSync(abs) ? fs.realpathSync(abs) : abs);
+      }
       if (options.externalUrl !== undefined) updates.externalUrl = options.externalUrl;
       if (options.claims !== undefined) {
         updates.claims = String(options.claims)
@@ -4270,6 +4280,10 @@ worktreeCmd
   .action(async (itemId) => {
     try {
       const { data } = await axios.get(`${API_URL}/items/${itemId}/worktree`);
+      // 686fdbf6: a tree the card chose is where it runs, whatever it carries.
+      if (data.chosen) {
+        console.log(`Runs in:  ${chalk.cyan(data.chosen === 'root' ? 'the project root (chosen with --worktree none)' : `${data.chosen} (chosen with --worktree)`)}`);
+      }
       if (!data.path) {
         console.log(chalk.yellow(`No worktree for [${itemId.substring(0, 8)}].`));
         return;
