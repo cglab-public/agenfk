@@ -11,6 +11,7 @@ import { app, initStorage, VERIFY_TOKEN } from '../server';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execSync } from 'child_process';
 
 const TEST_DB = path.resolve('./project-settings-route-test-db.sqlite');
 let server: import('http').Server;
@@ -160,7 +161,14 @@ describe('approving a command declared by the repository', () => {
 
   it('refuses to run it until it has been approved, and shows what it is', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-approve-'));
+    // A git repo: the default flow's `tree-clean` check (CGLAB-380) reads
+    // `git status`, and a bare temp directory fails it before the final step
+    // ever runs the command this test is about.
+    execSync('git init -q', { cwd: root });
     write(root, { projectId: 'x', verifyCommand: 'echo from-the-repo' });
+    // Committed, or the new `tree-clean` check blocks leaving the first step
+    // on the very file this test needs present.
+    execSync('git add -A && git -c user.email=t@t -c user.name=t commit -qm seed', { cwd: root });
     const created = await request(server).post('/projects').send({ name: 'approve-me' });
     await request(server)
       .put(`/projects/${created.body.id}/project-root`)

@@ -3201,7 +3201,30 @@ function treeContentState(root: string, excludeRel: string | null): string | nul
  * Used by the endpoint below and by the check engine. Resolves to the stored
  * record, or to a refusal.
  */
-type CaptureOutcome = { record: any } | { status: number; error: string; message: string };
+type CaptureOutcome =
+  | { record: any }
+  | { status: number; error: string; message: string; fingerprint?: string; command?: string };
+
+/**
+ * The command a project's steps and final verify actually run, and whether it
+ * came from the repository's own file.
+ *
+ * The file wins over the stored row, the same precedence the settings screen
+ * and the final verify use, so a project that travels with its `verifyCommand`
+ * is verifiable without anybody re-setting it by hand. The stored
+ * `testReport.command` is more specific and stays first.
+ *
+ * `fromFile` is what the approval gate keys on: only a command that arrived
+ * with a clone needs reading before it runs.
+ */
+function effectiveVerifyCommand(project: any): { command: string | null; fromFile: boolean } {
+  const report = typeof project?.testReport?.command === 'string' ? project.testReport.command : null;
+  if (report) return { command: report, fromFile: false };
+  const declared = readDeclaredSettings(project?.projectRoot).settings.verifyCommand;
+  if (typeof declared === 'string' && declared.trim()) return { command: declared, fromFile: true };
+  const stored = typeof project?.verifyCommand === 'string' ? project.verifyCommand : null;
+  return { command: stored, fromFile: false };
+}
 async function captureStepRecord(item: any): Promise<CaptureOutcome> {
   const project: any = await storage.getProject(item.projectId);
   const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
@@ -3209,9 +3232,28 @@ async function captureStepRecord(item: any): Promise<CaptureOutcome> {
     return { status: 400, error: 'NO_TREE', message: 'This card has no tree to run in: set the project root (agenfk verify from the repository sets it) or give the card a worktree.' };
   }
   const setting: TestReportSetting | undefined = project?.testReport;
-  const command = setting?.command ?? project?.verifyCommand;
+  const resolved = effectiveVerifyCommand(project);
+  const command = resolved.command;
   if (!command) {
     return { status: 400, error: 'NO_REPORT_COMMAND', message: 'Nothing to run: set a test report (agenfk update-project <id> --test-report-...) or a verifyCommand.' };
+  }
+  /*
+   * A command that arrived with the repository does not run until somebody on
+   * this machine has read it. Checked HERE, not only on the final verify: the
+   * step checks run the same command on an intermediate step, and running it
+   * there without approval would be the hole the approval exists to close.
+   */
+  if (resolved.fromFile) {
+    const verdict = approvalFor(
+      { key: 'verifyCommand', command },
+      ((project as any)?.approvedFileCommands ?? []) as string[],
+    );
+    if (!verdict.allowed) {
+      return {
+        status: 400, error: 'COMMAND_NEEDS_APPROVAL', message: verdict.reason ?? '',
+        fingerprint: verdict.fingerprint, command,
+      };
+    }
   }
 
   const record: any = {
@@ -3285,7 +3327,12 @@ app.post("/items/:id/step-records/capture", asyncHandler(async (req: any, res: a
   const item: any = await storage.getItem(req.params.id);
   if (!item) return res.status(404).json({ error: "Item not found" });
   const outcome = await captureStepRecord(item);
-  if ('error' in outcome) return res.status(outcome.status).json({ error: outcome.error, message: outcome.message });
+  if ('error' in outcome) {
+    return res.status(outcome.status).json({
+      error: outcome.error, message: outcome.message,
+      ...(outcome.fingerprint ? { fingerprint: outcome.fingerprint } : {}),
+    });
+  }
   res.json(outcome.record);
 }));
 
@@ -6002,7 +6049,16 @@ const staysOn = (status: string) => `\n\nThe advance was refused. Item stays on 
 // step, errors) responds synchronously as before — the route discards the
 // unused reservation in that case.
 /** What the step's checks decided (CGLAB-380), carried into the transition that follows them. */
-interface StepGate { results: CheckResult[]; blocked: boolean }
+interface StepGate {
+  results: CheckResult[];
+  blocked: boolean;
+  /**
+   * Set when the gate refused because a command from the repository has not
+   * been approved: the caller answers with `COMMAND_NEEDS_APPROVAL`, the shape
+   * the CLI already renders, rather than a generic failed-check reply.
+   */
+  approval?: { message: string; fingerprint?: string; command?: string };
+}
 
 /** The branch a card works on: its own, else its nearest ancestor's (branches live on top-level items). */
 async function branchOfCard(item: any): Promise<string | null> {
@@ -6102,7 +6158,10 @@ function deferredToCommand(flow: { steps: any[] }, status: string, project: any)
   const sorted = sortedFlowSteps(flow as any);
   const next = sorted[sorted.findIndex(st => st.name === status) + 1];
   const final = !next || next.name === Status.DONE || isBoundaryStep(next);
-  return final && !project?.testReport && project?.verifyCommand ? ['suite-green'] : [];
+  // The EFFECTIVE command, not only the stored row: a project that declares
+  // its verifyCommand in `.agenfk/project.json` must defer the suite to it too.
+  const { command } = effectiveVerifyCommand(project);
+  return final && !project?.testReport && command ? ['suite-green'] : [];
 }
 
 async function runStepGate(item: any, flow: { steps: any[] }, root: string | null, actor?: { client: string; sessionId: string; agentId: string | null } | null): Promise<StepGate> {
@@ -6114,10 +6173,18 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const resolved = resolveStepChecks(flow.steps, item.status);
   let capture: any = null;
   let captureError: string | undefined;
+  let approval: { message: string; fingerprint?: string; command?: string } | undefined;
   if (needsCapture(resolved.filter(c => !deferToCommand.includes(c.id))) || (next && needsEntryRecord(resolveStepChecks(flow.steps, next.name)))) {
     const out = await captureStepRecord(item);
-    if ('error' in out) captureError = out.message; else capture = out.record;
+    if ('error' in out) {
+      if (out.error === 'COMMAND_NEEDS_APPROVAL') {
+        approval = { message: out.message, fingerprint: out.fingerprint, command: out.command };
+      } else captureError = out.message;
+    } else capture = out.record;
   }
+  // Refused before anything else runs: an unapproved repository command is not
+  // a failed check, it is a question for the person.
+  if (approval) return { results: [], blocked: true, approval };
   const records: any[] = ((await storage.getItem(item.id)) as any)?.stepRecords ?? [];
   const lastOf = (pred: (r: any) => boolean) => [...records].reverse().find(pred) ?? null;
   const prev = sorted[index - 1];
@@ -6291,6 +6358,12 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         const fresh: any = await storage.getItem(itemId);
         if (!fresh) return recorder.status(404).json({ status: item.status, message: '❌ Item was deleted while the checks ran.' });
         const g = await runStepGate(fresh, activeFlow, effectiveRoot ?? null, opts?.actor);
+        if (g.approval) {
+          return recorder.status(400).json({
+            error: 'COMMAND_NEEDS_APPROVAL', message: g.approval.message,
+            fingerprint: g.approval.fingerprint, command: g.approval.command,
+          });
+        }
         if (g.blocked) return refuseOnChecks(recorder, fresh, g);
         return handleValidateProgress(itemId, command, recorder, undefined, undefined, { gate: g, run, actor: opts?.actor });
       })()
@@ -6305,6 +6378,12 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       return;
     }
     gate = await runStepGate(item, activeFlow, effectiveRoot ?? null, opts?.actor);
+    if (gate.approval) {
+      return res.status(400).json({
+        error: 'COMMAND_NEEDS_APPROVAL', message: gate.approval.message,
+        fingerprint: gate.approval.fingerprint, command: gate.approval.command,
+      });
+    }
     if (gate.blocked) return refuseOnChecks(res, item, gate);
     // The gate may have written a capture and produced records: build the
     // exit record on top of what is stored now, not on the copy read above.
@@ -6487,7 +6566,13 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     ? String(declaredHere.settings.verifyCommand)
     : null;
   const projectVerify = fileVerify ?? projectVerifyCommand;
-  if (isFinalStep && !command && fileVerify && projectVerify === fileVerify) {
+  /*
+   * Gated on the command that would ACTUALLY RUN, not on "the caller passed
+   * none": CGLAB-378 ignores a caller command on the final step, so a call
+   * carrying one still ends up running the file's command — and that is
+   * exactly the command that needs approval.
+   */
+  if (isFinalStep && fileVerify && projectVerify === fileVerify) {
     const verdict = approvalFor(
       { key: 'verifyCommand', command: fileVerify },
       ((project as any)?.approvedFileCommands ?? []) as string[],
