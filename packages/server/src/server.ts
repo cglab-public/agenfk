@@ -3186,11 +3186,25 @@ function runForExitCode(command: string, cwd: string, maxMs: number, onOutput?: 
  */
 function treeContentState(root: string, excludeRel: string | null): string | null {
   try {
-    const git = (args: string[]) => execFileSync('git', ['-C', root, ...args], { maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
-    const head = git(['rev-parse', 'HEAD']).toString().trim();
+    const head = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
     if (!head) return null;
+    const files = treeFilesState(root, excludeRel);
+    return files === null ? null : `${head}:${files}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The files half of treeContentState, without HEAD (e99b5015): what a close
+ * commit leaves unchanged when it commits exactly what the capture ran on, so
+ * a capture on the dirty tree can be tied to the commit that follows it.
+ */
+function treeFilesState(root: string, excludeRel: string | null): string | null {
+  try {
+    const git = (args: string[]) => execFileSync('git', ['-C', root, ...args], { maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
     const files = git(['ls-files', '-z', '--cached', '--others', '--exclude-standard']).toString().split('\0').filter(Boolean).sort();
-    const h = crypto.createHash('sha256').update(head);
+    const h = crypto.createHash('sha256');
     for (const rel of new Set(files)) {
       if (rel === excludeRel) continue;
       const abs = path.join(root, rel);
@@ -3198,7 +3212,8 @@ function treeContentState(root: string, excludeRel: string | null): string | nul
       try {
         const st = fs.lstatSync(abs);
         digest = st.isSymbolicLink() ? `link:${fs.readlinkSync(abs)}`
-          : st.isFile() ? crypto.createHash('sha1').update(fs.readFileSync(abs)).digest('hex') : 'other';
+          // The executable bit is content too: a script's tests can depend on it (e99b5015).
+          : st.isFile() ? `${crypto.createHash('sha1').update(fs.readFileSync(abs)).digest('hex')}:${st.mode & 0o111 ? 'x' : '-'}` : 'other';
       } catch { /* deleted: 'absent' */ }
       h.update(`\0${rel}\0${digest}`);
     }
@@ -3232,15 +3247,101 @@ async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) 
     return { status: 400, error: 'NO_REPORT_COMMAND', message: 'Nothing to run: set a test report (agenfk update-project <id> --test-report-...) or a verifyCommand.' };
   }
 
-  const cleanSha = readCleanTreeSha(root, gitRun);
-  const reused = await reusableCapture(item, project, root, cleanSha);
-  if (reused) {
-    const fresh: any = await storage.getItem(item.id);
-    if (!fresh || fresh.status !== item.status) return { status: 409, error: 'CARD_MOVED', message: `The card moved (${item.status} -> ${fresh?.status ?? 'deleted'}); nothing was recorded.` };
-    await storage.updateItem(item.id, { stepRecords: [...(fresh.stepRecords ?? []), reused] } as any);
-    return { record: reused };
+  /*
+   * SINGLE-FLIGHT (e99b5015): a capture of a CLEAN tree that starts while an
+   * identical one runs - same tree, commit, command, format and surface -
+   * waits for it and takes its record. Two suites in one tree share its
+   * on-disk sandbox, and that gave real false failures. A dirty tree is never
+   * shared: its content is the card's own. Only a GREEN is shared: a red or
+   * unreadable run may be a flake, and N cards' baselines should not inherit
+   * one. After any wait that yields nothing to share, the capture starts OVER -
+   * the tree may have changed during a whole suite run, and another waiter may
+   * already be the new owner.
+   */
+  for (let attempt = 0; ; attempt++) {
+    const cleanSha = readCleanTreeSha(root, gitRun);
+    const reused = await reusableCapture(item, project, root, cleanSha);
+    if (reused) {
+      const fresh: any = await storage.getItem(item.id);
+      if (!fresh || fresh.status !== item.status) return { status: 409, error: 'CARD_MOVED', message: `The card moved (${item.status} -> ${fresh?.status ?? 'deleted'}); nothing was recorded.` };
+      await storage.updateItem(item.id, { stepRecords: [...(fresh.stepRecords ?? []), reused] } as any);
+      return { record: reused };
+    }
+    const flightKey = cleanSha ? [item.projectId, root, cleanSha, command, setting?.format ?? 'exit-code', setting?.reportPath ?? '', JSON.stringify(setting?.surface ?? [])].join('\0') : null;
+    // Bounded: a tree that keeps changing under us stops waiting and runs.
+    if (!flightKey || attempt >= 8) return runCapture(item, root, setting, command, cleanSha, opts);
+    const running = capturesInFlight.get(flightKey);
+    if (running) {
+      opts?.onOutput?.(`[agenfk] waiting on the identical capture another card started in this tree...\n`);
+      let theirs: { out: CaptureOutcome; itemId: string } | null = null;
+      try { theirs = await running; } catch { /* its crash is not this card's: start over */ }
+      const rec = theirs && 'record' in theirs.out ? theirs.out.record : null;
+      if (theirs && rec && rec.available === true && rec.exitCode === 0) {
+        const fresh: any = await storage.getItem(item.id);
+        if (!fresh || fresh.status !== item.status) return { status: 409, error: 'CARD_MOVED', message: `The card moved (${item.status} -> ${fresh?.status ?? 'deleted'}); nothing was recorded.` };
+        const shared = { ...rec, step: item.status, at: new Date().toISOString(), reusedFrom: { itemId: theirs.itemId, step: rec.step, at: rec.at } };
+        await storage.updateItem(item.id, { stepRecords: [...(fresh.stepRecords ?? []), shared] } as any);
+        return { record: shared };
+      }
+      continue;
+    }
+    const flight = runCapture(item, root, setting, command, cleanSha, opts).then(out => ({ out, itemId: item.id as string }));
+    capturesInFlight.set(flightKey, flight);
+    try {
+      return (await flight).out;
+    } finally {
+      if (capturesInFlight.get(flightKey) === flight) capturesInFlight.delete(flightKey);
+    }
   }
+}
 
+/**
+ * e99b5015 — the close's per-test green, as a green of the close commit.
+ *
+ * A card's last capture ran on its dirty tree, just before the close commit,
+ * so it was a green of no commit and the next card paid a whole suite for its
+ * entry baseline. It is re-stamped when ALL of these hold, and not otherwise:
+ *  - the tree is clean now, at `sha` - the commit the close just stamped on its
+ *    test record (another agent committing in between is a different commit);
+ *  - the card's LAST own per-test run on exactly these files (HEAD aside) was
+ *    green - an earlier green on the same content does not outvote a later red;
+ *  - it ran in this tree with the project's current report command, format and
+ *    declared surface, and was not itself reused from another card.
+ * HEAD is left out of the comparison on purpose: the close commit is what moves
+ * it. A report command whose results depend on git state (a changed-files-only
+ * run) would see a different world at the clean commit; such a command gives a
+ * narrower baseline, never a green on content it did not see.
+ * Resolves to the stamped record, or null.
+ */
+export async function stampCloseGreen(itemId: string, root: string, sha: string): Promise<any | null> {
+  const item: any = await storage.getItem(itemId);
+  if (!item) return null;
+  const project: any = await storage.getProject(item.projectId);
+  const setting: TestReportSetting | undefined = project?.testReport;
+  if (!setting) return null;
+  const runs = (item.stepRecords ?? []).filter((r: any) => isOwnRun(r, setting, root) && typeof r.filesState === 'string');
+  if (!runs.length) return null;
+  if (readCleanTreeSha(root, gitRun) !== sha) return null;
+  const files = treeFilesState(root, insideRoot(root, path.resolve(root, setting.reportPath)));
+  if (!files) return null;
+  const last = [...runs].reverse().find((r: any) => r.filesState === files);
+  if (!last || last.exitCode !== 0) return null;
+  // Already a green of this very commit: nothing to add.
+  if (last.clean === true && last.head === sha) return null;
+  const stamped = { ...last, step: item.status, at: new Date().toISOString(), head: sha, clean: true, stampedFrom: { step: last.step, at: last.at, head: last.head } };
+  // Read again just before writing: an approval or override may have landed meanwhile.
+  const fresh: any = await storage.getItem(itemId);
+  if (!fresh) return null;
+  await storage.updateItem(itemId, { stepRecords: [...(fresh.stepRecords ?? []), stamped] } as any);
+  noteGreen(item.projectId, root, sha, itemId);
+  return stamped;
+}
+
+/** Captures running now, by what they capture: see SINGLE-FLIGHT in captureStepRecord. */
+const capturesInFlight = new Map<string, Promise<{ out: CaptureOutcome; itemId: string }>>();
+
+/** The run and the record, once no reuse applies. */
+async function runCapture(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts?: { onOutput?: (chunk: string) => void }): Promise<CaptureOutcome> {
   const record: any = {
     step: item.status, kind: 'capture', at: new Date().toISOString(),
     head: readHead(root, gitRun), clean: cleanSha !== null,
@@ -3270,6 +3371,8 @@ async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) 
     try {
       if (stateBefore === null || stateAfter === null) throw new Error('the tree could not be read (not a git repository, no commit yet, or git failed), so the results cannot be tied to it');
       if (stateAfter !== stateBefore) throw new Error('the tree changed while the command ran, so the results cannot be tied to it');
+      // What the run saw, without HEAD: a close that commits exactly this can re-stamp it (e99b5015).
+      record.filesState = stateAfter.slice(stateAfter.indexOf(':') + 1);
       if (!insideTree(reportAbs)) throw new Error('the report resolves outside the tree');
       const text = fs.readFileSync(reportAbs, 'utf8');
       const parsed = setting.format === 'vitest-json' ? parseVitestJson(text, root) : parseJunitXml(text, root);
@@ -3346,6 +3449,22 @@ function indexProjectGreens(projectId: string): Promise<void> {
 }
 
 /**
+ * A capture that RAN (not one reused from another card) green, per test, in
+ * `root`, with the report setting as it is now: command, format and declared
+ * surface. Where and at which commit it counts is the caller's to add.
+ */
+function isOwnGreenRun(r: any, setting: TestReportSetting, root: string): boolean {
+  return isOwnRun(r, setting, root) && r.exitCode === 0;
+}
+
+/** isOwnGreenRun, green or not. */
+function isOwnRun(r: any, setting: TestReportSetting, root: string): boolean {
+  return r?.kind === 'capture' && r.root === root && r.available === true && !r.reusedFrom
+    && r.command === setting.command && r.format === setting.format && r.surfaceScope === 'declared'
+    && JSON.stringify(r.surfaceDeclared ?? []) === JSON.stringify(setting.surface ?? []);
+}
+
+/**
  * 961f301d — a green already on record for exactly this tree, as a capture.
  * The tree must be CLEAN at a commit a run of the same command was recorded
  * against, by a card of this project working in THIS tree (CGLAB-366: another
@@ -3368,9 +3487,7 @@ async function reusableCapture(item: any, project: any, root: string, sha: strin
   }
   const base = { step: item.status, kind: 'capture', at: new Date().toISOString(), head: sha, clean: true, command, root };
   if (setting) {
-    const same = (r: any) => r?.kind === 'capture' && r.root === root && r.clean === true && r.head === sha && r.available === true && r.exitCode === 0
-      && !r.reusedFrom && r.command === command && r.format === setting.format && r.surfaceScope === 'declared'
-      && JSON.stringify(r.surfaceDeclared ?? []) === JSON.stringify(setting.surface ?? []);
+    const same = (r: any) => isOwnGreenRun(r, setting, root) && r.clean === true && r.head === sha;
     let best: { card: any; r: any } | null = null;
     for (const card of candidates) for (const r of card.stepRecords ?? []) if (same(r) && (!best || String(r.at) > String(best.r.at))) best = { card, r };
     if (!best) return null;
@@ -7331,6 +7448,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
           );
           await storage.updateItem(itemId, { tests });
           noteGreen(item.projectId, gateRoot, verifiedSha, itemId);
+          // e99b5015: and its per-test capture, so the next card's baseline runs nothing.
+          try { await stampCloseGreen(itemId, gateRoot, verifiedSha); }
+          catch (e: any) { console.error(`[validate] stampCloseGreen failed after DONE: ${e?.message || e}`); }
           io.emit('items_updated');
         }
       }
