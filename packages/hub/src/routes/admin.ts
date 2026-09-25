@@ -45,6 +45,7 @@ import {
   listRegistryFiles,
 } from '../services/flowRegistry.js';
 import { listRegistryPulls } from '../services/registryPulls.js';
+import { purgeRevokedJiraConnections } from '../services/jira.js';
 
 /**
  * Hosts a repoint campaign may never target. Every installation in the org
@@ -225,6 +226,8 @@ export function adminRouter(ctx: HubServerContext): Router {
       "UPDATE api_keys SET revoked_at = datetime('now') WHERE org_id = ? AND token_hash LIKE ? AND revoked_at IS NULL",
       [req.session!.orgId, `${preview}%`],
     );
+    // A revoked key's JIRA token must not outlive it (CGLAB-412).
+    await purgeRevokedJiraConnections(ctx.db, req.session!.orgId);
     res.json({ revoked: result.changes });
   }));
 
@@ -284,6 +287,7 @@ export function adminRouter(ctx: HubServerContext): Router {
         [orgId, orgId, userKey],
       );
       revokedApiKeys = r.changes;
+      await purgeRevokedJiraConnections(ctx.db, orgId);
     });
 
     res.status(201).json({ userKey, revokedApiKeys });
@@ -1231,6 +1235,7 @@ export function adminRouter(ctx: HubServerContext): Router {
         [orgId, id],
       );
       revokedApiKeys = revoked.changes;
+      await purgeRevokedJiraConnections(ctx.db, orgId);
       // Only in-flight work is cancelled; a finished target keeps its verdict.
       const cancelled = await ctx.db.run(
         `UPDATE upgrade_directive_targets
