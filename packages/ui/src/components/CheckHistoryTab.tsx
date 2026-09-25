@@ -25,38 +25,70 @@ function status(r: Result): { label: string; icon: React.ReactNode } {
 const when = (at: string) => new Date(at).toLocaleString();
 const signedBy = (authority?: string) => (authority === 'passkey' ? 'signed with a passkey' : 'on the board');
 
-function Entry({ e }: { e: CheckHistoryEntry }) {
-  if (e.kind === 'verify') {
-    return (
-      <li data-testid="check-history-entry" className="rounded-xl border border-slate-200 dark:border-slate-800 px-4 py-3">
-        <div className="flex items-center gap-2 text-sm">
-          <ListChecks size={14} className="text-slate-400 shrink-0" />
-          <span className="font-semibold text-slate-700 dark:text-slate-200">Verify on {e.step}</span>
-          <span className={e.blocked ? 'text-rose-600 dark:text-rose-400 text-xs font-bold' : 'text-emerald-600 dark:text-emerald-400 text-xs font-bold'}>
-            {e.blocked ? 'Refused' : 'Passed'}
-          </span>
-          <span className="ml-auto text-xs text-slate-400">{when(e.at)}</span>
-        </div>
-        {e.results.length > 0 && (
-          <ul className="mt-2 space-y-1">
-            {e.results.map((r, i) => {
-              const s = status(r);
-              return (
-                <li key={`${r.id}-${i}`} className="flex items-start gap-2 text-xs">
-                  {s.icon}
-                  <div className="min-w-0">
-                    <span className="font-mono text-slate-700 dark:text-slate-200">{r.id}</span>
-                    <span className="text-slate-400"> · {s.label}{(r as Result & { agentReported?: boolean }).agentReported ? ', agent-reported' : ''}</span>
-                    {r.detail && <p className="text-slate-500 dark:text-slate-400 break-words">{r.detail}</p>}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
+/** One check of a verify: its status, its summary, and a command's output behind a toggle (open when it failed). */
+function ResultRow({ r }: { r: Result }) {
+  const s = status(r);
+  const agent = !!(r as Result & { agentReported?: boolean }).agentReported;
+  const [first, ...rest] = String(r.detail ?? '').split('\n');
+  // An agent check says agent-reported in its status; its note is what the agent wrote.
+  const summary = agent ? first.replace(/^agent-reported:?\s*/, '') : first;
+  const output = rest.join('\n').trim();
+  const failed = r.outcome !== 'pass';
+  const [open, setOpen] = React.useState(failed);
+  return (
+    <li className="flex items-start gap-2 text-xs">
+      {s.icon}
+      <div className="min-w-0 flex-1">
+        <span className="font-mono text-slate-700 dark:text-slate-200">{r.id}</span>
+        <span className="text-slate-400"> · {s.label}{agent ? ', agent-reported' : ''}</span>
+        {summary && <p className="text-slate-500 dark:text-slate-400 break-words">{summary}</p>}
+        {output && !open && (
+          <button type="button" onClick={() => setOpen(true)} className="text-[11px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 underline">Show output</button>
         )}
-      </li>
-    );
-  }
+        {output && open && (
+          <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-slate-50 dark:bg-slate-900 px-2 py-1 text-[11px] text-slate-600 dark:text-slate-300">{output}</pre>
+        )}
+      </div>
+    </li>
+  );
+}
+
+/** A check that passed with nothing to add: the built-ins, not a custom or agent check. */
+const quiet = (r: Result) => r.outcome === 'pass' && !r.id.includes(':') && !(r as Result & { agentReported?: boolean }).agentReported;
+
+function VerifyEntry({ e }: { e: Extract<CheckHistoryEntry, { kind: 'verify' }> }) {
+  const [showQuiet, setShowQuiet] = React.useState(false);
+  const loud = e.results.filter(r => !quiet(r));
+  const calm = e.results.filter(quiet);
+  return (
+    <li data-testid="check-history-entry" className="rounded-xl border border-slate-200 dark:border-slate-800 px-4 py-3">
+      <div className="flex items-center gap-2 text-sm">
+        <ListChecks size={14} className="text-slate-400 shrink-0" />
+        <span className="font-semibold text-slate-700 dark:text-slate-200">Verify on {e.step}</span>
+        <span className={e.blocked ? 'text-rose-600 dark:text-rose-400 text-xs font-bold' : 'text-emerald-600 dark:text-emerald-400 text-xs font-bold'}>
+          {e.blocked ? 'Refused' : 'Passed'}
+        </span>
+        <span className="ml-auto text-xs text-slate-400">{when(e.at)}</span>
+      </div>
+      {e.results.length > 0 && (
+        <ul className="mt-2 space-y-1">
+          {loud.map((r, i) => <ResultRow key={`${r.id}-${i}`} r={r} />)}
+          {showQuiet && calm.map((r, i) => <ResultRow key={`q-${r.id}-${i}`} r={r} />)}
+          {calm.length > 0 && !showQuiet && (
+            <li>
+              <button type="button" onClick={() => setShowQuiet(true)} className="text-[11px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 underline">
+                {calm.length} other {calm.length === 1 ? 'check' : 'checks'} passed
+              </button>
+            </li>
+          )}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+function Entry({ e }: { e: CheckHistoryEntry }) {
+  if (e.kind === 'verify') return <VerifyEntry e={e} />;
   if (e.kind === 'approval') {
     return (
       <li data-testid="check-history-entry" className="rounded-xl border border-emerald-200 dark:border-emerald-900 bg-emerald-50/50 dark:bg-emerald-950/30 px-4 py-3 text-sm">

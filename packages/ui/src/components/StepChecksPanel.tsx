@@ -12,7 +12,7 @@ import { CheckCircle2, XCircle, AlertTriangle, MinusCircle, FastForward, Unlock,
 import { api, type StepCheckResult } from '../api';
 import { useSocketEvent } from '../SocketContext';
 import { canSignHere, createPasskey, handoffUrl, signAct } from '../webauthn';
-import { approveCommand, argvHash } from '../commandApprovals';
+import { approveCommand, argvHash, listCommandApprovals } from '../commandApprovals';
 
 const errorText = (e: unknown): string => {
   const err = e as { response?: { data?: { error?: string } }; message?: string } | null;
@@ -37,6 +37,9 @@ export const StepChecksPanel: React.FC<{ itemId: string; projectId?: string }> =
   const awaitingCommand = (r: StepCheckResult) => r.id.startsWith('command-check:') && r.blocking && r.params?.approval === 'person' && /waiting for a person to approve the command/.test(r.detail);
   const commandWaits = (gates?.lastChecks?.results ?? []).some(awaitingCommand);
   const { data: passkeyStatus } = useQuery({ queryKey: ['passkeys'], queryFn: () => api.getPasskeyStatus(), enabled: !!gates?.passkeyRequired || commandWaits });
+  // A command approved since the last verify: say so until the next verify runs it (83e4e956).
+  const { data: approvedCommands } = useQuery({ queryKey: ['command-approvals', projectId], queryFn: () => listCommandApprovals(projectId!), enabled: commandWaits && !!projectId });
+  const commandApproved = (r: StepCheckResult) => (approvedCommands ?? []).some(a => JSON.stringify(a.argv) === r.params.argv);
   useSocketEvent('items_updated', () => { void qc.invalidateQueries({ queryKey: key }); });
 
   const [note, setNote] = React.useState('');
@@ -95,6 +98,7 @@ export const StepChecksPanel: React.FC<{ itemId: string; projectId?: string }> =
       const argv = JSON.parse(r.params.argv) as string[];
       const assertion = await assertionFor({ purpose: 'command', itemId: projectId, checkId: await argvHash(argv) });
       await approveCommand(projectId, argv, assertion);
+      await qc.invalidateQueries({ queryKey: ['command-approvals', projectId] });
     });
   };
 
@@ -148,7 +152,7 @@ export const StepChecksPanel: React.FC<{ itemId: string; projectId?: string }> =
               <div className="space-y-1">
                 <p className="text-xs text-amber-800 dark:text-amber-200">No passkey is enrolled on this board yet. Enroll one to sign approvals.</p>
                 <button type="button" disabled={busy} onClick={enroll}
-                  className="text-xs font-bold px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-900 dark:bg-slate-200 dark:text-slate-900 text-white disabled:opacity-50">
+                  className="text-xs font-bold px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-900 dark:bg-slate-200 dark:hover:bg-slate-300 dark:text-slate-900 text-white disabled:opacity-50">
                   Enroll a passkey
                 </button>
               </div>
@@ -185,9 +189,11 @@ export const StepChecksPanel: React.FC<{ itemId: string; projectId?: string }> =
                     {awaitingCommand(r) && (
                       <div className="mt-1 space-y-1">
                         <code className="block text-xs bg-slate-100 dark:bg-slate-800 rounded px-2 py-1 break-all">{(JSON.parse(r.params.argv) as string[]).join(' ')}</code>
-                        {passkeyStatus && !passkeyStatus.enrolled && signHere ? (
+                        {commandApproved(r) ? (
+                          <p className="text-xs text-emerald-700 dark:text-emerald-300 flex items-center gap-1"><ShieldCheck size={13} /> Approved with a passkey — it runs on the next verify.</p>
+                        ) : passkeyStatus && !passkeyStatus.enrolled && signHere ? (
                           <button type="button" disabled={busy} onClick={enroll}
-                            className="text-xs font-bold px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-900 dark:bg-slate-200 dark:text-slate-900 text-white disabled:opacity-50">
+                            className="text-xs font-bold px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-900 dark:bg-slate-200 dark:hover:bg-slate-300 dark:text-slate-900 text-white disabled:opacity-50">
                             Enroll a passkey to approve commands
                           </button>
                         ) : (

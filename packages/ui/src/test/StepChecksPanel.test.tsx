@@ -32,6 +32,7 @@ vi.mock('../SocketContext', () => ({ useSocketEvent: vi.fn() }));
 vi.mock('../commandApprovals', () => ({
   argvHash: vi.fn(async () => 'hash-1'),
   approveCommand: vi.fn(() => Promise.resolve({})),
+  listCommandApprovals: vi.fn(() => Promise.resolve([])),
 }));
 import * as commandApprovals from '../commandApprovals';
 
@@ -210,5 +211,18 @@ describe('StepChecksPanel: a step that asks for a passkey (CGLAB-383)', () => {
     })] } }), 'p1');
     await screen.findByText('command-check:lint');
     expect(screen.queryByRole('button', { name: /approve this command/i })).toBeNull();
+  });
+
+  // 83e4e956: once a person approved the command, say so until the next verify runs it.
+  it('shows a command approved since the last verify as approved, with no button', async () => {
+    const argv = ['npm', 'run', 'lint'];
+    vi.mocked(commandApprovals.listCommandApprovals).mockResolvedValue([{ argv, at: '2026-09-25T00:17:38Z', authority: 'passkey' }] as never);
+    show(gates({ lastChecks: { step: 'WORK', at: 'x', blocked: true, results: [result('command-check:lint', {
+      outcome: 'fail', blocking: true, params: { name: 'lint', argv: JSON.stringify(argv), approval: 'person' },
+      detail: 'waiting for a person to approve the command npm run lint on the board (signed with a passkey).',
+    })] } }), 'p1');
+    expect(await screen.findByText(/Approved with a passkey.*runs on the next verify/i)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /approve this command/i })).toBeNull();
+    expect(commandApprovals.listCommandApprovals).toHaveBeenCalledWith('p1');
   });
 });

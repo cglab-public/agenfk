@@ -84,12 +84,34 @@ describe('efcacdeb (C2): a command check the server runs', () => {
   });
 
   it('blocks when the command fails, with its exit code and the tail of its output', async () => {
-    const { id } = await onWork([cmd(node("console.log('lint: 2 problems'); process.exit(3)"))]);
+    // The text is built at run time, so the command line itself never contains it.
+    const { id } = await onWork([cmd(node("console.log(['lint:', 2, 'problems'].join(' ')); process.exit(3)"))]);
     const v = await verdict(id);
     expect(v.status).toBe(422);
     expect(v.check).toMatchObject({ outcome: 'fail', blocking: true });
     expect(v.check.detail).toMatch(/exit(ed)? (code )?3/);
-    expect(v.check.detail).toMatch(/lint: 2 problems/);
+    // 83e4e956: the first line reads on its own; the output follows it.
+    const [summary, ...output] = v.check.detail.split('\n');
+    expect(summary).not.toMatch(/lint: 2 problems/);
+    expect(output.join('\n')).toMatch(/lint: 2 problems/);
+  });
+
+  // 83e4e956: a command reads as a command line; an argument with spaces is quoted.
+  it('names the command as a command line, quoting what needs it, with its output after the first line', async () => {
+    const { id } = await onWork([cmd(node("console.log('noise'); process.exit(0)"))]);
+    const v = await verdict(id);
+    const [summary, ...output] = v.check.detail.split('\n');
+    expect(summary).toBe(`${process.execPath} -e 'console.log(\\'noise\\'); process.exit(0)' exited 0`);
+    expect(output.join('\n')).toMatch(/noise/);
+    const h = (await agent().get(`/items/${id}/check-history`)).body;
+    expect(h[0].results.find((r: any) => r.id === 'command-check:lint').detail).toMatch(/exited 0\n[\s\S]*noise/);
+  });
+
+  it('keeps the output short enough for the history to hold it whole', async () => {
+    const { id } = await onWork([cmd(node("console.log('x'.repeat(3000) + 'END'); process.exit(1)"))]);
+    const detail = (await verdict(id)).check.detail;
+    expect(detail.length).toBeLessThanOrEqual(500);
+    expect(detail).toMatch(/END$/);
   });
 
   it("runs in the card's tree", async () => {
@@ -152,7 +174,7 @@ describe('efcacdeb (C2): a command check the server runs', () => {
       const { id } = await onWork([cmd(argv, { approval: 'person' })]);
       const v = await verdict(id);
       expect(v.check).toMatchObject({ outcome: 'fail', blocking: true });
-      expect(v.check.detail).toContain(JSON.stringify(argv));
+      expect(v.check.detail).toContain(`${process.execPath} -e 'process.exit(0)'`);
       expect(v.check.detail).toMatch(/approve/i);
     });
 

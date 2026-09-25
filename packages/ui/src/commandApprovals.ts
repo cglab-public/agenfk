@@ -17,3 +17,9 @@ export async function approveCommand(projectId: string, argv: readonly string[],
   const { data } = await axios.post(`${API_URL}/projects/${projectId}/command-approvals`, { argv, assertion }, { headers: { 'x-agenfk-ui': '1' } });
   return data;
 }
+
+/** The project's approved commands (83e4e956): a check shows it is approved before the next verify runs it. */
+export async function listCommandApprovals(projectId: string): Promise<Array<{ argv: string[]; at: string; authority?: string }>> {
+  const { data } = await axios.get(`${API_URL}/projects/${projectId}`);
+  return Array.isArray(data?.commandApprovals) ? data.commandApprovals : [];
+}

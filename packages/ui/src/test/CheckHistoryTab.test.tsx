@@ -4,7 +4,7 @@
  * 5ee2c3b1 — the card's Checks tab: the history of its verifies, approvals
  * and overrides, newest first, each with its date and every check's status.
  */
-import { render, screen, cleanup, waitFor, within } from '@testing-library/react';
+import { render, screen, cleanup, waitFor, within, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { CheckHistoryTab } from '../components/CheckHistoryTab';
@@ -42,6 +42,8 @@ describe('CheckHistoryTab', () => {
     const approval = within(entry).getByText('human-approval').closest('li')!;
     expect(within(approval).getByText(/blocked/i)).toBeDefined();
     expect(within(approval).getByText('waiting for a person')).toBeDefined();
+    // 83e4e956: a built-in that passed is folded away until asked for.
+    fireEvent.click(within(entry).getByRole('button', { name: /1 other check passed/i }));
     expect(within(within(entry).getByText('jira-key-valid').closest('li')!).getByText(/passed/i)).toBeDefined();
     expect(within(within(entry).getByText('new-tests-born-green').closest('li')!).getByText(/warning/i)).toBeDefined();
   });
@@ -82,9 +84,44 @@ describe('CheckHistoryTab', () => {
     await waitFor(() => expect(api.getCheckHistory).toHaveBeenCalledWith('c1'));
   });
 
-  it('labels an agent check as agent-reported', async () => {
+  it('labels an agent check as agent-reported once, and shows just its note', async () => {
     show([{ kind: 'verify', step: 'WORK', at: AT, blocked: false, results: [{ id: 'agent-check:docs', outcome: 'pass', blocking: false, severity: 'block', detail: 'agent-reported: README updated', agentReported: true }] }]);
     const li = (await screen.findByText('agent-check:docs')).closest('li')!;
     expect(li.textContent).toMatch(/passed, agent-reported/);
+    expect(li.textContent!.match(/agent-reported/g)).toHaveLength(1);
+    expect(within(li).getByText('README updated')).toBeTruthy();
+  });
+
+  // 83e4e956: a command's output sits behind a toggle - open when the check failed.
+  it("hides a passing command's output behind Show output", async () => {
+    show([{ kind: 'verify', step: 'WORK', at: AT, blocked: false, results: [{ id: 'command-check:tests', outcome: 'pass', blocking: false, severity: 'block', detail: 'node --test exited 0\n✔ adds\nℹ tests 3' }] }]);
+    const li = (await screen.findByText('command-check:tests')).closest('li')!;
+    expect(within(li).getByText('node --test exited 0')).toBeTruthy();
+    expect(within(li).queryByText(/tests 3/)).toBeNull();
+    fireEvent.click(within(li).getByRole('button', { name: /show output/i }));
+    expect(within(li).getByText(/tests 3/)).toBeTruthy();
+  });
+
+  it("shows a failing command's output straight away", async () => {
+    show([{ kind: 'verify', step: 'WORK', at: AT, blocked: true, results: [{ id: 'command-check:lint', outcome: 'fail', blocking: true, severity: 'block', detail: 'npm run lint exited 1\n2 problems' }] }]);
+    const li = (await screen.findByText('command-check:lint')).closest('li')!;
+    expect(within(li).getByText(/2 problems/)).toBeTruthy();
+  });
+
+  // 83e4e956: checks that passed with nothing to say fold away.
+  it('collapses the other passing checks into one line, and expands them', async () => {
+    show([{ kind: 'verify', step: 'WORK', at: AT, blocked: true, results: [
+      { id: 'on-card-branch', outcome: 'pass', blocking: false, severity: 'block', detail: 'no branch is recorded' },
+      { id: 'jira-key-valid', outcome: 'pass', blocking: false, severity: 'block', detail: 'ABC-12' },
+      { id: 'human-approval', outcome: 'fail', blocking: true, severity: 'block', detail: 'waiting for a person' },
+      { id: 'command-check:tests', outcome: 'pass', blocking: false, severity: 'block', detail: 'node --test exited 0' },
+    ] }]);
+    const entry = await screen.findByTestId('check-history-entry');
+    expect(within(entry).getByText('human-approval')).toBeTruthy();
+    expect(within(entry).getByText('command-check:tests')).toBeTruthy();
+    expect(within(entry).queryByText('on-card-branch')).toBeNull();
+    fireEvent.click(within(entry).getByRole('button', { name: /2 other checks passed/i }));
+    expect(within(entry).getByText('on-card-branch')).toBeTruthy();
+    expect(within(entry).getByText('jira-key-valid')).toBeTruthy();
   });
 });

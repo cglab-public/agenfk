@@ -30,6 +30,18 @@ export function commandEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.Process
 const TAIL = 2000;
 const tail = (s: string) => (s.length > TAIL ? `…${s.slice(-TAIL)}` : s).trim();
 
+/** A command as a person reads it: its arguments, quoted where a space or symbol needs it (83e4e956). */
+export const commandLine = (argv: readonly string[]): string =>
+  argv.map(a => (/^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, "\\'")}'`)).join(' ');
+
+/** What the check says: one readable line, then the output's tail - short enough for the history to keep whole. */
+const DETAIL_MAX = 500;
+const withOutput = (line: string, output: string) => {
+  if (!output) return line;
+  const room = DETAIL_MAX - line.length - 2;
+  return room > 0 ? `${line}\n${output.length > room ? `…${output.slice(-(room - 1))}` : output}` : line;
+};
+
 /** Run one argv in `cwd`: its exit code (null when killed) and the tail of its output. */
 export function runArgv(argv: readonly string[], cwd: string, timeoutMs: number): Promise<{ exitCode: number | null; output: string; notFound?: boolean; timedOut?: boolean }> {
   return new Promise(resolve => {
@@ -51,7 +63,7 @@ export async function judgeCommandChecks(
   for (const c of checks) {
     let argv: string[] = [];
     try { argv = JSON.parse(c.params.argv); } catch { /* validated at save time */ }
-    const shown = JSON.stringify(argv);
+    const shown = commandLine(argv);
     if (ctx.origin === 'registry') {
       out[c.id] = { outcome: 'fail', detail: `not run: this flow was installed from the community registry, and only flows from your org's hub or made on this machine may run commands. Publish it through your hub, or copy it into a local flow, to use ${shown}.` };
       continue;
@@ -63,8 +75,8 @@ export async function judgeCommandChecks(
     }
     const r = await runArgv(argv, ctx.root, ctx.timeoutMs);
     out[c.id] = r.exitCode === 0
-      ? { outcome: 'pass', detail: `${shown} exited 0${r.output ? `: ${r.output.slice(-300)}` : ''}` }
-      : { outcome: 'fail', detail: r.notFound ? `${shown}: program not found (${argv[0]})` : `${shown} ${r.timedOut ? 'timed out' : `exited ${r.exitCode ?? 'without a code (killed)'}`}${r.output ? `: ${r.output}` : ''}` };
+      ? { outcome: 'pass', detail: withOutput(`${shown} exited 0`, r.output) }
+      : { outcome: 'fail', detail: r.notFound ? `${shown}: program not found (${argv[0]})` : withOutput(`${shown} ${r.timedOut ? 'timed out' : `exited ${r.exitCode ?? 'without a code (killed)'}`}`, r.output) };
   }
   return out;
 }
