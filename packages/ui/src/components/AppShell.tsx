@@ -129,20 +129,11 @@ type ViewId = 'kanban' | 'terminal' | 'settings' | 'project';
  */
 type WorkRow =
   | { kind: 'view'; id: ViewId; label: string; Icon: LucideIcon }
-  | { kind: 'action'; id: 'flows' | 'terminal' | 'shell'; label: string; Icon: LucideIcon };
+  | { kind: 'action'; id: 'flows' | 'terminal'; label: string; Icon: LucideIcon };
 
 const WORK_ROWS: WorkRow[] = [
-  /*
-   * The other way to start work, above the two destinations: talk to an agent
-   * in the project's own checkout and let it write the cards (d450f6aa). The
-   * project page has the same door; this is where people already are.
-   */
+  // One direct entry to the user's shell, available before choosing a project.
   { kind: 'action', id: 'terminal', label: 'Open terminal', Icon: SquareTerminal },
-  /*
-   * And the one with NO project at all: the user's own shell in `$HOME`. No
-   * dialog, no agent — a terminal before any repository is chosen (57a42471).
-   */
-  { kind: 'action', id: 'shell', label: 'Open shell', Icon: SquareTerminal },
   { kind: 'view', id: 'kanban', label: 'Tasks', Icon: LayoutGrid },
   // GitBranch, the same icon the board's Manage Flow button uses: one concept,
   // two routes to it, and a second glyph would read as a second feature.
@@ -1583,10 +1574,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           onOpenProject={projectId => { setPageProjectId(projectId); setActive('project'); }}
           onOpenFlows={() => setFlowsOpen(true)}
           onOpenTerminal={() => {
-            const name = projectNames.get(activeProjectId ?? '');
-            if (activeProjectId && name) requestProjectTerminal(activeProjectId, name);
-          }}
-          onOpenShell={() => {
             // Opened here, not through a dialog: the shell needs no agent and
             // no target, so there is nothing to ask about.
             sessionSeq.current += 1;
@@ -2227,18 +2214,11 @@ interface SidebarProps {
    * would put an app-wide surface inside the column it covers.
    */
   onOpenFlows: () => void;
-  /**
-   * Open a terminal on the ACTIVE project, with no card.
-   *
-   * Shell-owned like `onOpenFlows`: only the shell knows which project is
-   * active and how to enqueue a session for it.
-   */
-  onOpenTerminal: () => void;
   /** Open the user's own shell in `$HOME` — no card, no project, no dialog. */
-  onOpenShell: () => void;
+  onOpenTerminal: () => void;
 }
 
-function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResizeStart, onNudge, requestTerminal, sessionRows, herdrProject, openPane, onOpenPane, liveItems, openSession, openSettings, revealOnBoard, activeView, onSelectView, onOpenProject, onOpenFlows, onOpenTerminal, onOpenShell, onOpenFleet }: SidebarProps) {
+function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResizeStart, onNudge, requestTerminal, sessionRows, herdrProject, openPane, onOpenPane, liveItems, openSession, openSettings, revealOnBoard, activeView, onSelectView, onOpenProject, onOpenFlows, onOpenTerminal, onOpenFleet }: SidebarProps) {
   /*
    * EVERY item, only for the claim chips (CGLAB-190).
    *
@@ -2631,7 +2611,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
             // An action with nothing to act on. The flow belongs to a project,
             // so with none open there is no editor to show - say that on the
             // control rather than opening an empty one.
-            const disabled = row.kind === 'action' && row.id !== 'shell' && !activeProjectId;
+            const disabled = row.kind === 'action' && row.id === 'flows' && !activeProjectId;
             return (
               <li key={row.id}>
                 <button
@@ -2640,8 +2620,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                     if (disabled) return;
                     if (row.kind === 'view') onSelectView(row.id);
                     else if (row.id === 'flows') onOpenFlows();
-                    else if (row.id === 'terminal') onOpenTerminal();
-                    else onOpenShell();
+                    else onOpenTerminal();
                   }}
                   // `aria-disabled`, not `disabled`. A disabled button is not
                   // focusable, so it can be neither tabbed to nor announced —
@@ -2662,10 +2641,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                    * control is dead beats being told what it is called.
                    */
                   title={
-                    disabled
-                      ? (row.kind === 'action' && row.id === 'terminal'
-                        ? 'Open a project to open a terminal here'
-                        : 'Open a project to edit its flow')
+                    disabled ? 'Open a project to edit its flow'
                     : !open ? label
                     : undefined
                   }
@@ -3653,5 +3629,4 @@ function SidebarLabel({ children }: { children: React.ReactNode }) {
     </h2>
   );
 }
-
 

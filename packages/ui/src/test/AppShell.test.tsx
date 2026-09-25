@@ -1888,46 +1888,33 @@ describe('a card whose run belongs to a terminal this app opened', () => {
   });
 });
 
-/*
- * The second way to start work, from the sidebar (d450f6aa).
- *
- * The project page already opens a card-less terminal; the sidebar is where
- * people are when they want to start talking to an agent, so the same door
- * lives on top of the WORK group.
- */
-describe('opening a project terminal from the sidebar', () => {
-  it('sits above Tasks and opens the dialog for the active project', async () => {
+describe('opening a terminal directly from the sidebar', () => {
+  it('offers one action above Tasks and opens a shell even with a project active', async () => {
     renderShell();
-    // An active project: the action needs one to have a checkout to run in.
     fireEvent.click(await screen.findByRole('button', { name: 'horizon-lab' }));
 
     const nav = screen.getByRole('navigation', { name: /work/i });
     const labels = within(nav).getAllByRole('button').map(b => b.getAttribute('aria-label'));
-    expect(labels).toContain('Open terminal');
+    expect(labels.filter(label => label === 'Open terminal')).toHaveLength(1);
+    expect(within(nav).queryByRole('button', { name: 'Open shell' })).toBeNull();
     expect(labels.indexOf('Open terminal'), 'the terminal row must be above Tasks')
       .toBeLessThan(labels.indexOf('Tasks'));
 
     fireEvent.click(within(nav).getByRole('button', { name: 'Open terminal' }));
-    // The SAME dialog the project page opens, named for the project.
-    expect(await screen.findByRole('dialog', { name: /open a terminal on horizon-lab/i })).toBeTruthy();
-
-    // Create runs a shell in the PROJECT, with no card.
-    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
+    expect(screen.queryByRole('dialog')).toBeNull();
     await waitFor(() => expect(ptyCalls.requests.length).toBe(1));
-    expect(ptyCalls.requests[0]).toMatchObject({ projectId: 'p2' });
+    expect(ptyCalls.requests[0]).toMatchObject({ agentId: 'shell' });
     expect(ptyCalls.requests[0]).not.toHaveProperty('itemId');
+    expect(ptyCalls.requests[0]).not.toHaveProperty('projectId');
   });
-});
 
-/*
- * A terminal with nothing chosen yet (57a42471): the user's own shell in
- * `$HOME`, opened directly — no agent dialog, no project.
- */
-describe('opening the home shell from the sidebar', () => {
-  it('opens a shell with no card and no project, without a dialog', async () => {
+  it('also opens a shell with no project selected, without a dialog', async () => {
     renderShell();
     const nav = await screen.findByRole('navigation', { name: /work/i });
-    fireEvent.click(within(nav).getByRole('button', { name: 'Open shell' }));
+    const terminal = within(nav).getByRole('button', { name: 'Open terminal' });
+    expect(terminal.getAttribute('aria-disabled')).not.toBe('true');
+    expect(within(nav).queryByRole('button', { name: 'Open shell' })).toBeNull();
+    fireEvent.click(terminal);
 
     // Nothing to ask: the shell is the user's own, so no picker.
     expect(screen.queryByRole('dialog')).toBeNull();
