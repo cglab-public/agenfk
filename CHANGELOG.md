@@ -31,6 +31,18 @@ Beta, cumulative over `2.0.0-beta.1`: everything in beta.1, plus the changes bel
   review step the roll-up stops a parent there, and the parent's own verify closes it - that was counted
   already.) Every step move verify makes now reaches the hub as `step.transitioned`, not only command runs.
 
+### JIRA, configured once on the hub
+
+- **A hub admin registers the org's Atlassian OAuth app once** (Admin → JIRA on the hub: client id, write-only
+  encrypted secret, the callback URL to register, a count of connected installations and "Disconnect everyone").
+- **Every joined installation connects its own JIRA identity through the hub** (per-user OAuth; the token is bound
+  to that installation's hub API key and stored encrypted on the hub) and reaches JIRA only through the hub's
+  read-only relay with its own token, so JIRA's permissions apply per person. No JIRA credential lives on laptops.
+- **While joined there is no fallback to a local JIRA config.** `agenfk jira setup` on a joined installation says to
+  ask a hub admin; `agenfk jira status` shows the hub's app and this user's connection; `agenfk jira disconnect`
+  drops this user's hub connection. The board says "Ask your hub admin to configure JIRA", offers Connect JIRA, or
+  shows the connection with Disconnect. Installations not joined to a hub keep today's local behaviour.
+
 ### Checks on the board
 
 - **A Checks tab on every card** lists its check runs, approvals and overrides by date, with each check's status.
