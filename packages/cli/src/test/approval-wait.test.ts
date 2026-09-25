@@ -5,7 +5,7 @@
  * waiting is allowed, and the bounded wait itself.
  */
 import { describe, it, expect } from 'vitest';
-import { onlyApprovalBlocks, waitAllowed, waitForApproval } from '../approvalWait';
+import { onlyApprovalBlocks, waitAllowed, waitForApproval, alreadySatisfied } from '../approvalWait';
 
 const check = (id: string, blocking: boolean) => ({ id, blocking });
 
@@ -46,10 +46,10 @@ describe('waitForApproval', () => {
     expect(polls).toBe(3);
   });
 
-  it('returns approved when the card has left the step some other way', async () => {
+  it('returns moved when the card has left the step some other way: nothing is left to wait for (C3b review)', async () => {
     const c = clock();
     const r = await waitForApproval({ step: 'DISCOVERY', approvalsBefore: 0, poll: async () => gates(0, 'CREATE_UNIT_TESTS'), intervalMs: 3000, deadlineMs: 60_000, ...c });
-    expect(r).toBe('approved');
+    expect(r).toBe('moved');
   });
 
   it('gives up at the deadline', async () => {
@@ -66,5 +66,47 @@ describe('waitForApproval', () => {
     let polls = 0;
     const r = await waitForApproval({ step: 'DISCOVERY', approvalsBefore: 0, poll: async () => { if (polls++ === 0) throw new Error('ECONNRESET'); return gates(1); }, intervalMs: 3000, deadlineMs: 60_000, ...c });
     expect(r).toBe('approved');
+  });
+});
+
+/**
+ * C3b: a command check waiting for a person's command approval is a person's
+ * approval too. A verify blocked only by those (and/or the step's approval)
+ * opens the board and waits, the same way.
+ */
+describe('waiting on a command approval (C3b)', () => {
+  const waitingCommand = { id: 'command-check:lint', blocking: true, detail: 'waiting for a person to approve the command', meta: { waiting: { kind: 'command-approval', hash: 'h-lint', command: 'npm run lint' } } };
+  const clock = () => { let t = 0; return { now: () => t, sleep: async (ms: number) => { t += ms; } }; };
+
+  it('onlyApprovalBlocks: a command waiting for a person counts as waiting for a person', () => {
+    expect(onlyApprovalBlocks([waitingCommand])).toBe(true);
+    expect(onlyApprovalBlocks([waitingCommand, check('human-approval', true)])).toBe(true);
+  });
+
+  it('onlyApprovalBlocks: a command check that FAILED is not waiting for anyone, whatever its words say', () => {
+    const { meta: _m, ...failed } = waitingCommand;
+    expect(onlyApprovalBlocks([{ ...failed, detail: 'waiting for a person to approve the command' }])).toBe(false);
+  });
+
+  it('waitForApproval: the approval of the command it waits on ends the wait', async () => {
+    let n = 0;
+    const poll = async () => ({ step: 'WORK', approvals: [], commandApprovals: n++ < 2 ? [] : [{ hash: 'h-lint', at: '2026-09-25T10:00:00Z' }] });
+    const r = await waitForApproval({ step: 'WORK', approvalsBefore: 0, commandsWaitedOn: [{ hash: 'h-lint', approvedAt: null }], poll, intervalMs: 10, deadlineMs: 1000, ...clock() });
+    expect(r).toBe('approved');
+  });
+
+  it('waitForApproval: approving an UNRELATED command in the same project does not end it', async () => {
+    const poll = async () => ({ step: 'WORK', approvals: [], commandApprovals: [{ hash: 'h-other', at: '2026-09-25T10:00:00Z' }] });
+    const r = await waitForApproval({ step: 'WORK', approvalsBefore: 0, commandsWaitedOn: [{ hash: 'h-lint', approvedAt: null }], poll, intervalMs: 10, deadlineMs: 100, ...clock() });
+    expect(r).toBe('timeout');
+  });
+
+  it('alreadySatisfied: an approval that landed while the refused verify ran is caught at once', () => {
+    const stepAndCommand = [check('human-approval', true), waitingCommand];
+    // The person approved both while the command checks were running.
+    expect(alreadySatisfied(stepAndCommand, { step: 'WORK', approvals: [{}], commandApprovals: [{ hash: 'h-lint', at: 't' }] })).toBe(true);
+    // Only one of the two: still waiting.
+    expect(alreadySatisfied(stepAndCommand, { step: 'WORK', approvals: [{}], commandApprovals: [] })).toBe(false);
+    expect(alreadySatisfied(stepAndCommand, null)).toBe(false);
   });
 });

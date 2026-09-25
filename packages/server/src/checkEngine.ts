@@ -36,6 +36,22 @@ export interface CheckResult {
   overridden?: Override;
   /** An agent check: the coding agent reported it, the server did not check it (efcacdeb). */
   agentReported?: boolean;
+  /** What a custom check actually did, stamped when it was judged (C3b). */
+  meta?: CheckMeta;
+}
+
+/**
+ * Facts about a custom check's run that its words must not be parsed for (C3b):
+ * whether the command RAN, whose approval let it, that it is WAITING for a
+ * person's command approval (and for which command), whether the agent really
+ * reported an agent check, and what it said.
+ */
+export interface CheckMeta {
+  ran?: boolean;
+  approval?: { by: string; at: string; authority?: string };
+  waiting?: { kind: 'command-approval'; hash: string; command: string };
+  reported?: boolean;
+  note?: string;
 }
 
 /** The coding agent's report of one agent check (efcacdeb). */
@@ -149,6 +165,7 @@ interface Verdict {
   /** Unavailable only because the card predates checks: warn, never block. */
   soft?: boolean;
   produces?: Partial<Record<RecordName, unknown>>;
+  meta?: CheckMeta;
 }
 type Evaluator = (ctx: EngineContext, params: Record<string, string>) => Verdict;
 
@@ -460,8 +477,9 @@ export const EVALUATORS: Record<string, Evaluator> = {
   'agent-check': (ctx, p) => {
     const r = ctx.agentReports?.[p.name];
     if (!r) return { outcome: 'fail', detail: `not reported yet. The step asks: ${p.instruction} When it is done, report it: agenfk verify ${ctx.item.id} --check ${p.name}=pass (or =fail) --check-note ${p.name}="<what you found>" --evidence "<evidence>" (MCP: validate_progress with agentChecks).` };
-    if (r.outcome === 'fail') return { outcome: 'fail', detail: `the agent reported it failed${r.note ? `: ${r.note}` : ''}` };
-    return { outcome: 'pass', detail: `agent-reported${r.note ? `: ${r.note}` : ''}` };
+    const meta = { reported: true, ...(r.note ? { note: r.note } : {}) };
+    if (r.outcome === 'fail') return { outcome: 'fail', detail: `the agent reported it failed${r.note ? `: ${r.note}` : ''}`, meta };
+    return { outcome: 'pass', detail: `agent-reported${r.note ? `: ${r.note}` : ''}`, meta };
   },
 
   // efcacdeb: run by the server before the engine (commandChecks.ts); judged here.
@@ -530,7 +548,7 @@ export function evaluateChecks(resolved: readonly ResolvedCheck[], ctx: EngineCo
     // It covers the verdict it was given against: a different failure needs its own.
     const o = blocks ? ctx.overrides?.[c.id] : undefined;
     const overridden = o && (o.detail === undefined || o.detail === verdict.detail) ? o : undefined;
-    results.push({ ...base, outcome: verdict.outcome, detail: verdict.detail, blocking: blocks && !overridden, ...(overridden ? { overridden } : {}), ...(c.id.startsWith('agent-check:') ? { agentReported: true } : {}) });
+    results.push({ ...base, outcome: verdict.outcome, detail: verdict.detail, blocking: blocks && !overridden, ...(overridden ? { overridden } : {}), ...(c.id.startsWith('agent-check:') ? { agentReported: true } : {}), ...(verdict.meta ? { meta: verdict.meta } : {}) });
     if (verdict.outcome === 'pass' && verdict.produces) Object.assign(produced, verdict.produces);
   }
   return { results, blocked: results.some(r => r.blocking), produced };

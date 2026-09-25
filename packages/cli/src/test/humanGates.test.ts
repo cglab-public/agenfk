@@ -4,7 +4,7 @@
  * step, the check and the reason, so a reviewer sees what a person let through.
  */
 import { describe, it, expect } from 'vitest';
-import { buildPrBody, formatHumanGates, type GateEvent } from '../humanGates';
+import { buildPrBody, formatHumanGates, formatCustomChecks, type GateEvent, type CustomCheckRow } from '../humanGates';
 
 const override: GateEvent = { itemId: 'c1', title: 'Fix the picker', step: 'WORK', kind: 'override', check: 'jira-key-valid', reason: 'spike card, no issue', by: 'board', at: '2026-09-24T10:00:00.000Z' };
 const approval: GateEvent = { itemId: 'c2', title: 'Plan it', step: 'DISCOVERY', kind: 'approval', note: 'go', by: 'board', at: '2026-09-24T09:00:00.000Z' };
@@ -85,5 +85,55 @@ describe('buildPrBody', () => {
 
   it('works with an empty body', () => {
     expect(buildPrBody('', [override])).toMatch(/^## Human gates/);
+  });
+});
+
+/**
+ * C3b: custom checks on the PR. A reviewer must see which results the server
+ * checked itself and which it took on the agent's word, and who let a command
+ * run.
+ */
+describe('formatCustomChecks (C3b)', () => {
+  const cmd: CustomCheckRow = { itemId: 'c1', title: 'Add mul', step: 'WORK', check: 'lint', kind: 'command', outcome: 'pass', ran: true, at: '2026-09-25T10:00:00.000Z', approval: { by: 'board', at: '2026-09-25T09:59:00.000Z', authority: 'passkey' } };
+  const said: CustomCheckRow = { itemId: 'c1', title: 'Add mul', step: 'WORK', check: 'docs', kind: 'agent', outcome: 'pass', reported: true, note: 'README | has it', at: '2026-09-25T10:00:00.000Z' };
+
+  it('is empty with no custom checks', () => {
+    expect(formatCustomChecks([])).toBe('');
+  });
+
+  it('labels each result: run by the server, or reported by the agent', () => {
+    const md = formatCustomChecks([cmd, said]);
+    expect(md).toMatch(/## Custom checks/);
+    const lint = md.split('\n').find(l => l.includes('`lint`'))!;
+    const docs = md.split('\n').find(l => l.includes('`docs`'))!;
+    expect(lint).toMatch(/server ran it/i);
+    expect(lint).toMatch(/🔐/);
+    expect(docs).toMatch(/agent-reported/i);
+    expect(docs).toContain('README \\| has it');
+  });
+
+  it('never says the server ran a command that did not run, or that the agent reported what it did not (C3b review)', () => {
+    const md = formatCustomChecks([
+      { ...cmd, check: 'waiting', ran: false, outcome: 'overridden', overridden: { by: 'board', reason: 'no linter on CI' }, detail: 'waiting for a person to approve the command' },
+      { ...cmd, check: 'registry', ran: false, outcome: 'fail', approval: undefined, detail: 'not run: registry flow' },
+      { ...said, check: 'silent', reported: false, note: undefined, outcome: 'fail' },
+    ]);
+    const row = (name: string) => md.split('\n').find(l => l.includes('`' + name + '`'))!;
+    expect(row('waiting')).toMatch(/overridden by board: no linter on CI/);
+    expect(row('waiting')).not.toMatch(/server ran it/);
+    expect(row('registry')).toMatch(/not run/);
+    expect(row('registry')).not.toMatch(/server ran it/);
+    expect(row('silent')).toMatch(/not reported/);
+    expect(md).not.toMatch(/reported by the coding agent and taken on its word/);
+  });
+
+  it('goes on the PR after the body and the human gates', () => {
+    const body = buildPrBody('Summary', [], [cmd]);
+    expect(body.startsWith('Summary')).toBe(true);
+    expect(body).toMatch(/## Custom checks/);
+  });
+
+  it('leaves the body alone when there is nothing to add', () => {
+    expect(buildPrBody('Summary', [], [])).toBe('Summary');
   });
 });

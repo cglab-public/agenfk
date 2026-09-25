@@ -124,7 +124,7 @@ This is the full workflow surface. Each row notes the equivalent MCP tool (avail
 | Link a card to a JIRA item | `agenfk update <id> --jira-item <KEY>` — attach a JIRA reference to an EXISTING card (e.g. `CGLAB-163`); `--jira-item none` unlinks. Also available at creation time as `agenfk create ... --jira-item <KEY>`. | `update_item` (`jiraItem`) |
 | Re-parent an item | `agenfk update <id> --parent <parentId>` — move it under another item; `--parent none` detaches it to top level. The parent must be in the same project, and cannot be the item itself or one of its descendants. | `update_item` (`parentId`) |
 | Declare owned paths / link an external issue | `agenfk update <id> --claims "<path>,<path>"` — declare the paths this card owns before editing (a directory or an exact file; a glob is refused, and a path another card holds is refused naming the holder); `agenfk update <id> --external-id <key> [--external-url <url>]` — pair the card with an issue in another tracker. | `update_item` |
-| Advance a step (forward) | `agenfk verify <id> --evidence "<text>" ["<command>"]` | `validate_progress` |
+| Advance a step (forward) | `agenfk verify <id> --evidence "<text>" ["<command>"] [--check <name>=pass\|fail] [--check-note <name>=<text>]` — `--check`/`--check-note` (repeatable) report the step's agent checks | `validate_progress` (`agentChecks`) |
 | Add a comment | `agenfk comment <id> "<text>" [--author <name>]` | `add_comment` |
 | Record an independent review | `agenfk review record <id> --transcript <path> --range <from>..<to> --findings '<json>'` | `record_review` |
 | Attach context | `agenfk add-context <id> --path <path> [--description <text>][--content <text>]` | `add_context` |

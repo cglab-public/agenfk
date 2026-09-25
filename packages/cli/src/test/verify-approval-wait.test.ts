@@ -150,6 +150,54 @@ describe('verify waits for a person\'s approval', () => {
     expect(out()).toMatch(/Still waiting for a person's approval.*run the same agenfk verify again/s);
   });
 
+  const cmdWaiting = [{ id: 'command-check:lint', outcome: 'fail', blocking: true, params: { approval: 'person' }, detail: 'waiting for a person to approve the command `npm run lint` on the board (signed with a passkey).', meta: { waiting: { kind: 'command-approval', hash: 'h-lint', command: 'npm run lint' } } }];
+  const gatesWith = (commandApprovals: unknown[], step = 'WORK', approvals: unknown[] = []) => ({ data: { step, approvals, overrides: {}, lastChecks: null, commandApprovals } } as any);
+
+  it('waits for a person to approve a COMMAND the same way, then verifies again (C3b)', async () => {
+    mockedAxios.post.mockRejectedValueOnce(refusal(cmdWaiting)).mockResolvedValueOnce(passed as any);
+    let n = 0;
+    mockedAxios.get.mockImplementation(async (url: string) => String(url).includes('/gates')
+      ? gatesWith(n++ < 2 ? [] : [{ hash: 'h-lint', at: '2026-09-25T10:00:00Z' }]) : { data: {} } as any);
+    await program.parseAsync(['node', 'agenfk', 'verify', FULL_ID, '--evidence', 'x']);
+    expect(opened()).toHaveLength(1);
+    expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+    expect(exitSpy).not.toHaveBeenCalledWith(1);
+    expect(out()).toContain('npm run lint');
+  });
+
+  it('verifies again at once when the approval landed while the refused verify ran (C3b review)', async () => {
+    mockedAxios.post.mockRejectedValueOnce(refusal(cmdWaiting)).mockResolvedValueOnce(passed as any);
+    mockedAxios.get.mockImplementation(async (url: string) => String(url).includes('/gates')
+      ? gatesWith([{ hash: 'h-lint', at: '2026-09-25T10:00:00Z' }]) : { data: {} } as any);
+    await program.parseAsync(['node', 'agenfk', 'verify', FULL_ID, '--evidence', 'x', '--wait-minutes', '0']);
+    expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+    expect(exitSpy).not.toHaveBeenCalledWith(1);
+  });
+
+  it('stops, without re-verifying, when a person moves the card on while it waits (C3b review)', async () => {
+    mockedAxios.post.mockRejectedValueOnce(refusal(APPROVAL_ONLY));
+    let n = 0;
+    mockedAxios.get.mockImplementation(async (url: string) => String(url).includes('/gates')
+      ? (n++ < 1 ? gates(0) : { data: { step: 'CREATE_UNIT_TESTS', approvals: [], overrides: {}, lastChecks: null } }) as any : { data: {} } as any);
+    await program.parseAsync(['node', 'agenfk', 'verify', FULL_ID, '--evidence', 'x']);
+    expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+    expect(out()).toMatch(/left DISCOVERY on the board/);
+  });
+
+  it('with --no-wait and only a command blocking, names the command, not the step', async () => {
+    mockedAxios.post.mockRejectedValueOnce(refusal(cmdWaiting));
+    await program.parseAsync(['node', 'agenfk', 'verify', FULL_ID, '--evidence', 'x', '--no-wait']);
+    expect(out()).toMatch(/approve the command npm run lint on the board/);
+    expect(out()).not.toMatch(/approve this step/);
+  });
+
+  it('does not double the icon of a refusal that already carries one', async () => {
+    mockedAxios.post.mockRejectedValueOnce(refusal([{ id: 'suite-green', outcome: 'fail', blocking: true, detail: '1 failing' }]));
+    await program.parseAsync(['node', 'agenfk', 'verify', FULL_ID, '--evidence', 'x']);
+    expect(out()).toContain('❌ Checks failed');
+    expect(out()).not.toMatch(/❌\s*❌/);
+  });
+
   it('also waits when the refusal comes from a background run', async () => {
     mockedAxios.post.mockResolvedValueOnce({ status: 202, data: { runId: 'run-1', message: '⏳ running' } } as any).mockResolvedValueOnce(passed as any);
     serve([0, 1], { status: 'failed', message: '❌ Checks failed', checks: APPROVAL_ONLY });
@@ -157,5 +205,47 @@ describe('verify waits for a person\'s approval', () => {
     expect(opened()).toHaveLength(1);
     expect(mockedAxios.post).toHaveBeenCalledTimes(2);
     expect(exitSpy).not.toHaveBeenCalledWith(1);
+  });
+});
+
+describe('verify --check / --check-note (C3b)', () => {
+  function resetCommanderOptions(cmd: any) {
+    (cmd.options || []).forEach((opt: any) => cmd.setOptionValue(opt.attributeName(), undefined));
+    (cmd.commands || []).forEach(resetCommanderOptions);
+  }
+  let exitSpy: any, logSpy: any, errSpy: any;
+  const out = () => [...logSpy.mock.calls, ...errSpy.mock.calls].map((c: any[]) => c.join(' ')).join('\n');
+  beforeEach(() => {
+    vi.clearAllMocks();
+    program.commands.forEach(resetCommanderOptions);
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue('test-token');
+    mockedAxios.post.mockReset();
+    mockedAxios.get.mockReset();
+    mockedAxios.get.mockResolvedValue({ data: {} } as any);
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => {}) as any);
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => { exitSpy.mockRestore(); logSpy.mockRestore(); errSpy.mockRestore(); });
+
+  it('sends the reports as agentChecks', async () => {
+    mockedAxios.post.mockResolvedValueOnce(passed as any);
+    await program.parseAsync(['node', 'agenfk', 'verify', FULL_ID, '--evidence', 'x', '--check', 'docs=pass', '--check-note', 'docs=README line added', '--check', 'tone=fail']);
+    const body = mockedAxios.post.mock.calls[0][1] as any;
+    expect(body.agentChecks).toEqual([{ name: 'docs', outcome: 'pass', note: 'README line added' }, { name: 'tone', outcome: 'fail' }]);
+  });
+
+  it('sends no agentChecks when none are given', async () => {
+    mockedAxios.post.mockResolvedValueOnce(passed as any);
+    await program.parseAsync(['node', 'agenfk', 'verify', FULL_ID, '--evidence', 'x']);
+    expect((mockedAxios.post.mock.calls[0][1] as any).agentChecks).toBeUndefined();
+  });
+
+  it('refuses a malformed --check before sending anything', async () => {
+    await program.parseAsync(['node', 'agenfk', 'verify', FULL_ID, '--evidence', 'x', '--check', 'docs=maybe']);
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(out()).toMatch(/pass or fail/);
   });
 });

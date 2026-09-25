@@ -10,14 +10,15 @@ import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT, setTeleme
 import { checkClaudeCodeEnforcement, checkPiEnforcement } from './enforcement.js';
 import { execSync, execFileSync, spawn, spawnSync } from 'child_process';
 import { chooseOpenTarget } from './openTarget.js';
-import { onlyApprovalBlocks, waitAllowed, waitForApproval } from './approvalWait.js';
+import { onlyApprovalBlocks, waitAllowed, waitForApproval, alreadySatisfied, commandWaitedOn, approvedAt, type BlockingCheck, type GatesSnapshot } from './approvalWait.js';
+import { parseCheckFlags } from './agentChecksFlag.js';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { stageJsonMigration } from './db-migration.js';
 import { followValidateRun } from './verifyRun.js';
-import { buildPrBody, type GateEvent } from './humanGates.js';
+import { buildPrBody, type GateEvent, type CustomCheckRow } from './humanGates.js';
 import { registryFlowToLocal } from './registryFlowFile.js';
 import { buildUiOpenUrl, resolveDashboardUrl } from './uiUrl.js';
 import { registerHubCommands } from './commands/hub.js';
@@ -3849,9 +3850,18 @@ program
   .option('--evidence <text>', 'REQUIRED: How you satisfied the current step\'s exit criteria')
   .option('--no-wait', 'When only a person\'s approval blocks the card, return at once instead of opening the board and waiting for it')
   .option('--wait-minutes <n>', 'How long to wait for a person\'s approval before giving up (default 9)')
+  .option('--check <name=outcome>', 'Report an agent check of this step: <name>=pass or <name>=fail (repeatable)', (v: string, acc: string[] = []) => [...acc, v])
+  .option('--check-note <name=text>', 'What you found for a reported agent check: <name>=<text> (repeatable)', (v: string, acc: string[] = []) => [...acc, v])
   .action(async (id, command, options) => {
     if (!options.evidence) {
       console.error(chalk.red('Error: --evidence is required. Describe how you satisfied the current step\'s exit criteria.'));
+      process.exit(1);
+      return;
+    }
+    // C3b: refused here, before anything is sent - a typo must not cost a verify.
+    const reported = parseCheckFlags(options.check ?? [], options.checkNote ?? []);
+    if ('error' in reported) {
+      console.error(chalk.red(`Error: ${reported.error}`));
       process.exit(1);
       return;
     }
@@ -3899,8 +3909,10 @@ program
       onOutput: (chunk: string) => process.stdout.write(chunk),
     });
 
+    // The --check reports are about the step they were given on: once the card is elsewhere, stop sending them.
+    let sendReports = true;
     /** One verify: its outcome, never an exit. Throws only when following a run fails. */
-    const attempt = async (): Promise<{ ok: boolean; message?: string; output?: string; checks?: Array<{ id: string; blocking?: boolean }> }> => {
+    const attempt = async (): Promise<{ ok: boolean; message?: string; output?: string; checks?: BlockingCheck[] }> => {
       try {
         // Report the caller's cwd so the server can run the verifyCommand in this
         // project's directory (resolved up to the repo root), not the daemon's own
@@ -3911,6 +3923,7 @@ program
         const actor = harnessActor();
         if (actor) body.actor = actor;
         if (command) body.command = command;
+        if (sendReports && reported.agentChecks.length) body.agentChecks = reported.agentChecks;
         // 5-minute POST timeout: a NEW server answers 202 in milliseconds, but an
         // OLD server (upgrade window) ignores async:true and blocks for the whole
         // command — keep the previous ceiling so that path doesn't regress.
@@ -3964,29 +3977,45 @@ program
         return;
       }
       if (r.output) console.error(r.output);
-      console.error(chalk.red(`\n❌ ${r.message || 'Validation failed.'}`));
+      // The server's refusals carry their own icon; one is enough.
+      console.error(chalk.red(`\n❌ ${(r.message || 'Validation failed.').replace(/^\s*❌\s*/, '')}`));
       if (!onlyApprovalBlocks(r.checks)) { process.exit(1); return; }
+      const commands = (r.checks ?? []).filter(c => c.blocking).map(commandWaitedOn).filter((c): c is NonNullable<typeof c> => c !== null);
+      const stepBlocks = (r.checks ?? []).some(c => c.blocking && c.id === 'human-approval');
+      const what = [stepBlocks ? 'this step' : '', ...commands.map(c => `the command ${c.command ?? ''}`.trim())].filter(Boolean).join(' and ');
       if (!canWait) {
-        console.error(chalk.yellow(`A person must approve this step on the board: agenfk ui --open ${targetId} --details`));
+        console.error(chalk.yellow(`A person must approve ${what} on the board: agenfk ui --open ${targetId} --details`));
         process.exit(1);
         return;
       }
-      let before: { step?: string; approvals?: unknown[] } | null = null;
+      let before: GatesSnapshot | null = null;
       try { before = await gatesNow(); } catch { /* the wait polls again */ }
+      // An approval that landed while the refused verify ran is already here: verify again at once.
+      if (alreadySatisfied(r.checks, before)) {
+        console.log(chalk.green('✅ Approved while the checks ran — verifying again.'));
+        continue;
+      }
       if (!opened) {
         // --details: the approval is given on the card's Overview, so open it there.
         spawnSync(process.execPath, [process.argv[1], 'ui', '--open', targetId, '--details'], { stdio: 'inherit' });
         opened = true;
       }
-      console.log(chalk.cyan(`⏳ Waiting up to ${waitMinutes} min for a person to approve ${before?.step ?? 'this step'} on the board…`));
+      console.log(chalk.cyan(`⏳ Waiting up to ${waitMinutes} min for a person to approve ${what} on the board…`));
       const outcome = await waitForApproval({
         step: before?.step ?? '',
         approvalsBefore: before?.approvals?.length ?? 0,
-        // Without a baseline, only an approval counts, never a step we could not read.
+        commandsWaitedOn: commands.map(c => ({ hash: c.hash, approvedAt: approvedAt(before, c.hash) })),
+        // Without a baseline, never a step move we could not compare.
         poll: async () => { const g = await gatesNow(); return before ? g : { ...g, step: '' }; },
         intervalMs: pollMs,
         deadlineMs: waitMinutes * 60_000,
       });
+      if (outcome === 'moved') {
+        // A person moved the card on (or back) on the board: this verify's step is behind it.
+        sendReports = false;
+        console.log(chalk.yellow(`The card left ${before?.step ?? 'the step'} on the board while this waited; nothing more to verify here. Run agenfk verify again for the step it is on now.`));
+        return;
+      }
       if (outcome === 'timeout') {
         console.error(chalk.yellow(`Still waiting for a person's approval (agenfk ui --open ${targetId} --details). Once it is given, run the same agenfk verify again: it waits again and carries on.`));
         process.exit(1);
@@ -4371,7 +4400,12 @@ prCmd
         // An older server has no such route: say so rather than drop the section silently.
         console.warn(chalk.yellow(`⚠️  Could not read the card's approvals and overrides (${e?.response?.status ?? e?.message}); the PR body will not list them.`));
       }
-      args.push('--body', buildPrBody(options.body || item.description || '', gateEvents));
+      // C3b: the custom checks the tree passed, and whose word each result is.
+      let customChecks: CustomCheckRow[] = [];
+      try { customChecks = (await axios.get(`${API_URL}/items/${itemId}/custom-checks`)).data ?? []; } catch (e: any) {
+        console.warn(chalk.yellow(`⚠️  Could not read the card's custom checks (${e?.response?.status ?? e?.message}); the PR body will not list them.`));
+      }
+      args.push('--body', buildPrBody(options.body || item.description || '', gateEvents, customChecks));
       if (options.draft) args.push('--draft');
 
       console.log(chalk.blue(`Creating PR: "${prTitle}"...`));

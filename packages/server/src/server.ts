@@ -2821,6 +2821,10 @@ app.get("/items/:id/gates", asyncHandler(async (req: any, res: any) => {
     ].filter(a => !stepWantsPasskey(flow, item.status) || a.authority === 'passkey'),
     overrides,
     lastChecks: item.lastChecks?.step === item.status ? item.lastChecks : null,
+    // C3b: which commands are approved here (hash and when), so a verify waiting
+    // on ONE command wakes for that command, not for any approval in the project.
+    commandApprovals: (Array.isArray(project?.commandApprovals) ? project.commandApprovals : [])
+      .map((a: any) => ({ hash: String(a?.hash ?? ''), at: String(a?.at ?? '') })).filter((a: any) => a.hash),
   });
 }));
 
@@ -2842,6 +2846,48 @@ app.get("/items/:id/gate-events", asyncHandler(async (req: any, res: any) => {
     queue.push(...((await storage.listItems({ parentId: card.id } as any)) as any[]));
   }
   res.json(events);
+}));
+
+/**
+ * The custom checks a card tree passed its steps with, for the PR body (C3b).
+ *
+ * From each card's EXIT records: the results that let it leave a step, not
+ * attempts that were refused. A command check names who approved its command
+ * when the step asked for a person; an agent check is labelled as the agent's
+ * word, because the server never checked it.
+ */
+app.get("/items/:id/custom-checks", asyncHandler(async (req: any, res: any) => {
+  const root: any = await storage.getItem(req.params.id);
+  if (!root) return res.status(404).json({ error: 'Item not found' });
+  const rows: any[] = [];
+  const queue = [root];
+  for (let seen = 0; queue.length && seen < 5000; seen++) {
+    const card = queue.shift();
+    // The LAST exit per step and check: a step left again after a rollback supersedes the earlier result.
+    const latest = new Map<string, any>();
+    for (const r of card.stepRecords ?? []) {
+      if (r?.kind !== 'exit' || !Array.isArray(r.checks)) continue;
+      for (const c of r.checks) {
+        const id = String(c?.id ?? '');
+        const kind = id.startsWith('command-check:') ? 'command' : id.startsWith('agent-check:') ? 'agent' : null;
+        if (!kind) continue;
+        // What the check DID, from the facts stamped when it was judged - never from its wording.
+        const m = c.meta ?? {};
+        latest.set(`${r.step}\u0000${id}`, {
+          itemId: card.id, title: card.title, step: r.step, check: id.slice(id.indexOf(':') + 1), kind,
+          outcome: c.outcome, at: r.at,
+          ...(kind === 'command' ? { ran: m.ran === true } : { reported: m.reported === true }),
+          ...(m.note ? { note: m.note } : {}),
+          ...(typeof c.detail === 'string' ? { detail: c.detail } : {}),
+          ...(m.approval ? { approval: m.approval } : {}),
+          ...(c.overridden ? { overridden: { by: c.overridden.by, reason: c.overridden.reason } } : {}),
+        });
+      }
+    }
+    rows.push(...latest.values());
+    queue.push(...((await storage.listItems({ parentId: card.id } as any)) as any[]));
+  }
+  res.json(rows);
 }));
 
 /** The card's check history, newest first (4a428bb0). */

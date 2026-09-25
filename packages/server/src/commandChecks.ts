@@ -15,7 +15,12 @@ import * as crypto from 'crypto';
 import type { ResolvedCheck } from '@agenfk/core';
 
 export interface CommandApproval { hash: string; argv: string[]; at: string; by: string; authority: string; credentialId?: string }
-export interface CommandVerdict { outcome: 'pass' | 'fail' | 'unavailable'; detail: string }
+export interface CommandVerdict {
+  outcome: 'pass' | 'fail' | 'unavailable';
+  detail: string;
+  /** C3b: ran or not, the approval it ran under, or the command it waits on. */
+  meta?: { ran?: boolean; approval?: { by: string; at: string; authority?: string }; waiting?: { kind: 'command-approval'; hash: string; command: string } };
+}
 
 /** What an approval pins: the exact argv. */
 export const argvHash = (argv: readonly string[]): string => crypto.createHash('sha256').update(JSON.stringify(argv)).digest('hex');
@@ -69,14 +74,18 @@ export async function judgeCommandChecks(
       continue;
     }
     if (!ctx.root) { out[c.id] = { outcome: 'unavailable', detail: 'the card has no tree (no project root, no worktree) to run the command in' }; continue; }
-    if (c.params.approval === 'person' && !ctx.approvals.some(a => a.hash === argvHash(argv))) {
-      out[c.id] = { outcome: 'fail', detail: `waiting for a person to approve the command ${shown} on the board (signed with a passkey). It runs once approved, and asks again if it changes.` };
+    const hash = argvHash(argv);
+    const approved = c.params.approval === 'person' ? ctx.approvals.find(a => a.hash === hash) : undefined;
+    if (c.params.approval === 'person' && !approved) {
+      out[c.id] = { outcome: 'fail', detail: `waiting for a person to approve the command ${shown} on the board (signed with a passkey). It runs once approved, and asks again if it changes.`, meta: { waiting: { kind: 'command-approval', hash, command: shown } } };
       continue;
     }
+    // The approval it ran under, stamped now: a later re-approval replaces the record.
+    const meta = { ran: true, ...(approved ? { approval: { by: approved.by, at: approved.at, authority: approved.authority } } : {}) };
     const r = await runArgv(argv, ctx.root, ctx.timeoutMs);
     out[c.id] = r.exitCode === 0
-      ? { outcome: 'pass', detail: withOutput(`${shown} exited 0`, r.output) }
-      : { outcome: 'fail', detail: r.notFound ? `${shown}: program not found (${argv[0]})` : withOutput(`${shown} ${r.timedOut ? 'timed out' : `exited ${r.exitCode ?? 'without a code (killed)'}`}`, r.output) };
+      ? { outcome: 'pass', detail: withOutput(`${shown} exited 0`, r.output), meta }
+      : { outcome: 'fail', detail: r.notFound ? `${shown}: program not found (${argv[0]})` : withOutput(`${shown} ${r.timedOut ? 'timed out' : `exited ${r.exitCode ?? 'without a code (killed)'}`}`, r.output), meta };
   }
   return out;
 }

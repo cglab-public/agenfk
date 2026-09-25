@@ -53,9 +53,59 @@ export function formatHumanGates(events: readonly GateEvent[]): string {
   ].join('\n');
 }
 
-/** The PR body: what was given, then the human gates when there are any. */
-export function buildPrBody(body: string, events: readonly GateEvent[]): string {
-  const gates = formatHumanGates(events);
-  if (!gates) return body;
-  return body.trim() ? `${body}\n\n${gates}` : gates;
+/** One custom check a card passed a step with (C3b), as the server lists it. */
+export interface CustomCheckRow {
+  itemId: string;
+  title: string;
+  step: string;
+  check: string;
+  /** 'command': the server ran it. 'agent': the coding agent reported it. */
+  kind: 'command' | 'agent';
+  outcome: string;
+  at: string;
+  note?: string;
+  detail?: string;
+  /** A command check: did the server actually run it? */
+  ran?: boolean;
+  /** An agent check: did the agent actually report it? */
+  reported?: boolean;
+  /** Who let a command that asks for a person run, as recorded when it ran. */
+  approval?: { by: string; at: string; authority?: string };
+  /** A person passed it on the board instead. */
+  overridden?: { by: string; reason: string };
+}
+
+/**
+ * The custom checks of a card tree, for the PR body (C3b). What a reviewer
+ * needs is WHOSE word each result is: the server's, having run the command, or
+ * the agent's, taken as given.
+ */
+export function formatCustomChecks(rows: readonly CustomCheckRow[]): string {
+  if (!rows.length) return '';
+  const agent = rows.filter(r => r.kind === 'agent' && r.reported).length;
+  const lines = [...rows].sort((a, b) => a.at.localeCompare(b.at)).map(r => {
+    // Whose word the result is, from what the check did - never from the kind alone.
+    const how = r.overridden ? `🔓 overridden by ${cell(r.overridden.by)}: ${cell(r.overridden.reason)}`
+      : r.kind === 'command'
+        ? (r.ran ? `server ran it${r.approval ? `; approved by ${cell(r.approval.by)}${r.approval.authority === 'passkey' ? ' 🔐' : ''}` : ''}` : `not run: ${cell(r.detail ?? '')}`)
+        : (r.reported ? 'agent-reported (not checked by the server)' : 'not reported by the agent');
+    const outcome = r.outcome === 'pass' ? '✅ pass' : `❌ ${cell(r.outcome)}`;
+    return `| ${cell(r.title)} | ${cell(r.step)} | \`${cell(r.check)}\` | ${outcome} | ${how} | ${cell(r.note ?? '') || '—'} |`;
+  });
+  return [
+    '## Custom checks',
+    '',
+    agent ? `${agent} result${agent === 1 ? ' was' : 's were'} reported by the coding agent and taken on its word.` : 'Every result below was checked by the server.',
+    '',
+    '| Card | Step | Check | Outcome | How | Note |',
+    '| --- | --- | --- | --- | --- | --- |',
+    ...lines,
+  ].join('\n');
+}
+
+/** The PR body: what was given, then the human gates and custom checks when there are any. */
+export function buildPrBody(body: string, events: readonly GateEvent[], customChecks: readonly CustomCheckRow[] = []): string {
+  const extra = [formatHumanGates(events), formatCustomChecks(customChecks)].filter(Boolean).join('\n\n');
+  if (!extra) return body;
+  return body.trim() ? `${body}\n\n${extra}` : extra;
 }
