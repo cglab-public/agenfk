@@ -37,7 +37,8 @@ const tail = (s: string) => (s.length > TAIL ? `…${s.slice(-TAIL)}` : s).trim(
 
 /** A command as a person reads it: its arguments, quoted where a space or symbol needs it (83e4e956). */
 export const commandLine = (argv: readonly string[]): string =>
-  argv.map(a => (/^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, "\\'")}'`)).join(' ');
+  // A JSON string: quotes AND backslashes escaped, which a hand-rolled quote replace missed.
+  argv.map(a => (/^[\w@%+=:,./-]+$/.test(a) ? a : JSON.stringify(a))).join(' ');
 
 /** What the check says: one readable line, then the output's tail - short enough for the history to keep whole. */
 const DETAIL_MAX = 500;

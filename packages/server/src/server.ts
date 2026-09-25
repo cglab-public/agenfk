@@ -4145,7 +4145,23 @@ app.post("/flows/contract", (req: any, res: any) => {
   res.json(describeFlowContract(req.body?.steps));
 });
 
-app.post("/flows", asyncHandler(async (req: any, res: any) => {
+/**
+ * Flow writes (CodeQL js/missing-rate-limiting). A ceiling well above what the
+ * editor and the test suites do in a minute - they create flows quickly - that
+ * still stops a runaway loop; the same threat model as limitExpensive.
+ */
+const limitFlowWrites = rateLimit({
+  windowMs: 60_000,
+  limit: 600,
+  keyGenerator: (req: any) => `${ipKeyGenerator(req.ip ?? '127.0.0.1')}\u0000${req.route?.path ?? req.path}`,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  handler: (req: any, res: any) => {
+    res.status(429).json({ error: `Too many requests to ${req.path}. Flow writes are capped at 600 a minute; this is almost always a loop.` });
+  },
+});
+
+app.post("/flows", limitFlowWrites, asyncHandler(async (req: any, res: any) => {
   const { name, description, version, steps, verifyAt } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
 
@@ -4180,7 +4196,7 @@ app.get("/flows/:id", asyncHandler(async (req: any, res: any) => {
   res.json(flow);
 }));
 
-app.put("/flows/:id", asyncHandler(async (req: any, res: any) => {
+app.put("/flows/:id", limitFlowWrites, asyncHandler(async (req: any, res: any) => {
   const existing = await storage.getFlow(req.params.id);
   if (!existing) return res.status(404).json({ error: "Flow not found" });
   if (existing.source === 'hub') {
@@ -4328,7 +4344,7 @@ app.get("/registry/flows", asyncHandler(async (_req: any, res: any) => {
   }
 }));
 
-app.post("/registry/flows/install", asyncHandler(async (req: any, res: any) => {
+app.post("/registry/flows/install", limitExpensive, asyncHandler(async (req: any, res: any) => {
   const { filename } = req.body;
   if (!filename) return res.status(400).json({ error: 'filename is required' });
 

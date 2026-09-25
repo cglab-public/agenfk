@@ -23,7 +23,7 @@
  * would drift the way the gatekeeper's status names drifted before it.
  */
 import { describe, it, expect } from 'vitest';
-import { gateOnClaims, claimTreeOf, strayStaged, claimlessNeighbours, type ClaimHolder } from '../claimGate';
+import { gateOnClaims, claimTreeOf, strayStaged, claimlessNeighbours, sameClaimTree, type ClaimHolder } from '../claimGate';
 
 /** A card holding files, in whatever step the test needs. */
 const holder = (id: string, status: string, claims: string[]): ClaimHolder =>
@@ -390,5 +390,19 @@ describe('claimlessNeighbours: who might own a stray', () => {
   });
   it('a paused card still counts: its staged work is still in the tree', () => {
     expect(claimlessNeighbours({ id: 'me', tree: '/t' }, [h('p', 'PAUSED', [], '/t')], working)).toEqual(['p']);
+  });
+});
+
+describe('sameClaimTree on hostile input (CodeQL js/polynomial-redos)', () => {
+  it('ignores any number of trailing separators', () => {
+    expect(sameClaimTree('/wt/a///', '/wt/a')).toBe(true);
+    expect(sameClaimTree('C:\\wt\\a\\\\', 'C:\\wt\\a')).toBe(true);
+    expect(sameClaimTree('/wt/a/', '/wt/b')).toBe(false);
+  });
+  it('stays linear on a long run of separators that is not at the end', () => {
+    const hostile = '/'.repeat(200_000) + 'x';
+    const t = Date.now();
+    expect(sameClaimTree(hostile, '/y')).toBe(false);
+    expect(Date.now() - t).toBeLessThan(200);
   });
 });

@@ -106,8 +106,15 @@ export function treeOf(card: ClaimCard, byId: ReadonlyMap<string, ClaimCard>, ro
   return typeof root === 'string' && root.trim() ? root.trim() : null;
 }
 
+/** Drop trailing path separators in one linear pass (a `[\\/]+$` regex is quadratic on long runs). */
+const trimSeparators = (t: string): string => {
+  let end = t.length;
+  while (end > 0 && (t[end - 1] === '/' || t[end - 1] === '\\')) end--;
+  return t.slice(0, end);
+};
+
 export function sameTree(a: string | null, b: string | null): boolean {
-  const norm = (t: string | null) => (t ?? '').trim().replace(/[\\/]+$/, '');
+  const norm = (t: string | null) => trimSeparators((t ?? '').trim());
   const x = norm(a), y = norm(b);
   return !x || !y || x === y;
 }

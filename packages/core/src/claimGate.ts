@@ -77,8 +77,15 @@ export const stillHolds = (status: string): boolean =>
  * evidence that it works elsewhere, and treating it that way would fail open
  * on exactly the cards this mechanism was written for.
  */
+/** Drop trailing path separators in one linear pass (a `[\\/]+$` regex is quadratic on long runs). */
+const trimSeparators = (t: string): string => {
+  let end = t.length;
+  while (end > 0 && (t[end - 1] === '/' || t[end - 1] === '\\')) end--;
+  return t.slice(0, end);
+};
+
 export function sameClaimTree(a: string | null | undefined, b: string | null | undefined): boolean {
-  const norm = (t: string | null | undefined): string => (typeof t === 'string' ? t.trim().replace(/[\\/]+$/, '') : '');
+  const norm = (t: string | null | undefined): string => (typeof t === 'string' ? trimSeparators(t.trim()) : '');
   const x = norm(a), y = norm(b);
   if (!x || !y) return true;
   return x === y;

@@ -16,7 +16,7 @@
  * a chip that renders on all of them is thirty rows announcing an absence.
  */
 import { describe, it, expect } from 'vitest';
-import { claimStateOf, claimChipLabel, claimChipTitle, collide, type ClaimCard } from '../claimState';
+import { claimStateOf, claimChipLabel, claimChipTitle, collide, sameTree, type ClaimCard } from '../claimState';
 
 const card = (id: string, status: string, claims?: string[]): ClaimCard => ({ id, status, claims });
 
@@ -256,5 +256,17 @@ describe('claims are per worktree in the sidebar', () => {
         cards.map(c => ({ id: c.id, status: c.status, claims: c.claims, tree: coreTree(c) }))).authorized;
       expect(claimStateOf('mine', cards).heldBy.length > 0, `${t1} vs ${t2}`).toBe(gateRefuses);
     }
+  });
+});
+
+describe('sameTree on hostile input (CodeQL js/polynomial-redos)', () => {
+  it('agrees with core and stays linear', async () => {
+    const { sameClaimTree } = await import('@agenfk/core');
+    for (const [a, b] of [['/wt/a///', '/wt/a'], ['/wt/a', '/wt/b'], [null, '/wt/a']] as const) {
+      expect(sameTree(a, b)).toBe(sameClaimTree(a, b));
+    }
+    const t = Date.now();
+    expect(sameTree('/'.repeat(200_000) + 'x', '/y')).toBe(false);
+    expect(Date.now() - t).toBeLessThan(200);
   });
 });
