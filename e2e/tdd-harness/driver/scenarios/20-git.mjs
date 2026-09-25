@@ -1,4 +1,4 @@
-/** The git and meta checks: tree-clean, on-card-branch, jira-key-valid, has-children. */
+/** The git and meta checks: tree-clean, on-card-branch, tree-in-sync, jira-key-valid, has-children. */
 import { checkOnWork, newCard, verify, update, write } from '../cards.mjs';
 import { sh } from '../lib.mjs';
 
@@ -6,6 +6,18 @@ const dirty = ({ dir }) => write(dir, { 'src/math.js': 'export const add = (a, b
 const s = (check, name, expected, opts) => ({ check, name, expected, run: () => checkOnWork(check, opts) });
 /** Record a branch on the card and put the tree on it, before the card leaves TODO (the entry guard checks it). */
 const onBranch = branch => async ({ id, dir }) => { await update(id, { branchName: branch }); sh(`git checkout -q -b ${branch}`, dir); };
+
+/**
+ * Give the sample a bare remote it tracks. `pushAhead` has a colleague push a
+ * commit the card's clone has not fetched; `unreachable` points the remote at
+ * nothing after the push, so the fetch fails.
+ */
+const withRemote = ({ pushAhead = false, unreachable = false } = {}) => ({ dir }) => {
+  const origin = `${dir}.origin.git`;
+  sh(`git init -q --bare -b main ${origin} && git remote add origin ${origin} && git push -q -u origin HEAD:main && git branch -q --set-upstream-to=origin/main`, dir);
+  if (pushAhead) sh(`git clone -q ${origin} ${dir}.other && cd ${dir}.other && git config user.email o@o && git config user.name o && echo x > colleague.txt && git add . && git commit -qm colleague && git push -q`, dir);
+  if (unreachable) sh('git remote set-url origin /nonexistent/agenfk-e2e-remote.git', dir);
+};
 
 export const scenarios = [
   // tree-clean
@@ -44,6 +56,11 @@ export const scenarios = [
   s('jira-key-valid', "blocks when the card's branch carries none of its keys", 'fail', {
     before: async ctx => { await update(ctx.id, { jiraItem: 'ABC-12' }); await onBranch('feat/XYZ-9_other')(ctx); },
   }),
+
+  // tree-in-sync (1049ce52): a bare remote next to the sample, the card's clone tracking it.
+  s('tree-in-sync', 'passes a tree in sync with its remote', 'pass', { before: withRemote() }),
+  s('tree-in-sync', 'blocks a tree behind its remote (it fetches by itself)', 'fail', { before: withRemote({ pushAhead: true }) }),
+  s('tree-in-sync', 'only warns when the remote cannot be reached', 'unavailable-soft', { before: withRemote({ unreachable: true }) }),
 
   // has-children
   s('has-children', 'passes an EPIC that has a child card', 'pass', {

@@ -136,7 +136,7 @@ MCP is opt-in (`--with-mcp`). When MCP tools are present, they are equivalent to
     *   **Clean Start from Main (MANDATORY)**:
         1. Run `git status` — if the working tree has uncommitted or modified files, **STOP** and ask the user how to proceed (stash, commit, or discard). Never start new work on a dirty working tree.
         2. Run `git branch --show-current` — if NOT on `main` (or `master`) and the current branch does not belong to an item you're about to resume, run `git checkout main` (or `master`).
-        3. Run `git pull` to ensure you have the latest upstream changes.
+        3. Run `git pull` to ensure you have the latest upstream changes - also when RESUMING an existing card, in the tree it works in (its worktree, else the project root). The `backlog` role's `tree-in-sync` check refuses a card leaving the backlog from a tree behind or diverged from its remote.
     *   **Action**:
         1. Run `agenfk current-project` to resolve the current project id (it finds the nearest `.agenfk/project.json`, walking up from the cwd). If it prints an id, that is the active `projectId` — use it for every command that takes `--project <id>`.
         2. If missing, DO NOT assume an existing project should be reused based on name alone.

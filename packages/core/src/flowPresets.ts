@@ -16,7 +16,8 @@ export const TDD_FLOW_PRESET: Flow = {
     "name": "TODO",
     "label": "To Do",
     "order": 0,
-    "isAnchor": true
+    "isAnchor": true,
+    "role": "backlog"
   },
   {
     "id": "tdd-discovery",

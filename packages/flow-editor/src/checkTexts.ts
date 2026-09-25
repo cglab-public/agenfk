@@ -16,6 +16,7 @@ export interface CheckText {
 
 export const CHECK_TEXTS: Record<string, CheckText> = {
   'tree-clean': { title: 'Clean working tree', stops: 'starting on top of someone else\'s half-finished edits', must: 'Start with no uncommitted changes' },
+  'tree-in-sync': { title: 'In sync with its remote', stops: 'building on a checkout that is behind (or has diverged from) its remote', must: 'Start from a tree that is not behind its remote: git pull --ff-only' },
   'on-card-branch': { title: 'On the card\'s branch', stops: 'working on the wrong branch', must: 'Be on the card\'s own branch' },
   'jira-key-valid': { title: 'Linked to a JIRA item', stops: 'work nobody can trace back to an issue', must: 'Link the card to a valid JIRA key that its branch carries' },
   'has-children': { title: 'Broken down into child cards', stops: 'building an epic or story as one lump', must: 'Break the card down into child cards' },
@@ -46,9 +47,10 @@ export function checkText(id: string, description?: string): CheckText {
 export interface RoleText { name: string; desc: string; color: string }
 
 export const ROLE_TEXTS: Record<string, RoleText> = {
+  backlog: { name: 'Backlog', desc: 'Work waiting to start. A card leaves it only from a tree in sync with its remote, so nothing is built on stale code.', color: '#94a3b8' },
   planning: { name: 'Planning', desc: 'Decide what to build. Cards are broken down, and a person can give the go-ahead.', color: '#a3c46b' },
-  'test-authoring': { name: 'Writing tests', desc: 'Tests come first and must fail. They are frozen when the step ends, so they can\'t be weakened later.', color: '#498373' },
-  coding: { name: 'Implementing', desc: 'Make the failing tests pass without touching them. Its test checks need a Writing-tests step before it.', color: '#3b82f6' },
+  'test-authoring': { name: 'Writing tests', desc: 'Tests come first and must fail; they become the red set that must pass later. Add test-surface-frozen to a later step to forbid changing them there.', color: '#498373' },
+  coding: { name: 'Implementing', desc: 'Make the failing tests pass. Existing tests may change where the behaviour they pin is what the card changes. Its test checks need a Writing-tests step before it.', color: '#3b82f6' },
   refactoring: { name: 'Refactoring', desc: 'Tidy the code. The list of tests must stay exactly the same.', color: '#8b5cf6' },
   review: { name: 'Review', desc: 'Someone other than the author reviews the work, and every finding is fixed or rejected with a reason.', color: '#d97706' },
   testing: { name: 'Testing', desc: 'The whole test suite must pass.', color: '#0ea5e9' },
@@ -59,7 +61,7 @@ export const ROLE_TEXTS: Record<string, RoleText> = {
 export const RECORD_TEXTS: Record<string, string> = {
   stepEntryTests: 'Tests at the start of the step',
   redSet: 'Failing-test list',
-  testSurface: 'Frozen tests',
+  testSurface: 'The tests as written',
   authoredTests: 'Tests as written',
 };
 

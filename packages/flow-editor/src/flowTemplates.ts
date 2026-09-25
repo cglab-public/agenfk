@@ -18,7 +18,8 @@ export const FLOW_TEMPLATES: Record<"tdd" | "default" | "docs", FlowTemplate> = 
         "name": "TODO",
         "label": "To Do",
         "order": 0,
-        "isAnchor": true
+        "isAnchor": true,
+        "role": "backlog"
       },
       {
         "id": "tdd-discovery",
@@ -98,7 +99,8 @@ export const FLOW_TEMPLATES: Record<"tdd" | "default" | "docs", FlowTemplate> = 
         "name": "TODO",
         "label": "To Do",
         "order": 0,
-        "isAnchor": true
+        "isAnchor": true,
+        "role": "backlog"
       },
       {
         "id": "default-in-progress",
@@ -143,7 +145,8 @@ export const FLOW_TEMPLATES: Record<"tdd" | "default" | "docs", FlowTemplate> = 
         "name": "TODO",
         "label": "To Do",
         "order": 0,
-        "isAnchor": true
+        "isAnchor": true,
+        "role": "backlog"
       },
       {
         "id": "docs-writing",

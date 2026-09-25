@@ -122,7 +122,7 @@ const cases = [
   code('red-set-passes-by-name', 'warns for a card that predates checks (no red set)', 'unavailable-soft', { predates: true, work: { SPECS: addRed, CODE: implement } }),
   code('red-set-passes-by-name', 'blocks when the report cannot be used', 'unavailable', { work: { CODE: all(implement, breakReport) } }),
 
-  // test-surface-frozen (append, since test-authoring: the coding role's)
+  // test-surface-frozen (append, since test-authoring) - added to the code step explicitly: no role brings it there since 1049ce52
   code('test-surface-frozen', 'passes when only code changed', 'pass', { work: { CODE: implement } }),
   code('test-surface-frozen', 'passes a new test file in append mode', 'pass', { work: { CODE: all(implement, ({ write, kit }) => write(kit.tests('more', [['addsMore', 'green']]))) } }),
   code('test-surface-frozen', 'blocks an edit to a test file written earlier', 'fail', { work: { CODE: all(implement, ({ write, kit }) => write(kit.touchMath())) } }),

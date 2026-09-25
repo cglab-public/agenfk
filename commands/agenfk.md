@@ -78,7 +78,7 @@ Before creating any item, evaluate the request against these signals:
    - Run `git status` to check for uncommitted or modified files. If the working tree is dirty, **STOP** and ask the user how to proceed (stash, commit, or discard). Never start new work on a dirty working tree.
    - Run `git branch --show-current` to check the current branch.
    - If you are NOT on `main` (or `master`), and the current branch does NOT belong to the item you're about to resume, run `git checkout main` (or `master`).
-   - Run `git pull` to ensure you have the latest upstream changes.
+   - Run `git pull` to ensure you have the latest upstream changes - also when RESUMING an existing card, in the tree it works in (its worktree, else the project root). The `backlog` role's `tree-in-sync` check refuses a card leaving the backlog from a tree behind or diverged from its remote.
    - This prevents new feature branches from being based on stale/unrelated branches and avoids carrying uncommitted changes into new work.
 1. Resolve the current project id by running `agenfk current-project` (it walks up from the cwd to the nearest `.agenfk/project.json`). Use the printed id as `<projectId>` in every command below. If it errors, the directory is not initialized — run `agenfk list-projects --json` and ask the user whether to link an existing project or create a new one (per the base agenfk skill's Initialization procedure) before continuing. Never auto-create a project without asking.
 2. Identify the item to work on:

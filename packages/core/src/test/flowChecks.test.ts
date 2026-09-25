@@ -90,9 +90,13 @@ describe('resolveStepChecks', () => {
     expect(got.find(c => c.id === 'some-new-test-red')?.source).toBe('role');
   });
 
-  it('a coding step after test-authoring must turn the red set green, by name, with the surface frozen', () => {
+  it('a coding step after test-authoring must turn the red set green, by name', () => {
     const got = resolveStepChecks(tdd(), 'BUILD');
-    expect(applicable(got)).toEqual(expect.arrayContaining(['suite-green', 'red-set-passes-by-name', 'test-surface-frozen', 'test-count-not-lower']));
+    expect(applicable(got)).toEqual(expect.arrayContaining(['suite-green', 'red-set-passes-by-name', 'test-count-not-lower']));
+  });
+
+  it('a coding step may change existing tests: a behaviour change rightly changes the tests that pin the old behaviour (1049ce52)', () => {
+    expect(applicable(resolveStepChecks(tdd(), 'BUILD'))).not.toContain('test-surface-frozen');
   });
 
   it('the SAME coding role on the default flow gets no red-set checks: nothing earlier produces a red set', () => {
@@ -151,7 +155,10 @@ describe('resolveStepChecks', () => {
   });
 
   it('fills a check\'s default params', () => {
-    const frozen = resolveStepChecks(tdd(), 'BUILD').find(c => c.id === 'test-surface-frozen');
+    const steps = tdd();
+    const build = (steps as any[]).find(s => s.name === 'BUILD');
+    build.checks = [{ id: 'test-surface-frozen' }];
+    const frozen = resolveStepChecks(steps, 'BUILD').find(c => c.id === 'test-surface-frozen');
     expect(frozen?.params).toEqual({ mode: 'append', since: 'test-authoring' });
   });
 

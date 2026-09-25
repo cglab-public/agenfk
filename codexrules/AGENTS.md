@@ -20,10 +20,10 @@
 
 ### Clean Start — MANDATORY at task start
 
-Before creating or starting a new task:
+Before creating, starting OR RESUMING a task (a card that already exists is no exception - resuming it on a stale checkout builds on old code):
 1. Run `git status` — if the working tree has uncommitted or modified files, **STOP** and ask the user how to proceed (stash, commit, or discard). Never start new work on a dirty working tree.
 2. Run `git branch --show-current` — if NOT on `main`/`master` and the current branch doesn't belong to an item you're resuming, run `git checkout main` (or `master`).
-3. Run `git pull` to ensure you have the latest upstream changes.
+3. Run `git pull` to ensure you have the latest upstream changes - in the tree the card works in (its worktree, else the project root). The `tree-in-sync` check (the `backlog` role's) refuses a card leaving the backlog from a tree behind or diverged from its remote; the pull is still yours on resume, which that check does not see.
 
 Before modifying ANY file, you MUST:
 1. Have an AgEnFK task in any active working step for the active project.

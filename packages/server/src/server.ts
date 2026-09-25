@@ -10,7 +10,7 @@ import { parseActor, parseFindings, readTranscriptIdentity } from './reviewRecor
 import * as passkeys from './passkeys';
 import { argvHash, awaitsPersonApproval, judgeCommandChecks, type CommandApproval } from './commandChecks';
 import { suggestTestReport } from './testReportHint';
-import { countedApproval, evaluateChecks, judgeReview, formatCheckResults, needsCapture, needsEntryRecord, parseAgentReports, type AgentReport, type CheckResult } from './checkEngine';
+import { countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, needsCapture, needsEntryRecord, parseAgentReports, type AgentReport, type CheckResult } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
@@ -6281,6 +6281,64 @@ function awaitingPersonCommands(resolved: ReturnType<typeof resolveStepChecks>, 
   return resolved.filter(c => c.applicable && c.id.startsWith('command-check:') && awaitsPersonApproval(c, approvals));
 }
 
+/**
+ * 1049ce52 - the tree's upstream, fetched now: how far HEAD is ahead of and
+ * behind it. Asynchronous and bounded - a fetch is network work and must never
+ * hold the event loop or hang a verify - and never interactive: no terminal,
+ * SSH in batch mode, no credential dialogs; a timeout kills the whole process
+ * group (ssh or a credential helper would otherwise keep the pipes open). No
+ * auto-gc or maintenance in a checkout other agents share.
+ *
+ * A branch with NO upstream (a fresh card branch) is compared with its remote's
+ * default branch instead (review): sitting strictly behind it - none of its own
+ * commits - is a stale base, the case this check exists for. A branch with its
+ * own commits and no upstream is not judged.
+ */
+type UpstreamState = { none: true } | { name: string; fetchError: string } | { name: string; ahead: number; behind: number; noUpstream?: true };
+async function readUpstream(root: string): Promise<UpstreamState> {
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', GIT_ASKPASS: '', SSH_ASKPASS: '', GIT_SSH_COMMAND: 'ssh -o BatchMode=yes -o ConnectTimeout=10' };
+  const git = (args: string[], timeoutMs = 5000) => new Promise<{ ok: boolean; out: string; err: string }>(resolve => {
+    const child = spawn('git', ['-C', root, '-c', 'credential.interactive=never', ...args], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    let out = '';
+    let err = '';
+    let done = false;
+    const finish = (ok: boolean) => { if (done) return; done = true; clearTimeout(timer); resolve({ ok, out: out.trim(), err: err.trim() }); };
+    const timer = setTimeout(() => { try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } err ||= `timed out after ${timeoutMs / 1000} s`; finish(false); }, timeoutMs);
+    child.stdout?.on('data', d => { out += d; });
+    child.stderr?.on('data', d => { err += d; });
+    child.on('error', e => { err ||= e.message; finish(false); });
+    child.on('close', code => finish(code === 0));
+  });
+  const fetch = (remote: string) => git(['-c', 'gc.auto=0', '-c', 'maintenance.auto=false', 'fetch', '--quiet', '--no-tags', '--no-write-fetch-head', remote], 20_000);
+  const firstLine = (s: string) => (s.split('\n').find(Boolean) ?? 'git fetch failed').slice(0, 300);
+  const count = async (range: string) => {
+    const c = await git(['rev-list', '--left-right', '--count', range]);
+    const [ahead, behind] = c.out.split(/\s+/).map(Number);
+    return c.ok && Number.isFinite(ahead) && Number.isFinite(behind) ? { ahead, behind } : null;
+  };
+  const branch = (await git(['symbolic-ref', '--quiet', '--short', 'HEAD'])).out;
+  const up = await git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']);
+  const configured = branch ? (await git(['config', `branch.${branch}.remote`])).out : '';
+  if (up.ok && up.out) {
+    if (!configured || configured === '.') return { none: true };
+    const fetched = await fetch(configured);
+    if (!fetched.ok) return { name: up.out, fetchError: firstLine(fetched.err) };
+    const c = await count('HEAD...@{upstream}');
+    return c ? { name: up.out, ...c } : { name: up.out, fetchError: 'could not compare HEAD with its upstream' };
+  }
+  // No upstream: the remote's default branch, when there is exactly one obvious remote.
+  const remotes = (await git(['remote'])).out.split('\n').map(r => r.trim()).filter(Boolean);
+  const remote = remotes.includes('origin') ? 'origin' : remotes.length === 1 ? remotes[0] : '';
+  if (!remote) return { none: true };
+  const fetched = await fetch(remote);
+  let base = (await git(['symbolic-ref', '--quiet', '--short', `refs/remotes/${remote}/HEAD`])).out;
+  for (const b of [`${remote}/main`, `${remote}/master`]) if (!base && (await git(['rev-parse', '--verify', '--quiet', `refs/remotes/${b}`])).ok) base = b;
+  if (!base) return fetched.ok ? { none: true } : { name: remote, fetchError: firstLine(fetched.err) };
+  if (!fetched.ok) return { name: base, fetchError: firstLine(fetched.err) };
+  const c = await count(`HEAD...${base}`);
+  return c ? { name: base, ...c, noUpstream: true } : { none: true };
+}
+
 /** 5a8d22e6: the server's own hold for a per-test entry baseline the project cannot record. */
 const ENTRY_BASELINE = 'entry-baseline';
 
@@ -6297,7 +6355,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   // 961f301d: waiting on a person, the slow checks wait too (see waitsOnPerson).
   const waitingOn = opts?.personFirst ? awaitingPersonCommands(resolved, flow, project) : [];
   const deferToApproval = opts?.personFirst
-    ? resolved.filter(c => c.applicable && (needsCapture([c]) || (c.id.startsWith('command-check:') && !waitingOn.includes(c)))).map(c => c.id)
+    ? resolved.filter(c => c.applicable && (needsCapture([c]) || needsNetwork(c) || (c.id.startsWith('command-check:') && !waitingOn.includes(c)))).map(c => c.id)
     : [];
   // 5a8d22e6: the next step's BLOCKING checks read a per-test entry baseline this project cannot record.
   const nextNeedsPerTestEntry = !!next && needsEntryRecord(resolveStepChecks(flow.steps, next.name).filter(c => c.severity === 'block'));
@@ -6343,6 +6401,8 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   if (review && actor && !review.authors.some((a: any) => a.sessionId === actor.sessionId && a.agentId === (actor.agentId ?? null))) {
     review.authors.push({ client: actor.client, sessionId: actor.sessionId, agentId: actor.agentId ?? null });
   }
+  // 1049ce52: the upstream is fetched only when a check reads it, and not while a person is waited on.
+  const upstream = root && resolved.some(c => c.applicable && needsNetwork(c) && !deferToApproval.includes(c.id)) ? await readUpstream(root) : undefined;
   // efcacdeb: command checks run here, before the engine, in the card's tree.
   const commandChecks = resolved.filter(c => c.applicable && c.id.startsWith('command-check:') && !deferToApproval.includes(c.id));
   const commandResults = commandChecks.length
@@ -6362,6 +6422,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     foreignClaims,
     deferToCommand,
     ...(deferToApproval.length ? { deferToApproval } : {}),
+    ...(upstream ? { upstream } : {}),
     ...(toParent ? { deferredToParent: { id: toParent.id, title: toParent.title } } : {}),
     children: (await storage.listItems({ parentId: item.id } as any)) as any,
     capture,
@@ -6579,6 +6640,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const deferred = deferredToCommand(activeFlow, item.status, project);
     const slow = needsCapture(resolveStepChecks(activeFlow.steps, item.status).filter(c => !deferred.includes(c.id)))
       || (!!nextName && needsEntryRecord(resolveStepChecks(activeFlow.steps, nextName)))
+      // A fetch may take seconds: never inside the request either (1049ce52 review).
+      || resolveStepChecks(activeFlow.steps, item.status).some(c => c.applicable && needsNetwork(c))
       // A command check may run for minutes: never inside the request (efcacdeb).
       || resolveStepChecks(activeFlow.steps, item.status).some(c => c.applicable && c.id.startsWith('command-check:'));
     if (slow && asyncRun) {

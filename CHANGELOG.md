@@ -2,6 +2,33 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.4] — unreleased
+
+Beta, cumulative over `2.0.0-beta.3`: everything in beta.3, plus the changes below.
+
+### Work starts from an up-to-date tree
+
+- **A new `backlog` role, with a `tree-in-sync` check.** A card leaves a backlog step only from a tree that is not
+  behind its remote and has not diverged from it: the server fetches the tree's upstream itself (in the background,
+  bounded, never interactive, no auto-gc) and refuses with the count and `git pull --ff-only`. Ahead - unpushed work -
+  is fine. A fresh branch that tracks nothing is checked as a base: sitting strictly behind the remote's default
+  branch is refused. A tree with no remote passes; an unreachable remote only warns. Nothing is fetched while a
+  person's approval is still missing.
+- **The shipped flows start with it.** The default flow's, the TDD preset's and the flow editor's templates' TODO
+  steps now carry the `backlog` role, so **leaving TODO now runs a `git fetch` of the card's tree**. To opt out, remove
+  the role from the TODO step of your flow. A project with no flow of its own uses the built-in default flow and gets it.
+- **Org flows using the role need this version everywhere.** An older agenfk rejects a flow whose step has the
+  `backlog` role (`unknown role`): upgrade every member before dispatching such a flow from the hub.
+- **Resuming a card pulls too.** The rules' Clean Start pull applies when resuming an existing card, in the tree it
+  works in - a card resumed on a checkout 25 commits behind origin is what prompted this.
+
+### Implementing may change existing tests
+
+- **`test-surface-frozen` is no longer part of the Implementing (coding) role.** Implementing a behaviour change
+  rightly changes the tests that pin the old behaviour. Refactoring keeps it (strict: its tests must stay identical),
+  and any flow can still add it to a step explicitly. `red-set-passes-by-name` and `test-count-not-lower` still stop a
+  red test from disappearing.
+
 ## [2.0.0-beta.3] — 2026-09-25
 
 Beta, cumulative over `2.0.0-beta.2`: everything in beta.2, plus the changes below. It is about one thing: a

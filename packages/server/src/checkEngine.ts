@@ -155,6 +155,11 @@ export interface EngineContext {
   capture: CaptureRecord | null;
   /** Why there is no usable capture, when there is none. */
   captureError?: string;
+  /**
+   * The tree's upstream as fetched on this verify (1049ce52): none, unreachable,
+   * or how far HEAD is ahead of and behind it. Absent when no check asked.
+   */
+  upstream?: { none: true } | { name: string; fetchError: string } | { name: string; ahead: number; behind: number; noUpstream?: true };
   /** Per-test results as the card entered this step (`stepEntryTests`). */
   entry: CaptureRecord | null;
   /** HEAD when the card entered this step, from the previous step's exit record. */
@@ -295,6 +300,24 @@ export const EVALUATORS: Record<string, Evaluator> = {
     return dirty.length
       ? { outcome: 'fail', detail: `uncommitted changes: ${list(dirty)}. Commit or stash them before starting.` }
       : { outcome: 'pass', detail: 'clean' };
+  },
+
+  'tree-in-sync': ctx => {
+    const u = ctx.upstream;
+    if (!ctx.root) return { outcome: 'unavailable', detail: 'the card has no tree (no project root, no worktree)' };
+    if (!u) return { outcome: 'unavailable', detail: 'the upstream was not read on this verify' };
+    if ('none' in u) return { outcome: 'pass', detail: 'no upstream: this branch tracks no remote branch, so there is nothing to be in sync with' };
+    // Offline or refused: whether the tree is behind is unknown - a warning, never a block (offline work is allowed).
+    if ('fetchError' in u) return { outcome: 'unavailable', soft: true, detail: `could not fetch ${u.name} (${u.fetchError}): whether the tree is behind it is unknown` };
+    const n = (k: number) => `${k} commit${k === 1 ? '' : 's'}`;
+    // No upstream (a fresh card branch): judged only as a base - strictly behind the remote's default branch.
+    if (u.noUpstream) {
+      if (u.behind && !u.ahead) return { outcome: 'fail', detail: `this branch tracks no remote branch and sits ${n(u.behind)} behind ${u.name}: work would start from a stale base. Bring it up to date first (git merge --ff-only ${u.name}, or re-create the branch from ${u.name}), then verify again.` };
+      return { outcome: 'pass', detail: u.ahead ? `no upstream; the branch has ${n(u.ahead)} of its own, so its base is not judged` : `no upstream; up to date with ${u.name}` };
+    }
+    if (u.behind && u.ahead) return { outcome: 'fail', detail: `the tree has diverged from ${u.name}: ${n(u.ahead)} ahead and ${n(u.behind)} behind. Bring it up to date first (git pull --rebase, or git pull), then verify again.` };
+    if (u.behind) return { outcome: 'fail', detail: `the tree is ${n(u.behind)} behind ${u.name}: work would be built on stale code. Update it first: git pull --ff-only` };
+    return { outcome: 'pass', detail: `in sync with ${u.name}${u.ahead ? ` (${n(u.ahead)} ahead, not pushed yet)` : ''}` };
   },
 
   'on-card-branch': ctx => {
@@ -592,6 +615,9 @@ export function evaluateChecks(resolved: readonly ResolvedCheck[], ctx: EngineCo
 export function needsCapture(resolved: readonly ResolvedCheck[]): boolean {
   return resolved.some(c => c.applicable && c.id !== 'server-owned-verify' && checkDef(c.id)?.needsCapture);
 }
+
+/** Is this check slow because it talks to a remote (1049ce52)? */
+export const needsNetwork = (c: ResolvedCheck): boolean => !!checkDef(c.id)?.network;
 
 /** Does any applicable check read the step's entry record? */
 export function needsEntryRecord(resolved: readonly ResolvedCheck[]): boolean {

@@ -486,12 +486,12 @@ describe('CGLAB-380: test checks', () => {
       expect(c.detail).toMatch(/mul_works/);
     });
 
-    it('refuses weakening a red test: the test files are frozen', async () => {
+    it('lets an existing test change while implementing: a behaviour change rightly changes its tests (1049ce52)', async () => {
       const { dir, id } = await atBuild();
       write(dir, 'tests/mul.test.js', 'T mul_works mul=0\nT mul_again mul=0\n');
       impl(dir, { add: 'ok', mul: '0' });
-      const c = await refused(id, 'test-surface-frozen');
-      expect(c.detail).toMatch(/edited tests\/mul\.test\.js/);
+      const r = await validate(id);
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
     });
 
     it('refuses skipping a red test: skipped is not passed', async () => {
@@ -502,10 +502,10 @@ describe('CGLAB-380: test checks', () => {
       expect(c.detail).toMatch(/mul_works.*skipped/);
     });
 
-    it('refuses deleting a test file', async () => {
+    it('refuses deleting a test file: its red tests are missing, not passed', async () => {
       const { dir, id } = await atBuild();
       fs.rmSync(path.join(dir, 'tests/mul.test.js'));
-      await refused(id, 'test-surface-frozen');
+      await refused(id, 'red-set-passes-by-name');
     });
 
     it('accepts an APPENDED test file while implementing', async () => {

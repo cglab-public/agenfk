@@ -18,7 +18,7 @@
 import { leavingEndsFlow } from './gatekeeper';
 
 /** One vocabulary with the gatekeeper's advisory `--role`, extended. */
-export const STEP_ROLES = ['planning', 'test-authoring', 'coding', 'refactoring', 'review', 'testing', 'closing'] as const;
+export const STEP_ROLES = ['backlog', 'planning', 'test-authoring', 'coding', 'refactoring', 'review', 'testing', 'closing'] as const;
 export type StepRole = typeof STEP_ROLES[number];
 
 export type CheckSeverity = 'block' | 'warn';
@@ -66,6 +66,8 @@ export interface CheckDef {
   requires: (params: Record<string, string>) => RecordName[];
   /** Needs per-test results (a capture of the test report). */
   needsCapture: boolean;
+  /** Talks to a remote (1049ce52): slow, so it waits behind a person's approval like a capture. */
+  network?: boolean;
   /** Set when the check cannot run on this server yet: it is refused at save time. */
   unavailable?: string;
 }
@@ -78,6 +80,8 @@ const def = (d: Omit<CheckDef, 'params' | 'produces' | 'requires' | 'needsCaptur
 export const CHECK_CATALOGUE: Record<string, CheckDef> = {
   'tree-clean': def({ id: 'tree-clean', group: 'git', defaultSeverity: 'block',
     description: 'The working tree has no uncommitted changes when work starts, so the card begins from a known commit.' }),
+  'tree-in-sync': def({ id: 'tree-in-sync', group: 'git', defaultSeverity: 'block', network: true,
+    description: "The card's tree is in sync with its remote when work starts - not behind it, not diverged from it - so work is never built on stale code. Ahead (unpushed work) is fine; a tree with no remote passes; an unreachable remote only warns." }),
   'on-card-branch': def({ id: 'on-card-branch', group: 'git', defaultSeverity: 'block',
     description: "The tree is on the card's own branch, so work never lands on somebody else's." }),
   'jira-key-valid': def({ id: 'jira-key-valid', group: 'git', defaultSeverity: 'block',
@@ -94,7 +98,7 @@ export const CHECK_CATALOGUE: Record<string, CheckDef> = {
     description: 'At least one test was added in this step.' }),
   'some-new-test-red': def({ id: 'some-new-test-red', group: 'tests', defaultSeverity: 'block', needsCapture: true,
     requires: () => ['stepEntryTests'], produces: () => ['redSet', 'testSurface', 'authoredTests'],
-    description: 'At least one new test fails before the code exists. Those tests become the red set that must pass later, and the test files are frozen.' }),
+    description: 'At least one new test fails before the code exists. Those tests become the red set that must pass later; the test files as written are recorded, for a step that freezes them (test-surface-frozen).' }),
   'new-tests-born-green': def({ id: 'new-tests-born-green', group: 'tests', defaultSeverity: 'warn', needsCapture: true,
     requires: () => ['stepEntryTests'],
     description: 'Warns about new tests that already pass: they prove nothing about code not yet written.' }),
@@ -154,13 +158,17 @@ const ref = (id: string, params?: Record<string, string>): StepCheckRef => (para
 
 /** What each role brings. A built-in whose record no earlier step produces is not applicable. */
 export const ROLE_BUILTINS: Record<StepRole, StepCheckRef[]> = {
+  // 1049ce52: a card leaves the backlog only from a tree in sync with its remote.
+  backlog: [ref('tree-in-sync')],
   planning: [],
   'test-authoring': [
     ref('only-test-files-changed'), ref('no-broken-test-files'), ref('new-tests-exist'), ref('some-new-test-red'),
     ref('existing-tests-still-green'), ref('new-tests-born-green'), ref('red-is-assertion'),
   ],
   coding: [
-    ref('suite-green'), ref('red-set-passes-by-name'), ref('test-surface-frozen', { mode: 'append', since: 'test-authoring' }),
+    // No test-surface-frozen here (user 2026-09-25): implementing a behaviour change may rightly change the
+    // existing tests that pin the old behaviour. Refactoring keeps it - behaviour must not change there.
+    ref('suite-green'), ref('red-set-passes-by-name'),
     ref('test-count-not-lower', { since: 'test-authoring' }),
   ],
   refactoring: [ref('suite-green'), ref('test-set-identical'), ref('test-surface-frozen', { mode: 'strict', since: 'step-entry' })],
