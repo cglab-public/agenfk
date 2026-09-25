@@ -101,7 +101,7 @@ enforced by the server. Each workflow tool name in this skill maps to a CLI comm
 | `create_item(projectId, type, title)` | `agenfk create <TYPE> "<title>" --project <id> [-d/--description <desc>] [-p/--parent <id>] [--jira-item <KEY>]` |
 | `update_item(id, {status})` | `agenfk update <id> [--status <name>][--title <t>][--description <d>][--type <T>]` (status is backward/rollback only) |
 | `update_item(id, {parentId})` | `agenfk update <id> --parent <parentId>` — re-parent; `--parent none` detaches to top level. Parent must be in the same project and cannot be the item itself or a descendant. |
-| `update_item(id, {jiraItem})` | `agenfk update <id> --jira-item <KEY>` — link an EXISTING card to a JIRA item (e.g. `CGLAB-163`); `--jira-item none` unlinks. Reference only: the card keeps its own title and description. Validated against JIRA when connected, format-checked when not. |
+| `update_item(id, {jiraItem})` | `agenfk update <id> --jira-item <KEY>` — link an EXISTING card to a JIRA item (e.g. `CGLAB-163`); `--jira-item none` unlinks. Reference only: the card keeps its own title and description. Validated against JIRA when connected, format-checked when not. On a hub-joined installation a hub admin configures the org's Atlassian app and each user connects their own JIRA through the hub from the board; `agenfk jira setup` refuses locally. |
 | `validate_progress(id, evidence, command?)` | `agenfk verify <id> --evidence "<text>" ["<command>"]` |
 | `add_comment(id, text)` | `agenfk comment <id> "<text>" [--author <name>]` |
 | `add_context(id, path)` | `agenfk add-context <id> --path <path> [--description <text>][--content <text>]` |

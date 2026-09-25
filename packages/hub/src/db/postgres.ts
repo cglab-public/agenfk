@@ -480,6 +480,52 @@ const SCHEMA_PG = `
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (org_id, model)
   );
+
+
+  -- Hub-centralized JIRA (CGLAB-412). org_jira is the org's Atlassian OAuth
+  -- app, registered once by an admin; the secret is an AES-GCM blob
+  -- (crypto.ts). Each installation connects its OWN JIRA identity:
+  -- jira_connections is keyed by the installation's hub api key (its sha256),
+  -- so a relay call uses the caller's token and JIRA's own permissions apply
+  -- per person. token_enc holds {access_token, refresh_token}; NULL with a
+  -- last_error once the grant died. jira_oauth_pending holds a flow between
+  -- start and completion: the state, then the exchanged token awaiting the
+  -- starting key's redemption of a one-time completion code. Timestamps are
+  -- ISO TEXT written by the app, identical in both dialects.
+  CREATE TABLE IF NOT EXISTS org_jira (
+    org_id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    client_secret_enc TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS jira_connections (
+    key_hash TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    token_enc TEXT,
+    cloud_id TEXT,
+    cloud_url TEXT,
+    account_email TEXT,
+    connected_at TEXT,
+    last_error TEXT,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_jira_connections_org ON jira_connections(org_id);
+
+  CREATE TABLE IF NOT EXISTS jira_oauth_pending (
+    state TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    key_hash TEXT NOT NULL,
+    return_to TEXT NOT NULL,
+    completion_hash TEXT,
+    token_enc TEXT,
+    cloud_id TEXT,
+    cloud_url TEXT,
+    account_email TEXT,
+    claimed_at TEXT,
+    expires_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_jira_oauth_pending_completion ON jira_oauth_pending(completion_hash);
 `;
 
 /**
