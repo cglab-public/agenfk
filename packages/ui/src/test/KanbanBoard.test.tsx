@@ -613,7 +613,7 @@ describe('KanbanBoard', () => {
 
       const task1Card = (await screen.findByText('Task 1')).closest('[draggable="true"]')!;
       const task2Card = (await screen.findByText('Task 2')).closest('[draggable="true"]')!;
-      const todoColumn = screen.getByText('TODO').closest('.flex-col')!;
+      const todoColumn = screen.getByTestId('column-header-TODO').parentElement!;
 
       // 1. Drag Start on Task 2
       const dataTransfer = {
@@ -676,7 +676,7 @@ describe('KanbanBoard', () => {
       }, { timeout: 3000 });
 
       const child1Card = (await screen.findByText('Child One')).closest('[draggable="true"]')!;
-      const todoColumn = screen.getByText('TODO').closest('.flex-col')!;
+      const todoColumn = screen.getByTestId('column-header-TODO').parentElement!;
 
       // Drag Child Two onto Child One (top half → above)
       const dataTransfer = {
@@ -763,7 +763,7 @@ describe('KanbanBoard', () => {
 
     render(<KanbanBoard />, { wrapper });
     // Wait for the main board to render (column headers appear)
-    await screen.findByText('TODO');
+    await screen.findByText('Todo');
 
     const searchInput = screen.getByPlaceholderText(/Search Item ID or Name/i);
     fireEvent.change(searchInput, { target: { value: 'xyzNotFound' } });
@@ -863,8 +863,8 @@ describe('KanbanBoard', () => {
 
     fireEvent.dragStart(taskCard, { dataTransfer });
 
-    // Drop onto the IN_PROGRESS column (rendered as "IN PROGRESS")
-    const inProgressCol = screen.getByText('IN PROGRESS').closest('.flex-col')!;
+    // Drop onto the IN_PROGRESS column (label "IN PROGRESS", shown in title case)
+    const inProgressCol = screen.getByTestId('column-header-IN_PROGRESS').parentElement!;
     fireEvent.drop(inProgressCol, { dataTransfer });
 
     await waitFor(() => {
@@ -915,7 +915,7 @@ describe('KanbanBoard', () => {
     localStorage.setItem('agenfk_project_id', 'p1');
 
     render(<KanbanBoard />, { wrapper });
-    await screen.findByText('TODO');
+    await screen.findByText('Todo');
 
     // Click the version button (What's new)
     const whatsNewBtn = screen.getByTitle(/What's new/i);
@@ -934,7 +934,7 @@ describe('KanbanBoard', () => {
     localStorage.setItem('agenfk_project_id', 'p1');
 
     render(<KanbanBoard />, { wrapper });
-    await screen.findByText('TODO');
+    await screen.findByText('Todo');
 
     const readmeBtn = screen.getByTitle(/View project README/i);
     fireEvent.click(readmeBtn);
@@ -951,7 +951,7 @@ describe('KanbanBoard', () => {
     localStorage.setItem('agenfk_project_id', 'p1');
 
     render(<KanbanBoard />, { wrapper });
-    await screen.findByText('TODO');
+    await screen.findByText('Todo');
 
     // The Ideas collapsed button has title with "Ideas" text
     const ideasText = screen.queryByText('Ideas');
@@ -965,7 +965,7 @@ describe('KanbanBoard', () => {
       }
     }
     // Verify board still renders
-    expect(screen.queryByText('TODO')).toBeDefined();
+    expect(screen.queryByText('Todo')).toBeDefined();
   });
 
   it('should navigate back to project selector via folder icon', async () => {
@@ -975,7 +975,7 @@ describe('KanbanBoard', () => {
     localStorage.setItem('agenfk_project_id', 'p1');
 
     render(<KanbanBoard />, { wrapper });
-    await screen.findByText('TODO');
+    await screen.findByText('Todo');
 
     const switchProjectBtn = screen.getByTitle('Switch Project');
     fireEvent.click(switchProjectBtn);
@@ -992,7 +992,7 @@ describe('KanbanBoard', () => {
     localStorage.setItem('agenfk_project_id', 'p1');
 
     render(<KanbanBoard />, { wrapper });
-    await screen.findByText('TODO');
+    await screen.findByText('Todo');
 
     const addTodoBtn = screen.getByText(/Add todo/i);
     fireEvent.click(addTodoBtn);
@@ -1038,7 +1038,7 @@ describe('KanbanBoard', () => {
     localStorage.setItem('agenfk_project_id', 'p1');
 
     render(<KanbanBoard />, { wrapper });
-    await screen.findByText('TODO');
+    await screen.findByText('Todo');
 
     fireEvent.click(screen.getByTitle(/What's new/i));
     await waitFor(() => expect(document.querySelector('.fixed.inset-0')).not.toBeNull());
@@ -1055,7 +1055,7 @@ describe('KanbanBoard', () => {
     localStorage.setItem('agenfk_project_id', 'p1');
 
     render(<KanbanBoard />, { wrapper });
-    await screen.findByText('TODO');
+    await screen.findByText('Todo');
 
     fireEvent.click(screen.getByTitle(/View project README/i));
     await waitFor(() => expect(screen.getByText('Project README')).toBeDefined());
@@ -1122,7 +1122,7 @@ describe('KanbanBoard', () => {
       localStorage.setItem('agenfk_project_id', 'proj-abc');
 
       render(<KanbanBoard />, { wrapper });
-      await screen.findByText('TODO');
+      await screen.findByText('Todo');
 
       await waitFor(() => {
         expect(api.getProjectFlow).toHaveBeenCalledWith('proj-abc');
@@ -1140,9 +1140,9 @@ describe('KanbanBoard', () => {
 
       // Fallback columns should still render
       await waitFor(() => {
-        expect(screen.getByText('TODO')).toBeDefined();
-        expect(screen.getByText('IN PROGRESS')).toBeDefined();
-        expect(screen.getByText('DONE')).toBeDefined();
+        expect(screen.getByRole('heading', { name: 'Todo' })).toBeDefined();
+        expect(screen.getByRole('heading', { name: 'In Progress' })).toBeDefined();
+        expect(screen.getByRole('heading', { name: 'Done' })).toBeDefined();
       });
     });
 

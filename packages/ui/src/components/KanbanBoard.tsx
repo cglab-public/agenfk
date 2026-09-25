@@ -18,6 +18,7 @@ import { useActiveProject } from '../ActiveProject';
 import { CardDetailModal } from './CardDetailModal';
 import { VerifyRunBadge } from './VerifyRunBadge';
 import { ColumnContractBadges, ColumnRole } from './ColumnContractBadges';
+import { checkText } from '@agenfk/flow-editor';
 import { CardAnimationWrapper } from '../animations/CardAnimationWrapper';
 import '../animations'; // Side-effect: registers all easter egg animations
 import { useEasterEggs } from '../useEasterEggs';
@@ -498,6 +499,18 @@ const stripDeepLinkParams = () => {
 const blankDraft = (projectId: string, status: Status): AgEnFKItem =>
   ({ type: ItemType.TASK, status, title: '', description: '', projectId } as unknown as AgEnFKItem);
 
+/**
+ * A step label as the column shows it: one written in capitals ('IN PROGRESS',
+ * or a status name with its underscores turned to spaces) in title case, and
+ * one the flow already wrote in mixed case left alone - which is how a flow
+ * keeps an acronym ('QA Review'). A word holding a '/' or a digit ('CI/CD',
+ * 'V2') is kept as written. The full label stays the heading's tooltip.
+ */
+function titleCaseLabel(label: string): string {
+  if (/\p{Ll}/u.test(label)) return label;
+  return label.replace(/\S+/g, w => (/[/\d]/.test(w) ? w : w.charAt(0) + w.slice(1).toLowerCase()));
+}
+
 export const KanbanBoard: React.FC = () => {
   const queryClient = useQueryClient();
   const { theme, toggleTheme } = useTheme();
@@ -650,10 +663,11 @@ export const KanbanBoard: React.FC = () => {
   });
   // What verify runs, and blocks on, to leave the column: warn-only checks
   // (all a flow from before roles has) are not counted, so they add no badge.
-  type ContractStep = { name: string; checks: Array<{ applicable: boolean; severity: string }>; onLeave?: Array<{ applicable: boolean; severity: string }> };
-  const checkCountOf = (name: string): number | undefined => {
+  type ContractCheck = { id: string; applicable: boolean; severity: string };
+  type ContractStep = { name: string; checks: ContractCheck[]; onLeave?: ContractCheck[] };
+  const blockingChecksOf = (name: string): ContractCheck[] | undefined => {
     const st = (flowContract as { steps?: ContractStep[] } | undefined)?.steps?.find(x => x.name === name);
-    return st ? (st.onLeave ?? st.checks).filter(c => c.applicable && c.severity === 'block').length : undefined;
+    return st ? (st.onLeave ?? st.checks).filter(c => c.applicable && c.severity === 'block') : undefined;
   };
 
   const flowStepByStatus = React.useMemo((): Record<string, FlowStep> => {
@@ -1971,29 +1985,31 @@ export const KanbanBoard: React.FC = () => {
           {(!isLoadingFlow || activeFlow) && mainColumnStatuses.map(status => {
             const flowStep = flowStepByStatus[status];
             const columnLabel = flowStep ? (flowStep.label || flowStep.name) : status.replace(/_/g, ' ');
+            const blocking = flowStep ? blockingChecksOf(flowStep.name) : undefined;
             return (
             <div key={status} className="flex flex-col w-full md:flex-1 md:min-w-[180px] h-full min-h-[300px] md:min-h-0" onDrop={(e) => handleDrop(e, status as Status)} onDragOver={handleDragOver} onDragEnter={handleColumnDragEnter}>
               <div
                 data-testid={`column-header-${status}`}
-                className="flex items-center justify-between mb-3 px-1 border-t-4 pt-2"
+                className="group flex flex-col gap-0.5 mb-3 px-1 border-t-4 pt-2"
                 style={{ borderTopColor: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? colorForUnknownStatus(status) }}
               >
-                <div className="flex items-center gap-2">
-                  <div className="p-1 rounded-md text-slate-500 bg-slate-50 dark:bg-slate-800" style={{ color: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? colorForUnknownStatus(status) }}>
+                <div data-testid={`column-title-${status}`} className="flex items-center gap-2 min-w-0">
+                  <div className="p-1 rounded-md text-slate-500 bg-slate-50 dark:bg-slate-800 shrink-0" style={{ color: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? colorForUnknownStatus(status) }}>
                     {renderStepIcon(flowStep?.icon, statusIcons[status as Status] ?? <Briefcase size={14} />)}
                   </div>
-                  <div className="flex flex-col min-w-0">
-                    <h2 className="font-bold text-ink-secondary text-sm uppercase tracking-wider">{columnLabel}</h2>
-                    {flowStep && <ColumnRole step={flowStep} />}
-                  </div>
-                  {flowStep && <ColumnContractBadges step={flowStep} checkCount={checkCountOf(flowStep.name)} />}
-                  <button onClick={() => handleArchiveColumn(status as Status)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 dark:text-slate-500 transition-colors" title="Archive Column">
+                  <h2 title={columnLabel} className="flex-1 min-w-0 truncate font-bold text-ink-secondary text-sm">{titleCaseLabel(columnLabel)}</h2>
+                  <button onClick={() => handleArchiveColumn(status as Status)} className="p-1 shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 dark:text-slate-500 transition-opacity" title="Archive Column">
                     <Archive size={12} />
                   </button>
+                  <span className="shrink-0 bg-chip text-accent-text text-xs font-mono font-bold px-2 py-1 rounded-full shadow-sm border border-border-soft">
+                    {getItemsByStatus(status as Status).length}
+                  </span>
                 </div>
-                <span className="bg-chip text-accent-text text-xs font-mono font-bold px-2 py-1 rounded-full shadow-sm border border-border-soft">
-                  {getItemsByStatus(status as Status).length}
-                </span>
+                {/* Always rendered, so every header is the same height (85b59d8c). */}
+                <div data-testid={`column-meta-${status}`} className="flex items-center gap-2 min-h-[16px] pl-[30px] min-w-0">
+                  {flowStep && <ColumnRole step={flowStep} />}
+                  {flowStep && <ColumnContractBadges step={flowStep} checkCount={blocking?.length} checkNames={blocking?.map(c => checkText(c.id).title)} />}
+                </div>
               </div>
 
               <div className={clsx("flex-1 px-3 pb-10 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>

@@ -61,11 +61,13 @@ describe('board column contracts', () => {
     mount();
     const specs = await screen.findByTestId('column-header-SPECS');
     await waitFor(() => expect(within(specs).getByText('Writing tests')).toBeTruthy());
-    // b13f37e6: the role is the line directly under the step name, not a badge beside it.
-    const role = within(specs).getByText('Writing tests');
-    expect(role.previousElementSibling?.tagName).toBe('H2');
-    expect(role.previousElementSibling?.textContent).toMatch(/Specs/i);
-    await waitFor(() => expect(within(specs).getByText(/\d+ checks/)).toBeTruthy());
+    // b13f37e6 / 85b59d8c: the role is on the line under the step name, not a badge beside it.
+    const meta = within(specs).getByTestId('column-meta-SPECS');
+    expect(within(meta).getByText('Writing tests')).toBeTruthy();
+    expect(within(meta).queryByRole('heading')).toBeNull();
+    expect(meta.previousElementSibling).toBe(within(specs).getByTestId('column-title-SPECS'));
+    expect(within(meta.previousElementSibling as HTMLElement).getByRole('heading').textContent).toMatch(/Specs/i);
+    await waitFor(() => expect(within(specs).getByLabelText(/\d+ checks/)).toBeTruthy());
     const plan = screen.getByTestId('column-header-PLAN');
     expect(within(plan).getByLabelText(/a person must approve/i)).toBeTruthy();
   });
@@ -76,7 +78,7 @@ describe('board column contracts', () => {
     const specs = await screen.findByTestId('column-header-SPECS');
     await waitFor(() => expect(api.getFlowContract).toHaveBeenCalled());
     await new Promise(r => setTimeout(r, 50));
-    expect(within(specs).queryByText(/checks?/)).toBeNull();
+    expect(within(specs).queryByTestId('column-checks-SPECS')).toBeNull();
   });
 
   it('an older server without the contract route still shows the role and the approval', async () => {
@@ -85,6 +87,6 @@ describe('board column contracts', () => {
     const plan = await screen.findByTestId('column-header-PLAN');
     await waitFor(() => expect(within(plan).getByText('Planning')).toBeTruthy());
     expect(within(plan).getByLabelText(/a person must approve/i)).toBeTruthy();
-    expect(within(plan).queryByText(/checks/)).toBeNull();
+    expect(within(plan).queryByTestId('column-checks-PLAN')).toBeNull();
   });
 });

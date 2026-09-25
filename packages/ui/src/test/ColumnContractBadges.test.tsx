@@ -19,7 +19,7 @@ describe('ColumnContractBadges', () => {
 
   it("shows the server's check count, and leaves the role to its own line under the step name", () => {
     render(<ColumnContractBadges step={{ id: 's', name: 'X', label: 'X', order: 1, role: 'test-authoring' }} checkCount={8} />);
-    expect(screen.getByText(/8 checks/)).toBeTruthy();
+    expect(screen.getByLabelText('8 checks')).toBeTruthy();
     expect(screen.queryByText('Writing tests')).toBeNull();
   });
 
@@ -38,6 +38,16 @@ describe('ColumnContractBadges', () => {
   it('shows no count for a flow whose checks only warn (a flow from before roles)', () => {
     const { container } = render(<ColumnContractBadges step={{ id: 's', name: 'X', label: 'X', order: 1 }} checkCount={0} />);
     expect(container.textContent).toBe('');
+  });
+
+  // 85b59d8c: the count is an icon and a number; which checks they are is the tooltip.
+  it('shows the checks as a number, with their names on hover', () => {
+    render(<ColumnContractBadges step={{ id: 's', name: 'X', label: 'X', order: 1 }} checkCount={2} checkNames={['Clean working tree', "On the card's branch"]} />);
+    const checks = screen.getByTestId('column-checks-X');
+    expect(checks.textContent?.trim()).toBe('2');
+    expect(checks.getAttribute('title')).toBe("2 checks: Clean working tree, On the card's branch");
+    // A screen reader still hears what the number counts.
+    expect(checks.getAttribute('aria-label')).toBe('2 checks');
   });
 
   it('marks a step that waits for a person, and one that needs a passkey', () => {
