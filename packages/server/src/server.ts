@@ -7,8 +7,8 @@ import { mayPropagate, readCleanTreeSha, readHead, readTreeStatus } from './prop
 import { insideRoot, parseJunitXml, parseVitestJson, surfaceOf } from './stepRecords';
 import { parseActor, parseFindings, readTranscriptIdentity } from './reviewRecords';
 import * as passkeys from './passkeys';
-import { argvHash, judgeCommandChecks, type CommandApproval } from './commandChecks';
-import { evaluateChecks, judgeReview, formatCheckResults, needsCapture, needsEntryRecord, parseAgentReports, type AgentReport, type CheckResult } from './checkEngine';
+import { argvHash, awaitsPersonApproval, judgeCommandChecks, type CommandApproval } from './commandChecks';
+import { countedApproval, evaluateChecks, judgeReview, formatCheckResults, needsCapture, needsEntryRecord, parseAgentReports, type AgentReport, type CheckResult } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
@@ -3122,10 +3122,21 @@ async function captureStepRecord(item: any): Promise<CaptureOutcome> {
     return { status: 400, error: 'NO_REPORT_COMMAND', message: 'Nothing to run: set a test report (agenfk update-project <id> --test-report-...) or a verifyCommand.' };
   }
 
+  const cleanSha = readCleanTreeSha(root, gitRun);
+  const reused = await reusableCapture(item, project, root, cleanSha);
+  if (reused) {
+    const fresh: any = await storage.getItem(item.id);
+    if (!fresh || fresh.status !== item.status) return { status: 409, error: 'CARD_MOVED', message: `The card moved (${item.status} -> ${fresh?.status ?? 'deleted'}); nothing was recorded.` };
+    await storage.updateItem(item.id, { stepRecords: [...(fresh.stepRecords ?? []), reused] } as any);
+    return { record: reused };
+  }
+
   const record: any = {
     step: item.status, kind: 'capture', at: new Date().toISOString(),
-    head: readHead(root, gitRun), clean: readCleanTreeSha(root, gitRun) !== null,
+    head: readHead(root, gitRun), clean: cleanSha !== null,
     format: setting ? setting.format : 'exit-code', available: false,
+    // What ran, and where: a later card may reuse this record only for the same command in the same tree (961f301d).
+    command, root,
   };
   // Inside the tree lexically AND through symlinks: a report path is never a
   // way to delete or read a file somewhere else.
@@ -3183,7 +3194,84 @@ async function captureStepRecord(item: any): Promise<CaptureOutcome> {
     return { status: 409, error: 'CARD_MOVED', message: `The card moved (${item.status} -> ${fresh?.status ?? 'deleted'}) while the capture ran; nothing was recorded.` };
   }
   await storage.updateItem(item.id, { stepRecords: [...(fresh.stepRecords ?? []), record] } as any);
+  // Only a per-test capture is ever reused (an exit code alone comes from a close's test record).
+  if (record.available && record.clean && record.exitCode === 0) noteGreen(item.projectId, root, record.head, item.id);
   return { record };
+}
+
+/**
+ * 961f301d — greens on record, by project, tree and commit: the cards that may
+ * hold one. Built from ONE scan per project per server process, then kept at
+ * the two places a green is written (a clean per-test capture that exited 0,
+ * and the commit a close stamps on its test record), so a capture never reads the whole
+ * project on the request path. Only a hint: every candidate is re-checked in
+ * full before it is used, so a stale entry costs a lookup, never a wrong green.
+ * After a restart it is rebuilt on first use.
+ */
+const greensAt = new Map<string, Set<string>>();
+/** The one scan per project: awaited by every lookup, dropped if it fails so the next one retries. */
+const greensIndexed = new Map<string, Promise<void>>();
+const greenKey = (projectId: string, root: string, sha: string) => `${projectId}\0${root}\0${sha}`;
+function noteGreen(projectId: string, root: string | null, sha: string | null | undefined, itemId: string): void {
+  if (!root || !sha) return;
+  const key = greenKey(projectId, root, sha);
+  const cards = greensAt.get(key) ?? new Set<string>();
+  cards.add(itemId);
+  greensAt.set(key, cards);
+}
+function indexProjectGreens(projectId: string): Promise<void> {
+  let scan = greensIndexed.get(projectId);
+  if (!scan) {
+    scan = (async () => {
+      // The tree each green RAN in is on its record: a card's current tree may be another by now.
+      for (const card of (await storage.listItems({ projectId } as any)) as any[]) {
+        for (const r of card.stepRecords ?? []) if (r?.kind === 'capture' && r.available === true && r.clean === true && r.exitCode === 0 && !r.reusedFrom) noteGreen(projectId, r.root, r.head, card.id);
+        for (const x of testRecords(card.tests)) if (x.status === 'PASSED' && x.commit) noteGreen(projectId, x.commitRoot, x.commit, card.id);
+      }
+    })();
+    scan.catch(() => greensIndexed.delete(projectId));
+    greensIndexed.set(projectId, scan);
+  }
+  return scan.catch(() => undefined);
+}
+
+/**
+ * 961f301d — a green already on record for exactly this tree, as a capture.
+ * The tree must be CLEAN at a commit a run of the same command was recorded
+ * against, by a card of this project working in THIS tree (CGLAB-366: another
+ * checkout at the same commit can differ in what git ignores - node_modules, a
+ * build, an .env). With a test report it is an earlier capture with per-test
+ * results (same format and declared surface); without one, a PASSED test
+ * record stamped with that commit (what a close stamps) - the exit code is all
+ * a capture would have known. Null: capture it.
+ */
+async function reusableCapture(item: any, project: any, root: string, sha: string | null): Promise<any | null> {
+  if (!sha) return null;
+  const setting: TestReportSetting | undefined = project?.testReport;
+  const command = setting?.command ?? project?.verifyCommand;
+  if (!command) return null;
+  await indexProjectGreens(item.projectId);
+  const candidates: any[] = [];
+  for (const id of greensAt.get(greenKey(item.projectId, root, sha)) ?? []) {
+    const card: any = await storage.getItem(id);
+    if (card && card.projectId === item.projectId) candidates.push(card);
+  }
+  const base = { step: item.status, kind: 'capture', at: new Date().toISOString(), head: sha, clean: true, command, root };
+  if (setting) {
+    const same = (r: any) => r?.kind === 'capture' && r.root === root && r.clean === true && r.head === sha && r.available === true && r.exitCode === 0
+      && !r.reusedFrom && r.command === command && r.format === setting.format && r.surfaceScope === 'declared'
+      && JSON.stringify(r.surfaceDeclared ?? []) === JSON.stringify(setting.surface ?? []);
+    let best: { card: any; r: any } | null = null;
+    for (const card of candidates) for (const r of card.stepRecords ?? []) if (same(r) && (!best || String(r.at) > String(best.r.at))) best = { card, r };
+    if (!best) return null;
+    return { ...best.r, ...base, reusedFrom: { itemId: best.card.id, step: best.r.step, at: best.r.at } };
+  }
+  let found: { card: any; t: any } | null = null;
+  for (const card of candidates) for (const x of testRecords(card.tests)) {
+    if (x.status === 'PASSED' && x.commit === sha && x.commitRoot === root && x.command === command && (!found || String(x.executedAt) > String(found.t.executedAt))) found = { card, t: x };
+  }
+  if (!found) return null;
+  return { ...base, format: 'exit-code', available: false, exitCode: 0, reusedFrom: { itemId: found.card.id, testId: found.t.id } };
 }
 
 app.post("/items/:id/step-records/capture", asyncHandler(async (req: any, res: any) => {
@@ -5897,7 +5985,7 @@ function sanitizeCallerTests(incoming: unknown, stored: any[] | undefined): any 
   // A record is an object; null, numbers and strings are dropped (BUG 93d9fbd0).
   return incoming.filter((t: any) => !!t && typeof t === 'object' && !Array.isArray(t)).map((t: any) => {
     if (byId.has(t.id)) return byId.get(t.id);
-    const { commit: _dropped, ...rest } = t;
+    const { commit: _dropped, commitRoot: _droppedRoot, ...rest } = t;
     return rest;
   });
 }
@@ -6094,7 +6182,37 @@ async function parentToDeferTo(item: any, flow: { steps: any[]; verifyAt?: unkno
   return parent;
 }
 
-async function runStepGate(item: any, flow: { steps: any[] }, root: string | null, actor?: { client: string; sessionId: string; agentId: string | null } | null, agentReports?: Record<string, AgentReport>): Promise<StepGate> {
+/**
+ * 961f301d — approval first. While the step still waits for a person (its own
+ * approval, or a command waiting for theirs), nothing a capture or a command
+ * run could find lets the card go, and the person is not shown the card until
+ * the refusal comes back. So the gate then skips the slow work - reported as
+ * deferred to the verify after the approval - and answers inline. The cheap
+ * checks still run, so a person approving can see (and override) them at once.
+ */
+async function waitsOnPerson(item: any, flow: { steps: any[] }, project: any): Promise<boolean> {
+  const resolved = resolveStepChecks(flow.steps, item.status).filter(c => c.severity === 'block');
+  const records: any[] = ((await storage.getItem(item.id)) as any)?.stepRecords ?? [];
+  const here = records.filter(r => r?.step === item.status);
+  // Only an override the gate would honour lifts a check: on a passkey step, a signed one.
+  const signedOnly = stepWantsPasskey(flow as Flow, item.status);
+  const overridden = new Set(here.filter(r => r.kind === 'override' && typeof r.check === 'string' && (!signedOnly || r.authority === 'passkey')).map(r => r.check));
+  if (awaitingPersonCommands(resolved, flow, project).some(c => !overridden.has(c.id))) return true;
+  const approval = resolved.find(c => c.applicable && c.id === 'human-approval');
+  if (!approval || overridden.has('human-approval')) return false;
+  const inherited = approval.params.appliesTo === 'every-card' ? [] : await ancestorApprovals(item, item.status);
+  const { own, up } = countedApproval(approval.params, approvalsAt({ stepRecords: here }, item.status), inherited);
+  return !own && !up;
+}
+
+/** The step's command checks that wait for a person to approve their command: never run. */
+function awaitingPersonCommands(resolved: ReturnType<typeof resolveStepChecks>, flow: any, project: any): ReturnType<typeof resolveStepChecks> {
+  if (flow?.origin === 'registry') return [];
+  const approvals: CommandApproval[] = Array.isArray(project?.commandApprovals) ? project.commandApprovals : [];
+  return resolved.filter(c => c.applicable && c.id.startsWith('command-check:') && awaitsPersonApproval(c, approvals));
+}
+
+async function runStepGate(item: any, flow: { steps: any[] }, root: string | null, actor?: { client: string; sessionId: string; agentId: string | null } | null, agentReports?: Record<string, AgentReport>, opts?: { personFirst?: boolean }): Promise<StepGate> {
   const sorted = sortedFlowSteps(flow as any);
   const index = sorted.findIndex(st => st.name === item.status);
   const next = sorted[index + 1];
@@ -6104,7 +6222,12 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const resolved = resolveStepChecks(flow.steps, item.status);
   let capture: any = null;
   let captureError: string | undefined;
-  if (needsCapture(resolved.filter(c => !deferToCommand.includes(c.id))) || (next && needsEntryRecord(resolveStepChecks(flow.steps, next.name)))) {
+  // 961f301d: waiting on a person, the slow checks wait too (see waitsOnPerson).
+  const waitingOn = opts?.personFirst ? awaitingPersonCommands(resolved, flow, project) : [];
+  const deferToApproval = opts?.personFirst
+    ? resolved.filter(c => c.applicable && (needsCapture([c]) || (c.id.startsWith('command-check:') && !waitingOn.includes(c)))).map(c => c.id)
+    : [];
+  if (!opts?.personFirst && (needsCapture(resolved.filter(c => !deferToCommand.includes(c.id))) || (next && needsEntryRecord(resolveStepChecks(flow.steps, next.name))))) {
     const out = await captureStepRecord(item);
     if ('error' in out) captureError = out.message; else capture = out.record;
   }
@@ -6138,7 +6261,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     review.authors.push({ client: actor.client, sessionId: actor.sessionId, agentId: actor.agentId ?? null });
   }
   // efcacdeb: command checks run here, before the engine, in the card's tree.
-  const commandChecks = resolved.filter(c => c.applicable && c.id.startsWith('command-check:'));
+  const commandChecks = resolved.filter(c => c.applicable && c.id.startsWith('command-check:') && !deferToApproval.includes(c.id));
   const commandResults = commandChecks.length
     ? await judgeCommandChecks(commandChecks, { root, origin: (flow as any).origin, approvals: Array.isArray(project?.commandApprovals) ? project.commandApprovals : [], timeoutMs: verifyMaxMs() })
     : undefined;
@@ -6155,6 +6278,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     ignoredPaths: reportPath && root ? [insideRoot(root, path.resolve(root, reportPath)) ?? reportPath] : [],
     foreignClaims,
     deferToCommand,
+    ...(deferToApproval.length ? { deferToApproval } : {}),
     ...(toParent ? { deferredToParent: { id: toParent.id, title: toParent.title } } : {}),
     children: (await storage.listItems({ parentId: item.id } as any)) as any,
     capture,
@@ -6318,6 +6442,11 @@ async function handleValidateProgress(itemId: string, command: string | undefine
 
   let gate = opts?.gate;
   if (!gate && !(currentFlowStep.step.isAnchor && currentFlowStep.index !== 0)) {
+    // 961f301d: a person's missing approval is answered first, inline, before anything slow.
+    if (await waitsOnPerson(item, activeFlow, project)) {
+      const waiting = await runStepGate(item, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { personFirst: true });
+      if (waiting.blocked) return refuseOnChecks(res, item, waiting);
+    }
     const nextName = sorted[currentFlowStep.index + 1]?.name;
     const deferred = deferredToCommand(activeFlow, item.status, project);
     const slow = needsCapture(resolveStepChecks(activeFlow.steps, item.status).filter(c => !deferred.includes(c.id)))
@@ -6877,9 +7006,10 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         if (verifiedSha) {
           const current = await storage.getItem(itemId);
           const tests = testRecords(current?.tests).map((t: any) =>
-            t.id === testId ? { ...t, commit: verifiedSha } : t,
+            t.id === testId ? { ...t, commit: verifiedSha, commitRoot: gateRoot } : t,
           );
           await storage.updateItem(itemId, { tests });
+          noteGreen(item.projectId, gateRoot, verifiedSha, itemId);
           io.emit('items_updated');
         }
       }

@@ -24,12 +24,14 @@ describe('onlyApprovalBlocks', () => {
 
 describe('waitAllowed', () => {
   it('waits by default, TTY or not: an agent\'s shell has none', () => {
-    expect(waitAllowed({}, { wait: true })).toBe(true);
+    expect(waitAllowed({})).toBe(true);
   });
-  it('does not wait with --no-wait, in CI, or with AGENFK_NO_BROWSER=1', () => {
-    expect(waitAllowed({}, { wait: false })).toBe(false);
-    expect(waitAllowed({ CI: 'true' }, { wait: true })).toBe(false);
-    expect(waitAllowed({ AGENFK_NO_BROWSER: '1' }, { wait: true })).toBe(false);
+  it('does not wait in CI: no person can approve there', () => {
+    expect(waitAllowed({ CI: 'true' })).toBe(false);
+    expect(waitAllowed({ CI: 'false' })).toBe(true);
+  });
+  it('has no switch to turn the wait off (961f301d): AGENFK_NO_BROWSER=1 is ignored', () => {
+    expect(waitAllowed({ AGENFK_NO_BROWSER: '1' })).toBe(true);
   });
 });
 

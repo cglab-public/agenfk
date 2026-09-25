@@ -125,6 +125,11 @@ export interface EngineContext {
    * command enforced them.
    */
   deferredToParent?: { id: string; title: string };
+  /**
+   * 961f301d: slow checks (a capture, a command run) left for the verify after a
+   * person's approval, which this one is still waiting for. Reported, never blocking.
+   */
+  deferToApproval?: string[];
   /** For review-record (CGLAB-381): the card's place and its review evidence. */
   review?: {
     hasParent: boolean;
@@ -469,12 +474,8 @@ export const EVALUATORS: Record<string, Evaluator> = {
   },
 
   'human-approval': (ctx, p) => {
-    // A step that asks for a passkey counts only approvals signed with one (CGLAB-383).
-    const counts = (x: { authority?: string }) => p.signature !== 'passkey' || x.authority === 'passkey';
-    const own = (ctx.approvals ?? []).filter(counts);
-    const a = own[own.length - 1];
+    const { own: a, up } = countedApproval(p, ctx.approvals, ctx.inheritedApprovals);
     if (a) return { outcome: 'pass', detail: `approved on the board at ${a.at}${a.note ? `: ${a.note}` : ''}` };
-    const up = p.appliesTo === 'every-card' ? undefined : (ctx.inheritedApprovals ?? []).filter(counts)[0];
     if (up) return { outcome: 'pass', detail: `approved with its parent ${up.from.slice(0, 8)} on the board at ${up.at}` };
     const how = p.signature === 'passkey' ? ', signed with a passkey' : '';
     return { outcome: 'fail', detail: `waiting for a person to approve this step on the board${how} (agenfk ui --open ${ctx.item.id} --details). An agent cannot approve.` };
@@ -524,6 +525,21 @@ export const EVALUATORS: Record<string, Evaluator> = {
   },
 };
 
+type Approval = NonNullable<EngineContext['approvals']>[number];
+type InheritedApproval = NonNullable<EngineContext['inheritedApprovals']>[number];
+/**
+ * The approval that satisfies a human-approval check: the step's latest own
+ * one, else (unless it applies to every card) the nearest ancestor's. A step
+ * that asks for a passkey counts only approvals signed with one (CGLAB-383).
+ */
+export function countedApproval(p: Record<string, string>, approvals: readonly Approval[] | undefined, inherited: readonly InheritedApproval[] | undefined): { own?: Approval; up?: InheritedApproval } {
+  const counts = (x: { authority?: string }) => p.signature !== 'passkey' || x.authority === 'passkey';
+  const own = (approvals ?? []).filter(counts);
+  if (own.length) return { own: own[own.length - 1] };
+  const up = p.appliesTo === 'every-card' ? undefined : (inherited ?? []).filter(counts)[0];
+  return up ? { up } : {};
+}
+
 /**
  * Evaluate resolved checks. Blocking: a `block` check that failed, or that
  * could not be judged for any reason other than a card predating checks.
@@ -540,6 +556,10 @@ export function evaluateChecks(resolved: readonly ResolvedCheck[], ctx: EngineCo
     const base = { id: c.id, step: c.step, source: c.source, severity: c.severity, params: c.params };
     if (!c.applicable) {
       results.push({ ...base, outcome: 'n/a', blocking: false, detail: `needs ${(c.missing ?? []).map(m => `'${m}'`).join(', ')}, which no earlier step produces` });
+      continue;
+    }
+    if (ctx.deferToApproval?.includes(c.id)) {
+      results.push({ ...base, outcome: 'deferred', blocking: false, detail: "judged once a person approves: nothing it finds could let the card go before that, so the verify after the approval runs it" });
       continue;
     }
     if (c.id === 'server-owned-verify' || ctx.deferToCommand.includes(c.id)) {

@@ -17,7 +17,8 @@ function status(r: Result): { label: string; icon: React.ReactNode } {
   if (r.overridden) return { label: 'overridden', icon: <Unlock size={14} className="text-amber-500 shrink-0" /> };
   if (r.outcome === 'pass') return { label: 'passed', icon: <CheckCircle2 size={14} className="text-emerald-500 shrink-0" /> };
   if (r.outcome === 'n/a') return { label: 'not applicable', icon: <MinusCircle size={14} className="text-slate-400 shrink-0" /> };
-  if (r.outcome === 'deferred') return { label: 'run by the verify command', icon: <FastForward size={14} className="text-slate-400 shrink-0" /> };
+  // Its detail says to what: the verify command, the parent's verify, or the verify after a person's approval.
+  if (r.outcome === 'deferred') return { label: 'deferred', icon: <FastForward size={14} className="text-slate-400 shrink-0" /> };
   if (r.blocking) return { label: r.outcome === 'unavailable' ? 'blocked: could not judge' : 'blocked', icon: <XCircle size={14} className="text-rose-500 shrink-0" /> };
   return { label: r.outcome === 'unavailable' ? 'warning: could not judge' : 'warning', icon: <AlertTriangle size={14} className="text-amber-500 shrink-0" /> };
 }

@@ -37,12 +37,13 @@ export function onlyApprovalBlocks(checks: readonly BlockingCheck[] | undefined)
   return blocking.length > 0 && blocking.every(waitsForPerson);
 }
 
-/** May this run open a browser and wait? Not with --no-wait, in CI, or with AGENFK_NO_BROWSER=1. */
-export function waitAllowed(env: Record<string, string | undefined>, opts: { wait?: boolean }): boolean {
-  if (opts.wait === false) return false;
-  if (env.CI && env.CI !== 'false' && env.CI !== '0') return false;
-  if (env.AGENFK_NO_BROWSER === '1') return false;
-  return true;
+/**
+ * May this run open a browser and wait? Not in CI: no person can approve there.
+ * There is deliberately no switch to turn it off (961f301d): an agent used one
+ * to skip the wait, and the person never saw the card waiting for them.
+ */
+export function waitAllowed(env: Record<string, string | undefined>): boolean {
+  return !(env.CI && env.CI !== 'false' && env.CI !== '0');
 }
 
 export interface GatesSnapshot {

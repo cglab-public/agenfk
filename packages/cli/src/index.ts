@@ -1,4 +1,4 @@
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { harnessActor, resolveFromOptions } from './harnessModel.js';
 import figlet from 'figlet';
@@ -3920,7 +3920,8 @@ program
   .command('verify <id> [command]')
   .description('Log evidence and advance item to next flow step (MCP fallback: validate_progress). [command] runs only on intermediate steps; on the final step the server runs the project verifyCommand.')
   .option('--evidence <text>', 'REQUIRED: How you satisfied the current step\'s exit criteria')
-  .option('--no-wait', 'When only a person\'s approval blocks the card, return at once instead of opening the board and waiting for it')
+  // 961f301d: removed. Kept hidden and IGNORED, so an older script or rule bundle still verifies - and still waits.
+  .addOption(new Option('--no-wait').hideHelp())
   .option('--wait-minutes <n>', 'How long to wait for a person\'s approval before giving up (default 9)')
   .option('--check <name=outcome>', 'Report an agent check of this step: <name>=pass or <name>=fail (repeatable)', (v: string, acc: string[] = []) => [...acc, v])
   .option('--check-note <name=text>', 'What you found for a reported agent check: <name>=<text> (repeatable)', (v: string, acc: string[] = []) => [...acc, v])
@@ -4028,7 +4029,8 @@ program
      * call is killed after minutes, so past the deadline it says to run the
      * same verify again, which waits again.
      */
-    const canWait = waitAllowed(process.env, { wait: options.wait });
+    if (options.wait === false) console.error(chalk.yellow('⚠️  --no-wait was removed and is ignored: when only a person\'s approval blocks the card, verify opens it on the board and waits.'));
+    const canWait = waitAllowed(process.env);
     const waitMinutes = options.waitMinutes !== undefined && Number.isFinite(Number(options.waitMinutes)) ? Math.max(0, Number(options.waitMinutes)) : 9;
     const pollMs = Number(process.env.AGENFK_APPROVAL_POLL_MS) || 3000;
     const gatesNow = async () => (await axios.get(`${API_URL}/items/${targetId}/gates`, { timeout: 10000 })).data;

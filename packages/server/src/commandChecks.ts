@@ -60,6 +60,14 @@ export function runArgv(argv: readonly string[], cwd: string, timeoutMs: number)
   });
 }
 
+/** A command check whose command a person must approve, and has not (C3b): it is never run. */
+export function awaitsPersonApproval(c: ResolvedCheck, approvals: readonly CommandApproval[]): boolean {
+  if (c.params.approval !== 'person') return false;
+  let argv: string[] = [];
+  try { argv = JSON.parse(c.params.argv); } catch { /* validated at save time */ }
+  return !approvals.some(a => a.hash === argvHash(argv));
+}
+
 /** Run the step's command checks and judge each, keyed by the resolved check id. */
 export async function judgeCommandChecks(
   checks: readonly ResolvedCheck[],
@@ -77,7 +85,7 @@ export async function judgeCommandChecks(
     if (!ctx.root) { out[c.id] = { outcome: 'unavailable', detail: 'the card has no tree (no project root, no worktree) to run the command in' }; continue; }
     const hash = argvHash(argv);
     const approved = c.params.approval === 'person' ? ctx.approvals.find(a => a.hash === hash) : undefined;
-    if (c.params.approval === 'person' && !approved) {
+    if (awaitsPersonApproval(c, ctx.approvals)) {
       out[c.id] = { outcome: 'fail', detail: `waiting for a person to approve the command ${shown} on the board (signed with a passkey). It runs once approved, and asks again if it changes.`, meta: { waiting: { kind: 'command-approval', hash, command: shown } } };
       continue;
     }

@@ -50,8 +50,8 @@ Beta, cumulative over `2.0.0-beta.1`: everything in beta.1, plus the changes bel
 - **Each column shows its step's role** under the step name.
 - **`agenfk verify` waits for a person.** When the only thing holding a card is a person's approval - of the step,
   or of a command a custom check wants to run - verify opens the board on the card's Overview (where the approval
-  is given) and waits up to 9 minutes, then verifies again by itself. `--no-wait`, `CI` or `AGENFK_NO_BROWSER=1`
-  turn it off; `--wait-minutes <n>` changes the wait. It wakes only for the approval it is waiting on, and stops
+  is given) and waits up to 9 minutes, then verifies again by itself. It does not wait in `CI`, where no
+  person can approve; `--wait-minutes <n>` changes the wait. It wakes only for the approval it is waiting on, and stops
   if a person moves the card on the board meanwhile.
 - **`agenfk ui --open <id> --details`** opens the card itself on its Overview tab instead of only highlighting it.
   Every "a person must approve this" hint now gives that form.

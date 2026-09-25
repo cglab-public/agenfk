@@ -48,6 +48,18 @@ describe('CheckHistoryTab', () => {
     expect(within(within(entry).getByText('new-tests-born-green').closest('li')!).getByText(/warning/i)).toBeDefined();
   });
 
+  it('says a check waiting on the approval is deferred, and why, not that the verify command ran it (961f301d)', async () => {
+    show([{ kind: 'verify', step: 'DISCOVERY', at: AT, blocked: true, results: [
+      { id: 'human-approval', outcome: 'fail', blocking: true, severity: 'block', detail: 'waiting for a person' },
+      { id: 'suite-green', outcome: 'deferred', blocking: false, severity: 'block', detail: 'judged once a person approves' },
+    ] }]);
+    const entry = await screen.findByTestId('check-history-entry');
+    const row = within(entry).getByText('suite-green').closest('li')!;
+    expect(within(row).getByText(/deferred/)).toBeDefined();
+    expect(within(row).getByText('judged once a person approves')).toBeDefined();
+    expect(within(row).queryByText(/run by the verify command/)).toBeNull();
+  });
+
   it('shows a passed verify as passed', async () => {
     show([{ kind: 'verify', step: 'WORK', at: AT, blocked: false, results: [{ id: 'suite-green', outcome: 'pass', blocking: false, severity: 'block', detail: '3 tests' }] }]);
     const entry = await screen.findByTestId('check-history-entry');

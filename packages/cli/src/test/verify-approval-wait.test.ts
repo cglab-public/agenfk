@@ -126,20 +126,40 @@ describe('verify waits for a person\'s approval', () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
-  it('with --no-wait, neither opens the board nor waits, and says how to open it', async () => {
-    mockedAxios.post.mockRejectedValueOnce(refusal(APPROVAL_ONLY));
+  it('ignores --no-wait (961f301d): says it was removed, then opens the board and waits all the same', async () => {
+    mockedAxios.post.mockRejectedValueOnce(refusal(APPROVAL_ONLY)).mockResolvedValueOnce(passed as any);
+    serve([0, 1]);
     await program.parseAsync(['node', 'agenfk', 'verify', FULL_ID, '--evidence', 'x', '--no-wait']);
-    expect(opened()).toHaveLength(0);
-    expect(exitSpy).toHaveBeenCalledWith(1);
-    expect(out()).toContain(`agenfk ui --open ${FULL_ID} --details`);
+    expect(out()).toMatch(/--no-wait was removed and is ignored/);
+    expect(opened()).toHaveLength(1);
+    expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+    expect(exitSpy).not.toHaveBeenCalledWith(1);
   });
 
-  it('in CI, neither opens a browser nor waits', async () => {
+  it('does not advertise --no-wait in its help (961f301d)', () => {
+    const verify = program.commands.find(c => c.name() === 'verify')!;
+    expect(verify.helpInformation()).not.toContain('--no-wait');
+  });
+
+  it('opens the board and waits even with AGENFK_NO_BROWSER=1 (961f301d)', async () => {
+    process.env.AGENFK_NO_BROWSER = '1';
+    try {
+      mockedAxios.post.mockRejectedValueOnce(refusal(APPROVAL_ONLY)).mockResolvedValueOnce(passed as any);
+      serve([0, 1]);
+      await program.parseAsync(['node', 'agenfk', 'verify', FULL_ID, '--evidence', 'x']);
+      expect(opened()).toHaveLength(1);
+      expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+      expect(exitSpy).not.toHaveBeenCalledWith(1);
+    } finally { delete process.env.AGENFK_NO_BROWSER; }
+  });
+
+  it('in CI, neither opens a browser nor waits, and says how to open it', async () => {
     process.env.CI = 'true';
     mockedAxios.post.mockRejectedValueOnce(refusal(APPROVAL_ONLY));
     await program.parseAsync(['node', 'agenfk', 'verify', FULL_ID, '--evidence', 'x']);
     expect(opened()).toHaveLength(0);
     expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(out()).toContain(`agenfk ui --open ${FULL_ID} --details`);
   });
 
   it('gives up at the deadline and tells the agent to run the same verify again', async () => {
@@ -184,9 +204,10 @@ describe('verify waits for a person\'s approval', () => {
     expect(out()).toMatch(/left DISCOVERY on the board/);
   });
 
-  it('with --no-wait and only a command blocking, names the command, not the step', async () => {
+  it('in CI and only a command blocking, names the command, not the step', async () => {
+    process.env.CI = 'true';
     mockedAxios.post.mockRejectedValueOnce(refusal(cmdWaiting));
-    await program.parseAsync(['node', 'agenfk', 'verify', FULL_ID, '--evidence', 'x', '--no-wait']);
+    await program.parseAsync(['node', 'agenfk', 'verify', FULL_ID, '--evidence', 'x']);
     expect(out()).toMatch(/approve the command npm run lint on the board/);
     expect(out()).not.toMatch(/approve this step/);
   });
