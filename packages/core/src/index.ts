@@ -16,6 +16,10 @@ export * from './fanOut';
 export * from './circuitBreaker';
 export * from './baseDrift';
 export * from './dispatch';
+export * from './flowChecks';
+export * from './flowPresets';
+export * from './flowContract';
+export * from './registryFlow';
 
 export * from './requestBudget.js';
 export * from './decompositionContract';

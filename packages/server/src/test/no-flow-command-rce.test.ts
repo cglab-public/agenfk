@@ -17,7 +17,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
 import * as path from 'path';
-import { app, initStorage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, VERIFY_TOKEN, storage } from '../server';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -71,7 +71,7 @@ describe('a flow cannot supply the verify command', () => {
     await agent().post(`/projects/${projectId}/flow`).send({ flowId: f.body.id });
 
     const item = await agent().post('/items').send({ type: 'TASK', title: 'probe', projectId });
-    await agent().put(`/items/${item.body.id}`).send({ status: 'WORK' });
+    await storage.updateItem(item.body.id, { status: 'WORK' } as any);
 
     // Advancing off the final step with no command must fall back to the
     // PROJECT's verifyCommand — which is unset — and refuse. It must never pick

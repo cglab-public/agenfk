@@ -504,6 +504,8 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 )}
               </div>
 
+              {!isNew && <StepChecksPanel itemId={item.id} projectId={item.projectId} />}
+
               <div>
                 {/* A <label> when there is a field to label, a heading when
                     there is prose to head. It was a heading in both cases, so

@@ -31,7 +31,7 @@ const TEST_DB = path.resolve('./verify-cwd-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, VERIFY_TOKEN, storage } from '../server';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -77,10 +77,7 @@ async function itemOnFinalStep(name: string, verifyCommand: string) {
   const p = (await agent().post('/projects').send({ name })).body;
   await agent().put(`/projects/${p.id}/verify-command`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ verifyCommand });
   const item = (await agent().post('/items').send({ type: 'TASK', title: `${name}-item`, projectId: p.id })).body;
-  await agent()
-    .post('/items/bulk')
-    .set('x-agenfk-internal', VERIFY_TOKEN!)
-    .send({ items: [{ id: item.id, updates: { status: 'TEST' } }] });
+  await storage.updateItem(item.id, { status: 'TEST' } as any);
   return { projectId: p.id, item };
 }
 

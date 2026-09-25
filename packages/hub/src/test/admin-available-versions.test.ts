@@ -112,6 +112,18 @@ describe('GET /v1/admin/upgrade/available-versions', () => {
     expect(r.body.versions).toEqual(['0.4.1', '0.4.0', '0.3.0-beta.23', '0.3.0-beta.22']);
   });
 
+  it('?unfiltered=1 offers every release, below the fleet floor too — a group upgrade targets child hubs the parent floor knows nothing about', async () => {
+    await seedInstallation(ctx.db, 'org-a', 'inst-1', '0.4.1');
+
+    const floored = await supertest(__server).get('/v1/admin/upgrade/available-versions').set('Cookie', cookieAdmin);
+    expect(floored.body.versions).toEqual(['0.4.1']);
+
+    const r = await supertest(__server).get('/v1/admin/upgrade/available-versions?unfiltered=1').set('Cookie', cookieAdmin);
+    expect(r.status).toBe(200);
+    expect(r.body.fleetFloor).toBeNull();
+    expect(r.body.versions).toEqual(['0.4.1', '0.4.0', '0.3.0-beta.23', '0.3.0-beta.22', '0.2.28', '0.2.10']);
+  });
+
   it('isolates fleet floor by org', async () => {
     await seedInstallation(ctx.db, 'org-a', 'inst-1', '0.4.0');
     await seedInstallation(ctx.db, 'org-b', 'inst-2', '0.2.10');

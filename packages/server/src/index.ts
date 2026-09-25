@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { actorFromEnv } from './reviewRecords';
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 // @ts-ignore
@@ -132,6 +133,53 @@ export const server = new Server(
 );
 
 // Define Tool Schemas
+/**
+ * One flow step as create_flow / update_flow take it. zod strips the keys a
+ * schema does not name, so every field the REST route persists must be here or
+ * an MCP caller silently loses it (roles and checks did, CGLAB-385). The
+ * server whitelists and validates what arrives; this only has to not drop it.
+ * Never add `command`: a flow must not be able to supply one.
+ */
+const FlowStepToolSchema = z.object({
+  // Accept an id so it round-trips: without it an update regenerated every
+  // step id on every call.
+  id: z.string().optional(),
+  name: z.string(),
+  label: z.string().optional(),
+  exitCriteria: z.string().optional(),
+  order: z.number(),
+  isSpecial: z.boolean().optional(),
+  isAnchor: z.boolean().optional(),
+  // null / [] clear a stored value; leaving the key out keeps it.
+  role: z.string().nullable().optional(),
+  checks: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
+  autoCommit: z.boolean().nullable().optional(),
+  requireCommit: z.boolean().nullable().optional(),
+  color: z.string().optional(),
+  icon: z.string().optional(),
+});
+
+/** The advertised JSON schema of the same step. */
+const FLOW_STEP_TOOL_PROPERTIES = {
+  id: { type: "string" },
+  name: { type: "string" },
+  label: { type: "string" },
+  exitCriteria: { type: "string" },
+  order: { type: "number" },
+  isSpecial: { type: "boolean" },
+  isAnchor: { type: "boolean" },
+  role: { type: ["string", "null"], description: "What the step IS (e.g. coding, review, closing). null clears it; omit to keep the stored value." },
+  checks: {
+    type: ["array", "null"],
+    description: "Checks the step adds, each { id, params? }. [] or null clears them; omit to keep the stored value.",
+    items: { type: "object", properties: { id: { type: "string" }, params: { type: "object" } }, required: ["id"] },
+  },
+  autoCommit: { type: ["boolean", "null"], description: "Commit the card's work when it leaves this step." },
+  requireCommit: { type: ["boolean", "null"], description: "With autoCommit: refuse to leave the step when that commit does not happen." },
+  color: { type: "string" },
+  icon: { type: "string" },
+};
+
 const CreateProjectSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
@@ -281,7 +329,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "update_item",
-        description: "Update an existing item's status, title, description, or parent. IMPORTANT: Cannot set status to DONE directly — use test_changes. For custom flows, call get_flow(projectId) for valid step names. Pass parentId to re-parent (null detaches to top level); the parent must be in the same project and cannot be the item itself or one of its descendants.",
+        description: "Update an existing item's status, title, description, or parent. IMPORTANT: status moves only BACKWARD or to a platform status (PAUSED, BLOCKED); a forward move is refused (409) — advance with validate_progress, the only route to the next step and to DONE. For custom flows, call get_flow(projectId) for valid step names. Pass parentId to re-parent (null detaches to top level); the parent must be in the same project and cannot be the item itself or one of its descendants.",
         inputSchema: {
           type: "object",
           properties: {
@@ -397,6 +445,28 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "record_review",
+        description: "Record an independent review of a card (CGLAB-381). The server reads the reviewer's identity from `transcript` (the REVIEWER's session log, e.g. a Claude Code sub-agent's <session>/subagents/agent-<id>.jsonl), so the reviewer must not be the author. CLI: agenfk review record.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            itemId: { type: "string" },
+            transcript: { type: "string", description: "Path of the reviewer's session log, under ~/.claude/projects, ~/.pi/agent/sessions or ~/.codex/sessions." },
+            range: { type: "string", description: "<from>..<to>: the commits the review covered." },
+            findings: {
+              type: "array",
+              description: "Each finding and its fate: fixed, or rejected with a reason. [] when nothing was found.",
+              items: {
+                type: "object",
+                properties: { title: { type: "string" }, state: { type: "string", enum: ["fixed", "rejected"] }, reason: { type: "string" } },
+                required: ["title", "state"],
+              },
+            },
+          },
+          required: ["itemId", "transcript", "range", "findings"],
+        },
+      },
+      {
         name: "add_comment",
         description: "Add a comment to an item to log progress or steps.",
         inputSchema: {
@@ -468,20 +538,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "validate_progress",
-        description: "Step-completion gate: you MUST describe how you satisfied the current step's exit criteria before the step advances. Provide your evidence in the 'evidence' field — it will be logged as a comment tagged with the current step name, creating an audit trail. Optionally run a build/test command. On success, advances to the next flow step and returns the next step's exit criteria — treat those as your new mandatory work definition. On failure, moves back to the coding step.",
+        description: "Step-completion gate: you MUST describe how you satisfied the current step's exit criteria before the step advances. Provide your evidence in the 'evidence' field — it will be logged as a comment tagged with the current step name, creating an audit trail. Optionally run a command; on intermediate steps it is not required — pass one only when the current step's exit criteria call for it, and only a command those criteria expect to succeed. On success, advances to the next flow step and returns the next step's exit criteria — treat those as your new mandatory work definition. If the command exits non-zero the advance is refused and the item stays on its current step (on the final step this is the hard gate that keeps a red suite out of DONE); nothing is rolled back. On the final step (and any boundary step) the server runs the project's verifyCommand and ignores the 'command' field, with a warning in the reply.",
         inputSchema: {
           type: "object",
           properties: {
             itemId: { type: "string" },
             evidence: { type: "string", description: "REQUIRED: Describe how you satisfied the current step's exit criteria (e.g. 'Wrote failing tests in foo.test.ts covering cases X and Y'). This is logged as a comment and serves as your confirmation." },
-            command: { type: "string", description: "Optional command to run (e.g. 'npm run build'). If omitted, the project verifyCommand is used on the final step." },
+            command: { type: "string", description: "Optional command to run on an INTERMEDIATE step (e.g. 'npm run build'). Ignored on the final step and on any boundary step, where the server always runs the project verifyCommand." },
           },
           required: ["itemId", "evidence"],
         },
       },
       {
         name: "review_changes",
-        description: "DEPRECATED: Use validate_progress instead. Runs a build command and advances to the next flow step.",
+        description: "DEPRECATED: Use validate_progress instead. Optionally runs a command and advances to the next flow step; a non-zero exit refuses the advance and the item stays on its current step.",
         inputSchema: {
           type: "object",
           properties: {
@@ -569,18 +639,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             description: { type: "string", description: "Optional description." },
             steps: {
               type: "array",
-              description: "Ordered list of steps. Each step: { id?, name, label?, exitCriteria?, order, isSpecial?, isAnchor? }. Omit id and the server generates one; pass back the id you read to keep it stable across updates.",
+              description: "Ordered list of steps. Each step: { id?, name, label?, exitCriteria?, order, isSpecial?, isAnchor?, role?, checks?, autoCommit?, requireCommit?, color?, icon? }. Omit id and the server generates one; pass back the id you read to keep it stable across updates.",
               items: {
                 type: "object",
-                properties: {
-                  id: { type: "string" },
-                  name: { type: "string" },
-                  label: { type: "string" },
-                  exitCriteria: { type: "string" },
-                  order: { type: "number" },
-                  isSpecial: { type: "boolean" },
-                  isAnchor: { type: "boolean" },
-                },
+                properties: FLOW_STEP_TOOL_PROPERTIES,
                 required: ["name", "order"],
               },
             },
@@ -602,14 +664,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               type: "array",
               items: {
                 type: "object",
-                properties: {
-                  name: { type: "string" },
-                  label: { type: "string" },
-                  exitCriteria: { type: "string" },
-                  order: { type: "number" },
-                  isSpecial: { type: "boolean" },
-                  isAnchor: { type: "boolean" },
-                },
+                properties: FLOW_STEP_TOOL_PROPERTIES,
                 required: ["name", "order"],
               },
             },
@@ -717,7 +772,9 @@ async function callToolHandler(request: any): Promise<any> {
       }
       case "validate_progress": {
         const { itemId, evidence, command } = z.object({ itemId: z.string(), evidence: z.string(), command: z.string().optional() }).parse(request.params.arguments);
-        const result = await validateViaApi(itemId, { evidence, command, cwd: process.cwd() });
+        // The author, as the harness that launched this MCP server names it (CGLAB-381).
+        const actor = actorFromEnv(process.env);
+        const result = await validateViaApi(itemId, { evidence, command, cwd: process.cwd(), ...(actor ? { actor } : {}) });
         if (!result.ok) return { isError: true, content: [{ type: "text", text: result.text }] };
         return { content: [{ type: "text", text: result.text }] };
       }
@@ -1002,6 +1059,17 @@ async function callToolHandler(request: any): Promise<any> {
         const { data } = await api.get('/token-events', { params });
         return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
       }
+      case "record_review": {
+        const { itemId, transcript, range, findings } = z.object({
+          itemId: z.string(), transcript: z.string(), range: z.string(), findings: z.array(z.any()),
+        }).parse(request.params.arguments);
+        try {
+          const { data } = await api.post(`/items/${itemId}/review-records`, { transcript, range, findings }, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
+          return { content: [{ type: "text", text: `✅ Review recorded by ${data.reviewer.client} session ${data.reviewer.sessionId}${data.reviewer.agentId ? `, agent ${data.reviewer.agentId}` : ''}: ${data.findings.length} finding(s).` }] };
+        } catch (error: any) {
+          return { isError: true, content: [{ type: "text", text: error.response?.data?.error || error.message }] };
+        }
+      }
       case "add_comment": {
         const args = AddCommentSchema.parse(request.params.arguments);
         const { itemId, content, author } = args;
@@ -1082,17 +1150,7 @@ async function callToolHandler(request: any): Promise<any> {
         const args = z.object({
           name: z.string(),
           description: z.string().optional(),
-          steps: z.array(z.object({
-            // Accept an id so it round-trips: zod strips unknown keys, so
-            // without this an update regenerated every step id on every call.
-            id: z.string().optional(),
-            name: z.string(),
-            label: z.string().optional(),
-            exitCriteria: z.string().optional(),
-            order: z.number(),
-            isSpecial: z.boolean().optional(),
-            isAnchor: z.boolean().optional(),
-          })),
+          steps: z.array(FlowStepToolSchema),
           projectId: z.string().optional(),
         }).parse(request.params.arguments);
         const { projectId, ...flowBody } = args;
@@ -1108,17 +1166,7 @@ async function callToolHandler(request: any): Promise<any> {
           id: z.string(),
           name: z.string().optional(),
           description: z.string().optional(),
-          steps: z.array(z.object({
-            // Accept an id so it round-trips: zod strips unknown keys, so
-            // without this an update regenerated every step id on every call.
-            id: z.string().optional(),
-            name: z.string(),
-            label: z.string().optional(),
-            exitCriteria: z.string().optional(),
-            order: z.number(),
-            isSpecial: z.boolean().optional(),
-            isAnchor: z.boolean().optional(),
-          })).optional(),
+          steps: z.array(FlowStepToolSchema).optional(),
         }).parse(request.params.arguments);
         const { id, ...updates } = args;
         try {

@@ -744,7 +744,7 @@ describe('PG parity: hub endpoint lifecycle (CGLAB-62)', () => {
     const send = (host: string) => supertest(fx.app).post('/v1/events')
       .set('Authorization', `Bearer ${bound}`)
       .set('X-Installation-Id', 'inst-pg')
-      .set('X-Forwarded-Host', host)
+      .set('Host', host)
       .send({ events: [{
         eventId: `pgev-${host}`, installationId: 'inst-pg', orgId: 'org',
         occurredAt: new Date().toISOString(),

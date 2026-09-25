@@ -26,16 +26,15 @@ export function verifySession(token: string, secret: string): SessionPayload | n
 // Whether to mark auth cookies Secure. Tying this to NODE_ENV alone meant a
 // TLS-terminated staging hub (NODE_ENV !== 'production') set the session JWT
 // WITHOUT Secure, so a protocol downgrade could leak it. Derive from the actual
-// request protocol (req.secure / x-forwarded-proto) and an explicit override,
-// so any HTTPS-served deployment gets Secure. (Security: bug f3d62844.)
+// request protocol and an explicit override, so any HTTPS-served deployment
+// gets Secure. (Security: bug f3d62844.) req.secure is Express's answer: it
+// honours X-Forwarded-Proto from the hops AGENFK_HUB_TRUST_PROXY trusts, so it
+// is only as honest as that setting. The raw header is not read.
 export function cookieSecure(req?: Request): boolean {
   const explicit = process.env.AGENFK_HUB_COOKIE_SECURE;
   if (explicit === 'true') return true;
   if (explicit === 'false') return false;
-  if (req) {
-    const xfp = (req.headers?.['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim().toLowerCase();
-    if (req.secure || xfp === 'https') return true;
-  }
+  if (req?.secure) return true;
   return process.env.NODE_ENV === 'production';
 }
 

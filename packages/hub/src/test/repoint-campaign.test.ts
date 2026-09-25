@@ -75,13 +75,13 @@ describe('repoint campaign (hub side)', () => {
   const directiveFor = (token: string) =>
     supertest(__server).get('/v1/repoint-directive').set('Authorization', `Bearer ${token}`);
 
-  /** Report an outcome as the client would, from a chosen hostname. */
+  /** Report an outcome as the client would, from a chosen hostname (the Host a proxy preserves). */
   const report = (token: string, installationId: string, type: string, payload: any, host?: string) => {
     const req = supertest(__server)
       .post('/v1/events')
       .set('Authorization', `Bearer ${token}`)
       .set('X-Installation-Id', installationId);
-    if (host) req.set('X-Forwarded-Host', host);
+    if (host) req.set('Host', host);
     return req.send({
       events: [{
         eventId: `ev-${Math.random().toString(36).slice(2)}`,
@@ -357,22 +357,36 @@ describe('repoint campaign (hub side)', () => {
       expect((await board()).body.drained).toBe(false);
     });
 
-    it('ignores a client-appended X-Forwarded-Host hop', async () => {
-      // Nothing strips this header, so its leftmost element is attacker-chosen.
-      // A proxy appends, meaning the trustworthy hop is the LAST one.
+    it('ignores X-Forwarded-Host entirely: the ALB never sets it, so the client wrote it', async () => {
+      // Any hop in it, first or last, is attacker-chosen in production. The
+      // arrival host is the Host header, which the proxy preserves.
       const c = await openCampaign();
 
-      await report(token1, 'inst-1', 'hub:repoint:succeeded', { campaignId: c.body.id, url: NEW_URL },
-        `${NEW_HOST}, hub.old.example`);
+      await supertest(__server).post('/v1/events')
+        .set('Authorization', `Bearer ${token1}`).set('X-Installation-Id', 'inst-1')
+        .set('Host', 'hub.old.example').set('X-Forwarded-Host', `hub.internal, ${NEW_HOST}`)
+        .send({ events: [{
+          eventId: `ev-${Math.random().toString(36).slice(2)}`, installationId: 'inst-1', orgId: 'org-a',
+          occurredAt: new Date().toISOString(), actor: { osUser: 'dev', gitName: null, gitEmail: 'dev@acme.com' },
+          type: 'hub:repoint:succeeded', payload: { campaignId: c.body.id, url: NEW_URL },
+        }] });
 
       expect((await targetState(c.body.id, 'inst-1')).state).toBe('pending');
     });
 
-    it('accepts the real host when a proxy appended it last', async () => {
+    it('matches a target written as an IPv6 literal', async () => {
+      // "[2606:4700::1111]:8443".split(':')[0] is "[" - an IPv6 host needs a real parse.
+      const target = 'https://[2606:4700::1111]:8443';
+      const c = await openCampaign(target);
+      expect(c.status, JSON.stringify(c.body)).toBe(201);
+      await report(token1, 'inst-1', 'hub:repoint:succeeded', { campaignId: c.body.id, url: target }, '[2606:4700::1111]:8443');
+      expect((await targetState(c.body.id, 'inst-1')).state).toBe('succeeded');
+    });
+
+    it('accepts a report that arrived on the target host', async () => {
       const c = await openCampaign();
 
-      await report(token1, 'inst-1', 'hub:repoint:succeeded', { campaignId: c.body.id, url: NEW_URL },
-        `hub.internal, ${NEW_HOST}`);
+      await report(token1, 'inst-1', 'hub:repoint:succeeded', { campaignId: c.body.id, url: NEW_URL }, NEW_HOST);
 
       expect((await targetState(c.body.id, 'inst-1')).state).toBe('succeeded');
     });

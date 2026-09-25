@@ -1,0 +1,9 @@
+# Docker build context for e2e/tdd-harness: the image installs and builds itself.
+**/node_modules
+**/dist
+.git
+.agenfk
+**/*.sqlite*
+agenfk-dist.tar.gz
+packages/desktop/build
+coverage

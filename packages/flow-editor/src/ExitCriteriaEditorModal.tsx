@@ -63,13 +63,13 @@ export const ExitCriteriaEditorModal: React.FC<ExitCriteriaEditorModalProps> = (
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
       data-testid="exit-criteria-editor-modal"
       onClick={e => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="bg-surface rounded-2xl shadow-2xl w-[calc(100vw-2rem)] max-w-4xl h-[85vh] flex flex-col overflow-hidden">
+      <div className="bg-surface border border-border-soft rounded-2xl shadow-2xl w-[calc(100vw-2rem)] max-w-4xl h-[85vh] flex flex-col overflow-hidden">
         {/* Header */}
         <div className="px-5 py-3.5 border-b border-border-soft flex items-center gap-2.5 shrink-0">
           <ScrollText size={16} className="text-accent-text shrink-0" />

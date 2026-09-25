@@ -169,11 +169,13 @@ describe('bug f3d62844: cookieSecure', () => {
     else process.env.AGENFK_HUB_COOKIE_SECURE = prevExplicit;
   });
 
-  it('is true when the request arrived over HTTPS (x-forwarded-proto), even off-prod', () => {
+  it('is true when the request arrived over HTTPS, even off-prod', () => {
+    // req.secure is Express's answer, which honours X-Forwarded-Proto only from
+    // a trusted proxy (AGENFK_HUB_TRUST_PROXY); the raw header is not read.
     process.env.NODE_ENV = 'staging';
     delete process.env.AGENFK_HUB_COOKIE_SECURE;
-    expect(cookieSecure({ headers: { 'x-forwarded-proto': 'https' } } as any)).toBe(true);
     expect(cookieSecure({ secure: true, headers: {} } as any)).toBe(true);
+    expect(cookieSecure({ secure: false, headers: { 'x-forwarded-proto': 'https' } } as any)).toBe(false);
   });
 
   it('honours the explicit override either way', () => {
@@ -186,6 +188,6 @@ describe('bug f3d62844: cookieSecure', () => {
   it('falls back to false for a plaintext non-prod request (local dev still works)', () => {
     process.env.NODE_ENV = 'development';
     delete process.env.AGENFK_HUB_COOKIE_SECURE;
-    expect(cookieSecure({ headers: { 'x-forwarded-proto': 'http' } } as any)).toBe(false);
+    expect(cookieSecure({ secure: false, headers: {} } as any)).toBe(false);
   });
 });

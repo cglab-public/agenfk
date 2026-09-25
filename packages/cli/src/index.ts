@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { resolveFromOptions } from './harnessModel.js';
+import { harnessActor, resolveFromOptions } from './harnessModel.js';
 import figlet from 'figlet';
 import axios from 'axios';
 import { decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, isHubRelease, isUpgrade, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
@@ -16,6 +16,8 @@ import path from 'path';
 import os from 'os';
 import { stageJsonMigration } from './db-migration.js';
 import { followValidateRun } from './verifyRun.js';
+import { buildPrBody, type GateEvent } from './humanGates.js';
+import { registryFlowToLocal } from './registryFlowFile.js';
 import { buildUiOpenUrl, resolveDashboardUrl } from './uiUrl.js';
 import { registerHubCommands } from './commands/hub.js';
 import { toonEncode } from './toon.js';
@@ -1933,21 +1935,70 @@ program
   .option('--verify-command <cmd>', 'Project-level verification command')
   .option('--setup-command <cmd>', 'What to run in a newly cut worktree to make it usable (e.g. "npm ci")')
   .option('--project-root <path>', 'Absolute path to the repository this project lives in')
+  .option('--test-report-format <format>', 'How per-test results are read: vitest-json | junit-xml (with --test-report-command and --test-report-path)')
+  .option('--test-report-command <cmd>', 'Command that runs the suite and writes the report')
+  .option('--test-report-path <path>', 'Where that command writes the report, relative to the project root')
+  .option('--test-report-surface <paths>', 'Comma-separated test paths (files or directories) the report cannot name, so test-surface-frozen can see them; "none" clears them')
+  .option('--test-report <none>', 'Pass "none" to clear the test report setting')
   .action(async (id, options) => {
     try {
       const updates: Record<string, unknown> = {};
+      const wantsTestReport = options.testReport !== undefined || options.testReportFormat !== undefined
+        || options.testReportCommand !== undefined || options.testReportPath !== undefined
+        || options.testReportSurface !== undefined;
       if (options.name !== undefined) updates.name = options.name;
       if (options.description !== undefined) updates.description = options.description;
       if (options.verifyCommand === undefined && options.projectRoot === undefined
-          && options.setupCommand === undefined
+          && options.setupCommand === undefined && !wantsTestReport
           && Object.keys(updates).length === 0) {
-        console.error(chalk.yellow('Nothing to update. Pass at least one of --name, --description, --verify-command, --setup-command, --project-root.'));
+        console.error(chalk.yellow('Nothing to update. Pass at least one of --name, --description, --verify-command, --setup-command, --project-root, --test-report-*.'));
         process.exit(1);
         return;
       }
       let data: unknown;
       if (Object.keys(updates).length > 0) {
         ({ data } = await axios.put(`${API_URL}/projects/${id}`, updates));
+      }
+      // The test report command is a shell string the server runs, so it goes
+      // through the internal endpoint like verifyCommand (CGLAB-379).
+      if (wantsTestReport) {
+        const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
+        if (!fs.existsSync(tokenPath)) {
+          console.error(chalk.red('Error: ~/.agenfk/verify-token not found. Run npm run install:framework first.'));
+          process.exit(1);
+          return;
+        }
+        const token = fs.readFileSync(tokenPath, 'utf8').trim();
+        let body: Record<string, unknown>;
+        if (options.testReport === 'none' && options.testReportSurface !== undefined) {
+          console.error(chalk.red('Error: --test-report none clears the whole setting, surface included; pass --test-report-surface on its own to change only the test paths.'));
+          process.exit(1);
+          return;
+        }
+        if (options.testReport === 'none') {
+          body = { testReport: null };
+        } else {
+          // The server replaces the whole setting: merge the flags given onto
+          // the stored one, so changing one part never drops the others (9afdba7d).
+          const { data: current } = await axios.get(`${API_URL}/projects/${id}`);
+          const stored = (current as any)?.testReport ?? {};
+          const merged: Record<string, unknown> = {
+            format: options.testReportFormat ?? stored.format,
+            command: options.testReportCommand ?? stored.command,
+            reportPath: options.testReportPath ?? stored.reportPath,
+          };
+          const surface = options.testReportSurface === undefined
+            ? stored.surface
+            : options.testReportSurface === 'none' ? undefined : String(options.testReportSurface).split(',').map(p => p.trim()).filter(Boolean);
+          if (surface !== undefined) merged.surface = surface;
+          if (!merged.format || !merged.command || !merged.reportPath) {
+            console.error(chalk.red('Error: this project has no test report to change yet. Set one with --test-report-format, --test-report-command and --test-report-path.'));
+            process.exit(1);
+            return;
+          }
+          body = merged;
+        }
+        ({ data } = await axios.put(`${API_URL}/projects/${id}/test-report`, body, { headers: { 'x-agenfk-internal': token } }));
       }
       // verifyCommand is a privileged shell string — set it via the internal
       // endpoint with the install-time token (mirrors `agenfk backup`).
@@ -3749,9 +3800,45 @@ program
     }
   });
 
+const reviewCmd = program
+  .command('review')
+  .description('Record independent reviews (CGLAB-381)');
+
+reviewCmd
+  .command('record <id>')
+  .description('Record an independent review of a card. The server reads the reviewer\'s identity from --transcript (a session log under ~/.claude/projects, ~/.pi/agent/sessions or ~/.codex/sessions), so the reviewer must not be the author. MCP: record_review.')
+  .requiredOption('--transcript <path>', 'The REVIEWER\'s session log, e.g. a Claude Code sub-agent\'s <session>/subagents/agent-<id>.jsonl')
+  .requiredOption('--range <from..to>', 'The commits the review covered')
+  .requiredOption('--findings <json>', 'JSON list of { "title", "state": "fixed"|"rejected", "reason"? } ([] when nothing was found)')
+  .action(async (id, options) => {
+    let findings: unknown;
+    try { findings = JSON.parse(options.findings); } catch {
+      console.error(chalk.red('Error: --findings must be JSON, e.g. [{"title":"null check in x","state":"fixed"}]'));
+      process.exit(1);
+      return;
+    }
+    const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
+    if (!fs.existsSync(tokenPath)) {
+      console.error(chalk.red('Error: ~/.agenfk/verify-token not found.'));
+      process.exit(1);
+      return;
+    }
+    const verifyToken = fs.readFileSync(tokenPath, 'utf8').trim();
+    try {
+      const { data } = await axios.post(`${API_URL}/items/${id}/review-records`,
+        { transcript: options.transcript, range: options.range, findings },
+        { headers: { 'x-agenfk-internal': verifyToken } });
+      const who = data?.reviewer ? `${data.reviewer.client} session ${data.reviewer.sessionId}${data.reviewer.agentId ? `, agent ${data.reviewer.agentId}` : ''}` : 'the reviewer';
+      console.log(chalk.green(`✅ Review recorded for [${String(id).slice(0, 8)}] by ${who}: ${(data?.findings ?? []).length} finding(s).`));
+    } catch (e: any) {
+      console.error(chalk.red(`❌ ${e.response?.data?.error || e.message}`));
+      process.exit(1);
+    }
+  });
+
 program
   .command('verify <id> [command]')
-  .description('Log evidence and advance item to next flow step (MCP fallback: validate_progress)')
+  .description('Log evidence and advance item to next flow step (MCP fallback: validate_progress). [command] runs only on intermediate steps; on the final step the server runs the project verifyCommand.')
   .option('--evidence <text>', 'REQUIRED: How you satisfied the current step\'s exit criteria')
   .action(async (id, command, options) => {
     if (!options.evidence) {
@@ -3816,6 +3903,10 @@ program
       // project's directory (resolved up to the repo root), not the daemon's own
       // cwd — matching the MCP validate_progress path (CGLAB-13).
       const body: any = { evidence: options.evidence, async: true, cwd: process.cwd() };
+      // Who is advancing the card (CGLAB-381), so a review check can tell an
+      // independent reviewer apart from the author.
+      const actor = harnessActor();
+      if (actor) body.actor = actor;
       if (command) body.command = command;
       // 5-minute POST timeout: a NEW server answers 202 in milliseconds, but an
       // OLD server (upgrade window) ignores async:true and blocks for the whole
@@ -4216,7 +4307,13 @@ prCmd
       }
       const prTitle = options.title || item.title;
       const args = ['pr', 'create', '--title', prTitle];
-      if (options.body) { args.push('--body', options.body); } else { args.push('--body', item.description || ''); }
+      // A person's approvals and overrides go on the PR, so a reviewer sees what was let through (CGLAB-382).
+      let gateEvents: GateEvent[] = [];
+      try { gateEvents = (await axios.get(`${API_URL}/items/${itemId}/gate-events`)).data ?? []; } catch (e: any) {
+        // An older server has no such route: say so rather than drop the section silently.
+        console.warn(chalk.yellow(`⚠️  Could not read the card's approvals and overrides (${e?.response?.status ?? e?.message}); the PR body will not list them.`));
+      }
+      args.push('--body', buildPrBody(options.body || item.description || '', gateEvents));
       if (options.draft) args.push('--draft');
 
       console.log(chalk.blue(`Creating PR: "${prTitle}"...`));
@@ -4728,35 +4825,19 @@ function getFlowRegistryRepo(): string {
   return 'cglab-public/agenfk-flows';
 }
 
-function serializeFlowToRegistry(flow: any): object {
-  const sorted = [...(flow.steps || [])].sort((a: any, b: any) => a.order - b.order);
-  return {
-    schemaVersion: '1',
-    name: flow.name,
-    description: flow.description || undefined,
-    author: flow.author || undefined,
-    version: flow.version || '1.0.0',
-    steps: sorted.map((s: any) => ({
-      name: s.name,
-      label: s.label,
-      order: s.order,
-      isSpecial: s.isSpecial || false,
-      exitCriteria: s.exitCriteria || undefined,
-    })),
-  };
-}
-
 // ── Flow Registry Commands ─────────────────────────────────────────────────────
 
 flowCommand
   .command('publish <id>')
   .description('Publish a flow to the community registry (requires gh auth login)')
   .option('--registry <owner/repo>', 'Registry repo (default: from config or cglab-public/agenfk-flows)')
+  .option('--allow-removing-checks', 'Publish even though this removes step roles/checks the registry copy has')
   .action(async (id, options) => {
     try {
       const registry = options.registry || getFlowRegistryRepo();
       const body: any = { flowId: id };
       if (registry) body.registry = registry;
+      if (options.allowRemovingChecks) body.allowContractRemoval = true;
       const { data } = await axios.post(`${API_URL}/registry/flows/publish`, body);
       console.log(chalk.green(`\nFlow published successfully!`));
       if (data.version) console.log(chalk.gray(`Version: ${data.version}`));
@@ -4841,18 +4922,8 @@ flowCommand
         return;
       }
 
-      const newFlow = {
-        name: parsed.name,
-        description: parsed.description,
-        steps: parsed.steps.map((s: any) => ({
-          id: randomUUID(),
-          name: s.name,
-          label: s.label,
-          order: s.order,
-          isSpecial: s.isSpecial || false,
-          exitCriteria: s.exitCriteria || undefined,
-        })),
-      };
+      // The step contract travels with the flow (CGLAB-385).
+      const newFlow = registryFlowToLocal(parsed, randomUUID);
 
       const { data: created } = await axios.post(`${API_URL}/flows`, newFlow);
       console.log(chalk.green(`\nFlow installed: ${created.name} (ID: ${created.id})`));

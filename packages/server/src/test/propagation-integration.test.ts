@@ -63,10 +63,10 @@ const setup = async () => {
   return { p, make };
 };
 
-// Internal token skips the one-step rule, so a card can be parked on the step
-// before DONE without walking the whole flow.
+// Parked on the step before DONE through storage: no HTTP route moves a card
+// forward outside verify any more (CGLAB-377), and the walk is not under test.
 const toTest = async (id: string) =>
-  internal(agent().post('/items/bulk')).send({ items: [{ id, updates: { status: 'TEST' } }] });
+  storage.updateItem(id, { status: 'TEST' } as any);
 const validate = async (id: string) => internal(agent().post(`/items/${id}/validate`)).send({ evidence: 'ok' });
 
 /**
@@ -99,7 +99,7 @@ describe('the sibling gate on a custom flow terminal', () => {
       status: 'DONE',
       tests: [{ id: 'legacy', command: 'true', output: '', status: 'PASSED', executedAt: new Date() }],
     } as never);
-    await internal(agent().post('/items/bulk')).send({ items: [{ id: c2.id, updates: { status: 'CODE' } }] });
+    await storage.updateItem(c2.id, { status: 'CODE' } as any);
 
     const r = await validate(c2.id);
     expect(r.body.status).toBe('SHIPPED');
@@ -131,7 +131,7 @@ describe('which last steps end the flow', () => {
       { name: 'CODE', label: 'Code', order: 1 },
       { name: 'DONE', label: 'Done', order: 2 },
     ]);
-    await internal(agent().post('/items/bulk')).send({ items: [{ id: item.id, updates: { status: 'CODE' } }] });
+    await storage.updateItem(item.id, { status: 'CODE' } as any);
     const r = await validate(item.id);
     expect(r.body.status).toBe('DONE');
     const after = (await agent().get(`/items/${item.id}`)).body;
@@ -147,7 +147,7 @@ describe('which last steps end the flow', () => {
       { name: 'CODE', label: 'Code', order: 1 },
       { name: 'SHIP', label: 'Ship', order: 2 },
     ]);
-    await internal(agent().post('/items/bulk')).send({ items: [{ id: item.id, updates: { status: 'CODE' } }] });
+    await storage.updateItem(item.id, { status: 'CODE' } as any);
     // An EXPLICIT command, so the request reaches the endsFlow sites instead of
     // returning early with nothing to run - without it this test passes
     // whether or not the boundary conjunct exists.
@@ -194,15 +194,16 @@ describe('the sibling gate on a real tree', () => {
 
   it('refuses when the cards work in a worktree the command never ran in', async () => {
     /*
-     * The round-2 blocker, on the provenance side. The verify command runs in
-     * `projectRoot`; a card with a worktree commits in `item.worktreePath`. So
-     * a SHA from that checkout describes a tree the command never opened, and
-     * two siblings sharing that worktree would match each other's SHAs while
-     * nothing was ever run there.
+     * The round-2 blocker, on the provenance side: a green must never cross
+     * from one tree to another. It used to be stated as "the command runs in
+     * projectRoot, a worktree card commits in its worktree", and CGLAB-366
+     * made that false - the command now runs in the card's (or its top-level
+     * ancestor's) worktree, the same root the close commit uses.
      *
-     * Both cards are in the SAME worktree on purpose: that is the shape that
-     * would propagate if the root were measured wrongly, so this test fails on
-     * revert of the shared-root guard.
+     * What survives is the dangerous shape itself: two checkouts at the SAME
+     * commit. A clone of the worktree has the identical SHA and a different
+     * tree, so a gate that compared SHAs alone would spend c1's green on a
+     * checkout nothing ever ran in. It must be refused on the ROOT.
      */
     const { make } = await setup();
     const other = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-other-'));
@@ -213,6 +214,10 @@ describe('the sibling gate on a real tree', () => {
     fs.writeFileSync(path.join(other, 'b.txt'), 'x');
     execSync('git add . && git commit -qm one', { cwd: other, shell: '/bin/sh' });
     const otherSha = execSync('git rev-parse HEAD', { cwd: other, encoding: 'utf8' }).trim();
+    const clone = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-clone-'));
+    repos.push(clone);
+    execSync(`git clone -q "${other}" "${clone}"`, { shell: '/bin/sh' });
+    expect(execSync('git rev-parse HEAD', { cwd: clone, encoding: 'utf8' }).trim()).toBe(otherSha);
 
     const c1 = await make('c1');
     const c2 = await make('c2');
@@ -221,12 +226,47 @@ describe('the sibling gate on a real tree', () => {
       worktreePath: other,
       tests: [{ id: 'w', command: 'true', output: '', status: 'PASSED', executedAt: new Date(), commit: otherSha }],
     } as never);
-    await storage.updateItem(c2.id, { worktreePath: other } as never);
+    await storage.updateItem(c2.id, { worktreePath: clone } as never);
 
     await toTest(c2.id);
     const r2 = await validate(c2.id);
     expect(r2.body.status).toBe('DONE');
     expect(r2.body.output, 'a green from a checkout the command never opened was spent').not.toBe('Sibling propagation');
+  });
+
+  it('propagates between siblings that share one worktree, at the commit the green was recorded on (CGLAB-366)', async () => {
+    /*
+     * The case the sibling rule exists for: children of one top-level item
+     * share its worktree. Their suite now runs IN that worktree, so a green
+     * recorded there at a clean commit is proof about the very tree the next
+     * sibling would test, and it transfers. (Before CGLAB-366 this same shape
+     * was refused, because the command ran in projectRoot - and siblings with
+     * no worktree of their own were quietly measured against the MAIN
+     * checkout's commits instead.)
+     */
+    const { make } = await setup();
+    const shared = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-shared-'));
+    repos.push(shared);
+    execSync('git init -q', { cwd: shared });
+    execSync('git config user.email t@t', { cwd: shared });
+    execSync('git config user.name t', { cwd: shared });
+    fs.writeFileSync(path.join(shared, 'b.txt'), 'x');
+    execSync('git add . && git commit -qm one', { cwd: shared, shell: '/bin/sh' });
+    const sha = execSync('git rev-parse HEAD', { cwd: shared, encoding: 'utf8' }).trim();
+
+    const c1 = await make('c1');
+    const c2 = await make('c2');
+    await storage.updateItem(c1.id, {
+      status: 'DONE',
+      worktreePath: shared,
+      tests: [{ id: 'w', command: 'true', output: '', status: 'PASSED', executedAt: new Date(), commit: sha }],
+    } as never);
+    await storage.updateItem(c2.id, { worktreePath: shared } as never);
+
+    await toTest(c2.id);
+    const r2 = await validate(c2.id);
+    expect(r2.body.status).toBe('DONE');
+    expect(r2.body.output).toBe('Sibling propagation');
   });
 
   it('uses a fresh record when a sibling also carries a stale one', async () => {

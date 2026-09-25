@@ -67,8 +67,8 @@ describe('parent propagation on a custom flow (CGLAB-82)', () => {
 
     // Walk both children one step at a time (one-step moves are legal).
     for (const id of [a.body.id, b.body.id]) {
-      await agent().put(`/items/${id}`).send({ status: 'SPEC' });
-      await agent().put(`/items/${id}`).send({ status: 'CODE' });
+      await agent().put(`/items/${id}`).set('x-agenfk-ui', '1').send({ status: 'SPEC' });
+      await agent().put(`/items/${id}`).set('x-agenfk-ui', '1').send({ status: 'CODE' });
     }
 
     const after = await agent().get(`/items/${parent.body.id}`);
@@ -82,8 +82,8 @@ describe('parent propagation on a custom flow (CGLAB-82)', () => {
     const a = await agent().post('/items').send({ type: 'TASK', title: 'a2', projectId, parentId: parent.body.id });
     await agent().post('/items').send({ type: 'TASK', title: 'b2', projectId, parentId: parent.body.id });
 
-    await agent().put(`/items/${a.body.id}`).send({ status: 'SPEC' });
-    await agent().put(`/items/${a.body.id}`).send({ status: 'CODE' });
+    await agent().put(`/items/${a.body.id}`).set('x-agenfk-ui', '1').send({ status: 'SPEC' });
+    await agent().put(`/items/${a.body.id}`).set('x-agenfk-ui', '1').send({ status: 'CODE' });
 
     const after = await agent().get(`/items/${parent.body.id}`);
     // One child is still at TODO, so the parent cannot claim CODE.

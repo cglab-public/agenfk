@@ -1,6 +1,8 @@
 import { Flow, FlowStep } from "./types.js";
 
-// Built-in default flow steps.
+// Built-in default flow steps. Roles (CGLAB-381) bring each step's checks:
+// suite-green leaving IN_PROGRESS, an independent review leaving REVIEW, and
+// the project's verify command on the way to DONE.
 // BLOCKED, PAUSED, IDEAS, ARCHIVED, TRASHED are platform-level statuses — NOT flow steps.
 // They are always reachable from any step, hardcoded in the server transition layer.
 const DEFAULT_STEPS: FlowStep[] = [
@@ -13,6 +15,7 @@ const DEFAULT_STEPS: FlowStep[] = [
   },
   {
     id: "default-in-progress",
+    role: "coding",
     name: "IN_PROGRESS",
     label: "In Progress",
     order: 1,
@@ -21,6 +24,7 @@ const DEFAULT_STEPS: FlowStep[] = [
   },
   {
     id: "default-review",
+    role: "review",
     name: "REVIEW",
     label: "Review",
     order: 2,
@@ -29,6 +33,7 @@ const DEFAULT_STEPS: FlowStep[] = [
   },
   {
     id: "default-test",
+    role: "testing",
     name: "TEST",
     label: "Test",
     order: 3,
@@ -37,6 +42,7 @@ const DEFAULT_STEPS: FlowStep[] = [
   },
   {
     id: "default-done",
+    role: "closing",
     name: "DONE",
     label: "Done",
     order: 4,

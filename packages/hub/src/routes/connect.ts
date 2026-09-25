@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { randomBytes } from 'crypto';
-import { signInviteToken, verifyInviteToken, burnInviteNonce, INVITE_TTL_MS } from '../auth/inviteToken.js';
+import { signInviteToken, verifyInviteToken, burnInviteNonce, INVITE_TTL_MS, MAX_INVITE_TOKEN_LEN } from '../auth/inviteToken.js';
 import { publicHubUrl } from '../util/publicUrl.js';
 import { HubServerContext } from '../server.js';
 import { requireSession, requireAdmin } from '../auth/session.js';
@@ -77,6 +77,17 @@ export function connectRouter(ctx: HubServerContext): Router {
   const router = Router();
   // Per-instance rate limiter (not module-level) — see auth.ts rationale.
   const deviceStartRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 60, message: 'Too many device-code requests, slow down.' });
+  // Redeeming verifies a signed invite and mints an installation token, with
+  // no session in front of it (CodeQL #114). Only FAILURES are counted: each
+  // invite works once, so successes are already capped by the invites an admin
+  // made, and a scripted rollout of many machines behind one office NAT must
+  // not be cut off by its own progress. The key is the client IP, which a
+  // directly-exposed hub cannot trust (see clientIp); the invite's signature,
+  // expiry and single-use nonce are what actually protect this route.
+  const inviteRedeemRateLimit = rateLimit({
+    windowMs: 15 * 60 * 1000, max: 60, skipSuccessfulRequests: true,
+    message: 'Too many failed invite redemptions, slow down.',
+  });
   // No requireSession guard here on purpose. Every authenticated route in this
   // file mints or reveals a live bearer token, so admin is the only correct
   // gate — and CGLAB-75 was precisely the wrong one being picked from the two
@@ -235,10 +246,11 @@ export function connectRouter(ctx: HubServerContext): Router {
     });
   });
 
-  router.post('/invite/redeem', async (req: Request, res: Response, next: NextFunction) => {
+  router.post('/invite/redeem', inviteRedeemRateLimit, async (req: Request, res: Response, next: NextFunction) => {
     try {
     const inviteToken = String(req.body?.inviteToken ?? '');
     if (!inviteToken) { res.status(400).json({ error: 'inviteToken required' }); return; }
+    if (inviteToken.length > MAX_INVITE_TOKEN_LEN) { res.status(400).json({ error: 'invalid invite token' }); return; }
     const parsed = verifyInviteToken(inviteToken, ctx.config.secretKey, 'installation');
     if (!parsed) { res.status(400).json({ error: 'invalid invite token' }); return; }
     if (parsed.exp < Date.now()) { res.status(400).json({ error: 'invite token expired' }); return; }

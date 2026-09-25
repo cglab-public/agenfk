@@ -312,7 +312,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
               <button
                 ref={moveMenuButtonRef}
                 onClick={(e) => { e.stopPropagation(); setIsMoveMenuOpen(v => !v); }}
-                className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-600 hover:text-accent-text transition-colors"
+                className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-500 hover:text-accent-text transition-colors"
                 title="Move to project"
               >
                 <FolderInput size={11} />
@@ -352,12 +352,12 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
             onClick={(e) => { e.stopPropagation(); onOpenTerminal(item); }}
             aria-label={`Open a terminal on ${item.title}`}
             title="Open a terminal on this card"
-            className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-600 hover:text-accent-text transition-colors"
+            className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-500 hover:text-accent-text transition-colors"
           >
             <SquareTerminal size={11} />
           </button>
           )}
-          <button onClick={(e) => { e.stopPropagation(); onArchive(item.id); }} className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-600 hover:text-rose-500 dark:hover:text-rose-400 transition-colors">
+          <button onClick={(e) => { e.stopPropagation(); onArchive(item.id); }} className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-500 hover:text-rose-500 dark:hover:text-rose-400 transition-colors">
             <Archive size={11} />
           </button>
         </div>
@@ -653,6 +653,22 @@ export const KanbanBoard: React.FC = () => {
   }, [activeFlow, isFlowError]);
 
   // Map from status name → FlowStep for quick label/order lookups
+  // CGLAB-384: the check count per column, as the server resolves the flow.
+  // An older server without the route: no counts, the rest still shows.
+  const { data: flowContract } = useQuery({
+    queryKey: ['flow-contract', activeFlow?.id, activeFlow?.updatedAt],
+    queryFn: () => api.getFlowContract(activeFlow!.steps),
+    enabled: !!activeFlow,
+    retry: false,
+  });
+  // What verify runs, and blocks on, to leave the column: warn-only checks
+  // (all a flow from before roles has) are not counted, so they add no badge.
+  type ContractStep = { name: string; checks: Array<{ applicable: boolean; severity: string }>; onLeave?: Array<{ applicable: boolean; severity: string }> };
+  const checkCountOf = (name: string): number | undefined => {
+    const st = (flowContract as { steps?: ContractStep[] } | undefined)?.steps?.find(x => x.name === name);
+    return st ? (st.onLeave ?? st.checks).filter(c => c.applicable && c.severity === 'block').length : undefined;
+  };
+
   const flowStepByStatus = React.useMemo((): Record<string, FlowStep> => {
     if (!activeFlow) return {};
     return Object.fromEntries(activeFlow.steps.map((s: FlowStep) => [s.name, s]));
@@ -1751,7 +1767,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
                       'p-0.5 rounded transition-colors',
                       isPinned
                         ? 'text-accent-text hover:opacity-80'
-                        : 'text-slate-300 dark:text-slate-600 hover:text-slate-500 dark:hover:text-slate-400'
+                        : 'text-slate-300 dark:text-slate-500 hover:text-slate-500 dark:hover:text-slate-400'
                     )}
                   >
                     {isPinned ? <Pin size={11} /> : <PinOff size={11} />}
@@ -1923,7 +1939,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
             </button>
             {navPath.map((nav, index) => (
               <React.Fragment key={nav.id}>
-                <ChevronRight size={14} className="text-slate-300 dark:text-slate-600 flex-shrink-0" />
+                <ChevronRight size={14} className="text-slate-300 dark:text-slate-500 flex-shrink-0" />
                 <button
                   /* v8 ignore start */
                   onClick={() => navigateTo(index)}
@@ -2067,6 +2083,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
                     {renderStepIcon(flowStep?.icon, statusIcons[status as Status] ?? <Briefcase size={14} />)}
                   </div>
                   <h2 className="font-bold text-ink-secondary text-sm uppercase tracking-wider">{columnLabel}</h2>
+                  {flowStep && <ColumnContractBadges step={flowStep} checkCount={checkCountOf(flowStep.name)} />}
                   <button onClick={() => handleArchiveColumn(status as Status)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 dark:text-slate-500 transition-colors" title="Archive Column">
                     <Archive size={12} />
                   </button>

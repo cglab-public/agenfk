@@ -1,3 +1,4 @@
+import * as net from 'net';
 import type { DB } from '../../db.js';
 import { normalizeHttpUrl } from '../../util/httpUrl.js';
 import { encryptSecret, decryptSecret } from '../../crypto.js';
@@ -62,45 +63,84 @@ interface StoredBinding {
 }
 
 /**
- * Hosts a parent hub may not live on unless an operator says otherwise.
+ * Host NAMES a parent hub may not live on unless an operator says otherwise.
+ * Addresses are judged separately, by range (isPrivateAddress): a regex over
+ * address text kept missing spellings and whole ranges.
  *
  * The child fetches this URL with an admin-supplied value, so without a guard
  * the join form is a semi-blind SSRF probe: the route reflects the upstream
  * status and error body, which is enough to map internal ports. A LAN parent
  * is a legitimate deployment, so this is an opt-in rather than a hard no.
  */
-const PRIVATE_HOST_RE = new RegExp([
-  '^localhost$', '^127\\.', '^0\\.0\\.0\\.0$', '^\\[?::1\\]?$',
-  '^10\\.', '^192\\.168\\.', '^169\\.254\\.',
-  '^172\\.(1[6-9]|2[0-9]|3[01])\\.',
-  '\\.local$', '\\.internal$',
-  // IPv6: the unspecified address, unique-local (fc00::/7) and link-local
-  // (fe80::/10). Not a blanket 'f' prefix — fe00:: is ordinary global space.
-  '^::$', '^f[cd][0-9a-f]{2}:', '^fe[89ab][0-9a-f]:',
-].join('|'), 'i');
+const PRIVATE_NAME_RE = /^localhost$|\.localhost$|\.local$|\.internal$/i;
+
+/** IPv4 ranges that are never a public host (RFC 6890 and friends). */
+const PRIVATE_V4 = new net.BlockList();
+for (const [a, bits] of [
+  ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16],
+  ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15],
+  ['224.0.0.0', 4], ['240.0.0.0', 4],
+] as const) PRIVATE_V4.addSubnet(a, bits, 'ipv4');
+
+/** IPv6 ranges that are never a public host. Embedded IPv4 is unwrapped first. */
+const PRIVATE_V6 = new net.BlockList();
+for (const [a, bits] of [
+  ['::', 128], ['::1', 128], ['fc00::', 7], ['fe80::', 10], ['fec0::', 10], ['ff00::', 8],
+] as const) PRIVATE_V6.addSubnet(a, bits, 'ipv6');
+
+/** An IPv6 address as eight 16-bit groups, or null. Zone ids are dropped. */
+function ipv6Groups(ip: string): number[] | null {
+  let s = ip.replace(/%.*$/, '').toLowerCase();
+  // A trailing dotted quad (::ffff:1.2.3.4, ::1.2.3.4) becomes two groups.
+  const quad = /(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s);
+  if (quad) {
+    const b = quad.slice(1).map(Number);
+    if (b.some((x) => x > 255)) return null;
+    s = s.slice(0, quad.index) + `${((b[0] << 8) | b[1]).toString(16)}:${((b[2] << 8) | b[3]).toString(16)}`;
+  }
+  const halves = s.split('::');
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(':') : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const missing = 8 - head.length - tail.length;
+  if (halves.length === 1 ? missing !== 0 : missing < 0) return null;
+  const groups = [...head, ...Array(halves.length === 2 ? missing : 0).fill('0'), ...tail].map((g) => parseInt(g, 16));
+  return groups.length === 8 && groups.every((g) => Number.isInteger(g) && g >= 0 && g <= 0xffff) ? groups : null;
+}
+
+const v4From = (hi: number, lo: number) => [hi >> 8, hi & 0xff, lo >> 8, lo & 0xff].join('.');
 
 /**
- * `::ffff:7f00:1` → `127.0.0.1`, so an IPv4-mapped address is judged by the
- * IPv4 rules rather than slipping through them.
- *
- * Mapping is not itself suspicious — `::ffff:8.8.8.8` is a public address — so
- * this translates rather than blocks. WHATWG URL re-spells the dotted form as
- * hex groups, which is exactly why the dotted block list missed these.
+ * The IPv4 address an IPv6 one carries, where the network will actually
+ * deliver to it: IPv4-mapped (::ffff:a.b.c.d), IPv4-translated
+ * (::ffff:0:a.b.c.d), IPv4-compatible (::a.b.c.d), NAT64 (64:ff9b::/96 - a
+ * NAT gateway turns it back into that IPv4) and 6to4 (2002::/16).
  */
-function mappedIPv4(host: string): string | null {
-  const dotted = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(host);
-  if (dotted) return dotted[1];
-  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(host);
-  if (!hex) return null;
-  const hi = parseInt(hex[1], 16);
-  const lo = parseInt(hex[2], 16);
-  return [hi >> 8, hi & 0xff, lo >> 8, lo & 0xff].join('.');
+function embeddedIPv4(g: number[]): string | null {
+  const zero = (from: number, to: number) => g.slice(from, to).every((x) => x === 0);
+  if (zero(0, 5) && g[5] === 0xffff) return v4From(g[6], g[7]);
+  if (zero(0, 4) && g[4] === 0xffff && g[5] === 0) return v4From(g[6], g[7]);
+  if (g[0] === 0x64 && g[1] === 0xff9b && zero(2, 6)) return v4From(g[6], g[7]);
+  if (g[0] === 0x2002) return v4From(g[1], g[2]);
+  if (zero(0, 6) && (g[6] !== 0 || g[7] > 1)) return v4From(g[6], g[7]);
+  return null;
+}
+
+/** Is this IP address (v4 or v6, any spelling) in a range that is never a public host? */
+export function isPrivateAddress(ip: string): boolean {
+  const bare = ip.replace(/^\[|\]$/g, '');
+  if (net.isIPv4(bare)) return PRIVATE_V4.check(bare, 'ipv4');
+  const g = ipv6Groups(bare);
+  if (!g) return true; // unparseable as an address: refuse rather than guess
+  const v4 = embeddedIPv4(g);
+  if (v4 !== null) return PRIVATE_V4.check(v4, 'ipv4');
+  return PRIVATE_V6.check(g.map((x) => x.toString(16)).join(':'), 'ipv6');
 }
 
 export function isPrivateHost(host: string): boolean {
   const bare = host.replace(/^\[|\]$/g, '');
-  const mapped = mappedIPv4(bare);
-  return PRIVATE_HOST_RE.test(bare) || (mapped !== null && PRIVATE_HOST_RE.test(mapped));
+  if (net.isIP(bare.replace(/%.*$/, ''))) return isPrivateAddress(bare);
+  return PRIVATE_NAME_RE.test(bare);
 }
 
 /** Only http(s): the URL is fetched by the worker, so file:// and javascript: are refused. */

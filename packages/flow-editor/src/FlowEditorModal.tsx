@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback, createContext, useContext } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import mermaid from 'mermaid';
 import type { Flow, FlowStep, RegistryFlow, FlowClient, RegistryClient } from './types';
 import { extractApiError } from './apiError';
 import { deriveStepName, flowDefinitionIssues, nextStepName, stepIssue, withStepIds } from './flowDefinition';
+import { ContractProblems, RecordsLane, StepContractButton, StepContractDialog, TemplatePicker } from './FlowContractSection';
 import { ExitCriteriaEditorModal } from './ExitCriteriaEditorModal';
 import { estimateTokenCount } from './estimateTokens';
 
@@ -274,6 +275,11 @@ function serializeDefinition(
       ...(s?.color ? { color: s.color } : {}),
       ...(s?.icon ? { icon: s.icon } : {}),
       ...(s?.isAnchor ? { isAnchor: true } : {}),
+      // CGLAB-384: a change to a role or a check is a change to the flow.
+      ...(typeof s?.role === 'string' && s.role ? { role: s.role } : {}),
+      ...(Array.isArray(s?.checks) && s.checks.length ? { checks: s.checks } : {}),
+      ...(s?.autoCommit ? { autoCommit: true } : {}),
+      ...(s?.requireCommit ? { requireCommit: true } : {}),
     }))
     .sort((a, b) => a.order - b.order);
   return JSON.stringify({ name, description, steps: canonical });
@@ -500,6 +506,46 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
     setSteps(prev => [...prev, makeBlankStep(prev.length)]);
   }, []);
 
+  // ── Step contracts (CGLAB-384) ─────────────────────────────────────────────
+  // The server says what the draft's steps mean, with the functions that
+  // validate a save and run verify. A host without the route sees none of it.
+  const hasContract = typeof flowClient.getFlowContract === 'function';
+  // Only what the contract reads, debounced: a label or a keystroke in a name
+  // is not a new question for the server.
+  // The commit flags and isSpecial count too: the server validates where a
+  // step commit can run, which depends on both (CGLAB-388).
+  const contractKey = JSON.stringify(steps.map((s, i) => ({ id: s.id, name: s.name, order: i, isAnchor: s.isAnchor, isSpecial: s.isSpecial, role: s.role, checks: s.checks, autoCommit: s.autoCommit, requireCommit: s.requireCommit })));
+  const [askedKey, setAskedKey] = useState(contractKey);
+  useEffect(() => {
+    const t = setTimeout(() => setAskedKey(contractKey), 250);
+    return () => clearTimeout(t);
+  }, [contractKey]);
+  const { data: contract } = useQuery({
+    queryKey: ['flow-contract', askedKey],
+    queryFn: () => flowClient.getFlowContract!(JSON.parse(askedKey).map((s: FlowStep) => ({ ...s, label: s.name })) as FlowStep[]),
+    enabled: hasContract,
+    placeholderData: keepPreviousData,
+  });
+  const [contractStepIndex, setContractStepIndex] = useState<number | null>(null);
+  const stepContractOf = (index: number) => contract?.steps.find(c => c.name === steps[index]?.name);
+  const removeCheck = useCallback((index: number, checkId: string) => {
+    setSteps(prev => prev.map((s, i) => (i === index ? { ...s, checks: (s.checks ?? []).filter(c => c.id !== checkId) } : s)));
+  }, []);
+  const addWritingTestsBefore = useCallback((index: number) => {
+    setSteps(prev => {
+      const taken = new Set(prev.map(s => s.name.toUpperCase()));
+      let name = 'WRITE_TESTS';
+      for (let n = 2; taken.has(name); n++) name = `WRITE_TESTS_${n}`;
+      const added: FlowStep = { ...makeBlankStep(index), name, label: 'Write tests', role: 'test-authoring' };
+      const next = [...prev.slice(0, index), added, ...prev.slice(index)];
+      return next.map((s, i) => ({ ...s, order: i }));
+    });
+  }, []);
+  const applyTemplate = useCallback((templateSteps: FlowStep[]) => {
+    setSteps(templateSteps.map((s, i) => ({ ...s, id: generateUUID(), order: i })));
+    setContractStepIndex(null);
+  }, []);
+
   const removeStep = useCallback((index: number) => {
     setSteps(prev => {
       const next = prev.filter((_, i) => i !== index);
@@ -607,7 +653,9 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   // BUG 269eeec8 (c): mirror the Hub's definition contract so a payload it would
   // reject never leaves the browser, and the reason is pinned to its step.
   const definitionIssues = flowDefinitionIssues(name, steps);
-  const isSaveDisabled = isBusy || reservedNameError || definitionIssues.length > 0;
+  // The server's contract check: a flow it would refuse is not sent.
+  const contractInvalid = hasContract && !!contract && !contract.valid;
+  const isSaveDisabled = isBusy || reservedNameError || definitionIssues.length > 0 || contractInvalid;
 
   /**
    * Whether this panel can write its definition at all. The two read-only
@@ -640,7 +688,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   const isActive = flow?.id !== undefined && flow.id === activeFlowId;
 
   // ── Publish to registry ──────────────────────────────────────────────────
-  const [publishResult, setPublishResult] = useState<{ url: string; kind: 'pr' | 'existing' | 'direct' } | null>(null);
+  const [publishResult, setPublishResult] = useState<{ url: string; kind: 'pr' | 'existing' | 'direct'; repo?: string } | null>(null);
   const [publishError, setPublishError] = useState<string | null>(null);
 
   /**
@@ -667,9 +715,12 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       return registryClient.publishToRegistry!(id);
     },
     onSuccess: (data) => {
-      setPublishResult({ url: data.url, kind: data.kind ?? 'pr' });
+      setPublishResult({ url: data.url, kind: data.kind ?? 'pr', repo: data.repo });
       setPublishError(null);
       setSaved(true);
+      // A publish may assign the flow a new version (the gh path bumps it; the
+      // hub path returns the one it published). Refetch so the badge is current.
+      queryClient.invalidateQueries({ queryKey: ['flows'] });
     },
     onError: (e: unknown) => {
       setPublishError(extractApiError(e, 'Failed to publish.'));
@@ -689,7 +740,11 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
           className="flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400 font-semibold hover:underline"
         >
           <ExternalLink size={12} />
-          {publishResult.kind === 'pr' ? 'PR opened — view on GitHub' : 'Already published — view on registry'}
+          {publishResult.kind === 'pr'
+            ? `PR opened${publishResult.repo ? ` on ${publishResult.repo}` : ''} — view on GitHub`
+            : publishResult.kind === 'direct'
+              ? `Pushed${publishResult.repo ? ` to ${publishResult.repo}` : ''} — view on GitHub`
+              : `Already published${publishResult.repo ? ` in ${publishResult.repo}` : ''} — view on registry`}
         </a>
       )}
       {publishError && (
@@ -814,6 +869,8 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             <label className="text-xs font-semibold text-ink-secondary uppercase tracking-wide">
               Steps
             </label>
+            <div className="flex items-center gap-4">
+            {!isReadOnly && hasContract && <TemplatePicker onApply={applyTemplate} />}
             {!isReadOnly && (
               <button
                 data-testid="add-step-btn"
@@ -825,6 +882,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                 Add Step
               </button>
             )}
+            </div>
           </div>
 
           {/* CGLAB-164: one ROW per step, read top to bottom.
@@ -1129,6 +1187,12 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                       )}
                     </div>
 
+                    {/* The contract, when the project file declares one for
+                        this step (origin/CGLAB-164). */}
+                    {hasContract && contract && (
+                      <StepContractButton index={index} step={step} stepContract={stepContractOf(index)} onOpen={() => setContractStepIndex(index)} />
+                    )}
+
                     {/* Reorder / delete, or the anchor badge that explains why
                         neither is offered. */}
                     <div className={clsx(STEP_COL_ACTIONS, 'shrink-0 flex items-center justify-end gap-1 pt-1')}>
@@ -1168,6 +1232,23 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               );
             })}
           </div>
+          {hasContract && contract && (
+            <div className="space-y-3 mt-3">
+              <ContractProblems steps={steps} contract={contract} disabled={isReadOnly} onRemoveCheck={removeCheck} onAddWritingTestsBefore={addWritingTestsBefore} />
+              <RecordsLane steps={steps} contract={contract} />
+            </div>
+          )}
+          {hasContract && contract && contractStepIndex !== null && steps[contractStepIndex] && (
+            <StepContractDialog
+              step={steps[contractStepIndex]}
+              stepContract={stepContractOf(contractStepIndex)}
+              contract={contract}
+              disabled={isReadOnly}
+              readOnlyNote={isHubManaged ? 'Set by your org admin: this flow can\'t be changed here.' : 'This is the built-in flow: clone it to change it.'}
+              onChange={patch => updateStep(contractStepIndex, patch)}
+              onClose={() => setContractStepIndex(null)}
+            />
+          )}
           {/* Reserved name global error */}
           {silentIssues.length > 0 && (
             <ul data-testid="flow-definition-issues" className="text-sm text-red-600 dark:text-red-400 mt-1 list-disc pl-5">

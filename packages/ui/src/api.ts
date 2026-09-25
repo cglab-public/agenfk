@@ -1,6 +1,30 @@
 import axios from 'axios';
 import { AgEnFKItem, ItemType, Status, Flow, RegistryFlow } from './types'; // We need to copy types or import from core if possible, but symlinking in Vite monorepo can be tricky without proper setup.
 import { API_URL } from './apiUrl';
+
+/** One check's verdict on a verify (CGLAB-380), as the server records it. */
+export interface StepCheckResult {
+  id: string;
+  step: string;
+  source: 'universal' | 'role' | 'flow';
+  severity: 'block' | 'warn';
+  params: Record<string, string>;
+  outcome: 'pass' | 'fail' | 'unavailable' | 'n/a' | 'deferred';
+  detail: string;
+  blocking: boolean;
+  overridden?: GateOverride;
+}
+export interface GateOverride { id: string; by: string; at: string; reason: string }
+/** The human gates of a card's current step (CGLAB-382). */
+export interface StepGates {
+  step: string;
+  approvalRequired: boolean;
+  /** The step's human-approval check asks for acts signed with a passkey (CGLAB-383). */
+  passkeyRequired?: boolean;
+  approvals: Array<{ id?: string; by: string; at: string; note?: string; authority?: string; from?: string }>;
+  overrides: Record<string, GateOverride>;
+  lastChecks: { step: string; at: string; blocked: boolean; results: StepCheckResult[] } | null;
+}
 // For MVP, we'll duplicate the types interface or use `any`.
 // Better: configure vite to aliase @agenfk/core to the local package.
 
@@ -337,16 +361,52 @@ export const api = {
 
   updateItem: async (id: string, updates: Partial<AgEnFKItem>) => {
     try {
-      const { data } = await axios.put(`${API_URL}/items/${id}`, updates);
+      // The board header: the server lets only the board move a card forward
+      // outside verify, and records each such move on the card (CGLAB-377).
+      const { data } = await axios.put(`${API_URL}/items/${id}`, updates, { headers: { 'x-agenfk-ui': '1' } });
       return data;
     } catch (e) {
       console.error('API Error updating item', id, e);
       throw e;
     }
   },
+  /** What a draft flow's steps mean, as the server validates and enforces them (CGLAB-384). */
+  getFlowContract: async (steps: unknown[]) => {
+    const { data } = await axios.post(`${API_URL}/flows/contract`, { steps });
+    return data;
+  },
+  /** The card's current step: go-ahead needed, approvals, overrides, last checks (CGLAB-382). */
+  getGates: async (id: string): Promise<StepGates> => {
+    const { data } = await axios.get(`${API_URL}/items/${id}/gates`);
+    return data;
+  },
+  /** A person's go-ahead for the card's current step. The board header is what the server accepts. */
+  approveStep: async (id: string, body: { step: string; note?: string; assertion?: unknown }) => {
+    const { data } = await axios.post(`${API_URL}/items/${id}/approvals`, body, { headers: { 'x-agenfk-ui': '1' } });
+    return data;
+  },
+  /** A person's pass of one blocked check, with the reason they wrote. */
+  overrideCheck: async (id: string, body: { step: string; checkId: string; reason: string; assertion?: unknown }) => {
+    const { data } = await axios.post(`${API_URL}/items/${id}/overrides`, body, { headers: { 'x-agenfk-ui': '1' } });
+    return data;
+  },
+  /** Passkeys enrolled on this board (CGLAB-383). */
+  getPasskeyStatus: async (): Promise<{ enrolled: boolean; credentials: Array<{ id: string; createdAt?: string | null }> }> => {
+    const { data } = await axios.get(`${API_URL}/webauthn/status`);
+    return data;
+  },
+  /** A single-use challenge bound to one act: a signature over it authorises that act only. */
+  passkeyChallenge: async (act: Record<string, string>): Promise<{ challenge: string; allowCredentials: string[] }> => {
+    const { data } = await axios.post(`${API_URL}/webauthn/challenge`, act, { headers: { 'x-agenfk-ui': '1' } });
+    return data;
+  },
+  enrollPasskey: async (registration: unknown, assertion?: unknown) => {
+    const { data } = await axios.post(`${API_URL}/webauthn/credentials`, { registration, ...(assertion ? { assertion } : {}) }, { headers: { 'x-agenfk-ui': '1' } });
+    return data;
+  },
   bulkUpdateItems: async (items: { id: string; updates: Partial<AgEnFKItem> }[]) => {
     try {
-      const { data } = await axios.post(`${API_URL}/items/bulk`, { items });
+      const { data } = await axios.post(`${API_URL}/items/bulk`, { items }, { headers: { 'x-agenfk-ui': '1' } });
       return data;
     } catch (e) {
       console.error(`API Error bulk updating items:`, e);
@@ -612,7 +672,7 @@ export const api = {
       throw e;
     }
   },
-  publishToRegistry: async (flowId: string): Promise<{ url: string; kind: 'pr' | 'existing'; note?: string }> => {
+  publishToRegistry: async (flowId: string): Promise<{ url: string; kind: 'pr' | 'existing' | 'direct'; note?: string; repo?: string; version?: string }> => {
     try {
       const { data } = await axios.post(`${API_URL}/registry/flows/publish`, { flowId });
       return data;

@@ -76,17 +76,32 @@
     --nav-surface: rgba(13, 15, 19, .72);
 
     --text-primary: #f1f5f9;
-    --text-secondary: #b6bfcd;
-    --text-tertiary: #737d8f;
+    --text-secondary: #bcbfc5;
+    --text-tertiary: #8f9299;
 
     --border-brand: rgba(4, 204, 152, .18);
-    --border-soft: rgba(148, 163, 184, .10);
+    --border-soft: rgba(160, 163, 170, .10);
 
     --accent-text: #7fe5ca;
     --chip-bg: rgba(4, 204, 152, .10);
     --danger-text: #f26d7e;     /* ~6.64:1 on #0d0f13; danger-muted is legible on dark, unlike on light */
 
     --glow: 0 0 30px rgba(4, 204, 152, .12);
+    /* Tailwind's slate, made neutral gray (user request 2026-09-24). The Kanban UI
+     * and the flow editor are written in slate, which is blue-tinted; every v4
+     * utility reads these variables. 900/950 are the brand surface/canvas, so the
+     * editor sits flush on the hub page, and 400/500 stay >= 4.5:1 on 800-950. */
+    --color-slate-50: #f8f9fa;
+    --color-slate-100: #f0f1f3;
+    --color-slate-200: #e2e4e8;
+    --color-slate-300: #cacdd2;
+    --color-slate-400: #a8abb1;
+    --color-slate-500: #8f9299;
+    --color-slate-600: #50535a;
+    --color-slate-700: #3a3d43;
+    --color-slate-800: #26282d;
+    --color-slate-900: #13161c;
+    --color-slate-950: #0d0f13;
   }
 }
 
@@ -105,17 +120,44 @@
   --nav-surface: rgba(13, 15, 19, .72);
 
   --text-primary: #f1f5f9;
-  --text-secondary: #b6bfcd;
-  --text-tertiary: #737d8f;
+  --text-secondary: #bcbfc5;
+  --text-tertiary: #8f9299;
 
   --border-brand: rgba(4, 204, 152, .18);
-  --border-soft: rgba(148, 163, 184, .10);
+  --border-soft: rgba(160, 163, 170, .10);
 
   --accent-text: #7fe5ca;
   --chip-bg: rgba(4, 204, 152, .10);
   --danger-text: #f26d7e;       /* ~6.64:1 on #0d0f13; danger-muted is legible on dark, unlike on light */
 
   --glow: 0 0 30px rgba(4, 204, 152, .12);
+  /* Tailwind's slate, made neutral gray (user request 2026-09-24). The Kanban UI
+   * and the flow editor are written in slate, which is blue-tinted; every v4
+   * utility reads these variables. 900/950 are the brand surface/canvas, so the
+   * editor sits flush on the hub page, and 400/500 stay >= 4.5:1 on 800-950. */
+  --color-slate-50: #f8f9fa;
+  --color-slate-100: #f0f1f3;
+  --color-slate-200: #e2e4e8;
+  --color-slate-300: #cacdd2;
+  --color-slate-400: #a8abb1;
+  --color-slate-500: #8f9299;
+  --color-slate-600: #50535a;
+  --color-slate-700: #3a3d43;
+  --color-slate-800: #26282d;
+  --color-slate-900: #13161c;
+  --color-slate-950: #0d0f13;
+  /* Markdown: @tailwindcss/typography writes slate values straight into
+   * .prose-slate, so it does not follow the ramp above unless pointed at it. */
+  --tw-prose-invert-body: var(--color-slate-300);
+  --tw-prose-invert-lead: var(--color-slate-400);
+  --tw-prose-invert-counters: var(--color-slate-400);
+  --tw-prose-invert-bullets: var(--color-slate-600);
+  --tw-prose-invert-hr: var(--color-slate-700);
+  --tw-prose-invert-quote-borders: var(--color-slate-700);
+  --tw-prose-invert-captions: var(--color-slate-400);
+  --tw-prose-invert-pre-code: var(--color-slate-300);
+  --tw-prose-invert-th-borders: var(--color-slate-600);
+  --tw-prose-invert-td-borders: var(--color-slate-700);
 }
 
 /* Explicit light overrides win over an OS-level dark preference when an app
@@ -138,6 +180,19 @@
   --danger-text: #c23a52;       /* AA-compliant error copy (~4.99:1 on #f8fafc); danger-muted stays for decorative chip/badge/icon tints */
 
   --glow: 0 0 20px rgba(4, 204, 152, .12);
+  /* Tailwind's own slate again: a forced light theme on a dark OS must not keep
+   * the dark-mode neutral ramp above. */
+  --color-slate-50: oklch(98.4% 0.003 247.858);
+  --color-slate-100: oklch(96.8% 0.007 247.896);
+  --color-slate-200: oklch(92.9% 0.013 255.508);
+  --color-slate-300: oklch(86.9% 0.022 252.894);
+  --color-slate-400: oklch(70.4% 0.04 256.788);
+  --color-slate-500: oklch(55.4% 0.046 257.417);
+  --color-slate-600: oklch(44.6% 0.043 257.281);
+  --color-slate-700: oklch(37.2% 0.044 257.287);
+  --color-slate-800: oklch(27.9% 0.041 260.031);
+  --color-slate-900: oklch(20.8% 0.042 265.755);
+  --color-slate-950: oklch(12.9% 0.042 264.695);
 }
 
 @theme {

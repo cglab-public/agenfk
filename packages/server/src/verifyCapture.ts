@@ -122,8 +122,10 @@ export function createOutputCapture(opts: { fd: number | null; maxLogBytes?: num
 
   const toFile = (buf: Buffer) => {
     if (fd === null || logTruncated || logWriteError) return;
+    // No early return when room is 0: a chunk that exactly filled the ceiling
+    // leaves room 0, and the NEXT chunk is precisely the one whose loss the
+    // file must admit to - it falls through to the truncation branch below.
     const room = maxLogBytes - writtenBytes;
-    if (room <= 0) return;
     try {
       if (buf.length <= room) {
         writtenBytes += writeAll(buf);

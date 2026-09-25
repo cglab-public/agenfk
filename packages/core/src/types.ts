@@ -407,11 +407,98 @@ export interface CommentRecord {
   step?: string;
 }
 
+/** One change to a setting that decides what a gate checks (CGLAB-378, CGLAB-379). */
+export interface GateSettingChange<T> {
+  from: T | null;
+  to: T | null;
+  at: string;
+}
+
+/** How the server gets per-test results for a project (CGLAB-379). */
+export interface TestReportSetting {
+  format: 'vitest-json' | 'junit-xml';
+  command: string;
+  /** Relative to the tree the command runs in. */
+  reportPath: string;
+  /** Extra files or directories the tests depend on (helpers, fixtures, setup), hashed into the surface. */
+  surface?: string[];
+}
+
+/**
+ * What a step left behind (CGLAB-379). `exit` is written on every forward
+ * verify; `capture` holds per-test results, taken only when a check needs them.
+ */
+export interface StepRecord {
+  step: string;
+  /**
+   * `record`: a named record a passing check produced (CGLAB-380), e.g. redSet.
+   * `approval` / `override`: a person's go-ahead for the step, or their pass of
+   * one blocked check with a reason (CGLAB-382). Made from the board only.
+   */
+  kind: 'exit' | 'capture' | 'record' | 'approval' | 'override' | 'manual-advance';
+  at: string;
+  head: string | null;
+  clean: boolean;
+  format?: 'vitest-json' | 'junit-xml' | 'exit-code';
+  exitCode?: number | null;
+  /** False when per-test results could not be read: they are unavailable, never passed. */
+  available?: boolean;
+  tests?: Array<{ name: string; file: string; status: 'passed' | 'failed' | 'skipped'; failure?: 'assertion' | 'error' }>;
+  brokenFiles?: Array<{ file: string; message: string }>;
+  surface?: { files: Record<string, string> };
+  /** False when a file the report named could not be found: the surface cannot vouch for it. */
+  surfaceComplete?: boolean;
+  surfaceMissing?: string[];
+  /** Names two or more tests share: left out of `tests`, since a name cannot tell them apart. */
+  duplicateNames?: string[];
+  parseError?: string;
+  /** On an exit record: the checks that let the card leave (CGLAB-380). */
+  checks?: StepCheckResult[];
+  /** On an exit record: who advanced the card, as its harness reported it (CGLAB-381). */
+  actor?: { client: string; sessionId: string; agentId: string | null };
+  /** On a `record`: its name and value. */
+  name?: string;
+  value?: unknown;
+  /** On an `approval` or `override`: its id, who made it, and what they wrote. */
+  id?: string;
+  by?: string;
+  note?: string;
+  /** On an `approval` or `override`: 'passkey' when signed with an enrolled passkey (CGLAB-383), else 'unverified'. */
+  authority?: 'passkey' | 'unverified';
+  credentialId?: string;
+  /** On an `override`: the check it passes, and why. */
+  check?: string;
+  reason?: string;
+  /** On an `override`: the verdict it was given against; a different failure is not covered. */
+  detail?: string;
+  /** On a `manual-advance`: the step the board moved the card to, skipping verify. */
+  to?: string;
+}
+
+/** One check's verdict on a verify (CGLAB-380). */
+export interface StepCheckResult {
+  id: string;
+  step: string;
+  source: 'universal' | 'role' | 'flow';
+  severity: 'block' | 'warn';
+  params: Record<string, string>;
+  outcome: 'pass' | 'fail' | 'unavailable' | 'n/a' | 'deferred';
+  detail: string;
+  blocking: boolean;
+  /** Set when a person passed this blocked check with a reason (CGLAB-382). */
+  overridden?: { id: string; by: string; at: string; reason: string };
+}
+
 export interface Project {
   id: string;
   name: string;
   description?: string;
   verifyCommand?: string; // Project-level verification command (e.g. "npm run build && npm test")
+  /** Every change to verifyCommand, oldest first (CGLAB-378). */
+  verifyCommandChanges?: GateSettingChange<string>[];
+  testReport?: TestReportSetting;
+  /** Every change to testReport, oldest first (CGLAB-379). */
+  testReportChanges?: GateSettingChange<TestReportSetting>[];
   /**
    * What makes a freshly cut worktree usable (CGLAB-203).
    *
@@ -445,6 +532,17 @@ export interface BaseItem {
   context?: ContextItem[];
   reviews?: ReviewRecord[];
   tests?: TestRecord[];
+  /** Server-written only; PUT /items/:id never accepts it (CGLAB-379). */
+  stepRecords?: StepRecord[];
+  /** Independent reviews of this card (CGLAB-381). Server-written only; the reviewer is read from its transcript. */
+  reviewRecords?: Array<{
+    id: string; at: string;
+    reviewer: { client: string; sessionId: string; agentId: string | null; transcript: string };
+    range: { from: string; to: string };
+    findings: Array<{ title: string; state: 'fixed' | 'rejected'; reason?: string }>;
+  }>;
+  /** The last verify's check results (CGLAB-380). Server-written only. */
+  lastChecks?: { step: string; at: string; blocked: boolean; results: StepCheckResult[] };
   history?: HistoryRecord[];
   comments?: CommentRecord[];
   createdAt: Date;
@@ -546,6 +644,14 @@ export interface FlowStep {
   isAnchor?: boolean;     // True for TODO (first) and DONE (last) — cannot be deleted or reordered
   /** @deprecated Use isAnchor instead. Kept for backwards compatibility. */
   isSpecial?: boolean;    // True for terminal steps like DONE, BLOCKED, ARCHIVED
+  /** What the step is (CGLAB-380): brings built-in checks. See flowChecks.ts. */
+  role?: import('./flowChecks').StepRole | null;
+  /** Checks the flow adds to this step (CGLAB-380). A flow can add, never remove. */
+  checks?: import('./flowChecks').StepCheckRef[] | null;
+  /** Commit the card's work when it leaves this step (CGLAB-388). */
+  autoCommit?: boolean | null;
+  /** With autoCommit: refuse to leave the step when that commit does not happen. */
+  requireCommit?: boolean | null;
 }
 
 export interface Flow {

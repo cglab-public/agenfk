@@ -11,7 +11,7 @@
 import { randomUUID } from 'crypto';
 import type { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
 import type { Flow } from '@agenfk/core';
-import { normalizeFlowSteps } from '@agenfk/core';
+import { flowChecksErrors, normalizeFlowSteps } from '@agenfk/core';
 import type { HubConfig } from './types.js';
 
 export type FetchLike = (url: string, opts: any) => Promise<{
@@ -113,6 +113,12 @@ async function reconcileProjectFlowInner(args: ReconcileProjectArgs): Promise<Re
   }
 
   const remote = body.flow;
+  // CGLAB-380: an org-wide flow whose roles or checks do not validate is not
+  // installed at all - dropping the bad part would run a flow nobody wrote.
+  const contractErrors = flowChecksErrors(remote?.steps ?? []);
+  if (contractErrors.length) {
+    return { outcome: 'error', etag: lastEtag, error: `Hub flow refused: ${contractErrors.join(' ')}` };
+  }
   const hubVersion = typeof body.hubVersion === 'number' ? body.hubVersion : null;
 
   // Find any existing local row that points at this remote hub flow id.
