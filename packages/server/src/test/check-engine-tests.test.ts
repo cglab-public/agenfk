@@ -548,6 +548,17 @@ describe('CGLAB-380: test checks', () => {
       const c = await refused(id, 'test-set-identical');
       expect(c.detail).toMatch(/-tests\/mul\.test\.js > mul_again/);
     });
+
+    it('names a changed report setting, not a mass swap, when the tests only look different because the report changed (d26832d6 #19)', async () => {
+      // marketing-lab: adding a `file` attribute to the report renamed every
+      // test, and the check listed them all as removed and re-added.
+      const { id } = await atTidy();
+      const pid = (await item(id)).projectId;
+      await storage.updateProject(pid, { testReport: { format: 'junit-xml', command: 'node junit.cjs tests', reportPath: 'report.xml', surface: ['tests'] } } as never);
+      const c = await refused(id, 'test-set-identical');
+      expect(c.detail).toMatch(/test report setting changed/i);
+      expect(c.detail).not.toMatch(/^the tests changed/);
+    });
   });
 
   it('a rollback over the test-writing step drops the red set it produced', async () => {

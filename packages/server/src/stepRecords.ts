@@ -429,6 +429,7 @@ export function surfaceOf(root: string, files: readonly string[], extra: readonl
   };
 
   const unnamed: string[] = [];
+  let treeIndex: readonly string[] | undefined;
   for (const name of new Set(files)) {
     if (!name) continue;
     const candidates = [name];
@@ -438,11 +439,19 @@ export function surfaceOf(root: string, files: readonly string[], extra: readonl
       const segs = name.split('.');
       for (let k = segs.length; k >= 1; k--) candidates.push(`${segs.slice(0, k).join('/')}.py`);
     }
-    const found = candidates.some(c => {
+    let found = candidates.some(c => {
       const abs = path.resolve(base, c);
       const rel = inside(abs);
       return rel !== null && hashFile(abs, rel);
     });
+    // d26832d6 #16: a suite run inside a subdirectory (`cd app && vitest`) names
+    // its files from there - `lib/__tests__/x.test.ts` for app/lib/__tests__/x.test.ts.
+    // The ONE file in the tree whose path ends that way is it; two or more is
+    // ambiguous, and stays missing rather than guessed.
+    if (!found && name.includes('/') && !name.startsWith('/') && opts.listTree) {
+      const hits = (treeIndex ??= opts.listTree()).filter(f => f.endsWith(`/${toPosix(path.normalize(name))}`));
+      if (hits.length === 1) found = hashFile(path.resolve(base, hits[0]), hits[0]);
+    }
     if (!found) (name.includes('/') ? missing : unnamed).push(name);
   }
   for (const cfg of RUNNER_CONFIGS) {

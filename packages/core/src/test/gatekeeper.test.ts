@@ -635,6 +635,19 @@ describe('mutation hardening for the gatekeeper (CGLAB-110)', () => {
     expect(d2.message).not.toContain('Active flow ""');
   });
 
+  it("names the role of the step the card is on when none is given (d26832d6 #11)", () => {
+    const withRoles = { name: 'TDD', steps: [
+      { name: 'TODO', order: 0, isAnchor: true },
+      { name: 'CREATE_UNIT_TESTS', order: 1, role: 'test-authoring' },
+      { name: 'REVIEW', order: 2, role: 'review' },
+      { name: 'DONE', order: 3, isAnchor: true },
+    ] } as unknown as GatekeeperFlow;
+    expect(decideGatekeeperAuthorization([item('a', 'CREATE_UNIT_TESTS')], withRoles, {}).message).toContain('AUTHORIZED (TEST-AUTHORING)');
+    expect(decideGatekeeperAuthorization([item('a', 'REVIEW')], withRoles, {}).message).toContain('AUTHORIZED (REVIEW)');
+    // An explicit --role is still the caller's to state.
+    expect(decideGatekeeperAuthorization([item('a', 'REVIEW')], withRoles, { role: 'testing' }).message).toContain('AUTHORIZED (TESTING)');
+  });
+
   it('echoes the no-intent fallback and the default role in the message', () => {
     const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], tddFlow, {});
     expect(d.message).toContain('Intent: "(no intent provided)"');

@@ -135,7 +135,10 @@ export async function checkOnWork(checkId, { params, project: projectOpts = {}, 
   const o = outcomeOf(c, checkId, 'WORK');
   // A blocking verdict must hold the card; one that reports fail and lets it
   // move is its own outcome, and never an expected one.
-  const actual = o.outcome === 'fail' && o.blocking && c.status !== 'WORK' ? 'fail-but-moved' : o.outcome;
+  // A non-blocking unavailable judged nothing and held nothing: `unavailable-soft`,
+  // as walk() reports it - so a scenario can expect a warning-only unavailable at all.
+  const actual = o.outcome === 'fail' && o.blocking && c.status !== 'WORK' ? 'fail-but-moved'
+    : o.outcome === 'unavailable' && !o.blocking ? 'unavailable-soft' : o.outcome;
   return { actual, detail: `${o.detail ?? ''} [verify ${r.status}, card on ${c.status}]`, card: c };
 }
 

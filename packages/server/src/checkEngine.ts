@@ -210,7 +210,11 @@ function currentTests(ctx: EngineContext): { tests: ReportedTest[]; capture: Cap
 function entryTests(ctx: EngineContext): ReportedTest[] | Verdict {
   const e = ctx.entry;
   if (!e) return { outcome: 'unavailable', soft: true, detail: 'no entry record: the card entered this step before checks recorded one (it predates checks). Re-enter the step to record it.' };
-  if (!e.available || !e.tests) return { outcome: 'unavailable', soft: true, detail: `the entry record has no per-test results${e.parseError ? ` (${e.parseError})` : ''}` };
+  // A capture that RAN and could not be used is not a card predating checks
+  // (d26832d6 #1): marketing-lab's first run dirtied its own tree, and every
+  // red/green check on the next step passed soft on nothing. Only a project
+  // that records no per-test results at all stays soft - its hold is entry-baseline's.
+  if (!e.available || !e.tests) return { outcome: 'unavailable', soft: !e.parseError, detail: `the entry record has no per-test results${e.parseError ? ` (${e.parseError}). Fix what the capture reports and re-enter the step to record a usable one` : ''}` };
   return e.tests;
 }
 
@@ -477,7 +481,8 @@ export const EVALUATORS: Record<string, Evaluator> = {
     if (isVerdict(d)) return d;
     const green = d.added.filter(t => t.status === 'passed').map(t => t.name);
     return green.length
-      ? { outcome: 'fail', detail: `already passing, so left out of the red set: ${list(green)}` }
+      // d26832d6 #21: it now runs after the tests are written too, where "red set" means nothing.
+      ? { outcome: 'fail', detail: `new test(s) passing on arrival, never seen failing without the change: ${list(green)}. Show each one fails with the change it covers reverted (on the step that writes tests, it is also left out of the red set).` }
       : { outcome: 'pass', detail: 'none' };
   },
 
@@ -497,7 +502,9 @@ export const EVALUATORS: Record<string, Evaluator> = {
     if (isVerdict(before)) return before;
     const status = new Map(now.tests.map(t => [t.name, t.status]));
     const broke = before.filter(t => t.status === 'passed' && status.get(t.name) !== 'passed').map(t => `${t.name} [${status.get(t.name) ?? 'missing'}]`);
-    return broke.length ? { outcome: 'fail', detail: `passed when the step began, not now: ${list(broke)}` } : { outcome: 'pass', detail: 'ok' };
+    // d26832d6: the field agent had edited an existing test's fixture for the
+    // new behaviour here. The refusal says where that edit belongs.
+    return broke.length ? { outcome: 'fail', detail: `passed when the step began, not now: ${list(broke)}. If an existing test's expectation changes with the behaviour being built, change it on the step that writes the code, not here; otherwise put it back.` } : { outcome: 'pass', detail: 'ok' };
   },
 
   'red-set-passes-by-name': ctx => {
@@ -566,6 +573,13 @@ export const EVALUATORS: Record<string, Evaluator> = {
     if (isVerdict(now)) return now;
     const before = entryTests(ctx);
     if (isVerdict(before)) return before;
+    // d26832d6 #19: tests are named by what the report says; a different report
+    // setting names them differently, and every test then reads as removed and re-added.
+    const e = ctx.entry as any, c = now.capture as any;
+    const reportsDiffer = Array.isArray(e?.reportPaths) && Array.isArray(c?.reportPaths) && JSON.stringify(e.reportPaths) !== JSON.stringify(c.reportPaths);
+    if (e && (e.command !== c.command || e.format !== c.format || reportsDiffer)) {
+      return { outcome: 'fail', detail: "the project's test report setting changed since this step's baseline was taken (its command or format), (its command, format or reports), so the test names cannot be compared. Re-enter the step to take a baseline under the new setting: the change is on the card's record." };
+    }
     // A sibling's tests being written in the files it claims are its own work (5b48b96b); a green test gone is not.
     const was = new Set(before.filter(t => !othersNotRegression(ctx, t.name, t.file)).map(t => t.name));
     const is = new Set(now.tests.filter(t => !othersNotRegression(ctx, t.name, t.file)).map(t => t.name));
@@ -724,12 +738,34 @@ export function needsEntryRecord(resolved: readonly ResolvedCheck[]): boolean {
 
 const MARK: Record<CheckOutcome, string> = { pass: '✅', fail: '❌', unavailable: '⛔', 'n/a': '➖', deferred: '⏩' };
 
-/** One line per result, blocking ones first. */
+/**
+ * One line per result, blocking ones LAST (d26832d6 #8): the reason a card is
+ * held sits right above the verdict, where `tail` and a reader's eye land, not
+ * above a screen of passes and suite output.
+ */
 export function formatCheckResults(results: readonly CheckResult[]): string {
-  const rank = (r: CheckResult) => (r.blocking ? 0 : r.outcome === 'fail' || r.outcome === 'unavailable' ? 1 : 2);
+  const rank = (r: CheckResult) => (r.blocking ? 2 : r.outcome === 'fail' || r.outcome === 'unavailable' ? 1 : 0);
   return [...results].sort((a, b) => rank(a) - rank(b)).map(r => {
     const mark = r.overridden ? '🔓' : !r.blocking && (r.outcome === 'fail' || r.outcome === 'unavailable') ? '⚠️' : MARK[r.outcome];
+    // A non-blocking unavailable is said to be one: it judged nothing (d26832d6 #9).
+    const soft = !r.blocking && !r.overridden && r.outcome === 'unavailable' ? ' (not judged, not blocking)' : '';
     const why = r.overridden ? ` (overridden by a person: ${r.overridden.reason})` : '';
-    return `${mark} ${r.id} [${r.severity}${r.source === 'flow' ? ', added by the flow' : ''}]: ${r.outcome}${r.detail ? ` — ${r.detail}` : ''}${why}`;
+    return `${mark} ${r.id} [${r.severity}${r.source === 'flow' ? ', added by the flow' : ''}]: ${r.outcome}${soft}${r.detail ? ` — ${r.detail}` : ''}${why}`;
   }).join('\n');
+}
+
+/**
+ * What this verify did with the suite, in one line (d26832d6 #0/#15): ran it,
+ * reused a green of exactly this content (and whose), or ran only the test
+ * files that changed. A reused run must never read as a measured one.
+ */
+export function describeCapture(capture: any): string | null {
+  if (!capture || capture.kind !== 'capture') return null;
+  if (capture.surfaceRereadFrom) return `🔁 suite not re-run: the report it wrote at ${capture.surfaceRereadFrom.at} was read again for the new declared test paths`;
+  if (capture.reusedFrom) {
+    const from = capture.reusedFrom;
+    return `🔁 suite not re-run: this tree's content was already tested${capture.exitCode === 0 ? ' green' : ''} at ${from.at ?? '?'} (${from.step ?? 'a close'} of card ${String(from.itemId ?? '').slice(0, 8)})`;
+  }
+  if (capture.lazy) return `▶ ran only the ${capture.ranFiles?.length ?? 0} test file(s) changed since this step began, over its entry results`;
+  return `▶ ran the suite (exit ${capture.exitCode})${capture.available === false && capture.parseError ? ` — its report could not be used: ${capture.parseError}` : ''}`;
 }

@@ -39,6 +39,13 @@ export function describeFlowContract(steps: unknown): FlowContract {
     const name = String(s.name);
     const terminal = i === list.length - 1 && !!last && !!(last.isAnchor || last.isSpecial);
     const onLeave = terminal ? [] : resolveStepChecks(list, name);
+    // d26832d6 #10: the server holds a card here when the NEXT step's blocking
+    // checks judge against the per-test results recorded as the card enters it
+    // (entry-baseline), so leaving this step takes a usable baseline too.
+    const nextName = list[i + 1]?.name;
+    if (!terminal && typeof nextName === 'string' && resolveStepChecks(list, String(nextName)).some(c => c.applicable && c.severity === 'block' && (checkDef(c.id)?.requires(c.params) ?? []).includes('stepEntryTests'))) {
+      onLeave.push({ id: 'entry-baseline', step: name, source: 'universal', severity: 'block', params: {}, applicable: true } as ResolvedCheck);
+    }
     // A step's own contract: resolveStepChecks also runs the terminal step's
     // checks on the move into it, which belong to the terminal step here.
     const checks = resolveStepChecks(list, name).filter(c => c.step === name || c.source === 'universal');

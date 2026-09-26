@@ -272,6 +272,8 @@ process.exit(${exitCode});`);
       step: 'PLAN', kind: 'capture', at: new Date().toISOString(), head, clean: true, root: recordRoot(t), command: project.testReport.command,
       format: 'junit-xml', available: true, exitCode: 0, tests: [{ name: 'adds numbers', file: 't.test.js', status: 'passed' }],
       brokenFiles: [], surface: { files: {} }, surfaceComplete: true, surfaceScope: 'declared', surfaceDeclared: [],
+      // A capture records the reports it read (d26832d6): a green of one report never stands for two.
+      reportPaths: [project.testReport.reportPath],
     }] } as any);
     expect((await approve(t.id)).status).toBe(201);
     expect((await validate(t.id)).status).toBe(200);
@@ -289,7 +291,10 @@ process.exit(${exitCode});`);
     expect(t.count()).toBe(1);
   });
 
-  it('captures when the declared test surface changed since', async () => {
+  it('re-reads, not re-runs, when only the declared test surface changed since (d26832d6 #0)', async () => {
+    // The declared paths decide which files are the test surface, not what the
+    // suite does on this content: the green's tests stand, its surface is read
+    // again under the new paths. It used to run the whole suite a second time.
     const t = await withReport();
     expect((await approve(t.id)).status).toBe(201);
     expect((await validate(t.id)).status).toBe(200);
@@ -298,7 +303,9 @@ process.exit(${exitCode});`);
     const b = await t.second();
     expect((await approve(b)).status).toBe(201);
     await validate(b);
-    expect(t.count()).toBe(2);
+    expect(t.count()).toBe(1);
+    const rec = ((await storage.getItem(b)) as any).stepRecords.filter((r: any) => r.kind === 'capture').pop();
+    expect(rec).toMatchObject({ surfaceDeclared: ['t.test.js'], surfaceRereadFrom: { itemId: t.id } });
   });
 });
 

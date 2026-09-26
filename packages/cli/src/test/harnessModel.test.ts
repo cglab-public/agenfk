@@ -330,6 +330,55 @@ describe('detectHarnessModel — the harness says which session it is (CGLAB-365
       expect(detectHarnessModel({ cwd: '/work/proj', home, env: { CLAUDE_CODE_SESSION_ID: 'mine' } })!.model).toBe('claude-opus-5');
     });
 
+    it('Claude Code: a subagent that handed back minutes ago, with the parent writing since, does not make the parent ambiguous (d26832d6)', () => {
+      // The field case: a reviewer finished at 12:51:48 and the parent ran
+      // `agenfk pr create` at 12:54:39 - inside the 5-minute window, so the PR
+      // went out "unverified" although only the parent was running.
+      const sub = path.join(home, '.claude', 'projects', '-work-proj', 'mine', 'subagents');
+      fs.mkdirSync(sub, { recursive: true });
+      const f = path.join(sub, 'agent-abc.jsonl');
+      fs.writeFileSync(f, JSON.stringify({ type: 'assistant', isSidechain: true, cwd: '/work/proj', message: { model: 'claude-sonnet-5' } }) + '\n');
+      const handedBack = new Date(Date.now() - 3 * 60 * 1000);
+      fs.utimesSync(f, handedBack, handedBack);
+      const parent = claudeLog('/work/proj', 'mine', 'claude-opus-5');
+      // The hand-back as Claude Code writes it into the parent transcript.
+      fs.appendFileSync(parent, JSON.stringify({ type: 'user', timestamp: new Date(Date.now() - 2 * 60 * 1000).toISOString(), message: { content: 'Another Claude session sent a message:\n<agent-message from="abc">\n[Subagent hand-back] ...' } }) + '\n');
+      expect(detectHarnessModel({ cwd: '/work/proj', home, env: { CLAUDE_CODE_SESSION_ID: 'mine' } })!.model).toBe('claude-opus-5');
+    });
+
+    it('Claude Code: a subagent resumed after handing back is running again, and keeps the parent ambiguous', () => {
+      // The coordinator resumes a reviewer with SendMessage: its old hand-back is
+      // still in the parent transcript, but it has written since.
+      const sub = path.join(home, '.claude', 'projects', '-work-proj', 'mine', 'subagents');
+      fs.mkdirSync(sub, { recursive: true });
+      const parent = claudeLog('/work/proj', 'mine', 'claude-opus-5');
+      fs.appendFileSync(parent, JSON.stringify({ type: 'user', timestamp: new Date(Date.now() - 4 * 60 * 1000).toISOString(), message: { content: '<agent-message from="abc">\n[Subagent hand-back] first report' } }) + '\n');
+      fs.writeFileSync(path.join(sub, 'agent-abc.jsonl'), JSON.stringify({ type: 'assistant', isSidechain: true, cwd: '/work/proj', message: { model: 'claude-sonnet-5' } }) + '\n');
+      expect(detectHarnessModel({ cwd: '/work/proj', home, env: { CLAUDE_CODE_SESSION_ID: 'mine' } })).toBeNull();
+    });
+
+    it('Claude Code: a background subagent still working while the parent writes keeps the parent ambiguous (no hand-back yet)', () => {
+      // The parent kept writing after the subagent's last write, but nothing
+      // handed it back: it may still be running - and may open the PR itself.
+      const sub = path.join(home, '.claude', 'projects', '-work-proj', 'mine', 'subagents');
+      fs.mkdirSync(sub, { recursive: true });
+      const f = path.join(sub, 'agent-abc.jsonl');
+      fs.writeFileSync(f, JSON.stringify({ type: 'assistant', isSidechain: true, cwd: '/work/proj', message: { model: 'claude-sonnet-5' } }) + '\n');
+      const earlier = new Date(Date.now() - 60 * 1000);
+      fs.utimesSync(f, earlier, earlier);
+      claudeLog('/work/proj', 'mine', 'claude-opus-5');
+      expect(detectHarnessModel({ cwd: '/work/proj', home, env: { CLAUDE_CODE_SESSION_ID: 'mine' } })).toBeNull();
+    });
+
+    it('Claude Code: a subagent still writing after the parent\'s last turn keeps the parent ambiguous', () => {
+      const parentAt = new Date(Date.now() - 2 * 60 * 1000);
+      claudeLog('/work/proj', 'mine', 'claude-opus-5', parentAt);
+      const sub = path.join(home, '.claude', 'projects', '-work-proj', 'mine', 'subagents');
+      fs.mkdirSync(sub, { recursive: true });
+      fs.writeFileSync(path.join(sub, 'agent-abc.jsonl'), JSON.stringify({ type: 'assistant', isSidechain: true, cwd: '/work/proj', message: { model: 'claude-sonnet-5' } }) + '\n');
+      expect(detectHarnessModel({ cwd: '/work/proj', home, env: { CLAUDE_CODE_SESSION_ID: 'mine' } })).toBeNull();
+    });
+
     it('pi: the named log has no model_change and nothing else says → unverified, not the sibling', () => {
       const mine = piSession('/work/proj', []);
       piSession('/work/proj', [{ provider: 'openrouter', modelId: 'deepseek/deepseek-v4.1-flash' }]);

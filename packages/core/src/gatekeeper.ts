@@ -395,6 +395,10 @@ export function decideGatekeeperAuthorization(
   // handler cannot drift — that drift is what produced false claims in the docs.
   const contract = resolveStepContract(flow, task.status);
   const advanceHint = `advance with \`agenfk verify ${task.id.substring(0, 8)} --evidence "<what you did>"\``;
+  // The label names the step the card is on (d26832d6 #11): CODING on a
+  // test-authoring step read as leave to write the implementation.
+  const stepRole = (flow as any)?.steps?.find((st: any) => st?.name === task!.status)?.role;
+  const shown = (opts.role || (typeof stepRole === 'string' && stepRole) || role).toUpperCase();
 
   return {
     authorized: true,
@@ -405,7 +409,7 @@ export function decideGatekeeperAuthorization(
     codingStep: contract.codingStep,
     finalStep: contract.finalStep,
     ...(contract.commitOnLeave ? { commitOnLeave: contract.commitOnLeave } : {}),
-    message: `✅ AUTHORIZED (${role.toUpperCase()}).\n\n${task.type}: [${task.id.substring(0, 8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"`
+    message: `✅ AUTHORIZED (${shown}).\n\n${task.type}: [${task.id.substring(0, 8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"`
       + renderStepContract(contract, task.status, advanceHint),
   };
 }

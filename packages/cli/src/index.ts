@@ -23,6 +23,7 @@ import { registryFlowToLocal } from './registryFlowFile.js';
 import { buildUiOpenUrl, resolveDashboardUrl } from './uiUrl.js';
 import { registerHubCommands } from './commands/hub.js';
 import { toonEncode } from './toon.js';
+import { releaseHint } from './releaseHint.js';
 
 /**
  * Consecutive delivery failures before the startup banner warns. A halted
@@ -1950,7 +1951,7 @@ program
   .option('--project-root <path>', 'Absolute path to the repository this project lives in')
   .option('--test-report-format <format>', 'How per-test results are read: vitest-json | junit-xml (with --test-report-command and --test-report-path)')
   .option('--test-report-command <cmd>', 'Command that runs the suite and writes the report')
-  .option('--test-report-path <path>', 'Where that command writes the report, relative to the project root')
+  .option('--test-report-path <path>', 'Where that command writes the report, relative to the project root; several reports (one per suite) as a comma list')
   .option('--test-report-surface <paths>', 'Comma-separated test paths (files or directories) the report cannot name, so test-surface-frozen can see them; "none" clears them')
   .option('--test-report <none>', 'Pass "none" to clear the test report setting')
   .action(async (id, options) => {
@@ -1998,7 +1999,9 @@ program
           const merged: Record<string, unknown> = {
             format: options.testReportFormat ?? stored.format,
             command: options.testReportCommand ?? stored.command,
-            reportPath: options.testReportPath ?? stored.reportPath,
+            // Several reports (one per suite) as a comma list, read as one run (d26832d6 #6).
+            reportPath: options.testReportPath === undefined ? stored.reportPath
+              : (() => { const ps = String(options.testReportPath).split(',').map(p => p.trim()).filter(Boolean); return ps.length === 1 ? ps[0] : ps; })(),
           };
           const surface = options.testReportSurface === undefined
             ? stored.surface
@@ -2012,6 +2015,7 @@ program
           body = merged;
         }
         ({ data } = await axios.put(`${API_URL}/projects/${id}/test-report`, body, { headers: { 'x-agenfk-internal': token } }));
+        if (typeof (data as any)?.warning === 'string') console.warn(chalk.yellow(`⚠️  ${(data as any).warning}`));
       }
       // verifyCommand is a privileged shell string — set it via the internal
       // endpoint with the install-time token (mirrors `agenfk backup`).
@@ -3762,7 +3766,7 @@ program
   .command('gatekeeper')
   .description('Check workflow authorization before making changes (MCP fallback: workflow_gatekeeper)')
   .option('--intent <text>', 'Description of what you intend to do')
-  .option('--role <role>', 'Role: planning|coding|review|testing|closing', 'coding')
+  .option('--role <role>', 'Role label (planning|coding|review|testing|closing); defaults to the role of the step the card is on')
   .option('--item-id <id>', 'Specific item ID to check against')
   .option('--json', 'Output as JSON')
   .action(async (options) => {
@@ -3804,8 +3808,12 @@ program
       // when no flow is resolvable.
       let activeFlow: any = null;
       let flowFetchFailed = false;
-      if (projectId) {
-        try { ({ data: activeFlow } = await axios.get(`${API_URL}/projects/${projectId}/flow`)); }
+      // With --item-id and no project here, the card names its own project: its
+      // flow still decides the step and its role (d26832d6 #11).
+      const flowProject = projectId
+        ?? (options.itemId ? (items as any[]).find((i: any) => i.id === options.itemId || String(i.id).startsWith(options.itemId))?.projectId ?? null : null);
+      if (flowProject) {
+        try { ({ data: activeFlow } = await axios.get(`${API_URL}/projects/${flowProject}/flow`)); }
         catch {
           // Do NOT swallow this. Without the flow the step's exit criteria are
           // unknown, and reporting "no criteria" for a failed lookup asserts a
@@ -4552,7 +4560,8 @@ prCmd
         console.log(chalk.yellow(`   ⚠️  Could not parse repo/number from PR URL — skipped auto-registration. Run 'agenfk pr-register' manually.`));
       }
 
-      console.log(chalk.cyan('\nWhen your PR is approved and merged, run /agenfk-release to create a release.'));
+      const hint = releaseHint(getProjectRoot(), 'open');
+      if (hint) console.log(chalk.cyan(`\n${hint}`));
     } catch (e: any) {
       console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
       process.exit(1);
@@ -4626,14 +4635,15 @@ prCmd
 
       if (result.state === 'merged') {
         console.log(chalk.green(`✅ PR #${item.prNumber} is merged: "${result.title}"`));
-        console.log(chalk.cyan('You can now run /agenfk-release to create a release.'));
+        const hint = releaseHint(getProjectRoot(), 'merged');
+        if (hint) console.log(chalk.cyan(hint));
         process.exit(0);
       } else if (result.state === 'closed') {
         console.log(chalk.red(`⚠ PR #${item.prNumber} was closed without merging.`));
         process.exit(1);
       } else {
         console.log(chalk.yellow(`PR #${item.prNumber} is ${result.state}: "${result.title}"`));
-        console.log(chalk.dim('Run /agenfk-release once the PR is merged.'));
+        if (releaseHint(getProjectRoot(), 'open')) console.log(chalk.dim('Run /agenfk-release once the PR is merged.'));
         process.exit(1);
       }
     } catch (e: any) {

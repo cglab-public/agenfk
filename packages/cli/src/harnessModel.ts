@@ -353,7 +353,7 @@ function fromClaudeEnvironment(home: string, env: NodeJS.ProcessEnv, now: number
     const file = path.join(projects, d.name, `${id}.jsonl`);
     if (!isFile(file)) continue;
     if (now - mtime(file) > MAX_SESSION_AGE_MS) return null;
-    if (subagentActive(path.join(projects, d.name, id, 'subagents'), now)) return null;
+    if (subagentActive(path.join(projects, d.name, id, 'subagents'), now, file)) return null;
     const model = claudeModelOf(records(file));
     return model ? bounded({ model, harness: 'claude-code', source: file }) : null;
   }
@@ -362,12 +362,58 @@ function fromClaudeEnvironment(home: string, env: NodeJS.ProcessEnv, now: number
   return undefined;
 }
 
-/** Whether any subagent transcript under this session was written just now. */
-function subagentActive(dir: string, now: number): boolean {
+/**
+ * Whether a subagent under this session may still be running: written just
+ * now and not yet handed back. A finished one's report is in the parent's
+ * transcript - the `agent-message from="<id>"` hand-back, or a completed task
+ * notification for its id - so the parent is the only session running
+ * (d26832d6: a reviewer that ended 3 minutes before `agenfk pr create` sent
+ * the PR out unverified). A background subagent still working has no
+ * hand-back, and keeps the identity ambiguous however the writes interleave.
+ */
+function subagentActive(dir: string, now: number, parentFile: string): boolean {
+  let handBacks: Map<string, number> | null = null;
   for (const file of listFiles(dir)) {
-    if (now - mtime(file) <= SUBAGENT_ACTIVE_WINDOW_MS) return true;
+    const at = mtime(file);
+    if (now - at > SUBAGENT_ACTIVE_WINDOW_MS) continue;
+    const id = /agent-([A-Za-z0-9_-]+)\.jsonl$/.exec(file)?.[1];
+    if (!id) return true;
+    handBacks ??= readHandBacks(parentFile);
+    // Only a hand-back AFTER its latest write finishes it: a subagent resumed
+    // after handing back writes again, and is running again (d26832d6 review).
+    const back = handBacks.get(id);
+    if (back === undefined || back < at - HANDBACK_SKEW_MS) return true;
   }
   return false;
+}
+
+/** File mtimes and record timestamps come from different clocks' rounding: a second of slack. */
+const HANDBACK_SKEW_MS = 1000;
+
+/**
+ * The latest hand-back per subagent id in the parent transcript, by the
+ * record's own timestamp: the `[Subagent hand-back]` agent-message, or a
+ * task notification that the agent completed/failed/was killed.
+ */
+function readHandBacks(parentFile: string): Map<string, number> {
+  const out = new Map<string, number>();
+  let text = '';
+  try { text = fs.readFileSync(parentFile, 'utf8'); } catch { return out; }
+  for (const line of text.split('\n')) {
+    if (!line.includes('hand-back') && !line.includes('<task-id>')) continue;
+    let r: any;
+    try { r = JSON.parse(line); } catch { continue; }
+    const t = Date.parse(r?.timestamp ?? '');
+    const body = JSON.stringify(r?.message ?? r);
+    const ids: string[] = [];
+    for (const m of body.matchAll(/agent-message from=\\"([A-Za-z0-9_-]+)\\"[\s\S]{0,400}?\[Subagent hand-back\]/g)) ids.push(m[1]);
+    for (const m of body.matchAll(/<task-id>([A-Za-z0-9_-]+)<\/task-id>[\s\S]{0,600}?<status>(?:completed|failed|killed)<\/status>/g)) ids.push(m[1]);
+    for (const id of ids) {
+      const when = Number.isNaN(t) ? 0 : t;
+      if (when > (out.get(id) ?? -1)) out.set(id, when);
+    }
+  }
+  return out;
 }
 
 function bounded(d: DetectedModel): DetectedModel | null {

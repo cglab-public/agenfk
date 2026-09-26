@@ -36,6 +36,15 @@ describe('describeFlowContract', () => {
     expect(c.steps[1].consumes).toEqual([]);
   });
 
+  it("lists entry-baseline on leaving the step before one that judges against its entry results (d26832d6 #10)", () => {
+    // Leaving DISCOVERY on marketing-lab was held by entry-baseline, a check the
+    // contract never showed: the next step's needs decide what leaving this one takes.
+    const c = describeFlowContract(tdd());
+    expect(c.steps[0].onLeave.map(k => k.id)).toContain('entry-baseline');
+    // A step whose successor reads no entry results carries no such hold.
+    expect(c.steps[2].onLeave.map(k => k.id)).not.toContain('entry-baseline');
+  });
+
   it("shows a role built-in that has nothing to check as not applicable, naming the missing record", () => {
     const c = describeFlowContract([step('START', 0, { isAnchor: true }), step('BUILD', 1, { role: 'coding' }), step('END', 2, { isAnchor: true })]);
     expect(c.valid).toBe(true);
