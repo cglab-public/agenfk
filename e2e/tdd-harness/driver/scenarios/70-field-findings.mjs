@@ -74,7 +74,8 @@ async function drive(ctx, until, work = {}) {
     if (on === until) return;
     const w = on in work ? work[on] : HONEST[on];
     if (w) await w(ctx);
-    const r = await verify(ctx.id, { actor: AUTHOR, evidence: `harness: ${on} done` });
+    // CGLAB-420: a failing warning on the step that writes tests is answered, as the step asks.
+    const r = await verify(ctx.id, { actor: AUTHOR, evidence: `harness: ${on} done`, ...(ctx.answers?.[on] ? { checkAnswers: ctx.answers[on] } : {}) });
     const c = await card(ctx.id);
     if (c.status === on) throw new Error(`${on} -> next refused (${r.status}): ${blockers(c) || JSON.stringify(r.body).slice(0, 300)}`);
   }
@@ -406,6 +407,7 @@ export const scenarios = [
     expected: 'on-refactor',
     run: async () => {
       const ctx = await tddProject({ runner: 'vitest', report: VITEST_JUNIT });
+      ctx.answers = { CREATE_UNIT_TESTS: [{ id: 'red-is-assertion', note: 'src/extra.js is not written yet: the red is the missing module' }] };
       await drive(ctx, 'REFACTOR', {
         CREATE_UNIT_TESTS: ({ dir }) => write(dir, { 'test/extra.test.js': "import { test, expect } from 'vitest';\n\ntest('subtracts', async () => { const { sub } = await import('../src/extra.js'); expect(sub(3, 1)).toBe(2); });\n" }),
         IN_PROGRESS: ({ dir, k }) => write(dir, k.otherSource),

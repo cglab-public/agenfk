@@ -18,7 +18,7 @@ import path from 'path';
 import os from 'os';
 import { stageJsonMigration } from './db-migration.js';
 import { followValidateRun } from './verifyRun.js';
-import { buildPrBody, type GateEvent, type CustomCheckRow } from './humanGates.js';
+import { buildPrBody, prRegisterComment, type GateEvent, type CustomCheckRow, type TreeWarningRow } from './humanGates.js';
 import { registryFlowToLocal } from './registryFlowFile.js';
 import { buildUiOpenUrl, resolveDashboardUrl } from './uiUrl.js';
 import { registerHubCommands } from './commands/hub.js';
@@ -3523,6 +3523,31 @@ program
     }
   });
 
+/**
+ * CGLAB-420: a PR opened with plain `gh pr create` carries none of the checks'
+ * history; `agenfk pr create` puts it in the body. pr-register follows both, so
+ * it posts the history as a comment - best effort, and said when it could not.
+ */
+async function postCheckHistory(itemId: string, prNumber: number, repo: string): Promise<void> {
+  const read = async <T>(what: string): Promise<T[] | null> => {
+    try { return ((await axios.get(`${API_URL}/items/${itemId}/${what}`)).data ?? []) as T[]; } catch { return null; }
+  };
+  const [events, custom, warnings] = await Promise.all([read<GateEvent>('gate-events'), read<CustomCheckRow>('custom-checks'), read<TreeWarningRow>('warnings')]);
+  if (!events || !custom || !warnings) {
+    console.warn(chalk.yellow('⚠️  Could not read the cards\' check history from the server; nothing was posted on the PR.'));
+    return;
+  }
+  const comment = prRegisterComment(events, custom, warnings);
+  if (!comment) return;
+  if (!checkGhCli()) { console.warn(chalk.yellow('⚠️  gh is not installed: the check history was not posted on the PR.')); return; }
+  // Once per PR: a second pr-register (a re-run) does not post it again.
+  const seen = spawnSync('gh', ['pr', 'view', String(prNumber), '--repo', repo, '--json', 'comments', '-q', '.comments[].body'], { encoding: 'utf8', timeout: 30_000 });
+  if (seen.status === 0 && (seen.stdout ?? '').includes('### AgEnFK check history')) { console.log(chalk.dim(`The check history is already on PR #${prNumber}.`)); return; }
+  const r = spawnSync('gh', ['pr', 'comment', String(prNumber), '--repo', repo, '--body', comment], { encoding: 'utf8', timeout: 30_000 });
+  if (r.status !== 0) console.warn(chalk.yellow(`⚠️  Could not post the check history on the PR: ${(r.stderr || r.stdout || '').trim()}`));
+  else console.log(chalk.green(`Posted the check history on PR #${prNumber}.`));
+}
+
 program
   .command('pr-register')
   .description('Register a freshly opened PR with agent-declared sizing (MCP fallback: register_pr)')
@@ -3550,6 +3575,7 @@ program
         ...(options.harness ? { harness: options.harness } : {}),
       });
       console.log(structuredOutput(data));
+      await postCheckHistory(options.item, options.number, options.repo);
     } catch (error: any) {
       console.error(chalk.red('Error registering PR:'), error.response?.data?.error || error.message);
       process.exit(1);
@@ -3942,7 +3968,7 @@ program
   .addOption(new Option('--no-wait').hideHelp())
   .option('--wait-minutes <n>', 'How long to wait for a person\'s approval before giving up (default 9)')
   .option('--check <name=outcome>', 'Report an agent check of this step: <name>=pass or <name>=fail (repeatable)', (v: string, acc: string[] = []) => [...acc, v])
-  .option('--check-note <name=text>', 'What you found for a reported agent check: <name>=<text> (repeatable)', (v: string, acc: string[] = []) => [...acc, v])
+  .option('--check-note <name=text>', 'What you found for a reported agent check, or your answer to one of the step\'s failing warnings: <name>=<text> (repeatable)', (v: string, acc: string[] = []) => [...acc, v])
   .action(async (id, command, options) => {
     if (!options.evidence) {
       console.error(chalk.red('Error: --evidence is required. Describe how you satisfied the current step\'s exit criteria.'));
@@ -4015,6 +4041,7 @@ program
         if (actor) body.actor = actor;
         if (command) body.command = command;
         if (sendReports && reported.agentChecks.length) body.agentChecks = reported.agentChecks;
+        if (sendReports && reported.checkAnswers?.length) body.checkAnswers = reported.checkAnswers;
         // 5-minute POST timeout: a NEW server answers 202 in milliseconds, but an
         // OLD server (upgrade window) ignores async:true and blocks for the whole
         // command — keep the previous ceiling so that path doesn't regress.
@@ -4510,7 +4537,12 @@ prCmd
       try { customChecks = (await axios.get(`${API_URL}/items/${itemId}/custom-checks`)).data ?? []; } catch (e: any) {
         console.warn(chalk.yellow(`⚠️  Could not read the card's custom checks (${e?.response?.status ?? e?.message}); the PR body will not list them.`));
       }
-      args.push('--body', buildPrBody(options.body || item.description || '', gateEvents, customChecks));
+      // CGLAB-420: the warnings the checks raised, and what the agent answered.
+      let warnings: TreeWarningRow[] = [];
+      try { warnings = (await axios.get(`${API_URL}/items/${itemId}/warnings`)).data ?? []; } catch (e: any) {
+        console.warn(chalk.yellow(`⚠️  Could not read the card's warnings (${e?.response?.status ?? e?.message}); the PR body will not list them.`));
+      }
+      args.push('--body', buildPrBody(options.body || item.description || '', gateEvents, customChecks, warnings));
       if (options.draft) args.push('--draft');
 
       console.log(chalk.blue(`Creating PR: "${prTitle}"...`));

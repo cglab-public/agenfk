@@ -10,7 +10,7 @@ import { parseActor, parseFindings, readTranscriptIdentity } from './reviewRecor
 import * as passkeys from './passkeys';
 import { argvHash, awaitsPersonApproval, judgeCommandChecks, type CommandApproval } from './commandChecks';
 import { suggestTestReport, withTestFiles } from './testReportHint';
-import { countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, describeCapture, TEST_FILE_PATTERN, ANY_TEST_FILE_PATTERN, needsCapture, needsEntryRecord, parseAgentReports, type AgentReport, type CheckResult } from './checkEngine';
+import { countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, describeCapture, TEST_FILE_PATTERN, ANY_TEST_FILE_PATTERN, needsCapture, needsEntryRecord, parseAgentReports, parseCheckAnswers, describeTreeWarnings, MAX_UNREVIEWED_LINES, type AgentReport, type CheckResult, type TreeWarning } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, foreignClaimsFor, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
@@ -3077,6 +3077,13 @@ app.get("/items/:id/custom-checks", asyncHandler(async (req: any, res: any) => {
   res.json(rows);
 }));
 
+/** CGLAB-420: the failing warnings a card tree left its steps with, and their answers, for the PR. */
+app.get("/items/:id/warnings", asyncHandler(async (req: any, res: any) => {
+  const root: any = await storage.getItem(req.params.id);
+  if (!root) return res.status(404).json({ error: 'Item not found' });
+  res.json(await treeWarningsOf(root));
+}));
+
 /** The card's check history, newest first (4a428bb0). */
 app.get("/items/:id/check-history", asyncHandler(async (req: any, res: any) => {
   const item: any = await storage.getItem(req.params.id);
@@ -3166,6 +3173,62 @@ app.post("/projects/:id/command-approvals", limitExpensive, asyncHandler(async (
  * commit, or it cannot have reviewed it. Server-written only: PUT
  * /items/:id never accepts `reviewRecords`.
  */
+/**
+ * CGLAB-420: what the card changed after the reviewer began: its own commits
+ * made since (not ones already on a remote default branch, not other cards'
+ * close and step commits), and its uncommitted work in files written since or
+ * removed. Lines are counted against the last commit before the reviewer
+ * began, so a small fix to a file the card had already changed counts small.
+ * Uncommitted work older than that commit cannot be told from a later edit to
+ * the same file, and is counted with it - the result is a warning, not a gate.
+ */
+function unreviewedAfter(root: string, from: string, since: number, mine: Set<string>, notOurs: (repoPath: string) => boolean): { lines: number; files: string[] } | { notJudged: string } {
+  try {
+    const git = (args: string[]) => gitRun.run(['-C', root, ...args]);
+    const z = (out: string) => out.split('\0').filter(Boolean);
+    const defaults = git(['for-each-ref', '--format=%(refname)', 'refs/remotes/*/HEAD', 'refs/remotes/*/main', 'refs/remotes/*/master']).split('\n').map(r => r.trim()).filter(Boolean);
+    // The committed state when the reviewer began: the last commit before, not before the card's own start.
+    let base = git(['rev-list', '-1', `--before=${Math.floor(since / 1000)}`, 'HEAD']).trim() || from;
+    try { git(['merge-base', '--is-ancestor', from, base]); } catch { base = from; }
+    const touched = new Set<string>();
+    const log = git(['log', '--no-merges', '--no-renames', '--name-only', '-z', '--format=%x01%s', `${base}..HEAD`, ...(defaults.length ? ['--not', ...defaults] : [])]);
+    for (const block of log.split('\x01').filter(Boolean)) {
+      const [subject, ...names] = block.split(/\n|\0/).filter(Boolean);
+      const tagged = /^(close|step)\([^)]*\):.*\[([0-9a-f]{8}-[0-9a-f-]{27,})\]\s*$/.exec(subject ?? '')?.[2];
+      if (tagged && !mine.has(tagged)) continue;
+      for (const n of names) touched.add(n);
+    }
+    const top = git(['rev-parse', '--show-toplevel']).trim();
+    const untracked = new Set(z(git(['ls-files', '--others', '--exclude-standard', '--full-name', '-z'])));
+    for (const f of [...z(git(['diff', '--name-only', '--no-renames', '-z', 'HEAD'])), ...untracked]) {
+      let written = NaN;
+      try { written = fs.statSync(path.join(top, f)).mtimeMs; } catch { /* removed: counted, when is not known */ }
+      if (Number.isNaN(written) || written > since) touched.add(f);
+    }
+    const counts = new Map<string, number>();
+    for (const entry of z(git(['diff', '--numstat', '--no-renames', '-z', base]))) {
+      const [added, deleted, ...rest] = entry.split('\t');
+      const file = rest.join('\t');
+      if (file) counts.set(file, (added === '-' ? 1 : Number(added) || 0) + (deleted === '-' ? 0 : Number(deleted) || 0));
+    }
+    let lines = 0;
+    const files: string[] = [];
+    for (const f of touched) {
+      if (notOurs(f)) continue;
+      let n = counts.get(f);
+      if (n === undefined && untracked.has(f)) {
+        try { const p = path.join(top, f); n = fs.statSync(p).size > (1 << 20) ? 1 : Math.max(1, fs.readFileSync(p, 'utf8').split('\n').filter(Boolean).length); } catch { n = 0; }
+      }
+      if (!n) continue;
+      lines += n;
+      files.push(f);
+    }
+    return { lines, files };
+  } catch (e: any) {
+    return { notJudged: `git could not list the card's changes (${String(e?.message ?? e).split('\n')[0]})` };
+  }
+}
+
 app.post("/items/:id/review-records", asyncHandler(async (req: any, res: any) => {
   if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
     return res.status(401).json({ error: "Unauthorized" });
@@ -3206,8 +3269,25 @@ app.post("/items/:id/review-records", asyncHandler(async (req: any, res: any) =>
   if (last.some(t => Number.isNaN(t) || t < Date.parse(tipAt))) {
     return res.status(400).json({ error: `The transcript was last written ${reviewer.lastAt ?? 'at no recorded time'} (file: ${reviewer.mtime}), before the range's tip commit (${tipAt}): it cannot have reviewed it.` });
   }
+  const recId = uuidv4();
+  // What in the tree is not this card's: the reports a run writes, and files other active cards claim.
+  const under = (f: string, p: string) => { const q = p.replace(/^\.\//, '').replace(/\/+$/, ''); return f === q || f.startsWith(`${q}/`); };
+  let prefix = '';
+  try { prefix = git(['rev-parse', '--show-prefix']); } catch { /* the root is the top */ }
+  const reports = reportOwnedOf(root, project).map(r => `${prefix}${r}`);
+  const ancestorIds = new Set<string>();
+  for (let p = item.parentId, hops = 0; p && hops < 64 && !ancestorIds.has(p); hops++) { ancestorIds.add(p); p = ((await storage.getItem(p)) as any)?.parentId ?? null; }
+  const { holders, treeOf } = await claimHoldersIn(item.projectId, project?.projectRoot);
+  const claimed = foreignClaimsFor(item, holders, { itemTree: treeOf(item), ancestorIds });
+  const notOurs = (f: string) => reports.some(r => under(f, r)) || claimed.some(c => under(f, c));
+  // The card's own work: itself and its descendants (reviews happen at the parent).
+  const mine = new Set<string>([item.id, ...(await descendantsOf(item)).map((d: any) => d.id)]);
   const rec = {
-    id: uuidv4(), at: new Date().toISOString(),
+    id: recId, at: new Date().toISOString(),
+    // CGLAB-420: what the reviewer cannot have read - the card's changes in files written after it began.
+    ...(reviewer.startedAt
+      ? (() => { const u = unreviewedAfter(root, from, Date.parse(reviewer.startedAt!), mine, notOurs); return 'notJudged' in u ? { unreviewedNotJudged: u.notJudged } : { unreviewed: u }; })()
+      : { unreviewedNotJudged: 'the transcript carries no timestamps, so when the reviewer began is not known' }),
     reviewer: { client: reviewer.client, sessionId: reviewer.sessionId, agentId: reviewer.agentId, transcript: reviewer.transcript, edits: reviewer.edits, advancedCards: reviewer.advancedCards },
     range: { from, to }, findings,
     // The tree as reviewed, uncommitted work included: a change after this
@@ -6839,13 +6919,108 @@ async function branchOfCard(item: any): Promise<string | null> {
  * tree, its review records, every author identity on it and its descendants,
  * where its work began, and its descendants' close commits.
  */
-async function reviewEvidence(item: any, root: string | null, depth = 0): Promise<any> {
-  const descendants: any[] = [];
+/** CGLAB-420: the warnings a card cannot leave the step that writes tests with unanswered. */
+const ANSWER_REQUIRED = new Set(['new-tests-born-green']);
+
+/** A card's descendants, breadth first (at most 5000). */
+async function descendantsOf(item: any): Promise<any[]> {
+  const out: any[] = [];
   const queue = [item.id];
-  while (queue.length && descendants.length < 5000) {
+  while (queue.length && out.length < 5000) {
     const kids: any[] = (await storage.listItems({ parentId: queue.shift() } as any)) as any;
-    for (const k of kids) { descendants.push(k); queue.push(k.id); }
+    for (const k of kids) { out.push(k); queue.push(k.id); }
   }
+  return out;
+}
+
+/**
+ * CGLAB-420: the failing warnings a card and its descendants left their steps
+ * with, from their exit records - the last exit per step and check, so a step
+ * left again after a rollback supersedes the earlier one.
+ */
+async function treeWarningsOf(item: any): Promise<TreeWarning[]> {
+  const out: TreeWarning[] = [];
+  for (const card of [item, ...(await descendantsOf(item))]) {
+    const latest = new Map<string, TreeWarning | null>();
+    for (const r of card.stepRecords ?? []) {
+      if (r?.kind !== 'exit' || !Array.isArray(r.checks)) continue;
+      for (const c of r.checks) {
+        const key = `${r.step}\u0000${c?.id}`;
+        // Its own list is not a warning of the tree: at an epic it would repeat every story's.
+        // An unanswered red on an error is the normal path of TDD, not news for a reviewer.
+        const noise = c?.id === 'red-is-assertion' && typeof c?.answer !== 'string';
+        latest.set(key, c?.severity === 'warn' && c?.outcome === 'fail' && c?.id !== 'tree-warnings' && !noise
+          ? { itemId: card.id, title: String(card.title ?? ''), step: String(r.step), check: String(c.id), detail: String(c.detail ?? '').slice(0, 300),
+            ...(typeof c.answer === 'string' ? { answer: c.answer } : c?.overridden?.reason ? { answer: `passed by ${c.overridden.by ?? 'a person'} on the board: ${c.overridden.reason}` } : {}) }
+          : null);
+      }
+    }
+    for (const w of latest.values()) if (w) out.push(w);
+  }
+  return out;
+}
+
+/** CGLAB-420: the tests a card's descendants froze (their testSurface records), oldest first. */
+async function descendantSurfacesOf(item: any): Promise<Array<{ itemId: string; files: Record<string, string>; head: string | null; complete: boolean; at: string }>> {
+  const out: Array<{ itemId: string; files: Record<string, string>; head: string | null; complete: boolean; at: string }> = [];
+  for (const d of await descendantsOf(item)) {
+    const rec = [...(d.stepRecords ?? [])].reverse().find((r: any) => r?.kind === 'record' && r.name === 'testSurface');
+    const v = rec?.value;
+    if (!v || typeof v !== 'object' || !v.files || typeof v.files !== 'object') continue;
+    out.push({ itemId: d.id, files: v.files, head: typeof v.head === 'string' ? v.head : null, complete: v.complete !== false, at: String(rec.at ?? '') });
+  }
+  return out.sort((a, b) => a.at.localeCompare(b.at));
+}
+
+/**
+ * CGLAB-420: a reply that brought a card (the one verified, or an ancestor it
+ * pushed along) onto a review step hands over its tree's warnings, so they
+ * reach the reviewer's brief. On a parent the child's verify is the only reply
+ * anyone reads at that moment. The statuses are read when this wraps the reply.
+ */
+async function withReviewBrief<T extends { status: (code: number) => any; json: (body: any) => any }>(res: T, itemId: string, opts: { done?: () => boolean } = {}): Promise<T> {
+  const before = new Map<string, string>();
+  let cur: any = await storage.getItem(itemId);
+  for (let depth = 0; cur && depth < 16; depth++) { before.set(cur.id, cur.status); cur = cur.parentId ? await storage.getItem(cur.parentId) : null; }
+  const brief = async (): Promise<string> => {
+    const notes: string[] = [];
+    for (const [id, was] of before) {
+      const card: any = await storage.getItem(id);
+      if (!card || card.status === was) continue;
+      const project: any = await storage.getProject(card.projectId);
+      const flow = getActiveFlow(project?.flowId, await storage.listFlows());
+      const review = resolveStepChecks(flow.steps, card.status).find(c => c.id === 'review-record' && c.applicable);
+      if (!review) continue;
+      // Reviewed at its parent: its own review step reviews nothing.
+      if (review.params?.appliesTo !== 'every-card' && card.parentId && !(await storage.listItems({ parentId: card.id } as any)).length) continue;
+      const ws = await treeWarningsOf(card);
+      if (ws.length) notes.push(`🔎 [${id.slice(0, 8)}] "${card.title}" is now on ${card.status}, its review step. Its tree raised these warnings: give them to the reviewer along with the diff.\n${describeTreeWarnings(ws)}`);
+    }
+    return notes.join('\n\n');
+  };
+  const proxy: T = new Proxy(res, {
+    get(target, key) {
+      if (key === 'json') return (body: any) => {
+        void brief()
+          .then(note => (note && body && typeof body === 'object' && typeof body.message === 'string' ? { ...body, message: `${body.message}\n\n${note}` } : body), () => body)
+          .then(b => {
+            // A reply already settled another way (an internal error, a sent response) is not overwritten.
+            if (opts.done?.() || (target as any).headersSent) return;
+            target.json(b);
+          })
+          .catch((e: any) => console.error(`[VALIDATE] could not send a reply: ${e?.message ?? e}`));
+        return proxy;
+      };
+      if (key === 'status') return (code: number) => { target.status(code); return proxy; };
+      const value = Reflect.get(target, key);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  return proxy;
+}
+
+async function reviewEvidence(item: any, root: string | null, depth = 0): Promise<any> {
+  const descendants = await descendantsOf(item);
   const children = descendants.filter(d => d.parentId === item.id);
   const authors: Array<{ client: string; sessionId: string; agentId: string | null }> = [];
   for (const c of [item, ...descendants]) {
@@ -7050,7 +7225,7 @@ async function readUpstream(root: string): Promise<UpstreamState> {
 /** 5a8d22e6: the server's own hold for a per-test entry baseline the project cannot record. */
 const ENTRY_BASELINE = 'entry-baseline';
 
-async function runStepGate(item: any, flow: { steps: any[] }, root: string | null, actor?: { client: string; sessionId: string; agentId: string | null } | null, agentReports?: Record<string, AgentReport>, opts?: { personFirst?: boolean; run?: ValidateRun }): Promise<StepGate> {
+async function runStepGate(item: any, flow: { steps: any[] }, root: string | null, actor?: { client: string; sessionId: string; agentId: string | null } | null, agentReports?: Record<string, AgentReport>, opts?: { personFirst?: boolean; run?: ValidateRun; answers?: Record<string, string> }): Promise<StepGate> {
   const sorted = sortedFlowSteps(flow as any);
   const index = sorted.findIndex(st => st.name === item.status);
   const next = sorted[index + 1];
@@ -7112,7 +7287,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   // On a step that asks for a passkey, only signed overrides lift a check.
   const signedOnly = stepWantsPasskey(flow as Flow, item.status);
   for (const r of here) if (r.kind === 'override' && typeof r.check === 'string' && (!signedOnly || r.authority === 'passkey')) overrides[r.check] = { id: String(r.id), by: String(r.by ?? 'board'), at: String(r.at), reason: String(r.reason ?? ''), ...(typeof r.detail === 'string' ? { detail: r.detail } : {}) };
-  const review = resolved.some(c => c.id === 'review-record' && c.applicable) ? { ...(await reviewEvidence(item, root)), agenfkVersion: getCurrentVersion() } : undefined;
+  const review = resolved.some(c => (c.id === 'review-record' || c.id === 'fixes-reviewed') && c.applicable) ? { ...(await reviewEvidence(item, root)), agenfkVersion: getCurrentVersion() } : undefined;
   // Whoever is advancing the card now is an author too, though no step record carries them yet.
   if (review && actor && !review.authors.some((a: any) => a.sessionId === actor.sessionId && a.agentId === (actor.agentId ?? null))) {
     review.authors.push({ client: actor.client, sessionId: actor.sessionId, agentId: actor.agentId ?? null });
@@ -7145,6 +7320,8 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     ...(upstream ? { upstream } : {}),
     ...(toParent ? { deferredToParent: { id: toParent.id, title: toParent.title } } : {}),
     children: (await storage.listItems({ parentId: item.id } as any)) as any,
+    ...(resolved.some(c => c.applicable && c.id === 'tree-warnings') ? { treeWarnings: await treeWarningsOf(item) } : {}),
+    ...(resolved.some(c => c.applicable && c.id === 'tests-added-late') ? { descendantSurfaces: await descendantSurfacesOf(item) } : {}),
     capture,
     captureError,
     entry: prev ? lastOf(r => r?.kind === 'capture' && r.step === prev.name) : null,
@@ -7156,6 +7333,29 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     inheritedApprovals,
     overrides,
   });
+  /*
+   * CGLAB-420: a warning on the step that writes tests went unanswered - a test
+   * that could not fail went on to be implemented, and nobody said why. Here a
+   * failing warning holds the card until the agent answers it (or a person
+   * passes it on the board); the answer goes on the record for the reviewer.
+   */
+  // Every answer given to a failing check is kept, on any step, for the reviewer and the PR.
+  for (const r of outcome.results) {
+    const answer = opts?.answers?.[r.id];
+    if (answer && (r.outcome === 'fail' || r.outcome === 'unavailable')) r.answer = answer;
+  }
+  if ((sorted[index] as any)?.role === 'test-authoring') {
+    for (const r of outcome.results) {
+      // Only the warning that marks a test which cannot fail must be answered: red on a missing
+      // symbol is the normal path of TDD, and asking every time trains rubber stamps.
+      if (!ANSWER_REQUIRED.has(r.id) || r.severity !== 'warn' || r.outcome !== 'fail' || r.overridden || r.answer) continue;
+      const held = `${r.detail} Answer it before the card leaves this step - say why it is fine, or what you changed: agenfk verify ${item.id} --check-note ${r.id}="<your answer>" --evidence "..." (MCP: validate_progress with checkAnswers).`;
+      // A person's pass counts for the failure they saw, not a later, different one.
+      const person = overrides[r.id];
+      if (person && person.detail === held) r.overridden = person;
+      else { r.blocking = true; r.detail = held; outcome.blocked = true; }
+    }
+  }
   /*
    * 5a8d22e6 review: the step being ENTERED judges its tests against the
    * per-test results recorded now. With no test report there are none, and
@@ -7274,7 +7474,7 @@ function runRecorder(run: ValidateRun) {
   };
 }
 
-async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string, asyncRun?: ValidateRun, opts?: { gate?: StepGate; run?: ValidateRun; actor?: ReturnType<typeof parseActor>; agentReports?: Record<string, AgentReport>; joined?: boolean }) {
+async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string, asyncRun?: ValidateRun, opts?: { gate?: StepGate; run?: ValidateRun; actor?: ReturnType<typeof parseActor>; agentReports?: Record<string, AgentReport>; answers?: Record<string, string>; joined?: boolean }) {
   const item = await storage.getItem(itemId);
   if (!item) return res.status(404).json({ error: "Item not found" });
 
@@ -7325,6 +7525,13 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     return res.status(400).json({ error: `validate_progress requires item to be in a flow step. Current status '${item.status}' is not part of the active flow '${activeFlow.name}'.` });
   }
 
+  // CGLAB-420: an answer must name one of THIS step's checks.
+  const answered = Object.keys(opts?.answers ?? {});
+  if (answered.length && !opts?.gate) {
+    const ids = resolveStepChecks(activeFlow.steps, item.status).map(c => c.id);
+    const unknown = answered.filter(a => !ids.includes(a));
+    if (unknown.length) return res.status(400).json({ error: `Step ${item.status} has no check ${unknown.map(n => `'${n}'`).join(', ')} to answer. Its checks: ${ids.join(', ') || 'none'}.` });
+  }
   // efcacdeb: a report must name one of THIS step's agent checks.
   const reported = Object.keys(opts?.agentReports ?? {});
   if (reported.length && !opts?.gate) {
@@ -7381,7 +7588,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   if (!gate && !(currentFlowStep.step.isAnchor && currentFlowStep.index !== 0)) {
     // 961f301d: a person's missing approval is answered first, inline, before anything slow.
     if (await waitsOnPerson(item, activeFlow, project)) {
-      const waiting = await runStepGate(item, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { personFirst: true });
+      const waiting = await runStepGate(item, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { personFirst: true, answers: opts?.answers });
       if (waiting.blocked) return refuseOnChecks(res, item, waiting);
     }
     const nextName = sorted[currentFlowStep.index + 1]?.name;
@@ -7400,13 +7607,13 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         message: `⏳ Step checks and validation running in background (run ${run.runId.slice(0, 8)}…). Follow with GET /items/validate-runs/${run.runId}.`,
       });
       markRunStarted(run, item.status);
-      const recorder = runRecorder(run);
+      const recorder = await withReviewBrief(runRecorder(run), itemId, { done: () => !!run.finishedAt });
       void (async () => {
         const fresh: any = await storage.getItem(itemId);
         if (!fresh) return recorder.status(404).json({ status: item.status, message: '❌ Item was deleted while the checks ran.' });
-        const g = await runStepGate(fresh, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { run });
+        const g = await runStepGate(fresh, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { run, answers: opts?.answers });
         if (g.blocked) return refuseOnChecks(recorder, fresh, g);
-        return handleValidateProgress(itemId, command, recorder, undefined, undefined, { gate: g, run, actor: opts?.actor, agentReports: opts?.agentReports });
+        return handleValidateProgress(itemId, command, recorder, undefined, undefined, { gate: g, run, actor: opts?.actor, agentReports: opts?.agentReports, answers: opts?.answers });
       })()
         .catch((err: any) => {
           run.status = 'failed';
@@ -7419,7 +7626,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         });
       return;
     }
-    gate = await runStepGate(item, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports);
+    gate = await runStepGate(item, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { answers: opts?.answers });
     if (gate.blocked) return refuseOnChecks(res, item, gate);
     // The gate may have written a capture and produced records: build the
     // exit record on top of what is stored now, not on the copy read above.
@@ -8079,7 +8286,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       message: `⏳ Validation running in background (run ${runId.slice(0, 8)}…). Follow with GET /items/validate-runs/${runId}.`,
     });
     markRunStarted(run, item.status);
-    const recorder = runRecorder(run);
+    const recorder = await withReviewBrief(runRecorder(run), itemId, { done: () => !!run.finishedAt });
     void runOrJoin(commandNote ? withNote(recorder, commandNote) : recorder, run, recorder)
       .catch((err: any) => {
         run.status = 'failed';
@@ -8453,6 +8660,10 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
   const parsedReports = parseAgentReports(req.body.agentChecks);
   if ('error' in parsedReports) return res.status(400).json({ error: parsedReports.error });
   const agentReports = parsedReports.reports;
+  // CGLAB-420: the agent's answers to the step's failing warnings.
+  const parsedAnswers = parseCheckAnswers(req.body.checkAnswers);
+  if ('error' in parsedAnswers) return res.status(400).json({ error: parsedAnswers.error });
+  const answers = parsedAnswers.answers;
   const asyncMode = req.body.async === true || req.body.async === 'true';
   if (asyncMode) {
     // Reserve the run in the SAME tick as the guard — a check-then-set gap
@@ -8462,7 +8673,9 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
     validateRuns.set(run.runId, run);
     activeValidateRunByItem.set(req.params.id, run.runId);
     try {
-      return await handleValidateProgress(req.params.id, req.body.command || undefined, res, req.body.evidence || undefined, run, { actor: parseActor(req.body.actor), agentReports });
+      // After the reservation (same tick as the guard, above): the wrap reads the card first.
+      res = await withReviewBrief(res, req.params.id);
+      return await handleValidateProgress(req.params.id, req.body.command || undefined, res, req.body.evidence || undefined, run, { actor: parseActor(req.body.actor), agentReports, answers });
     } finally {
       // A sync fast-path (anchor, sibling propagation, no-command, error)
       // responded without ever starting the command — discard the reservation.
@@ -8472,7 +8685,8 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
       }
     }
   }
-  return handleValidateProgress(req.params.id, req.body.command || undefined, res, req.body.evidence || undefined, undefined, { actor: parseActor(req.body.actor), agentReports });
+  res = await withReviewBrief(res, req.params.id);
+  return handleValidateProgress(req.params.id, req.body.command || undefined, res, req.body.evidence || undefined, undefined, { actor: parseActor(req.body.actor), agentReports, answers });
 }));
 
 /** 409 if the item already has a live background validate run. Returns true when it responded. */

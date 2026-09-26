@@ -96,8 +96,8 @@ export const card = async id => (await api('GET', `/items/${id}`)).body;
  * `actor` identifies the harness session (the review check tells authors from
  * reviewers by it).
  */
-export async function verify(id, { evidence = 'harness', command, actor } = {}) {
-  return api('POST', `/items/${id}/validate`, { evidence, ...(command ? { command } : {}), ...(actor ? { actor } : {}) }, { headers: internal() });
+export async function verify(id, { evidence = 'harness', command, actor, checkAnswers } = {}) {
+  return api('POST', `/items/${id}/validate`, { evidence, ...(command ? { command } : {}), ...(actor ? { actor } : {}), ...(checkAnswers ? { checkAnswers } : {}) }, { headers: internal() });
 }
 
 export const update = (id, patch) => api('PUT', `/items/${id}`, patch);

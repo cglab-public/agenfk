@@ -548,6 +548,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               description: "Your report of the current step's agent checks: for each, what its instruction asked you to do or check. A refused verify names them and their instructions. Recorded as agent-reported.",
               items: { type: "object", properties: { name: { type: "string" }, outcome: { type: "string", enum: ["pass", "fail"] }, note: { type: "string" } }, required: ["name", "outcome"] },
             },
+            checkAnswers: {
+              type: "array",
+              description: "Your answer to a failing warning of the step (e.g. new-tests-born-green): why it is fine, or what you changed. On the step that writes tests a failing new-tests-born-green holds the card until it is answered; answers go on the record for the reviewer and the PR.",
+              items: { type: "object", properties: { id: { type: "string" }, note: { type: "string" } }, required: ["id", "note"] },
+            },
           },
           required: ["itemId", "evidence"],
         },
@@ -776,13 +781,14 @@ async function callToolHandler(request: any): Promise<any> {
         }
       }
       case "validate_progress": {
-        const { itemId, evidence, command, agentChecks } = z.object({
+        const { itemId, evidence, command, agentChecks, checkAnswers } = z.object({
           itemId: z.string(), evidence: z.string(), command: z.string().optional(),
           agentChecks: z.array(z.object({ name: z.string(), outcome: z.enum(['pass', 'fail']), note: z.string().optional() })).optional(),
+          checkAnswers: z.array(z.object({ id: z.string(), note: z.string() })).optional(),
         }).parse(request.params.arguments);
         // The author, as the harness that launched this MCP server names it (CGLAB-381).
         const actor = actorFromEnv(process.env);
-        const result = await validateViaApi(itemId, { evidence, command, cwd: process.cwd(), ...(actor ? { actor } : {}), ...(agentChecks ? { agentChecks } : {}) });
+        const result = await validateViaApi(itemId, { evidence, command, cwd: process.cwd(), ...(actor ? { actor } : {}), ...(agentChecks ? { agentChecks } : {}), ...(checkAnswers ? { checkAnswers } : {}) });
         if (!result.ok) return { isError: true, content: [{ type: "text", text: result.text }] };
         return { content: [{ type: "text", text: result.text }] };
       }

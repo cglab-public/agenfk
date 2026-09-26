@@ -40,9 +40,17 @@ describe('parseCheckFlags', () => {
     expect('error' in r && r.error).toMatch(/twice/);
   });
 
-  it('refuses a note for a check that is not reported', () => {
-    const r = parseCheckFlags(['docs=pass'], ['lint=looked fine']);
-    expect('error' in r && r.error).toMatch(/--check lint=/);
+  // CGLAB-420: a note with no --check of its name answers one of the step's checks.
+  it('sends a note for a check that is not reported as the answer to that check', () => {
+    expect(parseCheckFlags(['docs=pass'], ['new-tests-born-green=pins add, which exists'])).toEqual({
+      agentChecks: [{ name: 'docs', outcome: 'pass' }],
+      checkAnswers: [{ id: 'new-tests-born-green', note: 'pins add, which exists' }],
+    });
+  });
+
+  it('refuses an empty answer', () => {
+    const r = parseCheckFlags([], ['red-is-assertion=']);
+    expect('error' in r && r.error).toMatch(/needs some text/);
   });
 
   it('checks the server\'s 2000-character limit on the JOINED notes', () => {

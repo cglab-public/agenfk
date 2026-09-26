@@ -106,6 +106,12 @@ export const CHECK_CATALOGUE: Record<string, CheckDef> = {
   'tests-added-late': def({ id: 'tests-added-late', group: 'tests', defaultSeverity: 'warn', needsCapture: false,
     requires: () => ['testSurface'],
     description: 'Warns about test files added after the step that writes tests froze them: nothing has shown they fail without the change. Runs no suite.' }),
+  // CGLAB-420: the fixes to a review's findings, written after the reviewer read the diff. No suite.
+  'fixes-reviewed': def({ id: 'fixes-reviewed', group: 'review', defaultSeverity: 'warn', needsCapture: false,
+    description: 'Warns when the card changed more than a few lines after its reviewer began: the fixes to its findings, which the review cannot have read. Judged from file times when the review is recorded. Runs no suite.' }),
+  // CGLAB-420: a child's warning never reached the parent's reviewer. No suite: it reads the tree's exit records.
+  'tree-warnings': def({ id: 'tree-warnings', group: 'review', defaultSeverity: 'warn', needsCapture: false,
+    description: "Lists the warnings the card and its children left their steps with, and each answer, so the reviewer sees them. Runs no suite." }),
   'red-is-assertion': def({ id: 'red-is-assertion', group: 'tests', defaultSeverity: 'warn', needsCapture: true,
     requires: () => ['stepEntryTests'],
     description: 'Warns when a new test fails with an error rather than a failed assertion.' }),
@@ -177,7 +183,7 @@ export const ROLE_BUILTINS: Record<StepRole, StepCheckRef[]> = {
     ref('test-count-not-lower', { since: 'test-authoring' }),
   ],
   refactoring: [ref('suite-green'), ref('test-set-identical'), ref('test-surface-frozen', { mode: 'strict', since: 'step-entry' })],
-  review: [ref('review-record'), ref('tests-added-late')],
+  review: [ref('review-record'), ref('fixes-reviewed'), ref('tests-added-late'), ref('tree-warnings')],
   testing: [ref('suite-green')],
   closing: [ref('server-owned-verify')],
 };

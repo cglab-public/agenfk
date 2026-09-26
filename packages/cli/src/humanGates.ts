@@ -105,9 +105,47 @@ export function formatCustomChecks(rows: readonly CustomCheckRow[]): string {
   ].join('\n');
 }
 
-/** The PR body: what was given, then the human gates and custom checks when there are any. */
-export function buildPrBody(body: string, events: readonly GateEvent[], customChecks: readonly CustomCheckRow[] = []): string {
-  const extra = [formatHumanGates(events), formatCustomChecks(customChecks)].filter(Boolean).join('\n\n');
+/** A failing warning a card left a step with, and the agent's answer (CGLAB-420), as the server lists it. */
+export interface TreeWarningRow { itemId: string; title: string; step: string; check: string; detail: string; answer?: string }
+
+/**
+ * CGLAB-420: the warnings the checks raised in a card tree. A PR reviewer sees
+ * what the checks doubted and what the agent said, unanswered ones first.
+ */
+export function formatTreeWarnings(rows: readonly TreeWarningRow[]): string {
+  if (!rows.length) return '';
+  const open = rows.filter(r => !r.answer).length;
+  const sorted = [...rows].sort((a, b) => Number(!!a.answer) - Number(!!b.answer));
+  return [
+    '## Warnings the checks raised',
+    '',
+    open ? `${open} of ${rows.length} ${open === 1 ? 'was' : 'were'} never answered.` : `Each was answered by the coding agent; the answer is its word.`,
+    '',
+    '| Card | Step | Check | What it found | Answer |',
+    '| --- | --- | --- | --- | --- |',
+    ...sorted.map(r => `| ${cell(r.title)} | ${cell(r.step)} | \`${cell(r.check)}\` | ${cell(r.detail)} | ${r.answer ? cell(r.answer) : '⚠️ not answered'} |`),
+  ].join('\n');
+}
+
+/** The checks' history of a card tree, for a PR: human gates, custom checks, warnings; empty when there is none. */
+export function checkHistory(events: readonly GateEvent[], customChecks: readonly CustomCheckRow[] = [], warnings: readonly TreeWarningRow[] = []): string {
+  return [formatHumanGates(events), formatCustomChecks(customChecks), formatTreeWarnings(warnings)].filter(Boolean).join('\n\n');
+}
+
+/** The PR body: what was given, then the checks' history when there is any. */
+export function buildPrBody(body: string, events: readonly GateEvent[], customChecks: readonly CustomCheckRow[] = [], warnings: readonly TreeWarningRow[] = []): string {
+  const extra = checkHistory(events, customChecks, warnings);
   if (!extra) return body;
   return body.trim() ? `${body}\n\n${extra}` : extra;
+}
+
+/**
+ * CGLAB-420: `agenfk pr-register` follows a PR opened with plain `gh pr
+ * create`, whose body carries none of this. The history goes on as a comment,
+ * so the PR shows what the checks let through either way; null when there is
+ * nothing to say.
+ */
+export function prRegisterComment(events: readonly GateEvent[], customChecks: readonly CustomCheckRow[] = [], warnings: readonly TreeWarningRow[] = []): string | null {
+  const history = checkHistory(events, customChecks, warnings);
+  return history ? `### AgEnFK check history\n\nWhat the workflow checks recorded for this PR's cards.\n\n${history}` : null;
 }

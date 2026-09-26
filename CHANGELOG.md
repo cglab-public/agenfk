@@ -2,6 +2,49 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.7] — 2026-09-26
+
+Beta, cumulative over `2.0.0-beta.6`: everything in beta.6, plus the changes below (CGLAB-420). Found by following a
+real story (five tasks in one tree, reviewed once at the story) end to end, and replayed in the TDD harness before
+release.
+
+### The fixes to a review's findings are flagged
+
+- **New `fixes-reviewed` check at the review step.** The fixes to a review's findings are written after the reviewer
+  read the diff, and recording the review afterwards certified code nobody reviewed. When a review is recorded, the
+  server now notes the card's changes made after the reviewer began - its commits since, not main merged in, not other
+  cards' commits, and its uncommitted work in files written since or removed - counted against the last commit before
+  the reviewer began. Over 20 lines it warns, naming the files, on the verify and on the PR: have a reviewer read them
+  (a new one, or the same one given a new message) and record that review. The card's own reviewed work, however large
+  and uncommitted, is not counted. It warns rather than refuses: file times are evidence to tell a reviewer, not to
+  hold an honest card.
+
+### A parent's review sees what its children recorded
+
+- **New `tree-warnings` check at the review step**: it lists the warnings the card and its children raised, with each
+  answer, so the reviewer sees them.
+- **The verify that brings a card onto its review step hands those warnings over** in its reply. On a parent that is
+  the verify of the child that pushed it there, the only reply anyone reads at that moment.
+- **`tests-added-late` works at a parent**: it reads the tests its children froze, and a test file one child
+  committed after its own freeze is late even when a later child's freeze holds it.
+
+### Warnings are answered, and the PR shows them
+
+- **A test that passes on arrival must be answered.** On the step that writes tests, a failing `new-tests-born-green`
+  holds the card until the agent says why it is fine, or what it changed:
+  `agenfk verify <id> --check-note new-tests-born-green="..."` (MCP: `checkAnswers`). Any warning can be answered the
+  same way; the answers go on the record, to the reviewer and on the PR. Red on a missing symbol - the normal path of
+  TDD - needs no answer.
+- **The PR carries the check history.** `agenfk pr create` lists the warnings in the body; `agenfk pr-register`, which
+  follows a PR opened with plain `gh pr create`, posts the history (overrides, approvals, custom checks, warnings) as
+  one comment.
+
+### on-card-branch judges the branch when none is recorded
+
+- With no branch recorded it used to pass without looking. It now refuses a tree on a branch named for another JIRA key
+  (`feat/OTHER-9_...`) and passes on the card's own; a branch that names no key (main, develop, release/...) is not
+  judged.
+
 ## [2.0.0-beta.6] — 2026-09-26
 
 Beta, cumulative over `2.0.0-beta.5`: everything in beta.5, plus the changes below (CGLAB-418).

@@ -39,6 +39,8 @@ export interface CheckResult {
   agentReported?: boolean;
   /** What a custom check actually did, stamped when it was judged (C3b). */
   meta?: CheckMeta;
+  /** CGLAB-420: the agent's answer to this failing warning, given on verify. */
+  answer?: string;
 }
 
 /**
@@ -55,6 +57,31 @@ export interface CheckMeta {
   note?: string;
   /** 5a8d22e6: a cause the refusal names once, with its fix, for every check it holds up. */
   code?: 'NO_TEST_REPORT';
+}
+
+/** A failing warning a card left a step with (CGLAB-420). */
+export interface TreeWarning { itemId: string; title: string; step: string; check: string; detail: string; answer?: string }
+
+/** One line per warning, for a reviewer's brief and the check that lists them. */
+export function describeTreeWarnings(ws: readonly TreeWarning[]): string {
+  return ws.map(w => `[${w.itemId.slice(0, 8)}] ${w.title} - ${w.step}: ${w.check} - ${w.detail}${w.answer ? ` (answered: ${w.answer})` : ' (not answered)'}`).join('\n');
+}
+
+/**
+ * `checkAnswers` as verify receives it (CGLAB-420): [{ id, note }], the agent's
+ * answer to a failing warning. Returns them by check id, or why it is refused.
+ */
+export function parseCheckAnswers(value: unknown): { answers: Record<string, string> } | { error: string } {
+  if (value === undefined || value === null) return { answers: {} };
+  if (!Array.isArray(value)) return { error: 'checkAnswers must be a list of { id, note }' };
+  const answers: Record<string, string> = {};
+  for (const a of value) {
+    const { id, note } = (a ?? {}) as any;
+    if (typeof id !== 'string' || !/^[a-z0-9][a-z0-9:-]{0,80}$/.test(id)) return { error: `checkAnswers: ${JSON.stringify(id)} is not a check id` };
+    if (typeof note !== 'string' || !note.trim() || note.length > 2000) return { error: `checkAnswers: the answer to '${id}' must be a text of 1 to 2000 characters` };
+    answers[id] = answers[id] ? `${answers[id]}\n${note.trim()}` : note.trim();
+  }
+  return { answers };
 }
 
 /** The coding agent's report of one agent check (efcacdeb). */
@@ -141,7 +168,7 @@ export interface EngineContext {
     childCount: number;
     /** Children that carry a review record of their own. */
     childrenReviewed: number;
-    records: Array<{ reviewer: { client: string; sessionId: string; agentId: string | null; edits?: string[]; advancedCards?: boolean }; range: { from: string; to: string }; tree?: string | null }>;
+    records: Array<{ reviewer: { client: string; sessionId: string; agentId: string | null; edits?: string[]; advancedCards?: boolean }; range: { from: string; to: string }; tree?: string | null; unreviewed?: { lines: number; files: string[] }; unreviewedNotJudged?: string }>;
     /** The tree's content state now (null when unreadable or not the card being verified). */
     currentTree?: string | null;
     /** Every author identity recorded on the card and its descendants. */
@@ -154,6 +181,16 @@ export interface EngineContext {
     agenfkVersion?: string;
   };
   children: Array<{ id: string; type: string; status: string }>;
+  /**
+   * CGLAB-420: the failing warnings this card and its descendants left their
+   * steps with, and the answer each was given. What a reviewer should see.
+   */
+  treeWarnings?: TreeWarning[];
+  /**
+   * CGLAB-420: the tests the card's descendants froze, for tests-added-late at a
+   * parent, where no step of its own wrote tests. Oldest freeze first.
+   */
+  descendantSurfaces?: Array<{ itemId: string; files: Record<string, string>; head: string | null; complete: boolean }>;
   /** This verify's capture, when a check needed one. */
   capture: CaptureRecord | null;
   /** Why there is no usable capture, when there is none. */
@@ -383,6 +420,41 @@ export function judgeReview(r: ReviewEvidence, root: string | null, git: (args: 
   return { outcome: 'pass', detail: `reviewed by ${who} over ${rec.range.from.slice(0, 12)}..${rec.range.to.slice(0, 12)}` };
 }
 
+/**
+ * CGLAB-420: with no branch recorded, on-card-branch used to pass without
+ * looking, while the agent worked on a branch it had made itself. A branch
+ * named for a JIRA key (feat/KEY_..., fix/KEY_...) that is none of the card's
+ * is another card's; that is the one thing a key can tell. A branch that
+ * names no key (main, develop, release/..., a descriptive name) is not judged.
+ */
+// Another card's key is written as a JIRA key is - upper case, two letters at least - and leads the name
+// (feat/KEY_..., fix/KEY-..., KEY_...). Words and standards that look like keys are not (CVE-2024, UTF-8, SHA-256).
+const LEADING_KEY = /^(?:[A-Za-z]+\/)?([A-Za-z]{2,}[A-Za-z0-9]*-\d+)(?=$|[/_-])/;
+const NOT_KEYS = new Set(['CVE', 'CWE', 'GHSA', 'UTF', 'HTTP', 'HTTPS', 'SHA', 'MD', 'ISO', 'RFC', 'TLS', 'SSL', 'AES', 'RSA', 'IPV', 'OAUTH', 'NODE', 'PYTHON', 'JAVA', 'ES', 'V']);
+const OWN_KEY = (k: string) => new RegExp(`(?:^|[/_-])${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=$|[/_-])`, 'i');
+function branchByKey(ctx: EngineContext): Verdict {
+  const keys = ctx.cardKeys.filter(k => JIRA_KEY.test(k)).map(k => k.toUpperCase());
+  if (!keys.length) return { outcome: 'pass', detail: 'no branch is recorded for this card or its parents, and no JIRA key to check the branch against' };
+  if (!ctx.root) return { outcome: 'unavailable', soft: true, detail: 'the card has no tree (no project root, no worktree)' };
+  let current: string;
+  try { current = ctx.git(['-C', ctx.root, 'branch', '--show-current']).trim(); } catch (e: any) { return { outcome: 'unavailable', soft: true, detail: `git branch failed: ${e?.message ?? e}` }; }
+  if (!current) return { outcome: 'pass', detail: 'a detached HEAD, and no branch is recorded for this card to check it against' };
+  // The key that leads the name is the branch's own: a key further along (feat/ABC-2_...-abc-1) is only a mention.
+  const lead = LEADING_KEY.exec(current)?.[1];
+  const leadIsKey = !!lead && (keys.includes(lead.toUpperCase()) || (/^[A-Z]{2,}[A-Z0-9]*-\d+$/.test(lead) && !NOT_KEYS.has(lead.split('-')[0])));
+  if (lead && leadIsKey) {
+    return keys.includes(lead.toUpperCase())
+      ? { outcome: 'pass', detail: `on '${current}', which carries ${lead.toUpperCase()}` }
+      : { outcome: 'fail', detail: `the tree is on '${current}', named for ${lead}, which is not this card's (${keys.join(', ')}): that is another card's branch. Switch to this card's branch (feat/${keys[0]}_<description> or fix/${keys[0]}_<description>), creating it if it does not exist yet.` };
+  }
+  const mine = keys.find(k => OWN_KEY(k).test(current));
+  if (mine) return { outcome: 'pass', detail: `on '${current}', which carries ${mine}` };
+  return { outcome: 'pass', detail: `on '${current}', which names no JIRA key: not judged (no branch is recorded for this card)` };
+}
+
+/** CGLAB-420: follow-up fixes up to this many lines pass on the review that asked for them. */
+export const MAX_UNREVIEWED_LINES = 20;
+
 export const EVALUATORS: Record<string, Evaluator> = {
   'tree-clean': ctx => {
     if (!ctx.root) return { outcome: 'unavailable', detail: 'the card has no tree (no project root, no worktree)' };
@@ -416,7 +488,7 @@ export const EVALUATORS: Record<string, Evaluator> = {
   },
 
   'on-card-branch': ctx => {
-    if (!ctx.cardBranch) return { outcome: 'pass', detail: 'no branch is recorded for this card or its parents' };
+    if (!ctx.cardBranch) return branchByKey(ctx);
     if (!ctx.root) return { outcome: 'unavailable', detail: 'the card has no tree (no project root, no worktree)' };
     let current: string;
     try { current = ctx.git(['-C', ctx.root, 'branch', '--show-current']).trim(); } catch (e: any) { return { outcome: 'unavailable', detail: `git branch failed: ${e?.message ?? e}` }; }
@@ -493,7 +565,8 @@ export const EVALUATORS: Record<string, Evaluator> = {
   'new-tests-born-green': ctx => {
     const d = newTests(ctx);
     if (isVerdict(d)) return d;
-    const green = d.added.filter(t => t.status === 'passed').map(t => t.name);
+    // Sorted: a runner's report order must not make the same failure read as a different one.
+    const green = d.added.filter(t => t.status === 'passed').map(t => t.name).sort();
     return green.length
       // d26832d6 #21: it now runs after the tests are written too, where "red set" means nothing.
       ? { outcome: 'fail', detail: `new test(s) passing on arrival, never seen failing without the change: ${list(green)}. Show each one fails with the change it covers reverted (on the step that writes tests, it is also left out of the red set).` }
@@ -602,7 +675,20 @@ export const EVALUATORS: Record<string, Evaluator> = {
    * so it cannot tell whether they pass. It names them, and asks for the proof.
    */
   'tests-added-late': ctx => {
-    const frozen = ctx.records.testSurface as { files?: unknown; head?: unknown; complete?: unknown } | undefined;
+    /*
+     * CGLAB-420: at a parent the tests were frozen by its children, one freeze
+     * each, each of the WHOLE tree's test files. A file a child committed is
+     * late unless that child's own freeze has it (a later sibling's freeze
+     * must not launder it); anything else, unless some freeze has it.
+     */
+    const kids = ctx.records.testSurface ? [] : (ctx.descendantSurfaces ?? []).filter(k => k.head);
+    const frozen = (ctx.records.testSurface ?? (kids.length ? {
+      files: Object.assign({}, ...kids.map(k => k.files)), head: kids[0].head, complete: kids.every(k => k.complete),
+    } : undefined)) as { files?: unknown; head?: unknown; complete?: unknown } | undefined;
+    const descendants = new Set(kids.map(k => k.itemId));
+    const freezeOf = new Map(kids.map(k => [k.itemId, k.files]));
+    /** Files a descendant committed, by that descendant: judged against its own freeze. */
+    const addedBy = new Map<string, string>();
     if (!frozen || typeof frozen !== 'object') return { outcome: 'unavailable', soft: true, detail: "no 'testSurface' record: no step wrote tests for this card" };
     if (typeof frozen.head !== 'string' || !frozen.head) return { outcome: 'unavailable', soft: true, detail: 'the tests were frozen before agenfk recorded the commit they were frozen at, so what came after cannot be told apart' };
     // An incomplete freeze does not know every test that existed then: anything could read as late.
@@ -629,8 +715,8 @@ export const EVALUATORS: Record<string, Evaluator> = {
       for (const block of log.split('\x01').filter(Boolean)) {
         const [subject, ...names] = block.split(/\n|\0/).filter(Boolean);
         const other = /^(close|step)\([^)]*\):.*\[([0-9a-f]{8}-[0-9a-f-]{27,})\]\s*$/.exec(subject ?? '')?.[2];
-        if (other && other !== ctx.item.id) continue;
-        for (const n of names) own.add(n);
+        if (other && other !== ctx.item.id && !descendants.has(other)) continue;
+        for (const n of names) { own.add(n); if (other && descendants.has(other)) addedBy.set(n, other); }
       }
       for (const f of z(['diff', '--cached', '--no-renames', '--diff-filter=A', '--name-only', '--relative', '-z'])) own.add(f);
       for (const f of z(['ls-files', '--others', '--exclude-standard', '-z'])) own.add(f);
@@ -642,7 +728,7 @@ export const EVALUATORS: Record<string, Evaluator> = {
       // Still there: added then deleted is no late test.
       .filter(f => fs.existsSync(path.join(ctx.root!, f)))
       .filter(f => !ctx.ignoredPaths.some(p => within(f, p)) && !ctx.foreignClaims.some(c => within(`${prefix}${f}`, c)))
-      .filter(f => ANY_TEST_FILE_PATTERN.test(f) && !(f in base));
+      .filter(f => ANY_TEST_FILE_PATTERN.test(f) && (addedBy.has(f) ? !(f in (freezeOf.get(addedBy.get(f)!) ?? {})) : !(f in base)));
     return late.length
       ? { outcome: 'fail', detail: `test file(s) added after the tests were frozen: ${list(late)}. Nothing has shown they do anything: show each one fails without the change it covers.` }
       : { outcome: 'pass', detail: 'no new test file since the tests were frozen (tests added inside existing test files are not looked at)' };
@@ -667,12 +753,42 @@ export const EVALUATORS: Record<string, Evaluator> = {
     return diff.length ? { outcome: 'fail', detail: `the tests changed: ${list(diff)}` } : { outcome: 'pass', detail: `${is.size} tests, identical` };
   },
 
+  // CGLAB-420: a child's warning never reached the parent's reviewer.
+  'tree-warnings': ctx => {
+    const ws = ctx.treeWarnings ?? [];
+    return ws.length
+      ? { outcome: 'fail', detail: `${ws.length} warning(s) raised in this card's tree; the reviewer should see each: ${list(describeTreeWarnings(ws).split('\n'))}` }
+      : { outcome: 'pass', detail: 'no warning was raised in this card\'s tree' };
+  },
+
+  /*
+   * CGLAB-420: the fixes to a review's findings are written after the reviewer
+   * read the diff. Judged when the review is recorded, from the card's changes
+   * in files written after the reviewer began. File times are evidence enough
+   * to tell a reviewer and the PR, not to refuse an honest card: a warning.
+   */
+  'fixes-reviewed': ctx => {
+    const r = ctx.review;
+    if (!r) return { outcome: 'unavailable', soft: true, detail: 'no review evidence was gathered' };
+    const rec: any = r.records[r.records.length - 1];
+    if (!rec) return { outcome: 'pass', detail: r.childCount > 0 || !r.hasParent ? 'no review is recorded yet (review-record judges that)' : 'reviewed with its parent' };
+    if (rec.unreviewedNotJudged) return { outcome: 'unavailable', soft: true, detail: `whether anything changed after the reviewer began was not judged: ${rec.unreviewedNotJudged}` };
+    const after = rec.unreviewed;
+    if (!after) return { outcome: 'unavailable', soft: true, detail: 'the review was recorded by an older agenfk, which did not note what changed after the reviewer began' };
+    return after.lines > MAX_UNREVIEWED_LINES
+      ? { outcome: 'fail', detail: `${after.lines} lines changed after the reviewer began, which it cannot have read: ${list(after.files)}. Have a reviewer read them (a new one, or the same one given a new message), then record that review.` }
+      : { outcome: 'pass', detail: after.lines ? `${after.lines} line(s) of follow-up after the reviewer began (up to ${MAX_UNREVIEWED_LINES} pass as follow-up)` : 'nothing changed after the reviewer began' };
+  },
+
   'review-record': (ctx, p) => {
     const r = ctx.review;
     if (!r) return { outcome: 'unavailable', detail: 'no review evidence was gathered' };
     const isParent = r.childCount > 0 || !r.hasParent;
     if (p.appliesTo !== 'every-card' && !isParent) return { outcome: 'pass', detail: 'reviewed with its parent: reviews happen at the parent card' };
-    return judgeReview(r, ctx.root, ctx.git, { bindTree: true });
+    const verdict = judgeReview(r, ctx.root, ctx.git, { bindTree: true });
+    const rec = r.records[r.records.length - 1];
+    if (verdict.outcome !== 'pass' || !rec) return verdict;
+    return verdict;
   },
 
   'human-approval': (ctx, p) => {
@@ -829,7 +945,7 @@ export function formatCheckResults(results: readonly CheckResult[]): string {
     const mark = r.overridden ? '🔓' : !r.blocking && (r.outcome === 'fail' || r.outcome === 'unavailable') ? '⚠️' : MARK[r.outcome];
     // A non-blocking unavailable is said to be one: it judged nothing (d26832d6 #9).
     const soft = !r.blocking && !r.overridden && r.outcome === 'unavailable' ? ' (not judged, not blocking)' : '';
-    const why = r.overridden ? ` (overridden by a person: ${r.overridden.reason})` : '';
+    const why = r.overridden ? ` (overridden by a person: ${r.overridden.reason})` : r.answer ? ` (answered: ${r.answer})` : '';
     return `${mark} ${r.id} [${r.severity}${r.source === 'flow' ? ', added by the flow' : ''}]: ${r.outcome}${soft}${r.detail ? ` — ${r.detail}` : ''}${why}`;
   }).join('\n');
 }

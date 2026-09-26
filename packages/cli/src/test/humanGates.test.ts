@@ -4,7 +4,7 @@
  * step, the check and the reason, so a reviewer sees what a person let through.
  */
 import { describe, it, expect } from 'vitest';
-import { buildPrBody, formatHumanGates, formatCustomChecks, type GateEvent, type CustomCheckRow } from '../humanGates';
+import { buildPrBody, formatHumanGates, formatCustomChecks, formatTreeWarnings, prRegisterComment, type GateEvent, type CustomCheckRow, type TreeWarningRow } from '../humanGates';
 
 const override: GateEvent = { itemId: 'c1', title: 'Fix the picker', step: 'WORK', kind: 'override', check: 'jira-key-valid', reason: 'spike card, no issue', by: 'board', at: '2026-09-24T10:00:00.000Z' };
 const approval: GateEvent = { itemId: 'c2', title: 'Plan it', step: 'DISCOVERY', kind: 'approval', note: 'go', by: 'board', at: '2026-09-24T09:00:00.000Z' };
@@ -143,5 +143,33 @@ describe('formatCustomChecks (C3b)', () => {
 
   it('leaves the body alone when there is nothing to add', () => {
     expect(buildPrBody('Summary', [], [])).toBe('Summary');
+  });
+});
+
+// CGLAB-420: a PR opened with plain gh pr create carried no check history.
+describe('the warnings the checks raised, on the PR (CGLAB-420)', () => {
+  const answered: TreeWarningRow = { itemId: 'a1b2c3d4-0000', title: 'Async ingest', step: 'CREATE_UNIT_TESTS', check: 'new-tests-born-green', detail: 'passing on arrival: test_an_unknown_run_is_a_404', answer: 'pins the route' };
+  const open: TreeWarningRow = { itemId: 'e5f6a7b8-0000', title: 'Tray', step: 'CREATE_UNIT_TESTS', check: 'red-is-assertion', detail: 'red on a TypeError' };
+
+  it('lists each warning with its answer, the unanswered first', () => {
+    const t = formatTreeWarnings([answered, open]);
+    expect(t).toMatch(/## Warnings the checks raised/);
+    expect(t).toMatch(/1 of 2 was never answered/);
+    expect(t.indexOf('red-is-assertion')).toBeLessThan(t.indexOf('new-tests-born-green'));
+    expect(t).toMatch(/test_an_unknown_run_is_a_404 \| pins the route/);
+    expect(t).toMatch(/⚠️ not answered/);
+  });
+
+  it('goes into the PR body with the other sections', () => {
+    expect(buildPrBody('Summary', [], [], [open])).toMatch(/^Summary\n\n## Warnings the checks raised/);
+  });
+
+  it('pr-register\'s comment carries every section, and there is none when nothing was recorded', () => {
+    const override: GateEvent = { itemId: 'x', title: 'T', step: 'S', kind: 'override', by: 'ann', at: '2026-09-26', check: 'suite-green', reason: 'flaky' };
+    const c = prRegisterComment([override], [], [open]);
+    expect(c).toMatch(/AgEnFK check history/);
+    expect(c).toMatch(/## Human gates/);
+    expect(c).toMatch(/## Warnings the checks raised/);
+    expect(prRegisterComment([], [], [])).toBeNull();
   });
 });
