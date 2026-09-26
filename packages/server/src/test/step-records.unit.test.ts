@@ -127,6 +127,91 @@ E   ModuleNotFoundError: No module named 'nope'</error></testcase></testsuite></
       expect(r.brokenFiles).toEqual([{ file: 'tests/test_broken.py', message: "ModuleNotFoundError: No module named 'nope'" }]);
     });
 
+    /*
+     * CGLAB-418: vitest's JUnit reporter writes a test file that fails to
+     * import as ONE testcase whose name is its own classname - the file path -
+     * holding the load error (shape captured from vitest 3). Read as a test it
+     * entered the red set, and once the module existed the name was gone, so
+     * red-set-passes-by-name refused the card forever.
+     */
+    const VITEST_IMPORT_FAILURE = `<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="2" failures="1" errors="0" time="0.001">
+    <testsuite name="src/__tests__/Broken.test.ts" tests="1" failures="1" errors="0" skipped="0" time="0">
+        <testcase classname="src/__tests__/Broken.test.ts" name="src/__tests__/Broken.test.ts" time="0">
+            <failure message="Cannot find module &apos;../missing&apos; imported from /r/src/__tests__/Broken.test.ts" type="Error">
+Error: Cannot find module &apos;../missing&apos; imported from /r/src/__tests__/Broken.test.ts
+ ❯ src/__tests__/Broken.test.ts:1:1
+Serialized Error: { code: &apos;ERR_MODULE_NOT_FOUND&apos; }
+            </failure>
+        </testcase>
+    </testsuite>
+    <testsuite name="src/__tests__/ok.test.ts" tests="1" failures="0" errors="0" skipped="0" time="0.001">
+        <testcase classname="src/__tests__/ok.test.ts" name="fine" time="0.0005">
+        </testcase>
+    </testsuite>
+</testsuites>`;
+
+    it('vitest: a file that fails to import is a broken file, never a test (CGLAB-418)', async () => {
+      const mod = await load();
+      const r = mod.parseJunitXml(VITEST_IMPORT_FAILURE, '/r');
+      expect(r.tests).toEqual([{ name: 'src/__tests__/ok.test.ts > fine', file: 'src/__tests__/ok.test.ts', status: 'passed' }]);
+      expect(r.brokenFiles).toEqual([{ file: 'src/__tests__/Broken.test.ts', message: "Cannot find module '../missing' imported from /r/src/__tests__/Broken.test.ts" }]);
+    });
+
+    // The field shape (CGLAB-417): a vitest project rooted in console/frontend, captured from vitest 3.
+    it('vitest multi-project: a file that fails to import is a broken file, named from the repository root (CGLAB-418)', async () => {
+      const mod = await load();
+      const xml = '<testsuites><testsuite name="console/frontend/components/__tests__/C.test.ts" tests="1" failures="1"><testcase classname="console/frontend/components/__tests__/C.test.ts" name="components/__tests__/C.test.ts" time="0"><failure message="Cannot find module &apos;../missing&apos;" type="Error">Error</failure></testcase></testsuite></testsuites>';
+      const r = mod.parseJunitXml(xml, '/r');
+      expect(r.tests).toEqual([]);
+      expect(r.brokenFiles).toEqual([{ file: 'console/frontend/components/__tests__/C.test.ts', message: "Cannot find module '../missing'" }]);
+    });
+
+    it('jest-junit / mocha: a failing test whose classname equals its title stays a test (CGLAB-418)', async () => {
+      const mod = await load();
+      const xml = '<testsuites><testsuite name="parser"><testcase classname="parser loads index.js" name="parser loads index.js"><failure message="expected 1 to be 2">AssertionError</failure></testcase></testsuite></testsuites>';
+      const r = mod.parseJunitXml(xml, '/r');
+      expect(r.brokenFiles).toEqual([]);
+      expect(r.tests.map((t: any) => t.status)).toEqual(['failed']);
+    });
+
+    it('vitest: a failed beforeAll in a file whose tests ran stays a failing test, not a load failure (CGLAB-418)', async () => {
+      const mod = await load();
+      const xml = '<testsuites><testsuite name="src/a.test.ts"><testcase classname="src/a.test.ts" name="works"/><testcase classname="src/a.test.ts" name="src/a.test.ts"><failure type="Error" message="hook boom">Error</failure></testcase></testsuite></testsuites>';
+      const r = mod.parseJunitXml(xml, '/r');
+      expect(r.brokenFiles).toEqual([]);
+      expect(r.tests.map((t: any) => [t.name, t.status])).toEqual([['src/a.test.ts > works', 'passed'], ['src/a.test.ts > src/a.test.ts', 'failed']]);
+    });
+
+    it('reads an old red-set entry recorded from a load failure as its file (CGLAB-418)', async () => {
+      const mod = await load();
+      // The name CGLAB-417 recorded, verbatim.
+      expect(mod.loadFailureFileOf('console/frontend/components/__tests__/ConfirmButton.test.tsx > components/__tests__/ConfirmButton.test.tsx'))
+        .toBe('console/frontend/components/__tests__/ConfirmButton.test.tsx');
+      expect(mod.loadFailureFileOf('src/a.test.ts > src/a.test.ts')).toBe('src/a.test.ts');
+      expect(mod.loadFailureFileOf('src/a.test.ts > adds > works')).toBeNull();
+      expect(mod.loadFailureFileOf('src/a.test.ts > b.test.ts')).toBeNull();
+      // A bare tail is a test title, not the file's path relative to a project root.
+      expect(mod.loadFailureFileOf('src/a.test.ts > a.test.ts')).toBeNull();
+      expect(mod.loadFailureFileOf('tests/test_a.py > tests/test_a.py')).toBeNull();
+    });
+
+    it('vitest: a real failing test in a file stays a test (CGLAB-418)', async () => {
+      const mod = await load();
+      const xml = '<testsuites><testsuite name="src/a.test.ts"><testcase classname="src/a.test.ts" name="adds &gt; works"><failure type="AssertionError" message="expected 1 to be 2">AssertionError</failure></testcase></testsuite></testsuites>';
+      const r = mod.parseJunitXml(xml, '/r');
+      expect(r.brokenFiles).toEqual([]);
+      expect(r.tests).toEqual([{ name: 'src/a.test.ts > adds > works', file: 'src/a.test.ts', status: 'failed', failure: 'assertion' }]);
+    });
+
+    it('vitest: a PASSING testcase named after its file is still a test (CGLAB-418)', async () => {
+      const mod = await load();
+      const xml = '<testsuites><testsuite name="src/a.test.ts"><testcase classname="src/a.test.ts" name="src/a.test.ts"/></testsuite></testsuites>';
+      const r = mod.parseJunitXml(xml, '/r');
+      expect(r.brokenFiles).toEqual([]);
+      expect(r.tests.map((t: any) => t.status)).toEqual(['passed']);
+    });
+
     it('pytest: a real test that errors in setup stays a test, with an error', async () => {
       const mod = await load();
       const xml = '<testsuite><testcase classname="tests.test_a" name="test_x"><error message="failed on setup with &quot;fixture \'db\' not found&quot;">E   fixture \'db\' not found</error></testcase></testsuite>';

@@ -470,6 +470,15 @@ describe('CGLAB-380: test checks', () => {
       expect(c.detail).toMatch(/tests\/c\.test\.js/);
     });
 
+    // CGLAB-418: the usual cause is a test importing code not written yet, and code may not be written here.
+    it('says how to write a test for code that does not exist yet when a test file fails to load', async () => {
+      const { dir, id } = await atSpecs();
+      honestTests(dir);
+      write(dir, 'tests/c.test.js', 'BROKEN\n');
+      const c = await refused(id, 'no-broken-test-files');
+      expect(c.detail).toMatch(/import it inside the test/i);
+    });
+
     it('refuses when a test that passed at the start of the step now fails', async () => {
       const { dir, id } = await atSpecs();
       honestTests(dir);
@@ -506,6 +515,46 @@ describe('CGLAB-380: test checks', () => {
       const { dir, id } = await atBuild();
       fs.rmSync(path.join(dir, 'tests/mul.test.js'));
       await refused(id, 'red-set-passes-by-name');
+    });
+
+    /*
+     * CGLAB-418: a red set recorded before the JUnit reader knew vitest's
+     * import-failure shape holds the file itself as a test, `F > F`. The name
+     * can never come back, so the card was stuck until a person overrode the
+     * check. Such an entry stands for the file's tests: it passes when the file
+     * now reports tests and every one of them passes, and on nothing less.
+     */
+    const plantPhantom = async (id: string, file: string) => {
+      const records: any[] = (await storage.getItem(id) as any).stepRecords;
+      const rec = records.find(r => r.kind === 'record' && r.name === 'redSet');
+      expect(rec, JSON.stringify(records)).toBeDefined();
+      rec.value = [...rec.value, `${file} > ${file}`];
+      await storage.updateItem(id, { stepRecords: records } as any);
+    };
+
+    it('an old import-failure entry in the red set passes once its file loads and its tests pass (CGLAB-418)', async () => {
+      const { dir, id } = await atBuild();
+      await plantPhantom(id, 'tests/mul.test.js');
+      impl(dir, { add: 'ok', mul: '12' });
+      const r = await validate(id);
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+    });
+
+    it('an old import-failure entry does not pass while a test in its file fails (CGLAB-418)', async () => {
+      const { dir, id } = await atBuild();
+      await plantPhantom(id, 'tests/a.test.js');
+      write(dir, 'tests/a.test.js', 'T add_works add=nope\n');
+      impl(dir, { add: 'ok', mul: '12' });
+      const c = await refused(id, 'red-set-passes-by-name');
+      expect(c.detail).toMatch(/tests\/a\.test\.js/);
+    });
+
+    it('an old import-failure entry does not pass when its file reports no tests (CGLAB-418)', async () => {
+      const { dir, id } = await atBuild();
+      await plantPhantom(id, 'tests/gone.test.js');
+      impl(dir, { add: 'ok', mul: '12' });
+      const c = await refused(id, 'red-set-passes-by-name');
+      expect(c.detail).toMatch(/tests\/gone\.test\.js/);
     });
 
     it('accepts an APPENDED test file while implementing', async () => {

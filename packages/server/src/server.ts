@@ -7726,10 +7726,11 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       }
       console.warn(`[VALIDATE] Sibling propagation refused for ${itemId}: ${refusal}`);
       if (treeState && gateRoot) siblingFlightKey = [item.projectId, item.parentId, gateRoot, resolvedCommand, treeState].join('\0');
-    } else if (!isFinalStep) {
+    } else if (!isFinalStep && !resolvedCommand) {
       // "A sibling is further along" runs nothing, so it may only carry a step
       // that needs no command. On a boundary step mid-flow the project's
-      // command is required, and it runs (CGLAB-378 review).
+      // command is required, and it runs (CGLAB-378 review). A command the
+      // caller handed can only add a check, so it runs too (CGLAB-418).
       const passedSibling = siblings.find(s => {
         if (s.id === item.id) return false;
         if (s.status === Status.DONE) return true;
@@ -7737,7 +7738,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         return sibStep !== undefined && sibStep.index > currentFlowStep.index;
       });
       if (passedSibling) {
-        const sibComment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).`, timestamp: new Date() };
+        // CGLAB-418: the step's own checks ran and passed; nothing is skipped.
+        const ahead = `A sibling, \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}), is already further along.`;
+        const sibComment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (sibling propagation)\n\n**Step**: ${item.status} → ${nextStatus}\n${ahead}${passedChecks ? `\n\n${passedChecks}` : ''}`, timestamp: new Date() };
         const left = await commitOnLeave(res);
         if (left.refused) return;
         res = left.res;
@@ -7748,7 +7751,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         await ensureWorktreeForItem(updated, true);
         io.emit('items_updated');
         if (updated.parentId) await syncParentStatus(updated.parentId);
-        return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}${nowOn(nextStatus)}`, output: 'Sibling propagation' });
+        return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}. ${ahead}${mandatoryInstructions}${nowOn(nextStatus)}`, output: 'Sibling propagation' });
       }
     }
   }

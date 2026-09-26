@@ -94,6 +94,9 @@ const noRun = ({ ran, moved, card: c, from }) => ({
   detail: `${ran} suite run(s); card on ${c.status}${moved ? '' : `: ${blockers(c)}`}`,
 });
 
+/** vitest writing JUnit XML (CGLAB-418): the field project's shape, where the JSON reader already saw load failures. */
+const VITEST_JUNIT = { format: 'junit-xml', reportPath: '.reports/junit.xml', command: 'node node_modules/vitest/vitest.mjs run --reporter=junit --outputFile=.reports/junit.xml' };
+
 /** Every check verify recorded, as a scenario reads it. */
 const hollowOf = c => (c.lastChecks?.results ?? []).filter(x => x.outcome === 'n/a' || x.outcome === 'unavailable');
 
@@ -380,6 +383,34 @@ export const scenarios = [
       const blockAt = lines.findIndex(l => l.includes('some-new-test-red'));
       const ok = /refused|cannot leave|stays on/i.test(last) && blockAt >= lines.length - 6;
       return { actual: ok ? 'verdict-last' : 'buried', detail: `last: ${last} | block line at ${blockAt}/${lines.length}` };
+    },
+  },
+
+  // ── CGLAB-418: vitest's JUnit reporter writes an import failure as one testcase named after the file ──
+  {
+    check: 'junit-load-failure',
+    name: 'vitest JUnit: a new test file that fails to import is a broken file, never a red test',
+    expected: 'held-broken',
+    run: async () => {
+      const ctx = await tddProject({ runner: 'vitest', report: VITEST_JUNIT });
+      await drive(ctx, 'CREATE_UNIT_TESTS');
+      write(ctx.dir, { 'test/extra.test.js': "import { test, expect } from 'vitest';\nimport { sub } from '../src/extra.js';\n\ntest('subtracts', () => { expect(sub(3, 1)).toBe(2); });\n" });
+      const r = await verifyCounting(ctx);
+      const blocked = (r.card.lastChecks?.results ?? []).filter(x => x.blocking).map(x => x.id);
+      return { actual: r.moved ? 'moved' : blocked.includes('no-broken-test-files') ? 'held-broken' : `held: ${blocked.join(',')}`, detail: blockers(r.card) };
+    },
+  },
+  {
+    check: 'junit-load-failure',
+    name: 'vitest JUnit: a test that imports the code it tests inside itself goes red, then green by name once the code exists',
+    expected: 'on-refactor',
+    run: async () => {
+      const ctx = await tddProject({ runner: 'vitest', report: VITEST_JUNIT });
+      await drive(ctx, 'REFACTOR', {
+        CREATE_UNIT_TESTS: ({ dir }) => write(dir, { 'test/extra.test.js': "import { test, expect } from 'vitest';\n\ntest('subtracts', async () => { const { sub } = await import('../src/extra.js'); expect(sub(3, 1)).toBe(2); });\n" }),
+        IN_PROGRESS: ({ dir, k }) => write(dir, k.otherSource),
+      });
+      return { actual: (await card(ctx.id)).status === 'REFACTOR' ? 'on-refactor' : 'held', detail: '' };
     },
   },
 

@@ -67,6 +67,24 @@ export function isTestPath(file: string, extra: readonly string[] = []): boolean
   });
 }
 
+/** A JavaScript/TypeScript source file: what vitest and node --test load. */
+const SCRIPT_FILE = /\.[cm]?[jt]sx?$/;
+
+/**
+ * The file a red-set entry stands for when it is a load failure a reader
+ * older than CGLAB-418 recorded as a test: `F > N`, where N is the file as the
+ * runner named it - F itself, or F's tail when the report's `file` attribute
+ * placed it under a subdirectory of the repository. Such a name never comes
+ * back once F loads, so a check reads it as F's tests.
+ */
+export function loadFailureFileOf(testName: string): string | null {
+  const i = testName.indexOf(' > ');
+  if (i < 0) return null;
+  const file = testName.slice(0, i);
+  const named = testName.slice(i + 3);
+  return SCRIPT_FILE.test(named) && (named === file || (named.includes('/') && file.endsWith(`/${named}`))) ? file : null;
+}
+
 /** Never part of a surface, wherever they sit: bytecode, caches, OS files. */
 const JUNK_NAMES = new Set(['node_modules', '.git', '__pycache__', '.pytest_cache', '.mypy_cache', '.DS_Store', 'Thumbs.db']);
 /** A directory that holds tests by its name: test/, specs/, Calc.Tests/, FooTests/. */
@@ -274,7 +292,10 @@ export function parseJunitXml(text: string, root: string): ParsedReport {
   const tests: ReportedTest[] = [];
   const brokenFiles: Array<{ file: string; message: string }> = [];
   let sawSuite = false;
-  let open: { attrs: Record<string, string>; failed?: 'assertion' | 'error'; skipped?: boolean; body?: string; failureType?: string; failureMessage?: string; errorMessage?: string; errorBody?: string } | null = null;
+  // CGLAB-418: vitest load failures, settled once the whole report is read.
+  const loadFailures: Array<{ file: string; message: string; test: ReportedTest }> = [];
+  let suiteName: string | undefined;
+  let open: { attrs: Record<string, string>; suite?: string; failed?: 'assertion' | 'error'; skipped?: boolean; body?: string; failureType?: string; failureMessage?: string; errorMessage?: string; errorBody?: string } | null = null;
   let errorFrom = -1;
   let failureFrom = -1;
   const close = () => {
@@ -292,7 +313,7 @@ export function parseJunitXml(text: string, root: string): ParsedReport {
     const name = open.attrs.name ?? '';
     const exited = open.failed && open.body ? /cause: 'test failed',\s*exitCode: (\d+),\s*signal:/.exec(open.body) : null;
     const fileAttr = open.attrs.file ? relativeTo(root, open.attrs.file) : null;
-    if (exited && /\.[cm]?[jt]sx?$/.test(name) && (!fileAttr || fileAttr === name || fileAttr.endsWith(`/${name}`))) {
+    if (exited && SCRIPT_FILE.test(name) && (!fileAttr || fileAttr === name || fileAttr.endsWith(`/${name}`))) {
       brokenFiles.push({ file: fileAttr ?? name, message: `the test process exited (code ${exited[1]}) before the file finished; it may not load` });
       open = null;
       return;
@@ -311,16 +332,38 @@ export function parseJunitXml(text: string, root: string): ParsedReport {
     }
     const file = open.attrs.file ? relativeTo(root, open.attrs.file) : (open.attrs.classname ?? '');
     const status: ReportedStatus = open.failed ? 'failed' : open.skipped ? 'skipped' : 'passed';
-    tests.push({ name: `${file} > ${open.attrs.name ?? ''}`, file, status, ...(open.failed ? { failure: open.failed } : {}) });
+    const test: ReportedTest = { name: `${file} > ${open.attrs.name ?? ''}`, file, status, ...(open.failed ? { failure: open.failed } : {}) };
+    /*
+     * vitest writes a test file that fails to import as ONE failed testcase
+     * named after the file, inside a <testsuite> named as its classname
+     * (CGLAB-418). The name is the file relative to its vitest project's
+     * root, the classname relative to the config root: the same path, or its
+     * tail in a multi-project repository. Read as a test it entered the red
+     * set under a name that vanishes once the file loads. The name must look
+     * like a file too: jest-junit and mocha write classname == name for
+     * ordinary tests.
+     */
+    const cls = open.attrs.classname ?? '';
+    if (open.failed && name && SCRIPT_FILE.test(name) && (name.includes('/') || isTestPath(name))
+      && (cls === name || cls.endsWith(`/${name}`)) && open.suite === cls) {
+      loadFailures.push({ file, message: (open.failureMessage ?? open.errorMessage ?? 'the file failed to load').split('\n')[0], test });
+      open = null;
+      return;
+    }
+    tests.push(test);
     open = null;
   };
   for (const m of clean.matchAll(tag)) {
     const [, closing, name, attrText, selfClosing] = m;
-    if (name === 'testsuite' || name === 'testsuites') { sawSuite = true; continue; }
+    if (name === 'testsuite' || name === 'testsuites') {
+      sawSuite = true;
+      if (name === 'testsuite') suiteName = closing ? undefined : attributes(attrText).name;
+      continue;
+    }
     if (name === 'testcase') {
       if (closing) { close(); continue; }
       close(); // an unclosed testcase ends where the next begins
-      open = { attrs: attributes(attrText) };
+      open = { attrs: attributes(attrText), suite: suiteName };
       if (selfClosing) close();
       continue;
     }
@@ -363,6 +406,13 @@ export function parseJunitXml(text: string, root: string): ParsedReport {
   }
   close();
   if (!sawSuite) throw new Error('not a JUnit XML report: no <testsuite>');
+  // A file that also reports named tests did load: its file-level testcase is
+  // a failed beforeAll/afterAll, and stays a failing test as it always was.
+  const loaded = new Set(tests.map(t => t.file));
+  for (const f of loadFailures) {
+    if (loaded.has(f.file)) tests.push(f.test);
+    else brokenFiles.push({ file: f.file, message: f.message });
+  }
   return { tests, brokenFiles, duplicateNames: duplicatesOf(tests) };
 }
 

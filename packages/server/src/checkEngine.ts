@@ -18,7 +18,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
-import { insideRoot, isTestPath } from './stepRecords';
+import { insideRoot, isTestPath, loadFailureFileOf } from './stepRecords';
 import { CHECK_CATALOGUE, checkDef, claimsCollide, type CheckSeverity, type RecordName, type ResolvedCheck } from '@agenfk/core';
 
 export type CheckOutcome = 'pass' | 'fail' | 'unavailable' | 'n/a' | 'deferred';
@@ -466,7 +466,8 @@ export const EVALUATORS: Record<string, Evaluator> = {
     if (isVerdict(now)) return now;
     const broken = (now.capture.brokenFiles ?? []).filter(b => !othersBrokenFile(ctx, b.file));
     return broken.length
-      ? { outcome: 'fail', detail: `${broken.length} test file(s) failed to load, so their tests have no names: ${list(broken.map(b => `${b.file}: ${b.message}`))}` }
+      // CGLAB-418: most often a test importing code not written yet - which a tests-only step cannot write.
+      ? { outcome: 'fail', detail: `${broken.length} test file(s) failed to load, so their tests have no names: ${list(broken.map(b => `${b.file}: ${b.message}`))}. If a file imports code that does not exist yet, import it inside the test instead (in JavaScript, \`await import(...)\`), so a missing module fails that test rather than the whole file; red-is-assertion then warns that it is red on an error, which is expected until the code exists.` }
       : { outcome: 'pass', detail: 'every test file loads' };
   },
 
@@ -526,7 +527,21 @@ export const EVALUATORS: Record<string, Evaluator> = {
     const red = ctx.records.redSet;
     if (!Array.isArray(red)) return { outcome: 'unavailable', soft: true, detail: "no 'redSet' record: the step that writes tests did not produce one for this card (it entered that step before checks, or its tests could not be judged there)" };
     const status = new Map(now.tests.map(t => [t.name, t.status]));
-    const open = red.map(String).filter(n => status.get(n) !== 'passed').map(n => `${n} [${status.get(n) ?? 'missing'}]`);
+    /*
+     * CGLAB-418: a reader older than this recorded a file that failed to load
+     * as a test named after itself, a name that never returns once the file
+     * loads. It stands for that file's tests: open until the file reports
+     * tests and every one of them passes.
+     */
+    const openBecause = (n: string): string | null => {
+      if (status.has(n)) return status.get(n) === 'passed' ? null : String(status.get(n));
+      const file = loadFailureFileOf(n);
+      if (!file) return 'missing';
+      const inFile = now.tests.filter(t => t.file === file);
+      if (!inFile.length) return `${file} reports no tests`;
+      return inFile.every(t => t.status === 'passed') ? null : `a test in ${file} is not passing`;
+    };
+    const open = red.map(String).flatMap(n => { const why = openBecause(n); return why ? [`${n} [${why}]`] : []; });
     return open.length
       ? { outcome: 'fail', detail: `not passing yet: ${list(open)}` }
       : { outcome: 'pass', detail: `${red.length} red test(s) now pass` };

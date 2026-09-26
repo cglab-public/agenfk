@@ -2,6 +2,34 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.5] — 2026-09-26
+
+Beta, cumulative over `2.0.0-beta.4`: everything in beta.4, plus the changes below. Found by following a real
+TDD Flow card end to end.
+
+### Checks run the suite only where something changed
+
+- **A verify reuses a capture the tree's content still matches** instead of running the suite again: a no-op
+  REFACTOR, a rollback and re-entry on an unchanged tree, and a test-path declaration that adds no test file run
+  no suite. A change to code, tests or `.gitignore` still runs it. The verify output says when a capture was
+  reused.
+- **A failed capture blocks instead of disarming the checks.** A capture that could not be read or tied to the
+  tree used to degrade the TDD checks to soft-unavailable on a new card; now it blocks and asks for a re-capture.
+  `entry-baseline` passes only when per-test results tied to the tree were produced.
+- **New `tests-added-late` warning at review**: it flags test files added after the tests were written and frozen,
+  which nothing has shown to fail without the change. It reads git and runs no suite.
+
+### The CLI says what happened
+
+- A refused `agenfk verify` exits non-zero, prints every check it judged (soft, warn and pass included), and
+  prints its verdict last.
+- The gatekeeper names the role of the step the card is on instead of `CODING` everywhere.
+- `agenfk pr create` / `pr check` mention `/agenfk-release` only in a repository that has that command.
+- `--test-report-path` takes a comma list, one report per suite, read as one run; a report the command did not
+  write is named.
+- Model detection no longer gives up because a subagent wrote recently when that subagent has already handed back:
+  a reviewer that finished minutes before `agenfk pr create` used to send the PR out with the model unverified.
+
 ## [2.0.0-beta.4] — 2026-09-25
 
 Beta, cumulative over `2.0.0-beta.3`: everything in beta.3, plus the changes below.

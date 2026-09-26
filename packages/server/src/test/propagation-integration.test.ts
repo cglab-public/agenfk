@@ -324,3 +324,56 @@ describe('the sibling gate on a real tree', () => {
     expect(r2.body.output, 'a stale green was spent as proof').not.toBe('Sibling propagation');
   });
 });
+
+/*
+ * CGLAB-418: on a step that needs no command, "a sibling is further along"
+ * carries the card once its own checks have passed. Nothing is skipped there,
+ * so the reply must not say so, and its comment carries the checks that ran
+ * like every other passing verify's does.
+ */
+describe('sibling propagation on an intermediate step says what happened', () => {
+  const shipFlow = async () => {
+    const p = (await internal(agent().post('/projects')).send({ name: `midprop-${Date.now()}` })).body;
+    await storage.updateProject(p.id, { projectRoot: repo, verifyCommand: 'true' } as never);
+    const f = (await internal(agent().post('/flows')).send({
+      name: `Mid Flow ${Date.now()}`,
+      steps: [
+        { name: 'TODO', label: 'To Do', order: 0, isAnchor: true },
+        { name: 'SPEC', label: 'Spec', order: 1 },
+        { name: 'CODE', label: 'Code', order: 2 },
+        { name: 'SHIPPED', label: 'Shipped', order: 3, isAnchor: true },
+      ],
+    })).body;
+    await internal(agent().post(`/projects/${p.id}/flow`)).send({ flowId: f.id });
+    const parent = (await internal(agent().post('/items')).send({ type: 'STORY', title: 'p', projectId: p.id })).body;
+    const make = async (title: string, status: string) => {
+      const c = (await internal(agent().post('/items')).send({ type: 'TASK', title, projectId: p.id, parentId: parent.id })).body;
+      await storage.updateItem(c.id, { status } as any);
+      return c;
+    };
+    return { ahead: await make('ahead', 'CODE'), card: await make('behind', 'SPEC') };
+  };
+  const lastComment = async (id: string) => {
+    const comments: any[] = ((await storage.getItem(id)) as any).comments ?? [];
+    return String(comments[comments.length - 1]?.content ?? '');
+  };
+
+  it('does not claim a skip when the step runs no command, and lists the checks', async () => {
+    const { card } = await shipFlow();
+    const r = await validate(card.id);
+    expect(r.body.status, JSON.stringify(r.body)).toBe('CODE');
+    expect(r.body.output).toBe('Sibling propagation');
+    const comment = await lastComment(card.id);
+    expect(r.body.message).not.toMatch(/skipped|already verified/i);
+    expect(comment).not.toMatch(/skipped|already verified/i);
+    expect(comment).toMatch(/ahead/);
+    expect(comment).toMatch(/on-card-branch/);
+  });
+
+  it('runs a command it was handed instead of propagating past it', async () => {
+    const { card } = await shipFlow();
+    const r = await internal(agent().post(`/items/${card.id}/validate`)).send({ evidence: 'ok', command: 'false' });
+    expect(r.body.output, JSON.stringify(r.body)).not.toBe('Sibling propagation');
+    expect(((await storage.getItem(card.id)) as any).status).toBe('SPEC');
+  });
+});
