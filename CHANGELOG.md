@@ -2,6 +2,29 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.6] — 2026-09-26
+
+Beta, cumulative over `2.0.0-beta.5`: everything in beta.5, plus the changes below (CGLAB-418).
+
+### A vitest test file that fails to import is no longer a phantom red test
+
+- **The JUnit reader recognises vitest's load failure.** vitest writes a file that fails to import as one failed
+  testcase named after the file (in a multi-project repository, the file relative to its project's root). It used
+  to be read as a red test: it entered the red set at the test-writing step, and once the module existed the name
+  was gone, so `red-set-passes-by-name` refused the card until a person overrode it. It is now a broken file, as
+  the vitest JSON reader already had it. A failed top-level hook in a file whose tests ran stays a failing test,
+  and jest-junit / mocha tests whose classname equals their title are untouched.
+- **Red sets recorded before this fix unstick themselves.** An entry of that old shape is read as its file's tests:
+  it passes once the file reports tests and every one of them passes, and not before.
+- **`no-broken-test-files` says what to do**: import code that does not exist yet inside the test (in JavaScript,
+  `await import(...)`), so the missing module fails that test rather than the whole file.
+
+### Sibling propagation on an intermediate step says what happened
+
+- It no longer reports "Skipped - already verified by sibling" after the step's own checks ran: the comment names
+  the step, the sibling that is further along, and the checks that passed.
+- A command handed to `agenfk verify` on such a step now runs instead of being dropped.
+
 ## [2.0.0-beta.5] — 2026-09-26
 
 Beta, cumulative over `2.0.0-beta.4`: everything in beta.4, plus the changes below. Found by following a real
