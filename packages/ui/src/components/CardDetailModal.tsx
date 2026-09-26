@@ -3,18 +3,20 @@ import { AgEnFKItem, ItemType, Status } from '../types';
 import {
   X, Layout, Tag, AlignLeft, AlertCircle, Zap,
   Clock, Calendar, FileText, ArrowLeft, Plus,
-  Loader2, ShieldCheck, FlaskConical, Copy, Check, Pencil, Trash2, ExternalLink
+  Loader2, ShieldCheck, FlaskConical, ListChecks, Copy, Check, Pencil, Trash2, ExternalLink
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { io } from 'socket.io-client';
+import { useSocketEvent } from '../SocketContext';
 import { stripAnsi, calculateCost, formatCost, calculateCycleTimeMs, formatDuration } from '../utils';
 import { api } from '../api';
-import { API_URL } from '../apiUrl';
+import { VerifyRunBadge, VerifyRunOutput } from './VerifyRunBadge';
 import { RunsPanel, type AgentRun } from './RunsPanel';
+import { StepChecksPanel } from './StepChecksPanel';
+import { CheckHistoryTab } from './CheckHistoryTab';
 
 interface CardDetailModalProps {
   item: AgEnFKItem;
@@ -29,7 +31,7 @@ interface CardDetailModalProps {
   flowName?: string;
 }
 
-type TabType = 'overview' | 'plan' | 'subitems' | 'history' | 'tests' | 'reviews' | 'usage' | 'runs';
+type TabType = 'overview' | 'plan' | 'subitems' | 'history' | 'checks' | 'tests' | 'reviews' | 'usage' | 'runs';
 
 export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems, pricesData, onClose, onSelectItem, onAddItem, onDeleteItem, onUpdateItem, projectName, flowName }) => {
   const isNew = !item.id;
@@ -43,20 +45,26 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
   });
   const agentRuns = Array.isArray(agentRunsData) ? agentRunsData : [];
 
+  // 9569b4d7: while a verify runs on the card, show what it is printing.
+  const { data: activeRun } = useQuery({
+    // Keyed by the run: a new run must not show the last one's output until it refetches.
+    queryKey: ['active-run', item.id, item.activeRun?.runId],
+    queryFn: () => api.getActiveRun(item.id),
+    enabled: !!item.id && !!item.activeRun,
+    refetchInterval: 2000,
+  });
+
   // Live: the "Runs" tab is conditional on runs existing, so refresh the run
   // list when the server pushes run events — the tab then appears without a
   // manual dashboard refresh. (RunsPanel does its own streaming once mounted;
   // this only needs to flip the tab into existence.)
-  React.useEffect(() => {
-    if (!item.id) return;
-    const socket = io(API_URL || undefined);
-    const refresh = (b: { itemId: string }) => {
-      if (b?.itemId === item.id) queryClient.invalidateQueries({ queryKey: ['agent-runs', item.id] });
-    };
-    socket.on('run:event', refresh);
-    socket.on('run:updated', refresh);
-    return () => { socket.disconnect(); };
-  }, [item.id, queryClient]);
+  // Shared connection (CGLAB-168): this modal opens and closes constantly, and
+  // it must not take the window's socket down with it on every close.
+  const refreshRuns = (b: { itemId: string }) => {
+    if (b?.itemId === item.id) queryClient.invalidateQueries({ queryKey: ['agent-runs', item.id] });
+  };
+  useSocketEvent('run:event', refreshRuns);
+  useSocketEvent('run:updated', refreshRuns);
   const [activeTab, setActiveTab] = React.useState<TabType>('overview');
   const [newSubitemTitle, setNewSubitemTitle] = React.useState('');
   const [isSubmitting, setIsSubmitting] = React.useState(false);
@@ -119,6 +127,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
     { id: 'plan', label: 'Plan', icon: <FileText size={14} />, hidden: isNew || !item.implementationPlan },
     { id: 'subitems', label: 'Subitems', icon: <Layout size={14} />, badge: subitems.length, hidden: isNew || item.type === ItemType.TASK || item.type === ItemType.BUG },
     { id: 'history', label: 'History', icon: <Clock size={14} />, badge: item.history?.length, hidden: isNew },
+    { id: 'checks', label: 'Checks', icon: <ListChecks size={14} />, hidden: isNew },
     { id: 'tests', label: 'Test Results', icon: <FlaskConical size={14} />, badge: item.tests?.length, hidden: isNew },
     { id: 'reviews', label: 'Reviews', icon: <ShieldCheck size={14} />, hidden: true },
     { id: 'usage', label: 'Usage', icon: <Zap size={14} />, hidden: isNew || !item.tokenUsage?.length },
@@ -376,6 +385,12 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
         <div ref={scrollRef} className="flex-1 overflow-y-auto p-8 space-y-8">
           {activeTab === 'overview' && (
             <>
+              {item.activeRun && (
+                <div>
+                  <VerifyRunBadge run={item.activeRun} />
+                  {activeRun?.output ? <VerifyRunOutput output={activeRun.output} /> : null}
+                </div>
+              )}
               <div>
                 {isNew ? (
                   <div className="space-y-2">
@@ -443,6 +458,8 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 )}
               </div>
 
+              {!isNew && <StepChecksPanel itemId={item.id} projectId={item.projectId} />}
+
               <div>
                 <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3">Description</h4>
                 {isNew ? (
@@ -463,7 +480,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                   <div className="prose prose-slate dark:prose-invert prose-sm max-w-none bg-slate-50 dark:bg-slate-950 rounded-xl p-4 min-h-[100px] border border-slate-100 dark:border-slate-800 overflow-x-auto break-words">
                     {item.description
                       ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{stripAnsi(item.description)}</ReactMarkdown>
-                      : <span className="italic text-slate-400 dark:text-slate-600 not-prose">No description provided.</span>
+                      : <span className="italic text-slate-400 dark:text-slate-500 not-prose">No description provided.</span>
                     }
                   </div>
                 )}
@@ -662,7 +679,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                                 "p-1 rounded transition-colors text-xs font-medium flex items-center gap-1",
                                 confirmDeleteId === sub.id
                                   ? "bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 hover:bg-rose-200 dark:hover:bg-rose-900/50"
-                                  : "text-slate-300 dark:text-slate-600 hover:text-rose-500 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/20"
+                                  : "text-slate-300 dark:text-slate-500 hover:text-rose-500 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/20"
                               )}
                             >
                               <Trash2 size={13} />
@@ -775,6 +792,8 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               {/* v8 ignore stop */}
             </div>
           )}
+
+          {activeTab === 'checks' && <CheckHistoryTab itemId={item.id} />}
 
           {activeTab === 'usage' && item.tokenUsage && (
             <div className="animate-in slide-in-from-bottom-2 duration-300">

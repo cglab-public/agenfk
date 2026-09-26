@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { requestOrigin } from '../util/publicUrl.js';
 import axios from 'axios';
 import { HubServerContext } from '../server.js';
 import { decryptSecret } from '../crypto.js';
@@ -19,9 +20,11 @@ async function readGoogleConfig(ctx: HubServerContext): Promise<GoogleCfg | unde
   );
 }
 
+// The host the user is browsing, never AGENFK_HUB_PUBLIC_URL: the state cookie
+// was set on this host, so the provider must send the user back to it. The
+// protocol honours X-Forwarded-Proto only from a trusted proxy.
 function callbackUrl(req: Request): string {
-  const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol;
-  return `${proto}://${req.get('host')}/auth/google/callback`;
+  return `${requestOrigin(req)}/auth/google/callback`;
 }
 
 export function googleRouter(ctx: HubServerContext): Router {
@@ -57,7 +60,9 @@ export function googleRouter(ctx: HubServerContext): Router {
     const code = req.query.code as string | undefined;
     if (!code) return res.status(400).json({ error: 'Missing authorization code' });
 
-    let userinfo: { sub: string; email: string; email_verified?: boolean };
+    // `name` comes free with the `profile` scope we already request, and is
+    // optional — sign-in must still succeed without it.
+    let userinfo: { sub: string; email: string; email_verified?: boolean; name?: string };
     try {
       const clientSecret = decryptSecret(cfg.google_client_secret_enc, ctx.config.secretKey);
       const tokenResp = await axios.post(GOOGLE_TOKEN, new URLSearchParams({
@@ -82,7 +87,7 @@ export function googleRouter(ctx: HubServerContext): Router {
     const allow = checkEmailAllowlist(userinfo.email, cfg.email_allowlist);
     if (!allow.allowed) return res.status(403).json({ error: allow.reason });
 
-    const user = await findInvitedSsoUser(ctx.db, ctx.config.defaultOrgId, { provider: 'google', subject: userinfo.sub, email: userinfo.email });
+    const user = await findInvitedSsoUser(ctx.db, ctx.config.defaultOrgId, { provider: 'google', subject: userinfo.sub, email: userinfo.email, name: userinfo.name });
     if (!user) return res.status(403).json({ error: 'Account not invited — ask your admin to invite you first' });
     if (!user.active) return res.status(403).json({ error: 'Account is deactivated' });
     await completeSsoLogin(ctx.db, res, user, ctx.config.sessionSecret);

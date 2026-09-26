@@ -84,6 +84,9 @@ const SCHEMA_PG = `
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL,
     email TEXT NOT NULL UNIQUE,
+    -- Display name as the identity provider reports it. Nullable: password
+    -- invites carry no name, and an IdP may withhold the claim.
+    name TEXT,
     password_hash TEXT,
     provider TEXT NOT NULL,
     provider_subject TEXT,
@@ -477,6 +480,52 @@ const SCHEMA_PG = `
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (org_id, model)
   );
+
+
+  -- Hub-centralized JIRA (CGLAB-412). org_jira is the org's Atlassian OAuth
+  -- app, registered once by an admin; the secret is an AES-GCM blob
+  -- (crypto.ts). Each installation connects its OWN JIRA identity:
+  -- jira_connections is keyed by the installation's hub api key (its sha256),
+  -- so a relay call uses the caller's token and JIRA's own permissions apply
+  -- per person. token_enc holds {access_token, refresh_token}; NULL with a
+  -- last_error once the grant died. jira_oauth_pending holds a flow between
+  -- start and completion: the state, then the exchanged token awaiting the
+  -- starting key's redemption of a one-time completion code. Timestamps are
+  -- ISO TEXT written by the app, identical in both dialects.
+  CREATE TABLE IF NOT EXISTS org_jira (
+    org_id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    client_secret_enc TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS jira_connections (
+    key_hash TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    token_enc TEXT,
+    cloud_id TEXT,
+    cloud_url TEXT,
+    account_email TEXT,
+    connected_at TEXT,
+    last_error TEXT,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_jira_connections_org ON jira_connections(org_id);
+
+  CREATE TABLE IF NOT EXISTS jira_oauth_pending (
+    state TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    key_hash TEXT NOT NULL,
+    return_to TEXT NOT NULL,
+    completion_hash TEXT,
+    token_enc TEXT,
+    cloud_id TEXT,
+    cloud_url TEXT,
+    account_email TEXT,
+    claimed_at TEXT,
+    expires_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_jira_oauth_pending_completion ON jira_oauth_pending(completion_hash);
 `;
 
 /**
@@ -628,17 +677,32 @@ async function bootstrap(adapter: HubDb): Promise<void> {
   // throws on every progress path — and on the parent that happens inside the
   // /deliver transaction, taking the child's whole delivery batch with it.
   for (const [table, column, ddl] of [
+    // users.name — hubs that predate the display-name fix have a users table
+    // without it, and those are precisely the ones with users already in them.
+    // (BUG f44b1128 / CGLAB-354.)
+    ['users', 'name', 'name TEXT'],
     ['flow_dispatches', 'definition_json', 'definition_json TEXT'],
     ['upgrade_dispatch_targets', 'seq', 'seq INTEGER NOT NULL DEFAULT 0'],
     ['upgrade_dispatch_targets', 'cancel_attempts', 'cancel_attempts INTEGER NOT NULL DEFAULT 0'],
     ['upgrade_dispatch_fanout', 'reported_seq', 'reported_seq INTEGER NOT NULL DEFAULT 0'],
     ['upgrade_dispatch_fanout', 'reported_json', 'reported_json TEXT'],
   ] as const) {
+    // Scope the probe to `public`. information_schema.columns spans every
+    // schema the role can see, so an unrelated application's `users.name`
+    // living in another schema of the same database would satisfy this check
+    // and silently skip the ALTER — leaving /auth/me querying a column that
+    // does not exist. `users` is the most collision-prone table name there is,
+    // and the rest of this file already filters by schema.
     const cols = await adapter.all<{ column_name: string }>(
-      'SELECT column_name FROM information_schema.columns WHERE table_name = $1', [table],
+      "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1", [table],
     );
     if (cols.length > 0 && !new Set(cols.map(c => c.column_name)).has(column)) {
-      await adapter.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+      // IF NOT EXISTS, because probe-then-ALTER is not atomic and the hub runs
+      // more than one task. On a rolling deploy they boot together, both see
+      // the column missing, and the loser's ALTER used to abort its startup
+      // with 'column already exists' — a crash-looping deploy on the very
+      // release that introduces a column. Verified against Postgres 16.
+      await adapter.exec(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${ddl}`);
     }
   }
 

@@ -1,10 +1,42 @@
 node_modules/
 dist/
 build/
+# packages/desktop/build is not build output - it is electron-builder's
+# buildResources directory, holding hand-authored packaging inputs: the app
+# icon and the macOS entitlements plist. Swallowed by the `build/` rule above,
+# they never reached the repo, and the resulting failures were quiet ones: a
+# release wearing the stock Electron atom instead of the brand mark, or a mac
+# build that cannot find its entitlements on a fresh clone.
+#
+# Un-ignoring it is an ALLOWLIST rather than an exception, because that
+# directory is also where electron-builder's own docs tell people to put
+# signing material, and this project signs for real. The trade is deliberate:
+# an allowlist fails LOUDLY the next time somebody adds a resource and forgets
+# the line, because a fresh clone cannot package. A denylist fails SILENTLY, by
+# publishing a certificate. Between a broken build and a leaked key, take the
+# broken build.
+!packages/desktop/build/
+packages/desktop/build/*
+!packages/desktop/build/entitlements.mac.plist
+!packages/desktop/build/icon.png
+!packages/desktop/build/icon.svg
+!packages/desktop/build/icons/
+# The allowlist has to be re-applied INSIDE icons/ as well. `build/*` matches
+# one level only, so un-ignoring the directory left anything dropped in it
+# committable - a hole the "keeps out anything else" test did not probe,
+# because it only checked build/ itself. A .p12 there would still be caught by
+# the extension rules further down; an unsuffixed credential file would not.
+packages/desktop/build/icons/*
+!packages/desktop/build/icons/*.png
 .agenfk/
 *.log
 .DS_Store
 .env
+# The bare rule above matches neither of these, and they are the two filenames
+# tooling actually writes credentials into.
+.env.local
+.env.*.local
+# .env.example stays tracked on purpose: it documents the variables.
 coverage/
 .reports/
 .opencode/
@@ -34,3 +66,42 @@ stryker.log
 
 # Stryker default HTML report dir (JSON reports land in /reports/ above)
 mutation-testing/
+
+# TypeScript incremental build state — local, never shared.
+*.tsbuildinfo
+
+# Signing and notarization material, wherever it lands (3d953bff).
+#
+# The highest-consequence thing that can be committed here. A leaked .p12 and
+# its password let somebody sign software as this organisation, and revoking a
+# Developer ID invalidates everything already shipped under it. Nothing matching
+# these was ever tracked, so none of them hides an existing file.
+*.p12
+*.pem
+*.cer
+*.keystore
+*.jks
+*.mobileprovision
+*.provisionprofile
+
+# Packaging artifacts, by extension and not only by directory.
+#
+# These land in packages/desktop/release today, which is already ignored. These
+# rules are for when they do not: `electron-builder --dir`, a run from another
+# cwd, or a change to directories.output. An installer committed once stays in
+# every clone of the history forever, so the extension is the safer thing to
+# match on. *.tar.gz above already set this precedent.
+*.dmg
+*.zip
+*.blockmap
+*.exe
+*.AppImage
+*.deb
+*.pkg
+
+# The directory, not only the *.log rule above - which stops covering it the
+# moment anything lands there without that extension.
+logs/
+
+# Playwright MCP scratch output (screenshots, console logs, snapshots)
+.playwright-mcp/

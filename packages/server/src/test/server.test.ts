@@ -1,10 +1,26 @@
 import { describe, it, expect, beforeEach, beforeAll, afterEach, vi } from 'vitest';
 import request from 'supertest';
-import { app, initStorage, storage, pkceStore, mapJiraTypeToAgEnFK, clearJiraValidationCache, VERIFY_TOKEN } from '../server';
+import { app, initStorage, storage, oauthStateStore, mapJiraTypeToAgEnFK, clearJiraValidationCache, VERIFY_TOKEN } from '../server';
+import { bindRoleLessDefaultFlow } from './helpers/roleLessFlow';
 import { Status, ItemType, AgEnFKItem } from '@agenfk/core';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call —
+ * 76 of them here. The churn produced `Error: Parse Error: Expected HTTP/`,
+ * a transport failure that hands the test an empty body, so the next call goes
+ * to `/items/undefined` and one bad socket surfaces as a confident wrong
+ * assertion in whichever test was running.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -32,7 +48,7 @@ describe('Server API', () => {
 
   describe('GET /projects', () => {
     it('should return empty list initially', async () => {
-      const res = await request(app).get('/projects');
+      const res = await agent().get('/projects');
       expect(res.status).toBe(200);
       expect(res.body).toEqual([]);
     });
@@ -40,12 +56,12 @@ describe('Server API', () => {
 
   describe('PUT /projects/:id', () => {
     it('should update a project', async () => {
-      const createRes = await request(app)
+      const createRes = await agent()
         .post('/projects')
         .send({ name: 'P1' });
       const id = createRes.body.id;
 
-      const res = await request(app)
+      const res = await agent()
         .put(`/projects/${id}`)
         .send({ name: 'P1 Updated' });
       
@@ -54,7 +70,7 @@ describe('Server API', () => {
     });
 
     it('should return 404 for non-existent project', async () => {
-      const res = await request(app)
+      const res = await agent()
         .put('/projects/none')
         .send({ name: 'X' });
       expect(res.status).toBe(404);
@@ -63,22 +79,22 @@ describe('Server API', () => {
 
   describe('DELETE /projects/:id', () => {
     it('should delete a project', async () => {
-      const createRes = await request(app)
+      const createRes = await agent()
         .post('/projects')
         .send({ name: 'To Delete' });
       const id = createRes.body.id;
 
-      const res = await request(app).delete(`/projects/${id}`);
+      const res = await agent().delete(`/projects/${id}`);
       expect(res.status).toBe(204);
 
-      const getRes = await request(app).get(`/projects/${id}`);
+      const getRes = await agent().get(`/projects/${id}`);
       expect(getRes.status).toBe(404);
     });
   });
 
   describe('GET /items', () => {
     it('should return empty items list', async () => {
-      const res = await request(app).get('/items');
+      const res = await agent().get('/items');
       expect(res.status).toBe(200);
       expect(res.body).toEqual([]);
     });
@@ -88,12 +104,13 @@ describe('Server API', () => {
     let projectId: string;
 
     beforeAll(async () => {
-      const res = await request(app).post('/projects').send({ name: 'Item Test' });
+      const res = await agent().post('/projects').send({ name: 'Item Test' });
       projectId = res.body.id;
+      await bindRoleLessDefaultFlow(storage, projectId);
     });
 
     it('should create an item', async () => {
-      const res = await request(app)
+      const res = await agent()
         .post('/items')
         .send({
           projectId,
@@ -105,27 +122,34 @@ describe('Server API', () => {
       expect(res.body.title).toBe('T1');
     });
 
-    it('should update an item status', async () => {
-      const createRes = await request(app)
+    it('should move an item status back, and only let the board move it forward (CGLAB-377)', async () => {
+      const createRes = await agent()
         .post('/items')
         .send({ projectId, type: ItemType.TASK, title: 'To Update', description: 'D' });
       const id = createRes.body.id;
 
-      const res = await request(app)
+      const refused = await agent().put(`/items/${id}`).send({ status: Status.IN_PROGRESS });
+      expect(refused.status).toBe(409);
+
+      const res = await agent()
         .put(`/items/${id}`)
+        .set('x-agenfk-ui', '1')
         .send({ status: Status.IN_PROGRESS });
-      
       expect(res.status).toBe(200);
       expect(res.body.status).toBe(Status.IN_PROGRESS);
+
+      const back = await agent().put(`/items/${id}`).send({ status: Status.TODO });
+      expect(back.status).toBe(200);
+      expect(back.body.status).toBe(Status.TODO);
     });
 
     it('should block direct transition to DONE', async () => {
-      const createRes = await request(app)
+      const createRes = await agent()
         .post('/items')
         .send({ projectId, type: ItemType.TASK, title: 'No Cheat', description: 'D' });
       const id = createRes.body.id;
 
-      const res = await request(app)
+      const res = await agent()
         .put(`/items/${id}`)
         .send({ status: Status.DONE });
       
@@ -133,177 +157,179 @@ describe('Server API', () => {
       expect(res.body.error).toContain('WORKFLOW VIOLATION');
     });
 
-    it('should allow transition to DONE with internal token', async () => {
-      const createRes = await request(app)
+    it('should refuse DONE even with the internal token (CGLAB-377)', async () => {
+      const createRes = await agent()
         .post('/items')
         .send({ projectId, type: ItemType.TASK, title: 'Verify Me', description: 'D' });
       const id = createRes.body.id;
 
-      const res = await request(app)
+      const res = await agent()
         .put(`/items/${id}`)
         .set('x-agenfk-internal', VERIFY_TOKEN)
         .send({ status: Status.DONE });
-      
-      expect(res.status).toBe(200);
-      expect(res.body.status).toBe(Status.DONE);
+
+      expect(res.status).toBe(403);
+      expect((await agent().get(`/items/${id}`)).body.status).toBe(Status.TODO);
     });
 
     it('should propagate status to parent', async () => {
-      const storyRes = await request(app)
+      const storyRes = await agent()
         .post('/items')
         .send({ projectId, type: ItemType.STORY, title: 'Parent Story', description: 'D' });
       const storyId = storyRes.body.id;
 
-      const taskRes = await request(app)
+      const taskRes = await agent()
         .post('/items')
         .send({ projectId, type: ItemType.TASK, title: 'Child Task', description: 'D', parentId: storyId });
       const taskId = taskRes.body.id;
 
       // Update child to IN_PROGRESS
-      await request(app).put(`/items/${taskId}`).send({ status: Status.IN_PROGRESS });
+      await agent().put(`/items/${taskId}`).set('x-agenfk-ui', '1').send({ status: Status.IN_PROGRESS });
 
       // Check parent
-      const parentRes = await request(app).get(`/items/${storyId}`);
+      const parentRes = await agent().get(`/items/${storyId}`);
       expect(parentRes.body.status).toBe(Status.IN_PROGRESS);
     });
 
     it('should treat parent as DONE when all active children are DONE and one is TRASHED', async () => {
-      const storyRes = await request(app)
+      const storyRes = await agent()
         .post('/items')
         .send({ projectId, type: ItemType.STORY, title: 'Parent with Trashed Child' });
       const storyId = storyRes.body.id;
 
-      const task1Res = await request(app)
+      const task1Res = await agent()
         .post('/items')
         .send({ projectId, type: ItemType.TASK, title: 'Active Done Task', parentId: storyId });
       const task1Id = task1Res.body.id;
 
-      const task2Res = await request(app)
+      const task2Res = await agent()
         .post('/items')
         .send({ projectId, type: ItemType.TASK, title: 'Trashed Task', parentId: storyId });
       const task2Id = task2Res.body.id;
 
-      // Move active task to DONE (via internal token)
-      await request(app).put(`/items/${task1Id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: Status.DONE });
+      // Seed the active task as DONE: no HTTP route sets DONE outside verify
+      // (CGLAB-377). The trash/archive below is what runs the parent sync.
+      await storage.updateItem(task1Id, { status: Status.DONE } as any);
 
       // Trash the second task
-      await request(app).delete(`/items/${task2Id}`);
+      await agent().delete(`/items/${task2Id}`);
 
       // Parent should be DONE — trashed child should be ignored
-      const parentRes = await request(app).get(`/items/${storyId}`);
+      const parentRes = await agent().get(`/items/${storyId}`);
       expect(parentRes.body.status).toBe(Status.DONE);
     });
 
     it('should treat parent as DONE when all active children are DONE and one is ARCHIVED', async () => {
-      const storyRes = await request(app)
+      const storyRes = await agent()
         .post('/items')
         .send({ projectId, type: ItemType.STORY, title: 'Parent with Archived Child' });
       const storyId = storyRes.body.id;
 
-      const task1Res = await request(app)
+      const task1Res = await agent()
         .post('/items')
         .send({ projectId, type: ItemType.TASK, title: 'Active Done Task 2', parentId: storyId });
       const task1Id = task1Res.body.id;
 
-      const task2Res = await request(app)
+      const task2Res = await agent()
         .post('/items')
         .send({ projectId, type: ItemType.TASK, title: 'Archived Task', parentId: storyId });
       const task2Id = task2Res.body.id;
 
-      // Move active task to DONE (via internal token)
-      await request(app).put(`/items/${task1Id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: Status.DONE });
+      // Seed the active task as DONE: no HTTP route sets DONE outside verify
+      // (CGLAB-377). The trash/archive below is what runs the parent sync.
+      await storage.updateItem(task1Id, { status: Status.DONE } as any);
 
       // Archive the second task
-      await request(app).put(`/items/${task2Id}`).send({ status: Status.ARCHIVED });
+      await agent().put(`/items/${task2Id}`).set('x-agenfk-ui', '1').send({ status: Status.ARCHIVED });
 
       // Parent should be DONE — archived child should be ignored
-      const parentRes = await request(app).get(`/items/${storyId}`);
+      const parentRes = await agent().get(`/items/${storyId}`);
       expect(parentRes.body.status).toBe(Status.DONE);
     });
 
     it('should not advance parent to DONE if active (non-trashed/archived) children remain incomplete', async () => {
-      const storyRes = await request(app)
+      const storyRes = await agent()
         .post('/items')
         .send({ projectId, type: ItemType.STORY, title: 'Parent with Mixed Children' });
       const storyId = storyRes.body.id;
 
-      const task1Res = await request(app)
+      const task1Res = await agent()
         .post('/items')
         .send({ projectId, type: ItemType.TASK, title: 'Done Task', parentId: storyId });
       const task1Id = task1Res.body.id;
 
-      const task2Res = await request(app)
+      const task2Res = await agent()
         .post('/items')
         .send({ projectId, type: ItemType.TASK, title: 'Still TODO Task', parentId: storyId });
 
-      const task3Res = await request(app)
+      const task3Res = await agent()
         .post('/items')
         .send({ projectId, type: ItemType.TASK, title: 'Trashed Task 2', parentId: storyId });
       const task3Id = task3Res.body.id;
 
-      // Move task1 to DONE
-      await request(app).put(`/items/${task1Id}`).set('x-agenfk-internal', VERIFY_TOKEN).send({ status: Status.DONE });
+      // Seed task1 as DONE (no HTTP route sets DONE outside verify, CGLAB-377)
+      await storage.updateItem(task1Id, { status: Status.DONE } as any);
 
       // Trash task3
-      await request(app).delete(`/items/${task3Id}`);
+      await agent().delete(`/items/${task3Id}`);
 
       // task2 is still TODO — parent should NOT be DONE
-      const parentRes = await request(app).get(`/items/${storyId}`);
+      const parentRes = await agent().get(`/items/${storyId}`);
       expect(parentRes.body.status).not.toBe(Status.DONE);
     });
 
     it('should archive and unarchive an item', async () => {
-      const createRes = await request(app)
+      const createRes = await agent()
         .post('/items')
         .send({ projectId, type: ItemType.TASK, title: 'Archive Me', description: 'D' });
       const id = createRes.body.id;
 
       // Archive
-      const archiveRes = await request(app).put(`/items/${id}`).send({ status: Status.ARCHIVED });
+      const archiveRes = await agent().put(`/items/${id}`).send({ status: Status.ARCHIVED });
       expect(archiveRes.status).toBe(200);
       expect(archiveRes.body.status).toBe(Status.ARCHIVED);
 
       // Unarchive
-      const unarchiveRes = await request(app).put(`/items/${id}`).send({ status: Status.TODO });
+      const unarchiveRes = await agent().put(`/items/${id}`).send({ status: Status.TODO });
       expect(unarchiveRes.status).toBe(200);
       expect(unarchiveRes.body.status).toBe(Status.TODO);
     });
 
     it('should trash an item (soft delete)', async () => {
-      const createRes = await request(app)
+      const createRes = await agent()
         .post('/items')
         .send({ projectId, type: ItemType.TASK, title: 'Delete Me', description: 'D' });
       const id = createRes.body.id;
 
-      const delRes = await request(app).delete(`/items/${id}`);
+      const delRes = await agent().delete(`/items/${id}`);
       expect(delRes.status).toBe(204);
 
       // Should still be fetchable by ID
-      const getRes = await request(app).get(`/items/${id}`);
+      const getRes = await agent().get(`/items/${id}`);
       expect(getRes.status).toBe(200);
       expect(getRes.body.status).toBe(Status.TRASHED);
 
       // Should NOT appear in general items list by default
-      const listRes = await request(app).get('/items');
+      const listRes = await agent().get('/items');
       const found = listRes.body.find((i: any) => i.id === id);
       expect(found).toBeUndefined();
     });
 
     it('should trash all archived items', async () => {
       // Create an archived item
-      const itemRes = await request(app)
+      const itemRes = await agent()
         .post('/items')
         .send({ projectId, type: ItemType.TASK, title: 'Archived Task', status: Status.ARCHIVED });
       const id = itemRes.body.id;
 
-      const trashRes = await request(app)
+      const trashRes = await agent()
         .post('/items/trash-archived')
         .send({ projectId });
       
       expect(trashRes.status).toBe(200);
       expect(trashRes.body.count).toBeGreaterThan(0);
 
-      const getRes = await request(app).get(`/items/${id}`);
+      const getRes = await agent().get(`/items/${id}`);
       expect(getRes.body.status).toBe(Status.TRASHED);
     });
   });
@@ -347,7 +373,7 @@ describe('JIRA Integration', () => {
     delete process.env.JIRA_CLIENT_ID;
     delete process.env.JIRA_CLIENT_SECRET;
     delete process.env.JIRA_REDIRECT_URI;
-    pkceStore.clear();
+    oauthStateStore.clear();
     clearJiraValidationCache();
     vi.resetAllMocks();
     // Re-arm: resetAllMocks reverted the homedir mock to its factory default.
@@ -375,7 +401,7 @@ describe('JIRA Integration', () => {
   // ── GET /jira/status ─────────────────────────────────────────────────────
   describe('GET /jira/status', () => {
     it('returns configured:false and connected:false when no config or token', async () => {
-      const res = await request(app).get('/jira/status');
+      const res = await agent().get('/jira/status');
       expect(res.status).toBe(200);
       expect(res.body.configured).toBe(false);
       expect(res.body.connected).toBe(false);
@@ -385,7 +411,7 @@ describe('JIRA Integration', () => {
     it('returns configured:true and connected:false when config present but no token', async () => {
       process.env.JIRA_CLIENT_ID = 'cid';
       process.env.JIRA_CLIENT_SECRET = 'csec';
-      const res = await request(app).get('/jira/status');
+      const res = await agent().get('/jira/status');
       expect(res.status).toBe(200);
       expect(res.body.configured).toBe(true);
       expect(res.body.connected).toBe(false);
@@ -398,7 +424,7 @@ describe('JIRA Integration', () => {
       const axios = (await import('axios')).default as any;
       // Mock the /myself validation call
       axios.mockResolvedValueOnce({ data: { emailAddress: 'test@example.com' } });
-      const res = await request(app).get('/jira/status');
+      const res = await agent().get('/jira/status');
       expect(res.status).toBe(200);
       expect(res.body.configured).toBe(true);
       expect(res.body.connected).toBe(true);
@@ -416,7 +442,7 @@ describe('JIRA Integration', () => {
       axios.mockRejectedValueOnce(err401);
       // refreshJiraToken uses axios.post — mock that to fail too
       axios.post.mockRejectedValueOnce(new Error('Refresh failed'));
-      const res = await request(app).get('/jira/status');
+      const res = await agent().get('/jira/status');
       expect(res.status).toBe(200);
       expect(res.body.configured).toBe(true);
       expect(res.body.connected).toBe(false);
@@ -430,7 +456,7 @@ describe('JIRA Integration', () => {
       const axios = (await import('axios')).default as any;
       // Network error (no response property)
       axios.mockRejectedValueOnce(new Error('ECONNREFUSED'));
-      const res = await request(app).get('/jira/status');
+      const res = await agent().get('/jira/status');
       expect(res.status).toBe(200);
       expect(res.body.connected).toBe(true);
     });
@@ -439,7 +465,7 @@ describe('JIRA Integration', () => {
   // ── GET /jira/oauth/authorize ────────────────────────────────────────────
   describe('GET /jira/oauth/authorize', () => {
     it('returns 503 with CLI hint when JIRA not configured', async () => {
-      const res = await request(app).get('/jira/oauth/authorize');
+      const res = await agent().get('/jira/oauth/authorize');
       expect(res.status).toBe(503);
       expect(res.body.configured).toBe(false);
       expect(res.body.command).toBe('agenfk jira setup');
@@ -448,12 +474,44 @@ describe('JIRA Integration', () => {
     it('redirects to Atlassian when configured via env vars', async () => {
       process.env.JIRA_CLIENT_ID = 'test-client-id';
       process.env.JIRA_CLIENT_SECRET = 'test-secret';
-      const res = await request(app).get('/jira/oauth/authorize');
+      const res = await agent().get('/jira/oauth/authorize');
       expect(res.status).toBe(302);
       expect(res.headers.location).toContain('auth.atlassian.com/authorize');
       expect(res.headers.location).toContain('client_id=test-client-id');
-      expect(res.headers.location).toContain('code_challenge_method=S256');
-      expect(pkceStore.size).toBe(1);
+      // CGLAB-361: no PKCE on the wire. See the dedicated tests below.
+      expect(res.headers.location).not.toContain('code_challenge');
+      // The state entry survives: it is CSRF protection, not PKCE bookkeeping.
+      expect(oauthStateStore.size).toBe(1);
+    });
+
+    // ── CGLAB-361 ──────────────────────────────────────────────────────────
+    // Atlassian's consent endpoint began returning HTTP 500
+    // ({"failedToLoad":true,"error":{"category":"generic"}},
+    // atl-traceid 4477e8158284433a8af8ecf8974f56bc) for an authorize request
+    // carrying code_challenge. Measured 2026-09-22 by single-variable
+    // experiment against live Atlassian: same client_id, scopes, redirect_uri
+    // and prompt=consent, with ONLY the PKCE parameters removed, the consent
+    // screen returns 200 and renders, Accept issues a code, and that code
+    // exchanges for an access_token + refresh_token with no code_verifier.
+    //
+    // Atlassian's docs still say 3LO supports PKCE S256 alongside client
+    // authentication, so this is a workaround for an unconfirmed regression on
+    // their side, NOT a claim that PKCE was wrong here. Do not restore it
+    // without re-running that experiment; these tests exist so that a silent
+    // restore fails loudly.
+    it('sends no PKCE parameters to Atlassian (CGLAB-361)', async () => {
+      process.env.JIRA_CLIENT_ID = 'test-client-id';
+      process.env.JIRA_CLIENT_SECRET = 'test-secret';
+      const res = await agent().get('/jira/oauth/authorize');
+      expect(res.status).toBe(302);
+      const url = new URL(res.headers.location);
+      expect(`${url.origin}${url.pathname}`).toBe('https://auth.atlassian.com/authorize');
+      expect(url.searchParams.has('code_challenge')).toBe(false);
+      expect(url.searchParams.has('code_challenge_method')).toBe(false);
+      // Pin the whole request shape, so anything re-added shows up here.
+      expect([...url.searchParams.keys()].sort()).toEqual(
+        ['audience', 'client_id', 'prompt', 'redirect_uri', 'response_type', 'scope', 'state'],
+      );
     });
 
     it('reads config from ~/.agenfk/config.json jira key', async () => {
@@ -463,7 +521,7 @@ describe('JIRA Integration', () => {
       cfg.jira = { clientId: 'cfg-client-id', clientSecret: 'cfg-secret' };
       fs.writeFileSync(jiraConfigPath(), JSON.stringify(cfg, null, 2));
 
-      const res = await request(app).get('/jira/oauth/authorize');
+      const res = await agent().get('/jira/oauth/authorize');
       expect(res.status).toBe(302);
       expect(res.headers.location).toContain('cfg-client-id');
     });
@@ -472,20 +530,20 @@ describe('JIRA Integration', () => {
   // ── GET /jira/oauth/callback ─────────────────────────────────────────────
   describe('GET /jira/oauth/callback', () => {
     it('redirects with error when error param present', async () => {
-      const res = await request(app).get('/jira/oauth/callback?error=access_denied');
+      const res = await agent().get('/jira/oauth/callback?error=access_denied');
       expect(res.status).toBe(302);
       expect(res.headers.location).toContain('jira=error');
     });
 
     it('redirects with error when code missing', async () => {
-      const res = await request(app).get('/jira/oauth/callback?state=abc');
+      const res = await agent().get('/jira/oauth/callback?state=abc');
       expect(res.status).toBe(302);
       expect(res.headers.location).toContain('jira=error');
       expect(res.headers.location).toContain('missing_params');
     });
 
     it('redirects with error for unknown state', async () => {
-      const res = await request(app).get('/jira/oauth/callback?code=abc&state=unknown-state');
+      const res = await agent().get('/jira/oauth/callback?code=abc&state=unknown-state');
       expect(res.status).toBe(302);
       expect(res.headers.location).toContain('invalid_state');
     });
@@ -495,7 +553,7 @@ describe('JIRA Integration', () => {
       process.env.JIRA_CLIENT_SECRET = 'csec';
 
       // Populate pkce store with a known state
-      pkceStore.set('test-state', { codeVerifier: 'test-verifier', expiresAt: Date.now() + 60000 });
+      oauthStateStore.set('test-state', { expiresAt: Date.now() + 60000 });
 
       const axios = (await import('axios')).default as any;
       // Mock: token exchange
@@ -505,7 +563,7 @@ describe('JIRA Integration', () => {
       // Mock: /myself
       axios.get.mockResolvedValueOnce({ data: { emailAddress: 'user@test.com' } });
 
-      const res = await request(app).get('/jira/oauth/callback?code=auth-code&state=test-state');
+      const res = await agent().get('/jira/oauth/callback?code=auth-code&state=test-state');
       expect(res.status).toBe(302);
       expect(res.headers.location).toContain('jira=connected');
       expect(fs.existsSync(jiraTokenPath())).toBe(true);
@@ -513,12 +571,72 @@ describe('JIRA Integration', () => {
       expect(saved.cloudId).toBe('cloud-123');
       expect(saved.email).toBe('user@test.com');
     });
+
+    // With PKCE gone, the state nonce is the callback's only protection, so
+    // each of its properties is pinned: issued by /authorize, single-use, and
+    // refused once expired.
+    it('accepts the state /authorize issued, exactly once (CGLAB-361)', async () => {
+      process.env.JIRA_CLIENT_ID = 'cid';
+      process.env.JIRA_CLIENT_SECRET = 'csec';
+      const auth = await agent().get('/jira/oauth/authorize');
+      const state = new URL(auth.headers.location).searchParams.get('state')!;
+
+      const axios = (await import('axios')).default as any;
+      axios.post.mockResolvedValueOnce({ data: { access_token: 'at', refresh_token: 'rt' } });
+      axios.get.mockResolvedValueOnce({ data: [{ id: 'cloud-123', url: 'https://test.atlassian.net', name: 'Test Cloud' }] });
+      axios.get.mockResolvedValueOnce({ data: { emailAddress: 'user@test.com' } });
+
+      const callback = `/jira/oauth/callback?code=auth-code&state=${encodeURIComponent(state)}`;
+      const first = await agent().get(callback);
+      expect(first.headers.location).toContain('jira=connected');
+
+      const replay = await agent().get(callback);
+      expect(replay.headers.location).toContain('invalid_state');
+      expect(axios.post).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects an expired state without exchanging the code (CGLAB-361)', async () => {
+      process.env.JIRA_CLIENT_ID = 'cid';
+      process.env.JIRA_CLIENT_SECRET = 'csec';
+      oauthStateStore.set('stale-state', { expiresAt: Date.now() - 1 });
+      const axios = (await import('axios')).default as any;
+
+      const res = await agent().get('/jira/oauth/callback?code=auth-code&state=stale-state');
+      expect(res.headers.location).toContain('invalid_state');
+      expect(oauthStateStore.has('stale-state')).toBe(false);
+      expect(axios.post).not.toHaveBeenCalled();
+    });
+
+    it('exchanges the code without a code_verifier (CGLAB-361)', async () => {
+      process.env.JIRA_CLIENT_ID = 'cid';
+      process.env.JIRA_CLIENT_SECRET = 'csec';
+      oauthStateStore.set('test-state', { expiresAt: Date.now() + 60000 });
+
+      const axios = (await import('axios')).default as any;
+      axios.post.mockResolvedValueOnce({ data: { access_token: 'at', refresh_token: 'rt' } });
+      axios.get.mockResolvedValueOnce({ data: [{ id: 'cloud-123', url: 'https://test.atlassian.net', name: 'Test Cloud' }] });
+      axios.get.mockResolvedValueOnce({ data: { emailAddress: 'user@test.com' } });
+
+      const res = await agent().get('/jira/oauth/callback?code=auth-code&state=test-state');
+      expect(res.headers.location).toContain('jira=connected');
+
+      const [url, body] = axios.post.mock.calls[0];
+      expect(url).toBe('https://auth.atlassian.com/oauth/token');
+      expect(body).not.toHaveProperty('code_verifier');
+      // The confidential-client exchange is otherwise unchanged.
+      expect(body).toMatchObject({
+        grant_type: 'authorization_code',
+        client_id: 'cid',
+        client_secret: 'csec',
+        code: 'auth-code',
+      });
+    });
   });
 
   // ── GET /jira/projects ───────────────────────────────────────────────────
   describe('GET /jira/projects', () => {
     it('returns 401 when not connected', async () => {
-      const res = await request(app).get('/jira/projects');
+      const res = await agent().get('/jira/projects');
       expect(res.status).toBe(401);
     });
 
@@ -528,7 +646,7 @@ describe('JIRA Integration', () => {
       axios.mockResolvedValueOnce({
         data: { values: [{ id: '10001', key: 'PROJ', name: 'My Project', projectTypeKey: 'software' }] },
       });
-      const res = await request(app).get('/jira/projects');
+      const res = await agent().get('/jira/projects');
       expect(res.status).toBe(200);
       expect(res.body).toHaveLength(1);
       expect(res.body[0].key).toBe('PROJ');
@@ -538,7 +656,7 @@ describe('JIRA Integration', () => {
   // ── GET /jira/projects/:key/issues ───────────────────────────────────────
   describe('GET /jira/projects/:key/issues', () => {
     it('returns 401 when not connected', async () => {
-      const res = await request(app).get('/jira/projects/PROJ/issues');
+      const res = await agent().get('/jira/projects/PROJ/issues');
       expect(res.status).toBe(401);
     });
 
@@ -554,7 +672,7 @@ describe('JIRA Integration', () => {
           ],
         },
       });
-      const res = await request(app).get('/jira/projects/PROJ/issues');
+      const res = await agent().get('/jira/projects/PROJ/issues');
       expect(res.status).toBe(200);
       expect(res.body[0].mappedType).toBe('BUG');
       expect(res.body[1].mappedType).toBe('STORY');
@@ -565,7 +683,7 @@ describe('JIRA Integration', () => {
   // ── POST /jira/import ────────────────────────────────────────────────────
   describe('POST /jira/import', () => {
     it('returns 401 when not connected', async () => {
-      const res = await request(app)
+      const res = await agent()
         .post('/jira/import')
         .send({ projectId: 'p1', items: [{ issueKey: 'PROJ-1' }] });
       expect(res.status).toBe(401);
@@ -573,13 +691,13 @@ describe('JIRA Integration', () => {
 
     it('returns 400 when items array missing or empty', async () => {
       fs.writeFileSync(jiraTokenPath(), JSON.stringify(testToken));
-      const res = await request(app).post('/jira/import').send({ projectId: 'p1' });
+      const res = await agent().post('/jira/import').send({ projectId: 'p1' });
       expect(res.status).toBe(400);
     });
 
     it('imports issues and creates AgEnFK items', async () => {
       fs.writeFileSync(jiraTokenPath(), JSON.stringify(testToken));
-      const projRes = await request(app).post('/projects').send({ name: 'JIRA Import Test' });
+      const projRes = await agent().post('/projects').send({ name: 'JIRA Import Test' });
       const projectId = projRes.body.id;
 
       const axios = (await import('axios')).default as any;
@@ -590,7 +708,7 @@ describe('JIRA Integration', () => {
         },
       });
 
-      const res = await request(app)
+      const res = await agent()
         .post('/jira/import')
         .send({ projectId, items: [{ issueKey: 'PROJ-1' }] });
       expect(res.status).toBe(200);
@@ -598,7 +716,7 @@ describe('JIRA Integration', () => {
       expect(res.body.imported[0].issueKey).toBe('PROJ-1');
       expect(res.body.errors).toHaveLength(0);
 
-      const itemsRes = await request(app).get(`/items?projectId=${projectId}`);
+      const itemsRes = await agent().get(`/items?projectId=${projectId}`);
       const importedItem = itemsRes.body.find((i: any) => i.title.includes('PROJ-1'));
       expect(importedItem).toBeDefined();
       expect(importedItem.type).toBe('BUG');
@@ -606,13 +724,13 @@ describe('JIRA Integration', () => {
 
     it('records errors for failed issue fetches', async () => {
       fs.writeFileSync(jiraTokenPath(), JSON.stringify(testToken));
-      const projRes = await request(app).post('/projects').send({ name: 'JIRA Err Test' });
+      const projRes = await agent().post('/projects').send({ name: 'JIRA Err Test' });
       const projectId = projRes.body.id;
 
       const axios = (await import('axios')).default as any;
       axios.mockRejectedValueOnce(new Error('Network error'));
 
-      const res = await request(app)
+      const res = await agent()
         .post('/jira/import')
         .send({ projectId, items: [{ issueKey: 'PROJ-99' }] });
       expect(res.status).toBe(200);
@@ -626,14 +744,14 @@ describe('JIRA Integration', () => {
   describe('POST /jira/disconnect', () => {
     it('removes token file and returns disconnected:true', async () => {
       fs.writeFileSync(jiraTokenPath(), JSON.stringify(testToken));
-      const res = await request(app).post('/jira/disconnect');
+      const res = await agent().post('/jira/disconnect');
       expect(res.status).toBe(200);
       expect(res.body.disconnected).toBe(true);
       expect(fs.existsSync(jiraTokenPath())).toBe(false);
     });
 
     it('succeeds even when token file does not exist', async () => {
-      const res = await request(app).post('/jira/disconnect');
+      const res = await agent().post('/jira/disconnect');
       expect(res.status).toBe(200);
       expect(res.body.disconnected).toBe(true);
     });
@@ -642,7 +760,7 @@ describe('JIRA Integration', () => {
   // ── GET /api/telemetry/config ────────────────────────────────────────────
   describe('GET /api/telemetry/config', () => {
     it('returns installationId and telemetryEnabled', async () => {
-      const res = await request(app).get('/api/telemetry/config');
+      const res = await agent().get('/api/telemetry/config');
       expect(res.status).toBe(200);
       expect(res.body).toHaveProperty('installationId');
       expect(res.body).toHaveProperty('telemetryEnabled');
@@ -650,7 +768,7 @@ describe('JIRA Integration', () => {
     });
 
     it('installationId is a non-empty string or null', async () => {
-      const res = await request(app).get('/api/telemetry/config');
+      const res = await agent().get('/api/telemetry/config');
       const { installationId } = res.body;
       expect(installationId === null || typeof installationId === 'string').toBe(true);
       if (typeof installationId === 'string') {

@@ -1,3 +1,5 @@
+import { flowChecksErrors } from '@agenfk/core';
+
 /**
  * Is this a usable flow definition?
  *
@@ -24,5 +26,7 @@ export function invalidFlowDefinition(def: unknown): string | null {
     if (typeof step.name !== 'string' || !step.name) return 'each step requires a name';
     if (typeof step.order !== 'number') return 'each step requires a numeric order';
   }
-  return null;
+  // CGLAB-380: step roles and checks, validated as a local server would.
+  const contractErrors = flowChecksErrors(d.steps);
+  return contractErrors.length ? contractErrors.join(' ') : null;
 }

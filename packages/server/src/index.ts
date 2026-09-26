@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { actorFromEnv } from './reviewRecords';
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 // @ts-ignore
@@ -18,6 +19,8 @@ import { getApiUrl } from "@agenfk/telemetry";
 import { createApiClient } from "./apiClient.js";
 import { execSync, execFileSync, spawnSync, spawn } from "child_process";
 import { getActiveStepItems, resolveStepContract, renderStepContract } from "./gatekeeper-utils";
+import { resolveBranchHint } from './branchHint';
+import { dispatchDriftNotice, driftTargets } from '@agenfk/core';
 import { buildUpgradeNotice } from "./mcpUpgradeNotice";
 
 // Load the install-time secret token — must match what the API server loaded.
@@ -130,6 +133,53 @@ export const server = new Server(
 );
 
 // Define Tool Schemas
+/**
+ * One flow step as create_flow / update_flow take it. zod strips the keys a
+ * schema does not name, so every field the REST route persists must be here or
+ * an MCP caller silently loses it (roles and checks did, CGLAB-385). The
+ * server whitelists and validates what arrives; this only has to not drop it.
+ * Never add `command`: a flow must not be able to supply one.
+ */
+const FlowStepToolSchema = z.object({
+  // Accept an id so it round-trips: without it an update regenerated every
+  // step id on every call.
+  id: z.string().optional(),
+  name: z.string(),
+  label: z.string().optional(),
+  exitCriteria: z.string().optional(),
+  order: z.number(),
+  isSpecial: z.boolean().optional(),
+  isAnchor: z.boolean().optional(),
+  // null / [] clear a stored value; leaving the key out keeps it.
+  role: z.string().nullable().optional(),
+  checks: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
+  autoCommit: z.boolean().nullable().optional(),
+  requireCommit: z.boolean().nullable().optional(),
+  color: z.string().optional(),
+  icon: z.string().optional(),
+});
+
+/** The advertised JSON schema of the same step. */
+const FLOW_STEP_TOOL_PROPERTIES = {
+  id: { type: "string" },
+  name: { type: "string" },
+  label: { type: "string" },
+  exitCriteria: { type: "string" },
+  order: { type: "number" },
+  isSpecial: { type: "boolean" },
+  isAnchor: { type: "boolean" },
+  role: { type: ["string", "null"], description: "What the step IS (e.g. coding, review, closing). null clears it; omit to keep the stored value." },
+  checks: {
+    type: ["array", "null"],
+    description: "Checks the step adds, each { id, params? }. [] or null clears them; omit to keep the stored value.",
+    items: { type: "object", properties: { id: { type: "string" }, params: { type: "object" } }, required: ["id"] },
+  },
+  autoCommit: { type: ["boolean", "null"], description: "Commit the card's work when it leaves this step." },
+  requireCommit: { type: ["boolean", "null"], description: "With autoCommit: refuse to leave the step when that commit does not happen." },
+  color: { type: "string" },
+  icon: { type: "string" },
+};
+
 const CreateProjectSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
@@ -158,6 +208,8 @@ const UpdateItemSchema = z.object({
   // match and cycles.
   parentId: z.string().nullable().optional(),
   implementationPlan: z.string().optional(),
+  // 686fdbf6: where the card runs - an absolute checkout path, 'none' or 'inherit'.
+  worktree: z.string().optional(),
   // JIRA issue key to link, or "none" to unlink. zod strips unknown keys, so
   // without this the MCP surface silently could not link at all — and this repo
   // documents the CLI and MCP surfaces as interchangeable.
@@ -279,7 +331,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "update_item",
-        description: "Update an existing item's status, title, description, or parent. IMPORTANT: Cannot set status to DONE directly — use test_changes. For custom flows, call get_flow(projectId) for valid step names. Pass parentId to re-parent (null detaches to top level); the parent must be in the same project and cannot be the item itself or one of its descendants.",
+        description: "Update an existing item's status, title, description, or parent. IMPORTANT: status moves only BACKWARD or to a platform status (PAUSED, BLOCKED); a forward move is refused (409) — advance with validate_progress, the only route to the next step and to DONE. For custom flows, call get_flow(projectId) for valid step names. Pass parentId to re-parent (null detaches to top level); the parent must be in the same project and cannot be the item itself or one of its descendants.",
         inputSchema: {
           type: "object",
           properties: {
@@ -290,6 +342,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             type: { type: "string", enum: ["EPIC", "STORY", "TASK", "BUG"] },
             parentId: { type: ["string", "null"], description: "Re-parent the item under this id; null detaches it to top level." },
             implementationPlan: { type: "string" },
+            worktree: { type: "string", description: "Where the card runs: an ABSOLUTE path to a checkout of the project's repository, 'none' (the project root, whatever its parents have) or 'inherit' (clear the choice). Use this, never parentId, to move a card to another tree." },
             jiraItem: { type: "string", description: "JIRA issue key to link this card to, e.g. 'CGLAB-163'; pass 'none' to unlink. Reference only: the card keeps its own title and description. Omit to leave any existing link untouched." },
           },
           required: ["id"],
@@ -395,6 +448,28 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "record_review",
+        description: "Record an independent review of a card (CGLAB-381). The server reads the reviewer's identity from `transcript` (the REVIEWER's session log, e.g. a Claude Code sub-agent's <session>/subagents/agent-<id>.jsonl), so the reviewer must not be the author. CLI: agenfk review record.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            itemId: { type: "string" },
+            transcript: { type: "string", description: "Path of the reviewer's session log, under ~/.claude/projects, ~/.pi/agent/sessions or ~/.codex/sessions." },
+            range: { type: "string", description: "<from>..<to>: the commits the review covered." },
+            findings: {
+              type: "array",
+              description: "Each finding and its fate: fixed, or rejected with a reason. [] when nothing was found.",
+              items: {
+                type: "object",
+                properties: { title: { type: "string" }, state: { type: "string", enum: ["fixed", "rejected"] }, reason: { type: "string" } },
+                required: ["title", "state"],
+              },
+            },
+          },
+          required: ["itemId", "transcript", "range", "findings"],
+        },
+      },
+      {
         name: "add_comment",
         description: "Add a comment to an item to log progress or steps.",
         inputSchema: {
@@ -461,20 +536,25 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "validate_progress",
-        description: "Step-completion gate: you MUST describe how you satisfied the current step's exit criteria before the step advances. Provide your evidence in the 'evidence' field — it will be logged as a comment tagged with the current step name, creating an audit trail. Optionally run a build/test command. On success, advances to the next flow step and returns the next step's exit criteria — treat those as your new mandatory work definition. On failure, moves back to the coding step.",
+        description: "Step-completion gate: you MUST describe how you satisfied the current step's exit criteria before the step advances. Provide your evidence in the 'evidence' field — it will be logged as a comment tagged with the current step name, creating an audit trail. Optionally run a command; on intermediate steps it is not required — pass one only when the current step's exit criteria call for it, and only a command those criteria expect to succeed. On success, advances to the next flow step and returns the next step's exit criteria — treat those as your new mandatory work definition. If the command exits non-zero the advance is refused and the item stays on its current step (on the final step this is the hard gate that keeps a red suite out of DONE); nothing is rolled back. On the final step (and any boundary step) the server runs the project's verifyCommand and ignores the 'command' field, with a warning in the reply.",
         inputSchema: {
           type: "object",
           properties: {
             itemId: { type: "string" },
             evidence: { type: "string", description: "REQUIRED: Describe how you satisfied the current step's exit criteria (e.g. 'Wrote failing tests in foo.test.ts covering cases X and Y'). This is logged as a comment and serves as your confirmation." },
-            command: { type: "string", description: "Optional command to run (e.g. 'npm run build'). If omitted, the project verifyCommand is used on the final step." },
+            command: { type: "string", description: "Optional command to run on an INTERMEDIATE step (e.g. 'npm run build'). Ignored on the final step and on any boundary step, where the server always runs the project verifyCommand." },
+            agentChecks: {
+              type: "array",
+              description: "Your report of the current step's agent checks: for each, what its instruction asked you to do or check. A refused verify names them and their instructions. Recorded as agent-reported.",
+              items: { type: "object", properties: { name: { type: "string" }, outcome: { type: "string", enum: ["pass", "fail"] }, note: { type: "string" } }, required: ["name", "outcome"] },
+            },
           },
           required: ["itemId", "evidence"],
         },
       },
       {
         name: "review_changes",
-        description: "DEPRECATED: Use validate_progress instead. Runs a build command and advances to the next flow step.",
+        description: "DEPRECATED: Use validate_progress instead. Optionally runs a command and advances to the next flow step; a non-zero exit refuses the advance and the item stays on its current step.",
         inputSchema: {
           type: "object",
           properties: {
@@ -562,21 +642,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             description: { type: "string", description: "Optional description." },
             steps: {
               type: "array",
-              description: "Ordered list of steps. Each step: { id?, name, label?, exitCriteria?, order, isSpecial?, isAnchor? }. Omit id and the server generates one; pass back the id you read to keep it stable across updates.",
+              description: "Ordered list of steps. Each step: { id?, name, label?, exitCriteria?, order, isSpecial?, isAnchor?, role?, checks?, autoCommit?, requireCommit?, color?, icon? }. Omit id and the server generates one; pass back the id you read to keep it stable across updates.",
               items: {
                 type: "object",
-                properties: {
-                  id: { type: "string" },
-                  name: { type: "string" },
-                  label: { type: "string" },
-                  exitCriteria: { type: "string" },
-                  order: { type: "number" },
-                  isSpecial: { type: "boolean" },
-                  isAnchor: { type: "boolean" },
-                },
+                properties: FLOW_STEP_TOOL_PROPERTIES,
                 required: ["name", "order"],
               },
             },
+            verifyAt: { type: "string", enum: ["leaf", "parent"], description: "Where the project's suite runs: 'leaf' (default) on every card's final step, or 'parent' once at the top-level card - a card with an open parent then closes without its own run." },
             projectId: { type: "string", description: "Optional: if provided, immediately activate the new flow for this project." },
           },
           required: ["name", "steps"],
@@ -591,18 +664,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             id: { type: "string", description: "The flow ID to update." },
             name: { type: "string" },
             description: { type: "string" },
+            verifyAt: { type: "string", enum: ["leaf", "parent"], description: "Where the project's suite runs: 'leaf' (default) on every card's final step, or 'parent' once at the top-level card - a card with an open parent then closes without its own run." },
             steps: {
               type: "array",
               items: {
                 type: "object",
-                properties: {
-                  name: { type: "string" },
-                  label: { type: "string" },
-                  exitCriteria: { type: "string" },
-                  order: { type: "number" },
-                  isSpecial: { type: "boolean" },
-                  isAnchor: { type: "boolean" },
-                },
+                properties: FLOW_STEP_TOOL_PROPERTIES,
                 required: ["name", "order"],
               },
             },
@@ -709,8 +776,13 @@ async function callToolHandler(request: any): Promise<any> {
         }
       }
       case "validate_progress": {
-        const { itemId, evidence, command } = z.object({ itemId: z.string(), evidence: z.string(), command: z.string().optional() }).parse(request.params.arguments);
-        const result = await validateViaApi(itemId, { evidence, command, cwd: process.cwd() });
+        const { itemId, evidence, command, agentChecks } = z.object({
+          itemId: z.string(), evidence: z.string(), command: z.string().optional(),
+          agentChecks: z.array(z.object({ name: z.string(), outcome: z.enum(['pass', 'fail']), note: z.string().optional() })).optional(),
+        }).parse(request.params.arguments);
+        // The author, as the harness that launched this MCP server names it (CGLAB-381).
+        const actor = actorFromEnv(process.env);
+        const result = await validateViaApi(itemId, { evidence, command, cwd: process.cwd(), ...(actor ? { actor } : {}), ...(agentChecks ? { agentChecks } : {}) });
         if (!result.ok) return { isError: true, content: [{ type: "text", text: result.text }] };
         return { content: [{ type: "text", text: result.text }] };
       }
@@ -751,9 +823,11 @@ async function callToolHandler(request: any): Promise<any> {
           return { isError: true, content: [{ type: "text", text: `❌ CONFIG ERROR: No AgEnFK project found in the current directory, and no itemId was provided.` }] };
         }
 
-        // Validate that the project exists in the database
+        // Validate that the project exists in the database. The record is
+        // KEPT: its projectRoot is where base drift is measured from.
+        let project: any;
         try {
-          await api.get(`/projects/${effectiveProjectId}`);
+          project = (await api.get(`/projects/${effectiveProjectId}`)).data;
         } catch (error: any) {
           return { isError: true, content: [{ type: "text", text: `❌ CONFIG ERROR: Project ID [${effectiveProjectId}] does not exist in the database.` }] };
         }
@@ -814,28 +888,43 @@ async function callToolHandler(request: any): Promise<any> {
           'call validate_progress(itemId, evidence)',
         );
 
-        // Branch hint
-        let branchHint = '';
-        if (task.branchName) {
-          try {
-            // execFileSync with an argument array, never a template literal in a
-            // shell: branchName is stored data, and this runs implicitly on every
-            // gatekeeper call, so a name like `main; rm -rf ~` must not be able to
-            // break out of the command. `--` stops it being read as an option.
-            execFileSync('git', ['rev-parse', '--verify', '--', task.branchName], { stdio: 'ignore' });
-            const currentBranch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' }).trim();
-            if (currentBranch !== task.branchName) {
-              execFileSync('git', ['checkout', '--', task.branchName], { stdio: 'ignore' });
-              branchHint = `\n🔀 Switched to branch '${task.branchName}'.`;
-            } else {
-              branchHint = `\n🔀 Already on branch '${task.branchName}'.`;
-            }
-          } catch {
-            branchHint = `\n⚠️ Branch '${task.branchName}' does not exist locally. Work on the current branch or ask the user to create it.`;
-          }
-        }
+        /*
+         * In the ITEM'S tree, never the server's own cwd.
+         *
+         * These three git commands used to run with no cwd and no -C, so the
+         * gatekeeper read the branch of one repository and checked out in
+         * another - whichever the server process was started in. Extracted to
+         * branchHint.ts, where the cwd can be asserted rather than assumed;
+         * see the header there for why a write in the wrong tree is worse than
+         * a read in one.
+         */
+        // 686fdbf6: never switch branches in a tree the card chose - it may be
+        // a person's checkout or another card's worktree.
+        const branchHint = task?.worktreeChoice
+          ? `\nℹ️ This card runs in a tree it chose (${task.worktreeChoice === 'root' ? 'the project root' : task.worktreeChoice}); its branch is not switched there.`
+          : resolveBranchHint(task, {
+            run: args => execFileSync('git', args, { encoding: 'utf8' }),
+          });
 
-        return { content: [{ type: "text", text: `✅ AUTHORIZED.\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${branchHint}${exitCriteriaHint}` }] };
+        /*
+         * The base moved underneath the agent (CGLAB-197).
+         *
+         * The gatekeeper is where this lands because it is the one piece of
+         * server-authored text that reaches the agent's context before it
+         * starts editing - Orca injects the same block into the worker's
+         * prompt preamble at dispatch, and we have no worker-prompt builder.
+         *
+         * ADVISORY ONLY. `measureBaseDrift` also returns `shouldWait`, and
+         * that threshold belongs to the DISPATCHER (the fan-out sheet), not
+         * here: a gate that refused every edit on a stale base would stop work
+         * for a condition the module itself calls mostly harmless.
+         */
+        const driftTarget = driftTargets(task, allItems, project?.projectRoot);
+        const driftNotice = driftTarget
+          ? dispatchDriftNotice({ ...driftTarget, deps: { run: args => execFileSync('git', args, { encoding: 'utf8' }) } })
+          : '';
+
+        return { content: [{ type: "text", text: `✅ AUTHORIZED.\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${branchHint}${exitCriteriaHint}${driftNotice}` }] };
       }
       case "analyze_request": {
         const { request: userRequest } = z.object({ request: z.string() }).parse(request.params.arguments);
@@ -971,6 +1060,17 @@ async function callToolHandler(request: any): Promise<any> {
         const { data } = await api.get('/token-events', { params });
         return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
       }
+      case "record_review": {
+        const { itemId, transcript, range, findings } = z.object({
+          itemId: z.string(), transcript: z.string(), range: z.string(), findings: z.array(z.any()),
+        }).parse(request.params.arguments);
+        try {
+          const { data } = await api.post(`/items/${itemId}/review-records`, { transcript, range, findings }, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
+          return { content: [{ type: "text", text: `✅ Review recorded by ${data.reviewer.client} session ${data.reviewer.sessionId}${data.reviewer.agentId ? `, agent ${data.reviewer.agentId}` : ''}: ${data.findings.length} finding(s).` }] };
+        } catch (error: any) {
+          return { isError: true, content: [{ type: "text", text: error.response?.data?.error || error.message }] };
+        }
+      }
       case "add_comment": {
         const args = AddCommentSchema.parse(request.params.arguments);
         const { itemId, content, author } = args;
@@ -1051,17 +1151,8 @@ async function callToolHandler(request: any): Promise<any> {
         const args = z.object({
           name: z.string(),
           description: z.string().optional(),
-          steps: z.array(z.object({
-            // Accept an id so it round-trips: zod strips unknown keys, so
-            // without this an update regenerated every step id on every call.
-            id: z.string().optional(),
-            name: z.string(),
-            label: z.string().optional(),
-            exitCriteria: z.string().optional(),
-            order: z.number(),
-            isSpecial: z.boolean().optional(),
-            isAnchor: z.boolean().optional(),
-          })),
+          steps: z.array(FlowStepToolSchema),
+          verifyAt: z.enum(['leaf', 'parent']).optional(),
           projectId: z.string().optional(),
         }).parse(request.params.arguments);
         const { projectId, ...flowBody } = args;
@@ -1077,17 +1168,8 @@ async function callToolHandler(request: any): Promise<any> {
           id: z.string(),
           name: z.string().optional(),
           description: z.string().optional(),
-          steps: z.array(z.object({
-            // Accept an id so it round-trips: zod strips unknown keys, so
-            // without this an update regenerated every step id on every call.
-            id: z.string().optional(),
-            name: z.string(),
-            label: z.string().optional(),
-            exitCriteria: z.string().optional(),
-            order: z.number(),
-            isSpecial: z.boolean().optional(),
-            isAnchor: z.boolean().optional(),
-          })).optional(),
+          steps: z.array(FlowStepToolSchema).optional(),
+          verifyAt: z.enum(['leaf', 'parent']).optional(),
         }).parse(request.params.arguments);
         const { id, ...updates } = args;
         try {

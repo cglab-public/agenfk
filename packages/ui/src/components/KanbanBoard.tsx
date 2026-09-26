@@ -10,17 +10,24 @@ import {
   Sun, Moon, Search, Archive, ArchiveRestore, ChevronLeft,
   FolderOpen, Briefcase, Clock, FlaskConical, ShieldCheck,
   Copy, Check, Download, Pin, PinOff, ExternalLink, Trash2, Lightbulb, Book, Pause,
-  ChevronUp, ChevronDown, X, FolderInput, GitBranch
+  ChevronUp, ChevronDown, X, FolderInput, GitBranch, SquareTerminal
 } from 'lucide-react';
-import { io } from 'socket.io-client';
-import { API_URL } from '../apiUrl';
+import { useSocketEvent } from '../SocketContext';
+import { isDesktop } from '../desktop';
+import { useActiveProject } from '../ActiveProject';
 import { CardDetailModal } from './CardDetailModal';
+import { VerifyRunBadge } from './VerifyRunBadge';
+import { ColumnContractBadges, ColumnRole } from './ColumnContractBadges';
+import { checkText } from '@agenfk/flow-editor';
 import { CardAnimationWrapper } from '../animations/CardAnimationWrapper';
 import '../animations'; // Side-effect: registers all easter egg animations
 import { useEasterEggs } from '../useEasterEggs';
 import { JiraConnectionButton } from './JiraConnectionButton';
 import { JiraImportModal } from './JiraImportModal';
 import { GitHubImportModal } from './GitHubImportModal';
+import { WelcomeScreen, welcomeActions } from './WelcomeScreen';
+import { AgenfkFlag } from './AgenfkFlag';
+import { AgenfkWordmark } from './AgenfkWordmark';
 import { ReleaseReminder } from './ReleaseReminder';
 import { WhatsNewModal } from './WhatsNewModal';
 import { ReadmeModal } from './ReadmeModal';
@@ -121,13 +128,15 @@ interface KanbanCardProps {
   onArchive: (id: string) => void;
   onMoveToProject: (id: string, targetProjectId: string) => void;
   onCopyId: (id: string) => void;
+  /** Open a terminal on this card. The board's only route to the shell's sessions. */
+  onOpenTerminal: (item: AgEnFKItem) => void;
   disableLayoutAnimation?: boolean;
 }
 
 const KanbanCard: React.FC<KanbanCardProps> = ({
   item, items, projects, highlightedId, dragId, dropTargetId, dropPosition,
   copiedId, pricesData, isUserAction, onCardDragStart, onCardDragEnd, onCardDragOver,
-  onCardDragLeave, onDoubleClick, onDrillDown, onArchive, onMoveToProject, onCopyId, disableLayoutAnimation
+  onCardDragLeave, onDoubleClick, onDrillDown, onArchive, onMoveToProject, onCopyId, onOpenTerminal, disableLayoutAnimation
 }) => {
   const [isMoveMenuOpen, setIsMoveMenuOpen] = useState(false);
   const moveMenuRef = React.useRef<HTMLDivElement>(null);
@@ -297,7 +306,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
               <button
                 ref={moveMenuButtonRef}
                 onClick={(e) => { e.stopPropagation(); setIsMoveMenuOpen(v => !v); }}
-                className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-600 hover:text-accent-text transition-colors"
+                className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-500 hover:text-accent-text transition-colors"
                 title="Move to project"
               >
                 <FolderInput size={11} />
@@ -322,12 +331,33 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
               )}
             </div>
           )}
-          <button onClick={(e) => { e.stopPropagation(); onArchive(item.id); }} className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-600 hover:text-rose-500 dark:hover:text-rose-400 transition-colors">
+          {/* The board's route to the card's agent. Until this existed the only
+              way to open a terminal was the sidebar's session rail, which lists
+              cards that ALREADY have one — so the first terminal on a card had
+              no path from the board at all, which is where the work is.
+
+              Desktop only, and not as a limitation: App.tsx mounts AppShell —
+              the ONLY consumer of the terminal request — behind the same
+              check, so in a browser this button would set state nobody reads.
+              A control that silently does nothing is worse than its absence,
+              and the pin-project button above already draws this exact line. */}
+          {isDesktop() && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onOpenTerminal(item); }}
+            aria-label={`Open a terminal on ${item.title}`}
+            title="Open a terminal on this card"
+            className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-500 hover:text-accent-text transition-colors"
+          >
+            <SquareTerminal size={11} />
+          </button>
+          )}
+          <button onClick={(e) => { e.stopPropagation(); onArchive(item.id); }} className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-500 hover:text-rose-500 dark:hover:text-rose-400 transition-colors">
             <Archive size={11} />
           </button>
         </div>
       </div>
       <h3 className="font-semibold text-slate-800 dark:text-slate-100 text-[13px] leading-snug mb-1.5 group-hover:text-accent-text transition-colors">{item.title}</h3>
+      {item.activeRun && <div className="mb-1.5"><VerifyRunBadge run={item.activeRun} /></div>}
       {!item.parentId && (item.branchName || item.prUrl) && (
         <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
           {item.branchName && (
@@ -456,18 +486,41 @@ const stripDeepLinkParams = () => {
   window.history.replaceState(null, '', window.location.pathname + window.location.hash);
 };
 
+/**
+ * The blank card every "add an item" entry point opens.
+ *
+ * There are five of them — the header button, three per-column placeholders and
+ * the sidebar's per-project + — and they were five copies of the same object
+ * literal, each with its own cast. Drift between them means the modal opens
+ * differently depending on where you clicked. The cast lives here and nowhere
+ * else: a draft genuinely has no id or timestamps until it is saved, so it is
+ * not an AgEnFKItem yet and no honest type says otherwise.
+ */
+const blankDraft = (projectId: string, status: Status): AgEnFKItem =>
+  ({ type: ItemType.TASK, status, title: '', description: '', projectId } as unknown as AgEnFKItem);
+
+/**
+ * A step label as the column shows it: one written in capitals ('IN PROGRESS',
+ * or a status name with its underscores turned to spaces) in title case, and
+ * one the flow already wrote in mixed case left alone - which is how a flow
+ * keeps an acronym ('QA Review'). A word holding a '/' or a digit ('CI/CD',
+ * 'V2') is kept as written. The full label stays the heading's tooltip.
+ */
+function titleCaseLabel(label: string): string {
+  if (/\p{Ll}/u.test(label)) return label;
+  return label.replace(/\S+/g, w => (/[/\d]/.test(w) ? w : w.charAt(0) + w.slice(1).toLowerCase()));
+}
+
 export const KanbanBoard: React.FC = () => {
   const queryClient = useQueryClient();
   const { theme, toggleTheme } = useTheme();
   const easterEggsEnabled = useEasterEggs();
   
   // Project State
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(() => {
-    // `agenfk ui --open <id>&project=<pid>` deep-link: an explicit project in
-    // the URL wins over the last-used project in localStorage.
-    const fromUrl = getUrlParam('project');
-    return fromUrl || localStorage.getItem('agenfk_project_id');
-  });
+  // Shared with the desktop sidebar (CGLAB-168). Same rules as before — a
+  // ?project= deep link beats the remembered choice — they just live in
+  // ActiveProject now so the sidebar and the board cannot disagree.
+  const { activeProjectId: selectedProjectId, setActiveProjectId: setSelectedProjectId, focusedItemId, newItemRequest, markProjectWorked, requestTerminalFor } = useActiveProject();
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [projectSearch, setProjectSearch] = useState('');
   const [highlightedProjectIndex, setHighlightedProjectIndex] = useState(-1);
@@ -565,9 +618,9 @@ export const KanbanBoard: React.FC = () => {
         setSelectedProjectId(fallback);
       }
       if (fallback) {
-        localStorage.setItem('agenfk_project_id', fallback);
+
       } else {
-        localStorage.removeItem('agenfk_project_id');
+
       }
       // The ?item deep-link was aimed at a project that doesn't exist — don't
       // let it fire later against whatever project the user picks instead.
@@ -576,7 +629,7 @@ export const KanbanBoard: React.FC = () => {
     }
   }, [projects, isLoadingProjects, selectedProjectId]);
 
-  const { data: items, isLoading } = useQuery({
+  const { data: items, isLoading, isFetching: isFetchingItems } = useQuery({
     queryKey: ['items', selectedProjectId],
     queryFn: () => api.listItems({ includeArchived: true, projectId: selectedProjectId || undefined }),
     enabled: !!selectedProjectId
@@ -600,6 +653,23 @@ export const KanbanBoard: React.FC = () => {
   }, [activeFlow, isFlowError]);
 
   // Map from status name → FlowStep for quick label/order lookups
+  // CGLAB-384: the check count per column, as the server resolves the flow.
+  // An older server without the route: no counts, the rest still shows.
+  const { data: flowContract } = useQuery({
+    queryKey: ['flow-contract', activeFlow?.id, activeFlow?.updatedAt],
+    queryFn: () => api.getFlowContract(activeFlow!.steps),
+    enabled: !!activeFlow,
+    retry: false,
+  });
+  // What verify runs, and blocks on, to leave the column: warn-only checks
+  // (all a flow from before roles has) are not counted, so they add no badge.
+  type ContractCheck = { id: string; applicable: boolean; severity: string };
+  type ContractStep = { name: string; checks: ContractCheck[]; onLeave?: ContractCheck[] };
+  const blockingChecksOf = (name: string): ContractCheck[] | undefined => {
+    const st = (flowContract as { steps?: ContractStep[] } | undefined)?.steps?.find(x => x.name === name);
+    return st ? (st.onLeave ?? st.checks).filter(c => c.applicable && c.severity === 'block') : undefined;
+  };
+
   const flowStepByStatus = React.useMemo((): Record<string, FlowStep> => {
     if (!activeFlow) return {};
     return Object.fromEntries(activeFlow.steps.map((s: FlowStep) => [s.name, s]));
@@ -625,6 +695,27 @@ export const KanbanBoard: React.FC = () => {
   }, [selectedItem?.id]);
 
   const [navPath, setNavPath] = useState<NavItem[]>([]);
+
+  // Changing project must also leave whatever we had drilled into.
+  //
+  // Only the id is shared with the desktop sidebar, so a switch from outside
+  // the board used to keep navPath pointing at the previous project's epic —
+  // every column then filtered the new project's items by a parent id they can
+  // never match, leaving an empty board under a breadcrumb still naming the
+  // old epic, with nothing on screen to explain it. Keyed on the id rather
+  // than living in one click handler so it holds for every route in, present
+  // and future.
+  const previousProjectRef = useRef<string | null>(selectedProjectId);
+  useEffect(() => {
+    if (previousProjectRef.current === selectedProjectId) return;
+    const previous = previousProjectRef.current;
+    previousProjectRef.current = selectedProjectId;
+    setNavPath([]);
+    // Only a real switch is telemetry. Landing on null (the open project was
+    // deleted) or being repointed by the stale-project fallback is the app
+    // correcting itself, and counting those as user intent inflates the metric.
+    if (selectedProjectId && previous) capture('project_switched');
+  }, [selectedProjectId]);
 
   const [searchQuery, setSearchTerm] = useState('');
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
@@ -680,55 +771,52 @@ export const KanbanBoard: React.FC = () => {
   const isPinnedRef = React.useRef(isPinned);
   useEffect(() => { isPinnedRef.current = isPinned; }, [isPinned]);
 
-  // WebSocket setup
+  // Live updates. One shared connection for the whole window (CGLAB-168);
+  // each subscription is removed when this component unmounts, and the
+  // connection outlives it for whatever else is on screen.
   /* v8 ignore start */
-  useEffect(() => {
-    const socket = io(API_URL || undefined);
+  useSocketEvent('connect', () => {
+    console.log('%c[WS_CONNECT] %cConnected to AgEnFK Brain', 'color: #04cc98; font-weight: bold', 'color: inherit');
+  });
 
-    socket.on('connect', () => {
-      console.log('%c[WS_CONNECT] %cConnected to AgEnFK Brain', 'color: #04cc98; font-weight: bold', 'color: inherit');
-    });
+  useSocketEvent('items_updated', () => {
+    console.log('%c[WS_UPDATE] %cDatabase change detected. Refreshing UI...', 'color: #f59e0b; font-weight: bold', 'color: inherit');
+    queryClient.invalidateQueries({ queryKey: ['items'] });
+    queryClient.invalidateQueries({ queryKey: ['projects'] });
+  });
 
-    socket.on('items_updated', () => {
-      console.log('%c[WS_UPDATE] %cDatabase change detected. Refreshing UI...', 'color: #f59e0b; font-weight: bold', 'color: inherit');
-      queryClient.invalidateQueries({ queryKey: ['items'] });
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-    });
+  useSocketEvent('flow:updated', ({ projectId }: { projectId?: string }) => {
+    console.log('%c[WS_FLOW] %cFlow updated — refreshing columns...', 'color: #04cc98; font-weight: bold', 'color: inherit');
+    if (projectId) {
+      queryClient.invalidateQueries({ queryKey: ['flow', projectId] });
+    } else {
+      // Flow created/updated without projectId — invalidate all flow queries
+      queryClient.invalidateQueries({ queryKey: ['flow'] });
+    }
+  });
 
-    socket.on('flow:updated', ({ projectId }: { projectId?: string }) => {
-      console.log('%c[WS_FLOW] %cFlow updated — refreshing columns...', 'color: #04cc98; font-weight: bold', 'color: inherit');
-      if (projectId) {
-        queryClient.invalidateQueries({ queryKey: ['flow', projectId] });
-      } else {
-        // Flow created/updated without projectId — invalidate all flow queries
-        queryClient.invalidateQueries({ queryKey: ['flow'] });
-      }
-    });
+  useSocketEvent('server_restarting', () => {
+    console.log('%c[WS_RESTART] %cServer restarting after update — reloading in 4s...', 'color: #10b981; font-weight: bold', 'color: inherit');
+    setTimeout(() => window.location.reload(), 4000);
+  });
 
-    socket.on('server_restarting', () => {
-      console.log('%c[WS_RESTART] %cServer restarting after update — reloading in 4s...', 'color: #10b981; font-weight: bold', 'color: inherit');
-      setTimeout(() => window.location.reload(), 4000);
-    });
-
-    socket.on('project_switched', ({ projectId }: { projectId: string }) => {
-      if (isPinnedRef.current) {
-        console.log('%c[WS_PROJECT] %cAuto-switch suppressed (project is pinned)', 'color: #f59e0b; font-weight: bold', 'color: inherit');
-        return;
-      }
-      setSelectedProjectId(prev => {
-        if (prev !== projectId) {
-          console.log(`%c[WS_PROJECT] %cSwitching to active project: ${projectId}`, 'color: #10b981; font-weight: bold', 'color: inherit');
-          setNavPath([]); // Only reset if project actually changed
-          localStorage.setItem('agenfk_project_id', projectId);
-        }
-        return projectId;
-      });
-    });
-
-    return () => {
-      socket.disconnect();
-    };
-  }, [queryClient]);
+  useSocketEvent('project_switched', ({ projectId }: { projectId: string }) => {
+    if (isPinnedRef.current) {
+      console.log('%c[WS_PROJECT] %cAuto-switch suppressed (project is pinned)', 'color: #f59e0b; font-weight: bold', 'color: inherit');
+      return;
+    }
+    // useSocketEvent always invokes the latest closure, so selectedProjectId
+    // here is current — no functional updater needed, and persistence is the
+    // context's job now.
+    if (selectedProjectId !== projectId) {
+      // projectId goes AFTER the styles, never into the format string: the two
+      // %c here are deliberate, and an id carrying its own %c would eat one of
+      // the colours and slide the rest onto the wrong segments.
+      console.log('%c[WS_PROJECT] %cSwitching to active project:', 'color: #10b981; font-weight: bold', 'color: inherit', projectId);
+    }
+    // navPath and persistence follow from the id change — see the effect above.
+    setSelectedProjectId(projectId);
+  });
   /* v8 ignore stop */
 
   const bulkUpdateMutation = useMutation({
@@ -758,6 +846,12 @@ export const KanbanBoard: React.FC = () => {
       api.createItem({ ...variables, projectId: selectedProjectId! } as any),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['items'] });
+      // Creating a card IS working in the project, and this is the main way
+      // cards get created. The sidebar's "last used" ordering had no writer on
+      // this path at all, so it silently fell back to updatedAt — which moves
+      // on rename and reconfigure and not on work, and is the very thing the
+      // local ranking exists to avoid.
+      if (selectedProjectId) markProjectWorked(selectedProjectId);
     }
   });
 
@@ -806,13 +900,13 @@ export const KanbanBoard: React.FC = () => {
   });
 
   const handleSelectProject = (id: string) => {
+    // navPath reset, persistence and the analytics event are handled by the
+    // effect above and by ActiveProject — every switch gets them, not just
+    // the ones that come through this handler.
     setSelectedProjectId(id);
-    localStorage.setItem('agenfk_project_id', id);
-    setNavPath([]);
     setIsPickerOpen(false);
     setIsCreatingProject(false);
     setHighlightedProjectIndex(-1);
-    capture('project_switched');
   };
 
   const closePicker = () => {
@@ -1061,7 +1155,10 @@ export const KanbanBoard: React.FC = () => {
         const orderDiff = Math.abs(toStep.order - fromStep.order);
         if (orderDiff > 1) {
           // Invalid transition: revert (do nothing — drag is already cancelled visually)
-          console.warn(`[FLOW] Blocked transition ${draggedItem.status} → ${status} (order diff ${orderDiff})`);
+          // Step names come from the project's flow, which may have been
+          // installed from a community registry — so they stay out of the
+          // format string. orderDiff is ours, but it rides along after it too.
+          console.warn('[FLOW] Blocked transition', draggedItem.status, '→', status, `(order diff ${orderDiff})`);
           return;
         }
       }
@@ -1237,9 +1334,56 @@ export const KanbanBoard: React.FC = () => {
     deepLinkAppliedRef.current = true;
     setSearchTerm(itemId);
     runSearch(itemId);
+    // ?view=overview (c8e35fb8): open the card itself, on Overview - where a
+    // person approves a step - not only highlight it. Exact id or unique prefix.
+    if (getUrlParam('view') === 'overview') {
+      const want = itemId.toLowerCase();
+      const hits = items.filter((i: AgEnFKItem) => i.id.toLowerCase().startsWith(want));
+      const card = hits.find((i: AgEnFKItem) => i.id.toLowerCase() === want) ?? (hits.length === 1 ? hits[0] : undefined);
+      if (card) setSelectedItem(card);
+    }
     stripDeepLinkParams();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, isLoadingFlow, activeFlow]);
+
+  // Navigating to a card from outside the board — today the desktop sidebar.
+  // Reuses the deep-link path rather than a second implementation: the search
+  // already drills into the right parent, highlights and scrolls, and that
+  // behaviour is what "take me to this work" means.
+  const appliedFocusRef = useRef<string | null>(null);
+  useEffect(() => {
+    // `items` being defined is not the same as `items` being current.
+    // TanStack hands back a CACHED array synchronously while it refetches, and
+    // invalidateQueries leaves INACTIVE queries stale without refetching them —
+    // so a project the user left minutes ago still has its old list, missing
+    // everything an agent has created since. Searching that array finds
+    // nothing, flashes NOT FOUND, and burns the one-shot below, so the real
+    // data arriving afterwards is refused. Wait for settled data instead.
+    if (!focusedItemId || !items || isFetchingItems) return;
+    if (isLoadingFlow && !activeFlow) return;
+    // One-shot per request, exactly like deepLinkAppliedRef above. `items` has
+    // to stay in the deps so a click that lands before the list arrives still
+    // works, but focusedItemId is never cleared — so without this guard every
+    // subsequent items change re-applies a navigation the user has long since
+    // moved on from: it overwrites what they have since typed and scrolls the
+    // board back. Keying on the whole nonced string, not the bare id, is what
+    // keeps clicking the same sidebar row twice working.
+    if (appliedFocusRef.current === focusedItemId) return;
+    appliedFocusRef.current = focusedItemId;
+    const itemId = focusedItemId.slice(0, focusedItemId.lastIndexOf('#'));
+    setSearchTerm(itemId);
+    runSearch(itemId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusedItemId, items, isFetchingItems, isLoadingFlow, activeFlow]);
+
+  // A new card asked for from outside the board — the sidebar's per-project +.
+  // Opens the very same blank draft the header's New Item button does, so
+  // there is one create flow rather than two that can drift apart.
+  useEffect(() => {
+    if (!newItemRequest) return;
+    const projectId = newItemRequest.slice(0, newItemRequest.lastIndexOf('#'));
+    setSelectedItem(blankDraft(projectId, Status.TODO));
+  }, [newItemRequest]);
 
   const handleSearchNav = (direction: 'prev' | 'next') => {
     if (searchMatches.length === 0) return;
@@ -1413,11 +1557,54 @@ export const KanbanBoard: React.FC = () => {
         </div>
   );
 
+  /*
+   * NOTHING AT ALL YET - not "nothing chosen", which is a different screen.
+   *
+   * With no projects the picker has nothing to pick from, so it renders a
+   * chooser over an empty list: a dialog asking a question with no answers.
+   * The welcome screen asks the question somebody in that position actually
+   * has, which is how to start, and offers only routes that exist.
+   *
+   * Gated on the query having SETTLED. Showing "you have nothing" during the
+   * first fetch would flash a welcome at every existing user on every launch,
+   * which is worse than a moment of blank.
+   */
+  if (!selectedProjectId && !isLoadingProjects && (projects?.length ?? 0) === 0) {
+    return (
+      <div className="flex h-screen w-full flex-col bg-canvas">
+        {/* ONE action, and that is not a placeholder for three.
+        
+            The import routes both take a projectId - they bring issues INTO a
+            project - so on a screen that exists precisely because there are no
+            projects, they have nowhere to put anything. Showing them here
+            would be the dead control this screen is most likely to have
+            pressed. They appear once there is a project, which is where they
+            work. */}
+        <WelcomeScreen
+          actions={welcomeActions({ onNewProject: () => setIsCreatingProject(true) })}
+        />
+        {isCreatingProject && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-canvas/90 p-6">
+            {projectPickerCard}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   // First load / no project chosen yet: full-screen, not dismissable (no close button).
   if (!selectedProjectId) {
     return (
       <div data-testid="project-picker-backdrop" className="flex h-screen w-full flex-col items-center justify-center overflow-y-auto bg-canvas p-6">
-        <Logo size={64} className="mb-8" />
+        {/* The brand as it is drawn now: the flag with the name beside it.
+            This was the CglabSpark lockup, which predates the new mark and is
+            the only place it still showed at size. */}
+        <div className="mb-8 flex items-center gap-4">
+          <AgenfkFlag size={52} label="AgEnFK" />
+          <span aria-hidden="true">
+            <AgenfkWordmark size={28} />
+          </span>
+        </div>
         {projectPickerCard}
       </div>
     );
@@ -1432,10 +1619,22 @@ export const KanbanBoard: React.FC = () => {
   const avgCycleMs = doneItems.length > 0 ? totalCycleMs / doneItems.length : 0;
 
   return (
-    <div className="h-full min-h-screen bg-canvas flex flex-col font-sans text-ink transition-colors duration-300">
+    <div className={clsx(
+      'h-full bg-canvas flex flex-col font-sans text-ink transition-colors duration-300',
+      // In the desktop shell the board lives inside a tab panel that is already
+      // viewport-height minus the title bar, tabs and footer. Demanding 100vh
+      // there buys ~100px of scrollbar on an empty board.
+      !isDesktop() && 'min-h-screen',
+    )}>
       <header className="bg-nav-surface backdrop-blur border-b border-border-brand px-6 py-3 flex flex-col gap-3 sticky top-0 z-10 shadow-sm dark:shadow-none">
         <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3 shrink-0">
+          {/* In the desktop app the sidebar already carries the logo, the app
+              name, the version, the README and the active project — repeating
+              them here spends a row of screen to say what is already visible.
+              The whole block goes, not just its contents: an empty flex child
+              still draws the row's `gap-4`, which would leave the search
+              indented from an edge with nothing on it. (CGLAB-168/172) */}
+          {!isDesktop() && <div className="flex items-center gap-3 shrink-0">
             <Logo size={32} />
             <div>
               <div className="flex items-center gap-2">
@@ -1461,6 +1660,10 @@ export const KanbanBoard: React.FC = () => {
                   </span>
                 </button>
               </div>
+              {/* The desktop sidebar owns project switching now, and shows the
+                  active one highlighted — repeating it here costs a header row
+                  to say what is already on screen. The pin lives with it
+                  because it is a property of the project, not of the board. */}
               <div className="flex items-center gap-1.5 mt-1">
                 <p className="text-[10px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-widest">
                   Project: <span className="text-accent-text">{activeProject?.name || 'Loading...'}</span>
@@ -1482,7 +1685,7 @@ export const KanbanBoard: React.FC = () => {
                       'p-0.5 rounded transition-colors',
                       isPinned
                         ? 'text-accent-text hover:opacity-80'
-                        : 'text-slate-300 dark:text-slate-600 hover:text-slate-500 dark:hover:text-slate-400'
+                        : 'text-slate-300 dark:text-slate-500 hover:text-slate-500 dark:hover:text-slate-400'
                     )}
                   >
                     {isPinned ? <Pin size={11} /> : <PinOff size={11} />}
@@ -1490,9 +1693,19 @@ export const KanbanBoard: React.FC = () => {
                 )}
               </div>
             </div>
-          </div>
+          </div>}
 
-          <form onSubmit={handleSearch} className="relative flex-1 max-w-md hidden lg:flex items-center gap-1.5">
+          <form
+            onSubmit={handleSearch}
+            className={clsx(
+              'relative max-w-md hidden lg:flex items-center gap-1.5',
+              // In the desktop app the logo, app name and project line are all
+              // gone from the left of this row, so growing to fill leaves the
+              // search adrift in the middle of an empty header. Sit at the
+              // left edge and push the buttons right instead.
+              isDesktop() ? 'flex-1 mr-auto' : 'flex-1',
+            )}
+          >
             <div className="relative flex-1">
               <input
                 type="text"
@@ -1521,6 +1734,31 @@ export const KanbanBoard: React.FC = () => {
           </form>
 
           <div className="flex items-center gap-3">
+            {/* The auto-switch pin survives the desktop header cleanup, because
+                it is the ONLY thing that stops a `project_switched` event from
+                yanking the board to whatever project an agent just touched.
+                It is not the sidebar's pin: that one writes
+                agenfk_pinned_projects and merely reorders the list, while this
+                writes agenfk_project_pinned and changes behaviour. It sits
+                here rather than back on the left so the search keeps the edge,
+                and it belongs with the other board toggles anyway. */}
+            {isDesktop() && selectedProjectId && (
+              <button
+                onClick={togglePin}
+                title={isPinned ? 'Unpin project (allow auto-switching)' : 'Pin project (prevent auto-switching)'}
+                aria-label={isPinned ? 'Unpin project' : 'Pin project'}
+                aria-pressed={isPinned}
+                data-testid="pin-project-btn"
+                className={clsx(
+                  'p-1.5 rounded-lg transition-colors',
+                  isPinned
+                    ? 'text-accent-text bg-chip hover:opacity-80'
+                    : 'text-slate-400 dark:text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-600 dark:hover:text-slate-300',
+                )}
+              >
+                {isPinned ? <Pin size={14} /> : <PinOff size={14} />}
+              </button>
+            )}
             <div className="flex items-center gap-1.5 bg-slate-100/50 dark:bg-slate-800/50 p-1 rounded-xl border border-slate-200/50 dark:border-slate-700/50">
               <JiraConnectionButton />
 
@@ -1602,7 +1840,7 @@ export const KanbanBoard: React.FC = () => {
             </div>
 
             <button 
-              onClick={() => setSelectedItem({ type: ItemType.TASK, status: Status.TODO, title: '', description: '', projectId: selectedProjectId! } as any)}
+              onClick={() => setSelectedItem(blankDraft(selectedProjectId!, Status.TODO))}
               className="bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 px-4 py-2 rounded-xl font-bold text-sm flex items-center gap-2 transition-all active:scale-95 whitespace-nowrap"
             >
               <Plus size={18} />
@@ -1619,7 +1857,7 @@ export const KanbanBoard: React.FC = () => {
             </button>
             {navPath.map((nav, index) => (
               <React.Fragment key={nav.id}>
-                <ChevronRight size={14} className="text-slate-300 dark:text-slate-600 flex-shrink-0" />
+                <ChevronRight size={14} className="text-slate-300 dark:text-slate-500 flex-shrink-0" />
                 <button
                   /* v8 ignore start */
                   onClick={() => navigateTo(index)}
@@ -1722,12 +1960,13 @@ export const KanbanBoard: React.FC = () => {
                             onArchive={(id) => updateMutation.mutate({ id, updates: { status: Status.ARCHIVED } })}
                             projects={projects}
                             onMoveToProject={(id, targetProjectId) => moveMutation.mutate({ id, targetProjectId })}
+                            onOpenTerminal={requestTerminalFor}
                             onCopyId={handleCopyId}
                           />
                         ))}
                       </AnimatePresence>
                     {/* v8 ignore start */}
-                    <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: Status.IDEAS, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-1.5 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-lg text-slate-400 dark:text-slate-500 text-xs font-medium hover:border-border-brand hover:text-accent-text transition-all flex items-center justify-center gap-1.5">
+                    <button onClick={() => setSelectedItem(blankDraft(selectedProjectId!, Status.IDEAS))} className="w-full py-1.5 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-lg text-slate-400 dark:text-slate-500 text-xs font-medium hover:border-border-brand hover:text-accent-text transition-all flex items-center justify-center gap-1.5">
                       <Plus size={14} /> Add idea
                     </button>
                     {/* v8 ignore stop */}
@@ -1746,25 +1985,31 @@ export const KanbanBoard: React.FC = () => {
           {(!isLoadingFlow || activeFlow) && mainColumnStatuses.map(status => {
             const flowStep = flowStepByStatus[status];
             const columnLabel = flowStep ? (flowStep.label || flowStep.name) : status.replace(/_/g, ' ');
+            const blocking = flowStep ? blockingChecksOf(flowStep.name) : undefined;
             return (
             <div key={status} className="flex flex-col w-full md:flex-1 md:min-w-[180px] h-full min-h-[300px] md:min-h-0" onDrop={(e) => handleDrop(e, status as Status)} onDragOver={handleDragOver} onDragEnter={handleColumnDragEnter}>
               <div
                 data-testid={`column-header-${status}`}
-                className="flex items-center justify-between mb-3 px-1 border-t-4 pt-2"
+                className="group flex flex-col gap-0.5 mb-3 px-1 border-t-4 pt-2"
                 style={{ borderTopColor: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? colorForUnknownStatus(status) }}
               >
-                <div className="flex items-center gap-2">
-                  <div className="p-1 rounded-md text-slate-500 bg-slate-50 dark:bg-slate-800" style={{ color: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? colorForUnknownStatus(status) }}>
+                <div data-testid={`column-title-${status}`} className="flex items-center gap-2 min-w-0">
+                  <div className="p-1 rounded-md text-slate-500 bg-slate-50 dark:bg-slate-800 shrink-0" style={{ color: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? colorForUnknownStatus(status) }}>
                     {renderStepIcon(flowStep?.icon, statusIcons[status as Status] ?? <Briefcase size={14} />)}
                   </div>
-                  <h2 className="font-bold text-ink-secondary text-sm uppercase tracking-wider">{columnLabel}</h2>
-                  <button onClick={() => handleArchiveColumn(status as Status)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 dark:text-slate-500 transition-colors" title="Archive Column">
+                  <h2 title={columnLabel} className="flex-1 min-w-0 truncate font-bold text-ink-secondary text-sm">{titleCaseLabel(columnLabel)}</h2>
+                  <button onClick={() => handleArchiveColumn(status as Status)} className="p-1 shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 dark:text-slate-500 transition-opacity" title="Archive Column">
                     <Archive size={12} />
                   </button>
+                  <span className="shrink-0 bg-chip text-accent-text text-xs font-mono font-bold px-2 py-1 rounded-full shadow-sm border border-border-soft">
+                    {getItemsByStatus(status as Status).length}
+                  </span>
                 </div>
-                <span className="bg-chip text-accent-text text-xs font-mono font-bold px-2 py-1 rounded-full shadow-sm border border-border-soft">
-                  {getItemsByStatus(status as Status).length}
-                </span>
+                {/* Always rendered, so every header is the same height (85b59d8c). */}
+                <div data-testid={`column-meta-${status}`} className="flex items-center gap-2 min-h-[16px] pl-[30px] min-w-0">
+                  {flowStep && <ColumnRole step={flowStep} />}
+                  {flowStep && <ColumnContractBadges step={flowStep} checkCount={blocking?.length} checkNames={blocking?.map(c => checkText(c.id).title)} />}
+                </div>
               </div>
 
               <div className={clsx("flex-1 px-3 pb-10 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
@@ -1793,13 +2038,14 @@ export const KanbanBoard: React.FC = () => {
                         /* v8 ignore stop */
                         projects={projects}
                         onMoveToProject={(id, targetProjectId) => moveMutation.mutate({ id, targetProjectId })}
+                        onOpenTerminal={requestTerminalFor}
                         onCopyId={handleCopyId}
                         disableLayoutAnimation={easterEggsEnabled}
                       />
                       </CardAnimationWrapper>
                     ))}
                   </AnimatePresence>
-                <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: status as Status, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-sm font-medium hover:border-border-brand hover:text-accent-text hover:bg-chip transition-all flex items-center justify-center gap-2">
+                <button onClick={() => setSelectedItem(blankDraft(selectedProjectId!, status as Status))} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-sm font-medium hover:border-border-brand hover:text-accent-text hover:bg-chip transition-all flex items-center justify-center gap-2">
                   <Plus size={16} /> Add {columnLabel.toLowerCase()}
                 </button>
               </div>
@@ -1844,6 +2090,7 @@ export const KanbanBoard: React.FC = () => {
                             onArchive={(id) => updateMutation.mutate({ id, updates: { status: Status.ARCHIVED } })}
                             projects={projects}
                             onMoveToProject={(id, targetProjectId) => moveMutation.mutate({ id, targetProjectId })}
+                            onOpenTerminal={requestTerminalFor}
                             onCopyId={handleCopyId}
                             disableLayoutAnimation={easterEggsEnabled}
                           />
@@ -1886,12 +2133,13 @@ export const KanbanBoard: React.FC = () => {
                             onArchive={(id) => updateMutation.mutate({ id, updates: { status: Status.ARCHIVED } })}
                             projects={projects}
                             onMoveToProject={(id, targetProjectId) => moveMutation.mutate({ id, targetProjectId })}
+                            onOpenTerminal={requestTerminalFor}
                             onCopyId={handleCopyId}
                             disableLayoutAnimation={easterEggsEnabled}
                           />
                         ))}
                       </AnimatePresence>
-                    <button onClick={() => setSelectedItem({ type: ItemType.TASK, status: Status.BLOCKED, title: '', description: '', projectId: selectedProjectId! } as any)} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-xs font-medium hover:border-red-300 dark:hover:border-red-700 hover:text-red-500 dark:hover:text-red-400 transition-all flex items-center justify-center gap-2 mt-2">
+                    <button onClick={() => setSelectedItem(blankDraft(selectedProjectId!, Status.BLOCKED))} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-xs font-medium hover:border-red-300 dark:hover:border-red-700 hover:text-red-500 dark:hover:text-red-400 transition-all flex items-center justify-center gap-2 mt-2">
                       <Plus size={16} /> Add blocked
                     </button>
                   </div>
@@ -1944,6 +2192,7 @@ export const KanbanBoard: React.FC = () => {
                           onArchive={(id) => updateMutation.mutate({ id, updates: { status: item.previousStatus || Status.TODO } })}
                           projects={projects}
                           onMoveToProject={(id, targetProjectId) => moveMutation.mutate({ id, targetProjectId })}
+                          onOpenTerminal={requestTerminalFor}
                           onCopyId={handleCopyId}
                           disableLayoutAnimation={easterEggsEnabled}
                         />

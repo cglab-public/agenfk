@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { HubServerContext } from '../server.js';
 import { requireSession } from '../auth/session.js';
 import { recomputeRollups } from '../rollup.js';
@@ -6,17 +6,38 @@ import { aggregateHistogramRows } from '../queries/histogram-aggregate.js';
 import { coerceMetricsRow } from '../queries/metrics-coerce.js';
 import { aggregatePrOverview, parsePrNumberFilter, PrEventRow } from '../queries/pr-overview-aggregate.js';
 import { sanitizeRemoteUrl } from './events.js';
-import { rateLimit } from '../util/rateLimit.js';
+import { rateLimit, sessionUserKey } from '../util/rateLimit.js';
 import { loadModelMappings } from '../util/modelMapping.js';
 import { loadModelMeta, resolveModelMetaAll } from '../util/modelMeta.js';
 import { resolveModelId } from '../util/modelMapping.js';
 import { childHubPredicate, childHubClause, selectedHubIds, HUB_COL_EVENTS, HUB_COL_ROLLUPS } from '../queries/childHub.js';
 import { asyncRoute } from '../util/asyncRoute.js';
 
-function parseList(s: string | undefined): string[] | null {
-  // Repeated params (?model=a&model=b) arrive as an array — normalize to the
-  // CSV form instead of letting .split throw a 500 (all list filters use this).
-  if (Array.isArray(s)) s = s.join(',');
+/**
+ * A query parameter that is not the shape the route reads. Express parses
+ * `?from=a&from=b` into an array and `?from[a]=b` into an object, so a value
+ * cast to string is a claim, not a check (CodeQL #107). Answered with a 400 by
+ * the router's error handler below.
+ */
+class BadQuery extends Error {}
+
+/** A parameter that must be ONE value: absent, or a single string. */
+function singleValue(req: Request, name: string): string | null {
+  const v = req.query[name];
+  if (v === undefined) return null;
+  if (typeof v !== 'string') throw new BadQuery(`Query parameter '${name}' must be given once, as a single value.`);
+  return v;
+}
+
+function parseList(req: Request, name: string): string[] | null {
+  const v = req.query[name];
+  if (v === undefined) return null;
+  // Repeated params (?model=a&model=b) arrive as an array — merged into the
+  // CSV form, which is what a list filter means. A nested object is not a list.
+  let s: string;
+  if (typeof v === 'string') s = v;
+  else if (Array.isArray(v) && v.every(x => typeof x === 'string')) s = v.join(',');
+  else throw new BadQuery(`Query parameter '${name}' must be a comma-separated list.`);
   if (!s) return null;
   const parts = s.split(',').map(p => p.trim()).filter(Boolean);
   return parts.length ? parts : null;
@@ -39,13 +60,13 @@ interface EventFilters {
 
 function readEventFilters(req: Request): EventFilters {
   return {
-    users: parseList(req.query.users as string | undefined),
-    types: parseList(req.query.types as string | undefined),
-    projects: parseList(req.query.projects as string | undefined),
-    itemTypes: parseList(req.query.itemTypes as string | undefined),
-    childHubs: parseList(req.query.childHubId as string | undefined),
-    from: (req.query.from as string | undefined) ?? null,
-    to: (req.query.to as string | undefined) ?? null,
+    users: parseList(req, 'users'),
+    types: parseList(req, 'types'),
+    projects: parseList(req, 'projects'),
+    itemTypes: parseList(req, 'itemTypes'),
+    childHubs: parseList(req, 'childHubId'),
+    from: singleValue(req, 'from'),
+    to: singleValue(req, 'to'),
   };
 }
 
@@ -83,7 +104,9 @@ export function queriesRouter(ctx: HubServerContext): Router {
   // Authenticated and org-scoped, but every route here runs real SQL, so an
   // authenticated client in a loop is still a resource concern. Generous cap:
   // high enough that no legitimate dashboard hits it, low enough to bound abuse.
-  router.use(rateLimit({ windowMs: 60 * 1000, max: 300, message: 'Too many requests, slow down.' }));
+  // Keyed by the signed-in user, not the address: the hub is reached through
+  // shared corporate egress, and an IP bucket would be an office-wide cap.
+  router.use(rateLimit({ windowMs: 60 * 1000, max: 300, keyFn: sessionUserKey(ctx.config.sessionSecret), message: 'Too many requests, slow down.' }));
   const guard = requireSession(ctx.config.sessionSecret);
 
   router.get('/users', guard, asyncRoute(async (req: Request, res: Response) => {
@@ -103,8 +126,8 @@ export function queriesRouter(ctx: HubServerContext): Router {
 
   router.get('/timeline', guard, asyncRoute(async (req: Request, res: Response) => {
     const f = readEventFilters(req);
-    const limit = Math.min(Number.parseInt((req.query.limit as string) ?? '100', 10) || 100, 500);
-    const offset = Math.max(Number.parseInt((req.query.offset as string) ?? '0', 10) || 0, 0);
+    const limit = Math.min(Number.parseInt(singleValue(req, 'limit') ?? '100', 10) || 100, 500);
+    const offset = Math.max(Number.parseInt(singleValue(req, 'offset') ?? '0', 10) || 0, 0);
     const { where, params } = applyEventFilters(req.session!.orgId, f);
 
     const rows = await ctx.db.all<any>(
@@ -327,7 +350,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
 
   router.get('/histogram', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
-    const bucket = (req.query.bucket as string | undefined) ?? 'day';
+    const bucket = singleValue(req, 'bucket') ?? 'day';
     if (bucket !== 'day' && bucket !== 'hour') {
       res.status(400).json({ error: "bucket must be 'day' or 'hour'" });
       return;
@@ -365,7 +388,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
     const f = readEventFilters(req);
     // Multi-select: a CSV of models, same parseList semantics as users/projects.
     // A single-value ?model=x link keeps working (one-element list).
-    const models = parseList(req.query.model as string | undefined);
+    const models = parseList(req, 'model');
     // PR-number search (?pr=57 | #57 | a pasted PR URL). When it parses it
     // supersedes the date window, the model filter and the developer filter —
     // see PrWindow.prNumber. The projects filter is NOT superseded and needs no
@@ -484,6 +507,13 @@ export function queriesRouter(ctx: HubServerContext): Router {
 
     res.json({ period, ...result, previous });
   }));
+
+  // A malformed query parameter is the caller's mistake: a 400 that names it,
+  // not the 500 an array reaching `.slice` or a SQL bind used to produce.
+  router.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
+    if (err instanceof BadQuery) { res.status(400).json({ error: err.message }); return; }
+    next(err);
+  });
 
   return router;
 }

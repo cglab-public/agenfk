@@ -1,6 +1,6 @@
 {
   "name": "agenfk",
-  "version": "1.1.20",
+  "version": "2.0.0-beta.6",
   "description": "AgenFK Engineering Framework",
   "private": true,
   "workspaces": [
@@ -13,14 +13,15 @@
     "packages/flow-editor",
     "packages/create",
     "packages/hub",
-    "packages/hub-ui"
+    "packages/hub-ui",
+    "packages/desktop"
   ],
   "bin": {
     "agenfk": "bin/agenfk.js",
     "agenfk-hub": "bin/agenfk-hub.js"
   },
   "scripts": {
-    "build": "npm run build -w packages/core -w packages/storage-sqlite -w packages/telemetry && npm run build -w packages/cli -w packages/server -w packages/ui -w packages/hub -w packages/hub-ui",
+    "build": "npm run build -w packages/core -w packages/storage-sqlite -w packages/telemetry && npm run build -w packages/cli -w packages/server -w packages/ui -w packages/hub -w packages/hub-ui -w packages/desktop",
     "test": "vitest",
     "test:coverage": "node scripts/home-integrity.mjs snapshot && vitest run --coverage && node scripts/home-integrity.mjs verify",
     "test:ui:coverage": "cd packages/ui && npx vitest run --coverage",
@@ -28,7 +29,8 @@
     "uninstall:framework": "node scripts/uninstall.mjs",
     "start:services": "node scripts/start-services.mjs",
     "test:home-integrity": "node scripts/home-integrity.mjs snapshot && npx vitest run && node scripts/home-integrity.mjs verify",
-    "test:stryker": "node scripts/stryker-home-wrap.mjs"
+    "test:stryker": "node scripts/stryker-home-wrap.mjs",
+    "e2e:tdd": "docker build -t agenfk-e2e-tdd -f e2e/tdd-harness/Dockerfile . && docker run --rm agenfk-e2e-tdd"
   },
   "keywords": [
     "agenfk",

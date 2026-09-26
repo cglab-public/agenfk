@@ -2,7 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { randomBytes, randomUUID } from 'crypto';
 import { HubServerContext } from '../server.js';
 import { requireAdmin } from '../auth/session.js';
-import { signInviteToken, verifyInviteToken, burnInviteNonce, INVITE_TTL_MS } from '../auth/inviteToken.js';
+import { signInviteToken, verifyInviteToken, burnInviteNonce, INVITE_TTL_MS, MAX_INVITE_TOKEN_LEN } from '../auth/inviteToken.js';
 import { semverOrNull } from '../util/semver.js';
 import { effectiveIdentityPolicy } from '../services/federation/forwarding.js';
 import { sanitizeRemoteUrl, remoteUrlFromRepo } from '../util/remoteUrl.js';
@@ -20,9 +20,6 @@ import { MAX_CHILD_HUB_NAME_LEN, validChildHubName } from '../util/childHubRow.j
 // (next to the installation invite) while the child-facing API lives under
 // /v1 like every other machine-to-machine route.
 
-// An invite is ~200 chars. Cap the input before it reaches createHmac so an
-// unauthenticated caller cannot make the hub HMAC megabytes per request.
-const MAX_INVITE_TOKEN_LEN = 4096;
 /** Same ceiling as /v1/events: one delivery must not be able to monopolise a writer. */
 const MAX_DELIVER_ROWS = 500;
 

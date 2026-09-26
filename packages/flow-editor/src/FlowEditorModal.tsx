@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback, createContext, useContext } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import mermaid from 'mermaid';
 import type { Flow, FlowStep, RegistryFlow, FlowClient, RegistryClient } from './types';
 import { extractApiError } from './apiError';
 import { flowDefinitionIssues, stepIssue, withStepIds } from './flowDefinition';
+import { ContractProblems, RecordsLane, StepContractButton, StepContractDialog, TemplatePicker } from './FlowContractSection';
 import { ExitCriteriaEditorModal } from './ExitCriteriaEditorModal';
 import { estimateTokenCount } from './estimateTokens';
 
@@ -225,6 +226,7 @@ function serializeDefinition(
   name: string,
   description: string,
   steps: FlowStep[],
+  verifyAt: 'leaf' | 'parent' = 'leaf',
 ): string {
   const canonical = (Array.isArray(steps) ? steps : [])
     .map((s, i) => ({
@@ -235,9 +237,15 @@ function serializeDefinition(
       ...(s?.color ? { color: s.color } : {}),
       ...(s?.icon ? { icon: s.icon } : {}),
       ...(s?.isAnchor ? { isAnchor: true } : {}),
+      // CGLAB-384: a change to a role or a check is a change to the flow.
+      ...(typeof s?.role === 'string' && s.role ? { role: s.role } : {}),
+      ...(Array.isArray(s?.checks) && s.checks.length ? { checks: s.checks } : {}),
+      ...(s?.autoCommit ? { autoCommit: true } : {}),
+      ...(s?.requireCommit ? { requireCommit: true } : {}),
     }))
     .sort((a, b) => a.order - b.order);
-  return JSON.stringify({ name, description, steps: canonical });
+  // 281adef0: where the flow runs the suite is part of it; the default is absent.
+  return JSON.stringify({ name, description, steps: canonical, ...(verifyAt === 'parent' ? { verifyAt } : {}) });
 }
 
 // ── Exit criteria summary trigger (CGLAB-109) ─────────────────────────────────
@@ -318,6 +326,8 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  // 281adef0: 'parent' runs the project's suite once, at the top-level card.
+  const [verifyAt, setVerifyAt] = useState<'leaf' | 'parent'>('leaf');
   const [steps, setSteps] = useState<FlowStep[]>([]);
   const [saved, setSaved] = useState(false);
   // The definition as last persisted, as the editor serialises it. `saved`
@@ -343,6 +353,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
     if (flow) {
       setName(flow.name);
       setDescription(flow.description ?? '');
+      setVerifyAt(flow.verifyAt === 'parent' ? 'parent' : 'leaf');
       // Filter out platform statuses — they are never part of flow definitions
       const flowSteps = [...flow.steps]
         .filter(s => {
@@ -353,10 +364,11 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       setSteps(flowSteps);
       // Baseline the dirty check on the SAME canonical shape the save mutation
       // sends, so a round-trip through the editor is not itself a change.
-      setPersisted(serializeDefinition(flow.name, flow.description ?? '', flowSteps));
+      setPersisted(serializeDefinition(flow.name, flow.description ?? '', flowSteps, flow.verifyAt === 'parent' ? 'parent' : 'leaf'));
     } else {
       setName('');
       setDescription('');
+      setVerifyAt('leaf');
       const [todo, done] = makeFreshAnchors();
       const blank = makeBlankStep(1);
       done.order = 2;
@@ -421,6 +433,46 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
     setSteps(prev => [...prev, makeBlankStep(prev.length)]);
   }, []);
 
+  // ── Step contracts (CGLAB-384) ─────────────────────────────────────────────
+  // The server says what the draft's steps mean, with the functions that
+  // validate a save and run verify. A host without the route sees none of it.
+  const hasContract = typeof flowClient.getFlowContract === 'function';
+  // Only what the contract reads, debounced: a label or a keystroke in a name
+  // is not a new question for the server.
+  // The commit flags and isSpecial count too: the server validates where a
+  // step commit can run, which depends on both (CGLAB-388).
+  const contractKey = JSON.stringify(steps.map((s, i) => ({ id: s.id, name: s.name, order: i, isAnchor: s.isAnchor, isSpecial: s.isSpecial, role: s.role, checks: s.checks, autoCommit: s.autoCommit, requireCommit: s.requireCommit })));
+  const [askedKey, setAskedKey] = useState(contractKey);
+  useEffect(() => {
+    const t = setTimeout(() => setAskedKey(contractKey), 250);
+    return () => clearTimeout(t);
+  }, [contractKey]);
+  const { data: contract } = useQuery({
+    queryKey: ['flow-contract', askedKey],
+    queryFn: () => flowClient.getFlowContract!(JSON.parse(askedKey).map((s: FlowStep) => ({ ...s, label: s.name })) as FlowStep[]),
+    enabled: hasContract,
+    placeholderData: keepPreviousData,
+  });
+  const [contractStepIndex, setContractStepIndex] = useState<number | null>(null);
+  const stepContractOf = (index: number) => contract?.steps.find(c => c.name === steps[index]?.name);
+  const removeCheck = useCallback((index: number, checkId: string) => {
+    setSteps(prev => prev.map((s, i) => (i === index ? { ...s, checks: (s.checks ?? []).filter(c => c.id !== checkId) } : s)));
+  }, []);
+  const addWritingTestsBefore = useCallback((index: number) => {
+    setSteps(prev => {
+      const taken = new Set(prev.map(s => s.name.toUpperCase()));
+      let name = 'WRITE_TESTS';
+      for (let n = 2; taken.has(name); n++) name = `WRITE_TESTS_${n}`;
+      const added: FlowStep = { ...makeBlankStep(index), name, label: 'Write tests', role: 'test-authoring' };
+      const next = [...prev.slice(0, index), added, ...prev.slice(index)];
+      return next.map((s, i) => ({ ...s, order: i }));
+    });
+  }, []);
+  const applyTemplate = useCallback((templateSteps: FlowStep[]) => {
+    setSteps(templateSteps.map((s, i) => ({ ...s, id: generateUUID(), order: i })));
+    setContractStepIndex(null);
+  }, []);
+
   const removeStep = useCallback((index: number) => {
     setSteps(prev => {
       const next = prev.filter((_, i) => i !== index);
@@ -439,6 +491,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
     const payload: Partial<Flow> = {
       name,
       description,
+      verifyAt,
       // order is authoritative from array position; ids are backfilled so a
       // flow loaded without them (MCP create_flow never sent ids) still
       // satisfies the Hub's id rule.
@@ -447,7 +500,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
     return flow?.id
       ? flowClient.updateFlow(flow.id, payload)
       : flowClient.createFlow(payload);
-  }, [flow?.id, name, description, steps, flowClient]);
+  }, [flow?.id, name, description, steps, verifyAt, flowClient]);
 
   /**
    * Re-baseline the dirty check after a write.
@@ -465,6 +518,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       savedFlow.name,
       savedFlow.description ?? '',
       [...(savedFlow.steps ?? [])].sort((a, b) => a.order - b.order),
+      savedFlow.verifyAt === 'parent' ? 'parent' : 'leaf',
     ));
   }, []);
 
@@ -514,7 +568,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
    * when its serialised definition differs from the one it was loaded with or
    * last saved.
    */
-  const isDirty = persisted === null || serializeDefinition(name, description, steps) !== persisted;
+  const isDirty = persisted === null || serializeDefinition(name, description, steps, verifyAt) !== persisted;
 
   // BUG 269eeec8 (a): read the server's `{ error }` body, not Error.message —
   // the latter is only ever "Request failed with status code N".
@@ -524,7 +578,9 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   // BUG 269eeec8 (c): mirror the Hub's definition contract so a payload it would
   // reject never leaves the browser, and the reason is pinned to its step.
   const definitionIssues = flowDefinitionIssues(name, steps);
-  const isSaveDisabled = isBusy || reservedNameError || definitionIssues.length > 0;
+  // The server's contract check: a flow it would refuse is not sent.
+  const contractInvalid = hasContract && !!contract && !contract.valid;
+  const isSaveDisabled = isBusy || reservedNameError || definitionIssues.length > 0 || contractInvalid;
 
   /**
    * Whether this panel can write its definition at all. The two read-only
@@ -557,7 +613,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   const isActive = flow?.id !== undefined && flow.id === activeFlowId;
 
   // ── Publish to registry ──────────────────────────────────────────────────
-  const [publishResult, setPublishResult] = useState<{ url: string; kind: 'pr' | 'existing' | 'direct' } | null>(null);
+  const [publishResult, setPublishResult] = useState<{ url: string; kind: 'pr' | 'existing' | 'direct'; repo?: string } | null>(null);
   const [publishError, setPublishError] = useState<string | null>(null);
 
   /**
@@ -584,9 +640,12 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       return registryClient.publishToRegistry!(id);
     },
     onSuccess: (data) => {
-      setPublishResult({ url: data.url, kind: data.kind ?? 'pr' });
+      setPublishResult({ url: data.url, kind: data.kind ?? 'pr', repo: data.repo });
       setPublishError(null);
       setSaved(true);
+      // A publish may assign the flow a new version (the gh path bumps it; the
+      // hub path returns the one it published). Refetch so the badge is current.
+      queryClient.invalidateQueries({ queryKey: ['flows'] });
     },
     onError: (e: unknown) => {
       setPublishError(extractApiError(e, 'Failed to publish.'));
@@ -606,7 +665,11 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
           className="flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400 font-semibold hover:underline"
         >
           <ExternalLink size={12} />
-          {publishResult.kind === 'pr' ? 'PR opened — view on GitHub' : 'Already published — view on registry'}
+          {publishResult.kind === 'pr'
+            ? `PR opened${publishResult.repo ? ` on ${publishResult.repo}` : ''} — view on GitHub`
+            : publishResult.kind === 'direct'
+              ? `Pushed${publishResult.repo ? ` to ${publishResult.repo}` : ''} — view on GitHub`
+              : `Already published${publishResult.repo ? ` in ${publishResult.repo}` : ''} — view on registry`}
         </a>
       )}
       {publishError && (
@@ -661,7 +724,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             value={name}
             onChange={e => { setName(e.target.value); setSaved(false); }}
             placeholder="Flow name…"
-            className="w-full text-xl font-bold text-slate-800 dark:text-slate-100 bg-transparent border-b-2 border-transparent hover:border-slate-300 dark:hover:border-slate-600 focus:border-brand focus:outline-none placeholder-slate-400 dark:placeholder-slate-600 transition-colors pb-0.5"
+            className="w-full text-xl font-bold text-slate-800 dark:text-slate-100 bg-transparent border-b-2 border-transparent hover:border-slate-300 dark:hover:border-slate-600 focus:border-brand focus:outline-none placeholder-slate-400 dark:placeholder-slate-500 transition-colors pb-0.5"
           />
         )}
       </div>
@@ -685,6 +748,24 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
           />
         </div>
 
+        {/* Where the suite runs (281adef0) */}
+        <label className="flex items-start gap-2 text-sm text-slate-700 dark:text-slate-200">
+          <input
+            type="checkbox"
+            data-testid="flow-verify-at-parent"
+            checked={verifyAt === 'parent'}
+            disabled={isReadOnly}
+            onChange={e => { setVerifyAt(e.target.checked ? 'parent' : 'leaf'); setSaved(false); }}
+            className="mt-0.5"
+          />
+          <span>
+            Run the project's suite once, at the top-level card
+            <span className="block text-xs text-slate-500 dark:text-slate-400">
+              A card whose parent is still open closes without its own run; the parent's verify runs it over everything. A red there cannot be pinned on one child.
+            </span>
+          </span>
+        </label>
+
         {/* Version — read-only, auto-managed */}
         {flow?.version && (
           <div className="flex items-center gap-2">
@@ -704,6 +785,8 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             <label className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
               Steps
             </label>
+            <div className="flex items-center gap-4">
+            {!isReadOnly && hasContract && <TemplatePicker onApply={applyTemplate} />}
             {!isReadOnly && (
               <button
                 data-testid="add-step-btn"
@@ -715,6 +798,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                 Add Step
               </button>
             )}
+            </div>
           </div>
 
           {/* Kanban-style: one column per step, horizontally scrollable */}
@@ -825,7 +909,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                           className={clsx(
                             'shrink-0',
                             isReadOnly
-                              ? 'text-slate-300 dark:text-slate-600'
+                              ? 'text-slate-300 dark:text-slate-500'
                               : 'cursor-grab active:cursor-grabbing text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
                           )}
                           title={isReadOnly ? undefined : 'Drag to reorder'}
@@ -925,11 +1009,31 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                         </div>
                       </>
                     )}
+                    {hasContract && contract && (
+                      <StepContractButton index={index} step={step} stepContract={stepContractOf(index)} onOpen={() => setContractStepIndex(index)} />
+                    )}
                   </div>
                 </div>
               );
             })}
           </div>
+          {hasContract && contract && (
+            <div className="space-y-3 mt-3">
+              <ContractProblems steps={steps} contract={contract} disabled={isReadOnly} onRemoveCheck={removeCheck} onAddWritingTestsBefore={addWritingTestsBefore} />
+              <RecordsLane steps={steps} contract={contract} />
+            </div>
+          )}
+          {hasContract && contract && contractStepIndex !== null && steps[contractStepIndex] && (
+            <StepContractDialog
+              step={steps[contractStepIndex]}
+              stepContract={stepContractOf(contractStepIndex)}
+              contract={contract}
+              disabled={isReadOnly}
+              readOnlyNote={isHubManaged ? 'Set by your org admin: this flow can\'t be changed here.' : 'This is the built-in flow: clone it to change it.'}
+              onChange={patch => updateStep(contractStepIndex, patch)}
+              onClose={() => setContractStepIndex(null)}
+            />
+          )}
           {/* Reserved name global error */}
           {silentIssues.length > 0 && (
             <ul data-testid="flow-definition-issues" className="text-sm text-red-600 dark:text-red-400 mt-1 list-disc pl-5">
@@ -1101,10 +1205,25 @@ const FlowMermaid: React.FC<{ steps: { name: string; label: string }[] }> = ({ s
   useEffect(() => {
     if (!ref.current || steps.length === 0) return;
     const id = `mermaid-flow-${Math.random().toString(36).substring(2, 9)}`;
-    const nodes = steps.map((s, i) => `  ${i}["${s.label || s.name}"]`).join('\n');
+    /*
+     * Labels come from the community registry, so they are untrusted.
+     *
+     * An unescaped `"` terminated the quoted label and left a blank preview;
+     * a newline injected extra statements into the chart source. Neither can
+     * become script at 'strict' — the URL is sanitized and the final SVG goes
+     * through DOMPurify — but the diagram is data, not source, and is escaped
+     * as such (F1 from the CGLAB-187 adversarial review).
+     */
+    const escapeLabel = (raw: string): string =>
+      raw.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/[\r\n]+/g, ' ');
+    const nodes = steps.map((s, i) => `  ${i}["${escapeLabel(s.label || s.name)}"]`).join('\n');
     const edges = steps.slice(1).map((_, i) => `  ${i} --> ${i + 1}`).join('\n');
     const chart = `flowchart LR\n${nodes}\n${edges}`;
-    mermaid.initialize({ startOnLoad: false, theme: theme === 'dark' ? 'dark' : 'default', securityLevel: 'loose' });
+    // 'strict', NEVER 'loose' (CGLAB-187): a community flow is authored by
+    // someone else, and at 'loose' Mermaid skips its own URL sanitization, so a
+    // `javascript:` link in a step would survive into the SVG this injects with
+    // innerHTML. See ReadmeModal.tsx for the desktop-escalation detail.
+    mermaid.initialize({ startOnLoad: false, theme: theme === 'dark' ? 'dark' : 'default', securityLevel: 'strict' });
     mermaid.render(id, chart).then(({ svg }) => {
       if (ref.current) ref.current.innerHTML = svg;
     }).catch(() => {});
@@ -1576,7 +1695,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                       }
                     }}
                     title="Clone flow"
-                    className="p-1 rounded transition-colors text-slate-300 hover:text-accent-text dark:text-slate-600 hover:bg-chip"
+                    className="p-1 rounded transition-colors text-slate-300 hover:text-accent-text dark:text-slate-500 hover:bg-chip"
                   >
                     <CopyPlus size={13} />
                   </button>
@@ -1654,7 +1773,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                           handleClone(flow, flow.name);
                         }}
                         title="Clone flow"
-                        className="p-1 rounded transition-colors text-slate-300 hover:text-accent-text dark:text-slate-600 hover:bg-chip"
+                        className="p-1 rounded transition-colors text-slate-300 hover:text-accent-text dark:text-slate-500 hover:bg-chip"
                       >
                         <CopyPlus size={13} />
                       </button>
@@ -1674,8 +1793,8 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                         className={clsx(
                           'shrink-0 p-1 rounded transition-colors',
                           isActive || isRowHubManaged
-                            ? 'text-slate-300 dark:text-slate-600 cursor-not-allowed'
-                            : 'text-slate-300 hover:text-red-500 dark:text-slate-600 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20'
+                            ? 'text-slate-300 dark:text-slate-500 cursor-not-allowed'
+                            : 'text-slate-300 hover:text-red-500 dark:text-slate-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20'
                         )}
                       >
                         <Trash2 size={13} />
@@ -1722,7 +1841,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                 onCloneToEdit={handleCommunityClone}
               />
             ) : (
-              <div className="flex flex-col items-center justify-center flex-1 text-slate-400 dark:text-slate-600 gap-3 p-8">
+              <div className="flex flex-col items-center justify-center flex-1 text-slate-400 dark:text-slate-500 gap-3 p-8">
                 <Globe size={40} className="opacity-30" />
                 <p className="text-sm">Select a community flow to preview it.</p>
               </div>
@@ -1754,7 +1873,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               canSelectFlow={canSelectFlow}
             />
           ) : (
-            <div className="flex flex-col items-center justify-center flex-1 text-slate-400 dark:text-slate-600 gap-3 p-8">
+            <div className="flex flex-col items-center justify-center flex-1 text-slate-400 dark:text-slate-500 gap-3 p-8">
               <GitBranch size={40} className="opacity-30" />
               <p className="text-sm">Select a flow from the sidebar or create a new one.</p>
               <button

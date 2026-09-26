@@ -89,6 +89,38 @@ describe('bounded output capture', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it('says so when one chunk exactly fills the ceiling and the next is dropped', () => {
+    // Under load a pipe coalesces into exact 64 KiB reads, so a chunk landing
+    // precisely on the cap is common - and the next chunk used to be dropped by
+    // an early return that never set the flag or wrote the notice. The log was
+    // silently short, which reads as "the command stopped there".
+    const dir = tmp();
+    const file = path.join(dir, 'out.log');
+    const fd = fs.openSync(file, 'w');
+    const cap = createOutputCapture({ fd, maxLogBytes: 65_536 });
+    cap.write(Buffer.alloc(65_536, 0x61));
+    cap.write(Buffer.from('b'));
+    const out = cap.end();
+
+    expect(out.logTruncated).toBe(true);
+    expect(out.totalBytes).toBe(65_537);
+    expect(fs.readFileSync(file, 'utf8')).toMatch(/log truncated at .*AGENFK_VERIFY_MAX_LOG_BYTES/);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('does not claim truncation when the output is exactly the ceiling and nothing more', () => {
+    const dir = tmp();
+    const file = path.join(dir, 'out.log');
+    const fd = fs.openSync(file, 'w');
+    const cap = createOutputCapture({ fd, maxLogBytes: 65_536 });
+    cap.write(Buffer.alloc(65_536, 0x61));
+    const out = cap.end();
+
+    expect(out.logTruncated).toBe(false);
+    expect(fs.statSync(file).size).toBe(65_536);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it('does not split a multi-byte character across chunk boundaries', () => {
     // toString() per chunk mangles any character whose bytes straddle the
     // boundary, and a test suite printing a check mark or an em dash is

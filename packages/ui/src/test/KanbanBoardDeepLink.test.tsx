@@ -16,6 +16,7 @@ import { render, screen, cleanup, waitFor, fireEvent } from '@testing-library/re
 import { KanbanBoard } from '../components/KanbanBoard';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../ThemeContext';
+import { ActiveProjectProvider } from '../ActiveProject';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api } from '../api';
 import { ItemType, Status } from '../types';
@@ -23,6 +24,7 @@ import { ItemType, Status } from '../types';
 // Mock socket.io-client
 vi.mock('socket.io-client', () => ({
   io: vi.fn(() => ({
+    connect: vi.fn(),
     on: vi.fn(),
     off: vi.fn(),
     emit: vi.fn(),
@@ -95,9 +97,11 @@ const queryClient = new QueryClient({
 
 const wrapper = ({ children }: { children: React.ReactNode }) => (
   <QueryClientProvider client={queryClient}>
+    <ActiveProjectProvider>
     <ThemeProvider>
       {children}
     </ThemeProvider>
+    </ActiveProjectProvider>
   </QueryClientProvider>
 );
 
@@ -156,6 +160,46 @@ describe('KanbanBoard deep-link (?item / ?project)', () => {
     expect(card!.className).toContain('search-highlight');
     // Match counter, same as a manual search with one hit.
     expect(screen.getByText('1/1')).toBeDefined();
+  });
+
+  it('?view=overview opens the card itself, on Overview, where the approval is given (c8e35fb8)', async () => {
+    window.history.pushState({}, '', '/?item=task-1&project=p2&view=overview');
+    render(<KanbanBoard />, { wrapper });
+    await searchInput();
+    // The card's detail is open, on its Overview tab, and it is THIS card.
+    expect(await screen.findByRole('button', { name: /Overview/ }, { timeout: 3000 })).toBeDefined();
+    expect(screen.getAllByText('Task One').length).toBeGreaterThan(1);
+  });
+
+  it('?view=overview opens a nested child too', async () => {
+    window.history.pushState({}, '', '/?item=task-2&project=p2&view=overview');
+    render(<KanbanBoard />, { wrapper });
+    await searchInput();
+    expect(await screen.findByRole('button', { name: /Overview/ }, { timeout: 3000 })).toBeDefined();
+    expect(screen.getAllByText('Task Child').length).toBeGreaterThan(0);
+  });
+
+  it('?view=overview takes a unique id prefix, in any case', async () => {
+    window.history.pushState({}, '', '/?item=EPIC&project=p2&view=overview');
+    render(<KanbanBoard />, { wrapper });
+    await searchInput();
+    expect(await screen.findByRole('button', { name: /Overview/ }, { timeout: 3000 })).toBeDefined();
+  });
+
+  it('?view=overview with an ambiguous prefix opens nothing rather than guessing', async () => {
+    window.history.pushState({}, '', '/?item=task-&project=p2&view=overview');
+    render(<KanbanBoard />, { wrapper });
+    const input = await searchInput();
+    await waitFor(() => expect(input.value).toBe('task-'));
+    expect(screen.queryByRole('button', { name: /Overview/ })).toBeNull();
+  });
+
+  it('without ?view the card is only highlighted, not opened', async () => {
+    window.history.pushState({}, '', '/?item=task-1&project=p2');
+    render(<KanbanBoard />, { wrapper });
+    const input = await searchInput();
+    await waitFor(() => expect(input.value).toBe('task-1'));
+    expect(screen.queryByRole('button', { name: /Overview/ })).toBeNull();
   });
 
   it('persists the ?project param to localStorage, like the project picker does', async () => {

@@ -9,6 +9,7 @@ import { flowsRouter } from './routes/flows.js';
 import { authRouter, setupRouter } from './routes/auth.js';
 import { adminRouter } from './routes/admin.js';
 import { orgRenameRouter } from './routes/orgRename.js';
+import { jiraAdminRouter, jiraInstallationRouter } from './routes/jira.js';
 import { googleRouter } from './auth/google.js';
 import { entraRouter } from './auth/entra.js';
 import { ensureBootstrapToken } from './auth/bootstrapToken.js';
@@ -186,6 +187,11 @@ export async function createHubApp(
   const ctx: HubServerContext = { db, config };
 
   const app = express();
+  // Which X-Forwarded-For hop is the client. Every rate limit keys on req.ip,
+  // and req.ip is only as honest as this setting: see configFromEnv.
+  app.set('trust proxy', config.trustProxy ?? DEFAULT_TRUST_PROXY);
+  // Read by publicHubUrl for every URL the hub hands out.
+  app.locals.hubPublicUrl = config.publicUrl;
   app.use(express.json({ limit: '10mb' }));
   app.use(cookieParser());
 
@@ -196,6 +202,10 @@ export async function createHubApp(
     res.json({ ok: true, service: 'agenfk-hub', version: HUB_VERSION });
   });
 
+  // Org-wide JIRA (CGLAB-412). Ahead of the broad /v1 routers so neither the
+  // admin router's limiter nor any /v1 fallthrough sees these paths first.
+  app.use('/v1/admin/jira', jiraAdminRouter(ctx));
+  app.use('/v1/jira', jiraInstallationRouter(ctx));
   app.use('/v1', eventsRouter(ctx));
   app.use('/v1', flowsRouter(ctx));
   app.use('/auth', authRouter(ctx));
@@ -340,6 +350,74 @@ export function hubErrorHandler(err: any, _req: Request, res: Response, _next: N
   res.status(500).json({ error: body });
 }
 
+/**
+ * One proxy hop: an AWS ALB (production) or a single nginx/Caddy in front of
+ * the hub. The proxy APPENDS the address it saw, so trusting exactly one hop
+ * makes req.ip that address - never the part of the header the client wrote.
+ */
+const DEFAULT_TRUST_PROXY = 1;
+
+/**
+ * AGENFK_HUB_TRUST_PROXY: unset -> 1; `0`/`false` -> a hub exposed directly
+ * (X-Forwarded-For ignored); a number -> that many proxy hops; anything else ->
+ * an address/CIDR list handed to Express. `true` is REFUSED: it trusts every
+ * hop, so req.ip becomes the left-most entry - whatever the client wrote -
+ * which is exactly the spoofable behaviour this setting exists to end.
+ */
+/** More proxy hops than any real deployment has; beyond it, "trust N" is "trust every hop". */
+const MAX_TRUST_PROXY_HOPS = 5;
+
+export function parseTrustProxy(raw: string | undefined): number | string {
+  const v = raw?.trim();
+  if (!v) return DEFAULT_TRUST_PROXY;
+  if (/^(0|false|no|off)$/i.test(v)) return 0;
+  const refuse = (why: string): never => {
+    throw new Error(
+      `AGENFK_HUB_TRUST_PROXY=${v} ${why} Set the number of proxies in front of the hub (1 for an ALB or a `
+      + `single reverse proxy, 0 when exposed directly, at most ${MAX_TRUST_PROXY_HOPS}), or a comma-separated `
+      + 'list of proxy addresses, CIDRs, or loopback/linklocal/uniquelocal.',
+    );
+  };
+  if (/^\d+$/.test(v)) {
+    const hops = Number.parseInt(v, 10);
+    if (hops > MAX_TRUST_PROXY_HOPS) {
+      refuse('trusts more hops than any deployment has, which lets a client pick its own address and rate-limit bucket - the same as trusting every hop.');
+    }
+    return hops;
+  }
+  if (/^(true|yes|on)$/i.test(v)) {
+    refuse('would trust every X-Forwarded-For hop, so any client could pick its own address and rate-limit bucket.');
+  }
+  // A list goes to proxy-addr, which reads a bare number as an IPv4 integer:
+  // "1,2" would mean 0.0.0.1 and 0.0.0.2, trust nothing, and put every user
+  // behind the proxy into one rate-limit bucket without a word. Each item must
+  // look like what it claims to be.
+  const items = v.split(',').map(s => s.trim()).filter(Boolean);
+  for (const item of items) {
+    const named = /^(loopback|linklocal|uniquelocal)$/i.test(item);
+    const address = /^[0-9a-f:.]+(\/\d{1,3})?$/i.test(item) && (item.includes(':') || /^\d{1,3}(\.\d{1,3}){3}(\/\d{1,2})?$/.test(item));
+    if (!named && !address) refuse(`contains "${item}", which is not an IP address, a CIDR, or a named range.`);
+  }
+  return items.join(', ');
+}
+
+/**
+ * AGENFK_HUB_PUBLIC_URL: the hub's canonical origin, used for the URLs it hands
+ * out. Reduced to scheme://host[:port]; unset or blank means "the origin each
+ * request arrived on". Anything that is not an http(s) URL is refused at boot -
+ * a typo here would otherwise ship broken join commands to every new machine.
+ */
+export function parsePublicUrl(raw: string | undefined): string | undefined {
+  const v = raw?.trim();
+  if (!v) return undefined;
+  let url: URL;
+  try { url = new URL(v); } catch { url = undefined as any; }
+  if (!url || (url.protocol !== 'https:' && url.protocol !== 'http:') || !url.host) {
+    throw new Error(`AGENFK_HUB_PUBLIC_URL=${v} is not an http(s) URL. Set it to the address users and machines reach the hub on, e.g. https://hub.example.com.`);
+  }
+  return url.origin;
+}
+
 export function configFromEnv(): HubServerConfig & { backend?: HubBackend; pgUrl?: string } {
   const secretKey = process.env.AGENFK_HUB_SECRET_KEY;
   const sessionSecret = process.env.AGENFK_HUB_SESSION_SECRET;
@@ -353,6 +431,8 @@ export function configFromEnv(): HubServerConfig & { backend?: HubBackend; pgUrl
     secretKey,
     sessionSecret,
     defaultOrgId: process.env.AGENFK_HUB_ORG_ID || 'default',
+    trustProxy: parseTrustProxy(process.env.AGENFK_HUB_TRUST_PROXY),
+    publicUrl: parsePublicUrl(process.env.AGENFK_HUB_PUBLIC_URL),
     backend,
     pgUrl: process.env.AGENFK_HUB_PG_URL,
   };

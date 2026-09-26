@@ -143,11 +143,12 @@ server (the UI, CLI, install script) reads that file rather than assuming
 | `AGENFK_HUB_DB_PATH` | no | SQLite file path (Docker default `/data/hub.sqlite`). |
 | `AGENFK_HUB_PG_URL` | when `AGENFK_HUB_DB=postgres` | `pg`-driver DSN. |
 | `AGENFK_HUB_ORG_ID` | no | Default org for single-tenant deployments (`default`). |
-| `AGENFK_HUB_PUBLIC_URL` | no | Origin used in OIDC redirects + magic-link emails. |
+| `AGENFK_HUB_PUBLIC_URL` | no | The hub's canonical origin (e.g. `https://hub.example.com`), used for every URL the hub hands to others: invite join commands, the device-code link, `hubUrl`, a federation child's parent URL. Unset: the origin each request arrived on (the `Host` header plus the protocol from a trusted proxy). OAuth callbacks do **not** use it - they return to the host the user is browsing. `X-Forwarded-Host` is never read; if your proxy rewrites `Host`, set this. Anything but an http(s) URL is refused at boot. |
 | `AGENFK_HUB_INITIAL_ADMIN_EMAIL` / `_PASSWORD` | no | Bootstraps the first admin without the `/setup` wizard. |
 | `AGENFK_HUB_UI_DIR` | no | Override for the SPA bundle path (auto-detected). |
 | `AGENFK_HUB_LIVE_INSTALL_WINDOW_HOURS` | no | How recently an installation must have reported to block an identity merge (default `48`). A machine dormant longer stops blocking; the alias the merge records is what prevents it resurrecting the key. |
 | `AGENFK_HUB_ALLOW_PRIVATE_PARENT` | no | Set to `1` to let this hub enrol with a parent on a private or loopback address. Off by default — see §2.7. |
+| `AGENFK_HUB_TRUST_PROXY` | no | How many reverse proxies stand in front of the hub (default `1`: an ALB, nginx or Caddy), `0` when the hub is exposed directly, or a list of proxy addresses/CIDRs. Decides which `X-Forwarded-For` hop is the client, and so every per-client rate limit. A proxy appends the address it saw, so with the wrong value a client can pick its own bucket; `true` (trust every hop), more than 5 hops, and list items that are not addresses/CIDRs are refused at boot. Assumes the proxy APPENDS to `X-Forwarded-For` - an ALB's default (`routing.http.xff_header_processing.mode=append`); with `preserve` the client-written value comes through and limits are spoofable again. |
 
 For staging deployments, secrets typically live in AWS Secrets Manager (or
 equivalent) under `agenfk-hub-<env>/{pg-url,hub-secret-key,hub-session-secret}`

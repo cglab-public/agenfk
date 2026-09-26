@@ -32,6 +32,8 @@ const ENV_KEYS = [
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let app: any, initStorage: any;
+let __server: any;
+const agent = () => request(__server);
 
 // Benign stub — returns 204 for everything so no live network is hit.
 function stubBenignFetch() {
@@ -54,7 +56,18 @@ describe('org-flow routes (hub disabled)', () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
     stubBenignFetch(); // stub before import so any startup fetch is intercepted
     if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+
+        /*
+     * The server is created right after the dynamic import, in the same hook
+     * (BUG 9de0c99c). This file cannot use a module-level `beforeAll` for it,
+     * because `app` does not exist until that import runs — but the reason for
+     * having ONE server is the same: `agent()` starts and tears down an
+     * ephemeral one per call, and that churn produced `Error: Parse Error:
+     * Expected HTTP/`, a transport failure that surfaces as a confident wrong
+     * assertion in whichever test was running.
+     */
     ({ app, initStorage } = await import('../server'));
+    __server = app.listen(0);
     await initStorage();
   });
 
@@ -76,15 +89,15 @@ describe('org-flow routes (hub disabled)', () => {
   });
 
   it('GET /flows/org-available reports hub disabled', async () => {
-    const r = await request(app).get('/flows/org-available');
+    const r = await agent().get('/flows/org-available');
     expect(r.status).toBe(200);
     expect(r.body.hubEnabled).toBe(false);
     expect(r.body.flows).toEqual([]);
   });
 
   it('select-org without a hub configured → 400', async () => {
-    const project = (await request(app).post('/projects').send({ name: 'p' })).body;
-    const r = await request(app)
+    const project = (await agent().post('/projects').send({ name: 'p' })).body;
+    const r = await agent()
       .post(`/projects/${project.id}/flow/select-org`)
       .send({ flowId: 'x' });
     expect(r.status).toBe(400);

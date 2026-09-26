@@ -1,4 +1,5 @@
 import { FEDERATION_HTTP_TIMEOUT_MS } from './federationSync.js';
+import { parentHttpAgents, type ParentResolve } from './guardedLookup.js';
 
 /**
  * Outbound calls a CHILD makes to its parent from an admin action, as opposed
@@ -14,12 +15,22 @@ export interface FederationClient {
   requestRelease(args: { parentUrl: string; token: string; reason?: string | null }): Promise<unknown>;
 }
 
-export function httpFederationClient(axiosLike?: any): FederationClient {
+export function httpFederationClient(
+  axiosLike?: any,
+  opts: { resolve?: ParentResolve } = {},
+): FederationClient {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const axios = axiosLike ?? require('axios');
   // A parent has no business redirecting an enrolment or a release request:
   // following one would hand the invite — or the bearer token — elsewhere.
-  const base = { timeout: FEDERATION_HTTP_TIMEOUT_MS, maxRedirects: 0 };
+  // Every connection resolves through the DNS guard (CGLAB-371): the parent's
+  // address is judged on the socket's own lookup, not on the hostname typed.
+  // Always direct: through an HTTP(S)_PROXY the guard would judge the proxy
+  // and the proxy would resolve the parent unchecked.
+  const base = {
+    timeout: FEDERATION_HTTP_TIMEOUT_MS, maxRedirects: 0, proxy: false as const,
+    ...parentHttpAgents({ resolve: opts.resolve }),
+  };
   return {
     async enroll({ parentUrl, inviteToken, name, hubVersion }) {
       const r = await axios.post(

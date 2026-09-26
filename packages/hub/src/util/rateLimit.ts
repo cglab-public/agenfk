@@ -1,21 +1,31 @@
-import { Request, Response, NextFunction } from 'express';
+import { Request, RequestHandler } from 'express';
+import expressRateLimit, { ipKeyGenerator } from 'express-rate-limit';
+import { SESSION_COOKIE, verifySession } from '../auth/session.js';
 
-// Dependency-free, in-memory rate limiting + brute-force lockout for the hub.
-// The hub is a single Node process backed by SQLite, so a per-process fixed
-// window is sufficient and avoids pulling a new package into a security PR.
+// In-memory rate limiting + brute-force lockout for the hub. The hub is a
+// single Node process, so a per-process fixed window is sufficient.
 // (Security: bugs 210b3d34, 72f8da10.)
+//
+// The limiter is express-rate-limit, not the hand-rolled window this file used
+// to carry. Behaviour is the same - `max` per window per key, then a 429 with a
+// JSON error and Retry-After - but a home-made middleware is invisible to code
+// scanning, which reported every hub route as unlimited (CodeQL
+// js/missing-rate-limiting, 20 alerts on PR #194) and taught reviewers to
+// dismiss that rule wholesale. The package was already in the tree: the local
+// server has used it since its own migration.
 
-/** Best-effort client IP. Honours the first x-forwarded-for hop (the hub runs
- *  behind a reverse proxy in production) and falls back to the socket.
- *  NOTE: this trusts x-forwarded-for, so the per-IP limiter is only sound when
- *  a trusted proxy sets it. A directly-exposed hub lets a client spoof the
- *  header for a fresh bucket each request — which is why the login defense's
- *  real teeth are the IP-independent per-account lockout, and /device/start
- *  also has an absolute pending-row cap. */
+/** The client IP, as Express derives it from the app's `trust proxy` setting
+ *  (AGENFK_HUB_TRUST_PROXY, default one hop). This used to read the FIRST
+ *  X-Forwarded-For entry itself - the part the client writes, since a proxy
+ *  such as the production ALB appends rather than replaces - so any client
+ *  could choose its own bucket. The per-account login lockout and the device
+ *  flow's pending-row cap remain the IP-independent backstops. */
 export function clientIp(req: Request): string {
-  const fwd = req.headers['x-forwarded-for'];
-  const first = Array.isArray(fwd) ? fwd[0] : (fwd ?? '').toString().split(',')[0];
-  return (first.trim() || req.ip || req.socket?.remoteAddress || 'unknown').toString();
+  const ip = (req.ip || req.socket?.remoteAddress || 'unknown').toString();
+  // An ALB with client ports enabled reports "a.b.c.d:port". Keyed with the
+  // port, every TCP connection would be a new client.
+  const v4WithPort = /^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/.exec(ip);
+  return v4WithPort ? v4WithPort[1] : ip;
 }
 
 export interface RateLimitOptions {
@@ -24,37 +34,66 @@ export interface RateLimitOptions {
   /** Bucket key; defaults to client IP. */
   keyFn?: (req: Request) => string;
   message?: string;
+  /** Count only responses below 400 as free: failures alone spend the budget. */
+  skipSuccessfulRequests?: boolean;
 }
 
-interface Window { count: number; resetAt: number; }
+/** The default bucket: the client IP, with an IPv6 address reduced to its /64.
+ *  A v6 client takes a fresh address out of its /64 whenever it likes, so a
+ *  key on the exact address hands each one a private budget. */
+function clientKey(req: Request): string {
+  return ipKeyGenerator(clientIp(req), 64);
+}
+
+/**
+ * The bucket for a route that requires a session: the VERIFIED session's
+ * user, so people sharing one NAT or VPN egress do not share a budget. A
+ * cookie that does not verify is charged to the client IP - a forged value
+ * must not buy a fresh bucket. Verification is a JWT signature check, the same
+ * one the route's own guard runs; it touches no database.
+ */
+export function sessionUserKey(sessionSecret: string): (req: Request) => string {
+  return (req: Request): string => {
+    const token = req.cookies?.[SESSION_COOKIE];
+    const session = typeof token === 'string' && token ? verifySession(token, sessionSecret) : null;
+    return session ? `user:${session.orgId}:${session.userId}` : clientKey(req);
+  };
+}
 
 /** Fixed-window per-key limiter. Returns 429 once `max` is exceeded within
- *  `windowMs`. Stale windows are pruned lazily on each hit. */
-export function rateLimit(opts: RateLimitOptions) {
-  const { windowMs, max, keyFn = clientIp, message = 'Too many requests, slow down.' } = opts;
-  const windows = new Map<string, Window>();
-
-  return (req: Request, res: Response, next: NextFunction): void => {
-    const now = Date.now();
-    const key = keyFn(req);
-    // Opportunistic prune so the map can't grow unbounded under churn.
-    if (windows.size > 10_000) {
-      for (const [k, w] of windows) if (w.resetAt <= now) windows.delete(k);
-    }
-    let w = windows.get(key);
-    if (!w || w.resetAt <= now) {
-      w = { count: 0, resetAt: now + windowMs };
-      windows.set(key, w);
-    }
-    w.count++;
-    if (w.count > max) {
-      const retryAfter = Math.max(1, Math.ceil((w.resetAt - now) / 1000));
+ *  `windowMs`, with the JSON `error` and a Retry-After header. */
+export function rateLimit(opts: RateLimitOptions): RequestHandler {
+  const { windowMs, max, keyFn = clientKey, message = 'Too many requests, slow down.', skipSuccessfulRequests = false } = opts;
+  // The casts cross a typings seam, nothing more: express-rate-limit is typed
+  // against the root @types/express while the hub pins its own copy, and the
+  // two Request types are structurally identical at runtime.
+  const limiter = expressRateLimit({
+    windowMs,
+    limit: max,
+    skipSuccessfulRequests,
+    keyGenerator: (req: any) => keyFn(req as Request),
+    standardHeaders: false,
+    legacyHeaders: false,
+    handler: (req: any, res: any) => {
+      // Logged on the first refusal in a bucket's window, so a limit that
+      // bites is visible without one line per blocked request. (Under
+      // skipSuccessfulRequests a success still in flight can decrement the
+      // count back to the limit, so that limiter may log a few times per
+      // window.) No address or token: the route, the ceiling, and what the
+      // bucket is. The path is printable-ASCII only and capped.
+      if (req.rateLimit?.used === max + 1) {
+        const kind = String(req.rateLimit?.key ?? '').startsWith('user:') ? 'user' : 'client address';
+        const where = `${req.baseUrl ?? ''}${req.path ?? ''}`.replace(/[^\x21-\x7e]/g, '?').slice(0, 200);
+        const method = String(req.method ?? '').replace(/[^A-Z]/g, '').slice(0, 10);
+        console.warn(`[RATE_LIMIT] ${method} ${where} refused: over ${max} per ${Math.round(windowMs / 1000)}s for one ${kind}`);
+      }
+      const resetTime = req.rateLimit?.resetTime as Date | undefined;
+      const retryAfter = resetTime ? Math.max(1, Math.ceil((resetTime.getTime() - Date.now()) / 1000)) : Math.ceil(windowMs / 1000);
       res.setHeader('Retry-After', String(retryAfter));
       res.status(429).json({ error: message });
-      return;
-    }
-    next();
-  };
+    },
+  });
+  return limiter as unknown as RequestHandler;
 }
 
 /** Per-account failed-attempt lockout. After `maxFailures` failures within

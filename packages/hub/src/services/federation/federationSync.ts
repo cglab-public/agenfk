@@ -1,4 +1,5 @@
 import { randomUUID } from 'crypto';
+import { parentHttpAgents, type ParentResolve } from './guardedLookup.js';
 import type { DB } from '../../db.js';
 import {
   readParentBinding, markBindingRevoked, writeParentBinding, PARENT_BINDING_KEY,
@@ -614,12 +615,21 @@ async function backoffRows(db: DB, rows: OutboxRow[]): Promise<void> {
   }
 }
 
-export function httpTransport(axiosLike?: any): FederationTransport {
+export function httpTransport(
+  axiosLike?: any,
+  opts: { resolve?: ParentResolve } = {},
+): FederationTransport {
   // Required lazily so importing this module never pulls axios into a code
   // path (CLI, tests) that has no intention of talking to a parent.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const axios = axiosLike ?? require('axios');
+  // The DNS guard, as for enrolment (CGLAB-371): a parent URL that later
+  // resolves somewhere private must not receive this hub's bearer token.
+  const agents = parentHttpAgents({ resolve: opts.resolve });
   const call = (token: string) => ({
+    ...agents,
+    // Always direct, as for enrolment: a proxy would resolve the parent itself.
+    proxy: false as const,
     headers: { Authorization: `Bearer ${token}` },
     timeout: FEDERATION_HTTP_TIMEOUT_MS,
     // A federation parent has no business redirecting. Following one would let

@@ -24,6 +24,104 @@ export function buildBranchName(type: ItemType, title: string): string {
 }
 
 /**
+ * Reduce an arbitrary string to one safe filesystem path segment: no
+ * separators, no leading/trailing dots, and therefore no way to express ".."
+ * or an absolute path. Returns '' when nothing survives — callers decide what
+ * to do with an empty segment.
+ */
+/**
+ * Strip trailing characters without backtracking (CodeQL, PR #182).
+ *
+ * `s.replace(/[-.]+$/, '')` is the obvious spelling and it is QUADRATIC on
+ * hostile input. The class has no start anchor, so when a character follows the
+ * run the `$` never matches and the engine retries from every position: O(n)
+ * starts times O(n) length. Measured on `'/'.repeat(100_000) + 'x'`, the
+ * regular expression took 4.7 SECONDS; this loop takes under a millisecond.
+ *
+ * A loop rather than a cleverer pattern, because the next person to edit a
+ * regular expression here will not be thinking about backtracking, and this has
+ * no way to acquire the problem again.
+ */
+function trimTrailing(value: string, chars: string): string {
+  let end = value.length;
+  while (end > 0 && chars.includes(value[end - 1])) end -= 1;
+  return value.slice(0, end);
+}
+
+function trimLeading(value: string, chars: string): string {
+  let start = 0;
+  while (start < value.length && chars.includes(value[start])) start += 1;
+  return value.slice(start);
+}
+
+function toPathSegment(raw: string): string {
+  const collapsed = raw
+    .replace(/[^A-Za-z0-9._-]+/g, '-')  // separators, spaces, everything exotic
+    .replace(/\.{2,}/g, '.')            // ".." can never survive
+    .replace(/-{2,}/g, '-');
+  /*
+   * Loops, not `^[-.]+|[-.]+$`. CodeQL flagged that pattern here and it was
+   * right about the pattern, though not about this call site: the two collapses
+   * above destroy any long run before the trim sees it, so the quadratic case
+   * is unreachable THROUGH THIS FUNCTION today.
+   *
+   * That is accidental safety, which is the kind worth removing. It depends on
+   * two replaces that exist for an unrelated reason, and the day somebody
+   * decides "--" is fine in a directory name the backtracking comes back with
+   * no test failing. See trimTrailing for the measurement.
+   */
+  return trimTrailing(trimLeading(collapsed, '-.'), '-.');
+}
+
+/**
+ * FNV-1a (32-bit). Deterministic, dependency-free and stable across processes —
+ * deliberately not node:crypto, so core stays a pure library that a browser
+ * bundle could import. Used only to disambiguate directory names, never for
+ * anything security-bearing.
+ */
+function fnv1a32(input: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
+/** Longest readable prefix kept in a worktree directory name. */
+const WORKTREE_SLUG_MAX = 60;
+
+/**
+ * Build the directory for an item's git worktree: `<root>/<repo>/<slug>-<digest>`.
+ *
+ * The slug keeps the directory recognisable; the digest of the *full* branch
+ * name is what guarantees uniqueness, because slugifying is lossy in two ways
+ * that matter. "feature/a-b" and "feature/a/b" flatten to the same slug, and
+ * two long branches sharing a 60-character prefix truncate to the same slug —
+ * in both cases a slug-only scheme would hand two agents the same directory
+ * and let them overwrite each other's work.
+ *
+ * Every component is reduced to a single path segment, so a branch or repo
+ * named "../../etc" lands inside the root like any other name rather than
+ * escaping it.
+ *
+ * Segments are joined with "/" rather than node:path so this stays usable
+ * without a Node runtime; Node and git both accept forward slashes on Windows.
+ */
+export function buildWorktreePath(root: string, repoName: string, branchName: string): string {
+  /*
+   * The alert that was REAL and reachable. Unlike the slug, nothing collapses
+   * `root` first, so `'/'.repeat(100_000) + 'x'` spent 4.7 seconds here - on a
+   * single-threaded server, during a request.
+   */
+  const base = trimTrailing(root, '/\\');
+  const repoSegment = toPathSegment(repoName) || 'repo';
+  const slug = trimTrailing(toPathSegment(branchName).substring(0, WORKTREE_SLUG_MAX), '-.');
+  const digest = fnv1a32(branchName);
+  return `${base}/${repoSegment}/${slug ? `${slug}-${digest}` : digest}`;
+}
+
+/**
  * Token-Oriented Object Notation (TOON) serializer.
  * Optimized for LLM token usage and structural accuracy.
  * Handles arrays of uniform objects (tabular) and single objects (indented).
@@ -189,6 +287,10 @@ export function migrateCardsToFlow(
  */
 export const FLOW_STEP_FIELDS = [
   'id', 'name', 'label', 'order', 'exitCriteria', 'color', 'icon', 'isAnchor', 'isSpecial',
+  // CGLAB-380: what the step IS and what it adds. Validated by flowChecksErrors.
+  'role', 'checks',
+  // CGLAB-388: commit the card's work when it leaves the step.
+  'autoCommit', 'requireCommit',
 ] as const;
 
 /**

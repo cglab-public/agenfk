@@ -10,7 +10,22 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
 import * as path from 'path';
-import { app, initStorage, buildAllowedTransitions } from '../server';
+import { app, initStorage, buildAllowedTransitions, storage } from '../server';
+
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call —
+ * 12 of them here. The churn produced `Error: Parse Error: Expected HTTP/`,
+ * a transport failure that hands the test an empty body, so the next call goes
+ * to `/items/undefined` and one bad socket surfaces as a confident wrong
+ * assertion in whichever test was running.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
 
 const TEST_DB = path.resolve('./workflow-gate-bypass-test-db.sqlite');
 
@@ -65,12 +80,12 @@ describe('the HTTP surface enforces the gate (CGLAB-81)', () => {
   afterAll(() => { if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB); });
   beforeEach(async () => {
     await initStorage();
-    const p = await request(app).post('/projects').send({ name: 'gate-test' });
+    const p = await agent().post('/projects').send({ name: 'gate-test' });
     projectId = p.body.id;
   });
 
   const newItem = async () => {
-    const r = await request(app).post('/items').send({ type: 'TASK', title: 'gate', projectId });
+    const r = await agent().post('/items').send({ type: 'TASK', title: 'gate', projectId });
     return r.body.id;
   };
 
@@ -78,16 +93,19 @@ describe('the HTTP surface enforces the gate (CGLAB-81)', () => {
     // The check used to run only `if (projectFlowId)`, so default-flow projects
     // — the majority — got no validation at all.
     const id = await newItem();
-    const res = await request(app).put(`/items/${id}`).send({ status: 'TEST' });
+    const res = await agent().put(`/items/${id}`).send({ status: 'TEST' });
     expect(res.status).toBe(400);
     expect(JSON.stringify(res.body)).toMatch(/FLOW VIOLATION/i);
   });
 
-  it('still allows a legitimate one-step move on a default-flow project', async () => {
+  it('refuses an agent a one-step forward move, but lets the board drag it (CGLAB-377)', async () => {
     const id = await newItem();
-    const res = await request(app).put(`/items/${id}`).send({ status: 'IN_PROGRESS' });
-    expect(res.status).toBe(200);
-    expect(res.body.status).toBe('IN_PROGRESS');
+    const agentMove = await agent().put(`/items/${id}`).send({ status: 'IN_PROGRESS' });
+    expect(agentMove.status).toBe(409);
+    expect(agentMove.body.error).toContain('agenfk verify');
+    const boardMove = await agent().put(`/items/${id}`).set('x-agenfk-ui', '1').send({ status: 'IN_PROGRESS' });
+    expect(boardMove.status).toBe(200);
+    expect(boardMove.body.status).toBe('IN_PROGRESS');
   });
 
   it('refuses to reach DONE through a plain status write, from any step', async () => {
@@ -96,31 +114,31 @@ describe('the HTTP surface enforces the gate (CGLAB-81)', () => {
     // reachable without validate_progress — including the last one before it,
     // which used to be the sanctioned launderer.
     const id = await newItem();
-    for (const s of ['IN_PROGRESS', 'REVIEW', 'TEST']) {
-      await request(app).put(`/items/${id}`).send({ status: s });
-    }
-    const fromFinal = await request(app).put(`/items/${id}`).send({ status: 'DONE' });
+    // Parked on the last step before DONE through storage: forward moves over
+    // HTTP are verify's alone now (CGLAB-377), and the walk is not under test.
+    await storage.updateItem(id, { status: 'TEST' } as any);
+    const fromFinal = await agent().put(`/items/${id}`).send({ status: 'DONE' });
     expect(fromFinal.status).toBeGreaterThanOrEqual(400);
-    expect((await request(app).get(`/items/${id}`)).body.status).toBe('TEST');
+    expect((await agent().get(`/items/${id}`)).body.status).toBe('TEST');
   });
 
   it('cannot launder a jump through PAUSED', async () => {
     const id = await newItem();
-    await request(app).put(`/items/${id}`).send({ status: 'IN_PROGRESS' });
-    const paused = await request(app).put(`/items/${id}`).send({ status: 'PAUSED' });
+    await storage.updateItem(id, { status: 'IN_PROGRESS' } as any);
+    const paused = await agent().put(`/items/${id}`).send({ status: 'PAUSED' });
     expect(paused.status).toBe(200);
-    const jump = await request(app).put(`/items/${id}`).send({ status: 'TEST' });
+    const jump = await agent().put(`/items/${id}`).send({ status: 'TEST' });
     expect(jump.status).toBe(400);
   });
 
   it('applies the same validation on the bulk route', async () => {
     const id = await newItem();
-    const res = await request(app).post('/items/bulk').send({
+    const res = await agent().post('/items/bulk').send({
       items: [{ id, updates: { status: 'TEST' } }],
     });
     // What must NOT happen is the item silently landing on TEST, and the caller
     // must be TOLD rather than left to assume it worked.
-    const after = await request(app).get(`/items/${id}`);
+    const after = await agent().get(`/items/${id}`);
     expect(after.body.status).not.toBe('TEST');
     expect(JSON.stringify(res.body)).toMatch(/FLOW VIOLATION/i);
   });

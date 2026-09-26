@@ -72,7 +72,7 @@ Once the implementation is complete, the agent moves the card to **REVIEW** and 
 
 ### 4. Test verification
 
-The card advances to **TEST**, where AgEnFK runs your project's full test suite using the configured `verifyCommand`. If tests fail, the card is automatically moved back to IN_PROGRESS and the agent fixes the issues — no manual intervention needed.
+The card advances to **TEST**, where AgEnFK runs your project's full test suite using the configured `verifyCommand`. If tests fail, the card does not reach DONE: it stays on TEST and the agent fixes the issues and verifies again — no manual intervention needed.
 
 ### 5. Done
 

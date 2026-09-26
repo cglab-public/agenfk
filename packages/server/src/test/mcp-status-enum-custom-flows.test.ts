@@ -19,6 +19,23 @@ import { app, initStorage } from '../server';
 import * as fs from 'fs';
 import * as path from 'path';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. That
+ * churn produced `Error: Parse Error: Expected HTTP/, RTSP/ or ICE/` — a
+ * transport failure, not an assertion about anything under test. It hands the
+ * test an empty body, so `res.body.id` is undefined and the next call goes to
+ * `/items/undefined`; one bad socket then surfaces as `expected 404 to be 400`
+ * in whichever test happened to be running. Different test every run, green
+ * when run alone.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 const ROOT = path.resolve(__dirname, '../../../..');
 const TEST_DB = path.resolve('./mcp-status-enum-custom-flows-test-db.sqlite');
 
@@ -103,8 +120,8 @@ describe('GET /items supports custom-flow statuses', () => {
 
   it('returns items parked in custom-flow steps (e.g. DISCOVERY)', async () => {
     // Set up: project + custom flow with DISCOVERY step + item parked there.
-    const project = (await request(app).post('/projects').send({ name: 'CustomFlowProj' })).body;
-    const flow = (await request(app).post('/flows').send({
+    const project = (await agent().post('/projects').send({ name: 'CustomFlowProj' })).body;
+    const flow = (await agent().post('/flows').send({
       name: 'TDD',
       steps: [
         { id: 'a', name: 'TODO', order: 1, isAnchor: true },
@@ -112,9 +129,9 @@ describe('GET /items supports custom-flow statuses', () => {
         { id: 'c', name: 'DONE', order: 3, isAnchor: true },
       ],
     })).body;
-    await request(app).post(`/projects/${project.id}/flow`).send({ flowId: flow.id });
+    await agent().post(`/projects/${project.id}/flow`).send({ flowId: flow.id });
 
-    const item = (await request(app).post('/items').send({
+    const item = (await agent().post('/items').send({
       projectId: project.id,
       type: 'TASK',
       title: 'In discovery',
@@ -123,12 +140,12 @@ describe('GET /items supports custom-flow statuses', () => {
     expect(item.status).toBe('DISCOVERY');
 
     // The "no status filter" sweep returns all in-flight items including custom statuses.
-    const allRes = await request(app).get(`/items`).query({ projectId: project.id });
+    const allRes = await agent().get(`/items`).query({ projectId: project.id });
     expect(allRes.status).toBe(200);
     expect(allRes.body.find((i: any) => i.id === item.id)).toBeTruthy();
 
     // Filtering by the custom status should also return it.
-    const filteredRes = await request(app).get(`/items`).query({ projectId: project.id, status: 'DISCOVERY' });
+    const filteredRes = await agent().get(`/items`).query({ projectId: project.id, status: 'DISCOVERY' });
     expect(filteredRes.status).toBe(200);
     expect(filteredRes.body.some((i: any) => i.id === item.id)).toBe(true);
   });

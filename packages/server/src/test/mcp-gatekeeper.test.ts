@@ -13,11 +13,25 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
-import { app, initStorage } from '../server';
+import { app, initStorage, storage } from '../server';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { connectMcpClient, type ConnectedMcpClient } from './helpers/mcpClient';
+
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. The
+ * churn produced `Error: Parse Error: Expected HTTP/` — a transport failure
+ * that hands the test an empty body, so one bad socket surfaces as a confident
+ * wrong assertion in whichever test happened to be running.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
 
 // The MCP handler reaches the REST layer through an axios client
 // (createApiClient). Other MCP test files mock axios as a no-op because the
@@ -71,16 +85,16 @@ describe('workflow_gatekeeper MCP handler: a STORY is directly actionable (CGLAB
     await initStorage();
     mcp = await connectMcpClient();
 
-    const proj = await request(app).post('/projects').send({ name: 'gatekeeper-mirror' });
+    const proj = await agent().post('/projects').send({ name: 'gatekeeper-mirror' });
     projectId = proj.body.id;
 
-    const story = await request(app).post('/items').send({ type: 'STORY', title: 'mirror story', projectId });
+    const story = await agent().post('/items').send({ type: 'STORY', title: 'mirror story', projectId });
     storyId = story.body.id;
-    await request(app).put(`/items/${storyId}`).send({ status: 'IN_PROGRESS' });
+    await storage.updateItem(storyId, { status: 'IN_PROGRESS' } as any);
 
-    const epic = await request(app).post('/items').send({ type: 'EPIC', title: 'mirror epic', projectId });
+    const epic = await agent().post('/items').send({ type: 'EPIC', title: 'mirror epic', projectId });
     epicId = epic.body.id;
-    await request(app).put(`/items/${epicId}`).send({ status: 'IN_PROGRESS' });
+    await storage.updateItem(epicId, { status: 'IN_PROGRESS' } as any);
   });
 
   afterAll(async () => {

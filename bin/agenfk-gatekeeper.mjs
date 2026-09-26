@@ -87,13 +87,77 @@ function isInsideAgenFKProject(filePath) {
 // Statuses that are never considered "active coding" regardless of flow name.
 const INACTIVE_STATUSES = new Set(['TODO', 'DONE', 'BLOCKED', 'PAUSED', 'IDEAS', 'ARCHIVED', 'TRASHED']);
 
+// Statuses where a card has stopped owning the files it claimed. NOT the set
+// above: a PAUSED card is not working, but its half-edited files are still in
+// the shared tree and handing them to somebody else is the exact race claims
+// exist to prevent. Kept in step with RELEASED_STATUSES in
+// packages/core/src/claimGate.ts - a test pins that the two agree.
+const RELEASED_STATUSES = new Set(['DONE', 'TRASHED', 'ARCHIVED', 'IDEAS']);
+
+/*
+ * A deliberately duplicated copy of claimsCollide from packages/core.
+ *
+ * This file is installed standalone into each client's config directory and
+ * cannot resolve @agenfk/core, so the choice is a copy or no check at all.
+ * The copy is kept minimal and a test asserts it agrees with the original on
+ * the cases that matter; a second implementation that DRIFTS is worse than
+ * either, which is why the agreement is pinned rather than assumed.
+ */
+function normaliseClaim(claim) {
+    return String(claim).replace(/\\/g, '/').split('/').filter(Boolean).join('/');
+}
+function claimsCollide(a, b) {
+    const x = normaliseClaim(a), y = normaliseClaim(b);
+    if (x === y) return true;
+    const contains = (outer, inner) => outer !== '' && inner.startsWith(outer + '/');
+    return contains(x, y) || contains(y, x);
+}
+
+/** The path of `filePath` relative to the project root that owns it, or null. */
+function repoRelative(filePath) {
+    const normalized = normalizePath(filePath);
+    const abs = path.isAbsolute(normalized) ? normalized : path.resolve(normalized);
+    let dir = path.dirname(abs);
+    const root = path.parse(dir).root;
+    while (dir !== root) {
+        if (fs.existsSync(path.join(dir, '.agenfk', 'project.json'))) {
+            return path.relative(dir, abs).split(path.sep).join('/');
+        }
+        dir = path.dirname(dir);
+    }
+    return null;
+}
+
+/**
+ * Cards that still own this path and are NOT being worked.
+ *
+ * WHAT THIS CANNOT DO, stated because the docs once claimed otherwise: it
+ * cannot tell which card the editing agent belongs to. The hook receives a
+ * tool call, not an identity, and several agents share one machine and one
+ * worktree - so when an ACTIVE card holds the file, this cannot know whether
+ * the agent at the keyboard is that card's or somebody else's, and allows.
+ *
+ * What it can answer without identity is the unambiguous half: a card that
+ * holds the file and is parked - TODO, PAUSED, BLOCKED - has an agent that is
+ * not editing right now, so nobody should be. That case is a refusal.
+ */
+function parkedHoldersOf(relPath, items) {
+    if (!relPath) return [];
+    return items.filter(i => {
+        const status = (i.status ?? '').toUpperCase();
+        if (RELEASED_STATUSES.has(status)) return false;
+        if (!INACTIVE_STATUSES.has(status)) return false;   // being worked - see above
+        return Array.isArray(i.claims) && i.claims.some(c => claimsCollide(relPath, c));
+    });
+}
+
 async function checkInProgress() {
     return new Promise((resolve) => {
         // Fetch all items without a status filter so custom coding-step names
         // (e.g. 'create_unit_tests' in a TDD flow) are recognised as active.
         const req = http.get(`${API_URL}/items`, { timeout: 2000 }, (res) => {
             if (res.statusCode !== 200) {
-                resolve(true); // Graceful skip on API issues
+                resolve({ hasActive: true, items: [] }); // Graceful skip on API issues
                 return;
             }
 
@@ -102,20 +166,21 @@ async function checkInProgress() {
             res.on('end', () => {
                 try {
                     const items = JSON.parse(data);
-                    const hasActive = Array.isArray(items) && items.some(
+                    const list = Array.isArray(items) ? items : [];
+                    const hasActive = list.some(
                         i => !INACTIVE_STATUSES.has((i.status ?? '').toUpperCase())
                     );
-                    resolve(hasActive);
+                    resolve({ hasActive, items: list });
                 } catch (e) {
-                    resolve(true); // Graceful skip on parse error
+                    resolve({ hasActive: true, items: [] }); // Graceful skip on parse error
                 }
             });
         });
 
-        req.on('error', () => resolve(true)); // Graceful skip on connection error
+        req.on('error', () => resolve({ hasActive: true, items: [] })); // Graceful skip on connection error
         req.on('timeout', () => {
             req.destroy();
-            resolve(true);
+            resolve({ hasActive: true, items: [] });
         });
     });
 }
@@ -141,9 +206,24 @@ async function main() {
         fs.unlinkSync(skipFlagPath); // Stale flag — clean up and enforce normally
     }
 
-    const hasInProgress = await checkInProgress();
+    const { hasActive, items } = await checkInProgress();
 
-    if (!hasInProgress) {
+    // The claim check runs FIRST on the unambiguous case: a parked card's
+    // files are nobody's to edit, whether or not some other card is active.
+    const parked = parkedHoldersOf(repoRelative(filePath), items);
+    if (parked.length) {
+        const who = parked.map(i => `  [${String(i.id).slice(0, 8)}] ${i.title} (${i.status})`).join('\n');
+        process.stdout.write(JSON.stringify({
+            decision: 'block',
+            reason: `AgenFK CLAIM CONFLICT: this file is owned by a card that is not being worked.\n\n${who}\n\n`
+                + `Its agent stopped mid-edit and the file is still half-finished in this shared worktree; `
+                + `editing it now overwrites work nobody is watching. Resume that card, or have it release the path with `
+                + `\`agenfk update <id> --claims ""\`.`,
+        }));
+        process.exit(0);
+    }
+
+    if (!hasActive) {
         const toolName = toolIntent?.tool || 'unknown tool';
         const reason = `AgenFK WORKFLOW VIOLATION: No task is actively being worked on while attempting to use ${toolName}.\n\nBefore modifying files you must have a task in an active coding step (e.g. IN_PROGRESS, create_unit_tests, or your flow's first working step).\n\n  1. Create a task:  agenfk create item --type TASK --title "<title>"\n  2. Start it:       agenfk verify <id>  (advances from TODO to the coding step)\n\nThen retry your change.`;
 

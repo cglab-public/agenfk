@@ -18,6 +18,17 @@ import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-unmerge-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
 
@@ -42,10 +53,10 @@ describe('reverting an identity merge', () => {
     );
 
   const merge = (from: string, to: string) =>
-    supertest(app).post('/v1/admin/user-keys/merge').set('Cookie', cookieAdmin).send({ from, to });
+    supertest(__server).post('/v1/admin/user-keys/merge').set('Cookie', cookieAdmin).send({ from, to });
 
   const revert = (id: string, cookie = cookieAdmin) =>
-    supertest(app).post(`/v1/admin/user-keys/merges/${encodeURIComponent(id)}/revert`).set('Cookie', cookie);
+    supertest(__server).post(`/v1/admin/user-keys/merges/${encodeURIComponent(id)}/revert`).set('Cookie', cookie);
 
   const keyOf = async (eventId: string) =>
     (await ctx.db.get('SELECT user_key FROM events WHERE event_id = ?', [eventId]))?.user_key;
@@ -54,7 +65,7 @@ describe('reverting an identity merge', () => {
     ctx.db.get('SELECT events_count FROM rollups_daily WHERE org_id = ? AND user_key = ? AND day = ?',
       ['org-a', userKey, day]);
 
-  const merges = () => supertest(app).get('/v1/admin/user-keys/merges').set('Cookie', cookieAdmin);
+  const merges = () => supertest(__server).get('/v1/admin/user-keys/merges').set('Cookie', cookieAdmin);
 
   beforeEach(async () => {
     cleanup();
@@ -62,23 +73,25 @@ describe('reverting an identity merge', () => {
       dbPath: TEST_DB, secretKey: SECRET, sessionSecret: 'test-session-secret', defaultOrgId: 'org-a',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
     await createPasswordUser(ctx.db, 'org-a', 'view@x', 'longenough1', 'viewer');
-    cookieAdmin = (await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' })).headers['set-cookie']?.[0] ?? '';
-    cookieView = (await supertest(app).post('/auth/login').send({ email: 'view@x', password: 'longenough1' })).headers['set-cookie']?.[0] ?? '';
+    cookieAdmin = (await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' })).headers['set-cookie']?.[0] ?? '';
+    cookieView = (await supertest(__server).post('/auth/login').send({ email: 'view@x', password: 'longenough1' })).headers['set-cookie']?.[0] ?? '';
   });
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
   describe('authz', () => {
     it('rejects unauthenticated and non-admin', async () => {
-      expect((await supertest(app).post('/v1/admin/user-keys/merges/x/revert')).status).toBe(401);
+      expect((await supertest(__server).post('/v1/admin/user-keys/merges/x/revert')).status).toBe(401);
       expect((await revert('x', cookieView)).status).toBe(403);
     });
   });

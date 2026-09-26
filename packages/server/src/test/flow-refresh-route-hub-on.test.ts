@@ -24,6 +24,8 @@ const ENV_KEYS = [
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let app: any, initStorage: any;
+let __server: any;
+const agent = () => request(__server);
 
 const hubSteps = [
   { id: 'h1', name: 'BACKLOG', label: 'Backlog', order: 0, isAnchor: true },
@@ -65,7 +67,18 @@ describe('GET /projects/:id/flow?refresh=true (hub enabled)', () => {
     process.env.AGENFK_DB_PATH = TEST_DB;
     stubHubFetch(); // stub before import so any startup fetch is intercepted
     if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
+
+        /*
+     * The server is created right after the dynamic import, in the same hook
+     * (BUG 9de0c99c). This file cannot use a module-level `beforeAll` for it,
+     * because `app` does not exist until that import runs — but the reason for
+     * having ONE server is the same: `agent()` starts and tears down an
+     * ephemeral one per call, and that churn produced `Error: Parse Error:
+     * Expected HTTP/`, a transport failure that surfaces as a confident wrong
+     * assertion in whichever test was running.
+     */
     ({ app, initStorage } = await import('../server'));
+    __server = app.listen(0);
     await initStorage();
   });
 
@@ -85,26 +98,26 @@ describe('GET /projects/:id/flow?refresh=true (hub enabled)', () => {
   });
 
   it('pulls the hub flow and rebinds the project on read, and it persists', async () => {
-    const local = (await request(app).post('/flows').send({ name: 'LocalFlow', steps: localSteps })).body;
-    const project = (await request(app).post('/projects').send({ name: 'proj' })).body;
-    await request(app).post(`/projects/${project.id}/flow`).send({ flowId: local.id });
+    const local = (await agent().post('/flows').send({ name: 'LocalFlow', steps: localSteps })).body;
+    const project = (await agent().post('/projects').send({ name: 'proj' })).body;
+    await agent().post(`/projects/${project.id}/flow`).send({ flowId: local.id });
 
-    const r = await request(app).get(`/projects/${project.id}/flow?refresh=true`);
+    const r = await agent().get(`/projects/${project.id}/flow?refresh=true`);
     expect(r.status).toBe(200);
     expect(r.body.name).toBe('Hub Managed Flow');
     expect(r.body.source).toBe('hub');
 
     // A subsequent plain read reflects the rebind — the refresh persisted.
-    const plain = await request(app).get(`/projects/${project.id}/flow`);
+    const plain = await agent().get(`/projects/${project.id}/flow`);
     expect(plain.body.name).toBe('Hub Managed Flow');
   });
 
   it('without ?refresh the local flow is returned (no hub pull)', async () => {
-    const local = (await request(app).post('/flows').send({ name: 'LocalOnly', steps: localSteps })).body;
-    const project = (await request(app).post('/projects').send({ name: 'proj2' })).body;
-    await request(app).post(`/projects/${project.id}/flow`).send({ flowId: local.id });
+    const local = (await agent().post('/flows').send({ name: 'LocalOnly', steps: localSteps })).body;
+    const project = (await agent().post('/projects').send({ name: 'proj2' })).body;
+    await agent().post(`/projects/${project.id}/flow`).send({ flowId: local.id });
 
-    const r = await request(app).get(`/projects/${project.id}/flow`);
+    const r = await agent().get(`/projects/${project.id}/flow`);
     expect(r.status).toBe(200);
     expect(r.body.name).toBe('LocalOnly');
   });

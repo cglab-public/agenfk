@@ -9,10 +9,12 @@
  * CREATE_UNIT_TESTS). Centralising the logic here kills that drift.
  */
 
+import { gateOnClaims, claimTreeOf } from './claimGate';
+
 export interface GatekeeperFlow {
   /** Flow name, echoed back so the caller can see which flow is governing. */
   name?: string;
-  steps: Array<{ name: string; order: number; isAnchor?: boolean; exitCriteria?: string }>;
+  steps: Array<{ name: string; order: number; isAnchor?: boolean; isSpecial?: boolean; exitCriteria?: string; autoCommit?: boolean | null; requireCommit?: boolean | null }>;
 }
 
 export interface GatekeeperItem {
@@ -21,6 +23,12 @@ export interface GatekeeperItem {
   type: string;
   title?: string;
   branchName?: string;
+  /** Paths this item owns while worked. See claimGate.ts. */
+  claims?: string[];
+  /** Tree resolution for claims (aaa01834): own worktree, else an ancestor's. */
+  parentId?: string | null;
+  worktreePath?: string | null;
+  worktreeChoice?: string | null;
 }
 
 /** Statuses that are never considered "active working" steps regardless of flow. */
@@ -34,13 +42,32 @@ export const INACTIVE_STATUSES = new Set(['BLOCKED', 'PAUSED', 'TRASHED', 'ARCHI
  * flows (e.g. TDD flows where both 'create_unit_tests' and 'IN_PROGRESS' are
  * valid working steps).
  */
+/**
+ * A step that bounds the work rather than being work: an entry/exit anchor, or
+ * a terminal/holding step like DONE, BLOCKED or ARCHIVED.
+ *
+ * isSpecial has to count, not just isAnchor. `agenfk flow create` only ever
+ * asks "Is this a terminal/special step?" and emits isSpecial — it never sets
+ * isAnchor — so a CLI-authored flow has a DONE-equivalent step that an isAnchor
+ * filter cannot see. Worse, with no isAnchor step anywhere, an isAnchor-only
+ * filter yields an EMPTY set, because the ['TODO','DONE'] fallback applies only
+ * when there is no flow at all.
+ *
+ * Every question of the form "which steps are real work" goes through this, so
+ * the answers cannot drift apart: getActiveStepItems decides whether an item is
+ * in flight, resolveStepContract tells the agent which step to work, and a flow
+ * where those two disagree is incoherent.
+ */
+export const isBoundaryStep = (s: { isAnchor?: boolean; isSpecial?: boolean }): boolean =>
+  Boolean(s.isAnchor || s.isSpecial);
+
 export function getActiveStepItems(
   items: GatekeeperItem[],
   flow: GatekeeperFlow | null,
 ): GatekeeperItem[] {
   const anchorNames = new Set(
     flow
-      ? flow.steps.filter(s => s.isAnchor).map(s => s.name.toUpperCase())
+      ? flow.steps.filter(isBoundaryStep).map(s => s.name.toUpperCase())
       : ['TODO', 'DONE'],
   );
   return items.filter(i => {
@@ -91,6 +118,8 @@ export function detectCrossProjectItem<T extends { id: string; projectId?: strin
 export interface GatekeeperDecision {
   authorized: boolean;
   message: string;
+  /** The current step commits the card's work when it leaves (CGLAB-388). */
+  commitOnLeave?: 'auto' | 'required';
   task: GatekeeperItem | null;
   /** True when authorization failed because multiple tasks were active. */
   ambiguous?: boolean;
@@ -122,6 +151,53 @@ export interface StepContract {
   activeFlow?: { name?: string; steps: string[] };
   codingStep?: string;
   finalStep?: string;
+  /** The step commits the card's work when it leaves (CGLAB-388), and whether it insists. */
+  commitOnLeave?: 'auto' | 'required';
+}
+
+/**
+ * What an agent is told about a step that commits on leave (CGLAB-388): the
+ * gatekeeper and verify's reply both say it, so the agent stages first rather
+ * than learning from a note after it moved on.
+ */
+export function commitOnLeaveNote(step: string, mode: 'auto' | 'required' | undefined): string {
+  if (!mode) return '';
+  return `📌 ${step} commits the card's staged, claimed files when it leaves: stage your work before you advance the card.`
+    + (mode === 'required' ? ' It refuses to move on without that commit.' : '');
+}
+
+/**
+ * Does leaving the step at `index` of these ORDERED steps end the flow? The
+ * server's own rule for the close commit (verify's endsFlow): no next step, a
+ * next step named DONE, or a next step that is the last and a boundary.
+ */
+export function leavingEndsFlow(sorted: ReadonlyArray<{ name: string; isAnchor?: boolean; isSpecial?: boolean }>, index: number): boolean {
+  const next = sorted[index + 1];
+  const exit = sorted[sorted.length - 1];
+  return !next || next.name === 'DONE' || (next.name === exit?.name && isBoundaryStep(next));
+}
+
+/**
+ * THE answer to "does leaving this step make a step commit?" (CGLAB-388): its
+ * flags, except on the move that ends the flow, where the close commit takes
+ * the work. The server's commit, the gatekeeper, verify's hints, flow
+ * validation and the editor all ask this, so none of them can promise a
+ * commit the server does not make.
+ */
+export function stepCommitsOnLeave(
+  steps: ReadonlyArray<{ name: string; order: number; isAnchor?: boolean; isSpecial?: boolean; autoCommit?: unknown; requireCommit?: unknown }>,
+  name: string,
+): 'auto' | 'required' | undefined {
+  const sorted = [...steps].sort((a, b) => a.order - b.order);
+  const i = sorted.findIndex(s => s.name === name);
+  if (i === -1 || leavingEndsFlow(sorted, i)) return undefined;
+  return commitModeOf(sorted[i]);
+}
+
+/** A step's commit-on-leave mode, from its flags alone. */
+export function commitModeOf(step: { autoCommit?: unknown; requireCommit?: unknown } | undefined): 'auto' | 'required' | undefined {
+  if (step?.autoCommit !== true) return undefined;
+  return step.requireCommit === true ? 'required' : 'auto';
 }
 
 /**
@@ -142,11 +218,21 @@ export function resolveStepContract(
   }
 
   const activeFlow = { name: flow?.name, steps: sorted.map(s => s.name) };
-  const codingStep = sorted.find(s => !s.isAnchor)?.name;
-  const nonTerminal = sorted.filter(s => s.name.toUpperCase() !== 'DONE');
-  const finalStep = (nonTerminal.length ? nonTerminal : sorted)[
-    (nonTerminal.length ? nonTerminal : sorted).length - 1
-  ]?.name;
+  // Real working steps only. The previous version asked this twice with two
+  // different hand-rolled predicates: `!s.isAnchor` (blind to isSpecial) and a
+  // filter on the literal name 'DONE' (blind to any terminal step named
+  // anything else). On a CLI-authored flow that made the coding step the
+  // holding step and the final step the terminal one.
+  const realSteps = sorted.filter(s => !isBoundaryStep(s));
+  const codingStep = realSteps[0]?.name;
+  // A flow with no real steps at all is degenerate, and its finalStep has been
+  // "the last step that is not literally named DONE" for a long time. That
+  // quirk is pinned by a test and is not what this fix is about, so it is
+  // preserved verbatim: only flows that DO have working steps change.
+  const degenerate = sorted.filter(s => s.name.toUpperCase() !== 'DONE');
+  const finalStep = (
+    realSteps.length ? realSteps : degenerate.length ? degenerate : sorted
+  ).at(-1)?.name;
 
   const currentStep = sorted.find(s => s.name.toUpperCase() === status.toUpperCase());
   if (!currentStep) {
@@ -154,7 +240,9 @@ export function resolveStepContract(
   }
 
   const exitCriteria = currentStep.exitCriteria?.trim() || undefined;
+  const commitOnLeave = stepCommitsOnLeave(sorted, currentStep.name);
   return {
+    ...(commitOnLeave ? { commitOnLeave } : {}),
     exitCriteria,
     criteriaState: exitCriteria ? 'present' : 'none-defined',
     activeFlow,
@@ -187,11 +275,18 @@ export function renderStepContract(c: StepContract, status: string, advanceHint:
 
   const steps = c.activeFlow
     ? `\n\nActive flow${c.activeFlow.name ? ` "${c.activeFlow.name}"` : ''}: ${c.activeFlow.steps.join(' → ')}`
-      + (c.codingStep ? `\nCoding step: ${c.codingStep}` : '')
-      + (c.finalStep ? `\nFinal step (omit the command on this one): ${c.finalStep}` : '')
+      // Say what each step IS, never what to do on it. "Coding step: DISCOVERY"
+      // read as an instruction to code on a discovery step (CGLAB-275); the
+      // step's own exit criteria are the instructions. Names come from the flow
+      // itself — the anchors are not assumed to be called TODO or DONE. The one
+      // deliberate "do" is "omit the command": that is how the final gate runs
+      // the project's verifyCommand, and getting it wrong skips the gate.
+      + (c.codingStep ? `\nFirst working step (the step after ${c.activeFlow.steps[0]}): ${c.codingStep}` : '')
+      + (c.finalStep ? `\nFinal step (omit the command here; the project's verifyCommand runs and closes the item): ${c.finalStep}` : '')
     : '';
 
-  return `${head}${steps}`;
+  const commit = commitOnLeaveNote(status, c.commitOnLeave);
+  return `${head}${commit ? `\n${commit}` : ''}${steps}`;
 }
 
 export interface GatekeeperDecisionOptions {
@@ -201,6 +296,8 @@ export interface GatekeeperDecisionOptions {
   intent?: string;
   /** Advisory role label (coding/review/testing/...). Echoed, NOT used as a status gate. */
   role?: string;
+  /** The project's root: the tree of a card with no worktree (aaa01834). */
+  projectRoot?: string | null;
 }
 
 /**
@@ -266,10 +363,42 @@ export function decideGatekeeperAuthorization(
     task = actionable[0];
   }
 
+  /*
+   * The claim gate (819e7192), and it runs LAST: being on an active step is
+   * the question of whether this card may work at all, and colliding with
+   * somebody else is the question of whether it may work HERE. Answering the
+   * second first would refuse a card for a file conflict when its real problem
+   * is that it never started.
+   *
+   * Holders come from `items`, NOT `workingItems`. getActiveStepItems drops
+   * PAUSED and BLOCKED, and a paused card is exactly the one whose half-edited
+   * files must not be handed to somebody else - it finds out on resume, which
+   * is the worst moment. claimGate decides release by terminal status instead.
+   */
+  // Claims are per worktree (aaa01834): each card carries the tree it works
+  // in, and an unknown tree stays strict. See sameClaimTree.
+  const byId = new Map(items.map(i => [i.id, i]));
+  const treeOf = (i: GatekeeperItem) => claimTreeOf(i, id => byId.get(id), opts.projectRoot);
+  const gate = gateOnClaims(
+    { id: task.id, claims: task.claims, tree: treeOf(task) },
+    items.map(i => ({ id: i.id, status: i.status, claims: i.claims, tree: treeOf(i) })),
+  );
+  if (!gate.authorized) {
+    return {
+      authorized: false,
+      task: null,
+      message: `❌ CLAIM CONFLICT on [${task.id.substring(0, 8)}] "${task.title}".\n\n${gate.message}`,
+    };
+  }
+
   // Surface the step contract via the shared resolver, so this and the MCP
   // handler cannot drift — that drift is what produced false claims in the docs.
   const contract = resolveStepContract(flow, task.status);
   const advanceHint = `advance with \`agenfk verify ${task.id.substring(0, 8)} --evidence "<what you did>"\``;
+  // The label names the step the card is on (d26832d6 #11): CODING on a
+  // test-authoring step read as leave to write the implementation.
+  const stepRole = (flow as any)?.steps?.find((st: any) => st?.name === task!.status)?.role;
+  const shown = (opts.role || (typeof stepRole === 'string' && stepRole) || role).toUpperCase();
 
   return {
     authorized: true,
@@ -279,7 +408,8 @@ export function decideGatekeeperAuthorization(
     activeFlow: contract.activeFlow,
     codingStep: contract.codingStep,
     finalStep: contract.finalStep,
-    message: `✅ AUTHORIZED (${role.toUpperCase()}).\n\n${task.type}: [${task.id.substring(0, 8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"`
+    ...(contract.commitOnLeave ? { commitOnLeave: contract.commitOnLeave } : {}),
+    message: `✅ AUTHORIZED (${shown}).\n\n${task.type}: [${task.id.substring(0, 8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"`
       + renderStepContract(contract, task.status, advanceHint),
   };
 }

@@ -13,7 +13,7 @@
  * These reflect future functionality and are expected to fail until the server
  * resolves the caller cwd to the project root.
  */
-import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterAll, vi, beforeAll } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -31,7 +31,24 @@ const TEST_DB = path.resolve('./verify-cwd-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, VERIFY_TOKEN, storage } from '../server';
+
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. That
+ * churn produced `Error: Parse Error: Expected HTTP/, RTSP/ or ICE/` — a
+ * transport failure, not an assertion about anything under test. It hands the
+ * test an empty body, so `res.body.id` is undefined and the next call goes to
+ * `/items/undefined`; one bad socket then surfaces as `expected 404 to be 400`
+ * in whichever test happened to be running. Different test every run, green
+ * when run alone.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
 
 // A throwaway project tree: <root>/.agenfk + <root>/packages/cli (a subdir).
 let projRoot: string;
@@ -48,7 +65,7 @@ afterAll(() => {
 async function waitForRun(runId: string, timeoutMs = 15000) {
   const start = Date.now();
   for (;;) {
-    const res = await request(app).get(`/items/validate-runs/${runId}`).set('x-agenfk-internal', VERIFY_TOKEN!);
+    const res = await agent().get(`/items/validate-runs/${runId}`).set('x-agenfk-internal', VERIFY_TOKEN!);
     if (res.status !== 200) return res;
     if (res.body.status !== 'running') return res;
     if (Date.now() - start > timeoutMs) return res;
@@ -57,13 +74,10 @@ async function waitForRun(runId: string, timeoutMs = 15000) {
 }
 
 async function itemOnFinalStep(name: string, verifyCommand: string) {
-  const p = (await request(app).post('/projects').send({ name })).body;
-  await request(app).put(`/projects/${p.id}/verify-command`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ verifyCommand });
-  const item = (await request(app).post('/items').send({ type: 'TASK', title: `${name}-item`, projectId: p.id })).body;
-  await request(app)
-    .post('/items/bulk')
-    .set('x-agenfk-internal', VERIFY_TOKEN!)
-    .send({ items: [{ id: item.id, updates: { status: 'TEST' } }] });
+  const p = (await agent().post('/projects').send({ name })).body;
+  await agent().put(`/projects/${p.id}/verify-command`).set('x-agenfk-internal', VERIFY_TOKEN!).send({ verifyCommand });
+  const item = (await agent().post('/items').send({ type: 'TASK', title: `${name}-item`, projectId: p.id })).body;
+  await storage.updateItem(item.id, { status: 'TEST' } as any);
   return { projectId: p.id, item };
 }
 
@@ -82,7 +96,7 @@ describe('CGLAB-13 — verifyCommand runs in the project working directory', () 
     if (!VERIFY_TOKEN) return;
     const { item } = await itemOnFinalStep('CWD1', 'pwd');
 
-    const res = await request(app)
+    const res = await agent()
       .post(`/items/${item.id}/validate`)
       .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ async: true, cwd: subDir });
@@ -99,13 +113,13 @@ describe('CGLAB-13 — verifyCommand runs in the project working directory', () 
     if (!VERIFY_TOKEN) return;
     const { projectId, item } = await itemOnFinalStep('CWD2', 'true');
 
-    const res = await request(app)
+    const res = await agent()
       .post(`/items/${item.id}/validate`)
       .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ async: true, cwd: subDir });
     await waitForRun(res.body.runId);
 
-    const proj = (await request(app).get(`/projects/${projectId}`)).body;
+    const proj = (await agent().get(`/projects/${projectId}`)).body;
     expect(proj.projectRoot).toBe(projRoot);
   });
 
@@ -113,31 +127,37 @@ describe('CGLAB-13 — verifyCommand runs in the project working directory', () 
     if (!VERIFY_TOKEN) return;
     const { projectId, item } = await itemOnFinalStep('CWD3', 'pwd');
 
-    const res = await request(app)
+    const res = await agent()
       .post(`/items/${item.id}/validate`)
       .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ async: true, cwd: projRoot }); // MCP sends the project dir directly
     const done = await waitForRun(res.body.runId);
 
     expect(done.body.output.trim()).toContain(projRoot);
-    const proj = (await request(app).get(`/projects/${projectId}`)).body;
+    const proj = (await agent().get(`/projects/${projectId}`)).body;
     expect(proj.projectRoot).toBe(projRoot);
   });
 
-  it('fallback: a caller cwd with no .agenfk ancestor is used as-is (returns the raw cwd)', async () => {
+  it('REFUSES a cwd with no .agenfk ancestor: it does not become the project root', async () => {
     if (!VERIFY_TOKEN) return;
-    // A directory tree with NO .agenfk marker anywhere above it.
+    // A directory tree with NO .agenfk marker anywhere above it - which is
+    // what a WORKTREE looks like, because `.agenfk/` is gitignored and does
+    // not travel into one. findProjectRoot's walk finds nothing and returns
+    // its starting directory, and recording that repointed the whole project
+    // at a directory belonging to ONE card, permanently, with no message.
+    // The verify still runs there; the PROJECT ROOT is what must not move.
     const orphan = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-orphan-')));
     try {
       const { projectId, item } = await itemOnFinalStep('CWD4', 'true');
-      const res = await request(app)
+      const res = await agent()
         .post(`/items/${item.id}/validate`)
         .set('x-agenfk-internal', VERIFY_TOKEN)
         .send({ async: true, cwd: orphan });
       await waitForRun(res.body.runId);
 
-      const proj = (await request(app).get(`/projects/${projectId}`)).body;
-      expect(proj.projectRoot).toBe(orphan);
+      const proj = (await agent().get(`/projects/${projectId}`)).body;
+      expect(proj.projectRoot, 'a directory with no .agenfk marker was recorded as the project root').not.toBe(orphan);
+      expect(proj.projectRoot ?? null).toBeNull();
     } finally {
       fs.rmSync(orphan, { recursive: true, force: true });
     }

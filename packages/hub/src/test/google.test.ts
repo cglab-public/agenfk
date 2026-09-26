@@ -9,6 +9,17 @@ import { encryptSecret } from '../crypto';
 import { checkEmailAllowlist } from '../auth/oauth';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-google-test-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
 const cleanup = () => {
@@ -61,25 +72,27 @@ describe('Google OAuth flow', () => {
       defaultOrgId: 'org',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     vi.restoreAllMocks();
   });
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
   it('returns 404 when Google is not configured', async () => {
-    const r = await supertest(app).get('/auth/google/start');
+    const r = await supertest(__server).get('/auth/google/start');
     expect(r.status).toBe(404);
   });
 
   it('start redirects to Google with state cookie', async () => {
     await enableGoogle(ctx.db);
-    const r = await supertest(app).get('/auth/google/start').redirects(0);
+    const r = await supertest(__server).get('/auth/google/start').redirects(0);
     expect(r.status).toBe(302);
     expect(r.headers.location).toContain('accounts.google.com/o/oauth2/v2/auth');
     expect(r.headers.location).toContain('client_id=gid');
@@ -88,7 +101,7 @@ describe('Google OAuth flow', () => {
 
   it('callback rejects bad state', async () => {
     await enableGoogle(ctx.db);
-    const r = await supertest(app).get('/auth/google/callback?code=abc&state=wrong');
+    const r = await supertest(__server).get('/auth/google/callback?code=abc&state=wrong');
     expect(r.status).toBe(400);
   });
 
@@ -106,11 +119,11 @@ describe('Google OAuth flow', () => {
       data: { sub: 'g-sub-1', email: 'alice@acme.com', email_verified: true },
     } as any);
 
-    const start = await supertest(app).get('/auth/google/start').redirects(0);
+    const start = await supertest(__server).get('/auth/google/start').redirects(0);
     const stateCookie = start.headers['set-cookie']?.[0];
     const state = decodeURIComponent(/agenfk_hub_oauth_state=([^;]+)/.exec(stateCookie!)![1]);
 
-    const cb = await supertest(app)
+    const cb = await supertest(__server)
       .get(`/auth/google/callback?code=abc&state=${state}`)
       .set('Cookie', stateCookie!)
       .redirects(0);
@@ -134,11 +147,11 @@ describe('Google OAuth flow', () => {
       data: { sub: 'g-stranger', email: 'stranger@acme.com', email_verified: true },
     } as any);
 
-    const start = await supertest(app).get('/auth/google/start').redirects(0);
+    const start = await supertest(__server).get('/auth/google/start').redirects(0);
     const stateCookie = start.headers['set-cookie']?.[0];
     const state = decodeURIComponent(/agenfk_hub_oauth_state=([^;]+)/.exec(stateCookie!)![1]);
 
-    const cb = await supertest(app)
+    const cb = await supertest(__server)
       .get(`/auth/google/callback?code=abc&state=${state}`)
       .set('Cookie', stateCookie!);
     expect(cb.status).toBe(403);
@@ -157,11 +170,11 @@ describe('Google OAuth flow', () => {
       data: { sub: 'g-sub-2', email: 'eve@badco.com', email_verified: true },
     } as any);
 
-    const start = await supertest(app).get('/auth/google/start').redirects(0);
+    const start = await supertest(__server).get('/auth/google/start').redirects(0);
     const stateCookie = start.headers['set-cookie']?.[0];
     const state = decodeURIComponent(/agenfk_hub_oauth_state=([^;]+)/.exec(stateCookie!)![1]);
 
-    const cb = await supertest(app)
+    const cb = await supertest(__server)
       .get(`/auth/google/callback?code=abc&state=${state}`)
       .set('Cookie', stateCookie!);
     expect(cb.status).toBe(403);
@@ -173,10 +186,10 @@ describe('Google OAuth flow', () => {
     vi.spyOn(axios, 'get').mockResolvedValueOnce({
       data: { sub: 'g-sub-3', email: 'unverified@x.com', email_verified: false },
     } as any);
-    const start = await supertest(app).get('/auth/google/start').redirects(0);
+    const start = await supertest(__server).get('/auth/google/start').redirects(0);
     const stateCookie = start.headers['set-cookie']?.[0];
     const state = decodeURIComponent(/agenfk_hub_oauth_state=([^;]+)/.exec(stateCookie!)![1]);
-    const cb = await supertest(app)
+    const cb = await supertest(__server)
       .get(`/auth/google/callback?code=abc&state=${state}`)
       .set('Cookie', stateCookie!);
     expect(cb.status).toBe(403);

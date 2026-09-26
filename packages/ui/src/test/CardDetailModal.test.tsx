@@ -2,6 +2,7 @@
  * @vitest-environment jsdom
  */
 import { render, screen, fireEvent, cleanup, waitFor, act } from '@testing-library/react';
+import { SocketProvider } from '../SocketContext';
 import { CardDetailModal } from '../components/CardDetailModal';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../ThemeContext';
@@ -36,6 +37,8 @@ vi.mock('../api', () => ({
     listItems: vi.fn(() => Promise.resolve([])),
     listAgentRuns: vi.fn(() => Promise.resolve([])),
     listRunEvents: vi.fn(() => Promise.resolve([])),
+    getGates: vi.fn(() => Promise.resolve({ step: 'TODO', approvalRequired: false, approvals: [], overrides: {}, lastChecks: null })),
+    getCheckHistory: vi.fn(() => Promise.resolve([{ kind: 'approval', step: 'DISCOVERY', at: '2026-09-24T21:05:00.000Z', by: 'board', authority: 'unverified' }])),
   }
 }));
 
@@ -43,6 +46,7 @@ vi.mock('../api', () => ({
 const socketHandlers: Record<string, (...args: any[]) => void> = {};
 vi.mock('socket.io-client', () => ({
   io: vi.fn(() => ({
+    connect: vi.fn(),
     on: (ev: string, cb: (...args: any[]) => void) => { socketHandlers[ev] = cb; },
     off: vi.fn(),
     emit: vi.fn(),
@@ -56,11 +60,17 @@ const queryClient = new QueryClient({
   },
 });
 
+// SocketProvider owns the connection now (CGLAB-168), so the component only
+// subscribes — it needs the provider above it to receive anything. The io()
+// mock above still captures the handlers, so socketHandlers drives events
+// exactly as before.
 const wrapper = ({ children }: { children: React.ReactNode }) => (
   <QueryClientProvider client={queryClient}>
-    <ThemeProvider>
-      {children}
-    </ThemeProvider>
+    <SocketProvider>
+      <ThemeProvider>
+        {children}
+      </ThemeProvider>
+    </SocketProvider>
   </QueryClientProvider>
 );
 
@@ -129,6 +139,13 @@ describe('CardDetailModal', () => {
   it('renders no reference badge when externalId is null', async () => {
     renderModal({ ...mockItem, externalId: null, externalUrl: null });
     expect(screen.queryByText('CGLAB-163')).toBeNull();
+  });
+
+  // 5ee2c3b1: approvals and checks have their own tab; the go-ahead itself stays on Overview.
+  it('has a Checks tab showing the card\'s check history', async () => {
+    renderModal(mockItem);
+    fireEvent.click(screen.getByRole('button', { name: /^Checks/ }));
+    expect(await screen.findByText(/Approved DISCOVERY/)).toBeDefined();
   });
 
   it('should render item details and switch tabs', async () => {

@@ -14,6 +14,23 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. That
+ * churn produced `Error: Parse Error: Expected HTTP/, RTSP/ or ICE/` — a
+ * transport failure, not an assertion about anything under test. It hands the
+ * test an empty body, so `res.body.id` is undefined and the next call goes to
+ * `/items/undefined`; one bad socket then surfaces as `expected 404 to be 400`
+ * in whichever test happened to be running. Different test every run, green
+ * when run alone.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 const TEST_DB = path.resolve('./hub-rewrite-outbox-org-test-db.sqlite');
 const ROUTE = '/internal/hub/rewrite-outbox-org';
 
@@ -34,19 +51,19 @@ describe('POST /internal/hub/rewrite-outbox-org', () => {
   }
 
   it('rejects with 403 when the internal token is missing/wrong', async () => {
-    const res = await request(app).post(ROUTE)
+    const res = await agent().post(ROUTE)
       .set('x-agenfk-internal', 'wrong-token')
       .send({ from: '', to: 'acme' });
     expect(res.status).toBe(403);
   });
 
   it('rejects with 400 when the target org is empty or body is malformed', async () => {
-    const missingTo = await request(app).post(ROUTE)
+    const missingTo = await agent().post(ROUTE)
       .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ from: '' });
     expect(missingTo.status).toBe(400);
 
-    const emptyTo = await request(app).post(ROUTE)
+    const emptyTo = await agent().post(ROUTE)
       .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ from: '', to: '' });
     expect(emptyTo.status).toBe(400);
@@ -58,7 +75,7 @@ describe('POST /internal/hub/rewrite-outbox-org', () => {
     (storage as any).database.prepare('DELETE FROM hub_outbox').run();
     (storage as any).hubOutboxAppend('rot-1', new Date().toISOString(), 'NOT-JSON');
     queue('acme');
-    const res = await request(app).post(ROUTE)
+    const res = await agent().post(ROUTE)
       .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ from: 'acme', to: 'acme2' });
     expect(res.status).toBe(200);
@@ -73,7 +90,7 @@ describe('POST /internal/hub/rewrite-outbox-org', () => {
     queue('');
     queue('other');       // a different org must be left untouched
 
-    const res = await request(app).post(ROUTE)
+    const res = await agent().post(ROUTE)
       .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ from: '', to: 'acme' });
 

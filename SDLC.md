@@ -95,6 +95,10 @@ When a step's criteria demand something outside the allow-list, do not comply an
 
 **Independent review.** When a step's criteria call for an independent, adversarial or outside review, spawn a separate reviewer even though Standard Mode otherwise keeps the work yours — the independence *is* the control being requested, so a self-review cannot supply it. Brief reviewers to hunt for defects and stay **read-only**, and verify each finding against the code before acting, because reviewers report false positives. If this client cannot spawn sub-agents, say so and ask the user to review in a fresh session; never claim an independent review you did not have — that is fabricated evidence.
 
+**Recording the review.** A step with the `review` role leaves only with a review on record: `agenfk review record <id> --transcript <reviewer session log> --range <from>..<to> --findings '<json>'` (MCP: `record_review`). The server reads the reviewer's identity from the transcript, not from you: a Claude Code sub-agent's log is `~/.claude/projects/<project>/<session>/subagents/agent-<id>.jsonl`. It must differ from every session that advanced the card or its children. The range must start where the card's work began and include every child's close commit. Each finding is `{"title", "state": "fixed"|"rejected", "reason"}`, and a rejection needs its reason. Reviews happen at the PARENT: tasks under a story pass with it, and a parent stops at its review step when its last child closes. Record the review after fixing the findings: it pins the tree as reviewed, and any change afterwards needs it recorded again. A reviewer that edited the card's files or ran `agenfk verify` counts as an author. On harnesses whose session logs the server cannot read (Cursor, Gemini, OpenCode) the check only warns; review independently all the same. What no check catches, so the reviewer must look for it: an implementation that special-cases the test inputs, and expected values kept in fixtures outside the test tree (keep fixtures under the test tree).
+
+**Human gates.** A step with the `human-approval` check (the TDD flow's DISCOVERY) leaves only after a person approves it on the board: `agenfk verify` then opens the board on the card and waits for the approval (up to 9 minutes), and verifies again by itself once it lands - tell the user it is waiting, and do not ask them to message you after approving. It prints an `APPROVAL NEEDED` block naming the card and its link: relay that block to the user in the chat, as it is, as soon as you see it (it is how a person who closed the board's tab finds the card again), and never claim or relay an approval yourself - only a person approves, on the board. A foreground tool call shows you verify's output only when it returns, minutes later: where your harness can, run a verify that may wait in the background (Claude Code: `run_in_background`) and read its output while it runs, so the block reaches the user at once. If it reports it is still waiting, run the same `agenfk verify` again: it waits again. In CI, or via MCP (no wait there), point the user at `agenfk ui --open <id> --details` (it opens the card on its Overview, where the approval is given) and re-run verify after they approve. A person can also pass one blocked check with a written reason (an override) from the card on the board. Both are the human's alone: there is no CLI or MCP command for them, and the server refuses a request that carries the agent's token. Never try to approve or override on the user's behalf. Overrides and approvals are listed on the PR by `agenfk pr create`. A step's human-approval check can ask for a passkey (`signature: passkey`): approvals and overrides on that step are then signed with a passkey enrolled on the board (fingerprint, face or PIN), and the board's word alone is refused. Never enroll a passkey, create one, or attempt a WebAuthn assertion yourself; that is the person's alone. In the desktop app the board opens the card in the browser to sign.
+
 ### IN_PROGRESS → REVIEW
 
 - Reached by `validate_progress` when the previous step's exit criteria are met. Never set it directly with `update_item`.
@@ -109,11 +113,11 @@ The agent calls `validate_progress` at each intermediate flow step to advance to
 validate_progress({ itemId, command: "npm run build" })
 ```
 
-- `command` is optional. If omitted, the project's `verifyCommand` is used.
-- The **agent picks the command** for intermediate steps (build, lint, type-check, etc.).
+- `command` is optional. If omitted on the final step, the project's `verifyCommand` is used; if omitted on an intermediate step, no command of yours runs, though the step's checks may run the project's suite (the default flow does when leaving IN_PROGRESS).
+- The **agent picks the command** for intermediate steps (build, lint, type-check, etc.) when the step's criteria call for one. A step whose criteria expect red tests (TDD) should not be verified with the test runner.
 - On the **final intermediate step** (the last step before DONE), `verifyCommand` is enforced and, on success, the server makes a `close(<type>)` commit **of whatever you have staged**. It stages nothing for you: `git add` the work that belongs to this item before verifying, or it will not land. The DONE response names anything it left behind.
 - If the command passes (exit code 0): item advances to the next flow step.
-- If it fails: item moves back to the first non-anchor step (i.e., `IN_PROGRESS` in the default flow).
+- If it fails (non-zero exit): the advance is refused and the item **stays on its current step**. Nothing is rolled back; on the final step this is what keeps a red suite out of DONE. The response's last line names the resulting step.
 - A comment is logged with the command output.
 
 **Before calling `validate_progress`**, the agent should call `workflow_gatekeeper(intent, itemId)` — or `agenfk gatekeeper` on the CLI, which reports the same thing. The response authorizes the edit and carries the current step's `exitCriteria` plus the active flow's steps. The agent must satisfy those criteria before advancing.
@@ -132,7 +136,7 @@ Examples by stack:
 - Python: `pytest`
 - Go: `go build ./... && go test ./...`
 
-The `verifyCommand` is stored on the **Project entity** and enforced on the final step transition (→ DONE). If not configured, `validate_progress` returns `NO_VERIFY_COMMAND`. The agent auto-detects the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), sets the command via `update_project({ id, verifyCommand })`, and retries. Agents cannot supply their own command on the final step.
+The `verifyCommand` is stored on the **Project entity** and enforced on the final step transition (→ DONE). If not configured, `validate_progress` returns `NO_VERIFY_COMMAND`. The agent auto-detects the project stack from config files (e.g. `package.json`, `Cargo.toml`, `go.mod`, `*.csproj`), sets the command via `update_project({ id, verifyCommand })`, and retries. If verify reports `NO_TEST_REPORT`, per-test results the project does not record are needed - by the step's checks, or by the step the card is entering (its baseline is recorded on the way in) - and that is yours to fix, not a person's to override: run the `agenfk update-project` command the refusal gives (built from the project's own verify command), add the report path to `.gitignore` if the refusal says it is not ignored, and run the same verify again. Where it gives no command, set a report for the project's runner yourself (`vitest-json`, or `junit-xml` from any runner that writes JUnit XML); only a runner that can write neither is a reason to ask a person to pass the check on the board. Agents cannot supply their own command on the final step.
 
 Never set `DONE` directly by any route. The plain REST path rejects it, but the MCP path does not close every hole, so treat this as your discipline rather than something the server guarantees.
 
@@ -231,7 +235,7 @@ The `/agenfk-release` skill includes a **Step 0 PR merge gate**:
 4. workflow_gatekeeper({ intent: "Fix null check", role: "coding" })
    → Gatekeeper auto-checks out the branch
 5. [Agent implements the fix]
-6. validate_progress({ id, evidence: "<how the coding step's criteria were met>" })
+6. validate_progress({ id, evidence: "<how this step's criteria were met>" })
 7. [Agent reviews: independently via a separate review agent when the step's exit criteria require it, else re-reads files and checks correctness]
 8. workflow_gatekeeper({ intent: "Review", role: "validating", itemId })
    → Response includes exitCriteria for the current step
@@ -254,7 +258,7 @@ The `/agenfk-release` skill includes a **Step 0 PR merge gate**:
 2. validate_progress({ id, evidence: "<why this is ready to start>" })
 3. workflow_gatekeeper({ intent: "Add toggle", role: "coding" })
 4. [Agent implements the feature]
-5. validate_progress({ id, evidence: "<how the coding step's criteria were met>" })
+5. validate_progress({ id, evidence: "<how this step's criteria were met>" })
 6. [Review — independent when the step's criteria require it] → workflow_gatekeeper({ intent: "Review", role: "validating", itemId })
 7. validate_progress({ itemId, command: "npm run build" })
    → Passes → the next step in the flow

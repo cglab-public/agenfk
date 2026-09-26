@@ -8,6 +8,8 @@ import {
   TokenEvent,
   TokenEventQuery,
   IngestionState,
+  AppSettings,
+  TerminalSession,
   Pr,
   PrSizing,
   AgentRun,
@@ -67,6 +69,12 @@ export interface StorageProvider extends AgEnFKPlugin {
   // Observability — token events (server-side ingestion of per-client session logs)
   insertTokenEvent(event: TokenEvent): Promise<void>;
   queryTokenEvents(query: TokenEventQuery): Promise<TokenEvent[]>;
+  listTerminalSessions(projectId?: string): Promise<TerminalSession[]>;
+  recordTerminalSession(session: TerminalSession): Promise<TerminalSession>;
+  forgetTerminalSession(id: string): Promise<void>;
+  getSettings(): Promise<AppSettings>;
+  /** Merges: keys left out keep their stored value rather than being blanked. */
+  updateSettings(patch: Partial<AppSettings>): Promise<AppSettings>;
   getIngestionState(sourcePath: string): Promise<IngestionState | null>;
   setIngestionState(state: IngestionState): Promise<void>;
 
@@ -76,7 +84,15 @@ export interface StorageProvider extends AgEnFKPlugin {
   getAgentRun(id: string): Promise<AgentRun | null>;
   listAgentRuns(query: AgentRunQuery): Promise<AgentRun[]>;
   getAgentRunBySession(sessionId: string): Promise<AgentRun | null>;
-  appendRunEvent(event: RunEvent): Promise<void>;
+  /**
+   * Append an event, answering with the position it was given.
+   *
+   * The position may be assigned by the store when the caller omits it, and
+   * the caller needs it back: the object it handed over still says undefined,
+   * and anything that broadcasts that object leaves every consumer unable to
+   * order or de-duplicate. Null means nothing was written.
+   */
+  appendRunEvent(event: RunEvent): Promise<number | null>;
   listRunEvents(runId: string): Promise<RunEvent[]>;
 
   // Observability — PR sizing (agent-declared)
@@ -111,6 +127,14 @@ export type HubEventType =
   | 'validate.invoked'
   | 'validate.passed'
   | 'validate.failed'
+  // A person's go-ahead for a step, or their pass of a blocked check (CGLAB-382).
+  | 'step.approved'
+  | 'check.overridden'
+  // A passkey enrolled on, or removed from, the board (CGLAB-383).
+  | 'passkey.enrolled'
+  | 'passkey.removed'
+  // A person's approval of a command check's exact argv for a project (efcacdeb).
+  | 'command.approved'
   | 'comment.added'
   | 'test.logged'
   // Legacy inbound-only event. Spokes no longer emit this, and Hub skips it

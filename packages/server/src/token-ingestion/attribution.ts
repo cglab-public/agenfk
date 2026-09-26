@@ -1,14 +1,19 @@
+import { isBoundaryStep } from '@agenfk/core';
 import type { AgEnFKItem } from '@agenfk/core';
 
 interface MinimalFlow {
-  steps: Array<{ name: string; isAnchor?: boolean }>;
+  steps: Array<{ name: string; isAnchor?: boolean; isSpecial?: boolean }>;
 }
 
 const INACTIVE_STATUSES = new Set(['BLOCKED', 'PAUSED', 'TRASHED', 'ARCHIVED', 'IDEAS']);
 
 function activeStatusSet(flow: MinimalFlow | null): (status: string) => boolean {
+  // Shares core's predicate rather than re-deriving it. A flow authored through
+  // `agenfk flow create` marks boundary steps with isSpecial and never isAnchor,
+  // so an isAnchor-only filter yields an EMPTY anchor set there and token usage
+  // gets attributed to items sitting in the terminal step.
   const anchors = new Set(
-    flow ? flow.steps.filter((s) => s.isAnchor).map((s) => s.name.toUpperCase()) : ['TODO', 'DONE'],
+    flow ? flow.steps.filter(isBoundaryStep).map((s) => s.name.toUpperCase()) : ['TODO', 'DONE'],
   );
   return (status: string) => {
     const u = status.toUpperCase();

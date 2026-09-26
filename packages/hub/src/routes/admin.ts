@@ -5,7 +5,7 @@ import { issueApiKey } from '../auth/apiKey.js';
 import { encryptSecret } from '../crypto.js';
 import { createPasswordUser, hashPassword } from '../auth/password.js';
 import { randomUUID } from 'crypto';
-import { DEFAULT_FLOW } from '@agenfk/core';
+import { DEFAULT_FLOW, describeFlowContract, mergeStepContracts, registryInstallSteps, flowChecksErrors } from '@agenfk/core';
 import { getAgenfkReleases, resetAgenfkReleaseCache } from '../services/githubReleases.js';
 import { compareSemver } from '../util/semver.js';
 import { isOnboardingKeyLabel } from '../util/keyLabel.js';
@@ -16,7 +16,7 @@ import { recomputeRollups } from '../rollup.js';
 import { loadModelMeta, isLicenseClass, isHarnessName } from '../util/modelMeta.js';
 import { liveIdentityBlockers, blockersFor } from '../util/mergeLiveness.js';
 import { loadAliasMap, resolveAliasKey, canonicaliseSourceKey } from '../util/userKeyAlias.js';
-import { rateLimit } from '../util/rateLimit.js';
+import { rateLimit, sessionUserKey } from '../util/rateLimit.js';
 import { mintChildHubInvite } from './federation.js';
 import { parentUrlFromInviteToken, inviteExpiryFromToken } from '../auth/inviteToken.js';
 import { toChildHubDto, validChildHubName, isoOrNull, MAX_CHILD_HUB_NAME_LEN } from '../util/childHubRow.js';
@@ -28,7 +28,7 @@ import { outboxDepth } from '../services/federation/federationSync.js';
 import { releaseParentFlows } from '../services/federation/parentFlows.js';
 import { effectiveIdentityPolicy } from '../services/federation/forwarding.js';
 import { httpFederationClient, type FederationClient } from '../services/federation/federationClient.js';
-import { publicHubUrl } from '../util/publicUrl.js';
+import { publicHubUrl, requestOrigin } from '../util/publicUrl.js';
 import { loadModelMappings } from '../util/modelMapping.js';
 import { asyncRoute } from '../util/asyncRoute.js';
 import {
@@ -44,6 +44,8 @@ import {
   ghHeaders,
   listRegistryFiles,
 } from '../services/flowRegistry.js';
+import { listRegistryPulls } from '../services/registryPulls.js';
+import { purgeRevokedJiraConnections } from '../services/jira.js';
 
 /**
  * Hosts a repoint campaign may never target. Every installation in the org
@@ -103,7 +105,9 @@ export function adminRouter(ctx: HubServerContext): Router {
 
   // Admin routes are session-guarded, but several mutate state or run wide
   // queries, so bound them too rather than relying on the guard alone.
-  router.use(rateLimit({ windowMs: 60 * 1000, max: 300, message: 'Too many requests, slow down.' }));
+  // Keyed by the signed-in user, not the address: the hub is reached through
+  // shared corporate egress, and an IP bucket would be an office-wide cap.
+  router.use(rateLimit({ windowMs: 60 * 1000, max: 300, keyFn: sessionUserKey(ctx.config.sessionSecret), message: 'Too many requests, slow down.' }));
   const guard = requireAdmin(ctx.config.sessionSecret);
 
   // ── Auth config ──────────────────────────────────────────────────────────
@@ -222,6 +226,8 @@ export function adminRouter(ctx: HubServerContext): Router {
       "UPDATE api_keys SET revoked_at = datetime('now') WHERE org_id = ? AND token_hash LIKE ? AND revoked_at IS NULL",
       [req.session!.orgId, `${preview}%`],
     );
+    // A revoked key's JIRA token must not outlive it (CGLAB-412).
+    await purgeRevokedJiraConnections(ctx.db, req.session!.orgId);
     res.json({ revoked: result.changes });
   }));
 
@@ -281,6 +287,7 @@ export function adminRouter(ctx: HubServerContext): Router {
         [orgId, orgId, userKey],
       );
       revokedApiKeys = r.changes;
+      await purgeRevokedJiraConnections(ctx.db, orgId);
     });
 
     res.status(201).json({ userKey, revokedApiKeys });
@@ -1228,6 +1235,7 @@ export function adminRouter(ctx: HubServerContext): Router {
         [orgId, id],
       );
       revokedApiKeys = revoked.changes;
+      await purgeRevokedJiraConnections(ctx.db, orgId);
       // Only in-flight work is cancelled; a finished target keeps its verdict.
       const cancelled = await ctx.db.run(
         `UPDATE upgrade_directive_targets
@@ -1440,6 +1448,12 @@ export function adminRouter(ctx: HubServerContext): Router {
     res.status(201).json(presentFlow(row!));
   }));
 
+  // CGLAB-384: what a draft's steps mean, for the flow editor. Declared
+  // before /flows/:id; computed with the core functions that validate it.
+  router.post('/flows/contract', guard, (req: Request, res: Response) => {
+    res.json(describeFlowContract(req.body?.steps));
+  });
+
   router.get('/flows/:id', guard, asyncRoute(async (req: Request, res: Response) => {
     const row = await ctx.db.get<FlowRow>(
       'SELECT * FROM flows WHERE id = ? AND org_id = ?',
@@ -1456,7 +1470,14 @@ export function adminRouter(ctx: HubServerContext): Router {
     );
     if (!existing) return res.status(404).json({ error: 'Flow not found' });
     if (parentOwned(existing)) return res.status(409).json({ error: PARENT_FLOW_LOCKED });
-    const definition = req.body?.definition;
+    let definition = req.body?.definition;
+    // CGLAB-380: a step that omits role/checks keeps the stored ones, so an
+    // older hub-ui never wipes a contract. Validated after the merge.
+    if (definition && typeof definition === 'object' && Array.isArray(definition.steps)) {
+      let stored: any[] | undefined;
+      try { stored = JSON.parse(existing.definition_json)?.steps; } catch { stored = undefined; }
+      definition = { ...definition, steps: mergeStepContracts(definition.steps, stored) };
+    }
     const err = validateDefinition(definition);
     if (err) return res.status(400).json({ error: err });
     await ctx.db.run(
@@ -1700,6 +1721,44 @@ export function adminRouter(ctx: HubServerContext): Router {
     res.json({ copied: copy.copied, skipped: copy.skipped, failed: copy.failed, truncated: copy.truncated });
   }));
 
+  // ── Open pull requests on the org's registry (CGLAB-368) ─────────────
+  // What installations have published (CGLAB-367) and is waiting for review.
+  // Read-only here: every entry links to GitHub, where review and merge
+  // happen. An org still on the public community registry has no repo of its
+  // own to review, so it is told so rather than shown every community PR.
+  router.get('/registry/pulls', guard, asyncRoute(async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const cfg = await getRegistryConfig(ctx.db, orgId);
+    if (cfg.isPublic) {
+      res.json({ repo: cfg.repo, branch: cfg.branch, isPublic: true, pulls: [] });
+      return;
+    }
+    let token: string | null;
+    try {
+      token = await registryToken(ctx.db, orgId, ctx.config.secretKey);
+    } catch {
+      // A rotated hub secret leaves a stored token that cannot be read.
+      res.status(409).json({ error: `the stored GitHub token for ${cfg.repo} cannot be decrypted; re-enter it in Admin > Flows`, repo: cfg.repo });
+      return;
+    }
+    if (!token) {
+      res.status(409).json({ error: `no GitHub token is stored for the org registry ${cfg.repo}`, repo: cfg.repo });
+      return;
+    }
+    const listed = await listRegistryPulls(fetch, cfg.repo, cfg.branch, token);
+    if (!listed.ok) {
+      // Never 200-with-empty: "nothing to review" is a claim, and a failure
+      // must not make it.
+      res.status(502).json({ error: listed.error, repo: cfg.repo });
+      return;
+    }
+    res.json({
+      repo: cfg.repo, branch: cfg.branch, isPublic: false, pulls: listed.pulls,
+      truncated: listed.truncated, allUrl: `https://github.com/${cfg.repo}/pulls`,
+    });
+  }));
+
+
   router.get('/registry/flows', guard, asyncRoute(async (req: Request, res: Response) => {
     const resolved = await resolveRegistrySource(
       ctx.db, req.session!.orgId, ctx.config.secretKey, req.query?.source,
@@ -1759,29 +1818,18 @@ export function adminRouter(ctx: HubServerContext): Router {
       const rawContent = Buffer.from(fileInfo.content, 'base64').toString('utf8');
       const flowData = JSON.parse(rawContent);
 
-      // Normalise step shape: drop anchors and add fresh ones (matches local
-      // server's /registry/flows/install transform, so installed flows behave
-      // identically wherever they land).
-      const rawSteps: any[] = Array.isArray(flowData.steps) ? flowData.steps : [];
-      const middle = rawSteps
-        .filter((s: any) => !s.isAnchor && s.name?.toUpperCase() !== 'TODO' && s.name?.toUpperCase() !== 'DONE')
-        .map((s: any, i: number) => ({
-          id: randomUUID(),
-          name: s.name ?? `step-${i}`,
-          label: s.label ?? s.name ?? `Step ${i + 1}`,
-          order: i + 1,
-          exitCriteria: s.exitCriteria ?? '',
-          isSpecial: s.isSpecial ?? false,
-        }));
-      const steps = [
-        { id: randomUUID(), name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
-        ...middle,
-        { id: randomUUID(), name: 'DONE', label: 'Done', order: middle.length + 1, exitCriteria: '', isAnchor: true },
-      ];
+      // Fresh anchors, each step's contract kept: the same transform as the
+      // local server's /registry/flows/install, so installed flows behave
+      // identically wherever they land. An invalid contract is refused whole.
+      const steps = registryInstallSteps(flowData.steps, randomUUID);
+      const contractErrors = flowChecksErrors(steps);
+      if (contractErrors.length) return res.status(422).json({ error: `The registry flow cannot be installed: ${contractErrors.join(' ')}` });
       const definition = {
         name: flowData.name ?? filename.replace('.json', ''),
         description: flowData.description ?? '',
         steps,
+        // 281adef0: where the flow runs the suite travels with it.
+        ...(flowData.verifyAt === 'parent' ? { verifyAt: 'parent' } : {}),
       };
 
       const id = randomUUID();
@@ -1887,7 +1935,15 @@ export function adminRouter(ctx: HubServerContext): Router {
       return res.status(503).json({ error: `Could not fetch release list: ${e?.message ?? e}` });
     }
 
-    const versionRows = await ctx.db.all<{ agenfk_version: string }>(
+    // ?unfiltered=1 skips the fleet floor. The floor is the oldest version
+    // among THIS org's own installations, which is the right bound for the
+    // fleet form and the wrong one for a group upgrade: a parent never sees a
+    // child's installations, so its own floor says nothing about theirs, and
+    // a parent whose own fleet is on the newest release could otherwise not
+    // pin children to anything older (CGLAB-360). POST /upgrade-dispatches
+    // only requires the release to exist.
+    const unfiltered = req.query.unfiltered === '1' || req.query.unfiltered === 'true';
+    const versionRows = unfiltered ? [] : await ctx.db.all<{ agenfk_version: string }>(
       `SELECT agenfk_version FROM installations
         WHERE org_id = ? AND agenfk_version IS NOT NULL AND agenfk_version <> ''`,
       [orgId],
@@ -2727,6 +2783,11 @@ export function adminRouter(ctx: HubServerContext): Router {
    * would turn this route into a readout for whatever it was pointed at.
    */
   const parentError = (err: unknown): { status: number; error: string } => {
+    // The DNS guard's refusal is this hub's own sentence, not upstream content,
+    // and it names the fix; "could not be reached" would hide it (CGLAB-371).
+    if ((err as any)?.code === 'EPRIVATEADDR' && typeof (err as any)?.message === 'string') {
+      return { status: 400, error: (err as any).message };
+    }
     const status = (err as any)?.response?.status;
     const fromParent = (err as any)?.response?.data?.error;
     const looksLikeHub = typeof fromParent === 'string' && fromParent.length > 0 && fromParent.length <= 200
@@ -2771,11 +2832,14 @@ export function adminRouter(ctx: HubServerContext): Router {
         res.status(400).json({ error: (err as Error).message });
         return;
       }
-      // A footgun guard, not a control: publicHubUrl comes from proxy headers,
-      // so an admin typing a loopback address or a different scheme walks past
-      // it. It catches the obvious paste, which is what it is for.
+      // A footgun guard, not a control: an admin typing a loopback address or a
+      // different scheme walks past it. It catches the obvious paste, which is
+      // what it is for - including this hub's OTHER name: a hub served on two
+      // hostnames is the same hub under either, whichever one
+      // AGENFK_HUB_PUBLIC_URL calls canonical.
       try {
-        if (parentUrl === assertHttpUrl(publicHubUrl(req), { allowPrivate: true })) {
+        const selves = [publicHubUrl(req), requestOrigin(req)].map(u => assertHttpUrl(u, { allowPrivate: true }));
+        if (selves.includes(parentUrl)) {
           res.status(400).json({ error: 'a hub cannot enrol with itself as its own parent' });
           return;
         }

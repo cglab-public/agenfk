@@ -131,3 +131,73 @@ describe('JiraConnectionButton', () => {
     expect(await screen.findByTestId('jira-loading')).toBeDefined();
   });
 });
+
+/**
+ * A hub-joined installation (CGLAB-412): the hub admin configures the org's
+ * Atlassian app; each user connects their OWN JIRA from the board, through
+ * the hub. So Connect and Disconnect work as locally - the server routes them
+ * via the hub - and only a hub with no app at all sends the user to an admin.
+ */
+describe('JiraConnectionButton on a hub-joined installation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.history.replaceState({}, '', '/');
+  });
+  afterEach(() => cleanup());
+
+  it('shows the user\'s connection through the hub, with a Disconnect control', async () => {
+    vi.mocked(api.getJiraStatus).mockResolvedValue({
+      source: 'hub', configured: true, connected: true, cloudUrl: 'https://acme.atlassian.net', email: 'alice@acme.test',
+    });
+    render(<JiraConnectionButton />, { wrapper: wrapper(makeQueryClient()) });
+    const chip = await screen.findByTestId('jira-connected');
+    expect(chip.textContent).toContain('JIRA');
+    expect(chip.getAttribute('title') ?? '').toMatch(/hub/i);
+    expect(chip.getAttribute('title') ?? '').toContain('alice@acme.test');
+    expect(screen.getByLabelText('Disconnect JIRA')).toBeDefined();
+  });
+
+  it('with no JIRA app on the hub, says to ask a hub admin and offers no Connect', async () => {
+    vi.mocked(api.getJiraStatus).mockResolvedValue({ source: 'hub', configured: false, connected: false });
+    render(<JiraConnectionButton />, { wrapper: wrapper(makeQueryClient()) });
+    const btn = await screen.findByTestId('jira-hub-unconnected');
+    expect((btn as HTMLButtonElement).disabled).toBe(true);
+    expect((btn as HTMLButtonElement).title).toMatch(/hub admin/i);
+    expect((btn as HTMLButtonElement).title).not.toContain('agenfk jira setup');
+    expect(screen.queryByTestId('jira-connect')).toBeNull();
+  });
+
+  it('a rejected hub key points at hub login rather than a hub admin', async () => {
+    vi.mocked(api.getJiraStatus).mockResolvedValue({ source: 'hub', configured: false, connected: false, reason: 'hub_auth_failed' });
+    render(<JiraConnectionButton />, { wrapper: wrapper(makeQueryClient()) });
+    const btn = await screen.findByTestId('jira-hub-unconnected');
+    expect((btn as HTMLButtonElement).title).toContain('agenfk hub login');
+  });
+
+  it('with the hub app there but no connection yet, offers Connect JIRA (routed through the hub)', async () => {
+    vi.mocked(api.getJiraStatus).mockResolvedValue({ source: 'hub', configured: true, connected: false });
+    render(<JiraConnectionButton />, { wrapper: wrapper(makeQueryClient()) });
+    expect(await screen.findByTestId('jira-connect')).toBeDefined();
+    expect(screen.queryByTestId('jira-hub-unconnected')).toBeNull();
+  });
+
+  it('gives every hub callback reason a sentence, never the raw code', async () => {
+    vi.mocked(api.getJiraStatus).mockResolvedValue({ source: 'hub', configured: true, connected: false });
+    for (const reason of ['no_accessible_site', 'missing_code', 'not_configured', 'jira_unreachable', 'key_not_personal']) {
+      window.history.replaceState({}, '', `/?jira=error&reason=${reason}`);
+      const { unmount } = render(<JiraConnectionButton />, { wrapper: wrapper(makeQueryClient()) });
+      const toast = await screen.findByTestId('jira-toast');
+      expect(toast.textContent, reason).not.toContain(reason);
+      unmount();
+    }
+  });
+
+  it('explains hub-specific connect failures from the callback', async () => {
+    vi.mocked(api.getJiraStatus).mockResolvedValue({ source: 'hub', configured: true, connected: false });
+    window.history.replaceState({}, '', '/?jira=error&reason=completion_key_mismatch');
+    render(<JiraConnectionButton />, { wrapper: wrapper(makeQueryClient()) });
+    const toast = await screen.findByTestId('jira-toast');
+    expect(toast.textContent).toMatch(/different installation|start again/i);
+    expect(toast.textContent).not.toContain('completion_key_mismatch');
+  });
+});

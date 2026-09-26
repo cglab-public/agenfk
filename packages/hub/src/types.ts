@@ -6,6 +6,19 @@ export interface HubServerConfig {
   sessionSecret: string;      // HMAC key for session JWTs
   defaultOrgId: string;       // single-tenant v1: one org per hub deployment
   /**
+   * Express `trust proxy`: how many reverse proxies stand in front of the hub
+   * (a hop count), or which addresses are proxies (a CIDR/`loopback` list).
+   * Decides which X-Forwarded-For hop is the client, and so which bucket every
+   * rate limit charges. 0 = exposed directly. Defaults to 1 (see configFromEnv).
+   */
+  trustProxy?: number | string;
+  /**
+   * AGENFK_HUB_PUBLIC_URL, reduced to an origin: the URL handed to others
+   * (invites, device-code links, hubUrl). OAuth callbacks deliberately do not
+   * use it - they return to the host the user is browsing.
+   */
+  publicUrl?: string;
+  /**
    * Validates that a given agenfk version actually exists as a published
    * release. Used by the fleet-upgrade-directive admin POST so we never fan
    * out a directive that no installation can resolve. Defaults to a GitHub

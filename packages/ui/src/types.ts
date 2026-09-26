@@ -83,6 +83,9 @@ export interface FlowStep {
   isAnchor?: boolean;     // True for TODO (first) and DONE (last) — cannot be deleted or reordered
   /** @deprecated Use isAnchor instead. Kept for backwards compatibility. */
   isSpecial?: boolean;
+  /** CGLAB-380: what the step is for, and the checks this flow adds to it. */
+  role?: string | null;
+  checks?: Array<{ id: string; params?: Record<string, string>; severity?: 'block' | 'warn' }> | null;
 }
 
 export interface Flow {
@@ -96,7 +99,7 @@ export interface Flow {
   // Ownership. The server sets 'hub' for flows synced from the org's Hub and
   // refuses local mutation of them; the UI must present those as read-only
   // (BUG 269eeec8 (b)). Absent on older payloads, so treat undefined as local.
-  source?: 'local' | 'hub' | 'community';
+  source?: 'local' | 'hub' | 'community' | 'parent';
   hubFlowId?: string;
 }
 
@@ -110,7 +113,26 @@ export interface RegistryFlow {
   steps?: { name: string; label: string }[];
 }
 
+/**
+ * A verify running on the card right now (9569b4d7). Derived by the server from
+ * its live runs at response time, never stored: after a restart there is none.
+ */
+export interface ActiveRun {
+  runId: string;
+  step: string;
+  startedAt: string;
+}
+
+/** The run's latest output, as the board reads it while the run lasts. */
+export interface ActiveRunOutput extends ActiveRun {
+  output: string;
+}
+
 export interface AgEnFKItem {
+  /** A verify running on this card right now (9569b4d7). */
+  activeRun?: ActiveRun;
+  /** Which agent works this card. Lives on the item, not in localStorage. */
+  agentId?: string;
   id: string;
   projectId: string;
   type: ItemType;

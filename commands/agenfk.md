@@ -23,7 +23,7 @@ Identify the user's request and follow the **Standard Mode** protocol below. You
 When child items of the same parent share the same source code (same branch/workspace), a single `agenfk verify` call validates the code for **all** siblings:
 
 - After `agenfk verify` passes on **one** sibling, advance each remaining sibling with its own `agenfk verify <id> --evidence "<text>"` call. The server's sibling propagation skips the build and test execution and passes immediately, so this is cheap — but it still records evidence and still goes through the gate.
-- Never shortcut a sibling forward with `agenfk update <id> --status <step>`. The server permits a one-step forward move, so that write succeeds and advances the item with no evidence and no exit-criteria check. `agenfk update --status` is for backward/rollback moves only.
+- Never try to shortcut a sibling forward with `agenfk update <id> --status <step>`. The server refuses forward moves there and names `agenfk verify`; `agenfk update --status` is for backward/rollback moves only.
 
 This avoids redundant build and test runs when the underlying code changes are shared.
 
@@ -78,12 +78,12 @@ Before creating any item, evaluate the request against these signals:
    - Run `git status` to check for uncommitted or modified files. If the working tree is dirty, **STOP** and ask the user how to proceed (stash, commit, or discard). Never start new work on a dirty working tree.
    - Run `git branch --show-current` to check the current branch.
    - If you are NOT on `main` (or `master`), and the current branch does NOT belong to the item you're about to resume, run `git checkout main` (or `master`).
-   - Run `git pull` to ensure you have the latest upstream changes.
+   - Run `git pull` to ensure you have the latest upstream changes - also when RESUMING an existing card, in the tree it works in (its worktree, else the project root). The `backlog` role's `tree-in-sync` check refuses a card leaving the backlog from a tree behind or diverged from its remote.
    - This prevents new feature branches from being based on stale/unrelated branches and avoids carrying uncommitted changes into new work.
 1. Resolve the current project id by running `agenfk current-project` (it walks up from the cwd to the nearest `.agenfk/project.json`). Use the printed id as `<projectId>` in every command below. If it errors, the directory is not initialized — run `agenfk list-projects --json` and ask the user whether to link an existing project or create a new one (per the base agenfk skill's Initialization procedure) before continuing. Never auto-create a project without asking.
 2. Identify the item to work on:
    - **If the user named a specific item id** (e.g. "work on `dd9658a6-…`"), load it directly with `agenfk get <id> --json` and resume that item. Do **not** try to read a file named `<id>.json` — items live in the AgEnFK server, not on disk; `agenfk get <id> --json` is the only way to fetch one.
-   - **Otherwise**, run `agenfk list --project <projectId> --active --json` to check for an item already in an active working step. `--active` returns only in-flight items (excludes TODO/DONE and PAUSED/BLOCKED/terminal) — a much smaller list than all items, so your context stays lean as the board fills. If one exists, resume it. If none exists, create a new item with `agenfk create <TYPE> "<title>" --project <id>` (using the type determined in Step 0), then run `agenfk verify <id> --evidence "Starting task, advancing from TODO"` to advance from TODO to the coding step.
+   - **Otherwise**, run `agenfk list --project <projectId> --active --json` to check for an item already in an active working step. `--active` returns only in-flight items (excludes TODO/DONE and PAUSED/BLOCKED/terminal) — a much smaller list than all items, so your context stays lean as the board fills. If one exists, resume it. If none exists, create a new item with `agenfk create <TYPE> "<title>" --project <id>` (using the type determined in Step 0), then run `agenfk verify <id> --evidence "Starting task, advancing from TODO"` to advance from TODO to the first working step.
 3. Run `agenfk flow show --project <projectId> --json` to load the **full flow with all steps and their exit criteria**. Read it carefully — this is your workflow contract for the session. Each step's exit criteria is your mandatory work definition before running `agenfk verify` again.
 4. Run `agenfk gatekeeper --intent "<intent>" --item-id <itemId>` before making any file changes.
 5. **Branch verification** — after gatekeeper authorization, run `git branch --show-current` and confirm you are on the correct branch for this work. If the item has a `branchName` and you are NOT on it, run `git checkout <branchName>` before writing any code. **Never code on the wrong branch.**
@@ -102,7 +102,7 @@ defines none, so this is the common case — empty criteria never mean "no work"
 1. **Read the step you are actually on.** Run `agenfk gatekeeper --intent "<intent>" --item-id <itemId>`.
    It authorizes the edit and reports everything you need: the step the item is currently on,
    that step's **exit criteria**, the **active flow's steps**, and — resolved for you, so you
-   never derive them — which step is the **coding step** and which is the **final step**.
+   never derive them — which step is the **first working step** and which is the **final step**.
 
    Read its verdict on the criteria carefully, because three cases look similar and mean
    different things:
@@ -123,7 +123,7 @@ defines none, so this is the common case — empty criteria never mean "no work"
    criteria, use the step's position in the flow, per the defaults below.
 
 2. **Do the work this step calls for.** Follow the criteria if there are any. If there are
-   none, default by position: on the **coding step**, explore the codebase and understand the
+   none, default by position: on the **first working step**, explore the codebase and understand the
    context, then implement the change; on the **final step**, get the project's test suite
    green; on any **other** step, verify what the previous steps produced — at minimum satisfy
    step 3 and step 4 below. Along the way:
@@ -163,20 +163,25 @@ defines none, so this is the common case — empty criteria never mean "no work"
 
 6. **Advance the gate.** Run `agenfk verify <itemId> --evidence "<how you satisfied THIS step's exit criteria>" ["<command>"]`.
    The evidence is mandatory and must be concrete. This is the only way to move forward —
-   never use `agenfk update --status` to advance, because the server permits a one-step forward
-   move, so that write succeeds and advances the item with no evidence and no criteria check.
-   - On the **final step** (identified in step 1), **omit the command** — this runs the
-     project's `verifyCommand` and lands DONE. This is the *only* step where omitting the
-     command substitutes `verifyCommand`.
-   - On every **other** step, pass a **build/compile command** for the project's stack
-     (e.g. `npm run build`, `cargo build`, `go build ./...`).
+   `agenfk update --status` cannot advance: the server refuses forward moves there, and refuses
+   the flow's exit step to everyone. The only forward move outside verify is a person dragging a
+   card one step on the board, and each one is recorded on the card as made without evidence.
+   - On the **final step** (identified in step 1), **omit the command** — the server runs the
+     project's `verifyCommand` and lands DONE. A command you pass here is ignored (the reply
+     says so): on the final step, and on any boundary step, only the project's command runs.
+   - On every **other** step the command is **optional**. Pass one only when the step's
+     criteria call for it (a build or type-check is the usual fit on a compiled stack). Never
+     pass the test runner on a step whose criteria expect red tests — a TDD "write the failing
+     tests" step ends red by design, and that is not a failure. Omitting the command advances
+     on your evidence alone; that is the intended path, not a gap.
    - **Success, and the step you advanced into is `DONE`**: you are finished looping. Skip to
      the branch push below.
    - **Success, otherwise**: the item advanced. Go back to **step 1** — the new step has its
      own criteria and its own bar.
-   - **Failure**: the item is rolled back to the flow's coding step. Go back to **step 1** to
-     re-read where you now are, then fix and work forward again. Do not carry the previous
-     step's criteria into the coding step.
+   - **Failure** (the command exited non-zero): the advance is **refused** and the item stays
+     on its current step — nothing is rolled back. Fix what failed and verify again from the
+     same step. The response's last line always names the step the item is now on; read it
+     rather than assuming, and never truncate that output with `| tail`.
    - Do NOT set `DONE` directly by any route — not `agenfk update <id> --status DONE`, not the
      equivalent MCP call. `agenfk verify` on the final step is the only legitimate way in.
 
@@ -195,6 +200,8 @@ defines none, so this is the common case — empty criteria never mean "no work"
    3. Persist it: `agenfk update-project <id> --verify-command "<detected>"`.
    4. Retry `agenfk verify <itemId> --evidence "<evidence>"`.
    5. Only if no config files exist and the stack cannot be detected, ask the developer.
+
+   If verify reports `NO_TEST_REPORT`, per-test results the project does not record are needed - by the step's checks, or by the step the card is entering (its baseline is recorded on the way in) - and that is yours to fix, not a person's to override: run the `agenfk update-project` command the refusal gives (built from the project's own verify command), add the report path to `.gitignore` if the refusal says it is not ignored, and run the same verify again. Where it gives no command, set a report for the project's runner yourself (`vitest-json`, or `junit-xml` from any runner that writes JUnit XML); only a runner that can write neither is a reason to ask a person to pass the check on the board. A project with several suites names every report: `--test-report-path a.xml,b.xml` (read as one run; a report the command did not write is named). The report, and the directory it is written into when that is plainly a report directory (a dot-directory or one named for reports, holding no tracked file and outside the declared test paths), is agenfk's own: its checks never count it as the card's change. If verify reports `CAPTURE_UNUSABLE`, the run taken as the next step's baseline could not be used (the refusal says why): fix that and verify again - it is yours, not a person's to override.
 
 **Stage this item's work before that final verify.** The DONE transition makes a
 `close(<type>)` commit of whatever is in the git index, and the server stages nothing for
@@ -219,8 +226,8 @@ placeholders deliberately: substitute the real step names from the flow you load
 
 | Pass | Step you are on | What you do | How you advance |
 |------|-----------------|-------------|-----------------|
-| 1 | `<coding step>` — first non-anchor step | Explore, then implement (step 2 default), then review it (step 3 floor) | `agenfk verify <id> --evidence "..." "<build command>"` |
-| n | any middle step | Whatever its criteria say; review it if they are silent | `agenfk verify <id> --evidence "..." "<build command>"` |
+| 1 | `<first working step>` — first non-anchor step | Explore, then implement (step 2 default), then review it (step 3 floor) | `agenfk verify <id> --evidence "..."` — command optional; a build check if the criteria want one |
+| n | any middle step | Whatever its criteria say; review it if they are silent | `agenfk verify <id> --evidence "..."` — command optional; never the test runner on a red-tests step |
 | last | `<final step>` — last step before `DONE` | Suite green, criteria met | `agenfk verify <id> --evidence "..."` — **no command**, uses `verifyCommand` → **DONE** |
 
 The number of passes equals the number of working steps in your flow, not three. A flow whose
@@ -237,4 +244,4 @@ which is exactly why the position-based defaults in steps 2 and 3 exist.
 3. After the item has been moved to `DONE`, you **MUST** ask the user what they would like to do next, providing exactly these three options:
     - **Release**: Cut a release following the project's own release process (release command, CI pipeline, or manual tag + GitHub release).
     - **New Task**: Start a new session for a new task, epic, or bug (by calling `/clear` followed by `/agenfk`).
-    - **Continue Current**: Keep working on the current item (you MUST then ask what else should be included, then roll the item back to the flow's coding step with `agenfk update <id> --status <step>` — a backward move, which is what `update --status` is for).
+    - **Continue Current**: Keep working on the current item (you MUST then ask what else should be included, then roll the item back to the flow's first working step with `agenfk update <id> --status <step>` — a backward move, which is what `update --status` is for).

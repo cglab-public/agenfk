@@ -1,10 +1,12 @@
 import { Router, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
+import { registryInstallSteps } from '@agenfk/core';
 import { HubServerContext } from '../server.js';
 import { requireApiKey } from '../auth/apiKey.js';
 import { resolveEffectiveFlow } from '../services/flowResolution.js';
 import { sanitizeRemoteUrl } from '../util/remoteUrl.js';
-import { resolveRegistryRead, ghHeaders, listRegistryFiles } from '../services/flowRegistry.js';
+import { resolveRegistryRead, ghHeaders, listRegistryFiles, getRegistryConfig, registryToken, publishFlowPullRequest, slugify } from '../services/flowRegistry.js';
+import { rateLimit, clientIp } from '../util/rateLimit.js';
 import { asyncRoute } from '../util/asyncRoute.js';
 
 /**
@@ -144,27 +146,94 @@ export function flowsRouter(ctx: HubServerContext): Router {
       const fileInfo: any = await r.json();
       const raw = Buffer.from(fileInfo.content, 'base64').toString('utf8');
       const flowData = JSON.parse(raw);
-      // Normalise exactly as the hub admin install does, so a flow behaves the
-      // same however it arrived.
-      const rawSteps: any[] = Array.isArray(flowData.steps) ? flowData.steps : [];
-      const middle = rawSteps
-        .filter((s: any) => !s.isAnchor && s.name?.toUpperCase() !== 'TODO' && s.name?.toUpperCase() !== 'DONE')
-        .map((s: any, i: number) => ({
-          id: randomUUID(),
-          name: (typeof s.name === 'string' && s.name.trim()) ? s.name : `step-${i}`,
-          label: (typeof s.label === 'string' && s.label.trim()) ? s.label : ((typeof s.name === 'string' && s.name.trim()) ? s.name : `Step ${i + 1}`),
-          order: i + 1,
-          exitCriteria: s.exitCriteria ?? '',
-          isSpecial: s.isSpecial ?? false,
-        }));
-      const steps = [
-        { id: randomUUID(), name: 'TODO', label: 'To Do', order: 0, exitCriteria: '', isAnchor: true },
-        ...middle,
-        { id: randomUUID(), name: 'DONE', label: 'Done', order: middle.length + 1, exitCriteria: '', isAnchor: true },
-      ];
-      res.json({ repo, flow: { name: flowData.name ?? filename.replace('.json', ''), description: flowData.description ?? '', steps } });
+      // Normalise exactly as the hub admin install and the local server do, so
+      // a flow behaves the same however it arrived, contract included.
+      const steps = registryInstallSteps(flowData.steps, randomUUID);
+      res.json({ repo, flow: { name: flowData.name ?? filename.replace('.json', ''), description: flowData.description ?? '', steps, ...(flowData.verifyAt === 'parent' ? { verifyAt: 'parent' } : {}) } });
     } catch (e: any) {
       res.status(502).json({ error: 'Failed to install flow', detail: e?.message });
+    }
+  }));
+
+  // Publish a flow from an installation to the ORG's registry, as a pull
+  // request the admin reviews on GitHub (CGLAB-367). The local server used to
+  // push to the public community repo with the laptop's own gh login; an org
+  // on a private registry now publishes the same way it browses - through the
+  // hub, which holds the token. The target repo comes ONLY from the org's
+  // config: a repo named in the body is ignored, never honoured.
+  //
+  // Rate-limited per api key: every call creates a branch and a PR on the
+  // org's repository.
+  const publishRateLimit = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 30,
+    keyFn: (req) => req.hubApiKey?.tokenHash ?? clientIp(req),
+    message: 'Too many publish requests, slow down.',
+  });
+  // And per ORG: N laptops would otherwise get N times the budget against one
+  // repository.
+  const publishOrgRateLimit = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 100,
+    keyFn: (req) => `org:${req.hubApiKey?.orgId ?? clientIp(req)}`,
+    message: 'Too many publish requests for this organisation, slow down.',
+  });
+  router.post('/registry/flows/publish', requireKey, publishRateLimit, publishOrgRateLimit, asyncRoute(async (req: Request, res: Response) => {
+    const orgId = req.hubApiKey!.orgId;
+    const flow = req.body?.flow;
+    if (!flow || typeof flow !== 'object') return res.status(400).json({ error: 'flow is required' });
+    // Bounded before anything reaches GitHub: the name becomes a branch and a
+    // path, and GitHub caps a PR body at 65,536 characters.
+    if (typeof flow.name !== 'string' || !slugify(flow.name) || flow.name.length > 100) {
+      return res.status(400).json({ error: 'flow.name must be 1-100 characters and contain at least one letter or digit' });
+    }
+    if (flow.description !== undefined && flow.description !== null
+      && (typeof flow.description !== 'string' || flow.description.length > 2000)) {
+      return res.status(400).json({ error: 'flow.description must be a string of at most 2000 characters' });
+    }
+    if (flow.version !== undefined && flow.version !== null
+      && (typeof flow.version !== 'string' || flow.version.length > 50)) {
+      return res.status(400).json({ error: 'flow.version must be a string of at most 50 characters' });
+    }
+    const tooLong = (v: unknown, max: number) => v !== undefined && v !== null && (typeof v !== 'string' || v.length > max);
+    if (!Array.isArray(flow.steps) || flow.steps.length > 200
+      || flow.steps.some((st: any) => !st || typeof st !== 'object' || typeof st.name !== 'string'
+        || !st.name.trim() || st.name.length > 100
+        || tooLong(st.label, 200) || tooLong(st.exitCriteria, 10000))) {
+      return res.status(400).json({
+        error: 'flow.steps must be at most 200 steps, each with a name of 1-100 characters, '
+          + 'a label of at most 200 and exit criteria of at most 10000',
+      });
+    }
+    // Shown in the PR and credited in the file; reported by the installation,
+    // not verified, and labelled so. Control characters and length are bounded.
+    const reported = typeof req.body?.publisher === 'string' ? req.body.publisher : '';
+    const publisher = reported.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 200) || 'unknown';
+
+    const cfg = await getRegistryConfig(ctx.db, orgId);
+    if (cfg.isPublic) {
+      return res.status(409).json({
+        error: 'this org uses the public community registry; the hub does not write there. '
+          + 'Publish from the installation, which opens the pull request with its own GitHub login.',
+        public: true,
+        repo: cfg.repo,
+      });
+    }
+    const token = await registryToken(ctx.db, orgId, ctx.config.secretKey);
+    if (!token) {
+      return res.status(409).json({ error: `no GitHub token is stored for the org registry ${cfg.repo}; an admin must set one in Admin > Flows`, repo: cfg.repo });
+    }
+    try {
+      const result = await publishFlowPullRequest(fetch, {
+        repo: cfg.repo, branch: cfg.branch, token, flow, publisher,
+        // The one attribution the hub itself can vouch for.
+        installationId: req.hubApiKey!.installationId ?? null,
+        allowContractRemoval: req.body?.allowContractRemoval === true,
+      });
+      if (result.kind === 'error') return res.status(result.status).json({ error: result.error, repo: cfg.repo });
+      res.json(result);
+    } catch (e: any) {
+      res.status(502).json({ error: `Failed to publish to ${cfg.repo}`, detail: e?.message, repo: cfg.repo });
     }
   }));
 

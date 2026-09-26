@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
+  stepCommitsOnLeave,
   getActiveStepItems,
+  resolveStepContract,
   decideGatekeeperAuthorization,
   findItemAcrossProjects,
   detectCrossProjectItem,
@@ -40,9 +42,96 @@ describe('getActiveStepItems (moved to core)', () => {
     expect(getActiveStepItems(items, tddFlow).map(i => i.id)).toEqual(['a', 'b', 'c', 'd']);
   });
 
+  it('treats a terminal step marked only isSpecial as finished, not as active', () => {
+    // `agenfk flow create` never asks about isAnchor — it only ever asks "Is
+    // this a terminal/special step?" and emits isSpecial. So a flow authored
+    // through the CLI has a DONE-equivalent step that no isAnchor filter can
+    // see, and with no isAnchor step anywhere the anchor set is EMPTY (the
+    // ['TODO','DONE'] fallback applies only when flow is null). Everything
+    // terminal then counts as in flight.
+    //
+    // server.ts asks a related question in several places with a DIFFERENT
+    // predicate (!isSpecial && !PLATFORM_STATUSES) — deliberately, because
+    // those need to KEEP anchor steps. Line numbers are not cited here: the
+    // two I first wrote down had already moved by the next commit, which is
+    // what line references in comments always do.
+    const cliAuthoredFlow = {
+      name: 'CLI Flow',
+      steps: [
+        { name: 'BACKLOG', order: 0, isSpecial: true },
+        { name: 'BUILDING', order: 1 },
+        { name: 'SHIPPED', order: 2, isSpecial: true },
+      ],
+    };
+    const items = [item('a', 'BACKLOG'), item('b', 'BUILDING'), item('c', 'SHIPPED')];
+    expect(getActiveStepItems(items, cliAuthoredFlow).map(i => i.id)).toEqual(['b']);
+  });
+
+  it('still counts a step that is neither anchor nor special', () => {
+    // Guards the fix from overshooting into "exclude anything with a flag".
+    const flow = {
+      name: 'Plain',
+      steps: [
+        { name: 'TODO', order: 0, isAnchor: true },
+        { name: 'DOING', order: 1 },
+        { name: 'DONE', order: 2, isAnchor: true },
+      ],
+    };
+    expect(getActiveStepItems([item('x', 'DOING')], flow).map(i => i.id)).toEqual(['x']);
+  });
+
   it('excludes anchors and inactive statuses', () => {
     const items = [item('1', 'TODO'), item('2', 'BLOCKED'), item('3', 'IN_PROGRESS'), item('4', 'DONE')];
     expect(getActiveStepItems(items, tddFlow).map(i => i.id)).toEqual(['3']);
+  });
+});
+
+describe('resolveStepContract on a CLI-authored flow', () => {
+  // The contract the gatekeeper prints IS the agent's working instructions:
+  // "First working step (the step after <first>): X" and "Final step (omit the
+  // command here; the project's verifyCommand runs and closes the item): Y". On a
+  // flow authored through `agenfk flow create` — which only ever asks "Is this
+  // a terminal/special step?" and emits isSpecial, never isAnchor — both were
+  // computed with predicates that cannot see isSpecial, so the gatekeeper
+  // steered agents at the holding step and told them to land on the terminal
+  // step without running the verify command.
+  const cliFlow = {
+    name: 'CLI Flow',
+    steps: [
+      { name: 'BACKLOG', order: 0, isSpecial: true },
+      { name: 'BUILDING', order: 1 },
+      { name: 'CHECKING', order: 2 },
+      { name: 'SHIPPED', order: 3, isSpecial: true },
+    ],
+  };
+
+  it('names a real working step as the coding step, not the holding step', () => {
+    expect(resolveStepContract(cliFlow, 'BUILDING').codingStep).toBe('BUILDING');
+  });
+
+  it('names the last real step as the final step, not the terminal one', () => {
+    // The old filter dropped only the literal name 'DONE', so any flow whose
+    // terminal step is called something else kept it as the final step.
+    expect(resolveStepContract(cliFlow, 'BUILDING').finalStep).toBe('CHECKING');
+  });
+
+  it('still agrees with getActiveStepItems about what counts as real work', () => {
+    // The two must never disagree: one decides whether an item is in flight,
+    // the other tells the agent which step to work. A flow where the contract
+    // names a step that getActiveStepItems calls finished is incoherent.
+    const contract = resolveStepContract(cliFlow, 'BUILDING');
+    const active = getActiveStepItems(
+      [item('a', 'BACKLOG'), item('b', 'BUILDING'), item('c', 'CHECKING'), item('d', 'SHIPPED')],
+      cliFlow,
+    ).map(i => i.status);
+    expect(active).toContain(contract.codingStep);
+    expect(active).toContain(contract.finalStep);
+  });
+
+  it('leaves an isAnchor flow exactly as it was', () => {
+    const contract = resolveStepContract(tddFlow, 'IN_PROGRESS');
+    expect(contract.codingStep).toBe('DISCOVERY');
+    expect(contract.finalStep).toBe('REVIEW');
   });
 });
 
@@ -387,9 +476,9 @@ describe('the gatekeeper resolves the coding and final steps itself (F6)', () =>
     expect(d.codingStep).toBe('BUILD');
   });
 
-  it('puts the coding and final steps in the message so no derivation is needed', () => {
+  it('puts the first working step and final step in the message so no derivation is needed', () => {
     const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], anchoredFlow, {});
-    expect(d.message).toMatch(/coding step/i);
+    expect(d.message).toMatch(/first working step/i);
     expect(d.message).toMatch(/final step/i);
   });
 
@@ -534,7 +623,7 @@ describe('mutation hardening for the gatekeeper (CGLAB-110)', () => {
   it('joins the active flow steps with the arrow separator', () => {
     const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], anchoredFlow, {});
     expect(d.message).toContain('TODO → DISCOVERY → IN_PROGRESS → DONE');
-    expect(d.message).toContain('Final step (omit the command on this one): IN_PROGRESS');
+    expect(d.message).toContain('Final step (omit the command here; the project\'s verifyCommand runs and closes the item): IN_PROGRESS');
   });
 
   it('renders a nameless flow without a quoted name', () => {
@@ -544,6 +633,19 @@ describe('mutation hardening for the gatekeeper (CGLAB-110)', () => {
     const d2 = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], anonymous, {});
     expect(d2.message).toContain('Active flow: TODO → DISCOVERY → IN_PROGRESS → DONE');
     expect(d2.message).not.toContain('Active flow ""');
+  });
+
+  it("names the role of the step the card is on when none is given (d26832d6 #11)", () => {
+    const withRoles = { name: 'TDD', steps: [
+      { name: 'TODO', order: 0, isAnchor: true },
+      { name: 'CREATE_UNIT_TESTS', order: 1, role: 'test-authoring' },
+      { name: 'REVIEW', order: 2, role: 'review' },
+      { name: 'DONE', order: 3, isAnchor: true },
+    ] } as unknown as GatekeeperFlow;
+    expect(decideGatekeeperAuthorization([item('a', 'CREATE_UNIT_TESTS')], withRoles, {}).message).toContain('AUTHORIZED (TEST-AUTHORING)');
+    expect(decideGatekeeperAuthorization([item('a', 'REVIEW')], withRoles, {}).message).toContain('AUTHORIZED (REVIEW)');
+    // An explicit --role is still the caller's to state.
+    expect(decideGatekeeperAuthorization([item('a', 'REVIEW')], withRoles, { role: 'testing' }).message).toContain('AUTHORIZED (TESTING)');
   });
 
   it('echoes the no-intent fallback and the default role in the message', () => {
@@ -591,9 +693,14 @@ describe('mutation hardening for the gatekeeper (CGLAB-110)', () => {
     expect(d.message).toContain('(IN_PROGRESS)\n  • [bbbbbbbb] Story S');
   });
 
-  it('pins the exact coding-step and final-step lines, and omits the coding line when there is none', () => {
+  it('pins the exact first-working-step and final-step lines, and omits the first-step line when there is none', () => {
+    // CGLAB-275: "Coding step: DISCOVERY" read as an instruction to code on a
+    // discovery step. The line says what the step IS (the step after the first
+    // anchor, named from the flow — never a literal TODO), and the final-step
+    // line says what happens there instead of a bare "omit".
     const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], anchoredFlow, {});
-    expect(d.message).toContain('Coding step: DISCOVERY\nFinal step (omit the command on this one): IN_PROGRESS');
+    expect(d.message).not.toContain('Coding step');
+    expect(d.message).toContain('First working step (the step after TODO): DISCOVERY\nFinal step (omit the command here; the project\'s verifyCommand runs and closes the item): IN_PROGRESS');
     const anchorsOnly: GatekeeperFlow = {
       steps: [
         { name: 'TODO', order: 0, isAnchor: true },
@@ -601,16 +708,16 @@ describe('mutation hardening for the gatekeeper (CGLAB-110)', () => {
       ],
     } as GatekeeperFlow;
     const d2 = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], anchorsOnly, {});
-    expect(d2.message).not.toContain('Coding step:');
+    expect(d2.message).not.toContain('First working step');
     // Exact adjacency: with no coding step, the final-step line follows the
     // flow line directly — nothing may be injected in between.
-    expect(d2.message).toContain('Active flow: TODO → DONE\nFinal step (omit the command on this one): TODO');
+    expect(d2.message).toContain('Active flow: TODO → DONE\nFinal step (omit the command here; the project\'s verifyCommand runs and closes the item): TODO');
   });
 
   it('leaks no step-shape copy when the flow could not be resolved', () => {
     const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], null as any, {});
     expect(d.message).not.toContain('Active flow');
-    expect(d.message).not.toContain('Coding step');
+    expect(d.message).not.toContain('First working step');
     // With no flow there is no step-shape block at all: the message must end
     // exactly where the advice ends — nothing appended after it.
     expect(d.message).toMatch(/before advancing\.$/);
@@ -627,3 +734,152 @@ describe('mutation hardening for the gatekeeper (CGLAB-110)', () => {
     expect(d.message).toContain('Current step: IN_PROGRESS');
   });
 });
+
+/**
+ * The claim gate, reached through the gatekeeper (819e7192).
+ *
+ * claimGate.test.ts proves the decision is right. This proves it is REACHED:
+ * the branch was added to decideGatekeeperAuthorization and the whole core
+ * suite stayed green, which says nothing about a path nothing walks.
+ *
+ * It also pins the two things easiest to get wrong in the wiring rather than
+ * in the decision - the ORDER of the two questions, and which list the holders
+ * come from.
+ */
+describe('claim conflicts reach the gatekeeper', () => {
+  const claiming = (id: string, status: string, claims?: string[]): GatekeeperItem =>
+    ({ ...item(id, status), claims });
+
+  it('refuses a card whose claim another card already holds', () => {
+    const decision = decideGatekeeperAuthorization(
+      [claiming('mine', 'IN_PROGRESS', ['packages/ui/src/App.tsx']), claiming('theirs', 'REVIEW', ['packages/ui/'])],
+      tddFlow,
+      { itemId: 'mine' },
+    );
+    expect(decision.authorized, 'the claim gate is not wired in').toBe(false);
+    expect(decision.message).toContain('CLAIM CONFLICT');
+    expect(decision.message).toContain('theirs');
+  });
+
+  it('still authorizes when nothing is claimed, which is every card today', () => {
+    // The wiring must not turn into an outage on the deploy that adds it.
+    const decision = decideGatekeeperAuthorization(
+      [item('mine', 'IN_PROGRESS'), item('theirs', 'REVIEW')],
+      tddFlow,
+      { itemId: 'mine' },
+    );
+    expect(decision.authorized).toBe(true);
+  });
+
+  it('holds files for a PAUSED card, which getActiveStepItems drops', () => {
+    /*
+     * THE wiring test. The holders list must be `items`, not `workingItems`:
+     * getActiveStepItems filters PAUSED out, so passing it would hand a paused
+     * agent's half-edited files to somebody else, and it would find out on
+     * resume. Using the wrong list authorizes here, and the defect is invisible
+     * in claimGate.test.ts because that layer never sees the filter.
+     */
+    const decision = decideGatekeeperAuthorization(
+      [claiming('mine', 'IN_PROGRESS', ['packages/ui/src/App.tsx']), claiming('theirs', 'PAUSED', ['packages/ui/'])],
+      tddFlow,
+      { itemId: 'mine' },
+    );
+    expect(decision.authorized, 'a paused card lost its files through the gatekeeper').toBe(false);
+  });
+
+  it('answers "may it work at all" before "may it work here"', () => {
+    /*
+     * Order matters for the message, not the verdict. A card sitting on TODO
+     * with a colliding claim has two problems, and being told about the file
+     * conflict would send it to renegotiate a claim when what it needs is to
+     * start the card.
+     */
+    const decision = decideGatekeeperAuthorization(
+      [claiming('mine', 'TODO', ['packages/ui/src/App.tsx']), claiming('theirs', 'REVIEW', ['packages/ui/'])],
+      tddFlow,
+      { itemId: 'mine' },
+    );
+    expect(decision.authorized).toBe(false);
+    expect(decision.message).not.toContain('CLAIM CONFLICT');
+  });
+});
+
+describe('claims are per worktree through the gatekeeper (aaa01834)', () => {
+  const card = (id: string, status: string, extra: Partial<GatekeeperItem>): GatekeeperItem => ({ ...item(id, status), ...extra });
+
+  it("authorizes a card whose claim is held by a card in another worktree, resolving each through its parent", () => {
+    const d = decideGatekeeperAuthorization([
+      card('epicA', 'IN_PROGRESS', { type: 'EPIC', worktreePath: '/wt/a' }),
+      card('mine', 'IN_PROGRESS', { parentId: 'epicA', claims: ['packages/server/src/server.ts'] }),
+      card('epicB', 'IN_PROGRESS', { type: 'EPIC', worktreePath: '/wt/b', claims: ['packages/server/src/server.ts'] }),
+    ], tddFlow, { itemId: 'mine', projectRoot: '/repo' });
+    expect(d.authorized, d.message).toBe(true);
+  });
+
+  it('still refuses when both cards fall back to the project root', () => {
+    const d = decideGatekeeperAuthorization([
+      card('mine', 'IN_PROGRESS', { claims: ['a.ts'] }),
+      card('theirs', 'REVIEW', { claims: ['a.ts'] }),
+    ], tddFlow, { itemId: 'mine', projectRoot: '/repo' });
+    expect(d.authorized).toBe(false);
+  });
+
+  it('a card with its own worktree still collides with one at the root when the root is unknown', () => {
+    const d = decideGatekeeperAuthorization([
+      card('mine', 'IN_PROGRESS', { worktreePath: '/wt/a', claims: ['a.ts'] }),
+      card('theirs', 'REVIEW', { claims: ['a.ts'] }),
+    ], tddFlow, { itemId: 'mine' });
+    expect(d.authorized).toBe(false);
+  });
+});
+
+describe('the gatekeeper says when a step commits on leave (CGLAB-388 follow-up)', () => {
+  const flowWith = (plan: Record<string, unknown>): GatekeeperFlow => ({
+    name: 'Commit Flow',
+    steps: [{ name: 'TODO', order: 0, isAnchor: true }, { name: 'PLAN', order: 1, ...plan }, { name: 'WORK', order: 2 }, { name: 'DONE', order: 3, isAnchor: true }],
+  });
+  it('tells the agent to stage its work before verify on an autoCommit step', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'PLAN')], flowWith({ autoCommit: true }), {});
+    expect(d.message).toMatch(/commits the card's staged, claimed files when it leaves/);
+    expect(d.message).toMatch(/stage your work before you advance the card/);
+    expect(d.message).not.toMatch(/refuses to move on/);
+  });
+  it('says the step refuses to move on without it when requireCommit is set', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'PLAN')], flowWith({ autoCommit: true, requireCommit: true }), {});
+    expect(d.message).toMatch(/refuses to move on without that commit/);
+  });
+  it('says nothing about commits on a step that does not make one', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'PLAN')], flowWith({}), {});
+    expect(d.message).not.toMatch(/commits the card/);
+  });
+
+  it('stays silent on the step whose leaving ends the flow, where the server makes no step commit (review)', () => {
+    const ends: GatekeeperFlow = { name: 'F', steps: [
+      { name: 'TODO', order: 0, isAnchor: true }, { name: 'WORK', order: 1, autoCommit: true, requireCommit: true },
+      { name: 'DONE', order: 2, isAnchor: true }, { name: 'ARCHIVED', order: 3, isSpecial: true },
+    ] };
+    const d = decideGatekeeperAuthorization([item('a', 'WORK')], ends, {});
+    expect(d.message).not.toMatch(/commits the card/);
+    expect(d.commitOnLeave).toBeUndefined();
+  });
+  it('exposes the mode as a structured field too', () => {
+    expect(decideGatekeeperAuthorization([item('a', 'PLAN')], flowWith({ autoCommit: true, requireCommit: true }), {}).commitOnLeave).toBe('required');
+  });
+  it('does not name the CLI verb, so MCP agents read it right', () => {
+    const d = decideGatekeeperAuthorization([item('a', 'PLAN')], flowWith({ autoCommit: true }), {});
+    expect(d.message).toMatch(/stage your work before you advance the card/);
+  });
+});
+
+describe('stepCommitsOnLeave: one answer to "does leaving this step commit?"', () => {
+  it('matches the server: no commit on the move that ends the flow, including a next step named DONE mid-list', () => {
+    const steps = [
+      { name: 'TODO', order: 0, isAnchor: true }, { name: 'PLAN', order: 1, autoCommit: true },
+      { name: 'WORK', order: 2, autoCommit: true }, { name: 'DONE', order: 3, isAnchor: true }, { name: 'ARCHIVED', order: 4, isSpecial: true },
+    ];
+    expect(stepCommitsOnLeave(steps, 'PLAN')).toBe('auto');
+    expect(stepCommitsOnLeave(steps, 'WORK')).toBeUndefined();
+    expect(stepCommitsOnLeave(steps, 'NOPE')).toBeUndefined();
+  });
+});
+

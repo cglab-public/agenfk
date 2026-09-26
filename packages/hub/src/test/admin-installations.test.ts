@@ -3,9 +3,21 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import supertest from 'supertest';
+import { loginAs } from './helpers/loginAs';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { drainApp } from './helpers/drainApp';
+
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-admin-installations-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -17,10 +29,6 @@ const cleanup = () => {
   }
 };
 
-const loginAs = async (app: any, email: string, password: string) => {
-  const r = await supertest(app).post('/auth/login').send({ email, password });
-  return r.headers['set-cookie']?.[0] ?? '';
-};
 
 async function seedInstallation(
   db: any,
@@ -52,6 +60,8 @@ describe('GET /v1/admin/installations', () => {
       defaultOrgId: 'org-a',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await ctx.db.run('INSERT OR IGNORE INTO orgs (id, name) VALUES (?, ?)', ['org-b', 'org-b']);
     await ctx.db.run('INSERT OR IGNORE INTO auth_config (org_id, password_enabled) VALUES (?, 1)', ['org-b']);
@@ -63,7 +73,7 @@ describe('GET /v1/admin/installations', () => {
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
@@ -73,7 +83,7 @@ describe('GET /v1/admin/installations', () => {
     await seedInstallation(ctx.db, 'org-a', 'inst-2', 'v0.3.0-beta.27', '2026-05-05T12:00:00Z', 'bob');
     await seedInstallation(ctx.db, 'org-b', 'inst-other', 'v0.3.0-beta.28', '2026-05-06T12:00:00Z', 'eve');
 
-    const r = await supertest(app).get('/v1/admin/installations').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/admin/installations').set('Cookie', cookieAdmin);
     expect(r.status).toBe(200);
     expect(Array.isArray(r.body)).toBe(true);
 
@@ -91,24 +101,24 @@ describe('GET /v1/admin/installations', () => {
     await seedInstallation(ctx.db, 'org-a', 'newest', 'v0.3.0-beta.28', '2026-05-06T00:00:00Z');
     await seedInstallation(ctx.db, 'org-a', 'middle', 'v0.3.0-beta.25', '2026-05-01T00:00:00Z');
 
-    const r = await supertest(app).get('/v1/admin/installations').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/admin/installations').set('Cookie', cookieAdmin);
     expect(r.body.map((x: any) => x.id)).toEqual(['newest', 'middle', 'old']);
   });
 
   it('returns null agenfkVersion when none recorded', async () => {
     await seedInstallation(ctx.db, 'org-a', 'inst-unknown', null, '2026-05-06T00:00:00Z');
-    const r = await supertest(app).get('/v1/admin/installations').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/admin/installations').set('Cookie', cookieAdmin);
     const row = r.body.find((x: any) => x.id === 'inst-unknown');
     expect(row.agenfkVersion).toBeNull();
   });
 
   it('rejects non-admin viewer', async () => {
-    const r = await supertest(app).get('/v1/admin/installations').set('Cookie', cookieView);
+    const r = await supertest(__server).get('/v1/admin/installations').set('Cookie', cookieView);
     expect(r.status).toBe(403);
   });
 
   it('returns empty array when org has no installations', async () => {
-    const r = await supertest(app).get('/v1/admin/installations').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/admin/installations').set('Cookie', cookieAdmin);
     expect(r.body).toEqual([]);
   });
 });

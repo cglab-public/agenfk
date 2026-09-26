@@ -16,6 +16,23 @@ import { app, initStorage } from '../server';
 import * as fs from 'fs';
 import * as path from 'path';
 
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. That
+ * churn produced `Error: Parse Error: Expected HTTP/, RTSP/ or ICE/` — a
+ * transport failure, not an assertion about anything under test. It hands the
+ * test an empty body, so `res.body.id` is undefined and the next call goes to
+ * `/items/undefined`; one bad socket then surfaces as `expected 404 to be 400`
+ * in whichever test happened to be running. Different test every run, green
+ * when run alone.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
+
 const TEST_DB = path.resolve('./flow-step-validation-test-db.sqlite');
 
 describe('local flow step-shape validation', () => {
@@ -41,7 +58,7 @@ describe('local flow step-shape validation', () => {
   ];
 
   const createFlow = async () => {
-    const r = await request(app).post('/flows').send({ name: 'LF', steps: baseSteps() });
+    const r = await agent().post('/flows').send({ name: 'LF', steps: baseSteps() });
     expect(r.status).toBe(201);
     return r.body;
   };
@@ -49,7 +66,7 @@ describe('local flow step-shape validation', () => {
   it('POST /flows rejects a step with an empty name', async () => {
     const steps = baseSteps();
     steps[1] = { ...steps[1], name: '' };
-    const r = await request(app).post('/flows').send({ name: 'Bad', steps });
+    const r = await agent().post('/flows').send({ name: 'Bad', steps });
     expect(r.status).toBe(400);
     expect(r.body.error).toMatch(/name/i);
   });
@@ -57,7 +74,7 @@ describe('local flow step-shape validation', () => {
   it('POST /flows rejects a whitespace-only step name', async () => {
     const steps = baseSteps();
     steps[1] = { ...steps[1], name: '   ' };
-    const r = await request(app).post('/flows').send({ name: 'Bad', steps });
+    const r = await agent().post('/flows').send({ name: 'Bad', steps });
     expect(r.status).toBe(400);
   });
 
@@ -66,7 +83,7 @@ describe('local flow step-shape validation', () => {
   // id, and generating is what makes a locally-authored flow publishable.
   it('POST /flows generates an id for a step that omits one', async () => {
     const steps = baseSteps().map(({ id: _id, ...rest }) => rest);
-    const r = await request(app).post('/flows').send({ name: 'NoIds', steps });
+    const r = await agent().post('/flows').send({ name: 'NoIds', steps });
     expect(r.status).toBe(201);
     const ids = r.body.steps.map((s: any) => s.id);
     expect(ids.every((id: unknown) => typeof id === 'string' && id.length > 0)).toBe(true);
@@ -76,7 +93,7 @@ describe('local flow step-shape validation', () => {
   it('POST /flows generates an id for a step whose id is blank', async () => {
     const steps = baseSteps();
     steps[1] = { ...steps[1], id: '' };
-    const r = await request(app).post('/flows').send({ name: 'BlankId', steps });
+    const r = await agent().post('/flows').send({ name: 'BlankId', steps });
     expect(r.status).toBe(201);
     expect(r.body.steps[1].id).toBeTruthy();
   });
@@ -84,7 +101,7 @@ describe('local flow step-shape validation', () => {
   it('PUT /flows/:id generates an id for a step that omits one', async () => {
     const flow = await createFlow();
     const steps = baseSteps().map(({ id: _id, ...rest }) => rest);
-    const r = await request(app).put(`/flows/${flow.id}`).send({ name: 'LF', steps });
+    const r = await agent().put(`/flows/${flow.id}`).send({ name: 'LF', steps });
     expect(r.status).toBe(200);
     expect(r.body.steps.every((s: any) => typeof s.id === 'string' && s.id.length > 0)).toBe(true);
   });
@@ -92,7 +109,7 @@ describe('local flow step-shape validation', () => {
   it('POST /flows rejects a non-numeric step order', async () => {
     const steps = baseSteps();
     steps[1] = { ...steps[1], order: 'second' as unknown as number };
-    const r = await request(app).post('/flows').send({ name: 'Bad', steps });
+    const r = await agent().post('/flows').send({ name: 'Bad', steps });
     expect(r.status).toBe(400);
     expect(r.body.error).toMatch(/order/i);
   });
@@ -101,13 +118,13 @@ describe('local flow step-shape validation', () => {
   // The Hub refuses an empty definition, so such a flow is un-publishable until
   // it has steps — but it is not invalid locally, and callers rely on this.
   it('POST /flows still accepts an empty steps array', async () => {
-    const r = await request(app).post('/flows').send({ name: 'Draft', steps: [] });
+    const r = await agent().post('/flows').send({ name: 'Draft', steps: [] });
     expect(r.status).toBe(201);
     expect(r.body.steps).toEqual([]);
   });
 
   it('POST /flows rejects a non-array steps value', async () => {
-    const r = await request(app).post('/flows').send({ name: 'Bad', steps: 'nope' });
+    const r = await agent().post('/flows').send({ name: 'Bad', steps: 'nope' });
     expect(r.status).toBe(400);
     expect(r.body.error).toMatch(/array/i);
   });
@@ -116,7 +133,7 @@ describe('local flow step-shape validation', () => {
     const flow = await createFlow();
     const steps = baseSteps();
     steps[1] = { ...steps[1], name: '' };
-    const r = await request(app).put(`/flows/${flow.id}`).send({ name: 'LF', steps });
+    const r = await agent().put(`/flows/${flow.id}`).send({ name: 'LF', steps });
     expect(r.status).toBe(400);
     expect(r.body.error).toMatch(/name/i);
   });
@@ -125,9 +142,9 @@ describe('local flow step-shape validation', () => {
     const flow = await createFlow();
     const steps = baseSteps();
     steps[1] = { ...steps[1], name: '' };
-    await request(app).put(`/flows/${flow.id}`).send({ name: 'LF', steps });
+    await agent().put(`/flows/${flow.id}`).send({ name: 'LF', steps });
 
-    const after = await request(app).get(`/flows/${flow.id}`);
+    const after = await agent().get(`/flows/${flow.id}`);
     expect(after.status).toBe(200);
     expect(after.body.steps.map((s: any) => s.name)).toEqual(['TODO', 'WORK', 'DONE']);
   });
@@ -136,14 +153,14 @@ describe('local flow step-shape validation', () => {
     const flow = await createFlow();
     const steps = baseSteps();
     steps[1] = { ...steps[1], name: 'REFACTOR', label: 'Refactor' };
-    const r = await request(app).put(`/flows/${flow.id}`).send({ name: 'LF', steps });
+    const r = await agent().put(`/flows/${flow.id}`).send({ name: 'LF', steps });
     expect(r.status).toBe(200);
     expect(r.body.steps.map((s: any) => s.name)).toEqual(['TODO', 'REFACTOR', 'DONE']);
   });
 
   it('PUT /flows/:id leaves steps untouched when the body omits them', async () => {
     const flow = await createFlow();
-    const r = await request(app).put(`/flows/${flow.id}`).send({ name: 'Renamed' });
+    const r = await agent().put(`/flows/${flow.id}`).send({ name: 'Renamed' });
     expect(r.status).toBe(200);
     expect(r.body.name).toBe('Renamed');
     expect(r.body.steps.map((s: any) => s.name)).toEqual(['TODO', 'WORK', 'DONE']);
@@ -154,7 +171,7 @@ describe('local flow step-shape validation', () => {
   it('PUT /flows/:id replaces duplicate step ids with fresh ones', async () => {
     const flow = await createFlow();
     const steps = baseSteps().map(s => ({ ...s, id: 'same' }));
-    const r = await request(app).put(`/flows/${flow.id}`).send({ name: 'LF', steps });
+    const r = await agent().put(`/flows/${flow.id}`).send({ name: 'LF', steps });
     expect(r.status).toBe(200);
     const ids = r.body.steps.map((s: any) => s.id);
     expect(new Set(ids).size).toBe(3);
@@ -162,7 +179,7 @@ describe('local flow step-shape validation', () => {
 
   it('PUT /flows/:id keeps caller-supplied ids that are already unique', async () => {
     const flow = await createFlow();
-    const r = await request(app).put(`/flows/${flow.id}`).send({ name: 'LF', steps: baseSteps() });
+    const r = await agent().put(`/flows/${flow.id}`).send({ name: 'LF', steps: baseSteps() });
     expect(r.status).toBe(200);
     expect(r.body.steps.map((s: any) => s.id)).toEqual(['s1', 's2', 's3']);
   });

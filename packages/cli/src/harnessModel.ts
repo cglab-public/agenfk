@@ -217,21 +217,40 @@ function piCandidates(home: string, now: number): Candidate[] {
       // and the hub matches on the segment after the LAST slash — so prepending
       // `openrouter/` would push the vendor out of the match key and split the
       // model into its own dashboard group.
-      readModel: rs => {
-        let model: string | null = null;
-        for (const r of rs) {
-          if (r?.type === 'model_change' && typeof r.modelId === 'string' && r.modelId) model = r.modelId;
-        }
-        return model;
-      },
+      readModel: piModelOf,
     });
   }
   return candidates;
 }
 
+/** pi: the LAST model_change is the one in force. */
+function piModelOf(rs: any[]): string | null {
+  let model: string | null = null;
+  for (const r of rs) {
+    if (r?.type === 'model_change' && typeof r.modelId === 'string' && r.modelId) model = r.modelId;
+  }
+  return model;
+}
+
+/** Claude Code: the last real model on a non-sidechain assistant turn. */
+function claudeModelOf(rs: any[]): string | null {
+  let model: string | null = null;
+  for (const r of rs) {
+    // Assistant turns only, and never a subagent's: a subagent runs a
+    // different model from the session that spawned it.
+    if (r?.type !== 'assistant' || r?.isSidechain) continue;
+    const m = r?.message?.model ?? r?.model;
+    // `<synthetic>` is written on cancelled and errored turns. Taking it
+    // would replace a correct --model with a non-model string on an
+    // append-only event.
+    if (typeof m === 'string' && m && !/^<.*>$/.test(m)) model = m;
+  }
+  return model;
+}
+
 /** Claude Code: one directory per project, model recorded on each message. */
-function claudeCandidates(home: string, now: number): Candidate[] {
-  const root = path.join(home, '.claude', 'projects');
+function claudeCandidates(home: string, now: number, env: NodeJS.ProcessEnv): Candidate[] {
+  const root = claudeProjectsRoot(home, env);
   const candidates: Candidate[] = [];
   for (const { file, mtimeMs } of freshFiles(root, now)) {
     // The transcript records the real cwd, and it can change mid-session, so
@@ -243,35 +262,183 @@ function claudeCandidates(home: string, now: number): Candidate[] {
     if (cwds.size === 0) continue;
     candidates.push({
       file, cwds: [...cwds], mtimeMs, harness: 'claude-code',
-      readModel: rs => {
-        let model: string | null = null;
-        for (const r of rs) {
-          // Assistant turns only, and never a subagent's: a subagent runs a
-          // different model from the session that spawned it.
-          if (r?.type !== 'assistant' || r?.isSidechain) continue;
-          const m = r?.message?.model ?? r?.model;
-          // `<synthetic>` is written on cancelled and errored turns. Taking it
-          // would replace a correct --model with a non-model string on an
-          // append-only event.
-          if (typeof m === 'string' && m && !/^<.*>$/.test(m)) model = m;
-        }
-        return model;
-      },
+      readModel: claudeModelOf,
     });
   }
   return candidates;
 }
 
 /**
+ * How recently a subagent must have written for the parent's identity to count
+ * as ambiguous. A subagent inherits the parent's CLAUDE_CODE_SESSION_ID and can
+ * run a different model, so while one is writing, "the session running now"
+ * has two candidates and the honest answer is none. Tight on purpose: the
+ * subagents directory keeps every past run.
+ */
+const SUBAGENT_ACTIVE_WINDOW_MS = 5 * 60_000;
+
+/** Model ids are short; anything longer is not one and must not go on the wire. */
+const MAX_MODEL_ID_LENGTH = 200;
+
+/** Where Claude Code keeps its transcripts, honouring a relocated config dir. */
+function claudeProjectsRoot(home: string, env: NodeJS.ProcessEnv): string {
+  const cfg = env.CLAUDE_CONFIG_DIR;
+  return path.join(typeof cfg === 'string' && cfg ? cfg : path.join(home, '.claude'), 'projects');
+}
+
+/**
+ * What the environment settled. `answer` is the model, or null for "the
+ * harness named a session and it has no usable answer" — which is final and
+ * must NOT fall through to the cwd heuristic, since that heuristic would pick
+ * the concurrent sibling this whole path exists to avoid. `undefined` means the
+ * environment named nothing usable, and the heuristic may run.
+ */
+type EnvVerdict = DetectedModel | null | undefined;
+
+/**
+ * The session the harness itself says is running, from the environment it
+ * gives every tool shell (CGLAB-365).
+ *
+ * The cwd heuristic cannot tell two live sessions in ONE repo directory apart,
+ * and its mtime tiebreak picks whichever wrote last: a Fable session was
+ * "corrected" to claude-opus-5 from a concurrent Opus session's transcript.
+ * Both harnesses export the exact identity, so it is read first:
+ *   - pi's bash tool sets PI_SESSION_FILE and PI_MODEL (the model in force);
+ *   - Claude Code sets CLAUDE_CODE_SESSION_ID, the transcript's basename under
+ *     <config>/projects/<slug>/.
+ *
+ * Two things a named session can still get wrong, and how each is handled:
+ *   - It may be dead. The variable is inherited by everything spawned from a
+ *     tool shell (a tmux server, a detached worker), so a log older than the
+ *     freshness bound is a stale identity, not the session running now → null.
+ *   - Under Claude Code the SAME id names the parent and every subagent it
+ *     spawns, and a subagent may run another model. While a subagent has
+ *     written recently the identity is ambiguous → null.
+ */
+function fromEnvironment(home: string, env: NodeJS.ProcessEnv, now: number): EnvVerdict {
+  const pi = fromPiEnvironment(home, env, now);
+  if (pi !== undefined) return pi;
+  return fromClaudeEnvironment(home, env, now);
+}
+
+function fromPiEnvironment(home: string, env: NodeJS.ProcessEnv, now: number): EnvVerdict {
+  const file = env.PI_SESSION_FILE;
+  const direct = typeof env.PI_MODEL === 'string' && env.PI_MODEL ? env.PI_MODEL : null;
+  // Only a log pi itself would have written: its own sessions directory, its
+  // own extension. The variable can be set by anything in the shell.
+  const sessionsRoot = path.join(home, '.pi', 'agent', 'sessions') + path.sep;
+  const named = typeof file === 'string' && file.endsWith('.jsonl') && file.startsWith(sessionsRoot) && isFile(file);
+  if (!named && !direct) return undefined;
+  if (named) {
+    if (now - mtime(file!) > MAX_SESSION_AGE_MS) return null;
+    const model = piModelOf(records(file!));
+    if (model) return bounded({ model, harness: 'pi', source: file! });
+  }
+  // The file has no model_change yet (or no file was named): pi also exports
+  // the model in force, which is the direct answer the file only derives.
+  if (direct) return bounded({ model: direct, harness: 'pi', source: 'env:PI_MODEL' });
+  return null;
+}
+
+function fromClaudeEnvironment(home: string, env: NodeJS.ProcessEnv, now: number): EnvVerdict {
+  const id = env.CLAUDE_CODE_SESSION_ID;
+  // A plain id only: this value becomes a path component, and the environment
+  // is not a trusted place to take one from.
+  if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) return undefined;
+  const projects = claudeProjectsRoot(home, env);
+  let dirs: fs.Dirent[] = [];
+  try { dirs = fs.readdirSync(projects, { withFileTypes: true }); } catch { /* no Claude Code here */ }
+  for (const d of dirs) {
+    if (!d.isDirectory()) continue;
+    const file = path.join(projects, d.name, `${id}.jsonl`);
+    if (!isFile(file)) continue;
+    if (now - mtime(file) > MAX_SESSION_AGE_MS) return null;
+    if (subagentActive(path.join(projects, d.name, id, 'subagents'), now, file)) return null;
+    const model = claudeModelOf(records(file));
+    return model ? bounded({ model, harness: 'claude-code', source: file }) : null;
+  }
+  // No transcript by that name anywhere: a relocated or missing config dir,
+  // not a session with no answer. The heuristic may still find one.
+  return undefined;
+}
+
+/**
+ * Whether a subagent under this session may still be running: written just
+ * now and not yet handed back. A finished one's report is in the parent's
+ * transcript - the `agent-message from="<id>"` hand-back, or a completed task
+ * notification for its id - so the parent is the only session running
+ * (d26832d6: a reviewer that ended 3 minutes before `agenfk pr create` sent
+ * the PR out unverified). A background subagent still working has no
+ * hand-back, and keeps the identity ambiguous however the writes interleave.
+ */
+function subagentActive(dir: string, now: number, parentFile: string): boolean {
+  let handBacks: Map<string, number> | null = null;
+  for (const file of listFiles(dir)) {
+    const at = mtime(file);
+    if (now - at > SUBAGENT_ACTIVE_WINDOW_MS) continue;
+    const id = /agent-([A-Za-z0-9_-]+)\.jsonl$/.exec(file)?.[1];
+    if (!id) return true;
+    handBacks ??= readHandBacks(parentFile);
+    // Only a hand-back AFTER its latest write finishes it: a subagent resumed
+    // after handing back writes again, and is running again (d26832d6 review).
+    const back = handBacks.get(id);
+    if (back === undefined || back < at - HANDBACK_SKEW_MS) return true;
+  }
+  return false;
+}
+
+/** File mtimes and record timestamps come from different clocks' rounding: a second of slack. */
+const HANDBACK_SKEW_MS = 1000;
+
+/**
+ * The latest hand-back per subagent id in the parent transcript, by the
+ * record's own timestamp: the `[Subagent hand-back]` agent-message, or a
+ * task notification that the agent completed/failed/was killed.
+ */
+function readHandBacks(parentFile: string): Map<string, number> {
+  const out = new Map<string, number>();
+  let text = '';
+  try { text = fs.readFileSync(parentFile, 'utf8'); } catch { return out; }
+  for (const line of text.split('\n')) {
+    if (!line.includes('hand-back') && !line.includes('<task-id>')) continue;
+    let r: any;
+    try { r = JSON.parse(line); } catch { continue; }
+    const t = Date.parse(r?.timestamp ?? '');
+    const body = JSON.stringify(r?.message ?? r);
+    const ids: string[] = [];
+    for (const m of body.matchAll(/agent-message from=\\"([A-Za-z0-9_-]+)\\"[\s\S]{0,400}?\[Subagent hand-back\]/g)) ids.push(m[1]);
+    for (const m of body.matchAll(/<task-id>([A-Za-z0-9_-]+)<\/task-id>[\s\S]{0,600}?<status>(?:completed|failed|killed)<\/status>/g)) ids.push(m[1]);
+    for (const id of ids) {
+      const when = Number.isNaN(t) ? 0 : t;
+      if (when > (out.get(id) ?? -1)) out.set(id, when);
+    }
+  }
+  return out;
+}
+
+function bounded(d: DetectedModel): DetectedModel | null {
+  return d.model.length <= MAX_MODEL_ID_LENGTH ? d : null;
+}
+
+function isFile(p: string): boolean {
+  try { return fs.statSync(p).isFile(); } catch { return false; }
+}
+
+/**
  * The model the current session is actually running, or null when no harness
  * log can be matched to `cwd`.
  */
-export function detectHarnessModel(opts: { cwd?: string; home?: string; now?: number } = {}): DetectedModel | null {
+export function detectHarnessModel(
+  opts: { cwd?: string; home?: string; now?: number; env?: NodeJS.ProcessEnv } = {},
+): DetectedModel | null {
   const cwd = opts.cwd ?? process.cwd();
   const home = opts.home ?? os.homedir();
   const now = opts.now ?? Date.now();
+  const env = opts.env ?? process.env;
   try {
-    const best = pick([...piCandidates(home, now), ...claudeCandidates(home, now)], canonicalPath(cwd), now);
+    const verdict = fromEnvironment(home, env, now);
+    if (verdict !== undefined) return verdict;
+    const best = pick([...piCandidates(home, now), ...claudeCandidates(home, now, env)], canonicalPath(cwd), now);
     if (!best) return null;
     const model = best.readModel(records(best.file));
     return model ? { model, harness: best.harness, source: best.file } : null;
@@ -315,7 +482,7 @@ export function reconcileModel(
       model: declared,
       verified: false,
       warning:
-        `a ${detected.harness} session log in this directory records ${detected.model}, but you `
+        `the ${detected.harness} session log records ${detected.model}, but you `
         + `declared --harness ${declaredHarness}. Keeping your --model ${declared}; the log is from `
         + `another harness. (source: ${detected.source})`,
     };
@@ -336,10 +503,10 @@ export function reconcileModel(
  */
 export function resolveModelForReport(
   declared: string,
-  opts: { cwd?: string; home?: string; detect?: boolean; harness?: string } = {},
+  opts: { cwd?: string; home?: string; env?: NodeJS.ProcessEnv; detect?: boolean; harness?: string } = {},
 ): ReconciledModel {
   if (opts.detect === false) return { model: declared, verified: false };
-  return reconcileModel(declared, detectHarnessModel({ cwd: opts.cwd, home: opts.home }), opts.harness);
+  return reconcileModel(declared, detectHarnessModel({ cwd: opts.cwd, home: opts.home, env: opts.env }), opts.harness);
 }
 
 /** The option shape the three PR commands parse (commander negates --no-*). */
@@ -358,12 +525,41 @@ export interface PrModelOptions {
  */
 export function resolveFromOptions(
   options: PrModelOptions,
-  env: { cwd?: string; home?: string } = {},
+  env: { cwd?: string; home?: string; env?: NodeJS.ProcessEnv } = {},
 ): ReconciledModel {
   return resolveModelForReport(options.model, {
     cwd: env.cwd,
     home: env.home,
+    env: env.env,
     detect: options.detectModel,
     harness: options.harness,
   });
+}
+
+/**
+ * The session this CLI runs in, as its harness names it (CGLAB-381): the
+ * AUTHOR identity `agenfk verify` reports, so a review check can tell an
+ * independent reviewer from whoever advanced the card. Read from the variables
+ * the harness exports to every tool shell, never from a flag an agent fills in.
+ *   - pi: PI_SESSION_FILE, under pi's own sessions folder; the id is the
+ *     session header's, which is what a transcript check reads back.
+ *   - Claude Code: CLAUDE_CODE_SESSION_ID. A sub-agent inherits it, so a
+ *     verify from a sub-agent counts as its parent session's - the cautious
+ *     direction for an author identity.
+ * Null when neither names a session.
+ */
+export function harnessActor(env: NodeJS.ProcessEnv = process.env, home: string = os.homedir()): { client: string; sessionId: string } | null {
+  const file = env.PI_SESSION_FILE;
+  const piRoot = path.join(home, '.pi', 'agent', 'sessions') + path.sep;
+  if (typeof file === 'string' && file.endsWith('.jsonl') && file.startsWith(piRoot) && isFile(file)) {
+    const header = records(file, 5).find(r => r && r.type === 'session' && typeof r.id === 'string');
+    if (header) return { client: 'pi', sessionId: header.id };
+  }
+  const id = env.CLAUDE_CODE_SESSION_ID;
+  if (typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id)) return { client: 'claude-code', sessionId: id };
+  // Codex (BUG e78e78d2): the commands it runs get CODEX_THREAD_ID, the id its
+  // transcript's session_meta carries (verified against Codex 0.155.1).
+  const thread = env.CODEX_THREAD_ID;
+  if (typeof thread === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(thread)) return { client: 'codex', sessionId: thread };
+  return null;
 }

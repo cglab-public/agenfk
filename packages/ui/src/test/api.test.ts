@@ -38,10 +38,30 @@ describe('UI API Client', () => {
     );
   });
 
+  it('sends approvals and overrides with the board header the server requires (CGLAB-382)', async () => {
+    mockedAxios.post.mockResolvedValue({ data: {} });
+    await api.approveStep('i1', { step: 'PLAN' });
+    await api.overrideCheck('i1', { step: 'WORK', checkId: 'suite-green', reason: 'flaky' });
+    const board = expect.objectContaining({ headers: expect.objectContaining({ 'x-agenfk-ui': '1' }) });
+    expect(mockedAxios.post).toHaveBeenCalledWith(expect.stringContaining('/items/i1/approvals'), { step: 'PLAN' }, board);
+    expect(mockedAxios.post).toHaveBeenCalledWith(expect.stringContaining('/items/i1/overrides'), { step: 'WORK', checkId: 'suite-green', reason: 'flaky' }, board);
+  });
+
+  it("asks the server what a draft flow's steps mean (CGLAB-384)", async () => {
+    mockedAxios.post.mockResolvedValue({ data: { valid: true } });
+    const steps = [{ id: 's0', name: 'TODO' }];
+    expect(await api.getFlowContract(steps)).toEqual({ valid: true });
+    expect(mockedAxios.post).toHaveBeenCalledWith(expect.stringContaining('/flows/contract'), { steps });
+  });
+
   it('should update item', async () => {
     mockedAxios.put.mockResolvedValue({ data: {} });
     await api.updateItem('i1', { status: 'DONE' } as any);
-    expect(mockedAxios.put).toHaveBeenCalledWith(expect.stringContaining('/items/i1'), { status: 'DONE' });
+    expect(mockedAxios.put).toHaveBeenCalledWith(
+      expect.stringContaining('/items/i1'),
+      { status: 'DONE' },
+      expect.objectContaining({ headers: expect.objectContaining({ 'x-agenfk-ui': '1' }) }),
+    );
   });
 
   it('should delete item', async () => {
@@ -68,7 +88,11 @@ describe('UI API Client', () => {
     mockedAxios.post.mockResolvedValue({ data: { updated: 1 } });
     const result = await api.bulkUpdateItems([{ id: 'i1', updates: { status: 'DONE' as any } }]);
     expect(result.updated).toBe(1);
-    expect(mockedAxios.post).toHaveBeenCalledWith(expect.stringContaining('/items/bulk'), expect.any(Object));
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      expect.stringContaining('/items/bulk'),
+      { items: [{ id: 'i1', updates: { status: 'DONE' } }] },
+      expect.objectContaining({ headers: expect.objectContaining({ 'x-agenfk-ui': '1' }) }),
+    );
   });
 
   it('should delete project', async () => {
