@@ -16,6 +16,7 @@
  * - n/a: a role built-in whose record no earlier step produces.
  * - deferred: enforced elsewhere on this transition (the project verify command).
  */
+import * as fs from 'fs';
 import * as path from 'path';
 import { insideRoot, isTestPath } from './stepRecords';
 import { CHECK_CATALOGUE, checkDef, claimsCollide, type CheckSeverity, type RecordName, type ResolvedCheck } from '@agenfk/core';
@@ -85,6 +86,8 @@ type ReportedTest = { name: string; file: string; status: 'passed' | 'failed' | 
 /** A capture step record (CGLAB-379), as far as checks read it. */
 export interface CaptureRecord {
   step: string;
+  /** The commit the run started at. */
+  head?: string | null;
   exitCode?: number | null;
   format?: string;
   available?: boolean;
@@ -187,6 +190,16 @@ interface Verdict {
   meta?: CheckMeta;
 }
 type Evaluator = (ctx: EngineContext, params: Record<string, string>) => Verdict;
+
+/** A file named as a test file itself (the server's lazy capture reads the same shape). */
+export const TEST_FILE_PATTERN = /(\.(test|spec)\.[cm]?[jt]sx?$)|(-test\.[cm]?[jt]s$)|((^|\/)test(-[^/]+)?\.[cm]?[jt]s$)|((^|\/)test_[^/]+\.py$)|(_test\.py$)/;
+/**
+ * A test file in any language this names by convention: the JS/TS/Python
+ * shapes above (the ones a lazy run can run alone), plus Go's `_test.go`,
+ * RSpec's `_spec.rb`, Maven/Gradle test source sets, C# `*.Tests` /
+ * `*.UnitTests` / `*.IntegrationTests` projects and Rust's `tests/*.rs`.
+ */
+export const ANY_TEST_FILE_PATTERN = new RegExp(`${TEST_FILE_PATTERN.source}|(_test\\.go$)|(_spec\\.rb$)|((^|/)src/(test|integrationTest|androidTest|testFixtures)/.+\\.(java|kt)$)|((^|/)[^/]*\\.(Unit|Integration)?Tests?/.+\\.cs$)|((^|/)tests/[^/]+\\.rs$)`);
 
 const LISTED = 5;
 const list = (xs: readonly string[]) => xs.slice(0, LISTED).join(' | ') + (xs.length > LISTED ? ` | …and ${xs.length - LISTED} more` : '');
@@ -472,7 +485,7 @@ export const EVALUATORS: Record<string, Evaluator> = {
       outcome: 'pass',
       detail: `${red.length} of ${d.added.length} new test(s) red: ${list(red)}`,
       // The tests as written: a sibling's new ones are its own, not part of this card's count (5b48b96b).
-      produces: { redSet: red, testSurface: { files: d.capture.surface?.files ?? {}, scope: d.capture.surfaceScope ?? null, complete: d.capture.surfaceComplete !== false, declared: d.capture.surfaceDeclared ?? [] }, authoredTests: d.now.filter(t => d.was.has(t.name) || !foreignFile(ctx, t.file)).map(t => t.name) },
+      produces: { redSet: red, testSurface: { files: d.capture.surface?.files ?? {}, scope: d.capture.surfaceScope ?? null, complete: d.capture.surfaceComplete !== false, declared: d.capture.surfaceDeclared ?? [], head: d.capture.head ?? null }, authoredTests: d.now.filter(t => d.was.has(t.name) || !foreignFile(ctx, t.file)).map(t => t.name) },
     };
   },
 
@@ -566,6 +579,58 @@ export const EVALUATORS: Record<string, Evaluator> = {
     return changes.length
       ? { outcome: 'fail', detail: `the tests changed: ${list(changes)}. Put them back; ${p.mode === 'strict' ? 'nothing may change here' : 'only new test files may be added'}.` }
       : { outcome: 'pass', detail: p.mode === 'strict' ? 'unchanged' : 'unchanged (new files allowed)' };
+  },
+
+  /*
+   * d26832d6 #21 — test files added after the tests were frozen: no suite runs
+   * for this (a per-test run on leaving review would cost one on most cards),
+   * so it cannot tell whether they pass. It names them, and asks for the proof.
+   */
+  'tests-added-late': ctx => {
+    const frozen = ctx.records.testSurface as { files?: unknown; head?: unknown; complete?: unknown } | undefined;
+    if (!frozen || typeof frozen !== 'object') return { outcome: 'unavailable', soft: true, detail: "no 'testSurface' record: no step wrote tests for this card" };
+    if (typeof frozen.head !== 'string' || !frozen.head) return { outcome: 'unavailable', soft: true, detail: 'the tests were frozen before agenfk recorded the commit they were frozen at, so what came after cannot be told apart' };
+    // An incomplete freeze does not know every test that existed then: anything could read as late.
+    if (frozen.complete === false || !frozen.files || typeof frozen.files !== 'object') return { outcome: 'unavailable', soft: true, detail: 'the tests were frozen with an incomplete surface, so a late test cannot be told from one that was there' };
+    if (!ctx.root) return { outcome: 'unavailable', soft: true, detail: 'the card has no tree (no project root, no worktree)' };
+    const base = frozen.files as Record<string, string>;
+    const own = new Set<string>();
+    try {
+      // Paths relative to the card's tree, whatever the repository's shape; NUL-separated,
+      // no rename detection (a user's diff.renames must not decide this).
+      const z = (args: string[]) => ctx.git(['-C', ctx.root!, ...args]).split('\0').filter(Boolean);
+      // What is left out, and nothing more (review): commits already on a remote's
+      // DEFAULT branch - main's work, however it came in (merge, fast-forward,
+      // rebase) - and the server's own close/step commits for ANOTHER card. The
+      // card's own branch being pushed hides nothing. Known limits: another
+      // agent's untagged commit fast-forwarded from a LOCAL branch, and an
+      // unclaimed file in a shared tree, still count; so does a default branch not
+      // named main/master when refs/remotes/<r>/HEAD is absent (a clone sets it,
+      // `git remote add` does not); a hand-written close() subject naming another
+      // real card would hide a test (a warning, not a gate).
+      const defaults = ctx.git(['-C', ctx.root, 'for-each-ref', '--format=%(refname)', 'refs/remotes/*/HEAD', 'refs/remotes/*/main', 'refs/remotes/*/master'])
+        .split('\n').map(r => r.trim()).filter(Boolean);
+      const log = ctx.git(['-C', ctx.root, 'log', '--first-parent', '--no-merges', '--no-renames', '--diff-filter=A', '--name-only', '--relative', '-z', '--format=%x01%s', `${frozen.head}..HEAD`, ...(defaults.length ? ['--not', ...defaults] : [])]);
+      for (const block of log.split('\x01').filter(Boolean)) {
+        const [subject, ...names] = block.split(/\n|\0/).filter(Boolean);
+        const other = /^(close|step)\([^)]*\):.*\[([0-9a-f]{8}-[0-9a-f-]{27,})\]\s*$/.exec(subject ?? '')?.[2];
+        if (other && other !== ctx.item.id) continue;
+        for (const n of names) own.add(n);
+      }
+      for (const f of z(['diff', '--cached', '--no-renames', '--diff-filter=A', '--name-only', '--relative', '-z'])) own.add(f);
+      for (const f of z(['ls-files', '--others', '--exclude-standard', '-z'])) own.add(f);
+    } catch (e: any) {
+      return { outcome: 'unavailable', soft: true, detail: `git could not list what was added since ${frozen.head.slice(0, 12)}: ${e?.message ?? e}` };
+    }
+    const prefix = reportPrefix(ctx);
+    const late = [...own]
+      // Still there: added then deleted is no late test.
+      .filter(f => fs.existsSync(path.join(ctx.root!, f)))
+      .filter(f => !ctx.ignoredPaths.some(p => within(f, p)) && !ctx.foreignClaims.some(c => within(`${prefix}${f}`, c)))
+      .filter(f => ANY_TEST_FILE_PATTERN.test(f) && !(f in base));
+    return late.length
+      ? { outcome: 'fail', detail: `test file(s) added after the tests were frozen: ${list(late)}. Nothing has shown they do anything: show each one fails without the change it covers.` }
+      : { outcome: 'pass', detail: 'no new test file since the tests were frozen (tests added inside existing test files are not looked at)' };
   },
 
   'test-set-identical': ctx => {

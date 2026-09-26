@@ -73,7 +73,7 @@ describe('describeFlowContract', () => {
   it('carries every role with its built-ins, and every catalogue check with its params', () => {
     const c = describeFlowContract(tdd());
     expect(c.roles.map(r => r.id)).toEqual([...STEP_ROLES]);
-    expect(c.roles.find(r => r.id === 'review')!.builtins.map(b => b.id)).toEqual(['review-record']);
+    expect(c.roles.find(r => r.id === 'review')!.builtins.map(b => b.id)).toEqual(['review-record', 'tests-added-late']); // d26832d6 #21
     expect(c.catalogue.map(k => k.id).sort()).toEqual(Object.keys(CHECK_CATALOGUE).sort());
     const ha = c.catalogue.find(k => k.id === 'human-approval')!;
     expect(ha.params.signature).toMatchObject({ values: ['none', 'passkey'], default: 'none' });

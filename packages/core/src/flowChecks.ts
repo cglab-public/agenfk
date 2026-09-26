@@ -102,6 +102,10 @@ export const CHECK_CATALOGUE: Record<string, CheckDef> = {
   'new-tests-born-green': def({ id: 'new-tests-born-green', group: 'tests', defaultSeverity: 'warn', needsCapture: true,
     requires: () => ['stepEntryTests'],
     description: 'Warns about new tests that already pass: they prove nothing about code not yet written.' }),
+  // d26832d6 #21: no capture, so no suite run - it reads git against the head the tests were frozen at.
+  'tests-added-late': def({ id: 'tests-added-late', group: 'tests', defaultSeverity: 'warn', needsCapture: false,
+    requires: () => ['testSurface'],
+    description: 'Warns about test files added after the step that writes tests froze them: nothing has shown they fail without the change. Runs no suite.' }),
   'red-is-assertion': def({ id: 'red-is-assertion', group: 'tests', defaultSeverity: 'warn', needsCapture: true,
     requires: () => ['stepEntryTests'],
     description: 'Warns when a new test fails with an error rather than a failed assertion.' }),
@@ -173,7 +177,7 @@ export const ROLE_BUILTINS: Record<StepRole, StepCheckRef[]> = {
     ref('test-count-not-lower', { since: 'test-authoring' }),
   ],
   refactoring: [ref('suite-green'), ref('test-set-identical'), ref('test-surface-frozen', { mode: 'strict', since: 'step-entry' })],
-  review: [ref('review-record')],
+  review: [ref('review-record'), ref('tests-added-late')],
   testing: [ref('suite-green')],
   closing: [ref('server-owned-verify')],
 };

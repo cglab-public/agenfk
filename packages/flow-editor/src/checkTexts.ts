@@ -25,6 +25,7 @@ export const CHECK_TEXTS: Record<string, CheckText> = {
   'new-tests-exist': { title: 'New tests were added', stops: 'leaving the step without writing a test', must: 'Add at least one test' },
   'some-new-test-red': { title: 'New tests fail first', stops: 'tests that never proved anything', must: 'Add at least one test that fails before the code exists' },
   'new-tests-born-green': { title: 'New tests already passing', stops: 'nothing on its own: it flags tests that passed before any code', must: '' },
+  'tests-added-late': { title: 'Tests added after they were written', stops: 'nothing on its own: it flags test files added after the tests were frozen, and runs no suite', must: '' },
   'red-is-assertion': { title: 'Fails on an assertion', stops: 'nothing on its own: it flags red caused by a crash, not a check', must: '' },
   'existing-tests-still-green': { title: 'Existing tests still pass', stops: 'breaking old behaviour while writing new tests', must: 'Keep every existing test passing' },
   'suite-green': { title: 'Whole test suite passes', stops: 'handing over broken code', must: 'Get the whole suite passing' },

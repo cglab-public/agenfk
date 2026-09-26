@@ -33,7 +33,7 @@ if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
 import { app, initStorage, storage, VERIFY_TOKEN, reportOwned } from '../server';
 import { surfaceOf } from '../stepRecords';
-import { formatCheckResults, describeCapture } from '../checkEngine';
+import { formatCheckResults, describeCapture, EVALUATORS } from '../checkEngine';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -243,6 +243,14 @@ describe('a rollback: greens kept for reuse, frozen tests not laundered', () => 
     expect(r.status, JSON.stringify(r.body)).toBe(200);
   });
 
+  it('counts a new test file in another language as a change to frozen tests (a Go test added on the refactoring step)', async () => {
+    const t = await atTidy();
+    write(t.dir, 'pkg/thing_test.go', 'package pkg\n');
+    const r = await agent().put(`/items/${t.id}`).send({ status: 'BUILD' });
+    expect(r.status).toBe(409);
+    expect(r.body.error).toMatch(/pkg\/thing_test\.go/);
+  });
+
   it('closes the way round through PAUSED: pausing, then sending the card to the coding step, is refused the same', async () => {
     const t = await atTidy();
     write(t.dir, 'tests/mul.test.js', 'T mul_renamed mul=12\n');
@@ -307,5 +315,182 @@ describe('what verify says', () => {
     expect(describeCapture({ kind: 'capture', exitCode: 0 })).toMatch(/^▶ ran the suite \(exit 0\)/);
     expect(describeCapture({ kind: 'capture', exitCode: 0, reusedFrom: { itemId: 'abcdef1234', step: 'BUILD', at: 'T1' } })).toMatch(/not re-run.*T1.*BUILD of card abcdef12/);
     expect(describeCapture({ kind: 'capture', exitCode: 0, reusedFrom: { itemId: 'x' }, surfaceRereadFrom: { at: 'T2' } })).toMatch(/read again for the new declared test paths/);
+  });
+});
+
+describe('tests-added-late: test files added after the tests were frozen, flagged without a run (d26832d6 #21)', () => {
+  // Real git, not a fake: the paths git prints are the point.
+  const gitIn = (dir: string) => (args: string[]) => execSync(`git ${args.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ')}`, { cwd: dir, encoding: 'utf8', shell: '/bin/sh' });
+  const sh = (dir: string, cmd: string) => execSync(cmd, { cwd: dir, shell: '/bin/sh', encoding: 'utf8' }).trim();
+  /** A repository whose tests were frozen at HEAD; `root` is the card's tree inside it. */
+  function frozenRepo(sub = '') {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-late-'));
+    dirs.push(repo);
+    sh(repo, 'git init -q -b main && git config user.email t@t && git config user.name t');
+    const root = sub ? path.join(repo, sub) : repo;
+    write(root, 'tests/a.test.js', 'a');
+    write(root, 'src/x.js', 'x');
+    sh(repo, 'git add -A && git commit -qm base');
+    return { repo, root, head: sh(repo, 'git rev-parse HEAD') };
+  }
+  const judge = (root: string, head: string, over: Record<string, any> = {}, files: Record<string, string> = { 'tests/a.test.js': 'h' }) =>
+    EVALUATORS['tests-added-late']({ root, git: gitIn(root), item: { id: '11111111-1111-4111-8111-111111111111', type: 'TASK' }, cardBranch: null, cardKeys: [], testPaths: [], ignoredPaths: ['.reports'],
+      foreignClaims: [], deferToCommand: [], children: [], capture: null, entry: null, entryHead: null, records: { testSurface: { files, scope: 'declared', complete: true, declared: [], head } }, ...over } as any, {});
+
+  it('flags test files added since the freeze - committed, staged or untracked - and nothing else', () => {
+    const { repo, root, head } = frozenRepo();
+    write(root, 'tests/committed.test.js', 'c'); sh(repo, 'git add -A && git commit -qm more');
+    write(root, 'tests/staged.test.js', 's'); sh(repo, 'git add tests/staged.test.js');
+    write(root, 'tests/untracked.test.js', 'u');
+    write(root, 'src/fix.js', 'f');
+    write(root, '.reports/r.test.js', 'r');
+    const r = judge(root, head);
+    expect(r.outcome).toBe('fail');
+    for (const f of ['tests/committed.test.js', 'tests/staged.test.js', 'tests/untracked.test.js']) expect(r.detail).toContain(f);
+    expect(r.detail).not.toMatch(/src\/fix\.js|\.reports/);
+    expect(r.detail).toMatch(/fails without the change it covers/);
+  });
+
+  it('in a project rooted in a subdirectory, a test frozen untracked and committed later is not late', () => {
+    const { repo, root, head } = frozenRepo('app');
+    write(root, 'tests/frozen.test.js', 'f'); // untracked at the freeze, in its surface
+    write(repo, 'other/pkg.test.js', 'o'); // another package's test, outside the tree
+    sh(repo, 'git add -A && git commit -qm later');
+    write(root, 'tests/late.test.js', 'l');
+    const r = judge(root, head, {}, { 'tests/a.test.js': 'h', 'tests/frozen.test.js': 'h' });
+    expect(r.outcome).toBe('fail');
+    expect(r.detail).toContain('tests/late.test.js');
+    expect(r.detail).not.toMatch(/frozen\.test\.js|app\/|other\//);
+  });
+
+  it("leaves out another card's close commit and main's tests merged in: only this card's additions count", () => {
+    const { repo, root, head } = frozenRepo();
+    write(root, 'tests/sibling.test.js', 's'); sh(repo, 'git add -A && git commit -qm "close(task): sibling [22222222-2222-4222-8222-222222222222]"');
+    sh(repo, 'git checkout -q -b side HEAD~1');
+    write(root, 'tests/main.test.js', 'm'); sh(repo, 'git add -A && git commit -qm main-work && git checkout -q - && git merge -q --no-edit side');
+    expect(judge(root, head).outcome).toBe('pass');
+    write(root, 'tests/mine.test.js', 'x'); sh(repo, 'git add -A && git commit -qm "close(task): mine [11111111-1111-4111-8111-111111111111]"');
+    expect(judge(root, head).detail).toContain('tests/mine.test.js');
+  });
+
+  it('is not led by rename detection and sees non-ASCII names', () => {
+    const { repo, root, head } = frozenRepo();
+    sh(repo, 'git mv tests/a.test.js tests/renamed.test.js && git commit -qm mv');
+    write(root, 'tests/é.test.js', 'e');
+    const r = judge(root, head);
+    for (const f of ['tests/renamed.test.js', 'tests/é.test.js']) expect(r.detail).toContain(f);
+  });
+
+  it("knows other languages' test names, and not a production class named like one", () => {
+    const { root, head } = frozenRepo();
+    write(root, 'pkg/thing_test.go', 'g');
+    write(root, 'svc/src/test/java/a/ThingTest.java', 'j');
+    write(root, 'App.UnitTests/ThingTests.cs', 'c');
+    write(root, 'svc/src/integrationTest/kotlin/a/ItTest.kt', 'k');
+    write(root, 'crate/tests/api.rs', 'r');
+    write(root, 'svc/src/main/java/a/SpeedTest.java', 'not a test: production code');
+    const r = judge(root, head);
+    for (const f of ['pkg/thing_test.go', 'svc/src/test/java/a/ThingTest.java', 'App.UnitTests/ThingTests.cs', 'svc/src/integrationTest/kotlin/a/ItTest.kt', 'crate/tests/api.rs']) expect(r.detail).toContain(f);
+    expect(r.detail).not.toContain('SpeedTest.java');
+  });
+
+  /** A remote the repo tracks, with `main`'s own work pushed there by someone else. */
+  function withRemote(repo: string) {
+    const remote = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-late-remote-'));
+    dirs.push(remote);
+    sh(remote, 'git init -q --bare -b main');
+    sh(repo, `git remote add origin ${remote} && git push -q origin main`);
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-late-other-'));
+    dirs.push(other);
+    sh(other, `git clone -q ${remote} . && git config user.email o@o && git config user.name o`);
+    return { pushMainTest: (f: string) => { write(other, f, 'm'); sh(other, `git add -A && git commit -qm main-work && git push -q origin main`); sh(repo, 'git fetch -q origin'); } };
+  }
+
+  it("pushing the card's own branch hides nothing: its late test is still flagged", () => {
+    const { repo, root, head } = frozenRepo();
+    withRemote(repo);
+    sh(repo, 'git checkout -q -b feat/X');
+    write(root, 'tests/late.test.js', 'l'); sh(repo, 'git add -A && git commit -qm late && git push -q origin feat/X');
+    expect(judge(root, head).detail).toContain('tests/late.test.js');
+  });
+
+  it("main's tests arriving by a fast-forward are not this card's", () => {
+    const { repo, root, head } = frozenRepo();
+    withRemote(repo).pushMainTest('tests/main.test.js');
+    sh(repo, 'git merge -q --ff-only origin/main');
+    expect(judge(root, head).outcome).toBe('pass');
+  });
+
+  it("main's tests arriving by a rebase are not this card's, while its own rebased commit still is", () => {
+    const { repo, root, head } = frozenRepo();
+    const r = withRemote(repo);
+    sh(repo, 'git checkout -q -b card');
+    write(root, 'tests/mine.test.js', 'x'); sh(repo, 'git add -A && git commit -qm "wip: my test"');
+    r.pushMainTest('tests/main.test.js');
+    sh(repo, 'git rebase -q origin/main');
+    const got = judge(root, head);
+    expect(got.detail).toContain('tests/mine.test.js');
+    expect(got.detail).not.toContain('tests/main.test.js');
+  });
+
+  it('a test added and then deleted is no late test', () => {
+    const { repo, root, head } = frozenRepo();
+    write(root, 'tests/gone.test.js', 'g'); sh(repo, 'git add -A && git commit -qm add && git rm -q tests/gone.test.js && git commit -qm rm');
+    write(root, 'tests/staged-then-removed.test.js', 's'); sh(repo, 'git add -A'); fs.rmSync(path.join(root, 'tests/staged-then-removed.test.js'));
+    expect(judge(root, head).outcome).toBe('pass');
+  });
+
+  it('in a subdirectory project, a frozen test that is only STAGED is not late', () => {
+    const { repo, root, head } = frozenRepo('app');
+    write(root, 'tests/frozen.test.js', 'f'); sh(repo, 'git add app/tests/frozen.test.js');
+    expect(judge(root, head, {}, { 'tests/a.test.js': 'h', 'tests/frozen.test.js': 'h' }).outcome).toBe('pass');
+    // ...and a LATE one that is only staged is seen, under the tree's own path.
+    write(root, 'tests/late.test.js', 'l'); sh(repo, 'git add app/tests/late.test.js');
+    expect(judge(root, head, {}, { 'tests/a.test.js': 'h', 'tests/frozen.test.js': 'h' }).detail).toContain('tests/late.test.js');
+  });
+
+  it("a hand-written card tag is nobody's proof: only the server's own close/step commit for another card is left out", () => {
+    const { repo, root, head } = frozenRepo();
+    write(root, 'tests/late.test.js', 'l'); sh(repo, 'git add -A && git commit -qm "wip [deadbeef-dead-4ead-8ead-deadbeefdead]"');
+    expect(judge(root, head).detail).toContain('tests/late.test.js');
+  });
+
+  it('fixtures and snapshots under a declared test path are not test files', () => {
+    const { root, head } = frozenRepo();
+    write(root, 'tests/fixtures/data.json', '{}');
+    write(root, 'tests/__snapshots__/a.test.js.snap', 's');
+    expect(judge(root, head, { testPaths: ['tests'] }).outcome).toBe('pass');
+  });
+
+  it('passes when nothing test-shaped was added, and says what it does not look at', () => {
+    const { root, head } = frozenRepo();
+    write(root, 'src/fix.js', 'f');
+    const r = judge(root, head);
+    expect(r.outcome).toBe('pass');
+    expect(r.detail).toMatch(/inside existing test files are not looked at/);
+  });
+
+  it('judges nothing without a usable freeze: no record, no head, an incomplete surface, or git failing', () => {
+    const { root, head } = frozenRepo();
+    const soft = (r: any) => expect(r).toMatchObject({ outcome: 'unavailable', soft: true });
+    soft(judge(root, head, { records: {} }));
+    soft(judge(root, head, { records: { testSurface: { files: {}, scope: 'declared' } } }));
+    soft(judge(root, head, { records: { testSurface: { files: {}, scope: 'declared', complete: false, head } } }));
+    soft(judge(root, 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'));
+  });
+
+  it('the step that writes tests records the commit it froze them at, which the review step then reads', async () => {
+    const reviewSteps = STEPS.map(x => (x.name === 'LOOK' ? { ...x, role: 'review' } : x));
+    const t = await setup({ format: 'vitest-json', command: 'node runner.cjs', reportPath: 'report.json' });
+    const f = await agent().post('/flows').send({ name: `enh-review-${++seq}`, steps: reviewSteps });
+    await storage.updateProject(t.pid, { flowId: f.body.id } as never);
+    await advanceTo(t.id, 'LOOK', HONEST(t.dir));
+    const frozen = (await item(t.id)).stepRecords.find((r: any) => r.kind === 'record' && r.name === 'testSurface');
+    expect(typeof frozen?.value?.head).toBe('string');
+    write(t.dir, 'tests/late.test.js', 'T late add=ok\n');
+    const r = await validate(t.id);
+    const late = (r.body.checks ?? (await item(t.id)).lastChecks?.results ?? []).find((x: any) => x.id === 'tests-added-late');
+    expect(late).toMatchObject({ outcome: 'fail', blocking: false });
+    expect(late.detail).toContain('tests/late.test.js');
   });
 });

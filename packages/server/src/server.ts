@@ -10,7 +10,7 @@ import { parseActor, parseFindings, readTranscriptIdentity } from './reviewRecor
 import * as passkeys from './passkeys';
 import { argvHash, awaitsPersonApproval, judgeCommandChecks, type CommandApproval } from './commandChecks';
 import { suggestTestReport, withTestFiles } from './testReportHint';
-import { countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, describeCapture, needsCapture, needsEntryRecord, parseAgentReports, type AgentReport, type CheckResult } from './checkEngine';
+import { countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, describeCapture, TEST_FILE_PATTERN, ANY_TEST_FILE_PATTERN, needsCapture, needsEntryRecord, parseAgentReports, type AgentReport, type CheckResult } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, foreignClaimsFor, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
@@ -1896,7 +1896,7 @@ async function frozenTestsRollbackRefusal(item: any, toStatus: string, flow: Tra
   // away), additions go unchecked here - edits and deletions of the entry's
   // test files still are. Refusing instead would strand the card: a rollback has no override.
   const since = additionsFrozen && typeof entry.head === 'string' ? changedSince(root, entry.head, owned) : null;
-  const fresh = (since?.inside ?? []).filter(f => TEST_FILE_NAME.test(f) && !(f in base) && fs.existsSync(path.join(root, f)));
+  const fresh = (since?.inside ?? []).filter(f => ANY_TEST_FILE_PATTERN.test(f) && !(f in base) && fs.existsSync(path.join(root, f)));
   const files = [...new Set([...Object.keys(base), ...(entry.tests ?? []).map((t: any) => t.file), ...fresh])];
   const now = surfaceOf(root, files, entry.surfaceDeclared ?? [], { listTree, exclude: owned }).files;
   const changed = [...new Set([...Object.keys(base), ...Object.keys(now)])].filter(f => base[f] !== now[f] && (additionsFrozen || f in base))
@@ -3581,7 +3581,7 @@ const capturesInFlight = new Map<string, Promise<{ out: CaptureOutcome; itemId: 
 interface LazyPlan { entry: any; ran: string[]; changed: string[]; command: string }
 
 /** A file named as a test file itself - not a helper, fixture, setup or snapshot that happens to live beside tests. */
-const TEST_FILE_NAME = /(\.(test|spec)\.[cm]?[jt]sx?$)|(-test\.[cm]?[jt]s$)|((^|\/)test(-[^/]+)?\.[cm]?[jt]s$)|((^|\/)test_[^/]+\.py$)|(_test\.py$)/;
+const TEST_FILE_NAME = TEST_FILE_PATTERN;
 /** Past this many files a partial run buys little, and the command line gets long. */
 const LAZY_MAX_FILES = 200;
 

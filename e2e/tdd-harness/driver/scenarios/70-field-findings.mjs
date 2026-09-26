@@ -303,6 +303,40 @@ export const scenarios = [
     },
   },
 
+  // ── #21: a test added after the tests were frozen is flagged, with no suite run ──
+  {
+    check: 'tests-added-late',
+    name: 'a test file added on REVIEW is flagged on the way out, and no suite runs for it',
+    expected: 'warn',
+    run: async () => {
+      const ctx = await tddProject();
+      await drive(ctx, 'REVIEW');
+      write(ctx.dir, ctx.k.tests('more', [['addsAgain', 'green']]));
+      await HONEST.REVIEW(ctx);
+      sh(`git add ${ctx.k.paths.more}`, ctx.dir);
+      const before = ctx.runs();
+      await verify(ctx.id, { actor: AUTHOR });
+      const c = await card(ctx.id);
+      const o = outcomeOf(c, 'tests-added-late', 'REVIEW');
+      const v = verdictOf(o, c.status !== 'REVIEW');
+      return { actual: ctx.runs() === before ? v : `ran ${ctx.runs() - before}`, detail: `${o.detail ?? ''} [card on ${c.status}]` };
+    },
+  },
+  {
+    check: 'tests-added-late',
+    name: 'a REVIEW that adds no test passes it',
+    expected: 'pass',
+    run: async () => {
+      const ctx = await tddProject();
+      await drive(ctx, 'REVIEW');
+      await HONEST.REVIEW(ctx);
+      await verify(ctx.id, { actor: AUTHOR });
+      const c = await card(ctx.id);
+      const o = outcomeOf(c, 'tests-added-late', 'REVIEW');
+      return { actual: verdictOf(o, c.status !== 'REVIEW'), detail: `${o.detail ?? ''} [card on ${c.status}]` };
+    },
+  },
+
   // ── #8 / #9 / #15: what the CLI says (a refusal's non-zero exit is a guard: it already holds) ────────────────────────────────
   {
     check: 'cli-verify',
