@@ -434,6 +434,12 @@ export interface TestReportSetting {
   reportPath: string;
   /** Extra files or directories the tests depend on (helpers, fixtures, setup), hashed into the surface. */
   surface?: string[];
+  /**
+   * 32045202: globs capture reuse leaves out of the tree's content, unless a
+   * test names the file. Absent: every Markdown file (**\/*.md); [] leaves
+   * nothing out.
+   */
+  reuseIgnore?: string[];
 }
 
 /**

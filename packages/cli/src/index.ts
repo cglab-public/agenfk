@@ -1964,13 +1964,14 @@ program
   .option('--test-report-command <cmd>', 'Command that runs the suite and writes the report')
   .option('--test-report-path <path>', 'Where that command writes the report, relative to the project root; several reports (one per suite) as a comma list')
   .option('--test-report-surface <paths>', 'Comma-separated test paths (files or directories) the report cannot name, so test-surface-frozen can see them; "none" clears them')
+  .option('--test-report-reuse-ignore <globs>', 'Comma-separated globs a re-run skips when only they changed, unless a test names the file (default: **/*.md); "none" ignores nothing')
   .option('--test-report <none>', 'Pass "none" to clear the test report setting')
   .action(async (id, options) => {
     try {
       const updates: Record<string, unknown> = {};
       const wantsTestReport = options.testReport !== undefined || options.testReportFormat !== undefined
         || options.testReportCommand !== undefined || options.testReportPath !== undefined
-        || options.testReportSurface !== undefined;
+        || options.testReportSurface !== undefined || options.testReportReuseIgnore !== undefined;
       if (options.name !== undefined) updates.name = options.name;
       if (options.description !== undefined) updates.description = options.description;
       if (options.verifyCommand === undefined && options.projectRoot === undefined
@@ -2018,6 +2019,11 @@ program
             ? stored.surface
             : options.testReportSurface === 'none' ? undefined : String(options.testReportSurface).split(',').map(p => p.trim()).filter(Boolean);
           if (surface !== undefined) merged.surface = surface;
+          // 32045202: kept across other changes, like the surface; "none" is an empty list, which ignores nothing.
+          const reuseIgnore = options.testReportReuseIgnore === undefined
+            ? stored.reuseIgnore
+            : options.testReportReuseIgnore === 'none' ? [] : String(options.testReportReuseIgnore).split(',').map(p => p.trim()).filter(Boolean);
+          if (reuseIgnore !== undefined) merged.reuseIgnore = reuseIgnore;
           if (!merged.format || !merged.command || !merged.reportPath) {
             console.error(chalk.red('Error: this project has no test report to change yet. Set one with --test-report-format, --test-report-command and --test-report-path.'));
             process.exit(1);

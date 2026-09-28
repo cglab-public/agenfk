@@ -11,6 +11,7 @@ import * as passkeys from './passkeys';
 import { argvHash, awaitsPersonApproval, judgeCommandChecks, type CommandApproval } from './commandChecks';
 import { suggestTestReport, withTestFiles } from './testReportHint';
 import { SuiteSlots, suiteRunLimit, waitingLine } from './suiteSlots';
+import { DEFAULT_REUSE_IGNORE, namedByTests, reuseIgnoreMatcher } from './reuseIgnore';
 import { capturedGreen, countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, describeCapture, TEST_FILE_PATTERN, ANY_TEST_FILE_PATTERN, needsCapture, needsEntryRecord, parseAgentReports, parseCheckAnswers, describeTreeWarnings, MAX_UNREVIEWED_LINES, type AgentReport, type CheckResult, type TreeWarning } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, foreignClaimsFor, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
@@ -2750,7 +2751,7 @@ async function noteGateChangeOnCards(project: any, heading: string, body: string
 // ── Test reports and step records (CGLAB-379) ────────────────────────────────
 
 const TEST_REPORT_FORMATS = new Set(['vitest-json', 'junit-xml']);
-type TestReportSetting = { format: string; command: string; reportPath: string | string[]; surface?: string[] };
+type TestReportSetting = { format: string; command: string; reportPath: string | string[]; surface?: string[]; reuseIgnore?: string[] };
 /**
  * d26832d6 #6: a project may write several reports (a pytest suite and a
  * vitest suite, each its own JUnit file); they are read as one. A single path
@@ -2775,7 +2776,7 @@ app.put("/projects/:id/test-report", asyncHandler(async (req: any, res: any) => 
   if (Object.prototype.hasOwnProperty.call(body, 'testReport') && body.testReport === null) {
     next = null;
   } else {
-    const { format, command, reportPath, surface } = body;
+    const { format, command, reportPath, surface, reuseIgnore } = body;
     const text = (v: unknown) => typeof v === 'string' && v.trim().length > 0;
     const paths = Array.isArray(reportPath) ? reportPath : [reportPath];
     if (!TEST_REPORT_FORMATS.has(format) || !text(command) || !paths.length || !paths.every(text)) {
@@ -2784,7 +2785,11 @@ app.put("/projects/:id/test-report", asyncHandler(async (req: any, res: any) => 
     if (surface !== undefined && !(Array.isArray(surface) && surface.every(text))) {
       return res.status(400).json({ error: 'testReport.surface must be an array of paths (files or directories) relative to the tree: helpers, fixtures and setup files the tests depend on.' });
     }
-    next = { format, command, reportPath: paths.length === 1 ? paths[0] : paths, ...(surface !== undefined ? { surface } : {}) };
+    // 32045202: the globs capture reuse leaves out; [] leaves out nothing.
+    if (reuseIgnore !== undefined && !(Array.isArray(reuseIgnore) && reuseIgnore.every(text))) {
+      return res.status(400).json({ error: 'testReport.reuseIgnore must be a list of globs relative to the tree (e.g. ["docs/**", "**/*.md"]), or [] to leave nothing out.' });
+    }
+    next = { format, command, reportPath: paths.length === 1 ? paths[0] : paths, ...(surface !== undefined ? { surface } : {}), ...(reuseIgnore !== undefined ? { reuseIgnore } : {}) };
   }
   const before: any = await storage.getProject(req.params.id);
   if (!before) return res.status(404).json({ error: "Project not found" });
@@ -3424,13 +3429,14 @@ function treeFilesState(root: string, excludeRel: TreeExclude): string | null {
  * What a tree state leaves out: a path, or several (the report and the
  * directory it owns, d26832d6 #3). A path excludes everything under it.
  */
-type TreeExclude = string | readonly string[] | null;
+type TreeExclude = string | readonly string[] | ((rel: string) => boolean) | null;
 /**
  * The exclusion test. `.gitignore` counts like any file (d26832d6 review): a
  * suite can read it (this repository's own tests do), so a green taken before
  * it changed is no green of the content after.
  */
 function excludedBy(excludeRel: TreeExclude): (rel: string) => boolean {
+  if (typeof excludeRel === 'function') return excludeRel;
   const list = excludeRel === null ? [] : typeof excludeRel === 'string' ? [excludeRel] : excludeRel;
   return rel => list.some(p => rel === p || rel.startsWith(`${p}/`));
 }
@@ -3568,6 +3574,40 @@ const commandStateOf = (root: string, project: any): string | null => {
   const head = t && t.shareable ? readHead(root, gitRun) : null;
   return t && head ? `${head}\0${t.index}\0${t.hash}` : null;
 };
+/**
+ * 32045202: the state capture REUSE compares - the tree's files with the
+ * report aside AND the project's reuse-ignore globs (default: every Markdown
+ * file) left out, except a file some test names. Only reuse reads it; the
+ * record's filesState, the final step and command checks keep every file.
+ * Null when the tree cannot be read, or nothing may be shared on it.
+ */
+function suiteStateOf(root: string, setting: TestReportSetting | undefined): string | null {
+  if (!setting) return null;
+  const owned = excludedBy(reportsOwned(root, setting));
+  const patterns = Array.isArray(setting.reuseIgnore) ? setting.reuseIgnore : DEFAULT_REUSE_IGNORE;
+  let ignored = new Set<string>();
+  if (patterns.length) {
+    try {
+      const files = execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 256 * 1024 * 1024 }).split('\0').filter(Boolean);
+      const match = reuseIgnoreMatcher(patterns);
+      const candidates = files.filter(f => match(f) && !owned(f));
+      if (candidates.length) {
+        const sources: string[] = [];
+        for (const f of files) {
+          if (!(TEST_FILE_NAME.test(f) || isTestPath(f, setting.surface ?? []))) continue;
+          try { sources.push(fs.readFileSync(path.join(root, f), 'utf8')); } catch { /* gone: names nothing */ }
+        }
+        const named = namedByTests(candidates, sources);
+        ignored = new Set(candidates.filter(c => !named.has(c)));
+      }
+    } catch { return null; }
+  }
+  const t = treeFiles(root, rel => owned(rel) || ignored.has(rel));
+  return t && t.shareable ? t.hash : null;
+}
+/** A capture record's reuse state (32045202); null for a record from before it, or one that did not fence its run. */
+const suiteStateOfRecord = (r: any): string | null => (typeof r?.suiteState === 'string' ? r.suiteState : null);
+
 /** A capture record's state, as treeStateOf reads it; null for a record that did not fence its run. */
 const stateOfRecord = (r: any): string | null => (typeof r?.filesState === 'string' ? r.filesState : null);
 
@@ -3619,7 +3659,7 @@ async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) 
     const cleanSha = readCleanTreeSha(root, gitRun);
     // 3ffc9651: the tree's state, dirty or not - what reuse and single-flight key on.
     const state = treeStateOf(root, project);
-    const reused = await reusableCapture(item, project, root, cleanSha, state);
+    const reused = await reusableCapture(item, project, root, cleanSha, state, suiteStateOf(root, setting));
     if (reused) {
       const fresh: any = await storage.getItem(item.id);
       if (!fresh || fresh.status !== item.status) return { status: 409, error: 'CARD_MOVED', message: `The card moved (${item.status} -> ${fresh?.status ?? 'deleted'}); nothing was recorded.` };
@@ -3806,6 +3846,7 @@ async function runCapture(item: any, root: string, setting: TestReportSetting | 
   if (record.available && record.clean && capturedGreen(record) && !record.lazy) noteGreen(item.projectId, root, record.head, item.id);
   // 3ffc9651: and by its state, clean or dirty.
   if (record.available && capturedGreen(record) && !record.lazy) noteGreen(item.projectId, root, stateOfRecord(record), item.id);
+  if (record.available && capturedGreen(record) && !record.lazy) noteGreen(item.projectId, root, suiteStateOfRecord(record), item.id);
   return { record };
 }
 
@@ -3863,6 +3904,9 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
       }
       // What the run saw, without HEAD: a close that commits exactly this can re-stamp it (e99b5015).
       record.filesState = stateAfter.slice(stateAfter.indexOf(':') + 1);
+      // 32045202: what reuse compares, docs no test names aside.
+      const suite = suiteStateOf(root, setting);
+      if (suite) record.suiteState = suite;
       // Each report the command should have written, read as one run's results.
       // One that is missing says which: a suite that crashed before writing its
       // report used to read as a vague "no report" (d26832d6 #6).
@@ -3960,6 +4004,7 @@ function indexProjectGreens(projectId: string): Promise<void> {
         for (const r of [...(card.stepRecords ?? []), ...(card.supersededRecords ?? [])]) if (r?.kind === 'capture' && r.available === true && capturedGreen(r) && !r.reusedFrom && !r.lazy) {
           if (r.clean === true) noteGreen(projectId, r.root, r.head, card.id);
           noteGreen(projectId, r.root, stateOfRecord(r), card.id);
+          noteGreen(projectId, r.root, suiteStateOfRecord(r), card.id);
         }
         for (const x of testRecords(card.tests)) if (x.status === 'PASSED' && x.commit) noteGreen(projectId, x.commitRoot, x.commit, card.id);
       }
@@ -3987,11 +4032,11 @@ function isOwnGreenRun(r: any, setting: TestReportSetting, root: string): boolea
  * the same content the green ran on. So the report is re-read, not re-run
  * (the field card ran its whole suite again for a surface declaration).
  */
-function resurfacedGreen(candidates: any[], setting: TestReportSetting, root: string, sha: string | null, state: string | null, base: any): any | null {
+function resurfacedGreen(candidates: any[], setting: TestReportSetting, root: string, sha: string | null, state: string | null, base: any, suite: string | null = null): any | null {
   const sameRun = (r: any) => r?.kind === 'capture' && r.root === root && r.available === true && !r.reusedFrom && !r.lazy && capturedGreen(r)
     && r.command === setting.command && r.format === setting.format && r.surfaceScope === 'declared' && Array.isArray(r.tests)
     && JSON.stringify(r.reportPaths ?? null) === JSON.stringify(reportPathsOf(setting))
-    && ((sha !== null && r.clean === true && r.head === sha) || (state !== null && stateOfRecord(r) === state));
+    && ((sha !== null && r.clean === true && r.head === sha) || (state !== null && stateOfRecord(r) === state) || (suite !== null && suiteStateOfRecord(r) === suite));
   let best: { card: any; r: any } | null = null;
   for (const card of candidates) for (const r of [...(card.stepRecords ?? []), ...(card.supersededRecords ?? [])]) if (sameRun(r) && (!best || String(r.at) > String(best.r.at))) best = { card, r };
   if (!best) return null;
@@ -4035,24 +4080,24 @@ function ranAsSetNow(r: any, setting: TestReportSetting): boolean {
  * content, the card's own included. Only a run that fenced its tree carries a
  * state (its filesState), so a run that saw the tree change never matches.
  */
-async function reusableCapture(item: any, project: any, root: string, sha: string | null, state: string | null = null): Promise<any | null> {
-  if (!sha && !state) return null;
+async function reusableCapture(item: any, project: any, root: string, sha: string | null, state: string | null = null, suite: string | null = null): Promise<any | null> {
+  if (!sha && !state && !suite) return null;
   const setting: TestReportSetting | undefined = project?.testReport;
   const command = setting?.command ?? project?.verifyCommand;
   if (!command) return null;
   await indexProjectGreens(item.projectId);
   const candidates: any[] = [];
-  const ids = new Set<string>([...(sha ? greensAt.get(greenKey(item.projectId, root, sha)) ?? [] : []), ...(state ? greensAt.get(greenKey(item.projectId, root, state)) ?? [] : [])]);
+  const ids = new Set<string>([...(sha ? greensAt.get(greenKey(item.projectId, root, sha)) ?? [] : []), ...(state ? greensAt.get(greenKey(item.projectId, root, state)) ?? [] : []), ...(suite ? greensAt.get(greenKey(item.projectId, root, suite)) ?? [] : [])]);
   for (const id of ids) {
     const card: any = await storage.getItem(id);
     if (card && card.projectId === item.projectId) candidates.push(card);
   }
   const base = { step: item.status, kind: 'capture', at: new Date().toISOString(), head: sha ?? readHead(root, gitRun), clean: sha !== null, command, root };
   if (setting) {
-    const same = (r: any) => isOwnGreenRun(r, setting, root) && ((sha !== null && r.clean === true && r.head === sha) || (state !== null && stateOfRecord(r) === state));
+    const same = (r: any) => isOwnGreenRun(r, setting, root) && ((sha !== null && r.clean === true && r.head === sha) || (state !== null && stateOfRecord(r) === state) || (suite !== null && suiteStateOfRecord(r) === suite));
     let best: { card: any; r: any } | null = null;
     for (const card of candidates) for (const r of [...(card.stepRecords ?? []), ...(card.supersededRecords ?? [])]) if (same(r) && (!best || String(r.at) > String(best.r.at))) best = { card, r };
-    if (!best) return resurfacedGreen(candidates, setting, root, sha, state, base);
+    if (!best) return resurfacedGreen(candidates, setting, root, sha, state, base, suite);
     const { supersededAt: _s, rolledBackTo: _t, ...green } = best.r;
     return { ...green, ...base, reusedFrom: { itemId: best.card.id, step: best.r.step, at: best.r.at } };
   }
