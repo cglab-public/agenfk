@@ -39,7 +39,7 @@ const API_URL = getApiUrl();
 
 // Global --toon switch: emit token-optimized TOON instead of JSON on read
 // commands. Falls back to JSON when the flag is absent.
-program.option('--toon', 'Emit token-optimized TOON instead of JSON on read commands');
+program.option('--toon', 'Emit token-optimized TOON instead of JSON on read commands (and for the card `create` prints)');
 
 /** Serialize structured data honoring the global --toon flag (else pretty JSON). */
 function structuredOutput(data: unknown): string {
@@ -1659,6 +1659,7 @@ program
   .option('-p, --parent <id>', 'Parent ID')
   .option('--project <id>', 'Project ID')
   .option('--jira-item <key>', 'Link the new card to a JIRA item by key (e.g. CGLAB-163)')
+  .option('--json', 'Print only the created card, as JSON (by default it follows the confirmation line)')
   .action(async (type, title, options) => {
     try {
       const itemType = type.toUpperCase() as ItemType;
@@ -1683,10 +1684,20 @@ program
       if (options.jiraItem !== undefined) payload.jiraItem = options.jiraItem;
 
       const { data } = await axios.post(`${API_URL}/items`, payload);
+      // CGLAB-427: the created card itself, so an agent need not query agenfk again for its id and details.
+      if (options.json || program.opts().toon) {
+        console.log(structuredOutput(data));
+        // stdout carries the card alone; a warning there would break the JSON.
+        if (data.jiraWarning) console.error(chalk.yellow(`  ! ${data.jiraWarning}`));
+        return;
+      }
       console.log(chalk.green(`Created ${type}: ${data.title} (ID: ${data.id})`));
       reportJiraLink(data, options.jiraItem);
+      console.log(structuredOutput(data));
     } catch (error: any) {
       console.error(chalk.red('Error creating item:'), error.response?.data?.error || error.message);
+      // A failed create must not read as a success to the agent that ran it.
+      process.exit(1);
     }
   });
 

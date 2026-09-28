@@ -100,7 +100,7 @@ enforced by the server. Each workflow tool name in this skill maps to a CLI comm
 | `update_project(id, {...})` | `agenfk update-project <id> [--name <name>][--description <text>][--verify-command <cmd>]` |
 | `list_items(projectId, ...)` | `agenfk list [--project <id>] [-t/--type <type>] [-s/--status <status>] [--active] [--all] [--json]` (`--active` = only items in an active working step; flow-aware) |
 | `get_item(id)` | `agenfk get <id> --json` |
-| `create_item(projectId, type, title)` | `agenfk create <TYPE> "<title>" --project <id> [-d/--description <desc>] [-p/--parent <id>] [--jira-item <KEY>]` |
+| `create_item(projectId, type, title)` | `agenfk create <TYPE> "<title>" --project <id> [-d/--description <desc>] [-p/--parent <id>] [--jira-item <KEY>] [--json]` (prints the created card's JSON) |
 | `update_item(id, {status})` | `agenfk update <id> [--status <name>][--title <t>][--description <d>][--type <T>]` (status is backward/rollback only) |
 | `update_item(id, {parentId})` | `agenfk update <id> --parent <parentId>` — re-parent; `--parent none` detaches to top level. Parent must be in the same project and cannot be the item itself or a descendant. |
 | `update_item(id, {worktree})` | `agenfk update <id> --worktree <path>` — run the card in that checkout of the project's repository; `--worktree none` — the project root, whatever its parents have; `--worktree inherit` — clear the choice. Never re-parent or detach a card to change where it runs. |
@@ -249,7 +249,7 @@ Use this skill whenever you are performing software engineering tasks to ensure 
 *   `agenfk current-project [--json]`: Print the current project id (resolved from the nearest `.agenfk/project.json`). Use this whenever a command needs `--project <id>` or the "active projectId".
 *   `agenfk list-projects --json`: List all existing projects.
 *   `agenfk create-project "<name>"`: Create a new project.
-*   `agenfk create <TYPE> "<title>" --project <id>`: Create a new workflow item. Add `--jira-item <KEY>` to link it to a JIRA item as it is created.
+*   `agenfk create <TYPE> "<title>" --project <id>`: Create a new workflow item. Add `--jira-item <KEY>` to link it to a JIRA item as it is created. It prints the created card - its JSON follows the confirmation line (`--json` prints the JSON alone) - so there is no need to look it up again; a create that fails exits non-zero.
 *   `agenfk update <id> --jira-item <KEY>`: Link an existing card to a JIRA item; `--jira-item none` unlinks. The link is a reference — the card keeps its own title and description.
 *   `agenfk update <id> --status <name>`: Update status (backward/rollback only — use `agenfk verify` for forward transitions).
 *   `agenfk list --project <id> --json`: Query the backlog.

@@ -182,7 +182,7 @@ This is the full workflow surface. Each row notes the equivalent MCP tool (avail
 | Update a project | `agenfk update-project <id> [--name <name>][--description <text>][--verify-command <cmd>]` | `update_project` |
 | List items | `agenfk list [--project <id>] [-t/--type <type>] [-s/--status <status>] [--active] [--all] [--json]` (`--active` = only items in an active working step: excludes TODO/DONE anchors + PAUSED/BLOCKED/terminal; flow-aware — use it for the init resume-check to keep context small) | `list_items` |
 | Get an item | `agenfk get <id> --json` | `get_item` |
-| Create an item | `agenfk create <TYPE> "<title>" --project <id> [-d/--description <desc>] [-p/--parent <id>] [--jira-item <KEY>]` | `create_item` |
+| Create an item | `agenfk create <TYPE> "<title>" --project <id> [-d/--description <desc>] [-p/--parent <id>] [--jira-item <KEY>] [--json]` (prints the created card's JSON after the confirmation line; `--json` - or `--toon` - prints the card alone) | `create_item` |
 | Update / roll back status | `agenfk update <id> [--status <name>][--title <t>][--description <d>][--type <T>]` (status is backward/rollback only) | `update_item` |
 | Link a card to a JIRA item | `agenfk update <id> --jira-item <KEY>` — attach a JIRA reference to an EXISTING card (e.g. `CGLAB-163`); `--jira-item none` unlinks. Also available at creation time as `agenfk create ... --jira-item <KEY>`. | `update_item` (`jiraItem`) |
 | Re-parent an item | `agenfk update <id> --parent <parentId>` — move it under another item; `--parent none` detaches it to top level. The parent must be in the same project, and cannot be the item itself or one of its descendants. | `update_item` (`parentId`) |
@@ -308,6 +308,8 @@ branch named `feat/CGLAB-163_<description>` are the two halves of the same
 trace, one on the board and one in git.
 
 ### Reading state — `--json`
+
+`agenfk create` prints the card it created - its JSON follows the confirmation line (`--json` prints the JSON alone) - so there is no need to `get` or `list` it afterwards; a create that fails exits non-zero.
 
 Read commands emit JSON. Append `--json` to `list`, `get`, `list-projects`, `current-project`, `flow show`,
 `flow list`, and `tokens` for machine-readable output you can parse into your context:
