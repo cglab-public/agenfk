@@ -955,12 +955,25 @@ export function formatCheckResults(results: readonly CheckResult[]): string {
  * reused a green of exactly this content (and whose), or ran only the test
  * files that changed. A reused run must never read as a measured one.
  */
+/**
+ * 001aed1e: a capture is green only when its REPORT says so. A command that
+ * joins suites with `;` exits with the last suite's code, so an exit of 0
+ * alone once let a run with failures stand as the tree's green, replayed by
+ * every later verify at the same content. With no per-test report, the exit
+ * code is all there is.
+ */
+export function capturedGreen(capture: any): boolean {
+  if (!capture || capture.exitCode !== 0) return false;
+  if (capture.available !== true) return true;
+  return !(capture.tests ?? []).some((t: any) => t?.status === 'failed') && !(capture.brokenFiles ?? []).length;
+}
+
 export function describeCapture(capture: any): string | null {
   if (!capture || capture.kind !== 'capture') return null;
   if (capture.surfaceRereadFrom) return `🔁 suite not re-run: the report it wrote at ${capture.surfaceRereadFrom.at} was read again for the new declared test paths`;
   if (capture.reusedFrom) {
     const from = capture.reusedFrom;
-    return `🔁 suite not re-run: this tree's content was already tested${capture.exitCode === 0 ? ' green' : ''} at ${from.at ?? '?'} (${from.step ?? 'a close'} of card ${String(from.itemId ?? '').slice(0, 8)})`;
+    return `🔁 suite not re-run: this tree's content was already tested${capturedGreen(capture) ? ' green' : ''} at ${from.at ?? '?'} (${from.step ?? 'a close'} of card ${String(from.itemId ?? '').slice(0, 8)})`;
   }
   if (capture.lazy) return `▶ ran only the ${capture.ranFiles?.length ?? 0} test file(s) changed since this step began, over its entry results`;
   return `▶ ran the suite (exit ${capture.exitCode})${capture.available === false && capture.parseError ? ` — its report could not be used: ${capture.parseError}` : ''}`;

@@ -10,7 +10,7 @@ import { parseActor, parseFindings, readTranscriptIdentity } from './reviewRecor
 import * as passkeys from './passkeys';
 import { argvHash, awaitsPersonApproval, judgeCommandChecks, type CommandApproval } from './commandChecks';
 import { suggestTestReport, withTestFiles } from './testReportHint';
-import { countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, describeCapture, TEST_FILE_PATTERN, ANY_TEST_FILE_PATTERN, needsCapture, needsEntryRecord, parseAgentReports, parseCheckAnswers, describeTreeWarnings, MAX_UNREVIEWED_LINES, type AgentReport, type CheckResult, type TreeWarning } from './checkEngine';
+import { capturedGreen, countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, describeCapture, TEST_FILE_PATTERN, ANY_TEST_FILE_PATTERN, needsCapture, needsEntryRecord, parseAgentReports, parseCheckAnswers, describeTreeWarnings, MAX_UNREVIEWED_LINES, type AgentReport, type CheckResult, type TreeWarning } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, foreignClaimsFor, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
@@ -3622,7 +3622,7 @@ async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) 
       try { theirs = await running; } catch { /* its crash is not this card's: start over */ }
       const rec = theirs && 'record' in theirs.out ? theirs.out.record : null;
       // Its run fenced the tree: its record's state is the one it ran on, which must be the one waited on.
-      if (theirs && rec && rec.available === true && rec.exitCode === 0 && stateOfRecord(rec) === state) {
+      if (theirs && rec && rec.available === true && capturedGreen(rec) && stateOfRecord(rec) === state) {
         const fresh: any = await storage.getItem(item.id);
         if (!fresh || fresh.status !== item.status) return { status: 409, error: 'CARD_MOVED', message: `The card moved (${item.status} -> ${fresh?.status ?? 'deleted'}); nothing was recorded.` };
         const shared = { ...rec, step: item.status, at: new Date().toISOString(), reusedFrom: { itemId: theirs.itemId, step: rec.step, at: rec.at } };
@@ -3787,9 +3787,9 @@ async function runCapture(item: any, root: string, setting: TestReportSetting | 
   }
   await storage.updateItem(item.id, { stepRecords: [...(fresh.stepRecords ?? []), record] } as any);
   // Only a per-test capture is ever reused (an exit code alone comes from a close's test record); never a merged one.
-  if (record.available && record.clean && record.exitCode === 0 && !record.lazy) noteGreen(item.projectId, root, record.head, item.id);
+  if (record.available && record.clean && capturedGreen(record) && !record.lazy) noteGreen(item.projectId, root, record.head, item.id);
   // 3ffc9651: and by its state, clean or dirty.
-  if (record.available && record.exitCode === 0 && !record.lazy) noteGreen(item.projectId, root, stateOfRecord(record), item.id);
+  if (record.available && capturedGreen(record) && !record.lazy) noteGreen(item.projectId, root, stateOfRecord(record), item.id);
   return { record };
 }
 
@@ -3941,7 +3941,7 @@ function indexProjectGreens(projectId: string): Promise<void> {
       // The tree each green RAN in is on its record: a card's current tree may be another by now.
       for (const card of (await storage.listItems({ projectId } as any)) as any[]) {
         // A superseded green (a rollback set it aside) is still a green of the content it ran on (d26832d6 #0).
-        for (const r of [...(card.stepRecords ?? []), ...(card.supersededRecords ?? [])]) if (r?.kind === 'capture' && r.available === true && r.exitCode === 0 && !r.reusedFrom && !r.lazy) {
+        for (const r of [...(card.stepRecords ?? []), ...(card.supersededRecords ?? [])]) if (r?.kind === 'capture' && r.available === true && capturedGreen(r) && !r.reusedFrom && !r.lazy) {
           if (r.clean === true) noteGreen(projectId, r.root, r.head, card.id);
           noteGreen(projectId, r.root, stateOfRecord(r), card.id);
         }
@@ -3960,7 +3960,7 @@ function indexProjectGreens(projectId: string): Promise<void> {
  * surface. Where and at which commit it counts is the caller's to add.
  */
 function isOwnGreenRun(r: any, setting: TestReportSetting, root: string): boolean {
-  return isOwnRun(r, setting, root) && r.exitCode === 0;
+  return isOwnRun(r, setting, root) && capturedGreen(r);
 }
 
 /**
@@ -3972,7 +3972,7 @@ function isOwnGreenRun(r: any, setting: TestReportSetting, root: string): boolea
  * (the field card ran its whole suite again for a surface declaration).
  */
 function resurfacedGreen(candidates: any[], setting: TestReportSetting, root: string, sha: string | null, state: string | null, base: any): any | null {
-  const sameRun = (r: any) => r?.kind === 'capture' && r.root === root && r.available === true && !r.reusedFrom && !r.lazy && r.exitCode === 0
+  const sameRun = (r: any) => r?.kind === 'capture' && r.root === root && r.available === true && !r.reusedFrom && !r.lazy && capturedGreen(r)
     && r.command === setting.command && r.format === setting.format && r.surfaceScope === 'declared' && Array.isArray(r.tests)
     && JSON.stringify(r.reportPaths ?? null) === JSON.stringify(reportPathsOf(setting))
     && ((sha !== null && r.clean === true && r.head === sha) || (state !== null && stateOfRecord(r) === state));
