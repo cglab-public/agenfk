@@ -136,7 +136,8 @@ async function reconcileProjectFlowInner(args: ReconcileProjectArgs): Promise<Re
     // entirely — which meant the flow-step field whitelist did not cover the one
     // channel whose untrustworthiness is the whole reason it exists. Duplicate
     // step ids and empty names got through here too.
-    steps: normalizeFlowSteps(remote.steps ?? [], () => randomUUID()),
+    // CGLAB-428: the only path that keeps `disabledChecks` - the org hub may switch a check off.
+    steps: normalizeFlowSteps(remote.steps ?? [], () => randomUUID(), { allowDisabledChecks: true }),
     // 281adef0: where the flow runs the suite travels with it, BOTH ways - written
     // every sync, because updateFlow merges and an omitted key would keep 'parent'
     // after the org turned it off. Anything unknown is the default.

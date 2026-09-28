@@ -12,7 +12,7 @@ import { argvHash, awaitsPersonApproval, judgeCommandChecks, type CommandApprova
 import { suggestTestReport, withTestFiles } from './testReportHint';
 import { countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, describeCapture, TEST_FILE_PATTERN, ANY_TEST_FILE_PATTERN, needsCapture, needsEntryRecord, parseAgentReports, parseCheckAnswers, describeTreeWarnings, MAX_UNREVIEWED_LINES, type AgentReport, type CheckResult, type TreeWarning } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, foreignClaimsFor, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
+import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, foreignClaimsFor, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -3012,7 +3012,36 @@ app.get("/items/:id/gates", asyncHandler(async (req: any, res: any) => {
     // on ONE command wakes for that command, not for any approval in the project.
     commandApprovals: (Array.isArray(project?.commandApprovals) ? project.commandApprovals : [])
       .map((a: any) => ({ hash: String(a?.hash ?? ''), at: String(a?.at ?? '') })).filter((a: any) => a.hash),
+    // CGLAB-428: what the org's hub switched off on this step, which verify will not run.
+    disabledChecks: disabledChecksOf(flow.steps, item.status),
   });
+}));
+
+/** CGLAB-428: the checks leaving `step` would run but the org's hub switched off. */
+function disabledChecksOf(steps: any[], step: string): Array<{ id: string; source: string }> {
+  return disabledStepChecks(steps, step).map(c => ({ id: c.id, source: c.source }));
+}
+
+/** CGLAB-428: the checks each card of the tree left a step with switched off by the hub, for the PR. */
+app.get("/items/:id/disabled-checks", asyncHandler(async (req: any, res: any) => {
+  const root: any = await storage.getItem(req.params.id);
+  if (!root) return res.status(404).json({ error: 'Item not found' });
+  const rows: any[] = [];
+  const queue = [root];
+  for (let seen = 0; queue.length && seen < 5000; seen++) {
+    const card = queue.shift();
+    // The LAST exit per step: a step left again after a rollback supersedes the earlier one.
+    const latest = new Map<string, any[]>();
+    for (const r of card.stepRecords ?? []) {
+      if (r?.kind !== 'exit') continue;
+      latest.set(String(r.step), (Array.isArray(r.disabled) ? r.disabled : []).map((d: any) => ({
+        itemId: card.id, title: card.title, step: r.step, check: String(d?.id ?? ''), source: String(d?.source ?? ''), at: r.at,
+      })));
+    }
+    for (const list of latest.values()) rows.push(...list);
+    queue.push(...((await storage.listItems({ parentId: card.id } as any)) as any[]));
+  }
+  res.json(rows);
 }));
 
 /** Every approval and override on a card and its descendants, for the PR body (CGLAB-382). */
@@ -4964,6 +4993,9 @@ function flowStepsError(steps: any): string | null {
     if (typeof s.name !== 'string' || !s.name.trim()) return "each step requires a name";
     if (typeof s.order !== 'number' || Number.isNaN(s.order)) return "each step requires a numeric order";
   }
+  // CGLAB-428: only the org's hub may switch a check off; a flow authored here cannot.
+  const disabling = steps.find((s: any) => Array.isArray(s.disabledChecks) ? s.disabledChecks.length > 0 : s.disabledChecks !== undefined && s.disabledChecks !== null);
+  if (disabling) return `Step ${disabling.name}: disabledChecks can only be set by your org's hub; a flow made or edited here runs every check its steps list.`;
   // CGLAB-380: roles and checks, including that every record a check needs is
   // produced by an earlier step.
   const contractErrors = flowChecksErrors(steps);
@@ -6892,6 +6924,8 @@ const staysOn = (status: string) => `\n\nThe advance was refused. Item stays on 
 interface StepGate {
   results: CheckResult[];
   blocked: boolean;
+  /** CGLAB-428: the checks leaving this step would run, switched off by the org's hub. */
+  disabled: Array<{ id: string; source: string }>;
   /** The capture this verify ran or reused, for saying which (d26832d6 #15). */
   capture?: any;
   /**
@@ -7233,6 +7267,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const toParent = await parentToDeferTo(item, flow);
   const deferToCommand = deferredToCommand(flow, item.status, project, toParent);
   const resolved = resolveStepChecks(flow.steps, item.status);
+  const disabled = disabledChecksOf(flow.steps, item.status);
   let capture: any = null;
   let captureError: string | undefined;
   // 961f301d: waiting on a person, the slow checks wait too (see waitsOnPerson).
@@ -7400,14 +7435,14 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const latest: any = await storage.getItem(item.id);
   const made = outcome.blocked ? [] : Object.entries(outcome.produced).map(([name, value]) => ({ step: item.status, kind: 'record', name, value, at, head: null, clean: false }));
   await storage.updateItem(item.id, {
-    lastChecks: { step: item.status, at, blocked: outcome.blocked, results: outcome.results },
+    lastChecks: { step: item.status, at, blocked: outcome.blocked, results: outcome.results, ...(disabled.length ? { disabled } : {}) },
     checkHistory: withHistory(latest, {
-      kind: 'verify', step: item.status, at, blocked: outcome.blocked,
+      kind: 'verify', step: item.status, at, blocked: outcome.blocked, ...(disabled.length ? { disabled } : {}),
       results: outcome.results.map(r => ({ id: r.id, outcome: r.outcome, blocking: r.blocking, severity: r.severity, detail: String(r.detail ?? '').slice(0, 500), ...(r.overridden ? { overridden: true } : {}), ...(r.agentReported ? { agentReported: true } : {}) })),
     }),
     ...(made.length ? { stepRecords: [...(latest?.stepRecords ?? []), ...made] } : {}),
   } as any);
-  return { results: outcome.results, blocked: outcome.blocked, step: item.status, ...(capture ? { capture } : {}), ...(toParent ? { deferredTo: toParent.id } : {}) };
+  return { results: outcome.results, blocked: outcome.blocked, disabled, step: item.status, ...(capture ? { capture } : {}), ...(toParent ? { deferredTo: toParent.id } : {}) };
 }
 
 /** Refuse a transition on the step's checks, in verify's failure shape plus `checks[]`. */
@@ -7432,9 +7467,16 @@ async function noTestReportFix(item: any, gate: StepGate): Promise<{ line: strin
   return { line, fix };
 }
 
+/** CGLAB-428: the line a verify reply carries for the checks the hub switched off, or ''. */
+function disabledLine(gate: StepGate): string {
+  if (!gate.disabled?.length) return '';
+  return `🔕 Switched off by your org's hub on this step (not run): ${gate.disabled.map(d => `${d.id} [${d.source}]`).join(', ')}`;
+}
+
 async function refuseOnChecks(res: any, item: any, gate: StepGate) {
   const ran = describeCapture(gate.capture);
-  const text = `${ran ? `${ran}\n` : ''}${formatCheckResults(gate.results)}`;
+  const off = disabledLine(gate);
+  const text = `${ran ? `${ran}\n` : ''}${formatCheckResults(gate.results)}${off ? `\n${off}` : ''}`;
   const noReport = await noTestReportFix(item, gate);
   const fresh: any = await storage.getItem(item.id);
   await storage.updateItem(item.id, { comments: [...(fresh?.comments ?? []), { id: uuidv4(), author: 'ValidateTool', content: `### Checks FAILED\n\n**Step**: ${item.status} (advance refused — the card stays here)\n\n${text}`, timestamp: new Date() }] });
@@ -7635,12 +7677,14 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   }
   if (gate) {
     (exitRecord as any).checks = gate.results;
+    if (gate.disabled.length) (exitRecord as any).disabled = gate.disabled;
     // d26832d6 #9/#15: a pass says what it judged - every check, soft and warn
     // included, and whether the suite ran - on the reply AND on the card.
     const ran = describeCapture(gate.capture);
     const warned = gate.results.filter(r => !r.blocking && (r.outcome === 'fail' || r.outcome === 'unavailable'));
-    passedChecks = `${ran ? `${ran}\n` : ''}${formatCheckResults(gate.results)}`;
-    if (gate.results.length || ran) res = withNote(res, `Checks:\n${passedChecks}`, { warning: false });
+    const off = disabledLine(gate);
+    passedChecks = `${ran ? `${ran}\n` : ''}${formatCheckResults(gate.results)}${off ? `\n${off}` : ''}`;
+    if (gate.results.length || ran || off) res = withNote(res, `Checks:\n${passedChecks}`, { warning: false });
     // The warnings are in the check list already: in `warning` too, never printed twice.
     if (warned.length) res = withNote(res, `⚠️ Check warnings (not blocking):\n${formatCheckResults(warned)}`, { message: false });
   }

@@ -70,5 +70,15 @@ export function getActiveFlow(flowId: string | undefined, flows: Flow[]): Flow {
     return DEFAULT_FLOW;
   }
   const found = flows.find((f) => f.id === flowId);
-  return found ?? DEFAULT_FLOW;
+  return found ? withoutForeignDisabledChecks(found) : DEFAULT_FLOW;
+}
+
+/**
+ * CGLAB-428: switching a check off is the org hub's call. The write paths only
+ * let the hub sync store `disabledChecks`; a row that carries it anyway and did
+ * not come from the hub is read as if it did not, so its checks all run.
+ */
+function withoutForeignDisabledChecks(flow: Flow): Flow {
+  if (flow.source === 'hub' || !flow.steps.some(s => s.disabledChecks !== undefined)) return flow;
+  return { ...flow, steps: flow.steps.map(({ disabledChecks: _dropped, ...s }) => s as FlowStep) };
 }

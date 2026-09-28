@@ -4,7 +4,7 @@
  * step, the check and the reason, so a reviewer sees what a person let through.
  */
 import { describe, it, expect } from 'vitest';
-import { buildPrBody, formatHumanGates, formatCustomChecks, formatTreeWarnings, prRegisterComment, type GateEvent, type CustomCheckRow, type TreeWarningRow } from '../humanGates';
+import { buildPrBody, formatHumanGates, formatCustomChecks, formatTreeWarnings, formatDisabledChecks, prRegisterComment, type GateEvent, type CustomCheckRow, type TreeWarningRow, type DisabledCheckRow } from '../humanGates';
 
 const override: GateEvent = { itemId: 'c1', title: 'Fix the picker', step: 'WORK', kind: 'override', check: 'jira-key-valid', reason: 'spike card, no issue', by: 'board', at: '2026-09-24T10:00:00.000Z' };
 const approval: GateEvent = { itemId: 'c2', title: 'Plan it', step: 'DISCOVERY', kind: 'approval', note: 'go', by: 'board', at: '2026-09-24T09:00:00.000Z' };
@@ -171,5 +171,28 @@ describe('the warnings the checks raised, on the PR (CGLAB-420)', () => {
     expect(c).toMatch(/## Human gates/);
     expect(c).toMatch(/## Warnings the checks raised/);
     expect(prRegisterComment([], [], [])).toBeNull();
+  });
+});
+
+describe('formatDisabledChecks (CGLAB-428)', () => {
+  const row: DisabledCheckRow = { itemId: 'c1', title: 'Fix the picker', step: 'WORK', check: 'new-tests-born-green', source: 'role', at: '2026-09-28T10:00:00.000Z' };
+
+  it('is empty when nothing was switched off', () => {
+    expect(formatDisabledChecks([])).toBe('');
+  });
+
+  it("names each check the org's hub switched off: card, step, check and where it came from", () => {
+    const md = formatDisabledChecks([row]);
+    expect(md).toMatch(/## Checks switched off by the org's hub/);
+    expect(md).toMatch(/Fix the picker/);
+    expect(md).toMatch(/WORK/);
+    expect(md).toMatch(/`new-tests-born-green`/);
+    expect(md).toMatch(/role/);
+  });
+
+  it('goes into the PR body and the pr-register comment', () => {
+    expect(buildPrBody('Body', [], [], [], [row])).toMatch(/## Checks switched off by the org's hub/);
+    expect(prRegisterComment([], [], [], [row])).toMatch(/new-tests-born-green/);
+    expect(prRegisterComment([], [], [], [])).toBeNull();
   });
 });

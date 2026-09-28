@@ -127,14 +127,35 @@ export function formatTreeWarnings(rows: readonly TreeWarningRow[]): string {
   ].join('\n');
 }
 
-/** The checks' history of a card tree, for a PR: human gates, custom checks, warnings; empty when there is none. */
-export function checkHistory(events: readonly GateEvent[], customChecks: readonly CustomCheckRow[] = [], warnings: readonly TreeWarningRow[] = []): string {
-  return [formatHumanGates(events), formatCustomChecks(customChecks), formatTreeWarnings(warnings)].filter(Boolean).join('\n\n');
+/** CGLAB-428: a check a card left a step with switched off by the org's hub, as the server lists it. */
+export interface DisabledCheckRow { itemId: string; title: string; step: string; check: string; source: string; at: string }
+
+/**
+ * CGLAB-428: the checks the org's hub switched off on the steps a card tree
+ * left. They did not run, so a reviewer must know which safeguards were absent.
+ */
+export function formatDisabledChecks(rows: readonly DisabledCheckRow[]): string {
+  if (!rows.length) return '';
+  const from = (source: string) => (source === 'role' ? "the step's role" : source === 'universal' ? 'every step' : 'the flow');
+  return [
+    "## Checks switched off by the org's hub",
+    '',
+    `${rows.length} check${rows.length === 1 ? ' was' : 's were'} not run: a hub admin switched ${rows.length === 1 ? 'it' : 'them'} off on the step.`,
+    '',
+    '| Card | Step | Check | Came from | When |',
+    '| --- | --- | --- | --- | --- |',
+    ...[...rows].sort((a, b) => a.at.localeCompare(b.at)).map(r => `| ${cell(r.title)} | ${cell(r.step)} | \`${cell(r.check)}\` | ${from(r.source)} | ${cell(r.at)} |`),
+  ].join('\n');
+}
+
+/** The checks' history of a card tree, for a PR: human gates, custom checks, warnings, checks switched off; empty when there is none. */
+export function checkHistory(events: readonly GateEvent[], customChecks: readonly CustomCheckRow[] = [], warnings: readonly TreeWarningRow[] = [], disabled: readonly DisabledCheckRow[] = []): string {
+  return [formatHumanGates(events), formatCustomChecks(customChecks), formatTreeWarnings(warnings), formatDisabledChecks(disabled)].filter(Boolean).join('\n\n');
 }
 
 /** The PR body: what was given, then the checks' history when there is any. */
-export function buildPrBody(body: string, events: readonly GateEvent[], customChecks: readonly CustomCheckRow[] = [], warnings: readonly TreeWarningRow[] = []): string {
-  const extra = checkHistory(events, customChecks, warnings);
+export function buildPrBody(body: string, events: readonly GateEvent[], customChecks: readonly CustomCheckRow[] = [], warnings: readonly TreeWarningRow[] = [], disabled: readonly DisabledCheckRow[] = []): string {
+  const extra = checkHistory(events, customChecks, warnings, disabled);
   if (!extra) return body;
   return body.trim() ? `${body}\n\n${extra}` : extra;
 }
@@ -145,7 +166,7 @@ export function buildPrBody(body: string, events: readonly GateEvent[], customCh
  * so the PR shows what the checks let through either way; null when there is
  * nothing to say.
  */
-export function prRegisterComment(events: readonly GateEvent[], customChecks: readonly CustomCheckRow[] = [], warnings: readonly TreeWarningRow[] = []): string | null {
-  const history = checkHistory(events, customChecks, warnings);
+export function prRegisterComment(events: readonly GateEvent[], customChecks: readonly CustomCheckRow[] = [], warnings: readonly TreeWarningRow[] = [], disabled: readonly DisabledCheckRow[] = []): string | null {
+  const history = checkHistory(events, customChecks, warnings, disabled);
   return history ? `### AgEnFK check history\n\nWhat the workflow checks recorded for this PR's cards.\n\n${history}` : null;
 }
