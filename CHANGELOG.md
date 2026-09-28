@@ -2,6 +2,54 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.10] — 2026-09-28
+
+Beta, cumulative over `2.0.0-beta.9`: everything in beta.9, plus the changes below (CGLAB-429).
+
+### Faster step verifies
+
+- **Only the tests the change affects, on intermediate steps.** A project that sets a related-tests command
+  (`agenfk update-project <id> --test-report-related-command "npx vitest related --run {files}"`, `jest
+  --findRelatedTests {files}`, ...) runs, on a step that changed code, only the tests related to the changed files,
+  merged over the step's entry results by file. It runs the whole suite instead for a config, lockfile or setup
+  change, a deleted file, a declared test-path file, too many files, a change outside the tree, or a changed test
+  file the run did not report. The final step always runs the whole suite. A whole run that only code changes caused
+  suggests the command.
+- **A Markdown edit no test names no longer re-runs the suite.** Capture reuse compares the tree without the
+  project's reuse-ignore globs (default `**/*.md`, `--test-report-reuse-ignore '<globs>|none'`), except a file some
+  test names (this repo's release test reads `CHANGELOG.md`). The final step, sibling propagation and command-check
+  sharing still see every file.
+- **Suite runs are queued server-wide.** At most `maxConcurrentSuiteRuns` run at once across every project (0 =
+  automatic = half the CPUs; 1 up to the CPU count). The rest wait first in first out and say they are waiting.
+  Several agents' suites at full parallelism had put a 12-core machine at load 76-88, and timing tests failed only
+  under agenfk.
+
+### Fixes
+
+- **A red run is no longer replayed as green.** A capture counted as green on exit code 0 alone, so a test report
+  command joining suites with `;` (the last suite's exit wins) recorded a run with failures as the tree's green, and
+  every later verify at the same content re-judged that stale red report - no retry could clear it. Green now needs
+  exit 0 and a report with no failed test and no broken file.
+- **The board no longer stalls during verifies.** `GET /items` left step records in: one project's list was 88 MB,
+  and every verify made every open board refetch it, blocking the server for seconds. The list leaves them out, and
+  capture records' per-test results now live in their own table (deduplicated, read back only when asked); existing
+  databases are moved over once at startup.
+
+### Removing tests while changing behaviour
+
+- `test-count-not-lower`, and a red test renamed or removed under `red-set-passes-by-name`, still hold a coding
+  step, naming the tests - until the agent answers why they go (`--check-note <check>="..."`). The answer and the
+  names go to the reviewer and the PR. An agent refused a legitimate deletion had kept the tests' names and repointed
+  them at another case, hiding the change. A red test that still fails is never answered away; refactoring stays
+  strict.
+
+### Settings
+
+- **The browser board has Settings** (a gear in its toolbar; the panel had only been reachable in the desktop app),
+  with a new Verification section: "Suite runs at once".
+- **`agenfk config get [key]` / `agenfk config set <key> <value>`** reach every server setting by name, the value
+  read by the setting's type and validated by the server. `telemetry` and `flowRegistry` stay local.
+
 ## [2.0.0-beta.9] — 2026-09-28
 
 Beta, cumulative over `2.0.0-beta.8`: everything in beta.8, plus the change below (CGLAB-428).

@@ -2819,7 +2819,68 @@ const configCommand = program
 
 const configSetCommand = configCommand
   .command('set')
-  .description('Set a configuration value');
+  .description('Set a configuration value: telemetry and flowRegistry are this machine\'s; any other key is one of the server\'s settings (agenfk config get lists them)')
+  // e437ea58: any key the server's settings report, by name - a setting added later needs no new command.
+  .argument('[key]', 'A server setting (e.g. maxConcurrentSuiteRuns)')
+  .argument('[value]', 'Its value: true/false, a number, or text, as the setting is')
+  .action(async (key: string | undefined, value: string | undefined) => {
+    if (!key || value === undefined) {
+      console.error(chalk.red('Usage: agenfk config set <key> <value>. Keys: telemetry, flowRegistry, or a server setting (agenfk config get lists them).'));
+      process.exit(1);
+      return;
+    }
+    let current: Record<string, unknown>;
+    try {
+      current = (await axios.get(`${API_URL}/settings`)).data ?? {};
+    } catch (e: any) {
+      console.error(chalk.red('Could not read the server\'s settings:'), e?.response?.data?.error ?? e?.message);
+      process.exit(1);
+      return;
+    }
+    if (!Object.prototype.hasOwnProperty.call(current, key)) {
+      console.error(chalk.red(`Unknown setting "${key}". Server settings: ${Object.keys(current).join(', ')}; this machine's: telemetry, flowRegistry.`));
+      process.exit(1);
+      return;
+    }
+    // Read by the setting's own type: the server refuses a string where it stores a number.
+    const kind = typeof current[key];
+    let parsed: unknown = value;
+    if (kind === 'boolean') {
+      const v = value.trim().toLowerCase();
+      if (v !== 'true' && v !== 'false') { console.error(chalk.red(`"${key}" is true or false.`)); process.exit(1); return; }
+      parsed = v === 'true';
+    } else if (kind === 'number') {
+      if (!/^-?\d+(\.\d+)?$/.test(value.trim())) { console.error(chalk.red(`"${key}" is a number.`)); process.exit(1); return; }
+      parsed = Number(value);
+    }
+    try {
+      const { data } = await axios.put(`${API_URL}/settings`, { [key]: parsed });
+      console.log(chalk.green(`${key} set to ${JSON.stringify((data ?? {})[key] ?? parsed)}`) + chalk.gray(' (server-wide)'));
+    } catch (e: any) {
+      console.error(chalk.red('The server refused it:'), e?.response?.data?.error ?? e?.message);
+      process.exit(1);
+    }
+  });
+
+// e437ea58: the server's settings, all or one.
+configCommand
+  .command('get [key]')
+  .description("Print the server's settings, or one of them")
+  .action(async (key: string | undefined) => {
+    try {
+      const { data } = await axios.get(`${API_URL}/settings`);
+      if (!key) { console.log(JSON.stringify(data, null, 2)); return; }
+      if (!Object.prototype.hasOwnProperty.call(data ?? {}, key)) {
+        console.error(chalk.red(`Unknown setting "${key}". Server settings: ${Object.keys(data ?? {}).join(', ')}.`));
+        process.exit(1);
+        return;
+      }
+      console.log(typeof data[key] === 'string' ? data[key] : JSON.stringify(data[key]));
+    } catch (e: any) {
+      console.error(chalk.red('Could not read the server\'s settings:'), e?.response?.data?.error ?? e?.message);
+      process.exit(1);
+    }
+  });
 
 configSetCommand
   .command('telemetry <value>')
