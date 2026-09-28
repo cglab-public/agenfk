@@ -2605,6 +2605,12 @@ async function loadSuiteRunSetting(): Promise<void> {
   try { suiteRunSetting = (await storage.getSettings()).maxConcurrentSuiteRuns ?? 0; } catch { /* automatic */ }
 }
 
+/** 7b640e64: what the machine makes of the suite-run setting, for the Settings screen. */
+app.get("/settings/runtime", (_req: any, res: any) => {
+  const cpus = os.cpus().length;
+  res.json({ cpus, automaticSuiteRuns: suiteRunLimit(cpus, 0), suiteRunLimit: suiteRunLimit(cpus, suiteRunSetting) });
+});
+
 app.put("/settings", asyncHandler(async (req: any, res: any) => {
   const body = req.body || {};
   const allowed = Object.keys(DEFAULT_APP_SETTINGS);

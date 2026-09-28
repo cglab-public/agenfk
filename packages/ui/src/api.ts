@@ -86,7 +86,12 @@ export interface AppSettingsDto {
   attentionSound: boolean;
   soundTiming: SoundTimingDto;
   osNotifications: boolean;
+  /** f8d0a752: suite runs the server runs at once, across every project; 0 is automatic (half the CPUs). */
+  maxConcurrentSuiteRuns: number;
 }
+
+/** 7b640e64: what the machine makes of maxConcurrentSuiteRuns. */
+export interface SettingsRuntimeDto { cpus: number; automaticSuiteRuns: number; suiteRunLimit: number }
 
 export const api = {
   listProjects: async () => {
@@ -312,6 +317,12 @@ export const api = {
       console.error('API Error updating settings:', e);
       throw e;
     }
+  },
+
+  /** 7b640e64: the CPUs the server sees, what automatic comes to, and the suite-run limit in force. */
+  getSettingsRuntime: async (): Promise<SettingsRuntimeDto> => {
+    const { data } = await axios.get(`${API_URL}/settings/runtime`);
+    return data;
   },
 
   updateItem: async (id: string, updates: Partial<AgEnFKItem>) => {

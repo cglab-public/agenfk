@@ -45,6 +45,7 @@ const SAMPLE: AppSettingsDto = {
   attentionSound: true,
   soundTiming: 'unfocused',
   osNotifications: true,
+  maxConcurrentSuiteRuns: 0,
 };
 
 describe('the settings type the UI writes through', () => {

@@ -10,7 +10,8 @@ import {
   Sun, Moon, Search, Archive, ArchiveRestore, ChevronLeft,
   FolderOpen, Briefcase, Clock, FlaskConical, ShieldCheck,
   Copy, Check, Download, Pin, PinOff, ExternalLink, Trash2, Lightbulb, Book, Pause,
-  ChevronUp, ChevronDown, X, FolderInput, GitBranch, SquareTerminal
+  ChevronUp, ChevronDown, X, FolderInput, GitBranch, SquareTerminal,
+  Settings,
 } from 'lucide-react';
 import { useSocketEvent } from '../SocketContext';
 import { isDesktop } from '../desktop';
@@ -32,6 +33,7 @@ import { ReleaseReminder } from './ReleaseReminder';
 import { WhatsNewModal } from './WhatsNewModal';
 import { ReadmeModal } from './ReadmeModal';
 import { FlowEditorModal, renderStepIcon } from './FlowEditorModal';
+import { BoardSettingsDialog } from './BoardSettingsDialog';
 import { OrgFlowPicker } from './OrgFlowPicker';
 import { useTheme } from '../ThemeContext';
 import { Logo } from './Logo';
@@ -565,6 +567,8 @@ export const KanbanBoard: React.FC = () => {
   const [isWhatsNewOpen, setIsWhatsNewOpen] = useState(false);
   const [isReadmeOpen, setIsReadmeOpen] = useState(false);
   const [isFlowEditorOpen, setIsFlowEditorOpen] = useState(false);
+  // 7b640e64: the desktop shell has its own Settings; a browser reaches them from here.
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isOrgFlowPickerOpen, setIsOrgFlowPickerOpen] = useState(false);
 
   const { data: versionData } = useQuery({
@@ -1830,6 +1834,18 @@ export const KanbanBoard: React.FC = () => {
                 </button>
               )}
 
+              {!isDesktop() && (
+                <button
+                  data-testid="board-settings-btn"
+                  onClick={() => setIsSettingsOpen(true)}
+                  title="Settings"
+                  aria-label="Settings"
+                  className="p-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-slate-500 hover:text-accent-text transition-all"
+                >
+                  <Settings size={16} />
+                </button>
+              )}
+
               <button
                 onClick={toggleTheme}
                 className="p-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-slate-500 hover:text-accent-text transition-all"
@@ -2299,6 +2315,7 @@ export const KanbanBoard: React.FC = () => {
       <WhatsNewModal isOpen={isWhatsNewOpen} onClose={() => setIsWhatsNewOpen(false)} />
       <ReadmeModal isOpen={isReadmeOpen} onClose={() => setIsReadmeOpen(false)} />
 
+      {isSettingsOpen && <BoardSettingsDialog onClose={() => setIsSettingsOpen(false)} />}
       {isFlowEditorOpen && selectedProjectId && (
         <FlowEditorModal
           isOpen={isFlowEditorOpen}
