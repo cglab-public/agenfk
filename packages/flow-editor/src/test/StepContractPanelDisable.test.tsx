@@ -97,4 +97,53 @@ describe('StepContractPanel: switching checks off (CGLAB-428)', () => {
     expect(preview.textContent).toMatch(/Whole test suite passes/);
     expect(preview.textContent).not.toMatch(/Get the whole suite passing/);
   });
+
+  it("never offers a switch for the project's verify command on the closing step", () => {
+    show(flow(), { canDisableChecks: true }, 3);
+    expect(screen.queryByRole('button', { name: /switch off: project verify command passes/i })).toBeNull();
+  });
+
+  it('offers no switch for the checks every step runs on the terminal step, which is never left', () => {
+    show(flow(), { canDisableChecks: true }, 3);
+    expect(screen.queryByTestId('contract-universal')).toBeNull();
+  });
+
+  it('removing a switched-off custom check takes its setting with it', () => {
+    const onChange = show(flow({ checks: [LINT], disabledChecks: ['command-check:lint', 'suite-green'] }), { canDisableChecks: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove A command the flow defines passes' }));
+    expect(onChange).toHaveBeenLastCalledWith({ checks: [], disabledChecks: ['suite-green'] });
+  });
+
+  it('renaming a switched-off custom check keeps it switched off under its new name', () => {
+    const onChange = show(flow({ checks: [LINT], disabledChecks: ['command-check:lint'] }), { canDisableChecks: true });
+    fireEvent.change(screen.getByLabelText('Name (lint)'), { target: { value: 'types' } });
+    expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ disabledChecks: ['command-check:types'] }));
+  });
+
+  it('lists a switched-off id the step no longer runs, so it can be removed and the flow saved', () => {
+    // A review step no longer runs suite-green, the coding role's built-in it was switched off as.
+    const onChange = show(flow({ role: 'review', disabledChecks: ['suite-green'] }), { canDisableChecks: true });
+    const stale = screen.getByTestId('contract-stale-off');
+    expect(stale.textContent).toMatch(/Whole test suite passes/);
+    fireEvent.click(within(stale).getByRole('button', { name: 'Remove the switched-off setting: suite-green' }));
+    expect(onChange).toHaveBeenLastCalledWith({ disabledChecks: [] });
+  });
+
+  it('lists for removal a switched-off id the save refuses, and never shows a check that runs as off', () => {
+    const onChange = show(flow().map(st => (st.name === 'DONE' ? { ...st, disabledChecks: ['server-owned-verify', 'on-card-branch'] } : st)), { canDisableChecks: true }, 3);
+    const stale = screen.getByTestId('contract-stale-off');
+    expect(stale.textContent).toMatch(/Project verify command passes/);
+    expect(stale.textContent).toMatch(/On the card's branch/);
+    expect(screen.getByTestId('contract-builtins').textContent).not.toMatch(/switched off by your org's hub/i);
+    fireEvent.click(within(stale).getByRole('button', { name: 'Remove the switched-off setting: server-owned-verify' }));
+    expect(onChange).toHaveBeenLastCalledWith({ disabledChecks: ['on-card-branch'] });
+  });
+
+  it('lists nothing for removal before the contract has described the step', () => {
+    const steps = flow({ disabledChecks: ['suite-green'] });
+    const contract = describeFlowContract(steps) as any;
+    render(<StepContractPanel step={steps[2]} stepContract={undefined} contract={contract} disabled={false} canDisableChecks onChange={vi.fn()} />);
+    expect(screen.queryByTestId('contract-stale-off')).toBeNull();
+  });
 });
+

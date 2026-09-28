@@ -124,7 +124,8 @@ function cloneFlow(source: Flow, newName: string): Omit<Flow, 'id' | 'createdAt'
   const [todo, done] = makeFreshAnchors();
   const middle = source.steps
     .filter(s => !s.isAnchor)
-    .map((s, i) => ({ ...s, id: generateUUID(), order: i + 1 }));
+    // CGLAB-428 review: a local copy cannot keep the hub's switched-off checks (the server refuses them).
+    .map(({ disabledChecks: _hubOnly, ...s }, i) => ({ ...s, id: generateUUID(), order: i + 1 }));
   done.order = middle.length + 1;
   return {
     name: newName,

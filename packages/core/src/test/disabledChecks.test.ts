@@ -59,9 +59,10 @@ describe('resolveStepChecks leaves a disabled check out', () => {
   });
 
   it("a disabled terminal-step check does not run on the move into it", () => {
-    expect(ids(resolveStepChecks(tdd(), 'LOOK'))).toContain('server-owned-verify');
-    const got = ids(resolveStepChecks(tdd({ END: { disabledChecks: ['server-owned-verify'] } }), 'LOOK'));
-    expect(got).not.toContain('server-owned-verify');
+    const end = { checks: [{ id: 'jira-key-valid' }] };
+    expect(ids(resolveStepChecks(tdd({ END: end }), 'LOOK'))).toContain('jira-key-valid');
+    const got = ids(resolveStepChecks(tdd({ END: { ...end, disabledChecks: ['jira-key-valid'] } }), 'LOOK'));
+    expect(got).not.toContain('jira-key-valid');
     expect(got).toContain('review-record');
   });
 
@@ -92,7 +93,7 @@ describe('disabledStepChecks lists what was left out', () => {
   });
 
   it('includes the terminal step\'s disabled checks on the step before it', () => {
-    expect(ids(disabledStepChecks(tdd({ END: { disabledChecks: ['server-owned-verify'] } }), 'LOOK'))).toEqual(['server-owned-verify']);
+    expect(ids(disabledStepChecks(tdd({ END: { checks: [{ id: 'jira-key-valid' }], disabledChecks: ['jira-key-valid'] } }), 'LOOK'))).toEqual(['jira-key-valid']);
   });
 
   it('is empty when nothing is disabled, and for a step the flow does not have', () => {
@@ -196,3 +197,27 @@ describe('describeFlowContract shows the disabled checks to the editor', () => {
     for (const s of describeFlowContract(tdd()).steps) expect(s.disabled).toEqual([]);
   });
 });
+
+describe('review findings (CGLAB-428)', () => {
+  it("refuses switching off the project's verify command, which runs on the final move whatever the step lists", () => {
+    const steps = tdd({ END: { disabledChecks: ['server-owned-verify'] } });
+    const errors = flowChecksErrors(steps);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(/server-owned-verify/);
+    expect(ids(resolveStepChecks(steps, 'LOOK'))).toContain('server-owned-verify');
+    expect(disabledStepChecks(steps, 'LOOK')).toEqual([]);
+  });
+
+  it('does not report a check as switched off when the terminal step runs it on the same move', () => {
+    const steps = tdd({ LOOK: { checks: [{ id: 'suite-green' }], disabledChecks: ['suite-green'] }, END: { checks: [{ id: 'suite-green' }] } });
+    expect(ids(resolveStepChecks(steps, 'LOOK'))).toContain('suite-green');
+    expect(ids(disabledStepChecks(steps, 'LOOK'))).not.toContain('suite-green');
+  });
+
+  it('refuses a universal check on the terminal step, which is never left', () => {
+    const errors = flowChecksErrors(tdd({ END: { disabledChecks: ['on-card-branch'] } }));
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(/Step END/);
+  });
+});
+

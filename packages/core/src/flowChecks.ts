@@ -204,11 +204,13 @@ export interface ResolvedCheck {
 type AnyStep = { name?: unknown; order?: unknown; role?: unknown; checks?: unknown; disabledChecks?: unknown; isAnchor?: unknown; isSpecial?: unknown };
 
 /**
- * CGLAB-428: checks `disabledChecks` can never switch off. A human approval
- * gate has its own setting on the step; disabling it here is refused at save
- * time, and ignored should a flow carry it anyway.
+ * CGLAB-428: checks `disabledChecks` can never switch off, refused at save time
+ * and ignored should a flow carry them anyway. A human approval gate has its
+ * own setting on the step. The project's verify command runs on the move that
+ * ends the flow whatever the step lists (review: switching it off changed
+ * nothing, while the record said it had not run).
  */
-const NEVER_DISABLED: ReadonlySet<string> = new Set(['human-approval']);
+export const NEVER_DISABLED: ReadonlySet<string> = new Set(['human-approval', 'server-owned-verify']);
 
 /** The resolved check ids a step switches off (CGLAB-428): only a hub-delivered flow can carry any. */
 const disabledOf = (s: AnyStep | undefined): Set<string> =>
@@ -347,7 +349,8 @@ function splitStepChecks(steps: readonly AnyStep[], stepName: string): { on: Res
     for (const c of contracts[index + 1].on) if (!on.some(o => same(o, c))) on.push(c);
     for (const c of contracts[index + 1].off) if (!on.some(o => same(o, c)) && !off.some(o => same(o, c))) off.push(c);
   }
-  return { on, off };
+  // Review: a check the terminal step runs as well is not "switched off" here, since it runs.
+  return { on, off: off.filter(c => !on.some(o => o.id === c.id && JSON.stringify(o.params) === JSON.stringify(c.params))) };
 }
 
 /**
@@ -434,13 +437,17 @@ export function flowChecksErrors(steps: unknown): string[] {
     }
     const full = contractOf(s, produced);
     // CGLAB-428: what the step switches off must be a check it runs.
-    const runs = new Set([...(i === 0 ? ['tree-clean'] : []), 'on-card-branch', ...full.map(c => c.id)]);
+    // A terminal step is never left, so the universal checks never run on it (review).
+    const terminal = i === list.length - 1 && !!(s.isAnchor || s.isSpecial);
+    const runs = new Set([...(terminal ? [] : [...(i === 0 ? ['tree-clean'] : []), 'on-card-branch']), ...full.map(c => c.id)]);
     if (s.disabledChecks !== undefined && s.disabledChecks !== null) {
       if (!Array.isArray(s.disabledChecks) || !(s.disabledChecks as unknown[]).every(x => typeof x === 'string')) {
         errors.push(`Step ${name}: disabledChecks must be a list of check ids, e.g. ["new-tests-born-green"].`);
       } else {
         for (const id of s.disabledChecks as string[]) {
-          if (NEVER_DISABLED.has(id)) errors.push(`Step ${name}: check '${id}' cannot be disabled; a human approval is switched on or off by the step's own approval setting.`);
+          if (NEVER_DISABLED.has(id)) errors.push(id === 'human-approval'
+            ? `Step ${name}: check '${id}' cannot be disabled; a human approval is switched on or off by the step's own approval setting.`
+            : `Step ${name}: check '${id}' cannot be disabled; the project's verify command always runs on the move that ends the flow.`);
           else if (!checkDef(id)) errors.push(`Step ${name}: disabledChecks names an unknown check '${id}'.`);
           else if (!runs.has(id)) errors.push(`Step ${name}: disabledChecks names '${id}', which this step does not run.`);
         }

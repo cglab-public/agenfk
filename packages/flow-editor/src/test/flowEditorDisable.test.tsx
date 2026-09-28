@@ -37,6 +37,7 @@ function mount(flow: Flow, contract = true, extra: Record<string, unknown> = {},
     updateFlow,
     deleteFlow: async () => {},
     setProjectFlow: async () => {},
+    ...((extra.flowClientOverrides as Partial<FlowClient>) ?? {}),
     ...(contract ? { getFlowContract: vi.fn(async (steps: FlowStep[]) => {
       if (contractDelayMs) await new Promise(r => setTimeout(r, contractDelayMs));
       return describeFlowContract(steps) as any;
@@ -46,7 +47,7 @@ function mount(flow: Flow, contract = true, extra: Record<string, unknown> = {},
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   render(
     <QueryClientProvider client={qc}>
-      <FlowEditorModal isOpen onClose={onClose} projectId="p1" initialFlowId="f1" flowClient={flowClient} registryClient={registryClient} {...extra} />
+      <FlowEditorModal isOpen onClose={onClose} projectId="p1" initialFlowId="f1" flowClient={flowClient} registryClient={registryClient} {...(({ flowClientOverrides: _o, ...rest }) => rest)(extra)} />
     </QueryClientProvider>,
   );
   return { updateFlow, onClose, flowClient };
@@ -111,4 +112,16 @@ describe('flow editor: switching checks off (CGLAB-428)', () => {
     const btn = await screen.findByTestId('step-contract-btn-2');
     await waitFor(() => expect(btn.textContent).toMatch(new RegExp(`(^|\\D)${on - 1} checks?$`)));
   });
+
+  it("a local clone of a hub flow drops the hub's switched-off checks, so it can be saved", async () => {
+    const hub = { ...flowOf(good().steps.map(st => (st.name === 'BUILD' ? { ...st, disabledChecks: ['suite-green'] } : st))), source: 'hub' } as Flow;
+    const createFlow = vi.fn(async (p: Partial<Flow>) => ({ ...hub, ...p, id: 'f2', source: 'local' } as Flow));
+    mount(hub, true, { hubManagedReadOnly: true, flowClientOverrides: { createFlow } });
+    await ready();
+    fireEvent.click(await screen.findByTestId('clone-to-edit-btn'));
+    fireEvent.click(await screen.findByTestId('save-flow-btn'));
+    await waitFor(() => expect(createFlow).toHaveBeenCalled());
+    for (const st of createFlow.mock.calls[0][0].steps as FlowStep[]) expect(st).not.toHaveProperty('disabledChecks');
+  });
 });
+

@@ -17,6 +17,9 @@ import { clsx } from 'clsx';
 import { checkText, GROUP_TEXTS, RECORD_TEXTS, ROLE_TEXTS } from './checkTexts';
 import type { FlowContract, FlowStep, StepCheckRef } from './types';
 
+/** CGLAB-428: checks that cannot be switched off (core's NEVER_DISABLED): no switch is offered. */
+const NO_SWITCH = new Set(['human-approval', 'server-owned-verify']);
+
 /** Checks with their own control, or that every step runs anyway: not offered in the gallery. */
 const NOT_IN_GALLERY = new Set(['human-approval', 'tree-clean', 'on-card-branch', 'server-owned-verify']);
 
@@ -49,17 +52,25 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
   const roleText = role ? ROLE_TEXTS[role] : null;
   // CGLAB-428: a check the hub switched off is still the step's, shown in its place.
   const offIds: string[] = Array.isArray(step.disabledChecks) ? step.disabledChecks : [];
-  const off = new Set(offIds);
+  // A check that cannot be switched off is never shown as off: it runs.
+  const off = new Set(offIds.filter(id => !NO_SWITCH.has(id)));
   const canSwitch = !!canDisableChecks && !disabled;
   const toggle = (id: string) => onChange({ disabledChecks: off.has(id) ? offIds.filter(x => x !== id) : [...offIds, id] });
   const own = [...(stepContract?.checks ?? []), ...(stepContract?.disabled ?? [])];
   const builtinOrder = (contract.roles.find(r => r.id === role)?.builtins ?? []).map(b => b.id);
   const builtins = own.filter(c => c.source === 'role').sort((a, b) => builtinOrder.indexOf(a.id) - builtinOrder.indexOf(b.id));
-  const universal = own.filter(c => c.source === 'universal');
+  const universal = stepContract?.terminal ? [] : own.filter(c => c.source === 'universal');
+  // Review: an id the save would refuse - one the step no longer runs (its role changed, its check was
+  // removed), one that can never be switched off, or a universal check on a terminal step - has no switch
+  // to clear it, so it is listed with a Remove. Only once the contract has described the step: before,
+  // every id would look stale.
+  const refused = (id: string) => NO_SWITCH.has(id) || !own.some(c => c.id === id)
+    || (!!stepContract?.terminal && own.some(c => c.id === id && c.source === 'universal'));
+  const stale = stepContract ? offIds.filter(refused) : [];
   const titleOf = (id: string) => checkText(id, catalogue.get(id)?.description).title;
   const offNote = "Switched off by your org's hub: it does not run.";
   /** The on/off switch for one check, by its resolved id. */
-  const switchFor = (id: string, label: string) => canSwitch && (
+  const switchFor = (id: string, label: string) => canSwitch && !NO_SWITCH.has(id) && (
     <button type="button" onClick={() => toggle(id)} aria-label={`${off.has(id) ? 'Switch on' : 'Switch off'}: ${label}`}
       className="shrink-0 text-xs font-semibold px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700">
       {off.has(id) ? 'Switch on' : 'Switch off'}
@@ -70,8 +81,15 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
   /** A custom check (efcacdeb) is one of several of its kind on a step: it is known by its name too. */
   const isCustom = (id: string) => catalogue.get(id)?.group === 'custom';
   const keyOf = (ref: StepCheckRef) => (isCustom(ref.id) ? `${ref.id}:${String((ref.params as any)?.name ?? '')}` : ref.id);
-  const replace = (key: string, next: StepCheckRef | null) =>
-    setChecks(added.flatMap(c => (keyOf(c) === key ? (next ? [next] : []) : [c])));
+  const replace = (key: string, next: StepCheckRef | null) => {
+    const checks = added.flatMap(c => (keyOf(c) === key ? (next ? [next] : []) : [c]));
+    // CGLAB-428 review: a check removed or renamed takes its switched-off entry with it.
+    const offList = Array.isArray(step.disabledChecks) ? step.disabledChecks : [];
+    const nextKey = next ? keyOf(next) : null;
+    if (offList.includes(key) && nextKey !== key) {
+      onChange({ checks, disabledChecks: offList.flatMap(x => (x === key ? (nextKey ? [nextKey] : []) : [x])) });
+    } else setChecks(checks);
+  };
   /** A param at its default is left out, so the stored step stays minimal; a required one always stays. */
   const withParam = (ref: StepCheckRef, key: string, value: string | string[]): StepCheckRef => {
     const def = catalogue.get(ref.id)?.params[key];
@@ -183,6 +201,25 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Switched off, but no longer on the step (CGLAB-428 review) */}
+      {stale.length > 0 && !disabled && (
+        <div data-testid="contract-stale-off" className="space-y-1">
+          <div className={section}>Switched off, but no longer on this step</div>
+          {stale.map(id => (
+            <div key={id} className={clsx('flex items-start gap-2', chip)}>
+              <div className="flex-1">
+                <div className="font-medium">{titleOf(id.split(':')[0])}{id.includes(':') ? ` (${id.split(':').slice(1).join(':')})` : ''}</div>
+                <div className="text-xs text-slate-500 dark:text-slate-400">The step no longer runs this check, so the setting cannot be saved. Remove it.</div>
+              </div>
+              <button type="button" aria-label={`Remove the switched-off setting: ${id}`} onClick={() => onChange({ disabledChecks: offIds.filter(x => x !== id) })}
+                className="shrink-0 text-xs font-semibold px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700">
+                Remove
+              </button>
+            </div>
+          ))}
         </div>
       )}
 
