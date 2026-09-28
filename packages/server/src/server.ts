@@ -5849,8 +5849,21 @@ app.get("/items", asyncHandler(async (req: any, res: any) => {
     items = kept;
   }
 
-  res.json(items.map(withActiveRun));
+  res.json(items.map(item => withActiveRun(listShape(item))));
 }));
+
+/**
+ * cb4ef070: an item as the LIST carries it - without its step records. A
+ * capture record holds a whole run's per-test results (one card was 1.8 MB,
+ * one project's list 88 MB), and every verify makes every open board refetch
+ * the list: serialising that blocked every request for seconds. Nothing reads
+ * step records from the list; GET /items/:id and the gates, check-history and
+ * warnings endpoints serve them.
+ */
+function listShape<T extends Record<string, any>>(item: T): T {
+  const { stepRecords: _records, supersededRecords: _superseded, ...rest } = item;
+  return rest as T;
+}
 
 app.post("/items/trash-archived", asyncHandler(async (req: any, res: any) => {
   const { projectId } = req.body;
