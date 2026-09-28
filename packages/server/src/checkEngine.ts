@@ -57,6 +57,9 @@ export interface CheckMeta {
   note?: string;
   /** 5a8d22e6: a cause the refusal names once, with its fix, for every check it holds up. */
   code?: 'NO_TEST_REPORT';
+  /** e2ab4ced (red-set-passes-by-name): red tests renamed or removed - answerable - and ones still not passing - never. */
+  missing?: string[];
+  notPassing?: string[];
 }
 
 /** A failing warning a card left a step with (CGLAB-420). */
@@ -614,9 +617,11 @@ export const EVALUATORS: Record<string, Evaluator> = {
       if (!inFile.length) return `${file} reports no tests`;
       return inFile.every(t => t.status === 'passed') ? null : `a test in ${file} is not passing`;
     };
-    const open = red.map(String).flatMap(n => { const why = openBecause(n); return why ? [`${n} [${why}]`] : []; });
+    const whys = red.map(String).flatMap(n => { const why = openBecause(n); return why ? [{ n, why }] : []; });
+    const open = whys.map(o => `${o.n} [${o.why}]`);
     return open.length
-      ? { outcome: 'fail', detail: `not passing yet: ${list(open)}` }
+      // e2ab4ced: which were renamed or removed (answerable) and which still fail (never).
+      ? { outcome: 'fail', detail: `not passing yet: ${list(open)}`, meta: { missing: whys.filter(o => o.why === 'missing').map(o => o.n), notPassing: whys.filter(o => o.why !== 'missing').map(o => o.n) } }
       : { outcome: 'pass', detail: `${red.length} red test(s) now pass` };
   },
 

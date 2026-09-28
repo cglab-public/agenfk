@@ -7079,6 +7079,13 @@ async function branchOfCard(item: any): Promise<string | null> {
  */
 /** CGLAB-420: the warnings a card cannot leave the step that writes tests with unanswered. */
 const ANSWER_REQUIRED = new Set(['new-tests-born-green']);
+/**
+ * e2ab4ced: tests removed (or renamed) while changing behaviour. Blocking, but
+ * the agent may answer why they go - an agent refused a legitimate deletion
+ * kept the tests' names and repointed them, hiding the change. Never on a
+ * refactoring step, where behaviour must not change.
+ */
+const ANSWERABLE_REMOVALS = new Set(['test-count-not-lower', 'red-set-passes-by-name']);
 
 /** A card's descendants, breadth first (at most 5000). */
 async function descendantsOf(item: any): Promise<any[]> {
@@ -7107,7 +7114,8 @@ async function treeWarningsOf(item: any): Promise<TreeWarning[]> {
         // Its own list is not a warning of the tree: at an epic it would repeat every story's.
         // An unanswered red on an error is the normal path of TDD, not news for a reviewer.
         const noise = c?.id === 'red-is-assertion' && typeof c?.answer !== 'string';
-        latest.set(key, c?.severity === 'warn' && c?.outcome === 'fail' && c?.id !== 'tree-warnings' && !noise
+        // e2ab4ced: an answered removal is the reviewer's to judge, as a warning is.
+        latest.set(key, (c?.severity === 'warn' || c?.answeredRemoval === true) && c?.outcome === 'fail' && c?.id !== 'tree-warnings' && !noise
           ? { itemId: card.id, title: String(card.title ?? ''), step: String(r.step), check: String(c.id), detail: String(c.detail ?? '').slice(0, 300),
             ...(typeof c.answer === 'string' ? { answer: c.answer } : c?.overridden?.reason ? { answer: `passed by ${c.overridden.by ?? 'a person'} on the board: ${c.overridden.reason}` } : {}) }
           : null);
@@ -7507,6 +7515,18 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   for (const r of outcome.results) {
     const answer = opts?.answers?.[r.id];
     if (answer && (r.outcome === 'fail' || r.outcome === 'unavailable')) r.answer = answer;
+  }
+  if ((sorted[index] as any)?.role !== 'refactoring') {
+    let lifted = false;
+    for (const r of outcome.results) {
+      if (!ANSWERABLE_REMOVALS.has(r.id) || r.outcome !== 'fail' || !r.blocking || r.overridden) continue;
+      // A red test that still fails is not a removal: only renamed or removed ones may be answered.
+      const meta: any = (r as any).meta;
+      if (r.id === 'red-set-passes-by-name' && !(Array.isArray(meta?.missing) && meta.missing.length && Array.isArray(meta?.notPassing) && !meta.notPassing.length)) continue;
+      if (r.answer) { r.blocking = false; (r as any).answeredRemoval = true; lifted = true; }
+      else r.detail = `${r.detail}. If these tests pinned behaviour this card changes, say why they go: agenfk verify ${item.id} --check-note ${r.id}="<why they go>" --evidence "..." (MCP: validate_progress with checkAnswers); the reviewer and the PR will see it.`;
+    }
+    if (lifted && !outcome.results.some(r => r.blocking)) outcome.blocked = false;
   }
   if ((sorted[index] as any)?.role === 'test-authoring') {
     for (const r of outcome.results) {
