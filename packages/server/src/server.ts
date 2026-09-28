@@ -2751,7 +2751,7 @@ async function noteGateChangeOnCards(project: any, heading: string, body: string
 // ── Test reports and step records (CGLAB-379) ────────────────────────────────
 
 const TEST_REPORT_FORMATS = new Set(['vitest-json', 'junit-xml']);
-type TestReportSetting = { format: string; command: string; reportPath: string | string[]; surface?: string[]; reuseIgnore?: string[] };
+type TestReportSetting = { format: string; command: string; reportPath: string | string[]; surface?: string[]; reuseIgnore?: string[]; relatedCommand?: string };
 /**
  * d26832d6 #6: a project may write several reports (a pytest suite and a
  * vitest suite, each its own JUnit file); they are read as one. A single path
@@ -2776,7 +2776,7 @@ app.put("/projects/:id/test-report", asyncHandler(async (req: any, res: any) => 
   if (Object.prototype.hasOwnProperty.call(body, 'testReport') && body.testReport === null) {
     next = null;
   } else {
-    const { format, command, reportPath, surface, reuseIgnore } = body;
+    const { format, command, reportPath, surface, reuseIgnore, relatedCommand } = body;
     const text = (v: unknown) => typeof v === 'string' && v.trim().length > 0;
     const paths = Array.isArray(reportPath) ? reportPath : [reportPath];
     if (!TEST_REPORT_FORMATS.has(format) || !text(command) || !paths.length || !paths.every(text)) {
@@ -2789,7 +2789,11 @@ app.put("/projects/:id/test-report", asyncHandler(async (req: any, res: any) => 
     if (reuseIgnore !== undefined && !(Array.isArray(reuseIgnore) && reuseIgnore.every(text))) {
       return res.status(400).json({ error: 'testReport.reuseIgnore must be a list of globs relative to the tree (e.g. ["docs/**", "**/*.md"]), or [] to leave nothing out.' });
     }
-    next = { format, command, reportPath: paths.length === 1 ? paths[0] : paths, ...(surface !== undefined ? { surface } : {}), ...(reuseIgnore !== undefined ? { reuseIgnore } : {}) };
+    // a36047ea: the related-tests template must say where the changed files go.
+    if (relatedCommand !== undefined && !(text(relatedCommand) && String(relatedCommand).includes('{files}'))) {
+      return res.status(400).json({ error: 'testReport.relatedCommand must be the runner\'s related-tests command with {files} where the changed files go, e.g. "npx vitest related --run {files}".' });
+    }
+    next = { format, command, reportPath: paths.length === 1 ? paths[0] : paths, ...(surface !== undefined ? { surface } : {}), ...(reuseIgnore !== undefined ? { reuseIgnore } : {}), ...(relatedCommand !== undefined ? { relatedCommand } : {}) };
   }
   const before: any = await storage.getProject(req.params.id);
   if (!before) return res.status(404).json({ error: "Project not found" });
@@ -3742,7 +3746,44 @@ export async function stampCloseGreen(itemId: string, root: string, sha: string)
 const capturesInFlight = new Map<string, Promise<{ out: CaptureOutcome; itemId: string }>>();
 
 /** What a lazy capture runs and merges over (acceaa54). */
-interface LazyPlan { entry: any; ran: string[]; changed: string[]; command: string }
+interface LazyPlan { entry: any; ran: string[]; changed: string[]; command: string; related?: boolean }
+
+/**
+ * a36047ea: a change to one of these can move ANY test's result - the runner
+ * config, the dependencies, a setup file - so it always means the whole suite.
+ */
+const WHOLE_SUITE_FILE = /(^|\/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|bun\.lockb?|tsconfig[^/]*\.json|jsconfig\.json|\.babelrc[^/]*|babel\.config\.[^/]+|[^/]*\.config\.[cm]?[jt]s|vitest\.workspace\.[^/]+|[^/]*setup[^/]*\.[cm]?[jt]sx?|conftest\.py|pytest\.ini|pyproject\.toml|setup\.cfg|tox\.ini|requirements[^/]*\.txt|poetry\.lock|uv\.lock|Pipfile(\.lock)?)$/i;
+/** One argument per file, whatever its name holds. */
+const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+
+/**
+ * a36047ea — when a step changed code, not just tests: the project's related-
+ * tests command over the changed files, or null for the whole suite. The same
+ * entry preconditions as the test-only run, and all of these: a relatedCommand
+ * is set; no changed file is gone, a whole-suite file (config, lockfile,
+ * setup) or one of the declared test paths (helpers, fixtures). Which test
+ * files run is the runner's to say; every changed test file must be among
+ * them, or the run cannot stand for the suite (runAndRead falls back).
+ */
+function relatedPlan(root: string, setting: TestReportSetting, entry: any, changed: string[]): LazyPlan | null {
+  const template = setting.relatedCommand;
+  if (typeof template !== 'string' || !template.includes('{files}')) return null;
+  const surface = setting.surface ?? [];
+  const declared = (f: string) => surface.some(p => f === p || f.startsWith(`${p.replace(/\/$/, '')}/`));
+  if (changed.some(f => !fs.existsSync(path.join(root, f)) || WHOLE_SUITE_FILE.test(f) || declared(f) || f.startsWith('-'))) return null;
+  const tests = changed.filter(f => isTestPath(f, surface) && TEST_FILE_NAME.test(f));
+  return { entry, ran: tests, changed, command: template.split('{files}').join(changed.map(shellQuote).join(' ')), related: true };
+}
+
+/** a36047ea: the hint a whole run gets when only code changed and the project has no related-tests command. */
+function relatedHint(root: string, setting: TestReportSetting, entry: any): string | null {
+  if (setting.relatedCommand || !(entry?.kind === 'capture' && entry.clean === true && typeof entry.head === 'string')) return null;
+  const since = changedSince(root, entry.head, reportsOwned(root, setting));
+  if (!since || since.outside || !since.inside.length || since.inside.every(f => TEST_FILE_NAME.test(f))) return null;
+  const vitest = /\bvitest\b/.test(setting.command), jest = /\bjest\b/.test(setting.command);
+  const example = vitest ? 'npx vitest related --run {files}' : jest ? 'npx jest --findRelatedTests {files}' : "<your runner's related-tests command> {files}";
+  return `💡 code changed, so the whole suite ran. To run only the tests it affects: agenfk update-project <project> --test-report-related-command "${example}"`;
+}
 
 /** A file named as a test file itself - not a helper, fixture, setup or snapshot that happens to live beside tests. */
 const TEST_FILE_NAME = TEST_FILE_PATTERN;
@@ -3803,7 +3844,8 @@ function lazyPlan(root: string, setting: TestReportSetting, entry: any): LazyPla
   const changed = since.inside;
   if (!changed.length || changed.length > LAZY_MAX_FILES) return null;
   // Named as a test file itself: a file the runner merely picked up (a helper it reported as broken) does not count.
-  if (!changed.every(f => isTestPath(f, setting.surface ?? []) && TEST_FILE_NAME.test(f) && !f.startsWith('-'))) return null;
+  // a36047ea: anything else changed - the tests that code affects, when the project says how to find them.
+  if (!changed.every(f => isTestPath(f, setting.surface ?? []) && TEST_FILE_NAME.test(f) && !f.startsWith('-'))) return relatedPlan(root, setting, entry, changed);
   const ran = changed.filter(f => fs.existsSync(path.join(root, f)));
   let scripts: Record<string, string> = {};
   try { scripts = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))?.scripts ?? {}; } catch { /* none */ }
@@ -3891,7 +3933,10 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
   if (lazy) {
     // acceaa54: only the changed test files run; the rest keep their entry results.
     Object.assign(record, { lazy: true, ranFiles: lazy.ran, lazyCommand: lazy.command, mergedOver: { step: lazy.entry.step, at: lazy.entry.at, head: lazy.entry.head } });
-    opts?.onOutput?.(`[agenfk] only test files changed since this step began: running ${lazy.ran.length} of them over the entry results\n`);
+    if (lazy.related) {
+      Object.assign(record, { related: true, changedFiles: lazy.changed });
+      opts?.onOutput?.(`[agenfk] ${lazy.changed.length} file(s) changed since this step began: running the tests they affect over the entry results\n`);
+    } else opts?.onOutput?.(`[agenfk] only test files changed since this step began: running ${lazy.ran.length} of them over the entry results\n`);
   }
   record.exitCode = await runForExitCode(lazy ? lazy.command : command, root, verifyMaxMs(), opts?.onOutput);
   const stateAfter = treeContentState(root, owned);
@@ -3926,9 +3971,12 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
         } as any;
       }
       if (lazy) {
-        const changed = new Set(lazy.changed), ran = new Set(lazy.ran);
+        // a36047ea: a related run's files are the ones its report names; the changed test files must be among them.
+        const ran = new Set(lazy.related ? [...parsed.tests.map(t => t.file), ...parsed.brokenFiles.map(b => b.file)] : lazy.ran);
+        const changed = new Set([...lazy.changed, ...(lazy.related ? ran : [])]);
         const ranTests = parsed.tests.filter(t => ran.has(t.file));
         const ranBroken = parsed.brokenFiles.filter(b => ran.has(b.file));
+        if (lazy.related) record.ranFiles = [...ran].sort();
         // Every file it ran must be in its report, under that very path.
         const reported = new Set<string>([...ranTests.map(t => t.file), ...ranBroken.map(b => b.file)]);
         if (lazy.ran.some(f => !reported.has(f))) return null;
@@ -7354,6 +7402,11 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     const lazyOver = prevStep ? [...before].reverse().find((r: any) => r?.kind === 'capture' && r.step === prevStep.name) ?? null : null;
     const out = await captureStepRecord(item, { ...(run ? { onOutput: (chunk: string) => appendRunOutput(run, chunk) } : {}), lazyOver });
     if ('error' in out) captureError = out.message; else capture = out.record;
+    // a36047ea: a whole run that only code changes caused, in a project that could have run fewer.
+    if (capture && !capture.lazy && !capture.reusedFrom && lazyOver && project?.testReport && project.projectRoot) {
+      const hint = relatedHint(capture.root ?? project.projectRoot, project.testReport, lazyOver);
+      if (hint) capture = { ...capture, relatedHint: hint };
+    }
   }
   const records: any[] = ((await storage.getItem(item.id)) as any)?.stepRecords ?? [];
   const lastOf = (pred: (r: any) => boolean) => [...records].reverse().find(pred) ?? null;

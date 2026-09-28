@@ -1964,6 +1964,7 @@ program
   .option('--test-report-command <cmd>', 'Command that runs the suite and writes the report')
   .option('--test-report-path <path>', 'Where that command writes the report, relative to the project root; several reports (one per suite) as a comma list')
   .option('--test-report-surface <paths>', 'Comma-separated test paths (files or directories) the report cannot name, so test-surface-frozen can see them; "none" clears them')
+  .option('--test-report-related-command <cmd>', 'The runner\'s related-tests command with {files} (e.g. "npx vitest related --run {files}"): a step that changed code runs only the tests it affects; "none" clears it')
   .option('--test-report-reuse-ignore <globs>', 'Comma-separated globs a re-run skips when only they changed, unless a test names the file (default: **/*.md); "none" ignores nothing')
   .option('--test-report <none>', 'Pass "none" to clear the test report setting')
   .action(async (id, options) => {
@@ -1971,7 +1972,8 @@ program
       const updates: Record<string, unknown> = {};
       const wantsTestReport = options.testReport !== undefined || options.testReportFormat !== undefined
         || options.testReportCommand !== undefined || options.testReportPath !== undefined
-        || options.testReportSurface !== undefined || options.testReportReuseIgnore !== undefined;
+        || options.testReportSurface !== undefined || options.testReportReuseIgnore !== undefined
+        || options.testReportRelatedCommand !== undefined;
       if (options.name !== undefined) updates.name = options.name;
       if (options.description !== undefined) updates.description = options.description;
       if (options.verifyCommand === undefined && options.projectRoot === undefined
@@ -2024,6 +2026,10 @@ program
             ? stored.reuseIgnore
             : options.testReportReuseIgnore === 'none' ? [] : String(options.testReportReuseIgnore).split(',').map(p => p.trim()).filter(Boolean);
           if (reuseIgnore !== undefined) merged.reuseIgnore = reuseIgnore;
+          // a36047ea: kept across other changes; "none" clears it.
+          const relatedCommand = options.testReportRelatedCommand === undefined ? stored.relatedCommand
+            : options.testReportRelatedCommand === 'none' ? undefined : String(options.testReportRelatedCommand);
+          if (relatedCommand !== undefined) merged.relatedCommand = relatedCommand;
           if (!merged.format || !merged.command || !merged.reportPath) {
             console.error(chalk.red('Error: this project has no test report to change yet. Set one with --test-report-format, --test-report-command and --test-report-path.'));
             process.exit(1);

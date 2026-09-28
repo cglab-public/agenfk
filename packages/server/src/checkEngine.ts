@@ -975,6 +975,8 @@ export function describeCapture(capture: any): string | null {
     const from = capture.reusedFrom;
     return `🔁 suite not re-run: this tree's content was already tested${capturedGreen(capture) ? ' green' : ''} at ${from.at ?? '?'} (${from.step ?? 'a close'} of card ${String(from.itemId ?? '').slice(0, 8)})`;
   }
+  // a36047ea: the tests the changed code affects, not the whole suite.
+  if (capture.lazy && capture.related) return `▶ ran the ${capture.ranFiles?.length ?? 0} test file(s) affected by ${capture.changedFiles?.length ?? 0} changed file(s), over its entry results`;
   if (capture.lazy) return `▶ ran only the ${capture.ranFiles?.length ?? 0} test file(s) changed since this step began, over its entry results`;
-  return `▶ ran the suite (exit ${capture.exitCode})${capture.available === false && capture.parseError ? ` — its report could not be used: ${capture.parseError}` : ''}`;
+  return `▶ ran the suite (exit ${capture.exitCode})${capture.available === false && capture.parseError ? ` — its report could not be used: ${capture.parseError}` : ''}${typeof capture.relatedHint === 'string' ? `\n${capture.relatedHint}` : ''}`;
 }

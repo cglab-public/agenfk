@@ -440,6 +440,13 @@ export interface TestReportSetting {
    * nothing out.
    */
   reuseIgnore?: string[];
+  /**
+   * a36047ea: the runner's related-tests command, with {files} where the
+   * changed files go (e.g. `npx vitest related --run {files}`). With it, a
+   * step that changed code runs only the tests those files affect, merged
+   * over its entry results; without it, the whole suite.
+   */
+  relatedCommand?: string;
 }
 
 /**
