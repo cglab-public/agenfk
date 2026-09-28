@@ -2,6 +2,20 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.8] — 2026-09-28
+
+Beta, cumulative over `2.0.0-beta.7`: everything in beta.7, plus the change below (CGLAB-427).
+
+### `agenfk create` returns the card it created
+
+- **The created card is printed as JSON.** Agents used to create a card and then query agenfk again (`get`/`list`)
+  to learn its id. `agenfk create` now prints the card's JSON after the confirmation line; `--json` (or `--toon`)
+  prints the card alone, with a JIRA-link warning sent to stderr so stdout stays parseable.
+- **A failed create exits non-zero.** It printed the error and exited 0, so an agent could not tell a failure from a
+  success without querying again.
+- The rules and skills (`SKILL.md`, `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, the Cursor rule, `agenfk-plan`) tell agents
+  to rely on it.
+
 ## [2.0.0-beta.7] — 2026-09-26
 
 Beta, cumulative over `2.0.0-beta.6`: everything in beta.6, plus the changes below (CGLAB-420). Found by following a
