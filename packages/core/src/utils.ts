@@ -305,7 +305,7 @@ export const FLOW_STEP_FIELDS = [
  * remote steps verbatim, so the whitelist did not cover the one channel whose
  * untrustworthiness is the reason it exists.
  */
-export function normalizeFlowSteps(steps: any, newId: () => string): any {
+export function normalizeFlowSteps(steps: any, newId: () => string, opts?: { allowDisabledChecks?: boolean }): any {
   if (!Array.isArray(steps)) return steps;
   const seen = new Set<string>();
   return steps.map((step: any) => {
@@ -314,6 +314,10 @@ export function normalizeFlowSteps(steps: any, newId: () => string): any {
     for (const k of FLOW_STEP_FIELDS) {
       if (step[k] !== undefined) out[k] = step[k];
     }
+    // CGLAB-428: switching a check off is the org hub's call alone. Only the
+    // hub sync opts in; every other path (a local edit, a registry install)
+    // drops the field, so it cannot be used to remove a safeguard.
+    if (opts?.allowDisabledChecks && step.disabledChecks !== undefined) out.disabledChecks = step.disabledChecks;
     const id = typeof step.id === 'string' ? step.id : '';
     const resolved = (!id || seen.has(id)) ? newId() : id;
     seen.add(resolved);

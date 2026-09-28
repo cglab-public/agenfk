@@ -200,7 +200,18 @@ export interface ResolvedCheck {
   missing?: RecordName[];
 }
 
-type AnyStep = { name?: unknown; order?: unknown; role?: unknown; checks?: unknown; isAnchor?: unknown; isSpecial?: unknown };
+type AnyStep = { name?: unknown; order?: unknown; role?: unknown; checks?: unknown; disabledChecks?: unknown; isAnchor?: unknown; isSpecial?: unknown };
+
+/**
+ * CGLAB-428: checks `disabledChecks` can never switch off. A human approval
+ * gate has its own setting on the step; disabling it here is refused at save
+ * time, and ignored should a flow carry it anyway.
+ */
+const NEVER_DISABLED: ReadonlySet<string> = new Set(['human-approval']);
+
+/** The resolved check ids a step switches off (CGLAB-428): only a hub-delivered flow can carry any. */
+const disabledOf = (s: AnyStep | undefined): Set<string> =>
+  new Set(s && Array.isArray(s.disabledChecks) ? (s.disabledChecks as unknown[]).filter((x): x is string => typeof x === 'string' && !NEVER_DISABLED.has(x)) : []);
 
 const ordered = <T extends AnyStep>(steps: readonly T[]): T[] =>
   [...steps].sort((a, b) => Number(a.order) - Number(b.order));
@@ -290,32 +301,52 @@ const producedBy = (checks: readonly ResolvedCheck[]): RecordName[] =>
  * checks at all they only warn: an upgrade must not start blocking cards.
  */
 export function resolveStepChecks(steps: readonly AnyStep[], stepName: string): ResolvedCheck[] {
+  return splitStepChecks(steps, stepName).on;
+}
+
+/**
+ * CGLAB-428: the checks leaving `stepName` would run but the flow switched off
+ * (`disabledChecks`), so they can be shown rather than silently vanish.
+ * Together with resolveStepChecks, every check the step would otherwise run.
+ */
+export function disabledStepChecks(steps: readonly AnyStep[], stepName: string): ResolvedCheck[] {
+  return splitStepChecks(steps, stepName).off;
+}
+
+function splitStepChecks(steps: readonly AnyStep[], stepName: string): { on: ResolvedCheck[]; off: ResolvedCheck[] } {
   const list = ordered(steps);
   const index = list.findIndex(s => s.name === stepName);
-  if (index === -1) return [];
+  if (index === -1) return { on: [], off: [] };
   const universalSeverity: CheckSeverity = hasStepContracts(list) ? 'block' : 'warn';
 
   // Each step is resolved against what the steps BEFORE it produce: `produced`
-  // only grows after a step's own contract is built.
+  // only grows after a step's own contract is built. A disabled check does not
+  // run, so it produces nothing.
   const produced = new Set<RecordName>();
-  const contracts: ResolvedCheck[][] = [];
+  const contracts: Array<{ on: ResolvedCheck[]; off: ResolvedCheck[] }> = [];
   for (const s of list) {
+    const off = disabledOf(s);
     const c = contractOf(s, produced);
-    contracts.push(c);
-    for (const r of producedBy(c)) produced.add(r);
+    const split = { on: c.filter(x => !off.has(x.id)), off: c.filter(x => off.has(x.id)) };
+    contracts.push(split);
+    for (const r of producedBy(split.on)) produced.add(r);
   }
 
   const universal: ResolvedCheck[] = [];
   const u = (id: string) => universal.push({ id, params: {}, severity: universalSeverity, source: 'universal', step: stepName, applicable: true });
   if (index === 0) u('tree-clean');
   u('on-card-branch');
+  const offHere = disabledOf(list[index]);
 
-  const out = [...universal, ...contracts[index]];
+  const on = [...universal.filter(c => !offHere.has(c.id)), ...contracts[index].on];
+  const off = [...universal.filter(c => offHere.has(c.id)), ...contracts[index].off];
   const next = list[index + 1];
   if (next && index + 1 === list.length - 1 && (next.isAnchor || next.isSpecial)) {
-    for (const c of contracts[index + 1]) if (!out.some(o => o.id === c.id && JSON.stringify(o.params) === JSON.stringify(c.params))) out.push(c);
+    const same = (a: ResolvedCheck, b: ResolvedCheck) => a.id === b.id && JSON.stringify(a.params) === JSON.stringify(b.params);
+    for (const c of contracts[index + 1].on) if (!on.some(o => same(o, c))) on.push(c);
+    for (const c of contracts[index + 1].off) if (!on.some(o => same(o, c)) && !off.some(o => same(o, c))) off.push(c);
   }
-  return out;
+  return { on, off };
 }
 
 /**
@@ -400,7 +431,22 @@ export function flowChecksErrors(steps: unknown): string[] {
         }
       }
     }
-    const contract = contractOf(s, produced);
+    const full = contractOf(s, produced);
+    // CGLAB-428: what the step switches off must be a check it runs.
+    const runs = new Set([...(i === 0 ? ['tree-clean'] : []), 'on-card-branch', ...full.map(c => c.id)]);
+    if (s.disabledChecks !== undefined && s.disabledChecks !== null) {
+      if (!Array.isArray(s.disabledChecks) || !(s.disabledChecks as unknown[]).every(x => typeof x === 'string')) {
+        errors.push(`Step ${name}: disabledChecks must be a list of check ids, e.g. ["new-tests-born-green"].`);
+      } else {
+        for (const id of s.disabledChecks as string[]) {
+          if (NEVER_DISABLED.has(id)) errors.push(`Step ${name}: check '${id}' cannot be disabled; a human approval is switched on or off by the step's own approval setting.`);
+          else if (!checkDef(id)) errors.push(`Step ${name}: disabledChecks names an unknown check '${id}'.`);
+          else if (!runs.has(id)) errors.push(`Step ${name}: disabledChecks names '${id}', which this step does not run.`);
+        }
+      }
+    }
+    const off = disabledOf(s);
+    const contract = full.filter(c => !off.has(c.id));
     for (const c of contract) {
       if (c.source !== 'flow' || c.applicable) continue;
       for (const rec of c.missing ?? []) {
@@ -418,20 +464,20 @@ export function flowChecksErrors(steps: unknown): string[] {
  * empty list) clears it. An older editor that knows nothing about contracts
  * therefore never wipes one. A step with a new id starts empty.
  */
-export function mergeStepContracts<T extends Record<string, any>>(incoming: T[], stored: readonly Record<string, any>[] | undefined): Array<T & { role?: any; checks?: any; autoCommit?: any; requireCommit?: any }> {
+export function mergeStepContracts<T extends Record<string, any>>(incoming: T[], stored: readonly Record<string, any>[] | undefined): Array<T & { role?: any; checks?: any; disabledChecks?: any; autoCommit?: any; requireCommit?: any }> {
   if (!Array.isArray(incoming)) return incoming;
   const byId = new Map((stored ?? []).filter(s => s && typeof s.id === 'string').map(s => [s.id, s]));
   return incoming.map(step => {
     if (!step || typeof step !== 'object') return step;
     const prev = typeof step.id === 'string' ? byId.get(step.id) : undefined;
     const out: Record<string, any> = { ...step };
-    for (const k of ['role', 'checks', 'autoCommit', 'requireCommit'] as const) {
+    for (const k of ['role', 'checks', 'disabledChecks', 'autoCommit', 'requireCommit'] as const) {
       if (!Object.prototype.hasOwnProperty.call(step, k)) {
         if (prev && prev[k] !== undefined && prev[k] !== null) out[k] = prev[k];
-      } else if (step[k] === null || (k === 'checks' && Array.isArray(step[k]) && step[k].length === 0)) {
+      } else if (step[k] === null || ((k === 'checks' || k === 'disabledChecks') && Array.isArray(step[k]) && step[k].length === 0)) {
         delete out[k];
       }
     }
-    return out as T & { role?: any; checks?: any; autoCommit?: any; requireCommit?: any };
+    return out as T & { role?: any; checks?: any; disabledChecks?: any; autoCommit?: any; requireCommit?: any };
   });
 }
