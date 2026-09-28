@@ -10,6 +10,7 @@ import { parseActor, parseFindings, readTranscriptIdentity } from './reviewRecor
 import * as passkeys from './passkeys';
 import { argvHash, awaitsPersonApproval, judgeCommandChecks, type CommandApproval } from './commandChecks';
 import { suggestTestReport, withTestFiles } from './testReportHint';
+import { SuiteSlots, suiteRunLimit, waitingLine } from './suiteSlots';
 import { capturedGreen, countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, describeCapture, TEST_FILE_PATTERN, ANY_TEST_FILE_PATTERN, needsCapture, needsEntryRecord, parseAgentReports, parseCheckAnswers, describeTreeWarnings, MAX_UNREVIEWED_LINES, type AgentReport, type CheckResult, type TreeWarning } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, foreignClaimsFor, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
@@ -1412,6 +1413,8 @@ const initStorage = async () => {
 
   console.log(`[SERVER_START] Using Database: ${dbPath} (SQLite)`);
   await storage.init({ path: dbPath });
+  // f8d0a752: the server-wide suite-run limit, read from the settings it lives in.
+  await loadSuiteRunSetting();
 
   // Apply pending migration (written by install/upgrade when a db.json was detected)
   const migrationPath = path.join(os.homedir(), '.agenfk', 'migration.json');
@@ -2589,6 +2592,17 @@ app.get("/settings", asyncHandler(async (_req: any, res: any) => {
   res.json(await storage.getSettings());
 }));
 
+/**
+ * f8d0a752: the server-wide limit on concurrent suite runs. Read synchronously
+ * whenever a slot is taken or freed, so it is cached here: loaded with the
+ * storage, refreshed on every settings write.
+ */
+let suiteRunSetting = 0;
+const suiteSlots = new SuiteSlots(() => suiteRunLimit(os.cpus().length, suiteRunSetting));
+async function loadSuiteRunSetting(): Promise<void> {
+  try { suiteRunSetting = (await storage.getSettings()).maxConcurrentSuiteRuns ?? 0; } catch { /* automatic */ }
+}
+
 app.put("/settings", asyncHandler(async (req: any, res: any) => {
   const body = req.body || {};
   const allowed = Object.keys(DEFAULT_APP_SETTINGS);
@@ -2634,6 +2648,7 @@ app.put("/settings", asyncHandler(async (req: any, res: any) => {
     return res.status(400).json({ error: `Provide at least one of: ${allowed.join(", ")}` });
   }
   const settled = await storage.updateSettings(patch);
+  suiteRunSetting = settled.maxConcurrentSuiteRuns ?? 0;
   // The whole settled state, so a caller never has to re-read to find out what
   // it now has.
   io.emit("settings_updated", settled);
@@ -3777,7 +3792,8 @@ async function runCapture(item: any, root: string, setting: TestReportSetting | 
 async function runCapture(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts?: { onOutput?: (chunk: string) => void }): Promise<CaptureOutcome>;
 async function runCapture(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts?: { onOutput?: (chunk: string) => void; lazy?: LazyPlan }): Promise<CaptureOutcome | typeof LAZY_FALLBACK> {
   const lockKey = `${root}\0${reportPathsOf(setting).join('\0')}`;
-  const record = await withReportLock(lockKey, () => runAndRead(item, root, setting, command, cleanSha, opts, opts?.lazy), opts?.onOutput);
+  // f8d0a752: inside the report lock, so a card waiting on the lock holds no suite-run slot.
+  const record = await withReportLock(lockKey, () => suiteSlots.run(() => runAndRead(item, root, setting, command, cleanSha, opts, opts?.lazy), w => opts?.onOutput?.(waitingLine(w))), opts?.onOutput);
   if (record === null) return LAZY_FALLBACK;
   // The card may have moved while the command ran: a record for a step it
   // no longer occupies (or was rolled back over) must not be written.
@@ -8056,6 +8072,12 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   const storedItem = await storage.getItem(itemId);
   const logHandle = storedItem ? openValidationLog(storedItem.id, testId) : null;
   const capture = createOutputCapture({ fd: logHandle?.fd ?? null });
+  // f8d0a752: a suite-run slot before the tree is read, so the state recorded is the one the command runs on.
+  const releaseSlot = await suiteSlots.acquire(w => {
+    const line = waitingLine(w);
+    capture.note(line);
+    if (run) appendRunOutput(run, line);
+  });
 
   // The commit and the working-tree state the command actually ran against,
   // captured BEFORE the spawn. A long run during which another agent commits
@@ -8129,6 +8151,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     });
    } finally {
      if (!settledCapture) capture.end();
+     releaseSlot();
    }
   })();
 

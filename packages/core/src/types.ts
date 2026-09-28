@@ -195,6 +195,14 @@ export interface AppSettings {
    * says so rather than the setting disappearing.
    */
   osNotifications: boolean;
+  /**
+   * f8d0a752: how many suite runs (step captures and the final step's verify
+   * command) the server runs at once, across every project - one value for
+   * the whole server, not per project. 0 is automatic: half the CPUs, at least
+   * 1. Any other whole number is used as given, up to the CPU count; the rest
+   * wait in line.
+   */
+  maxConcurrentSuiteRuns: number;
 }
 
 /** The legal values for `soundTiming`, in the order the UI offers them. */
@@ -234,7 +242,10 @@ export function isLegalSettingValue(key: keyof AppSettings, value: unknown): boo
   if (!Object.prototype.hasOwnProperty.call(DEFAULT_APP_SETTINGS, key)) return false;
   if (typeof value !== typeof DEFAULT_APP_SETTINGS[key]) return false;
   const allowed = APP_SETTING_VALUES[key];
-  return allowed ? allowed.includes(value) : true;
+  if (allowed) return allowed.includes(value);
+  // A count: `typeof` says number, and so are -1, 2.5 and NaN.
+  if (key === 'maxConcurrentSuiteRuns') return Number.isInteger(value) && (value as number) >= 0 && (value as number) <= 1024;
+  return true;
 }
 
 /*
@@ -277,6 +288,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   // with no information is what trains a user to switch the feature off.
   soundTiming: 'unfocused',
   osNotifications: true,
+  maxConcurrentSuiteRuns: 0,
 };
 
 export interface IngestionState {
