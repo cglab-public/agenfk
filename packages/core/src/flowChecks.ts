@@ -4,7 +4,8 @@
  * A step's NAME says nothing the server can use: a step called WRITE_SPECS may
  * be where tests are written, or not. So a step may carry a ROLE, which brings
  * built-in checks, and extra CHECKS, which a flow adds. A flow can add
- * requirements; it can never take a role's built-ins away.
+ * requirements; it can never take a role's built-ins away. Only the org's hub
+ * may switch a check off (`disabledChecks`, CGLAB-428).
  *
  * Checks pass state to later steps through named RECORDS, never through step
  * names: `some-new-test-red` produces `redSet`, and `red-set-passes-by-name`

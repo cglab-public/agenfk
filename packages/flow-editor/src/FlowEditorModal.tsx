@@ -151,6 +151,12 @@ interface FlowEditorModalProps {
   // there, hub-sourced flows are exactly the ones you are meant to edit.
   hubManagedReadOnly?: boolean;
   /**
+   * CGLAB-428: the step dialog may switch individual checks off. Only the hub
+   * admin sets this - the org's hub is the one place a safeguard may be
+   * removed; a local server refuses the field on any flow it did not sync.
+   */
+  canDisableChecks?: boolean;
+  /**
    * Tab captions. Defaults to "My Flows" / "Community", which is correct for
    * the standalone client. The hub admin overrides them: its first tab is the
    * org-wide catalogue rather than a personal list, and its registry tab lists
@@ -240,6 +246,8 @@ function serializeDefinition(
       // CGLAB-384: a change to a role or a check is a change to the flow.
       ...(typeof s?.role === 'string' && s.role ? { role: s.role } : {}),
       ...(Array.isArray(s?.checks) && s.checks.length ? { checks: s.checks } : {}),
+      // CGLAB-428: so is switching a check off.
+      ...(Array.isArray(s?.disabledChecks) && s.disabledChecks.length ? { disabledChecks: s.disabledChecks } : {}),
       ...(s?.autoCommit ? { autoCommit: true } : {}),
       ...(s?.requireCommit ? { requireCommit: true } : {}),
     }))
@@ -300,6 +308,7 @@ interface EditorPanelProps {
   onUseDefault?: () => void;    // only provided for the builtin default flow row
   canSelectFlow: boolean;       // false → hide "Use this Flow" (selection is hub-owned)
   isHubManaged: boolean;        // true → owned by the org Hub, not editable here
+  canDisableChecks: boolean;    // CGLAB-428: the step dialog may switch checks off (hub admin only)
 }
 
 const EditorPanel: React.FC<EditorPanelProps> = ({
@@ -313,6 +322,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   onUseDefault,
   canSelectFlow,
   isHubManaged,
+  canDisableChecks,
 }) => {
   // Two independent reasons this panel can't be edited: it's the built-in
   // default flow, or (BUG 269eeec8 (b)) it's owned by the org Hub and this host
@@ -441,7 +451,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   // is not a new question for the server.
   // The commit flags and isSpecial count too: the server validates where a
   // step commit can run, which depends on both (CGLAB-388).
-  const contractKey = JSON.stringify(steps.map((s, i) => ({ id: s.id, name: s.name, order: i, isAnchor: s.isAnchor, isSpecial: s.isSpecial, role: s.role, checks: s.checks, autoCommit: s.autoCommit, requireCommit: s.requireCommit })));
+  const contractKey = JSON.stringify(steps.map((s, i) => ({ id: s.id, name: s.name, order: i, isAnchor: s.isAnchor, isSpecial: s.isSpecial, role: s.role, checks: s.checks, disabledChecks: s.disabledChecks, autoCommit: s.autoCommit, requireCommit: s.requireCommit })));
   const [askedKey, setAskedKey] = useState(contractKey);
   useEffect(() => {
     const t = setTimeout(() => setAskedKey(contractKey), 250);
@@ -1029,6 +1039,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               stepContract={stepContractOf(contractStepIndex)}
               contract={contract}
               disabled={isReadOnly}
+              canDisableChecks={canDisableChecks}
               readOnlyNote={isHubManaged ? 'Set by your org admin: this flow can\'t be changed here.' : 'This is the built-in flow: clone it to change it.'}
               onChange={patch => updateStep(contractStepIndex, patch)}
               onClose={() => setContractStepIndex(null)}
@@ -1361,6 +1372,8 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
   // Defaults false so the hub admin — which must edit hub-sourced flows — keeps
   // working without opting out; only the local agenfk UI sets it.
   const hubManagedReadOnly = isLegacy ? false : ((props as FlowEditorModalProps).hubManagedReadOnly ?? false);
+  // CGLAB-428: off unless the host is the hub admin.
+  const canDisableChecks = isLegacy ? false : ((props as FlowEditorModalProps).canDisableChecks ?? false);
   const tabLabels = useTabLabels();
   const { registryToolbar } = useHost();
 
@@ -1852,6 +1865,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               flow={selectedFlow}
               isReadOnly={isReadOnly}
               isHubManaged={isHubManagedSelected}
+              canDisableChecks={canDisableChecks}
               projectId={projectId}
               activeFlowId={effectiveActiveFlowId}
               onSaved={handleFlowSaved}

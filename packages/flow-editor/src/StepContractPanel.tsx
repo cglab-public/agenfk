@@ -2,7 +2,8 @@
  * CGLAB-384 — one step's contract, in plain words.
  *
  * What the step is for (its role) and the checks that brings, locked: a flow
- * may add requirements, never take a role's away. The checks this flow adds,
+ * may add requirements, never take a role's away - only the org's hub may
+ * switch a check off (CGLAB-428, `canDisableChecks`). The checks this flow adds,
  * with their params as real controls and Block or Warn. Whether a person must
  * approve, and whether that approval is signed with a passkey. And what an
  * agent must do to leave the step, exactly as `agenfk verify` will enforce it.
@@ -11,7 +12,7 @@
  * validate and run the flow). Edits go out as a patch to the step.
  */
 import React, { useState } from 'react';
-import { Lock, Plus, Search, Trash2, UserCheck, KeyRound } from 'lucide-react';
+import { Lock, Plus, Search, Trash2, UserCheck, KeyRound, BellOff } from 'lucide-react';
 import { clsx } from 'clsx';
 import { checkText, GROUP_TEXTS, RECORD_TEXTS, ROLE_TEXTS } from './checkTexts';
 import type { FlowContract, FlowStep, StepCheckRef } from './types';
@@ -24,12 +25,17 @@ export interface StepContractPanelProps {
   stepContract: FlowContract['steps'][number] | undefined;
   contract: FlowContract;
   disabled: boolean;
+  /**
+   * CGLAB-428: offer a switch to turn each check off (the hub admin only). A
+   * check already switched off is shown as such either way.
+   */
+  canDisableChecks?: boolean;
   onChange: (patch: Partial<FlowStep>) => void;
 }
 
 const recordWords = (recs: readonly string[] | undefined) => (recs ?? []).map(r => RECORD_TEXTS[r] ?? r).join(', ');
 
-export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, stepContract, contract, disabled, onChange }) => {
+export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, stepContract, contract, disabled, canDisableChecks, onChange }) => {
   const [pickingRole, setPickingRole] = useState(false);
   const [browsing, setBrowsing] = useState(false);
   const [query, setQuery] = useState('');
@@ -41,8 +47,24 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
   const approval = added.find(c => c.id === 'human-approval');
   const role = typeof step.role === 'string' ? step.role : null;
   const roleText = role ? ROLE_TEXTS[role] : null;
-  const builtins = (stepContract?.checks ?? []).filter(c => c.source === 'role');
+  // CGLAB-428: a check the hub switched off is still the step's, shown in its place.
+  const offIds: string[] = Array.isArray(step.disabledChecks) ? step.disabledChecks : [];
+  const off = new Set(offIds);
+  const canSwitch = !!canDisableChecks && !disabled;
+  const toggle = (id: string) => onChange({ disabledChecks: off.has(id) ? offIds.filter(x => x !== id) : [...offIds, id] });
+  const own = [...(stepContract?.checks ?? []), ...(stepContract?.disabled ?? [])];
+  const builtinOrder = (contract.roles.find(r => r.id === role)?.builtins ?? []).map(b => b.id);
+  const builtins = own.filter(c => c.source === 'role').sort((a, b) => builtinOrder.indexOf(a.id) - builtinOrder.indexOf(b.id));
+  const universal = own.filter(c => c.source === 'universal');
   const titleOf = (id: string) => checkText(id, catalogue.get(id)?.description).title;
+  const offNote = "Switched off by your org's hub: it does not run.";
+  /** The on/off switch for one check, by its resolved id. */
+  const switchFor = (id: string, label: string) => canSwitch && (
+    <button type="button" onClick={() => toggle(id)} aria-label={`${off.has(id) ? 'Switch on' : 'Switch off'}: ${label}`}
+      className="shrink-0 text-xs font-semibold px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700">
+      {off.has(id) ? 'Switch on' : 'Switch off'}
+    </button>
+  );
 
   const setChecks = (checks: StepCheckRef[]) => onChange({ checks });
   /** A custom check (efcacdeb) is one of several of its kind on a step: it is known by its name too. */
@@ -85,6 +107,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
     return c.id === 'human-approval' && c.params.signature === 'passkey' ? `${must}, signed with a passkey` : must;
   }).filter(Boolean);
   const warns = preview.filter(c => c.severity === 'warn').map(c => titleOf(c.id));
+  const notRun = (stepContract?.disabled ?? []).map(c => titleOf(c.id.split(':')[0]));
   // The same rule the gatekeeper and verify give the agent (CGLAB-388), from
   // the server's contract: it knows where the move ends the flow and the
   // close commit takes the work instead.
@@ -142,19 +165,42 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
       {/* Built-ins */}
       {builtins.length > 0 && (
         <div data-testid="contract-builtins" className="space-y-1">
-          <div className={section}>Checks from this role · always on</div>
+          <div className={section}>Checks from this role{canSwitch || builtins.some(c => off.has(c.id)) ? '' : ' · always on'}</div>
           {builtins.map(c => {
             const t = checkText(c.id, catalogue.get(c.id)?.description);
+            const isOff = off.has(c.id);
             return (
-              <div key={`${c.id}-${JSON.stringify(c.params)}`} className={clsx('flex items-start gap-2', chip, !c.applicable && 'opacity-60')}>
-                <Lock size={13} className="mt-0.5 shrink-0 text-slate-400" aria-hidden />
+              <div key={`${c.id}-${JSON.stringify(c.params)}`} className={clsx('flex items-start gap-2', chip, (!c.applicable || isOff) && 'opacity-60')}>
+                {isOff ? <BellOff size={13} className="mt-0.5 shrink-0 text-amber-600" aria-hidden /> : !canSwitch && <Lock size={13} className="mt-0.5 shrink-0 text-slate-400" aria-hidden />}
                 <div className="flex-1">
-                  <div className="font-medium">{t.title}</div>
+                  <div className={clsx('font-medium', isOff && 'line-through')}>{t.title}</div>
                   <div className="text-xs text-slate-500 dark:text-slate-400">
-                    {c.applicable ? `Stops: ${t.stops}` : `Nothing to check here: it needs the ${recordWords(c.missing)}, which no earlier step makes.`}
+                    {isOff ? offNote : c.applicable ? `Stops: ${t.stops}` : `Nothing to check here: it needs the ${recordWords(c.missing)}, which no earlier step makes.`}
                   </div>
                 </div>
-                <span className="text-xs font-semibold text-slate-500">{c.severity === 'block' ? 'Block' : 'Warn'}</span>
+                {!isOff && <span className="text-xs font-semibold text-slate-500">{c.severity === 'block' ? 'Block' : 'Warn'}</span>}
+                {switchFor(c.id, t.title)}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Checks every step runs (CGLAB-428): shown where they can be, or were, switched off */}
+      {(canSwitch || universal.some(c => off.has(c.id))) && universal.length > 0 && (
+        <div data-testid="contract-universal" className="space-y-1">
+          <div className={section}>Checks every step runs</div>
+          {universal.map(c => {
+            const t = checkText(c.id, catalogue.get(c.id)?.description);
+            const isOff = off.has(c.id);
+            return (
+              <div key={c.id} className={clsx('flex items-start gap-2', chip, isOff && 'opacity-60')}>
+                {isOff && <BellOff size={13} className="mt-0.5 shrink-0 text-amber-600" aria-hidden />}
+                <div className="flex-1">
+                  <div className={clsx('font-medium', isOff && 'line-through')}>{t.title}</div>
+                  <div className="text-xs text-slate-500 dark:text-slate-400">{isOff ? offNote : `Stops: ${t.stops}`}</div>
+                </div>
+                {switchFor(c.id, t.title)}
               </div>
             );
           })}
@@ -177,13 +223,16 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
             replace(keyOf(ref), sev === byDefault ? rest : { ...rest, severity: sev });
           };
           const name = String((ref.params as any)?.name ?? '');
+          const isOff = off.has(keyOf(ref));
           return (
             <div key={keyOf(ref)} className={clsx('space-y-2', chip)}>
               <div className="flex items-start gap-2">
+                {isOff && <BellOff size={13} className="mt-0.5 shrink-0 text-amber-600" aria-hidden />}
                 <div className="flex-1">
-                  <div className="font-medium">{t.title}</div>
-                  <div className="text-xs text-slate-500 dark:text-slate-400">Stops: {t.stops}</div>
+                  <div className={clsx('font-medium', isOff && 'line-through')}>{t.title}</div>
+                  <div className="text-xs text-slate-500 dark:text-slate-400">{isOff ? offNote : `Stops: ${t.stops}`}</div>
                 </div>
+                {switchFor(keyOf(ref), isCustom(ref.id) ? `${t.title} (${name})` : t.title)}
                 {!disabled && (
                   <button type="button" aria-label={`Remove ${t.title}`} onClick={() => replace(keyOf(ref), null)}
                     className="p-1 rounded text-slate-400 hover:text-red-500">
@@ -349,6 +398,9 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
           {musts.map((m, i) => <li key={`m${i}`}>{m}</li>)}
           {warns.map((w, i) => <li key={`w${i}`} className="text-slate-500">Warning only: {w}</li>)}
         </ul>
+        {notRun.length > 0 && (
+          <div className="text-xs text-amber-700 dark:text-amber-400">Not run, switched off by your org's hub: {notRun.join(', ')}</div>
+        )}
       </div>
     </div>
   );

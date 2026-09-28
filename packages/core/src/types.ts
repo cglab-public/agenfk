@@ -656,7 +656,7 @@ export interface FlowStep {
   isSpecial?: boolean;    // True for terminal steps like DONE, BLOCKED, ARCHIVED
   /** What the step is (CGLAB-380): brings built-in checks. See flowChecks.ts. */
   role?: import('./flowChecks').StepRole | null;
-  /** Checks the flow adds to this step (CGLAB-380). A flow can add, never remove. */
+  /** Checks the flow adds to this step (CGLAB-380). A flow can add, never remove; only the hub switches off (disabledChecks). */
   checks?: import('./flowChecks').StepCheckRef[] | null;
   /** Resolved check ids this step switches off (CGLAB-428). Only a flow the org's hub delivered may carry any. */
   disabledChecks?: string[] | null;

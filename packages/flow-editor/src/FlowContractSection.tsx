@@ -52,11 +52,13 @@ export const StepContractDialog: React.FC<{
   stepContract: FlowContract['steps'][number] | undefined;
   contract: FlowContract;
   disabled: boolean;
+  /** CGLAB-428: the panel may switch checks off (the hub admin). */
+  canDisableChecks?: boolean;
   /** Why the contract cannot be edited here, when it cannot. */
   readOnlyNote?: string;
   onChange: (patch: Partial<FlowStep>) => void;
   onClose: () => void;
-}> = ({ step, stepContract, contract, disabled, readOnlyNote, onChange, onClose }) => {
+}> = ({ step, stepContract, contract, disabled, canDisableChecks, readOnlyNote, onChange, onClose }) => {
   // Capture phase on window, like ExitCriteriaEditorModal: the editor closes on
   // a bubble-phase window Escape (discarding unsaved edits), and focus often
   // drops to <body> after a pick unmounts the clicked button.
@@ -83,7 +85,7 @@ export const StepContractDialog: React.FC<{
         {disabled && readOnlyNote && (
           <div className="text-xs rounded-lg bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900 text-blue-900 dark:text-blue-100 px-3 py-2">{readOnlyNote}</div>
         )}
-        <StepContractPanel step={step} stepContract={stepContract} contract={contract} disabled={disabled} onChange={onChange} />
+        <StepContractPanel step={step} stepContract={stepContract} contract={contract} disabled={disabled} canDisableChecks={canDisableChecks} onChange={onChange} />
       </div>
     </div>
   </div>

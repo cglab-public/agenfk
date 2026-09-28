@@ -2,6 +2,28 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.9] — 2026-09-28
+
+Beta, cumulative over `2.0.0-beta.8`: everything in beta.8, plus the change below (CGLAB-428).
+
+### A hub admin can switch individual checks off on a step
+
+- **In Admin → Flows, the step dialog has an on/off switch for each check**: the step role's built-ins (until now
+  locked as "always on"), the checks every step runs (`tree-clean`, `on-card-branch`) and the flow's own, a custom
+  check by its name. A human approval keeps its own setting and gets no switch. It is stored per step as
+  `disabledChecks` and reaches installations with the flow.
+- **A switched-off check does not run**, and it produces no record, so a later check that needs that record does not
+  apply either (or, if the flow added it, the save is refused, naming it).
+- **Only the org's hub can do this.** An installation keeps `disabledChecks` only on a flow the hub sync delivered: a
+  local `POST`/`PUT /flows` with it is refused (400), a registry install or a local copy drops it, and a flow row that
+  carries it without coming from the hub is read as if it did not. An installation on an older version ignores the
+  field and runs every check.
+- **Never silently.** A switched-off check is struck through in the editor and named in the step's preview; the
+  verify reply carries `🔕 Switched off by your org's hub on this step (not run): ...`, pass or refusal; the card's
+  `GET /items/:id/gates` lists `disabledChecks`; and the PR check history (`agenfk pr create`, `agenfk pr-register`)
+  gains a "Checks switched off by the org's hub" section, from the new `GET /items/:id/disabled-checks`.
+- The agent rules say how to read it: the org's decision, not a flow bug, and never something an agent sets.
+
 ## [2.0.0-beta.8] — 2026-09-28
 
 Beta, cumulative over `2.0.0-beta.7`: everything in beta.7, plus the change below (CGLAB-427).
