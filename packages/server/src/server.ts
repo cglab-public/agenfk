@@ -1111,7 +1111,8 @@ function ownTreeOf(item: any): string | undefined {
  * resolved in memory, rather than a storage round-trip per ancestor.
  */
 async function claimHoldersIn(projectId: string, projectRoot: string | null | undefined): Promise<{ holders: ClaimHolder[]; treeOf: (item: any) => string | null }> {
-  const all: any[] = (await storage.listItems({ projectId, limit: 1_000_000 } as any)) as any;
+  // e248239d: claims only - no per-test results to read back.
+  const all: any[] = (await storage.listItems({ projectId, limit: 1_000_000, hydrate: false } as any)) as any;
   const byId = new Map<string, any>(all.map(i => [i.id, i]));
   /*
    * A card moved to another project keeps its parentId (move takes only
@@ -5813,7 +5814,8 @@ app.get("/items", asyncHandler(async (req: any, res: any) => {
   if (parentId) query.parentId = parentId;
   if (projectId) query.projectId = projectId;
 
-  let items = await storage.listItems(query);
+  // e248239d: the list leaves step records out (listShape), so their per-test results are never read back.
+  let items = await storage.listItems({ ...query, hydrate: false });
 
   if (includeArchived !== 'true' && !status) {
     items = items.filter(i => i.status !== Status.ARCHIVED && i.status !== Status.TRASHED);

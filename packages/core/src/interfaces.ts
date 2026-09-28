@@ -35,6 +35,12 @@ export interface StorageQuery {
   parentId?: string;
   limit?: number;
   offset?: number;
+  /**
+   * e248239d: false leaves each capture record's per-test results as a
+   * `testsBlob` reference instead of reading them back - for a caller that
+   * never reads them (the item list, claim scans). Default true.
+   */
+  hydrate?: boolean;
 }
 
 export interface StorageProvider extends AgEnFKPlugin {
