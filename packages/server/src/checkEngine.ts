@@ -969,6 +969,8 @@ export function formatCheckResults(results: readonly CheckResult[]): string {
  */
 export function capturedGreen(capture: any): boolean {
   if (!capture || capture.exitCode !== 0) return false;
+  // de5e5a03: results that could not be read back say nothing - never a green.
+  if (capture.testsMissing) return false;
   if (capture.available !== true) return true;
   return !(capture.tests ?? []).some((t: any) => t?.status === 'failed') && !(capture.brokenFiles ?? []).length;
 }

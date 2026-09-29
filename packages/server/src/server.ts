@@ -3417,11 +3417,16 @@ function runForExitCode(command: string, cwd: string, maxMs: number, onOutput?: 
  * failed): the caller treats that as "cannot say", never as unchanged.
  */
 function treeContentState(root: string, excludeRel: TreeExclude): string | null {
+  return treeContentRead(root, excludeRel)?.state ?? null;
+}
+
+/** treeContentState with the read it hashed: what a fenced run records must come from this one read (de5e5a03). */
+function treeContentRead(root: string, excludeRel: TreeExclude): { state: string; tree: TreeRead } | null {
   try {
     const head = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
     if (!head) return null;
-    const files = treeFilesState(root, excludeRel);
-    return files === null ? null : `${head}:${files}`;
+    const tree = treeFiles(root, excludeRel);
+    return tree === null ? null : { state: `${head}:${tree.hash}`, tree };
   } catch {
     return null;
   }
@@ -3468,7 +3473,14 @@ const blobSha = (content: Buffer): string => crypto.createHash('sha1').update(`b
  * `shareable` is false: the hash still fences a run, but no green or pass may
  * be shared on it. `index` names what is staged, for a command that reads it.
  */
-function treeFiles(root: string, excludeRel: TreeExclude): { hash: string; shareable: boolean; index: string; files: Record<string, string> } | null {
+type TreeRead = { hash: string; shareable: boolean; index: string; files: Record<string, string> };
+/** The hash a tree state is: every entry, by path. */
+function hashEntries(entries: Iterable<[string, string]>): string {
+  const h = crypto.createHash('sha256');
+  for (const [rel, v] of [...entries].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) h.update(`\0${rel}\0${v}`);
+  return h.digest('hex');
+}
+function treeFiles(root: string, excludeRel: TreeExclude): TreeRead | null {
   const excluded = excludedBy(excludeRel);
   try {
     const git = (args: string[], cwd = root) => execFileSync('git', ['-C', cwd, ...args], { maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
@@ -3513,10 +3525,8 @@ function treeFiles(root: string, excludeRel: TreeExclude): { hash: string; share
       if (rel.endsWith('/')) shareable = false;
       entries.set(clean, fromDisk(clean));
     }
-    const h = crypto.createHash('sha256');
-    for (const rel of [...entries.keys()].sort()) h.update(`\0${rel}\0${entries.get(rel)}`);
     // 6e0d2fd6: the per-file map too, so a later step can tell which files changed since, dirty tree or not.
-    return { hash: h.digest('hex'), shareable, index: crypto.createHash('sha256').update(staged).digest('hex'), files: Object.fromEntries(entries) };
+    return { hash: hashEntries(entries), shareable, index: crypto.createHash('sha256').update(staged).digest('hex'), files: Object.fromEntries(entries) };
   } catch {
     return null;
   }
@@ -3595,16 +3605,18 @@ const commandStateOf = (root: string, project: any): string | null => {
  * record's filesState, the final step and command checks keep every file.
  * Null when the tree cannot be read, or nothing may be shared on it.
  */
-function suiteStateOf(root: string, setting: TestReportSetting | undefined): string | null {
+function suiteStateOf(root: string, setting: TestReportSetting | undefined, read?: TreeRead | null): string | null {
   if (!setting) return null;
-  const owned = excludedBy(reportsOwned(root, setting));
+  // de5e5a03: from the caller's read when it has one - a fenced run's, so the state is the content it ran on.
+  const tree = read === undefined ? treeFiles(root, reportsOwned(root, setting)) : read;
+  if (!tree || !tree.shareable) return null;
   const patterns = Array.isArray(setting.reuseIgnore) ? setting.reuseIgnore : DEFAULT_REUSE_IGNORE;
   let ignored = new Set<string>();
   if (patterns.length) {
     try {
-      const files = execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 256 * 1024 * 1024 }).split('\0').filter(Boolean);
+      const files = Object.keys(tree.files);
       const match = reuseIgnoreMatcher(patterns);
-      const candidates = files.filter(f => match(f) && !owned(f));
+      const candidates = files.filter(f => match(f));
       if (candidates.length) {
         const sources: string[] = [];
         for (const f of files) {
@@ -3616,14 +3628,21 @@ function suiteStateOf(root: string, setting: TestReportSetting | undefined): str
       }
     } catch { return null; }
   }
-  const t = treeFiles(root, rel => owned(rel) || ignored.has(rel));
-  return t && t.shareable ? t.hash : null;
+  return hashEntries(Object.entries(tree.files).filter(([rel]) => !ignored.has(rel)));
 }
+/**
+ * How a record's tree states were hashed (de5e5a03). Before `--relative`, a
+ * project in a subdirectory hashed its modified tracked files as their index
+ * blobs: a dirty tree's state equalled the clean one's. A state recorded by an
+ * older build is not compared at all.
+ */
+const STATE_VERSION = 2;
+const currentStates = (r: any): boolean => r?.stateVersion === STATE_VERSION;
 /** A capture record's reuse state (32045202); null for a record from before it, or one that did not fence its run. */
-const suiteStateOfRecord = (r: any): string | null => (typeof r?.suiteState === 'string' ? r.suiteState : null);
+const suiteStateOfRecord = (r: any): string | null => (currentStates(r) && typeof r?.suiteState === 'string' ? r.suiteState : null);
 
 /** A capture record's state, as treeStateOf reads it; null for a record that did not fence its run. */
-const stateOfRecord = (r: any): string | null => (typeof r?.filesState === 'string' ? r.filesState : null);
+const stateOfRecord = (r: any): string | null => (currentStates(r) && typeof r?.filesState === 'string' ? r.filesState : null);
 
 /**
  * Capture a test report for the card's CURRENT step, in the tree its commands
@@ -3734,13 +3753,13 @@ export async function stampCloseGreen(itemId: string, root: string, sha: string)
   const project: any = await storage.getProject(item.projectId);
   const setting: TestReportSetting | undefined = project?.testReport;
   if (!setting) return null;
-  const runs = (item.stepRecords ?? []).filter((r: any) => isOwnRun(r, setting, root) && typeof r.filesState === 'string');
+  const runs = (item.stepRecords ?? []).filter((r: any) => isOwnRun(r, setting, root) && stateOfRecord(r) !== null);
   if (!runs.length) return null;
   if (readCleanTreeSha(root, gitRun) !== sha) return null;
   const files = treeFilesState(root, reportsOwned(root, setting));
   if (!files) return null;
-  const last = [...runs].reverse().find((r: any) => r.filesState === files);
-  if (!last || last.exitCode !== 0) return null;
+  const last = [...runs].reverse().find((r: any) => stateOfRecord(r) === files);
+  if (!last || !capturedGreen(last)) return null;
   // Already a green of this very commit: nothing to add.
   if (last.clean === true && last.head === sha) return null;
   const stamped = { ...last, step: item.status, at: new Date().toISOString(), head: sha, clean: true, stampedFrom: { step: last.step, at: last.at, head: last.head } };
@@ -3763,6 +3782,8 @@ interface LazyPlan { entry: any; ran: string[]; changed: string[]; command: stri
  * config, the dependencies, a setup file - so it always means the whole suite.
  */
 const WHOLE_SUITE_FILE = /(^|\/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|bun\.lockb?|tsconfig[^/]*\.json|jsconfig\.json|\.babelrc[^/]*|babel\.config\.[^/]+|[^/]*\.config\.[cm]?[jt]s|vitest\.workspace\.[^/]+|[^/]*setup[^/]*\.[cm]?[jt]sx?|conftest\.py|pytest\.ini|pyproject\.toml|setup\.cfg|tox\.ini|requirements[^/]*\.txt|poetry\.lock|uv\.lock|Pipfile(\.lock)?)$/i;
+/** A file a related-tests command follows through imports: JS and TS sources (de5e5a03). */
+const GRAPH_FILE = /\.[cm]?[jt]sx?$/i;
 /** One argument per file, whatever its name holds. */
 const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
@@ -3782,6 +3803,8 @@ function relatedPlan(root: string, setting: TestReportSetting, entry: any, chang
   const declared = (f: string) => surface.some(p => f === p || f.startsWith(`${p.replace(/\/$/, '')}/`));
   if (changed.some(f => !fs.existsSync(path.join(root, f)) || WHOLE_SUITE_FILE.test(f) || declared(f) || f.startsWith('-'))) return null;
   const tests = changed.filter(f => isTestPath(f, surface) && TEST_FILE_NAME.test(f));
+  // de5e5a03: a related run follows imports. A snapshot, a fixture read from disk, a template: it traces no test to them.
+  if (changed.some(f => !tests.includes(f) && !GRAPH_FILE.test(f))) return null;
   return { entry, ran: tests, changed, command: template.split('{files}').join(changed.map(shellQuote).join(' ')), related: true };
 }
 
@@ -3852,9 +3875,10 @@ function changedSinceEntry(root: string, entry: any, reportRel: TreeExclude): { 
 /**
  * acceaa54 — a capture that can run only the changed test files, or null for
  * the whole suite. All of these, or null:
- *  - the step's entry capture is per-test, taken on a CLEAN tree in this tree
- *    with the report setting as it is now - so "changed since" is exactly what
- *    git reports against its head;
+ *  - the step's entry capture is per-test, in this tree, with the report
+ *    setting as it is now, and says what it ran on: a whole run on a clean
+ *    tree (git against its head), or a recorded file map with nothing changed
+ *    beside `root` (6e0d2fd6, de5e5a03);
  *  - nothing changed outside `root`, and EVERY file changed since then is
  *    itself a test file: under the test surface AND named as one (a test file
  *    that exports helpers for others is the rare case this misses). A helper,
@@ -3869,7 +3893,7 @@ function changedSinceEntry(root: string, entry: any, reportRel: TreeExclude): { 
 function lazyPlan(root: string, setting: TestReportSetting, entry: any): LazyPlan | null {
   // 6e0d2fd6: an entry that recorded its files works dirty or partial - which is how a TDD coding step is entered.
   if (!(entry?.kind === 'capture' && entry.root === root && entry.available === true && typeof entry.head === 'string'
-    && ((entry.clean === true && !entry.lazy) || isFileMap(entry.fileShas))
+    && ((entry.clean === true && !entry.lazy) || (isFileMap(entry.fileShas) && entry.outsideDirty === false))
     && Array.isArray(entry.tests) && ranAsSetNow(entry, setting))) return null;
   const since = changedSinceEntry(root, entry, reportsOwned(root, setting));
   if (!since || since.outside) return null;
@@ -3960,6 +3984,8 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
   const reportRel = reportAbs ? insideRoot(root, reportAbs) : null;
   const owned = setting ? reportsOwned(root, setting) : [];
   const stateBefore = treeContentState(root, owned);
+  // de5e5a03: work beside `root` as the run starts - read on both sides, so a change undone meanwhile still counts.
+  const besideBefore = typeof record.head === 'string' ? changedSince(root, record.head, owned) : null;
   // The plan was made before the run was fenced: the tree must still be what it saw.
   if (lazy && JSON.stringify(changedSinceEntry(root, lazy.entry, owned)) !== JSON.stringify({ inside: lazy.changed, outside: false })) return null;
   if (lazy) {
@@ -3971,7 +3997,9 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
     } else opts?.onOutput?.(`[agenfk] only test files changed since this step began: running ${lazy.ran.length} of them over the entry results\n`);
   }
   record.exitCode = await runForExitCode(lazy ? lazy.command : command, root, verifyMaxMs(), opts?.onOutput);
-  const stateAfter = treeContentState(root, owned);
+  // de5e5a03: one read for the fence AND everything the record says the run saw - a later read may see a later tree.
+  const after = treeContentRead(root, owned);
+  const stateAfter = after?.state ?? null;
   if (setting && reportAbs) {
     try {
       if (stateBefore === null || stateAfter === null) throw new Error('the tree could not be read (not a git repository, no commit yet, or git failed), so the results cannot be tied to it');
@@ -3981,11 +4009,14 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
       }
       // What the run saw, without HEAD: a close that commits exactly this can re-stamp it (e99b5015).
       record.filesState = stateAfter.slice(stateAfter.indexOf(':') + 1);
+      record.stateVersion = STATE_VERSION;
       // 6e0d2fd6: which file held what, for the next step's partial run.
-      const seen = treeFiles(root, owned);
-      if (seen) record.fileShas = seen.files;
+      record.fileShas = after!.tree.files;
+      // de5e5a03: the map covers `root` only; work beside it at this moment makes it no base for a partial run.
+      const besideAfter = typeof record.head === 'string' ? changedSince(root, record.head, owned) : null;
+      record.outsideDirty = !besideBefore || !besideAfter || besideBefore.outside || besideAfter.outside;
       // 32045202: what reuse compares, docs no test names aside.
-      const suite = suiteStateOf(root, setting);
+      const suite = suiteStateOf(root, setting, after!.tree);
       if (suite) record.suiteState = suite;
       // Each report the command should have written, read as one run's results.
       // One that is missing says which: a suite that crashed before writing its
@@ -4011,6 +4042,8 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
         const changed = new Set([...lazy.changed, ...(lazy.related ? ran : [])]);
         const ranTests = parsed.tests.filter(t => ran.has(t.file));
         const ranBroken = parsed.brokenFiles.filter(b => ran.has(b.file));
+        // de5e5a03: a related run that found no test at all traced nothing - it cannot stand for the suite.
+        if (lazy.related && !ran.size) return null;
         if (lazy.related) record.ranFiles = [...ran].sort();
         // Every file it ran must be in its report, under that very path.
         const reported = new Set<string>([...ranTests.map(t => t.file), ...ranBroken.map(b => b.file)]);
@@ -7456,7 +7489,8 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     // acceaa54: the capture this step entered with, for a test-only change to run over.
     const prevStep = sorted[index - 1];
     const before: any[] = ((await storage.getItem(item.id)) as any)?.stepRecords ?? [];
-    const lazyOver = prevStep ? [...before].reverse().find((r: any) => r?.kind === 'capture' && r.step === prevStep.name) ?? null : null;
+    // de5e5a03: a testing step's whole job is the suite - it never runs a part of it.
+    const lazyOver = prevStep && (sorted[index] as any)?.role !== 'testing' ? [...before].reverse().find((r: any) => r?.kind === 'capture' && r.step === prevStep.name) ?? null : null;
     const out = await captureStepRecord(item, { ...(run ? { onOutput: (chunk: string) => appendRunOutput(run, chunk) } : {}), lazyOver });
     if ('error' in out) captureError = out.message; else capture = out.record;
     // a36047ea: a whole run that only code changes caused, in a project that could have run fewer.

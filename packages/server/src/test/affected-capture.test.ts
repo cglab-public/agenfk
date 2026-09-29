@@ -74,8 +74,8 @@ process.exit(failed ? 1 : 0);
 `;
 
 /** START -> PLAN -> BUILD (existing-tests-still-green: leaving PLAN records the entry, leaving BUILD captures) -> END. */
-async function setup(opts: { related?: boolean | string } = { related: true }) {
-  const f = await agent().post('/flows').send({ name: `af-${++seq}`, steps: [
+async function setup(opts: { related?: boolean | string; steps?: any[] } = { related: true }) {
+  const f = await agent().post('/flows').send({ name: `af-${++seq}`, steps: opts.steps ?? [
     s('START', 0, { isAnchor: true }), s('PLAN', 1), s('BUILD', 2, { checks: [{ id: 'existing-tests-still-green' }] }), s('END', 3, { isAnchor: true }),
   ] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
@@ -95,7 +95,8 @@ async function setup(opts: { related?: boolean | string } = { related: true }) {
   fs.writeFileSync(deps, JSON.stringify({ 'a.test.js': ['lib.js'], 'b.test.js': ['other.js'], 'c.test.js': ['my lib.js'] }));
   const runner = path.join(tools, 'runner.js');
   fs.writeFileSync(runner, RUNNER(log, deps, omit));
-  const relatedCommand = typeof opts.related === 'string' ? opts.related : opts.related ? `node ${runner} related {files}` : undefined;
+  const related = opts.related ?? true;
+  const relatedCommand = typeof related === 'string' ? related : related ? `node ${runner} related {files}` : undefined;
   const p = await agent().post('/projects').send({ name: `af-${++seq}` });
   await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'true',
     testReport: { format: 'junit-xml', command: `node ${runner}`, reportPath: 'report.xml', ...(relatedCommand ? { relatedCommand } : {}) } } as never);
@@ -238,5 +239,68 @@ describe('PUT /projects/:id/test-report with relatedCommand', () => {
     const t = await setup({ related: false });
     expect((await put(t.pid, { ...base, relatedCommand: 'npx vitest related --run' })).status).toBe(400);
     expect((await put(t.pid, { ...base, relatedCommand: 42 })).status).toBe(400);
+  });
+});
+
+/*
+ * de5e5a03 (review of 6caae168, finding 1): a related run follows imports. A
+ * change it cannot trace - a snapshot, a fixture a test reads from disk - left
+ * the affected tests out of its report, and the merge kept their entry greens.
+ * Only code files the runner's graph follows run affected-only; a related run
+ * that finds no test at all means the whole suite; and a testing step, whose
+ * whole job is the suite, never runs a part of it.
+ */
+describe('de5e5a03: an affected-only run never stands in for tests it cannot trace', () => {
+  const whole = async (t: Awaited<ReturnType<typeof setup>>) => {
+    const res = await validate(t.id);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(t.runs().at(-1)).toBe('ALL');
+    return res;
+  };
+
+  it('a snapshot changed with the code: the whole suite runs', async () => {
+    const t = await setup();
+    fs.mkdirSync(path.join(t.repo, '__snapshots__'));
+    t.edit('__snapshots__/a.test.js.snap', 'exports[`adds 1`] = `1`;\n');
+    git(t.repo, 'git add . && git commit -qm snap');
+    await enterBuild(t);
+    t.edit('lib.js', 'module.exports = 10;\n');
+    t.edit('__snapshots__/a.test.js.snap', 'exports[`adds 1`] = `10`;\n');
+    await whole(t);
+    expect(t.runs().slice(1)).toEqual(['ALL']);
+  });
+
+  it('a data file a test reads changed: the whole suite runs', async () => {
+    const t = await setup();
+    t.edit('fixture.json', '{"n":1}\n');
+    git(t.repo, 'git add . && git commit -qm fixture');
+    await enterBuild(t);
+    t.edit('fixture.json', '{"n":2}\n');
+    await whole(t);
+    expect(t.runs().slice(1)).toEqual(['ALL']);
+  });
+
+  it('a related run that finds no test for the change: the whole suite runs after it', async () => {
+    const t = await setup();
+    await enterBuild(t);
+    t.edit('orphan.js', 'module.exports = 5;\n');
+    await whole(t);
+    expect(t.runs().slice(1)).toEqual([{ related: ['orphan.js'], ran: [] }, 'ALL']);
+    expect(await captureAt(t.id, 'BUILD')).not.toHaveProperty('lazy');
+  });
+
+  it('a testing step runs the whole suite, even over an affected-only entry', async () => {
+    const t = await setup({ steps: [
+      s('START', 0, { isAnchor: true }), s('PLAN', 1, { checks: [{ id: 'suite-green' }] }), s('BUILD', 2, { checks: [{ id: 'suite-green' }] }),
+      s('CHECK', 3, { role: 'testing' }), s('SHIP', 4), s('END', 5, { isAnchor: true }),
+    ] });
+    await enterBuild(t);
+    t.edit('lib.js', 'module.exports = 10;\n');
+    expect((await validate(t.id)).status).toBe(200);            // BUILD -> CHECK: a coding change, affected-only
+    expect(t.runs().slice(1)).toEqual([{ related: ['lib.js'], ran: ['a.test.js'] }]);
+    expect(((await storage.getItem(t.id)) as any).status).toBe('CHECK');
+    t.edit('lib.js', 'module.exports = 11;\n');
+    await whole(t);                                                // CHECK -> SHIP: the suite, all of it
+    expect(await captureAt(t.id, 'CHECK')).not.toHaveProperty('lazy');
   });
 });

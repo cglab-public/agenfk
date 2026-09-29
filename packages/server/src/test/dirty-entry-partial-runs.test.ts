@@ -72,15 +72,15 @@ process.exit(failed ? 1 : 0);
 
 
 /** START -> SPECS (test-authoring) -> BUILD (coding) -> END, nothing ever committed after the first commit. */
-async function setup(sub = false) {
-  const f = await agent().post('/flows').send({ name: `de-${++seq}`, steps: [
+async function setup(sub = false, steps?: any[]) {
+  const f = await agent().post('/flows').send({ name: `de-${++seq}`, steps: steps ?? [
     s('START', 0, { isAnchor: true }), s('SPECS', 1, { role: 'test-authoring' }), s('BUILD', 2, { role: 'coding' }), s('END', 3, { isAnchor: true }),
   ] });
   expect(f.status, JSON.stringify(f.body)).toBe(201);
   const top = tmp('agenfk-de-repo-');
   // With `sub`, the project is a subdirectory of its repository.
   const repo = sub ? path.join(top, 'sub') : top;
-  if (sub) fs.mkdirSync(repo);
+  if (sub) { fs.mkdirSync(repo); fs.writeFileSync(path.join(top, 'shared.js'), 'module.exports = 0;\n'); }
   fs.writeFileSync(path.join(repo, 'lib.js'), 'module.exports = 1;\n');
   fs.writeFileSync(path.join(repo, 'other.js'), 'module.exports = 2;\n');
   fs.writeFileSync(path.join(repo, 'a.test.js'), 'pass adds\n');
@@ -100,7 +100,7 @@ async function setup(sub = false) {
   await storage.updateItem(c.body.id, { status: 'START' } as any);
   const edit = (rel: string, text: string) => fs.writeFileSync(path.join(repo, rel), text);
   const runs = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : []);
-  return { id: c.body.id as string, repo, edit, runs };
+  return { id: c.body.id as string, top, repo, edit, runs };
 }
 const validate = (id: string) => agent().post(`/items/${id}/validate`).set(internal()).send({ evidence: 'ok' });
 const statusOf = async (id: string) => ((await storage.getItem(id)) as any).status;
@@ -128,12 +128,13 @@ describe('6e0d2fd6: partial runs on a dirty tree, after a partial run', () => {
     expect((await validate(t.id)).status).toBe(200);
     t.edit('c.test.js', 'fail new rule\n');
     expect((await validate(t.id)).status).toBe(200);
-    // A new file written while coding (untracked, uncommitted) is part of what changed.
-    t.edit('notes.txt', 'written during the coding step\n');
+    // A new file written while coding (untracked, uncommitted) is part of what changed. A code file: anything else
+    // means the whole suite (de5e5a03), which would not show whether it was seen.
+    t.edit('util.js', 'module.exports = 4;\n');
     t.edit('lib.js', 'module.exports = 10;\n');
     t.edit('c.test.js', 'pass new rule\n');
     expect((await validate(t.id)).status).toBe(200);
-    expect(t.runs().at(-1)).toEqual({ related: ['c.test.js', 'lib.js', 'notes.txt'], ran: ['a.test.js', 'c.test.js'] });
+    expect(t.runs().at(-1)).toEqual({ related: ['c.test.js', 'lib.js', 'util.js'], ran: ['a.test.js', 'c.test.js'] });
   });
 
   it('in a project that is a subdirectory, a TRACKED file edited while coding is part of what changed', async () => {
@@ -147,5 +148,23 @@ describe('6e0d2fd6: partial runs on a dirty tree, after a partial run', () => {
     t.edit('c.test.js', 'pass new rule\n');
     expect((await validate(t.id)).status).toBe(200);
     expect(t.runs().at(-1)).toEqual({ related: ['c.test.js', 'other.js'], ran: ['b.test.js', 'c.test.js'] });
+  });
+
+  // de5e5a03 (review of 6caae168, finding 3): the entry's file map covers the project's root only. A change beside
+  // it that was there when the entry ran and is gone now shows in no diff against HEAD - yet the entry's results
+  // were taken with it. Its outside state is recorded too, and a different one means the whole suite.
+  it('in a project that is a subdirectory, a change beside it at entry that is reverted since: the whole suite runs', async () => {
+    const t = await setup(true, [
+      s('START', 0, { isAnchor: true }), s('PLAN', 1, { checks: [{ id: 'suite-green' }] }), s('BUILD', 2, { checks: [{ id: 'suite-green' }] }), s('END', 3, { isAnchor: true }),
+    ]);
+    expect((await validate(t.id)).status).toBe(200);                                  // START -> PLAN on the clean tree
+    fs.writeFileSync(path.join(t.top, 'shared.js'), 'module.exports = 99;\n');   // someone's work beside the project
+    t.edit('lib.js', 'module.exports = 10;\n');
+    expect((await validate(t.id)).status).toBe(200);                                  // PLAN -> BUILD: a dirty entry, shared.js modified
+    expect(await statusOf(t.id)).toBe('BUILD');
+    git(t.top, 'git checkout -q -- shared.js');                                     // ... and it is gone again
+    t.edit('lib.js', 'module.exports = 11;\n');
+    expect((await validate(t.id)).status).toBe(200);
+    expect(t.runs().at(-1)).toBe('ALL');
   });
 });

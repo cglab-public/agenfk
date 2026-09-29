@@ -162,6 +162,18 @@ describe('e99b5015 (1): the close green becomes the next card\'s baseline', () =
     expect(await stampCloseGreen(a, t.repo, git(t.repo, 'git rev-parse HEAD'))).toBeNull();
   });
 
+  // de5e5a03 (review of 6caae168, 10a): exit 0 is not green when the report records a failure (001aed1e missed this site).
+  it('no stamp from a run whose exit hid a failing test', async () => {
+    const t = await setup();
+    const a = await t.card();
+    fs.writeFileSync(path.join(t.repo, 'feature.js'), 'module.exports = 1;\n');
+    expect((await capture(a)).status).toBe(200);
+    const card: any = await storage.getItem(a);
+    await storage.updateItem(a, { stepRecords: card.stepRecords.map((r: any) => ({ ...r, exitCode: 0, tests: r.tests.map((x: any) => ({ ...x, status: 'failed' })) })) } as any);
+    commitAll(t.repo, 'close');
+    expect(await stampCloseGreen(a, t.repo, git(t.repo, 'git rev-parse HEAD'))).toBeNull();
+  });
+
   it('the stamp enters the green index, so a project already indexed finds it', async () => {
     const t = await setup();
     const warm = await t.card();
