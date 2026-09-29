@@ -829,7 +829,8 @@ program
     const persistedApiPort = readServerPort();
     if (persistedApiPort && persistedApiPort !== DEFAULT_API_PORT) killPort(persistedApiPort);
     killPort(DEFAULT_API_PORT); // API default
-    killPort(5173); // UI default
+    // A separate vite UI an older version ran (24a7b899: the server serves the board now).
+    killPort(5173);
     killPattern('packages/server/dist/server.js');
     killPattern('packages/ui');
 
@@ -871,7 +872,7 @@ program
 
 program
   .command('down')
-  .description('Stop all AgEnFK services (API server and UI)')
+  .description('Stop all AgEnFK services (the server, which also serves the board)')
   .action(() => {
     const rootDir = path.resolve(__dirname, '../../..');
     console.log(chalk.blue('🛑 Bringing down AgEnFK services...'));
@@ -887,14 +888,9 @@ program
       console.log(chalk.gray('  - API server was not running'));
     }
 
-    // Stop UI dev server — match vite process rooted in packages/ui
-    try {
-      killPattern('packages/ui');
-      console.log(chalk.green('  ✓ UI server stopped'));
-      stopped++;
-    } catch {
-      console.log(chalk.gray('  - UI server was not running'));
-    }
+    // 24a7b899: the server serves the board, so stopping it stopped the board. A separate
+    // vite UI an older version ran is cleared quietly - it is not a service of this one.
+    try { killPattern('packages/ui'); } catch { /* none running */ }
 
     if (stopped > 0) {
       console.log(chalk.green(`\n✅ Stopped ${stopped} service(s).`));
@@ -917,13 +913,13 @@ program
       console.log(chalk.gray(`  - Also killing processes on default port ${DEFAULT_API_PORT}...`));
       killPort(DEFAULT_API_PORT);
     }
-    console.log(chalk.gray('  - Killing processes on port 5173 (UI)...'));
+    console.log(chalk.gray('  - Killing processes on port 5173 (a UI from an older version)...'));
     killPort(5173);
 
     // Kill by pattern
     console.log(chalk.gray('  - Killing API server processes...'));
     killPattern('packages/server/dist/server.js');
-    console.log(chalk.gray('  - Killing UI server processes...'));
+    console.log(chalk.gray('  - Killing UI processes left by an older version...'));
     killPattern('packages/ui');
     console.log(chalk.gray('  - Killing MCP server processes...'));
     killPattern('packages/server/dist/index.js');

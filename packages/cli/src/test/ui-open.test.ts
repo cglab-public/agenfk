@@ -3,7 +3,7 @@
  *
  * User-facing contract exercised here (CGLAB-100):
  *  - `resolveDashboardUrl` keeps the existing base-URL behaviour: the URL
- *    recorded in `<root>/.agenfk/ui.log` wins, else the default dev port.
+ *    is the server's port (it serves the board; 24a7b899), else the API default.
  *  - `buildUiOpenUrl` appends `?item=<itemId>` (and `&project=<projectId>`
  *    when the current project resolves) to that base, URL-encoding values.
  *  - the commander `ui` command accepts `--open <itemId>`.
@@ -45,39 +45,27 @@ function uiCommand() {
 }
 
 describe('resolveDashboardUrl', () => {
-  it('falls back to the default dev-server URL when no ui.log exists', () => {
+  // 24a7b899: the server serves the board (one origin); no separate UI process records a URL any more.
+  it('ignores a vite URL an older install left in .agenfk/ui.log: the board is the server\'s', () => {
     const dir = makeTmpDir('agenfk-ui-open-');
     try {
-      expect(resolveDashboardUrl(dir)).toBe('http://localhost:5173');
+      fs.mkdirSync(path.join(dir, '.agenfk'));
+      fs.writeFileSync(path.join(dir, '.agenfk', 'ui.log'), '  ➜  Local:   http://localhost:5174/\n');
+      expect(resolveDashboardUrl(dir)).toBe('http://localhost:3000');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('uses the URL recorded in .agenfk/ui.log', () => {
+  it('with no server port recorded, is the API\'s default port', () => {
     const dir = makeTmpDir('agenfk-ui-open-');
     try {
-      fs.mkdirSync(path.join(dir, '.agenfk'));
-      fs.writeFileSync(
-        path.join(dir, '.agenfk', 'ui.log'),
-        'VITE ready in 120 ms\n  ➜  Local:   http://localhost:5174/\n'
-      );
-      expect(resolveDashboardUrl(dir)).toBe('http://localhost:5174');
+      expect(resolveDashboardUrl(dir)).toBe('http://localhost:3000');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('falls back to the default when ui.log has no parseable URL', () => {
-    const dir = makeTmpDir('agenfk-ui-open-');
-    try {
-      fs.mkdirSync(path.join(dir, '.agenfk'));
-      fs.writeFileSync(path.join(dir, '.agenfk', 'ui.log'), 'no urls in here');
-      expect(resolveDashboardUrl(dir)).toBe('http://localhost:5173');
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
 });
 
 describe('buildUiOpenUrl', () => {

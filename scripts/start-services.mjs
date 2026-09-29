@@ -23,7 +23,6 @@ function resolveDbPath() {
 const dbPath = resolveDbPath();
 
 const REQUESTED_API_PORT = process.env.AGENFK_PORT || '3000';
-const UI_PORT = process.env.VITE_PORT || '5173';
 const SERVER_PORT_FILE = path.join(os.homedir(), '.agenfk', 'server-port');
 
 if (!fs.existsSync(agenfkDir)) {
@@ -43,6 +42,12 @@ try { fs.unlinkSync(SERVER_PORT_FILE); } catch { /* ignore */ }
  */
 const uiDist = path.join(rootDir, 'packages/ui', 'dist');
 const servesUi = fs.existsSync(path.join(uiDist, 'index.html'));
+/*
+ * 24a7b899 - the board's lifecycle is the server's: nothing else serves it.
+ * The vite-preview fallback that ran here when there was no build could never
+ * work (preview serves that same build), and a second process is one more thing
+ * a restart can leave down. With no build the API still runs, and says so.
+ */
 
 console.log(`Starting API Server (requested port ${REQUESTED_API_PORT})${servesUi ? ' with the built UI' : ''}...`);
 const apiLogPath = path.join(agenfkDir, 'api.log');
@@ -52,7 +57,6 @@ const apiProcess = spawn('node', [path.join(rootDir, 'packages/server/dist/serve
         ...process.env,
         AGENFK_DB_PATH: dbPath,
         AGENFK_PORT: REQUESTED_API_PORT,
-        VITE_PORT: UI_PORT,
         ...(servesUi ? { AGENFK_SERVE_UI: uiDist } : {}),
     },
     detached: true,
@@ -74,25 +78,12 @@ if (API_PORT !== REQUESTED_API_PORT) {
     console.log(`API Server bound to port ${API_PORT} (requested ${REQUESTED_API_PORT} was unavailable).`);
 }
 
-const uiLogPath = path.join(agenfkDir, 'ui.log');
-const isMinGW = !!(process.env.MSYSTEM || process.env.MINGW_PREFIX);
-const npmCmd = (os.platform() === 'win32' && !isMinGW) ? 'npm.cmd' : 'npm';
+// A vite URL an older install left behind would send `agenfk ui` to a dead port.
+try { fs.unlinkSync(path.join(agenfkDir, 'ui.log')); } catch { /* nothing to remove */ }
 if (servesUi) {
-    // Remove a STALE vite URL: `agenfk ui` reads this log, and a 5173 left over
-    // from a previous run would point at a port nothing is serving any more.
-    try { fs.unlinkSync(uiLogPath); } catch { /* nothing to remove */ }
-    console.log(`UI served by the API on port ${API_PORT} (no separate vite).`);
+    console.log(`Board served by the API on port ${API_PORT}.`);
 } else {
-    console.log(`No built UI found; starting vite preview on port ${UI_PORT}...`);
-    const uiLog = fs.openSync(uiLogPath, 'w');
-    const uiProcess = spawn(npmCmd, ['run', 'preview'], {
-        cwd: path.join(rootDir, 'packages/ui'),
-        env: { ...process.env, VITE_PORT: UI_PORT, VITE_API_URL: `http://localhost:${API_PORT}` },
-        detached: true,
-        stdio: ['ignore', uiLog, uiLog],
-        shell: os.platform() === 'win32', // .cmd scripts need shell on Windows (MinGW + native)
-    });
-    uiProcess.unref();
+    console.log(`No built board found at ${uiDist}: the API runs without it. Build it with: npm run build -w packages/ui`);
 }
 
 console.log("Services started in background.");
@@ -100,27 +91,12 @@ console.log(`API: http://localhost:${API_PORT}`);
 console.log("Database: " + dbPath);
 console.log("Logs: " + path.join(agenfkDir, '*.log'));
 
-// Simple wait for UI
-console.log("Waiting for UI to be ready...");
-// The API's own port when it serves the UI; the vite port otherwise.
-let uiUrl = servesUi ? `http://localhost:${API_PORT}` : `http://localhost:${UI_PORT}`;
-for (let i = 0; i < 15 && !servesUi; i++) {
-    if (fs.existsSync(uiLogPath)) {
-        const content = fs.readFileSync(uiLogPath, 'utf8');
-        const matches = content.match(/http:\/\/localhost:[0-9]+/g);
-        if (matches) {
-            uiUrl = matches[matches.length - 1];
-            break;
-        }
-    }
-    await new Promise(resolve => setTimeout(resolve, 1000));
-}
-
-console.log("UI available at: " + uiUrl);
+const uiUrl = `http://localhost:${API_PORT}`;
+if (servesUi) console.log("Board available at: " + uiUrl);
 
 // AGENFK_NO_OPEN_BROWSER gates the auto-open so fleet-driven restarts
 // (agenfk restart --quiet) don't surface a new browser tab.
-if (process.env.AGENFK_NO_OPEN_BROWSER) {
+if (process.env.AGENFK_NO_OPEN_BROWSER || !servesUi) {
     process.exit(0);
 }
 

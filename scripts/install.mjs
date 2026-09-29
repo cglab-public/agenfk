@@ -1801,7 +1801,7 @@ async function run() {
         console.log("");
         console.log(`${BLUE}=== Usage Instructions ===${NC}`);
         console.log("1. Restart your AI editor/agent (Opencode, Cursor, Codex, and Gemini CLI need a restart to pick up the new MCP server; pi needs a restart to load its native extension).");
-        console.log("2. Run 'node scripts/start-services.mjs' to start the API and Web UI.");
+        console.log("2. Run 'agenfk up' to start the server, which also serves the board.");
         console.log("3. Go to ANY project repository and type '/agenfk' (Standard) or '/agenfk-deep' (Multi-Agent) in your AI editor's prompt to initialize your project context and start the workflow.");
         console.log("4. Phase Commands (Agent Spawn): '/agenfk-plan', '/agenfk-code', '/agenfk-review', '/agenfk-test', '/agenfk-close'.");
         console.log("5. Run 'agenfk health' to verify your installation at any time.");

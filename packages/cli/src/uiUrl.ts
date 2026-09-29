@@ -8,33 +8,20 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-
-const DEFAULT_UI_URL = 'http://localhost:5173';
+import { DEFAULT_API_PORT } from '@agenfk/telemetry';
 
 /**
- * Resolve the dashboard base URL the way `agenfk ui` always has: the URL the
- * dev server recorded in `<rootDir>/.agenfk/ui.log` wins; anything else (no
- * log, unparseable log) falls back to the default dev port.
+ * The dashboard's base URL: the server's own port, since the server serves the
+ * board (one origin, CGLAB-165; 24a7b899: nothing else does). A `ui.log` an
+ * older install's vite process left behind is ignored - it names a port nothing
+ * serves any more. `_rootDir` is kept for the callers' signature.
  */
-export function resolveDashboardUrl(rootDir: string): string {
-  let logContent: string;
+export function resolveDashboardUrl(_rootDir: string): string {
   try {
-    logContent = fs.readFileSync(path.join(rootDir, '.agenfk', 'ui.log'), 'utf8');
-  } catch {
-    /*
-     * NO VITE LOG: the API is probably serving the UI itself (one origin,
-     * CGLAB-165), and its port is the one thing that knows where. Without this
-     * the fallback stayed 5173 - a port nothing serves any more once the API
-     * carries the bundle - and `agenfk ui` would open a browser at a dead URL.
-     */
-    try {
-      const port = fs.readFileSync(path.join(os.homedir(), '.agenfk', 'server-port'), 'utf8').trim();
-      if (port) return `http://localhost:${port}`;
-    } catch { /* no server either; the default is still usable */ }
-    return DEFAULT_UI_URL;
-  }
-  const match = logContent.match(/http:\/\/localhost:\d+/);
-  return match ? match[0] : DEFAULT_UI_URL;
+    const port = fs.readFileSync(path.join(os.homedir(), '.agenfk', 'server-port'), 'utf8').trim();
+    if (port) return `http://localhost:${port}`;
+  } catch { /* no server recorded: the default port */ }
+  return `http://localhost:${DEFAULT_API_PORT}`;
 }
 
 /**

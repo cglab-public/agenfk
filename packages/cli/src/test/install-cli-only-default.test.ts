@@ -16,15 +16,18 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { existsSync, readFileSync, readdirSync } from 'fs';
-import { execFileSync } from 'child_process';
 import path from 'path';
 import { runInstall, runBootstrap, cleanupHome, REPO_ROOT, type RunResult } from './helpers/runInstaller';
 
 describe('install.mjs — default (CLI-only) install writes the expected artifacts', () => {
   let r: RunResult;
   const readJson = (...segs: string[]) => JSON.parse(readFileSync(r.p(...segs), 'utf8'));
+  // 24a7b899: the service script as it was before the install ran - the check is that the INSTALL leaves it alone,
+  // which an absolute "is the file clean" could not tell from a change being worked on in the tree.
+  let serviceScriptBefore = '';
 
   beforeAll(() => {
+    serviceScriptBefore = readFileSync(path.join(REPO_ROOT, 'scripts', 'start-services.mjs'), 'utf8');
     // A plain install (no --with-mcp / --no-mcp) is the CLI-only default: MCP is
     // opt-in (withMcp stays false) but Codex keeps MCP on (codexMcp default).
     r = runInstall(['--rules-scope=global']);
@@ -76,14 +79,10 @@ describe('install.mjs — default (CLI-only) install writes the expected artifac
   });
 
   it('does not dirty tracked repo files (installer writes only under the sandbox HOME)', () => {
-    // install.mjs (re)writes scripts/start-services.mjs at its rootDir (= this
-    // repo). It is byte-identical to the committed file today, so the tree stays
-    // clean — but assert it explicitly so any future drift in the template fails
-    // loudly here instead of silently mutating a tracked file during the suite.
-    const dirty = execFileSync('git', ['status', '--porcelain', '--', 'scripts/start-services.mjs'], {
-      cwd: REPO_ROOT, encoding: 'utf8',
-    }).trim();
-    expect(dirty).toBe('');
+    // install.mjs once (re)wrote scripts/start-services.mjs at its rootDir (= this repo) from a template that had
+    // drifted behind the real script. It no longer does; this keeps it that way. Byte-for-byte against the file as it
+    // was before the install, not "clean in git": a change being worked on in the tree is not the installer's.
+    expect(readFileSync(path.join(REPO_ROOT, 'scripts', 'start-services.mjs'), 'utf8')).toBe(serviceScriptBefore);
   });
 });
 
