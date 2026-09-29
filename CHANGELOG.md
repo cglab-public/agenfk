@@ -2,6 +2,14 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.12] — 2026-09-29
+
+Beta, cumulative over `2.0.0-beta.11`: everything in beta.11, plus the change below (CGLAB-164).
+
+- **The Settings dialog's edge is visible in dark mode.** It was filled with the board's own colour, outlined at
+  10% and set over an unblurred backdrop, so it blended into the board. It now wears the Org Flows picker's frame
+  (fill, outline, shadow) over the GitHub Import modal's blurred backdrop, in both themes.
+
 ## [2.0.0-beta.11] — 2026-09-29
 
 Beta, cumulative over `2.0.0-beta.10`: everything in beta.10, plus the changes below (CGLAB-164).
