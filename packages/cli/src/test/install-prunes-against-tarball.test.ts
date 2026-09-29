@@ -73,7 +73,7 @@ beforeAll(() => {
   }
 
   run = spawnSync(process.execPath,
-    [path.join(root, 'scripts', 'install.mjs'), '--rules-scope=global', `--dist-tarball=${tarball}`],
+    [path.join(root, 'scripts', 'install.mjs'), '--rules-scope=global', '--debuglog', `--dist-tarball=${tarball}`],
     {
       encoding: 'utf8',
       timeout: 180_000,
@@ -146,7 +146,7 @@ describe('step 1a refuses to prune a developer working tree', () => {
     const devHome = path.join(devWork, 'home');
     mkdirSync(devHome, { recursive: true });
     devRun = spawnSync(process.execPath,
-      [path.join(devRoot, 'scripts', 'install.mjs'), '--rules-scope=global', `--dist-tarball=${tarball}`],
+      [path.join(devRoot, 'scripts', 'install.mjs'), '--rules-scope=global', '--debuglog', `--dist-tarball=${tarball}`],
       {
         encoding: 'utf8',
         timeout: 180_000,
@@ -193,7 +193,7 @@ describe('install.mjs takes the archive path from AGENFK_DIST_TARBALL', () => {
     writeFileSync(path.join(envRoot, 'commands', 'agenfk-release.md'), 'stale repo-private\n', 'utf8');
 
     envRun = spawnSync(process.execPath,
-      [path.join(envRoot, 'scripts', 'install.mjs'), '--rules-scope=global'],
+      [path.join(envRoot, 'scripts', 'install.mjs'), '--rules-scope=global', '--debuglog'],
       {
         encoding: 'utf8',
         timeout: 180_000,

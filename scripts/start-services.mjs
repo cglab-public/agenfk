@@ -49,7 +49,6 @@ const servesUi = fs.existsSync(path.join(uiDist, 'index.html'));
  * a restart can leave down. With no build the API still runs, and says so.
  */
 
-console.log(`Starting API Server (requested port ${REQUESTED_API_PORT})${servesUi ? ' with the built UI' : ''}...`);
 const apiLogPath = path.join(agenfkDir, 'api.log');
 const apiLog = fs.openSync(apiLogPath, 'w');
 const apiProcess = spawn('node', [path.join(rootDir, 'packages/server/dist/server.js')], {
@@ -65,34 +64,33 @@ const apiProcess = spawn('node', [path.join(rootDir, 'packages/server/dist/serve
 apiProcess.unref();
 
 let API_PORT = REQUESTED_API_PORT;
+let reported = false;
 for (let i = 0; i < 30; i++) {
     if (fs.existsSync(SERVER_PORT_FILE)) {
         try {
             const persisted = fs.readFileSync(SERVER_PORT_FILE, 'utf8').trim();
-            if (persisted) { API_PORT = persisted; break; }
+            if (persisted) { API_PORT = persisted; reported = true; break; }
         } catch { /* ignore */ }
     }
     await new Promise(r => setTimeout(r, 500));
 }
-if (API_PORT !== REQUESTED_API_PORT) {
-    console.log(`API Server bound to port ${API_PORT} (requested ${REQUESTED_API_PORT} was unavailable).`);
-}
 
 // A vite URL an older install left behind would send `agenfk ui` to a dead port.
 try { fs.unlinkSync(path.join(agenfkDir, 'ui.log')); } catch { /* nothing to remove */ }
-if (servesUi) {
-    console.log(`Board served by the API on port ${API_PORT}.`);
-} else {
-    console.log(`No built board found at ${uiDist}: the API runs without it. Build it with: npm run build -w packages/ui`);
-}
-
-console.log("Services started in background.");
-console.log(`API: http://localhost:${API_PORT}`);
-console.log("Database: " + dbPath);
-console.log("Logs: " + path.join(agenfkDir, '*.log'));
-
 const uiUrl = `http://localhost:${API_PORT}`;
-if (servesUi) console.log("Board available at: " + uiUrl);
+// e04dac92: one line - where the board is and where the logs are. Anything else is a warning.
+const YELLOW = '\x1b[33m', GREEN = '\x1b[32m', NC = '\x1b[0m';
+if (!reported) {
+    console.log(`${YELLOW}⚠ The AgEnFK server started but has not reported its port yet - see ${apiLogPath}${NC}`);
+} else {
+    console.log(`${GREEN}✓ AgEnFK running - ${servesUi ? 'board' : 'API'} at ${uiUrl} (logs: ${agenfkDir})${NC}`);
+}
+if (reported && API_PORT !== REQUESTED_API_PORT) {
+    console.log(`${YELLOW}⚠ Port ${REQUESTED_API_PORT} was unavailable, so the server took ${API_PORT}${NC}`);
+}
+if (!servesUi) {
+    console.log(`${YELLOW}⚠ No built board at ${uiDist}: the API runs without it. Build it with: npm run build -w packages/ui${NC}`);
+}
 
 // AGENFK_NO_OPEN_BROWSER gates the auto-open so fleet-driven restarts
 // (agenfk restart --quiet) don't surface a new browser tab.

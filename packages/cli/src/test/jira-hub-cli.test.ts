@@ -55,7 +55,6 @@ vi.mock('child_process', () => ({
   spawnSync: vi.fn(),
   default: { execSync: vi.fn(), spawn: vi.fn(), spawnSync: vi.fn() },
 }));
-vi.mock('figlet', () => ({ default: { textSync: vi.fn().mockReturnValue('AgEnFK') } }));
 vi.mock('inquirer', () => ({ default: { prompt: vi.fn() } }));
 const { mockCreateInterface } = vi.hoisted(() => ({ mockCreateInterface: vi.fn() }));
 vi.mock('readline', () => ({ createInterface: mockCreateInterface, default: { createInterface: mockCreateInterface } }));

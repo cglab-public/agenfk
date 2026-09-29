@@ -120,13 +120,3 @@ describe('agenfk upgrade — failure reporting', () => {
     expect(section).toMatch(/process\.exit\(1\)|process\.exit\(2\)|process\.exitCode\s*=\s*[12]/);
   });
 });
-
-// ── --json silences the figlet banner ─────────────────────────────────────────
-
-describe('agenfk upgrade — --json suppresses non-JSON stdout', () => {
-  it('the figlet banner gate already excludes --json invocations', () => {
-    const cli = readCli();
-    // Existing line at top of file: gate that suppresses banner when --json is present.
-    expect(cli).toMatch(/process\.argv\.includes\(\s*['"]--json['"]\s*\)/);
-  });
-});

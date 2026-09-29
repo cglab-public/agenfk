@@ -44,7 +44,6 @@ vi.mock('child_process', () => ({
 }));
 
 vi.mock('axios');
-vi.mock('figlet', () => ({ default: { textSync: vi.fn().mockReturnValue('AgEnFK') } }));
 vi.mock('@agenfk/telemetry', () => ({
   TelemetryClient: vi.fn(function (this: any) {
     this.capture = vi.fn();

@@ -59,9 +59,6 @@ vi.mock('child_process', () => ({
   spawn: vi.fn(),
   default: { execSync: vi.fn(), spawn: vi.fn() },
 }));
-vi.mock('figlet', () => ({
-  default: { textSync: vi.fn().mockReturnValue('AgEnFK') },
-}));
 
 import { program } from '../index';
 import * as path from 'path';

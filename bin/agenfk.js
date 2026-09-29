@@ -18,24 +18,13 @@ const BLUE   = '\x1b[34m';
 const YELLOW = '\x1b[33m';
 const RESET  = '\x1b[0m';
 
-console.log(`${CYAN}
-                     ______           ______   _  __
-     /\\             |  ____|         |  ____| | |/ /
-    /  \\      __ _  | |__     _ __   | |__    | ' /
-   / /\\ \\    / _\` | |  __|   | '_ \\  |  __|   |  <
-  / ____ \\  | (_| | | |____  | | | | | |      | . \\
- /_/    \\_\\  \\__, | |______| |_| |_| |_|      |_|\\_\\
-              __/ |
-             |___/
-${RESET}`);
-
-console.log(`${BLUE}=== AgEnFK Installer ===${RESET}\n`);
-
 // Determine whether we're running from the npx cache or a real clone.
 // A real clone has a .git directory; the npx cache does not.
 const isNpxCache = !fs.existsSync(path.join(REPO_ROOT, '.git'));
 const shouldRebuild = process.argv.includes('--rebuild');
 const isBeta = process.argv.includes('--beta');
+// install.mjs is quiet by default; --debuglog brings back its step-by-step log.
+const debuglog = process.argv.includes('--debuglog');
 // MCP is opt-in (CLI-only by default): forward --with-mcp / --no-mcp to install.mjs.
 const withMcp = process.argv.includes('--with-mcp');
 const noMcp = process.argv.includes('--no-mcp');
@@ -126,15 +115,15 @@ function fetchLatestTag(repo, beta = false) {
 }
 
 // Run the setup script, surfacing a clean failure instead of letting the success
-// banner print on a partial/failed install (issue #86 #3). execSync throws on a
+// summary print on a partial/failed install (issue #86 #3). execSync throws on a
 // non-zero exit; we translate that into an explicit error + non-zero exit code.
 function runInstaller(cwd) {
   try {
-    execSync(`node scripts/install.mjs${shouldRebuild ? ' --rebuild' : ''}${isBeta ? ' --beta' : ''}${withMcp ? ' --with-mcp' : ''}${noMcp ? ' --no-mcp' : ''}`, { cwd, stdio: 'inherit' });
+    execSync(`node scripts/install.mjs${shouldRebuild ? ' --rebuild' : ''}${isBeta ? ' --beta' : ''}${withMcp ? ' --with-mcp' : ''}${noMcp ? ' --no-mcp' : ''}${debuglog ? ' --debuglog' : ''}`, { cwd, stdio: 'inherit' });
   } catch {
     console.error(`\n${YELLOW}❌ AgEnFK installation failed — the setup step did not complete.${RESET}`);
-    console.error(`${YELLOW}   See the output above for the failing step, then re-run:${RESET}`);
-    console.error(`${YELLOW}     npx -p github:cglab-public/agenfk agenfk${RESET}\n`);
+    console.error(`${YELLOW}   Re-run with --debuglog to see every step:${RESET}`);
+    console.error(`${YELLOW}     npx -p github:cglab-public/agenfk agenfk --debuglog${RESET}\n`);
     process.exit(1);
   }
 }
@@ -157,10 +146,10 @@ function downloadAsset(repo, tag, pattern, outputPath) {
 // garbage skills in every agent session (CGLAB-94 / issue #163).
 const isMacMetadata = (name) => name.startsWith('._') || name === '.DS_Store';
 const copyFilter = (src) => !isMacMetadata(path.basename(src));
-// Say what was pruned, and say what could not be — an upgrade that reports
-// clean while the leak persists is the failure mode this whole fix exists for.
+// Say what could not be pruned — an upgrade that reports clean while the leak
+// persists is the failure mode this whole fix exists for. What WAS pruned is
+// routine, and no longer listed file by file (e04dac92).
 function reportPrune({ removed, failed }) {
-  for (const rel of removed) console.log(`  Pruned (no longer shipped): ${rel}`);
   for (const f of failed) console.log(`${YELLOW}  Could not prune ${f.path}: ${f.reason}${RESET}`);
 }
 
@@ -222,7 +211,6 @@ if (isNpxCache) {
   // Always download on update (to replace stale binaries); on fresh install only if dist missing
   if (!shouldRebuild && (isUpdate || distMissing)) {
     const REPO = 'cglab-public/agenfk';
-    console.log(`${GREEN}Downloading pre-built binary from GitHub...${RESET}`);
     try {
       const latestTag = fetchLatestTag(REPO, isBeta);
       // Downgrade guard: refuse to extract a tag whose version is older than
@@ -244,7 +232,7 @@ if (isNpxCache) {
         const archive = path.join(INSTALL_DIR, 'agenfk-dist.tar.gz');
         try {
         downloadAsset(REPO, latestTag, 'agenfk-dist.tar.gz', archive);
-        execSync(`tar ${tarFlags} "${toPosixPath(archive)}" -C "${toPosixPath(INSTALL_DIR)}"`, { stdio: 'inherit' });
+        execSync(`tar ${tarFlags} "${toPosixPath(archive)}" -C "${toPosixPath(INSTALL_DIR)}"`, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
         // Prune against the ARCHIVE, not against REPO_ROOT. REPO_ROOT is the
         // npx git ref (the default branch); the tarball is fetchLatestTag,
         // which is a DIFFERENT ref — betas are cut from release/vX.Y.Z-beta.N
@@ -306,20 +294,18 @@ if (isNpxCache) {
     }
   }
 
-  console.log(`\n${GREEN}Running setup from ${INSTALL_DIR}...${RESET}\n`);
   runInstaller(INSTALL_DIR);
 } else {
   // Running from a real git clone — install in place
-  console.log(`${GREEN}Running install from ${REPO_ROOT}...${RESET}\n`);
+  console.log(`${GREEN}Installing AgEnFK in place at ${REPO_ROOT}...${RESET}`);
 
   const distMissing = !fs.existsSync(path.join(REPO_ROOT, 'packages/cli/dist')) || !fs.existsSync(path.join(REPO_ROOT, 'packages/server/dist'));
   if (!shouldRebuild && distMissing) {
     const REPO = 'cglab-public/agenfk';
-    console.log(`${GREEN}Downloading pre-built binary from GitHub...${RESET}`);
     try {
       const latestTag = fetchLatestTag(REPO, isBeta);
       downloadAsset(REPO, latestTag, 'agenfk-dist.tar.gz', path.join(REPO_ROOT, 'agenfk-dist.tar.gz'));
-      execSync(`tar ${tarFlags} "${toPosixPath(path.join(REPO_ROOT, 'agenfk-dist.tar.gz'))}" -C "${toPosixPath(REPO_ROOT)}"`, { stdio: 'inherit' });
+      execSync(`tar ${tarFlags} "${toPosixPath(path.join(REPO_ROOT, 'agenfk-dist.tar.gz'))}" -C "${toPosixPath(REPO_ROOT)}"`, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
       fs.unlinkSync(path.join(REPO_ROOT, 'agenfk-dist.tar.gz'));
     } catch (e) {
       console.error(`Failed to download pre-built binary: ${e.message}`);
@@ -330,11 +316,4 @@ if (isNpxCache) {
   runInstaller(REPO_ROOT);
 }
 
-// Reached only when the setup script above exited 0 (runInstaller exits non-zero on
-// failure). The PATH / "source <rc>" guidance is printed conditionally by install.mjs
-// itself — it knows whether an rc file was actually modified — so we don't repeat a
-// (potentially misleading) source hint here (issue #86 #3/#4).
-if (process.platform !== 'win32') {
-  console.log(`\n${GREEN}✅ AgEnFK installation complete!${RESET}`);
-  console.log(`\n${CYAN}  Once 'agenfk' is on your PATH, start services with: agenfk up${RESET}\n`);
-}
+// install.mjs prints the closing summary (and the PATH hint, when one is needed).

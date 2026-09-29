@@ -1,7 +1,6 @@
 import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { harnessActor, resolveFromOptions } from './harnessModel.js';
-import figlet from 'figlet';
 import axios from 'axios';
 import { ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, isHubRelease, isUpgrade, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
 import { writeActiveWork } from './activeWork.js';
@@ -84,82 +83,111 @@ function isMinGW() {
 }
 
 /**
- * Cross-platform port killing logic
+ * What a kill helper did. `down` and `kill` report it (e04dac92): `down` used to
+ * say "stopped" whatever happened, because the helpers reported nothing.
  */
-function killPort(port: number) {
+interface KillResult { killed: number; failed: string[] }
+
+/** SIGKILL one pid, recording the outcome. A pid already gone (ESRCH) is neither. */
+function killPid(pid: number, result: KillResult): void {
+  if (pid === process.pid) return;
   try {
-    if (process.platform === 'win32' && !isMinGW()) {
-      const output = execSync(`netstat -ano | findstr :${port}`, { encoding: 'utf8' });
-      const lines = output.split('\n').filter(l => l.includes('LISTENING'));
-      for (const line of lines) {
-        const parts = line.trim().split(/\s+/);
-        const pid = parts[parts.length - 1];
-        if (pid) execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
-      }
-    } else {
-      try {
-        const pid = execSync(`lsof -t -i:${port}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-        if (pid) {
-          process.kill(parseInt(pid, 10), 'SIGKILL');
-        }
-      } catch {
-        // Fallback to cross-platform ps check if lsof fails
-        try {
-          const output = execSync('ps -ef', { encoding: 'utf8' });
-          const lines = output.split('\n');
-          for (const line of lines) {
-            if (line.includes(`:${port}`) || line.includes(` ${port}`)) {
-               const parts = line.trim().split(/\s+/);
-               const pid = parts[1];
-               if (pid && /^\d+$/.test(pid)) {
-                 process.kill(parseInt(pid, 10), 'SIGKILL');
-               }
-            }
-          }
-        } catch {}
-      }
-    }
-  } catch (e) {
-    // Port might not be in use
+    process.kill(pid, 'SIGKILL');
+    result.killed++;
+  } catch (e: any) {
+    if (e?.code !== 'ESRCH') result.failed.push(`PID ${pid}: ${e?.code ?? e?.message ?? e}`);
+  }
+}
+
+/** taskkill one pid. Exit 128 is "process not found" - gone already, like ESRCH. */
+function taskkillPid(pid: string, result: KillResult): void {
+  if (pid === String(process.pid)) return;
+  try {
+    execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
+    result.killed++;
+  } catch (e: any) {
+    if (e?.status !== 128) result.failed.push(`PID ${pid}: ${e?.message ?? e}`);
   }
 }
 
 /**
- * Kill process by pattern (cross-platform)
+ * Kill whatever LISTENS on a port (cross-platform). Only the listener: a board
+ * open in a browser or the desktop app holds a socket on the same port, and
+ * those are not ours to kill (e04dac92 review).
  */
-function killPattern(pattern: string) {
-  try {
-    if (process.platform === 'win32' && !isMinGW()) {
-      // Very basic pattern matching for Windows
-      const output = execSync(`wmic process where "commandline like '%${pattern.replace(/\//g, '\\\\')}%'" get processid`, { encoding: 'utf8' });
-      const pids = output.split('\n').map(l => l.trim()).filter(l => /^\d+$/.test(l));
-      for (const pid of pids) {
-        execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
-      }
-    } else {
-      try {
-        const output = execSync('ps -ef', { encoding: 'utf8' });
-        const lines = output.split('\n');
-        for (const line of lines) {
-          if (line.includes(pattern) && !line.includes('ps -ef') && !line.includes('grep')) {
-            const parts = line.trim().split(/\s+/);
-            const pid = parts[1];
-            if (pid && /^\d+$/.test(pid)) {
-              process.kill(parseInt(pid, 10), 'SIGKILL');
-            }
-          }
-        }
-      } catch (e) {
-        // Fallback to pgrep if ps fails
-        try {
-          const pids = execSync(`pgrep -f "${pattern}"`, { encoding: 'utf8' }).split('\n').filter(Boolean);
-          for (const pid of pids) {
-            process.kill(parseInt(pid, 10), 'SIGKILL');
-          }
-        } catch {}
+function killPort(port: number): KillResult {
+  const result: KillResult = { killed: 0, failed: [] };
+  if (process.platform === 'win32' && !isMinGW()) {
+    let output = '';
+    try {
+      output = execSync(`netstat -ano | findstr LISTENING`, { encoding: 'utf8' });
+    } catch {
+      return result; // findstr exits 1 when nothing listens
+    }
+    const pids = new Set<string>();
+    for (const line of output.split('\n')) {
+      // Proto  Local-Address  Foreign-Address  State  PID - one line per stack (IPv4, IPv6)
+      const parts = line.trim().split(/\s+/);
+      if (parts.length >= 5 && parts[1].endsWith(`:${port}`) && /^\d+$/.test(parts[parts.length - 1])) {
+        pids.add(parts[parts.length - 1]);
       }
     }
-  } catch (e) {}
+    for (const pid of pids) taskkillPid(pid, result);
+    return result;
+  }
+  let pids: string[] = [];
+  try {
+    pids = execSync(`lsof -t -iTCP:${port} -sTCP:LISTEN`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+      .split('\n').map(p => p.trim()).filter(p => /^\d+$/.test(p));
+  } catch {
+    // lsof exits 1 when nothing listens - the normal case. Without lsof there is
+    // no listener to find: the server's command line carries no port (it comes
+    // in AGENFK_PORT), so scanning argv could only hit someone else's process.
+    // killPattern stops the server by its path either way.
+  }
+  for (const pid of new Set(pids)) killPid(parseInt(pid, 10), result);
+  return result;
+}
+
+/**
+ * Kill process by pattern (cross-platform), reporting what it killed and what
+ * it could not - including not being able to list processes at all.
+ */
+function killPattern(pattern: string): KillResult {
+  const result: KillResult = { killed: 0, failed: [] };
+  if (process.platform === 'win32' && !isMinGW()) {
+    let output = '';
+    try {
+      // Very basic pattern matching for Windows. The query's own command line
+      // (and cmd.exe's around it) holds the pattern too: leave those out.
+      output = execSync(`wmic process where "commandline like '%${pattern.replace(/\//g, '\\\\')}%' and not commandline like '%wmic%'" get processid`, { encoding: 'utf8' });
+    } catch (e: any) {
+      result.failed.push(`could not list processes: ${e?.message ?? e}`);
+      return result;
+    }
+    const pids = new Set(output.split('\n').map(l => l.trim()).filter(l => /^\d+$/.test(l)));
+    for (const pid of pids) taskkillPid(pid, result);
+    return result;
+  }
+  let pids: number[] = [];
+  try {
+    const output = execSync('ps -ef', { encoding: 'utf8' });
+    for (const line of output.split('\n')) {
+      if (line.includes(pattern) && !line.includes('ps -ef') && !line.includes('grep')) {
+        const pid = line.trim().split(/\s+/)[1];
+        if (pid && /^\d+$/.test(pid)) pids.push(parseInt(pid, 10));
+      }
+    }
+  } catch {
+    // Fallback to pgrep if ps fails; pgrep exits 1 when nothing matches
+    try {
+      pids = execSync(`pgrep -f "${pattern}"`, { encoding: 'utf8' }).split('\n').filter(Boolean).map(p => parseInt(p, 10));
+    } catch (e: any) {
+      if (e?.status !== 1) result.failed.push(`could not list processes: ${e?.message ?? e}`);
+    }
+  }
+  for (const pid of new Set(pids)) killPid(pid, result);
+  return result;
 }
 
 // Strict semver allowlist — prevents shell injection via `--version` flowing into execSync calls.
@@ -367,23 +395,6 @@ function setPausedIntegrations(list: string[]): void {
   }
   cfg.pausedIntegrations = list;
   fs.writeFileSync(agenfkConfigPath(), JSON.stringify(cfg, null, 2), 'utf8');
-}
-
-// Only show the ASCII banner for interactive humans. When stdout is piped or
-// captured (the agent case — every mutating command runs through a shell and is
-// read back into context), the ~10-line figlet banner is pure token waste, so
-// gate on isTTY in addition to the existing --json / mcp suppression.
-if (
-  process.env.NODE_ENV !== 'test' &&
-  !process.argv.includes('mcp') &&
-  !process.argv.includes('--json') &&
-  process.stdout.isTTY
-) {
-  console.log(
-    chalk.cyan(
-      figlet.textSync('AgEnFK', { font: 'Big' })
-    )
-  );
 }
 
 export { program };
@@ -667,8 +678,6 @@ program
       if (result.status === 'failed') process.exit(1);
     };
 
-    log(chalk.blue(`Checking for updates from https://github.com/${REPO}${options.beta ? ' (including betas)' : ''}${options.version ? ` (target ${options.version})` : ''}...`));
-    log(chalk.gray(`Local version: ${CURRENT_VERSION}`));
 
     let resolvedTag = '';
     let targetVersion = '';
@@ -694,29 +703,24 @@ program
       }
 
       targetVersion = resolvedTag.replace(/^v/, '');
-      log(chalk.gray(`Remote version: ${targetVersion}`));
 
       // Idempotent skip: target === current and not forced.
       if (targetVersion === CURRENT_VERSION && !options.force) {
         emitResult({ status: 'noop', fromVersion: CURRENT_VERSION, toVersion: targetVersion });
-        log(chalk.green('You are already on the requested version. Use --force to reinstall.'));
+        log(chalk.green(`AgEnFK is already on ${CURRENT_VERSION} (use --force to reinstall)`));
         return;
       }
 
-      if (options.force && targetVersion === CURRENT_VERSION) {
-        log(chalk.yellow('Versions match, but --force was specified. Proceeding with upgrade...'));
-      } else {
-        log(chalk.yellow(`New version available: ${targetVersion} (current: ${CURRENT_VERSION})`));
-      }
-
-      log(chalk.blue('Upgrading...'));
+      // e04dac92: one line now and one when done; the steps are --debuglog's.
+      log(targetVersion === CURRENT_VERSION
+        ? `Reinstalling AgEnFK ${targetVersion}...`
+        : `Upgrading AgEnFK ${CURRENT_VERSION} → ${targetVersion}...`);
 
       const rootDir = path.resolve(__dirname, '../../..');
 
       if (servicesRunning) {
-        log(chalk.blue('Stopping services before upgrade...'));
         try {
-          execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, stdio: isJson ? 'ignore' : 'inherit' });
+          execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, stdio: 'ignore' });
         } catch (e) { /* ignore */ }
       }
 
@@ -724,13 +728,11 @@ program
       fs.mkdirSync(tempDir, { recursive: true });
       let distTarball: string | null = null;
       try {
-        log(chalk.gray(`Downloading pre-built binary for ${resolvedTag}...`));
         downloadReleaseAsset(REPO, resolvedTag, 'agenfk-dist.tar.gz', path.join(tempDir, 'agenfk-dist.tar.gz'));
-        log(chalk.gray('Extracting update...'));
         // --exclude: published releases up to v1.1.16-beta.4 were ~half macOS
         // AppleDouble (`._*`) entries; never let them into the install dir
         // (CGLAB-94 / issue #163).
-        execSync(`tar --exclude='._*' --exclude='.DS_Store' -xzf "${path.join(tempDir, 'agenfk-dist.tar.gz')}" -C "${rootDir}"`, { stdio: isJson ? 'ignore' : 'inherit' });
+        execSync(`tar --exclude='._*' --exclude='.DS_Store' -xzf "${path.join(tempDir, 'agenfk-dist.tar.gz')}" -C "${rootDir}"`, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
         // `tar -xzf` deletes nothing, so the install dir keeps files this
         // version dropped — and its own commands/ cannot be asked what is
         // current, because it IS the stale thing. Hand install.mjs the archive
@@ -738,7 +740,8 @@ program
         // therefore cleaned up AFTER install.mjs runs, not here.
         distTarball = path.join(tempDir, 'agenfk-dist.tar.gz');
       } catch (e: any) {
-        log(chalk.yellow('Pre-built binary not available, falling back to source build...'));
+        const why = String(e?.stderr || e?.message || e).trim().split('\n').slice(-3).join(' ');
+        log(chalk.yellow(`⚠ Could not install the pre-built binary (${why}), falling back to a source build...`));
         fs.rmSync(tempDir, { recursive: true, force: true });
       }
 
@@ -759,15 +762,15 @@ program
       // calls emitResult, which process.exit()s past every pending finally.
       try {
       if (stageJsonMigration(localAgenfkDir)) {
-        log(chalk.yellow('Legacy db.json detected — data will be migrated to SQLite on next server start.'));
+        log(chalk.yellow('⚠ Legacy db.json detected — data will be migrated to SQLite on next server start.'));
       }
       } catch (e) {
         fs.rmSync(tempDir, { recursive: true, force: true });
         throw e;
       }
 
-      const debuglogFlag = options.debuglog ? ' --debuglog' : '';
-      log(chalk.gray('Running install script (pre-built mode)...'));
+      // --quiet: this command prints the summary, so the installer prints only warnings.
+      const debuglogFlag = options.debuglog ? ' --debuglog' : ' --quiet';
       try {
         // BUG 2f491181: `down` ran above, so install.mjs's own reachability
         // probe will read the server as gone and skip the post-upgrade
@@ -799,10 +802,7 @@ program
         fs.rmSync(tempDir, { recursive: true, force: true });
       }
 
-      log(chalk.green(`Successfully upgraded to ${targetVersion}`));
-      if (servicesRunning) {
-        log(chalk.green('Server restart was triggered by the installer (running in background).'));
-      }
+      log(chalk.green(`✓ ${targetVersion === CURRENT_VERSION ? 'Reinstalled' : 'Upgraded to'} ${targetVersion}${servicesRunning ? ' (server restarting in the background)' : ''}`));
 
       emitResult({ status: 'upgraded', fromVersion: CURRENT_VERSION, toVersion: targetVersion });
     } catch (error: any) {
@@ -821,16 +821,12 @@ program
   .option('-q, --quiet', 'Do not auto-open the dashboard in a browser window')
   .action(async (options) => {
     const rootDir = path.resolve(__dirname, '../../..');
-    console.log(chalk.blue('🚀 Bringing up AgEnFK Engineering Framework (agenfk)...'));
-
+    // e04dac92: `up` says nothing of its own - start-services.mjs prints the one line.
     // 0. Cleanup zombies — kill the previously persisted API port (if any)
     // plus the default, in case the server crashed without unlinking the file.
-    console.log(chalk.gray('🧹 Cleaning up zombie processes...'));
     const persistedApiPort = readServerPort();
     if (persistedApiPort && persistedApiPort !== DEFAULT_API_PORT) killPort(persistedApiPort);
     killPort(DEFAULT_API_PORT); // API default
-    // A separate vite UI an older version ran (24a7b899: the server serves the board now).
-    killPort(5173);
     killPattern('packages/server/dist/server.js');
     killPattern('packages/ui');
 
@@ -844,17 +840,16 @@ program
     const missingDist = requiredDists.some(d => !fs.existsSync(d));
 
     if (!fs.existsSync(startScript) || missingDist) {
-        console.log(chalk.yellow('📦 Initial bootstrap required...'));
         try {
             const installFlags = options.debuglog ? ' --debuglog' : '';
             execSync(`node scripts/install.mjs${installFlags}`, { cwd: rootDir, stdio: 'inherit' });
         } catch (e) {
             console.error(chalk.red('Bootstrap failed.'));
+            process.exitCode = 1;
             return;
         }
     }
     
-    console.log(chalk.blue('⚡ Starting agenfk services...'));
     try {
         const startEnv = { ...process.env };
         if (options.easterEggs) startEnv.VITE_EASTER_EGGS = 'true';
@@ -874,57 +869,37 @@ program
   .command('down')
   .description('Stop all AgEnFK services (the server, which also serves the board)')
   .action(() => {
-    const rootDir = path.resolve(__dirname, '../../..');
-    console.log(chalk.blue('🛑 Bringing down AgEnFK services...'));
-
-    let stopped = 0;
-
-    // Stop API server — match the specific server.js path
-    try {
-      killPattern('packages/server/dist/server.js');
-      console.log(chalk.green('  ✓ API server stopped'));
-      stopped++;
-    } catch {
-      console.log(chalk.gray('  - API server was not running'));
-    }
-
     // 24a7b899: the server serves the board, so stopping it stopped the board. A separate
     // vite UI an older version ran is cleared quietly - it is not a service of this one.
-    try { killPattern('packages/ui'); } catch { /* none running */ }
-
-    if (stopped > 0) {
-      console.log(chalk.green(`\n✅ Stopped ${stopped} service(s).`));
-    } else {
-      console.log(chalk.yellow('\nNo running services found.'));
-    }
+    const server = killPattern('packages/server/dist/server.js');
+    const legacyUi = killPattern('packages/ui');
+    for (const f of [...server.failed, ...legacyUi.failed]) console.log(chalk.yellow(`⚠ Could not stop ${f}`));
+    if (server.killed > 0) console.log(chalk.green('✓ AgEnFK stopped'));
+    else if (server.failed.length === 0) console.log(chalk.gray('AgEnFK was not running'));
+    else process.exitCode = 1;
   });
 
 program
   .command('kill')
   .description('Force kill all AgEnFK related processes and ports (aggressive cleanup)')
   .action(() => {
-    console.log(chalk.red('🧹 Aggressively killing all AgEnFK related processes...'));
-
     // Kill by port
     const killApiPort = readServerPort() ?? DEFAULT_API_PORT;
-    console.log(chalk.gray(`  - Killing processes on port ${killApiPort} (API)...`));
-    killPort(killApiPort);
-    if (killApiPort !== DEFAULT_API_PORT) {
-      console.log(chalk.gray(`  - Also killing processes on default port ${DEFAULT_API_PORT}...`));
-      killPort(DEFAULT_API_PORT);
-    }
-    console.log(chalk.gray('  - Killing processes on port 5173 (a UI from an older version)...'));
-    killPort(5173);
+    const results: KillResult[] = [killPort(killApiPort)];
+    if (killApiPort !== DEFAULT_API_PORT) results.push(killPort(DEFAULT_API_PORT));
 
-    // Kill by pattern
-    console.log(chalk.gray('  - Killing API server processes...'));
-    killPattern('packages/server/dist/server.js');
-    console.log(chalk.gray('  - Killing UI processes left by an older version...'));
-    killPattern('packages/ui');
-    console.log(chalk.gray('  - Killing MCP server processes...'));
-    killPattern('packages/server/dist/index.js');
-    
-    console.log(chalk.green('\n✅ Cleanup complete.'));
+    // Kill by pattern: the API server, UI processes an older version left, MCP servers.
+    // (Not by port 5173: that is vite's default, and a user's own dev server is not ours.)
+    results.push(killPattern('packages/server/dist/server.js'));
+    results.push(killPattern('packages/ui'));
+    results.push(killPattern('packages/server/dist/index.js'));
+
+    const killed = results.reduce((n, r) => n + r.killed, 0);
+    const failed = results.flatMap(r => r.failed);
+    for (const f of failed) console.log(chalk.yellow(`⚠ Could not kill ${f}`));
+    if (killed > 0) console.log(chalk.green(`✓ Killed ${killed} AgEnFK process${killed === 1 ? '' : 'es'}`));
+    else if (failed.length === 0) console.log(chalk.gray('No AgEnFK processes were running'));
+    if (failed.length > 0) process.exitCode = 1;
   });
 
 program
@@ -933,29 +908,27 @@ program
   .option('-q, --quiet', 'Do not auto-open the dashboard in a browser window (used by fleet-upgrade auto-restart)')
   .action(async (options) => {
     const rootDir = path.resolve(__dirname, '../../..');
-    console.log(chalk.blue('🔄 Restarting AgEnFK services...'));
-
-    // Call 'down'
+    // Call 'down'. Its "stopped" line would only repeat what `up` says next;
+    // a warning it raises (a server it could not stop) is passed on.
+    let downOut = '';
     try {
-      execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, stdio: 'inherit' });
-    } catch (e) {}
+      downOut = String(execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }) ?? '');
+    } catch (e: any) {
+      downOut = String(e?.stdout ?? '');
+    }
+    for (const line of downOut.split('\n')) if (line.includes('⚠')) console.log(line);
 
-    // Call 'up' — pass --quiet through so a fleet-driven restart doesn't
-    // pop a new browser tab on the user's machine.
-    try {
-      const upArgs = ['packages/cli/bin/agenfk.js', 'up'];
-      if (options.quiet) upArgs.push('--quiet');
-      const start = spawn('node', upArgs, {
-        cwd: rootDir,
-        stdio: 'inherit',
-        detached: true
-      });
-      start.unref();
-      console.log(chalk.green('🚀 Services restart initiated in background.'));
-      // Give it a second to show initial output before exiting the CLI
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    } catch (e) {
-      console.error(chalk.red('Failed to initiate restart.'));
+    // Call 'up' in the foreground - start-services detaches the server itself and
+    // exits once it reports its port, so waiting costs nothing and its one line
+    // (and any warning: a moved port, a server that never reported) reaches the
+    // terminal. --quiet passes through so a fleet-driven restart doesn't pop a
+    // new browser tab on the user's machine.
+    const upArgs = ['packages/cli/bin/agenfk.js', 'up'];
+    if (options.quiet) upArgs.push('--quiet');
+    const up = spawnSync('node', upArgs, { cwd: rootDir, stdio: 'inherit' });
+    if (up.error || up.status !== 0) {
+      console.error(chalk.red(`Failed to restart: ${up.error?.message ?? `agenfk up exited ${up.status}`}`));
+      process.exitCode = 1;
     }
   });
 

@@ -30,13 +30,14 @@ describe('install.mjs — default (CLI-only) install writes the expected artifac
     serviceScriptBefore = readFileSync(path.join(REPO_ROOT, 'scripts', 'start-services.mjs'), 'utf8');
     // A plain install (no --with-mcp / --no-mcp) is the CLI-only default: MCP is
     // opt-in (withMcp stays false) but Codex keeps MCP on (codexMcp default).
-    r = runInstall(['--rules-scope=global']);
+    // --debuglog: the stale-source guard below is read from the step log, which a plain install no longer prints.
+    r = runInstall(['--rules-scope=global', '--debuglog']);
   });
   afterAll(() => cleanupHome(r.home));
 
   it('completes successfully', () => {
     expect(r.status).toBe(0);
-    expect(r.stdout).toMatch(/Installation Complete/);
+    expect(r.stdout).toMatch(/✓ AgEnFK \S+ installed/);
   });
 
   it('installs the workflow rules (global CLAUDE.md)', () => {
