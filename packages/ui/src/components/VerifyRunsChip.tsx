@@ -76,8 +76,9 @@ export function VerifyRunsChip({ placement = 'down' }: { placement?: 'down' | 'u
         <div
           id={listId}
           data-testid="verify-runs-list"
+          role="region"
           aria-label="Verifies running"
-          className={`absolute right-0 ${placement === 'up' ? 'bottom-full mb-2' : 'top-full mt-2'} z-30 w-80 max-w-[90vw] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg p-1`}
+          className={`absolute ${placement === 'up' ? 'left-0 bottom-full mb-2' : 'right-0 top-full mt-2'} z-30 w-80 max-w-[90vw] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg p-1`}
         >
           <ul className="max-h-96 overflow-auto">
             {shown.map(e => (

@@ -3156,8 +3156,6 @@ app.post("/items/:id/approvals", limitExpensive, asyncHandler(async (req: any, r
   if (refuseUnlessBoard(req, res)) return;
   const target = await gateTarget(req, res);
   if (!target) return;
-  // beae41a0: the person it was waiting on has answered.
-  if (awaitingPerson.delete(target.item.id)) notifyVerifyRuns();
   const { item, flow } = target;
   if (!resolveStepChecks(flow.steps, item.status).some(c => c.id === 'human-approval' && c.applicable)) {
     return res.status(400).json({ error: `Step ${item.status} does not ask for an approval.` });
@@ -3175,6 +3173,8 @@ app.post("/items/:id/approvals", limitExpensive, asyncHandler(async (req: any, r
   const rec = { id: uuidv4(), step: item.status, kind: 'approval', at: new Date().toISOString(), head: null, clean: false, by: 'board', ...authority, ...(note ? { note } : {}), covers };
   await appendGateRecord(item, rec, `### Step approved\n\n**Step**: ${item.status} — a person approved it on the board.${note ? `\n\n${note}` : ''}`);
   recordHubEvent({ type: 'step.approved', projectId: item.projectId, itemId: item.id, payload: { step: item.status, by: 'board' } });
+  // beae41a0/2ec08b41: the person it was waiting on has answered - only once the approval is on record.
+  if (awaitingPerson.delete(item.id)) notifyVerifyRuns();
   res.status(201).json(rec);
 }));
 
@@ -6642,8 +6642,6 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   // BUG 93d9fbd0: a card's tests are a list of records; anything else is refused
   // before it is stored, where the verify path would trip over it.
   if (tests !== undefined && !Array.isArray(tests)) return res.status(400).json({ error: 'tests must be an array of test records' });
-  // beae41a0: a card moved is no longer held where it was waiting on a person.
-  if (status !== undefined && awaitingPerson.delete(req.params.id)) notifyVerifyRuns();
 
   const currentItem = await storage.getItem(req.params.id);
   if (!currentItem) {
@@ -6885,6 +6883,9 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
 
   try {
     const updated = await storage.updateItem(req.params.id, updates);
+    // beae41a0/2ec08b41: a card that really moved is no longer held where it waited on a person - a save that
+    // leaves the status alone, or a move refused above, keeps the wait.
+    if (statusChanged && awaitingPerson.delete(req.params.id)) notifyVerifyRuns();
 
     /*
      * A status change through this route is a route INTO WORK, and it had no

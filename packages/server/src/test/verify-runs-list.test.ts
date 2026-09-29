@@ -251,9 +251,14 @@ describe('beae41a0: the list stays true', () => {
     expect(await entryFor(id)).toBeUndefined();
   });
 
-  it('output printed in a burst is pushed a few times, not once per line', async () => {
-    const lines = Array.from({ length: 60 }, (_, i) => `line ${i}`);
-    const c = await card({ lines, ms: 1200 });
+  it('output printed line by line is pushed a few times, not once per line', async () => {
+    // 2ec08b41: one line every 20 ms, so each reaches the server as its own chunk - lines printed at once arrive in a
+    // handful of chunks, and the test passed with the coalescing removed.
+    const c = await card({ ms: 0 });
+    const script = path.join(tmp('agenfk-vr-drip-'), 'drip.js');
+    fs.writeFileSync(script, "let i = 0; const t = setInterval(() => { console.log('line ' + i); if (++i >= 60) clearInterval(t); }, 20);\n");
+    const proj: any = (await storage.getItem(c.id) as any);
+    await storage.updateProject(proj.projectId, { verifyCommand: `node ${script}` } as never);
     const emit = vi.spyOn(io, 'emit');
     try {
       expect((await verifyAsync(c.id)).status).toBe(202);
@@ -304,6 +309,36 @@ describe('beae41a0: the list stays true', () => {
     expect((await entryFor(b)).phase).toEqual({ state: 'waiting', on: 'sibling' });
     expect((await entryFor(b)).lastLine).toMatch(/sibling is running the same command/);
     await until(async () => !(await entryFor(a)) && !(await entryFor(b)));
+  });
+
+  // 2ec08b41: the person-wait goes only when the card really moves, or the person really approves.
+  it('a save that leaves the status as it was keeps the person-wait', async () => {
+    const id = await held();
+    expect((await agent().put(`/items/${id}`).set(board()).send({ status: 'WORK', title: 'typo fixed' })).status).toBe(200);
+    expect((await entryFor(id))?.phase).toEqual({ state: 'awaiting-person' });
+  });
+
+  it('a move the server refuses keeps the person-wait', async () => {
+    const id = await held();
+    expect((await agent().put(`/items/${id}`).set(internal()).send({ status: 'END' })).status).toBeGreaterThanOrEqual(400);
+    expect((await entryFor(id))?.phase).toEqual({ state: 'awaiting-person' });
+  });
+
+  it('an approval the server refuses keeps the person-wait', async () => {
+    const f = await agent().post('/flows').send({ name: `vr-${++seq}`, steps: [
+      s('START', 0, { isAnchor: true }), s('WORK', 1, { checks: [{ id: 'human-approval', params: { signature: 'passkey' } }] }), s('NEXT', 2), s('END', 3, { isAnchor: true }),
+    ] });
+    const repo = tmp('agenfk-vr-pk-');
+    git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one');
+    const p = await agent().post('/projects').send({ name: `vr-pk-${++seq}` });
+    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'true' } as never);
+    const c = (await agent().post('/items').send({ type: 'TASK', title: `pk-${++seq}`, projectId: p.body.id })).body;
+    await storage.updateItem(c.id, { status: 'WORK' } as any);
+    expect((await agent().post(`/items/${c.id}/validate`).set(internal()).send({ evidence: 'ok' })).status).toBe(422);
+    expect((await entryFor(c.id))?.phase).toEqual({ state: 'awaiting-person' });
+    // No passkey assertion: a passkey step refuses the board's word alone.
+    expect((await agent().post(`/items/${c.id}/approvals`).set(board()).send({ step: 'WORK' })).status).toBeGreaterThanOrEqual(400);
+    expect((await entryFor(c.id))?.phase).toEqual({ state: 'awaiting-person' });
   });
 });
 

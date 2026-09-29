@@ -197,6 +197,8 @@ describe('3aea49f1: running verifies in the header', () => {
     const list = await screen.findByTestId('verify-runs-list');
     expect(button.getAttribute('aria-controls')).toBe(list.id);
     expect(screen.queryByRole('dialog')).toBeNull();
+    // 2ec08b41: a label on a plain div is read by nothing; a region carries it.
+    expect(screen.getByRole('region', { name: /verifies running/i })).toBe(list);
   });
 
   // beae41a0: after a server restart or a dropped connection, what was pushed meanwhile is gone - read it again.
