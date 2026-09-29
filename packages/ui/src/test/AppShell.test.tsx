@@ -25,6 +25,7 @@ vi.mock('../api', () => ({
   api: {
     listProjects: vi.fn(async () => []),
     listActiveItems: vi.fn(async () => []),
+    getVerifyRuns: vi.fn(async () => []),
     getVersion: vi.fn(async () => ({ version: '1.1.18' })),
     getReadme: vi.fn(async () => ({ content: '# Readme' })),
     getLatestRelease: vi.fn(async () => ({ version: '1.1.18', tagName: 'v1.1.18', name: '', body: '', publishedAt: '', url: '', currentVersion: '1.1.18' })),
@@ -1770,3 +1771,20 @@ describe('the WORK group in the sidebar (CGLAB-164)', () => {
     expect(screen.getByRole('navigation', { name: /work/i }).textContent).toMatch(/tasks/i);
   });
 });
+
+/*
+ * beae41a0 (review of CGLAB-430): the board's header is hidden whenever another
+ * tab is showing, and a terminal is where the user watches a verify run. The
+ * shell's status bar - on every tab - carries the running verifies instead.
+ */
+describe('AppShell — running verifies in the status bar', () => {
+  it('shows the running verifies in the status bar, outside the board', async () => {
+    const { api } = await import('../api');
+    vi.mocked(api.getVerifyRuns).mockResolvedValue([{ runId: 'r1', itemId: 'c1', projectId: 'p2', projectName: 'Beta', title: 'Card in Beta', step: 'REVIEW', startedAt: new Date(Date.now() - 30_000).toISOString(), phase: { state: 'running', kind: 'whole' } }] as never);
+    renderShell();
+    const chip = await screen.findByTestId('verify-runs-chip');
+    expect(chip.closest('footer')).not.toBeNull();
+    expect(chip.textContent).toMatch(/1 verify running/);
+  });
+});
+

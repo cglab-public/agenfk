@@ -103,6 +103,21 @@ describe('SuiteSlots', () => {
     expect(ran).toBe(true);
   });
 
+  // beae41a0: a waiter was told its place once, as it joined the queue.
+  it('tells a waiting run its new place as runs ahead of it finish', async () => {
+    const { SuiteSlots } = await slotsModule();
+    const slots = new SuiteSlots(() => 1);
+    const releaseFirst = await slots.acquire();
+    const seen: number[] = [];
+    const second = slots.acquire();
+    const third = slots.acquire(w => seen.push(w.ahead));
+    expect(seen).toEqual([2]);
+    releaseFirst();
+    (await second)();
+    (await third)();
+    expect(seen).toEqual([2, 1]);
+  });
+
   it('reads the limit when a slot frees, so a raised limit lets the queue through', async () => {
     let limit = 1;
     const slots = new SuiteSlots(() => limit);

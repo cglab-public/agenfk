@@ -83,6 +83,7 @@ import { RunsPanel } from './RunsPanel';
 import { ORDER } from './sessionPresentation';
 import { cardState, itemsNeedingAPerson, NEEDS_A_PERSON } from '../cardState';
 import { AttentionAlerts } from './AttentionAlerts';
+import { VerifyRunsChip } from './VerifyRunsChip';
 import { clampSidebarWidth, sidebarIsResizable, SIDEBAR_MIN_PX, SIDEBAR_MAX_PX, SIDEBAR_COLLAPSED_PX } from '../sidebarWidth';
 
 /**
@@ -1657,6 +1658,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <span data-testid="connection-state">{CONNECTION_LABEL[connection]}</span>
         </span>
         <span className="font-mono">{window.location.host}</span>
+
+        {/* beae41a0: on every tab - the board's header, which has it in a browser, is hidden behind a terminal. */}
+        <VerifyRunsChip placement="up" />
 
         <button
           onClick={() => setWhatsNewOpen(true)}

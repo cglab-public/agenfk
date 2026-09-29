@@ -21,11 +21,19 @@ import { subscribeToSeconds, formatElapsed } from '../secondsTick';
 import type { VerifyRunEntry } from '../types';
 import { VERIFY_RUNS_QUERY_KEY, VERIFY_RUNS_THRESHOLD_MS, phaseText } from '../verifyRuns';
 
-export function VerifyRunsChip(): React.ReactElement | null {
+/**
+ * `placement`: where the list opens - below the chip in the board's header, above it in the desktop shell's status
+ * bar (beae41a0: the board's header is hidden whenever another tab shows, so the shell carries its own).
+ */
+export function VerifyRunsChip({ placement = 'down' }: { placement?: 'down' | 'up' } = {}): React.ReactElement | null {
   const queryClient = useQueryClient();
   const { focusItem } = useActiveProject();
   const { data } = useQuery({ queryKey: VERIFY_RUNS_QUERY_KEY, queryFn: () => api.getVerifyRuns() });
   useSocketEvent<VerifyRunEntry[]>('verify_runs', list => queryClient.setQueryData(VERIFY_RUNS_QUERY_KEY, Array.isArray(list) ? list : []));
+  // beae41a0: a restarted server or a dropped connection lost what was pushed meanwhile - read it again.
+  useSocketEvent('connect', () => { void queryClient.invalidateQueries({ queryKey: VERIFY_RUNS_QUERY_KEY }); });
+  const listId = React.useId();
+  const buttonRef = React.useRef<HTMLButtonElement>(null);
   const [now, setNow] = React.useState(() => Date.now());
   React.useEffect(() => subscribeToSeconds(() => setNow(Date.now())), []);
   const [openAsked, setOpen] = React.useState(false);
@@ -39,7 +47,8 @@ export function VerifyRunsChip(): React.ReactElement | null {
 
   React.useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    // beae41a0: focus goes back to the chip, not to the page, when the list it was in goes.
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { setOpen(false); buttonRef.current?.focus(); } };
     const onDown = (e: MouseEvent) => { if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false); };
     document.addEventListener('keydown', onKey);
     document.addEventListener('mousedown', onDown);
@@ -50,22 +59,25 @@ export function VerifyRunsChip(): React.ReactElement | null {
   return (
     <div ref={rootRef} className="relative">
       <button
+        ref={buttonRef}
         type="button"
         data-testid="verify-runs-chip"
-        aria-haspopup="dialog"
         aria-expanded={open}
+        aria-controls={open ? listId : undefined}
         onClick={() => setOpen(o => !o)}
         title="Verifies running for more than 10 seconds, in every project"
-        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-brand/10 text-brand border border-brand/30 hover:bg-brand/15 transition-all"
+        className={`flex items-center gap-1.5 rounded-lg font-bold bg-brand/10 text-brand border border-brand/30 hover:bg-brand/15 transition-all ${placement === 'up' ? 'px-2 py-0 text-[11px]' : 'px-2.5 py-1.5 text-xs'}`}
       >
         <Loader2 size={13} aria-hidden="true" className="animate-spin motion-reduce:animate-none" />
         <span>{label}</span>
       </button>
       {open && (
+        // A disclosure (beae41a0): the button shows a list of links to cards; it never claimed focus as a dialog would.
         <div
-          role="dialog"
+          id={listId}
+          data-testid="verify-runs-list"
           aria-label="Verifies running"
-          className="absolute right-0 top-full mt-2 z-30 w-80 max-w-[90vw] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg p-1"
+          className={`absolute right-0 ${placement === 'up' ? 'bottom-full mb-2' : 'top-full mt-2'} z-30 w-80 max-w-[90vw] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg p-1`}
         >
           <ul className="max-h-96 overflow-auto">
             {shown.map(e => (

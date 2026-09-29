@@ -3156,6 +3156,8 @@ app.post("/items/:id/approvals", limitExpensive, asyncHandler(async (req: any, r
   if (refuseUnlessBoard(req, res)) return;
   const target = await gateTarget(req, res);
   if (!target) return;
+  // beae41a0: the person it was waiting on has answered.
+  if (awaitingPerson.delete(target.item.id)) notifyVerifyRuns();
   const { item, flow } = target;
   if (!resolveStepChecks(flow.steps, item.status).some(c => c.id === 'human-approval' && c.applicable)) {
     return res.status(400).json({ error: `Step ${item.status} does not ask for an approval.` });
@@ -3710,6 +3712,7 @@ async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) 
     const running = capturesInFlight.get(flightKey);
     if (running) {
       opts?.onOutput?.(`[agenfk] waiting on the identical capture another card started in this tree...\n`);
+      opts?.onPhase?.({ state: 'waiting', on: 'identical-run' });
       let theirs: { out: CaptureOutcome; itemId: string } | null = null;
       try { theirs = await running; } catch { /* its crash is not this card's: start over */ }
       const rec = theirs && 'record' in theirs.out ? theirs.out.record : null;
@@ -3961,9 +3964,9 @@ function lazyPlan(root: string, setting: TestReportSetting, entry: any): LazyPla
 
 /** One run at a time per report file: two runs writing one report would read each other's results. */
 const reportLocks = new Map<string, Promise<unknown>>();
-async function withReportLock<T>(key: string, fn: () => Promise<T>, onOutput?: (chunk: string) => void): Promise<T> {
+async function withReportLock<T>(key: string, fn: () => Promise<T>, onOutput?: (chunk: string) => void, onHeld?: () => void): Promise<T> {
   const held = reportLocks.get(key);
-  if (held) onOutput?.('[agenfk] another capture is writing this tree\'s test report: waiting for it to finish\n');
+  if (held) { onOutput?.('[agenfk] another capture is writing this tree\'s test report: waiting for it to finish\n'); onHeld?.(); }
   const prior = held ?? Promise.resolve();
   const mine = prior.catch(() => undefined).then(fn);
   const tail = mine.catch(() => undefined);
@@ -3989,7 +3992,7 @@ async function runCapture(item: any, root: string, setting: TestReportSetting | 
   const record = await withReportLock(lockKey, () => suiteSlots.run(() => { opts?.onPhase?.(running); return runAndRead(item, root, setting, command, cleanSha, opts, lazy); }, w => {
     opts?.onOutput?.(waitingLine(w));
     opts?.onPhase?.({ state: 'queued', ahead: w.ahead });
-  }), opts?.onOutput);
+  }), opts?.onOutput, () => opts?.onPhase?.({ state: 'waiting', on: 'report' }));
   if (record === null) return LAZY_FALLBACK;
   // The card may have moved while the command ran: a record for a step it
   // no longer occupies (or was rolled back over) must not be written.
@@ -6639,6 +6642,8 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   // BUG 93d9fbd0: a card's tests are a list of records; anything else is refused
   // before it is stored, where the verify path would trip over it.
   if (tests !== undefined && !Array.isArray(tests)) return res.status(400).json({ error: 'tests must be an array of test records' });
+  // beae41a0: a card moved is no longer held where it was waiting on a person.
+  if (status !== undefined && awaitingPerson.delete(req.params.id)) notifyVerifyRuns();
 
   const currentItem = await storage.getItem(req.params.id);
   if (!currentItem) {
@@ -6961,6 +6966,7 @@ app.delete("/items/:id", asyncHandler(async (req: any, res: any) => {
   if (!itemToDelete) {
     return res.status(404).json({ error: "Item not found" });
   }
+  if (awaitingPerson.delete(req.params.id)) notifyVerifyRuns();
 
   const success = await trashRecursively(req.params.id);
   if (success) {
@@ -7064,7 +7070,9 @@ export interface ValidateRun {
 export type VerifyPhase =
   | { state: 'checking' }
   | { state: 'queued'; ahead: number }
-  | { state: 'running'; kind: 'whole' | 'affected' | 'tests-only' | 'reused'; files?: number };
+  | { state: 'running'; kind: 'whole' | 'affected' | 'tests-only' | 'reused'; files?: number }
+  /** beae41a0: waiting on another run of this tree - the report it writes, an identical capture, or a sibling's final verify. */
+  | { state: 'waiting'; on: 'report' | 'identical-run' | 'sibling' };
 const validateRuns = new Map<string, ValidateRun>();
 /** 9569b4d7: how much of a run's latest output the board is shown. */
 const RUN_TAIL_BYTES = 8192;
@@ -7646,6 +7654,8 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     }
     const out = await captureStepRecord(item, { ...(run ? { onOutput: (chunk: string) => appendRunOutput(run, chunk), onPhase: (phase: VerifyPhase) => setRunPhase(run, phase) } : {}), lazyOver });
     if ('error' in out) captureError = out.message; else capture = out.record;
+    // beae41a0: the suite is done; what follows (command checks, fetches) is the step's checks again.
+    setRunPhase(run, { state: 'checking' });
     // a36047ea: a whole run that only code changes caused, in a project that could have run fewer.
     if (capture && !capture.lazy && !capture.reusedFrom && lazyOver && project?.testReport && project.projectRoot) {
       const hint = relatedHint(capture.root ?? project.projectRoot, project.testReport, lazyOver);
@@ -7849,8 +7859,12 @@ const waitsForPerson = (r: any): boolean => r?.id === 'human-approval' || (Strin
 async function refuseOnChecks(res: any, item: any, gate: StepGate) {
   // cf6941e0: held by a person alone, the verify waits on them (the CLI waits for the approval): list it so.
   const blocking = gate.results.filter((r: any) => r.blocking);
-  if (blocking.length && blocking.every(waitsForPerson)) awaitingPerson.set(item.id, { step: item.status, since: new Date(), projectId: item.projectId, title: item.title });
-  else awaitingPerson.delete(item.id);
+  if (blocking.length && blocking.every(waitsForPerson)) {
+    awaitingPerson.set(item.id, { step: item.status, since: new Date(), projectId: item.projectId, title: item.title });
+    // beae41a0: its expiry is pushed too, or every board keeps showing it.
+    const expiry = setTimeout(notifyVerifyRuns, AWAITING_PERSON_TTL_MS + 50);
+    if (typeof expiry.unref === 'function') expiry.unref();
+  } else awaitingPerson.delete(item.id);
   notifyVerifyRuns();
   const ran = describeCapture(gate.capture);
   const off = disabledLine(gate);
@@ -8697,7 +8711,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     if (!key) return runCommandAndFinalize(res2, run);
     const theirs = finalVerifiesInFlight.get(key);
     if (theirs && !opts?.joined) {
-      if (run) run.output = `${run.output ?? ''}[agenfk] a sibling is running the same command on this same tree state: waiting for its result\n`;
+      // beae41a0: through appendRunOutput, so the line reaches the board's list, and said as a phase.
+      if (run) appendRunOutput(run, '[agenfk] a sibling is running the same command on this same tree state: waiting for its result\n');
+      setRunPhase(run, { state: 'waiting', on: 'sibling' });
       await theirs;
       // Its evidence is already on the card: the first pass recorded it.
       return handleValidateProgress(itemId, command, bare, undefined, undefined, { ...opts, gate, run, joined: true });

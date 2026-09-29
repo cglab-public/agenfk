@@ -128,6 +128,7 @@ export type VerifyRunPhase =
   | { state: 'checking' }
   | { state: 'queued'; ahead: number }
   | { state: 'running'; kind: 'whole' | 'affected' | 'tests-only' | 'reused'; files?: number }
+  | { state: 'waiting'; on: 'report' | 'identical-run' | 'sibling' }
   | { state: 'awaiting-person' };
 
 /** 3aea49f1: one verify running now, in any project (GET /verify-runs, the 'verify_runs' event). */

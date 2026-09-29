@@ -23,7 +23,8 @@ export interface SuiteWait { ahead: number; limit: number }
 
 export class SuiteSlots {
   private running = 0;
-  private readonly queue: Array<() => void> = [];
+  /** Each waiter, and how it is told its place (beae41a0: again whenever it moves up). */
+  private readonly queue: Array<{ start: () => void; onWait?: (w: SuiteWait) => void; told: number }> = [];
 
   /** `limit` is read whenever a slot is taken or freed, so a changed setting applies to the queue at once. */
   constructor(private readonly limit: () => number) {}
@@ -34,8 +35,9 @@ export class SuiteSlots {
       this.running++;
       return this.releaser();
     }
-    onWait?.({ ahead: this.running + this.queue.length - Math.max(0, this.limit() - 1), limit: this.limit() });
-    await new Promise<void>(resolve => this.queue.push(resolve));
+    const ahead = this.aheadOf(this.queue.length);
+    onWait?.({ ahead, limit: this.limit() });
+    await new Promise<void>(resolve => this.queue.push({ start: resolve, onWait, told: ahead }));
     return this.releaser();
   }
 
@@ -60,11 +62,23 @@ export class SuiteSlots {
     };
   }
 
+  /** How many runs are ahead of the waiter at `index` in the queue. */
+  private aheadOf(index: number): number {
+    return this.running + index - Math.max(0, this.limit() - 1);
+  }
+
   private drain(): void {
     while (this.queue.length && this.running < this.limit()) {
       this.running++;
-      this.queue.shift()!();
+      this.queue.shift()!.start();
     }
+    // beae41a0: the ones still waiting moved up - each is told its new place.
+    this.queue.forEach((w, i) => {
+      const ahead = this.aheadOf(i);
+      if (ahead === w.told) return;
+      w.told = ahead;
+      w.onWait?.({ ahead, limit: this.limit() });
+    });
   }
 }
 

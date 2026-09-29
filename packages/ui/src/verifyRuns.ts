@@ -13,6 +13,10 @@ export function phaseText(phase: VerifyRunPhase | undefined): string {
   switch (phase?.state) {
     case 'queued': return `waiting for a suite-run slot: ${phase.ahead} ahead`;
     case 'awaiting-person': return 'waiting on a person';
+    case 'waiting':
+      if (phase.on === 'sibling') return 'waiting on a sibling card\'s run of the same tree';
+      if (phase.on === 'identical-run') return 'waiting on another card\'s identical run';
+      return 'waiting for another run of this tree to finish';
     case 'running':
       if (phase.kind === 'affected') return `affected tests only: ${phase.files ?? '?'} files`;
       if (phase.kind === 'tests-only') return `changed test files only: ${phase.files ?? '?'}`;

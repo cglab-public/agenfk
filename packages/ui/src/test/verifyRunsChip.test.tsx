@@ -145,7 +145,7 @@ describe('3aea49f1: running verifies in the header', () => {
     ] as never);
     render(<KanbanBoard />, { wrapper });
     fireEvent.click(await screen.findByTestId('verify-runs-chip'));
-    const pop = await screen.findByRole('dialog', { name: /verifies running/i });
+    const pop = await screen.findByTestId('verify-runs-list');
     const row = (title: string) => within(pop).getByText(title, { exact: false }).closest('[data-testid="verify-run-entry"]') as HTMLElement;
     expect(row('Queued card').textContent).toMatch(/Alpha/);
     expect(row('Queued card').textContent).toMatch(/waiting for a suite-run slot: 2 ahead/);
@@ -179,10 +179,36 @@ describe('3aea49f1: running verifies in the header', () => {
     const button = await screen.findByTestId('verify-runs-chip');
     fireEvent.click(button);
     expect(button.getAttribute('aria-expanded')).toBe('true');
-    await screen.findByRole('dialog', { name: /verifies running/i });
+    await screen.findByTestId('verify-runs-list');
     fireEvent.keyDown(document, { key: 'Escape' });
-    expect(screen.queryByRole('dialog', { name: /verifies running/i })).toBeNull();
+    expect(screen.queryByTestId('verify-runs-list')).toBeNull();
     expect(button.getAttribute('aria-expanded')).toBe('false');
+    // beae41a0: focus goes back to the chip, not to the page.
+    expect(document.activeElement).toBe(button);
+  });
+
+  // beae41a0: a disclosure - a button that shows a list - not a dialog that never takes focus.
+  it('is a disclosure: the button controls the list, and nothing claims to be a dialog', async () => {
+    vi.mocked(api.getVerifyRuns).mockResolvedValue([run({ itemId: 'card-there', projectId: 'p2', projectName: 'Beta', title: 'Card in Beta', startedAt: ago(30) })] as never);
+    render(<KanbanBoard />, { wrapper });
+    const button = await screen.findByTestId('verify-runs-chip');
+    expect(button.getAttribute('aria-haspopup')).toBeNull();
+    fireEvent.click(button);
+    const list = await screen.findByTestId('verify-runs-list');
+    expect(button.getAttribute('aria-controls')).toBe(list.id);
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  // beae41a0: after a server restart or a dropped connection, what was pushed meanwhile is gone - read it again.
+  it('reads the list again when the socket (re)connects', async () => {
+    vi.mocked(api.getVerifyRuns).mockResolvedValue([run({ itemId: 'card-there', projectId: 'p2', projectName: 'Beta', title: 'Card in Beta', startedAt: ago(30) })] as never);
+    render(<KanbanBoard />, { wrapper });
+    await screen.findByTestId('verify-runs-chip');
+    vi.mocked(api.getVerifyRuns).mockResolvedValue([] as never);
+    const connect = socketHandlers.get('connect');
+    expect(connect, "the chip listens for 'connect'").toBeTypeOf('function');
+    await act(async () => { connect!(undefined); await new Promise(r => setTimeout(r, 0)); });
+    expect(chip()).toBeNull();
   });
 
   // Found in the browser check: open when the last run ended, the list came back open with the next one, unasked.
@@ -190,13 +216,13 @@ describe('3aea49f1: running verifies in the header', () => {
     vi.mocked(api.getVerifyRuns).mockResolvedValue([run({ itemId: 'card-there', projectId: 'p2', projectName: 'Beta', title: 'Card in Beta', startedAt: ago(30) })] as never);
     render(<KanbanBoard />, { wrapper });
     fireEvent.click(await screen.findByTestId('verify-runs-chip'));
-    await screen.findByRole('dialog', { name: /verifies running/i });
+    await screen.findByTestId('verify-runs-list');
     const push = socketHandlers.get('verify_runs')!;
     await act(async () => { push([]); await new Promise(r => setTimeout(r, 0)); });
     expect(chip()).toBeNull();
     await act(async () => { push([run({ itemId: 'z', projectId: 'p1', projectName: 'Alpha', title: 'Z', startedAt: ago(20) })]); await new Promise(r => setTimeout(r, 0)); });
     expect(chip()?.getAttribute('aria-expanded')).toBe('false');
-    expect(screen.queryByRole('dialog', { name: /verifies running/i })).toBeNull();
+    expect(screen.queryByTestId('verify-runs-list')).toBeNull();
   });
 
   it("clicking one in another project switches to it and opens the card on its Overview", async () => {
@@ -204,11 +230,13 @@ describe('3aea49f1: running verifies in the header', () => {
     render(<KanbanBoard />, { wrapper });
     await screen.findByText('Card in Alpha');
     fireEvent.click(await screen.findByTestId('verify-runs-chip'));
-    const pop = await screen.findByRole('dialog', { name: /verifies running/i });
+    const pop = await screen.findByTestId('verify-runs-list');
     fireEvent.click(within(pop).getByText('Card in Beta', { exact: false }));
-    // The board now shows Beta, with the card's detail open on Overview.
+    // The board now shows Beta, with THAT card's detail open on Overview.
     expect(await screen.findByRole('button', { name: /Overview/ }, { timeout: 3000 })).toBeDefined();
+    // The detail's header names the card by its id's first 8 characters; the board card shows only 4.
+    expect(await screen.findByText(/card-the/, {}, { timeout: 3000 })).toBeDefined();
     expect(vi.mocked(api.listItems)).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'p2' }));
-    expect(screen.queryByRole('dialog', { name: /verifies running/i })).toBeNull();
+    expect(screen.queryByTestId('verify-runs-list')).toBeNull();
   });
 });

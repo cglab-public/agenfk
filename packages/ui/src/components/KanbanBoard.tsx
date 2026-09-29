@@ -1842,7 +1842,8 @@ export const KanbanBoard: React.FC = () => {
                 </button>
               )}
 
-              <VerifyRunsChip />
+              {/* The desktop shell shows its own, in the status bar that every tab keeps (beae41a0). */}
+              {!isDesktop() && <VerifyRunsChip />}
 
               {!isDesktop() && (
                 <button

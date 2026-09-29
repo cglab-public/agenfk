@@ -214,3 +214,96 @@ describe("the 'verify_runs' push follows a final-step verify's output", () => {
   });
 });
 
+// beae41a0 (review of CGLAB-430): what makes an entry go, what it says while it waits, and how often it is pushed.
+describe('beae41a0: the list stays true', () => {
+  const board = () => ({ 'x-agenfk-ui': '1' });
+  /** A card held on WORK by a person's approval: listed as waiting on a person. */
+  async function held() {
+    const f = await agent().post('/flows').send({ name: `vr-${++seq}`, steps: [
+      s('START', 0, { isAnchor: true }), s('WORK', 1, { checks: [{ id: 'human-approval' }] }), s('NEXT', 2), s('END', 3, { isAnchor: true }),
+    ] });
+    const repo = tmp('agenfk-vr-held-');
+    git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one');
+    const p = await agent().post('/projects').send({ name: `vr-held-${++seq}` });
+    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'true' } as never);
+    const c = (await agent().post('/items').send({ type: 'TASK', title: `held-${++seq}`, projectId: p.body.id })).body;
+    await storage.updateItem(c.id, { status: 'WORK' } as any);
+    expect((await agent().post(`/items/${c.id}/validate`).set(internal()).send({ evidence: 'ok' })).status).toBe(422);
+    expect((await entryFor(c.id))?.phase).toEqual({ state: 'awaiting-person' });
+    return c.id as string;
+  }
+
+  it('a person-wait goes when the person approves', async () => {
+    const id = await held();
+    expect((await agent().post(`/items/${id}/approvals`).set(board()).send({ step: 'WORK' })).status).toBeLessThan(300);
+    expect(await entryFor(id)).toBeUndefined();
+  });
+
+  it('a person-wait goes when the card is moved', async () => {
+    const id = await held();
+    expect((await agent().put(`/items/${id}`).set(internal()).send({ status: 'START' })).status).toBe(200);
+    expect(await entryFor(id)).toBeUndefined();
+  });
+
+  it('a person-wait goes when the card is deleted', async () => {
+    const id = await held();
+    expect((await agent().delete(`/items/${id}`).set(internal())).status).toBeLessThan(300);
+    expect(await entryFor(id)).toBeUndefined();
+  });
+
+  it('output printed in a burst is pushed a few times, not once per line', async () => {
+    const lines = Array.from({ length: 60 }, (_, i) => `line ${i}`);
+    const c = await card({ lines, ms: 1200 });
+    const emit = vi.spyOn(io, 'emit');
+    try {
+      expect((await verifyAsync(c.id)).status).toBe(202);
+      await until(async () => !(await entryFor(c.id)));
+      const mine = emit.mock.calls.filter(([ev, body]) => ev === 'verify_runs' && (body as any[]).some(e => e.itemId === c.id));
+      expect(mine.length).toBeGreaterThan(0);
+      expect(mine.length).toBeLessThanOrEqual(10);
+    } finally {
+      emit.mockRestore();
+    }
+  });
+
+  it('a verify waiting on an identical capture of the same tree says so', async () => {
+    const f = await agent().post('/flows').send({ name: `vr-${++seq}`, steps: [
+      s('START', 0, { isAnchor: true }), s('WORK', 1, { checks: [{ id: 'suite-green' }] }), s('NEXT', 2), s('END', 3, { isAnchor: true }),
+    ] });
+    const repo = tmp('agenfk-vr-sf-');
+    git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one');
+    const script = path.join(tmp('agenfk-vr-sftools-'), 'run.js');
+    fs.writeFileSync(script, "console.log('running');\nsetTimeout(() => {}, 1500);\n");
+    const p = await agent().post('/projects').send({ name: `vr-sf-${++seq}` });
+    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: `node ${script}` } as never);
+    const mk = async () => { const c = (await agent().post('/items').send({ type: 'TASK', title: `sf-${++seq}`, projectId: p.body.id })).body; await storage.updateItem(c.id, { status: 'WORK' } as any); return c.id as string; };
+    const a = await mk(); const b = await mk();
+    expect((await verifyAsync(a)).status).toBe(202);
+    await until(async () => (await entryFor(a))?.phase?.state === 'running');
+    expect((await verifyAsync(b)).status).toBe(202);
+    await until(async () => (await entryFor(b))?.phase?.state === 'waiting');
+    expect((await entryFor(b)).phase).toEqual({ state: 'waiting', on: 'identical-run' });
+    await until(async () => !(await entryFor(a)) && !(await entryFor(b)));
+  });
+
+  it("a sibling's final verify waiting on the other's run says so, and shows its output", async () => {
+    const f = await agent().post('/flows').send({ name: `vr-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('WORK', 1), s('END', 2, { isAnchor: true })] });
+    const repo = tmp('agenfk-vr-sib-');
+    git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one');
+    const script = path.join(tmp('agenfk-vr-sibtools-'), 'run.js');
+    fs.writeFileSync(script, "console.log('running');\nsetTimeout(() => {}, 1500);\n");
+    const p = await agent().post('/projects').send({ name: `vr-sib-${++seq}` });
+    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: `node ${script}` } as never);
+    const parent = (await agent().post('/items').send({ type: 'STORY', title: 'p', projectId: p.body.id })).body;
+    const mk = async () => { const c = (await agent().post('/items').send({ type: 'TASK', title: `sib-${++seq}`, projectId: p.body.id, parentId: parent.id })).body; await storage.updateItem(c.id, { status: 'WORK' } as any); return c.id as string; };
+    const a = await mk(); const b = await mk();
+    expect((await verifyAsync(a)).status).toBe(202);
+    await until(async () => (await entryFor(a))?.phase?.state === 'running');
+    expect((await verifyAsync(b)).status).toBe(202);
+    await until(async () => (await entryFor(b))?.phase?.state === 'waiting');
+    expect((await entryFor(b)).phase).toEqual({ state: 'waiting', on: 'sibling' });
+    expect((await entryFor(b)).lastLine).toMatch(/sibling is running the same command/);
+    await until(async () => !(await entryFor(a)) && !(await entryFor(b)));
+  });
+});
+
