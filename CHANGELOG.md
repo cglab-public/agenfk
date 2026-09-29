@@ -2,6 +2,21 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.13] — 2026-09-29
+
+Beta, cumulative over `2.0.0-beta.12`: everything in beta.12, plus the changes below (CGLAB-164).
+
+- **Bare `agenfk` no longer offers an older stable as an update.** On a beta it offered 1.1.20: it asked only the
+  stable channel and fired whenever the versions differed. It now compares against the newest release the install's
+  channel reaches - the latest stable, and on a beta also the latest beta - offers only a strictly newer one, and
+  names the command that installs it (`agenfk upgrade --beta` for a beta). A stable install is never pointed at a
+  beta, even one published without the pre-release flag.
+- **The latest beta is the newest version, not the newest publish date.** A hotfix beta for an older line,
+  published later, is no longer "the latest beta", so `agenfk upgrade --beta` cannot downgrade to it.
+- **What's New shows the installed release's notes.** The version chip showed the latest stable's notes on a beta.
+  It now reads the new `GET /releases/current` - the installed version's own release - and says so, with a link to
+  the releases page, when that version has none. `GET /releases/latest` is unchanged.
+
 ## [2.0.0-beta.12] — 2026-09-29
 
 Beta, cumulative over `2.0.0-beta.11`: everything in beta.11, plus the change below (CGLAB-164).
