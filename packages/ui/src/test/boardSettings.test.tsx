@@ -161,6 +161,26 @@ describe('the browser board reaches Settings (7b640e64)', () => {
     expect(shown()[0]).toHaveTextContent(/Suite runs at once/);
   });
 
+  /*
+   * User 2026-09-29 (d8bda14f): in dark mode the dialog's edge could not be
+   * seen - it was filled with the board's own colour (bg-canvas), outlined at
+   * 10% and set over an unblurred 40% backdrop. It now wears the Org Flows
+   * picker's frame (fill, outline, shadow) over the GitHub Import modal's
+   * blurred backdrop. jsdom computes no colours: contrast is checked in a
+   * browser, this pins the frame that gives it.
+   */
+  it("stands out from the board: the Org Flows picker's frame over the Import modal's blurred backdrop", async () => {
+    render(<KanbanBoard />, { wrapper });
+    fireEvent.click(await screen.findByTestId('board-settings-btn'));
+    const backdrop = await screen.findByRole('dialog', { name: /settings/i });
+    const panel = backdrop.firstElementChild as HTMLElement;
+    for (const c of ['bg-black/50', 'backdrop-blur-sm']) expect(backdrop).toHaveClass(c);
+    for (const c of ['bg-white', 'dark:bg-slate-900', 'border', 'border-slate-200', 'dark:border-slate-700', 'shadow-2xl']) {
+      expect(panel).toHaveClass(c);
+    }
+    expect(panel).not.toHaveClass('bg-canvas'); // the board's own colour
+  });
+
   it('the sections not shown cannot be reached: hidden from assistive tech and inert', async () => {
     render(<KanbanBoard />, { wrapper });
     fireEvent.click(await screen.findByTestId('board-settings-btn'));

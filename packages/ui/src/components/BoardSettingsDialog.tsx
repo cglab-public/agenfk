@@ -24,12 +24,15 @@ export function BoardSettingsDialog({ onClose }: { onClose: () => void }): React
       aria-modal="true"
       aria-label="Settings"
       data-testid="board-settings-dialog"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6"
+      // d8bda14f: the GitHub Import modal's blurred backdrop, so the board recedes behind it.
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-6"
       onClick={onClose}
     >
       <div
         // 35e1fe96: the tallest section's height, capped at the viewport - the panel's body scrolls, not the dialog.
-        className="relative flex max-h-full w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-border-soft bg-canvas shadow-xl"
+        // d8bda14f: the Org Flows picker's frame. bg-canvas is the board's own colour, and in dark mode
+        // its 10% border-soft outline left no visible edge.
+        className="relative flex max-h-full w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900"
         onClick={e => e.stopPropagation()}
       >
         <button
