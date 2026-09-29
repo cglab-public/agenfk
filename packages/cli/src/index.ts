@@ -2,7 +2,8 @@ import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { harnessActor, resolveFromOptions } from './harnessModel.js';
 import axios from 'axios';
-import { ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, isHubRelease, isUpgrade, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
+import { ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
+import { findUpdateNotice } from './updateNotice.js';
 import { writeActiveWork } from './activeWork.js';
 import { resolveItemIdPrefix } from './resolveItemId.js';
 import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT, setTelemetryEnabled } from '@agenfk/telemetry';
@@ -248,9 +249,22 @@ interface ReleaseRef {
  * source cannot forget the guard by omission.
  */
 function newestChannelRelease(refs: ReleaseRef[], beta: boolean): string | null {
+  // Newest by VERSION, publish date only breaking ties (b60bc8bf): betas are cut
+  // from per-version branches, so a 1.1.21-beta.1 hotfix published after
+  // 2.0.0-beta.13 would otherwise be "the latest beta" - and `upgrade --beta`
+  // would downgrade to it. An unparseable tag sorts below any parseable one.
   const match = refs
     .filter((r) => r.tag && !isHubRelease(r.tag) && r.prerelease === beta)
-    .sort((a, b) => b.publishedAt - a.publishedAt)[0];
+    .sort((a, b) => {
+      const pa = parseSemver(a.tag), pb = parseSemver(b.tag);
+      if (pa && pb) {
+        const byVersion = compareSemver(b.tag, a.tag);
+        if (byVersion !== 0) return byVersion;
+      } else if (pa || pb) {
+        return pa ? -1 : 1;
+      }
+      return b.publishedAt - a.publishedAt;
+    })[0];
   return match?.tag ?? null;
 }
 
@@ -311,7 +325,8 @@ export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promis
     const out = execFileSync(
       'gh',
       ['release', 'list', '--repo', repo, '--limit', '30', '--json', 'tagName,isPrerelease,createdAt'],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+      // A bounded wait: this also runs from bare `agenfk`, which must not hang on a stalled gh.
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000 },
     ).trim();
     return toReleaseRefs(JSON.parse(out || '[]'), GH_KEYS);
   };
@@ -325,7 +340,7 @@ export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promis
   const viewTag = execFileSync(
     'gh',
     ['release', 'view', '--repo', repo, '--json', 'tagName', '--template', '{{.tagName}}'],
-    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000 },
   ).trim();
   if (viewTag && !isHubRelease(viewTag)) return viewTag;
   // Same recovery as the REST path — `gh release view` reports the newest
@@ -614,15 +629,15 @@ program
 
     console.log(chalk.blue(`AgEnFK CLI v${CURRENT_VERSION}`));
 
-    // Check for updates silently
+    // Check for updates silently. On a prerelease the beta channel counts too, and
+    // only a strictly newer release is offered (b60bc8bf: a beta was offered an
+    // older stable). One channel failing does not hide the other.
     try {
       const REPO = 'cglab-public/agenfk';
-      const latestTag = await fetchLatestReleaseTag(REPO, false);
-      const latestVersion = latestTag.replace(/^v/, '');
-
-      if (latestVersion !== CURRENT_VERSION) {
-        console.log(chalk.yellow(`\nUpdate available: ${latestVersion} (current: ${CURRENT_VERSION})`));
-        console.log(chalk.gray(`Run 'agenfk upgrade' to update.`));
+      const notice = await findUpdateNotice(CURRENT_VERSION, (beta) => fetchLatestReleaseTag(REPO, beta));
+      if (notice) {
+        console.log(chalk.yellow(`\nUpdate available: ${notice.version} (current: ${CURRENT_VERSION})`));
+        console.log(chalk.gray(`Run '${notice.command}' to update.`));
       }
     } catch (e) {
       // Silence errors for version check
