@@ -189,3 +189,28 @@ describe("the 'verify_runs' socket event", () => {
     }
   });
 });
+
+// 08f40965 (found in the browser check): a final-step verify's output was never pushed - only its start and end.
+describe("the 'verify_runs' push follows a final-step verify's output", () => {
+  it('pushes the last line as the command prints it', async () => {
+    const f = await agent().post('/flows').send({ name: `vr-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('WORK', 1), s('END', 2, { isAnchor: true })] });
+    const repo = tmp('agenfk-vr-final-');
+    git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo a > a && git add . && git commit -qm one');
+    const script = path.join(tmp('agenfk-vr-finaltools-'), 'run.js');
+    fs.writeFileSync(script, "console.log('first');\nsetTimeout(() => console.log('second'), 700);\nsetTimeout(() => {}, 1600);\n");
+    const p = await agent().post('/projects').send({ name: `vr-final-${++seq}` });
+    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: `node ${script}` } as never);
+    const c = (await agent().post('/items').send({ type: 'TASK', title: `final-${++seq}`, projectId: p.body.id })).body;
+    await storage.updateItem(c.id, { status: 'WORK' } as any);
+    const emit = vi.spyOn(io, 'emit');
+    try {
+      expect((await verifyAsync(c.id)).status).toBe(202);
+      const pushed = () => emit.mock.calls.filter(([ev]) => ev === 'verify_runs').flatMap(([, body]) => body as any[]).filter(e => e.itemId === c.id);
+      await until(async () => pushed().some(e => e.lastLine === 'second'));
+    } finally {
+      emit.mockRestore();
+    }
+    await until(async () => !(await entryFor(c.id)));
+  });
+});
+

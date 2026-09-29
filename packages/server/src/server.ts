@@ -8506,7 +8506,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     // anywhere else either. The full output is on disk, not in this process.
     // What the run already streamed (a capture's output, 9569b4d7) stays in front: followers read by offset.
     const runBase = run?.output ?? '';
-    const onData = (d: Buffer) => { capture.write(d); if (run) { run.output = runBase + capture.live(); run.tail = ((run.tail ?? '') + d.toString()).slice(-RUN_TAIL_BYTES); } };
+    // 08f40965: and pushed, like appendRunOutput does - the header's list shows each run's last line.
+    const onData = (d: Buffer) => { capture.write(d); if (run) { run.output = runBase + capture.live(); run.tail = ((run.tail ?? '') + d.toString()).slice(-RUN_TAIL_BYTES); notifyVerifyRuns(); } };
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
     child.on('exit', (c, sig) => { if (killed) finish(124, sig); });
