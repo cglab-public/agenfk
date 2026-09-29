@@ -147,3 +147,16 @@ describe('an existing database', () => {
     expect(((await storage.getItem(c.id)) as any).stepRecords[0].tests[0].name).toBe('new 0');
   });
 });
+
+describe('a capture\'s file map (6e0d2fd6)', () => {
+  it('is kept out of the item row like the per-test results, and read back', async () => {
+    const c = await storage.createItem(item());
+    const fileShas = Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`src/f${i}.ts`, `100644:${String(i).padStart(40, '0')}`]));
+    await storage.updateItem(c.id, { stepRecords: [{ ...capture(tests(10)), fileShas }] } as any);
+    const row = JSON.parse(raw(c.id));
+    expect(row.stepRecords[0].fileShas).toBeUndefined();
+    expect(typeof row.stepRecords[0].fileShasBlob).toBe('string');
+    expect(((await storage.getItem(c.id)) as any).stepRecords[0].fileShas).toEqual(fileShas);
+  });
+});
+

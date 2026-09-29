@@ -3468,12 +3468,14 @@ const blobSha = (content: Buffer): string => crypto.createHash('sha1').update(`b
  * `shareable` is false: the hash still fences a run, but no green or pass may
  * be shared on it. `index` names what is staged, for a command that reads it.
  */
-function treeFiles(root: string, excludeRel: TreeExclude): { hash: string; shareable: boolean; index: string } | null {
+function treeFiles(root: string, excludeRel: TreeExclude): { hash: string; shareable: boolean; index: string; files: Record<string, string> } | null {
   const excluded = excludedBy(excludeRel);
   try {
     const git = (args: string[], cwd = root) => execFileSync('git', ['-C', cwd, ...args], { maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
     const staged = git(['ls-files', '-z', '-s']);
-    const changed = new Set(git(['diff', '--no-renames', '--name-only', '-z']).split('\0').filter(Boolean));
+    // --relative (6e0d2fd6): ls-files names paths from `root`, a bare diff from the repository's top - in a project
+    // that is a subdirectory they never matched, and a modified tracked file kept its stale index hash.
+    const changed = new Set(git(['diff', '--no-renames', '--name-only', '--relative', '-z']).split('\0').filter(Boolean));
     const untracked = git(['ls-files', '-z', '--others', '--exclude-standard']).split('\0').filter(Boolean);
     const entries = new Map<string, string>();
     let shareable = true;
@@ -3513,7 +3515,8 @@ function treeFiles(root: string, excludeRel: TreeExclude): { hash: string; share
     }
     const h = crypto.createHash('sha256');
     for (const rel of [...entries.keys()].sort()) h.update(`\0${rel}\0${entries.get(rel)}`);
-    return { hash: h.digest('hex'), shareable, index: crypto.createHash('sha256').update(staged).digest('hex') };
+    // 6e0d2fd6: the per-file map too, so a later step can tell which files changed since, dirty tree or not.
+    return { hash: h.digest('hex'), shareable, index: crypto.createHash('sha256').update(staged).digest('hex'), files: Object.fromEntries(entries) };
   } catch {
     return null;
   }
@@ -3826,6 +3829,26 @@ function changedSince(root: string, head: string, reportRel: TreeExclude): { ins
   }
 }
 
+const isFileMap = (m: unknown): m is Record<string, string> => !!m && typeof m === 'object' && !Array.isArray(m);
+
+/**
+ * 6e0d2fd6 — files changed since an entry capture: from its per-file map when
+ * it recorded one (a dirty tree, a partial run), else from git against its
+ * clean head. A change outside `root` is read from git either way, and means
+ * the whole suite.
+ */
+function changedSinceEntry(root: string, entry: any, reportRel: TreeExclude): { inside: string[]; outside: boolean } | null {
+  const viaGit = changedSince(root, entry.head, reportRel);
+  if (!isFileMap(entry.fileShas)) return viaGit;
+  const now = treeFiles(root, reportRel);
+  if (!now || !viaGit) return null;
+  const before: Record<string, string> = entry.fileShas;
+  const inside = new Set<string>();
+  for (const [f, v] of Object.entries(now.files)) if (before[f] !== v) inside.add(f);
+  for (const f of Object.keys(before)) if (!(f in now.files)) inside.add(f);
+  return { inside: [...inside].sort(), outside: viaGit.outside };
+}
+
 /**
  * acceaa54 — a capture that can run only the changed test files, or null for
  * the whole suite. All of these, or null:
@@ -3844,9 +3867,11 @@ function changedSince(root: string, head: string, reportRel: TreeExclude): { ins
  * reuse of a clean green does not see them.
  */
 function lazyPlan(root: string, setting: TestReportSetting, entry: any): LazyPlan | null {
-  if (!(entry?.kind === 'capture' && entry.root === root && entry.available === true && entry.clean === true && typeof entry.head === 'string'
-    && Array.isArray(entry.tests) && !entry.lazy && ranAsSetNow(entry, setting))) return null;
-  const since = changedSince(root, entry.head, reportsOwned(root, setting));
+  // 6e0d2fd6: an entry that recorded its files works dirty or partial - which is how a TDD coding step is entered.
+  if (!(entry?.kind === 'capture' && entry.root === root && entry.available === true && typeof entry.head === 'string'
+    && ((entry.clean === true && !entry.lazy) || isFileMap(entry.fileShas))
+    && Array.isArray(entry.tests) && ranAsSetNow(entry, setting))) return null;
+  const since = changedSinceEntry(root, entry, reportsOwned(root, setting));
   if (!since || since.outside) return null;
   const changed = since.inside;
   if (!changed.length || changed.length > LAZY_MAX_FILES) return null;
@@ -3936,7 +3961,7 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
   const owned = setting ? reportsOwned(root, setting) : [];
   const stateBefore = treeContentState(root, owned);
   // The plan was made before the run was fenced: the tree must still be what it saw.
-  if (lazy && JSON.stringify(changedSince(root, lazy.entry.head, owned)) !== JSON.stringify({ inside: lazy.changed, outside: false })) return null;
+  if (lazy && JSON.stringify(changedSinceEntry(root, lazy.entry, owned)) !== JSON.stringify({ inside: lazy.changed, outside: false })) return null;
   if (lazy) {
     // acceaa54: only the changed test files run; the rest keep their entry results.
     Object.assign(record, { lazy: true, ranFiles: lazy.ran, lazyCommand: lazy.command, mergedOver: { step: lazy.entry.step, at: lazy.entry.at, head: lazy.entry.head } });
@@ -3956,6 +3981,9 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
       }
       // What the run saw, without HEAD: a close that commits exactly this can re-stamp it (e99b5015).
       record.filesState = stateAfter.slice(stateAfter.indexOf(':') + 1);
+      // 6e0d2fd6: which file held what, for the next step's partial run.
+      const seen = treeFiles(root, owned);
+      if (seen) record.fileShas = seen.files;
       // 32045202: what reuse compares, docs no test names aside.
       const suite = suiteStateOf(root, setting);
       if (suite) record.suiteState = suite;

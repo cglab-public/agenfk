@@ -64,6 +64,11 @@ export class SQLiteStorageProvider implements StorageProvider {
   // results back unless the caller asks for `hydrate: false`.
 
   private static readonly RECORD_LISTS = ['stepRecords', 'supersededRecords'] as const;
+  /** What a record's field is stored as (6e0d2fd6: a capture's per-file map rides along with its results). */
+  private static readonly HEAVY_FIELDS = [['tests', 'testsBlob'], ['fileShas', 'fileShasBlob']] as const;
+  private static heavy(v: unknown): boolean {
+    return Array.isArray(v) ? v.length > 0 : !!v && typeof v === 'object' && Object.keys(v as object).length > 0;
+  }
 
   /** The item as its row stores it: results out, references in. */
   private rowOf(item: any): string {
@@ -73,13 +78,18 @@ export class SQLiteStorageProvider implements StorageProvider {
       const records = item?.[key];
       if (!Array.isArray(records)) continue;
       lists[key] = records.map((r: any) => {
-        if (!r || typeof r !== 'object' || !Array.isArray(r.tests) || r.tests.length === 0) return r;
-        const json = JSON.stringify(r.tests);
-        const hash = crypto.createHash('sha256').update(json).digest('hex');
-        this.database.prepare('INSERT OR IGNORE INTO blobs (hash, data) VALUES (?, ?)').run(hash, json);
-        changed = true;
-        const { tests: _tests, ...rest } = r;
-        return { ...rest, testsBlob: hash };
+        if (!r || typeof r !== 'object') return r;
+        let out = r;
+        for (const [field, ref] of SQLiteStorageProvider.HEAVY_FIELDS) {
+          if (!SQLiteStorageProvider.heavy(out[field])) continue;
+          const json = JSON.stringify(out[field]);
+          const hash = crypto.createHash('sha256').update(json).digest('hex');
+          this.database.prepare('INSERT OR IGNORE INTO blobs (hash, data) VALUES (?, ?)').run(hash, json);
+          changed = true;
+          const { [field]: _heavy, ...rest } = out;
+          out = { ...rest, [ref]: hash };
+        }
+        return out;
       });
     }
     return JSON.stringify(changed ? { ...item, ...lists } : item);
@@ -90,13 +100,17 @@ export class SQLiteStorageProvider implements StorageProvider {
     const it: any = item;
     for (const key of SQLiteStorageProvider.RECORD_LISTS) {
       const records = it?.[key];
-      if (!Array.isArray(records) || !records.some((r: any) => typeof r?.testsBlob === 'string')) continue;
+      if (!Array.isArray(records) || !records.some((r: any) => typeof r?.testsBlob === 'string' || typeof r?.fileShasBlob === 'string')) continue;
       it[key] = records.map((r: any) => {
-        if (typeof r?.testsBlob !== 'string') return r;
-        const row = this.database.prepare('SELECT data FROM blobs WHERE hash = ?').get(r.testsBlob) as { data: string } | undefined;
-        const { testsBlob: _ref, ...rest } = r;
-        // A missing blob reads as no results - never as an empty, green run.
-        return row ? { ...rest, tests: JSON.parse(row.data) } : { ...rest, testsMissing: true };
+        let out = r;
+        for (const [field, ref] of SQLiteStorageProvider.HEAVY_FIELDS) {
+          if (typeof out?.[ref] !== 'string') continue;
+          const row = this.database.prepare('SELECT data FROM blobs WHERE hash = ?').get(out[ref]) as { data: string } | undefined;
+          const { [ref]: _ref, ...rest } = out;
+          // A missing blob reads as missing - never as an empty, green run or an unchanged tree.
+          out = row ? { ...rest, [field]: JSON.parse(row.data) } : { ...rest, [`${field}Missing`]: true };
+        }
+        return out;
       });
     }
     return item;
@@ -124,8 +138,8 @@ export class SQLiteStorageProvider implements StorageProvider {
   /** Blobs no item row references: a rollback or a later capture replaced them. */
   private dropUnreferencedBlobs(): void {
     const keep = new Set<string>();
-    const rows = this.database.prepare(`SELECT data FROM items WHERE data LIKE '%"testsBlob"%'`).all() as { data: string }[];
-    for (const row of rows) for (const m of row.data.matchAll(/"testsBlob":"([0-9a-f]{64})"/g)) keep.add(m[1]);
+    const rows = this.database.prepare(`SELECT data FROM items WHERE data LIKE '%Blob"%'`).all() as { data: string }[];
+    for (const row of rows) for (const m of row.data.matchAll(/"(?:testsBlob|fileShasBlob)":"([0-9a-f]{64})"/g)) keep.add(m[1]);
     const all = this.database.prepare('SELECT hash FROM blobs').all() as { hash: string }[];
     const drop = all.filter(b => !keep.has(b.hash));
     if (!drop.length) return;
