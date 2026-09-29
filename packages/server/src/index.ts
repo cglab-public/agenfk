@@ -514,7 +514,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "workflow_gatekeeper",
-        description: "Mandatory pre-flight check before any code change. Verifies that an active task exists in any working flow step and returns context (exit criteria, flow steps, branch). role= is accepted for backward compatibility but is no longer enforced.",
+        description: "Mandatory pre-flight check before any code change. Verifies that an active task exists in any working flow step and returns context (exit criteria, flow steps, branch, and what leaving the step will run: when it says the suite or the verify command runs, do not run it yourself first - verify does; when it says nothing runs, the tests the exit criteria ask for are yours). role= is accepted for backward compatibility but is no longer enforced.",
         inputSchema: {
           type: "object",
           properties: {
@@ -536,7 +536,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "validate_progress",
-        description: "Step-completion gate: you MUST describe how you satisfied the current step's exit criteria before the step advances. Provide your evidence in the 'evidence' field — it will be logged as a comment tagged with the current step name, creating an audit trail. Optionally run a command; on intermediate steps it is not required — pass one only when the current step's exit criteria call for it, and only a command those criteria expect to succeed. On success, advances to the next flow step and returns the next step's exit criteria — treat those as your new mandatory work definition. If the command exits non-zero the advance is refused and the item stays on its current step (on the final step this is the hard gate that keeps a red suite out of DONE); nothing is rolled back. On the final step (and any boundary step) the server runs the project's verifyCommand and ignores the 'command' field, with a warning in the reply.",
+        description: "Step-completion gate: you MUST describe how you satisfied the current step's exit criteria before the step advances. Provide your evidence in the 'evidence' field — it will be logged as a comment tagged with the current step name, creating an audit trail. Optionally run a command; on intermediate steps it is not required — pass one only when the current step's exit criteria call for it, and only a command those criteria expect to succeed. On success, advances to the next flow step and returns the next step's exit criteria — treat those as your new mandatory work definition — and what leaving THAT step will run (leavePlan): when it runs the suite, do not run the full suite yourself before calling this again. If the command exits non-zero the advance is refused and the item stays on its current step (on the final step this is the hard gate that keeps a red suite out of DONE); nothing is rolled back. On the final step (and any boundary step) the server runs the project's verifyCommand and ignores the 'command' field, with a warning in the reply.",
         inputSchema: {
           type: "object",
           properties: {
@@ -930,7 +930,10 @@ async function callToolHandler(request: any): Promise<any> {
           ? dispatchDriftNotice({ ...driftTarget, deps: { run: args => execFileSync('git', args, { encoding: 'utf8' }) } })
           : '';
 
-        return { content: [{ type: "text", text: `✅ AUTHORIZED.\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${branchHint}${exitCriteriaHint}${driftNotice}` }] };
+        // 37a292a7: what leaving this step will run - advice, so a failed read never stops the authorization.
+        const leavePlan = await api.get(`/items/${task.id}/leave-plan`).then((r: any) => r.data).catch(() => null);
+        const leaveNote = typeof leavePlan?.advice === 'string' ? `\n\n${leavePlan.advice}` : '';
+        return { content: [{ type: "text", text: `✅ AUTHORIZED.\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${branchHint}${exitCriteriaHint}${leaveNote}${driftNotice}` }] };
       }
       case "analyze_request": {
         const { request: userRequest } = z.object({ request: z.string() }).parse(request.params.arguments);

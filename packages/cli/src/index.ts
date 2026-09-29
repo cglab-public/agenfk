@@ -3967,6 +3967,14 @@ program
         writeActiveWork({ id: decision.task.id, projectId: (decision.task as any).projectId });
       }
 
+      // 37a292a7: what leaving this step will run, so the agent does not run the
+      // suite first when verify will - and knows the tests are its own when it won't.
+      // Advice only: a server that cannot answer it never stops the authorization.
+      let onLeave: any = null;
+      if (decision.authorized && decision.task?.id) {
+        onLeave = await axios.get(`${API_URL}/items/${decision.task.id}/leave-plan`, { timeout: 5000 }).then(r => r.data ?? null).catch(() => null);
+      }
+
       if (options.json) {
         console.log(JSON.stringify({
           authorized: decision.authorized,
@@ -3980,10 +3988,12 @@ program
           activeFlow: decision.activeFlow ?? null,
           codingStep: decision.codingStep ?? null,
           finalStep: decision.finalStep ?? null,
+          onLeave,
           flowFetchFailed,
         }));
       } else {
         console.log(decision.authorized ? chalk.green(decision.message + driftNotice) : chalk.red(decision.message));
+        if (onLeave?.advice) console.log(chalk.cyan(`\n${onLeave.advice}`));
         if (flowFetchFailed) {
           console.error(chalk.yellow(`⚠️  Could not load the project's flow from ${API_URL}. Exit criteria are unknown, not absent — retry or run \`agenfk flow show\` before advancing.`));
         }
@@ -4812,6 +4822,10 @@ flowCommand
         // reading, so `flow show` reflects a just-changed Hub assignment without
         // waiting for the 5-minute poll (falls back to the local flow on error).
         ({ data: flow } = await axios.get(`${API_URL}/projects/${projectId}/flow?refresh=true`));
+        // 37a292a7: what leaving each step runs, under this project's settings - shown, never saved into the flow.
+        const plans: any[] = await axios.get(`${API_URL}/projects/${projectId}/flow/leave-plans`, { timeout: 5000 }).then(r => r.data).catch(() => []);
+        const byStep = new Map((Array.isArray(plans) ? plans : []).map((p: any) => [p.step, p]));
+        if (byStep.size) flow = { ...flow, steps: (flow.steps ?? []).map((st: any) => byStep.has(st.name) ? { ...st, onLeave: byStep.get(st.name) } : st) };
       }
       if (program.opts().toon || options.json) {
         console.log(structuredOutput(flow));
@@ -4830,6 +4844,7 @@ flowCommand
         Name: s.name,
         Label: s.label,
         Special: s.isSpecial ? 'yes' : 'no',
+        ...(sorted.some((x: any) => x.onLeave) ? { 'On leave': s.onLeave ? ({ suite: 'runs the suite', 'verify-command': 'runs the verify command', nothing: 'runs no tests' } as Record<string, string>)[s.onLeave.runs] ?? '-' : '-' } : {}),
         'Exit Criteria': s.exitCriteria ? s.exitCriteria.substring(0, 50) : '-',
       })));
     } catch (error: any) {

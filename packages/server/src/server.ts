@@ -7274,6 +7274,16 @@ export function withNote<T extends { status: (code: number) => any; json: (body:
 const criteriaBanner = (step: string, criteria: string) =>
   `\n\n⚠️ MANDATORY EXIT CRITERIA for ${step} — the step this item is now on. You MUST satisfy ALL of the following before calling validate_progress again:\n\n${criteria}`;
 const nowOn = (status: string) => `\n\nItem is now on ${status}.`;
+
+/**
+ * 37a292a7: after an advance, what leaving the step the card landed on will run
+ * - the text for the reply and the plan as a field. Nothing when it landed on
+ * the exit step, or the plan cannot be read (it is advice, never a failure).
+ */
+async function nextLeaveNote(itemId: string): Promise<{ text: string; field: { leavePlan?: LeavePlan } }> {
+  const plan = await leavePlanOf(itemId).catch(() => null);
+  return plan ? { text: `\n\n${plan.advice}`, field: { leavePlan: plan } } : { text: '', field: {} };
+}
 const staysOn = (status: string) => `\n\nThe advance was refused. Item stays on ${status}.`;
 
 // Advances item to the next flow step. On failure the advance is refused and the item stays put (CGLAB-275).
@@ -7630,6 +7640,134 @@ async function readUpstream(root: string): Promise<UpstreamState> {
 /** 5a8d22e6: the server's own hold for a per-test entry baseline the project cannot record. */
 const ENTRY_BASELINE = 'entry-baseline';
 
+/**
+ * 37a292a7: whether leaving `status` runs a test-report capture, and why. The
+ * ONE predicate the step gate runs on and the leave plan reports, so an agent
+ * told "leaving runs the suite" (or "runs nothing") is told what will happen.
+ *  - checks: this step's applicable checks that need per-test results, less
+ *    those the verify command settles on this move (deferredToCommand);
+ *  - entryBaseline: the next step reads the results recorded as a card enters
+ *    it, so this capture doubles as that entry (no suite runs just to snapshot);
+ *  - entryHeld: that next step's BLOCKING checks need a per-test baseline the
+ *    project records none of - the card is held, and the capture is not run.
+ */
+/** A person's override of the entry-baseline hold on this step, as the gate honours it (passkey on a passkey step; the same hold). */
+function entryHoldOverride(item: any, flow: { steps: any[] }, detail: string): any | undefined {
+  return [...((item as any)?.stepRecords ?? [])].reverse().find((r: any) =>
+    r?.step === item.status && r.kind === 'override' && r.check === ENTRY_BASELINE && (!stepWantsPasskey(flow as Flow, item.status) || r.authority === 'passkey')
+    && (r.detail === undefined || r.detail === detail));
+}
+
+/** The hold's detail - the text a person's override of it names. */
+const entryHoldDetailOf = (next: any) => next ? `${next.name} judges its tests against the per-test results recorded as the card enters it, and this project records none` : '';
+
+function captureOnLeave(flow: { steps: any[] }, status: string, project: any, deferToCommand: string[], opts: { personFirst?: boolean; holdOverridden?: boolean } = {}) {
+  const sorted = sortedFlowSteps(flow as any);
+  const next = sorted[sorted.findIndex(st => st.name === status) + 1];
+  const resolved = resolveStepChecks(flow.steps, status);
+  const nextChecks = next ? resolveStepChecks(flow.steps, next.name) : [];
+  const nextNeedsPerTestEntry = !!next && needsEntryRecord(nextChecks.filter(c => c.severity === 'block'));
+  const entryHeld = !opts.personFirst && nextNeedsPerTestEntry && !project?.testReport && !opts.holdOverridden;
+  const checks = resolved.filter(c => !deferToCommand.includes(c.id) && needsCapture([c])).map(c => c.id);
+  const entryBaseline = next && !entryHeld && needsEntryRecord(nextChecks) ? next.name as string : null;
+  return { runs: !opts.personFirst && (checks.length > 0 || !!entryBaseline), checks, entryBaseline, entryHeld, nextNeedsPerTestEntry, next };
+}
+
+/** 37a292a7: what `agenfk verify` will run on leaving a step - told before it runs. */
+export interface LeavePlan {
+  step: string;
+  next: string | null;
+  /** suite: a test-report capture (the project's verify command, read per test); verify-command: the final gate; nothing. */
+  runs: 'suite' | 'verify-command' | 'nothing';
+  /** The step's checks that need the suite's results. */
+  checks: string[];
+  /** The next step whose entry baseline this capture records, if any. */
+  entryBaseline: string | null;
+  /** The command that runs (the project's verify command). */
+  command?: string;
+  /** The parent the card's suite is deferred to (verifyAt 'parent'): nothing runs on this card. */
+  deferredTo?: { id: string; title: string };
+  /** The step waits for a person's approval first; the suite runs on the verify after it. */
+  waitsOnPerson: boolean;
+  /** Why the card will be held instead of advancing, when it will be. */
+  held?: string;
+  /** How a run may be smaller than the whole suite: 'affected-tests' (a related-tests command), 'reuse' (an unchanged tree's green). */
+  narrowing: string[];
+  /** One line for the agent. */
+  advice: string;
+}
+
+async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown }, project: any): Promise<LeavePlan> {
+  const sorted = sortedFlowSteps(flow as any);
+  const index = sorted.findIndex(st => st.name === item.status);
+  const next = sorted[index + 1];
+  const final = !next || next.name === Status.DONE || isBoundaryStep(next);
+  const toParent = await parentToDeferTo(item, flow);
+  const deferToCommand = deferredToCommand(flow, item.status, project, toParent);
+  const cap = captureOnLeave(flow, item.status, project, deferToCommand, { holdOverridden: !!entryHoldOverride(item, flow, entryHoldDetailOf(next)) });
+  const waiting = await waitsOnPerson(item, flow, project);
+  const command: string | undefined = project?.verifyCommand || undefined;
+  const runs: LeavePlan['runs'] = cap.runs ? 'suite' : final && !toParent && command ? 'verify-command' : 'nothing';
+  const role = (sorted[index] as any)?.role;
+  const narrowing = runs === 'nothing' ? [] : [
+    ...(runs === 'suite' && project?.testReport?.relatedCommand && !['testing', 'refactoring'].includes(role) ? ['affected-tests'] : []),
+    'reuse',
+  ];
+  const held = cap.entryHeld ? `${next?.name} judges its tests against per-test results recorded as the card enters it, and this project records none (set a test report)` : undefined;
+  const step = item.status as string;
+  const cmd = command ? ` (\`${command}\`)` : '';
+  const why = cap.checks.length ? ` for ${cap.checks.join(', ')}` : '';
+  const entry = cap.entryBaseline ? `${why ? ' and' : ' for'} ${cap.entryBaseline}'s entry baseline` : '';
+  const smaller = narrowing.includes('affected-tests') ? ' It may run only the tests the change affects, or reuse the last green run of an unchanged tree.' : runs !== 'nothing' ? ' It may reuse the last green run of an unchanged tree.' : '';
+  let advice: string;
+  if (toParent) advice = `Leaving ${step} runs no tests on this card: the project's suite is deferred to the parent [${String(toParent.id).slice(0, 8)}] "${toParent.title}", whose final verify runs it.`;
+  else if (held) advice = `Leaving ${step} will hold the card: ${held}.`;
+  else if (runs === 'suite') advice = `Leaving ${step} runs the project's suite${cmd} for you${why}${entry}. Don't run the full suite yourself first - run only the tests you are iterating on, then verify.${smaller}`;
+  else if (runs === 'verify-command') advice = `Leaving ${step} runs the project's verify command${cmd} for you, and it closes the card only if it passes. Don't run it yourself first - run only the tests you are iterating on, then verify.${smaller}`;
+  else advice = `Leaving ${step} runs no tests. If its exit criteria ask for passing tests, running them is yours${command ? ` (\`${command}\`, or only the tests your change affects)` : ''}.`;
+  if (waiting && runs !== 'nothing') advice += ' It first waits for a person\'s approval on the board; the suite runs on the verify after it.';
+  return {
+    step, next: next?.name ?? null, runs, checks: cap.checks, entryBaseline: cap.entryBaseline,
+    ...(command && runs !== 'nothing' ? { command } : {}),
+    ...(toParent ? { deferredTo: { id: toParent.id, title: toParent.title } } : {}),
+    waitsOnPerson: waiting, ...(held ? { held } : {}), narrowing, advice,
+  };
+}
+
+/** The leave plan for a card as it stands now, or null when it has no flow step to leave. */
+async function leavePlanOf(itemId: string): Promise<LeavePlan | null> {
+  const item: any = await storage.getItem(itemId);
+  if (!item) return null;
+  const project: any = await storage.getProject(item.projectId);
+  const flow = getActiveFlow(project?.flowId, await storage.listFlows());
+  const sorted = sortedFlowSteps(flow);
+  const index = sorted.findIndex(st => st.name === item.status);
+  if (index < 0 || index === sorted.length - 1) return null;
+  return leavePlanFor(item, flow, project);
+}
+
+app.get("/items/:id/leave-plan", limitBoardRoutes, asyncHandler(async (req: any, res: any) => {
+  const item = await storage.getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: 'Item not found' });
+  const plan = await leavePlanOf(req.params.id);
+  if (!plan) return res.status(409).json({ error: `${(item as any).status} is not a step of the project's flow that a card leaves` });
+  res.json(plan);
+}));
+
+/** Each working step's plan, as a card with no parent deferral or pending approval would get it (flow show). */
+app.get("/projects/:id/flow/leave-plans", limitBoardRoutes, asyncHandler(async (req: any, res: any) => {
+  const project: any = await storage.getProject(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  const flow = getActiveFlow(project.flowId, await storage.listFlows());
+  const sorted = sortedFlowSteps(flow);
+  const plans: LeavePlan[] = [];
+  for (let i = 0; i < sorted.length - 1; i++) {
+    if (sorted[i].isAnchor && i !== 0) continue;
+    plans.push(await leavePlanFor({ id: '', projectId: project.id, status: sorted[i].name, stepRecords: [] }, flow, project));
+  }
+  res.json(plans);
+}));
+
 async function runStepGate(item: any, flow: { steps: any[] }, root: string | null, actor?: { client: string; sessionId: string; agentId: string | null } | null, agentReports?: Record<string, AgentReport>, opts?: { personFirst?: boolean; run?: ValidateRun; answers?: Record<string, string> }): Promise<StepGate> {
   const sorted = sortedFlowSteps(flow as any);
   const index = sorted.findIndex(st => st.name === item.status);
@@ -7646,17 +7784,17 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const deferToApproval = opts?.personFirst
     ? resolved.filter(c => c.applicable && (needsCapture([c]) || needsNetwork(c) || (c.id.startsWith('command-check:') && !waitingOn.includes(c)))).map(c => c.id)
     : [];
-  // 5a8d22e6: the next step's BLOCKING checks read a per-test entry baseline this project cannot record.
-  const nextNeedsPerTestEntry = !!next && needsEntryRecord(resolveStepChecks(flow.steps, next.name).filter(c => c.severity === 'block'));
-  const entryHoldDetail = next ? `${next.name} judges its tests against the per-test results recorded as the card enters it, and this project records none` : '';
+  const entryHoldDetail = entryHoldDetailOf(next);
   // One read decides both the capture and the hold (review): a person's override of it, as the hold will honour it.
-  const holdOverride = [...(((await storage.getItem(item.id)) as any)?.stepRecords ?? [])].reverse().find((r: any) =>
-    r?.step === item.status && r.kind === 'override' && r.check === ENTRY_BASELINE && (!stepWantsPasskey(flow as Flow, item.status) || r.authority === 'passkey')
-    && (r.detail === undefined || r.detail === entryHoldDetail));
+  // 37a292a7: the same predicate the leave plan reads.
+  const holdOverride = entryHoldOverride(await storage.getItem(item.id), flow, entryHoldDetail);
   const holdOverridden = !!holdOverride;
+  // 5a8d22e6: the next step's BLOCKING checks read a per-test entry baseline this project cannot record.
   // 8876747c: held anyway, the next step's entry capture could only be an exit code - so it is not run.
-  const entryHeld = !opts?.personFirst && nextNeedsPerTestEntry && !project?.testReport && !holdOverridden;
-  if (!opts?.personFirst && (needsCapture(resolved.filter(c => !deferToCommand.includes(c.id))) || (next && !entryHeld && needsEntryRecord(resolveStepChecks(flow.steps, next.name))))) {
+  // 37a292a7: one predicate with the leave plan (captureOnLeave), so what the agent was told is what runs.
+  const planned = captureOnLeave(flow, item.status, project, deferToCommand, { personFirst: opts?.personFirst, holdOverridden });
+  const { nextNeedsPerTestEntry, entryHeld } = planned;
+  if (planned.runs) {
     const run = opts?.run;
     // acceaa54: the capture this step entered with, for a test-only change to run over.
     const prevStep = sorted[index - 1];
@@ -8164,7 +8302,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const codingStepCriteria = (codingStep as any).exitCriteria as string | undefined;
     const codingCommitNote = commitOnLeaveNote(codingStep.name, stepCommitsOnLeave(sorted as any, codingStep.name));
     const mandatoryNote = (codingStepCriteria ? criteriaBanner(codingStep.name, codingStepCriteria) : '') + (codingCommitNote ? `\n\n${codingCommitNote}` : '');
-    return res.json({ status: codingStep.name, message: `✅ Validation Passed!\n\nItem moved to ${codingStep.name}.${mandatoryNote}${nowOn(codingStep.name)}` });
+    const leave = await nextLeaveNote(itemId);
+    return res.json({ status: codingStep.name, message: `✅ Validation Passed!\n\nItem moved to ${codingStep.name}.${mandatoryNote}${leave.text}${nowOn(codingStep.name)}`, ...leave.field });
   }
 
   const nextStep = sorted[currentFlowStep.index + 1];
@@ -8413,7 +8552,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         await ensureWorktreeForItem(updated, true);
         io.emit('items_updated');
         if (updated.parentId) await syncParentStatus(updated.parentId);
-        return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}. ${ahead}${mandatoryInstructions}${nowOn(nextStatus)}`, output: 'Sibling propagation' });
+        const leave = await nextLeaveNote(itemId);
+        return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}. ${ahead}${mandatoryInstructions}${leave.text}${nowOn(nextStatus)}`, output: 'Sibling propagation', ...leave.field });
       }
     }
   }
@@ -8430,7 +8570,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     await ensureWorktreeForItem(updated, true);
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId);
-    return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}${nowOn(nextStatus)}` });
+    const leave = await nextLeaveNote(itemId);
+    return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}${leave.text}${nowOn(nextStatus)}`, ...leave.field });
   }
 
   // See above: declining beats committing somewhere plausible.
@@ -8680,7 +8821,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       itemId,
       payload: { command: resolvedCommand, status: 'PASSED', testId },
     });
-    return res2.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${describePush(gitResult)}${nowOn(nextStatus)}`, output: preview });
+    const leave = await nextLeaveNote(itemId);
+    return res2.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${describePush(gitResult)}${leave.text}${nowOn(nextStatus)}`, output: preview, ...leave.field });
   } else {
     const updates: any = { status: failureStatus, comments };
     // Same positional predicate as the PASSED record above: a red final gate on
