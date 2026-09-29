@@ -124,8 +124,10 @@ defines none, so this is the common case — empty criteria never mean "no work"
 
 2. **Do the work this step calls for.** Follow the criteria if there are any. If there are
    none, default by position: on the **first working step**, explore the codebase and understand the
-   context, then implement the change; on the **final step**, get the project's test suite
-   green; on any **other** step, verify what the previous steps produced — at minimum satisfy
+   context, then implement the change; on the **final step**, get the work into a state
+   that passes the project's suite - leaving it runs the verify command for you, so run only
+   the tests you are iterating on, not the whole suite first (`agenfk verify <id> --plan` says
+   what it will run); on any **other** step, verify what the previous steps produced — at minimum satisfy
    step 3 and step 4 below. Along the way:
    - **Evidence-based claims**: before claiming a feature already exists, search the codebase
      for the specific UI components, API endpoints and database queries. Never assume
@@ -228,7 +230,7 @@ placeholders deliberately: substitute the real step names from the flow you load
 |------|-----------------|-------------|-----------------|
 | 1 | `<first working step>` — first non-anchor step | Explore, then implement (step 2 default), then review it (step 3 floor) | `agenfk verify <id> --evidence "..."` — command optional; a build check if the criteria want one |
 | n | any middle step | Whatever its criteria say; review it if they are silent | `agenfk verify <id> --evidence "..."` — command optional; never the test runner on a red-tests step |
-| last | `<final step>` — last step before `DONE` | Suite green, criteria met | `agenfk verify <id> --evidence "..."` — **no command**, uses `verifyCommand` → **DONE** |
+| last | `<final step>` — last step before `DONE` | Criteria met (verify runs the suite) | `agenfk verify <id> --evidence "..."` — **no command**, uses `verifyCommand` → **DONE** |
 
 The number of passes equals the number of working steps in your flow, not three. A flow whose
 second step is `CREATE_UNIT_TESTS` writes tests on that pass because its criteria say so — the
