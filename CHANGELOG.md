@@ -2,9 +2,20 @@
 
 All notable changes to AgEnFK are documented here.
 
-## [2.0.0-beta.10] — 2026-09-28
+## [2.0.0-beta.10] — 2026-09-29
 
-Beta, cumulative over `2.0.0-beta.9`: everything in beta.9, plus the changes below (CGLAB-429).
+Beta, cumulative over `2.0.0-beta.9`: everything in beta.9, plus the changes below (CGLAB-429, CGLAB-430).
+
+### Running verifies, in every project
+
+- **A "N verifies running" chip** appears once a verify has run for more than 10 seconds, in any project: in the
+  browser board's header, and in the desktop app's status bar (on every tab, terminals included). Its list shows,
+  for each: the project and card, the step, how long, what it is doing (running the whole suite, only the affected
+  tests, reusing a green run, waiting for a suite-run slot and how many are ahead, waiting on another run of the
+  same tree, or waiting on a person's approval) and the last line it printed.
+- **Clicking one opens its card** - switching project if needed - on Overview, where the run's output streams.
+- Served by the new `GET /verify-runs` and pushed over the socket as `verify_runs` (coalesced); it carries no step
+  records or output bodies, and the board reads it again when its connection comes back.
 
 ### Faster step verifies
 
