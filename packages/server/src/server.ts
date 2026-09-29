@@ -7651,6 +7651,59 @@ const ENTRY_BASELINE = 'entry-baseline';
  *  - entryHeld: that next step's BLOCKING checks need a per-test baseline the
  *    project records none of - the card is held, and the capture is not run.
  */
+/**
+ * acceaa54: the capture this step entered with, for a partial run to go over -
+ * or null. de5e5a03: a testing step's whole job is the suite, it never runs a
+ * part of it; 83c1cbca: nor does refactoring, which changes code and not tests,
+ * where an import graph misses most. 2ebacb23: shared by the step gate and the
+ * dry run, so the mode predicted is the mode run.
+ */
+/**
+ * b29a8b3a / 3ffc9651: a DONE sibling's green of the command, tied to THIS
+ * tree - its commit, or its exact state - in the same checkout; or why not.
+ * Every candidate is asked: a stale older sibling must not shadow a younger one
+ * still green here. 2ebacb23: shared by the final gate and the dry run.
+ */
+async function siblingGreenOf(item: any, siblings: any[], project: any, gateRoot: string | null | undefined, command: string) {
+  const sharesRoot = !!gateRoot;
+  const treeSha = sharesRoot ? readCleanTreeSha(gateRoot!, gitRun) : null;
+  // 3ffc9651: or at this very STATE, dirty or not - every file's content, as the green recorded it.
+  const treeState = sharesRoot ? treeStateOf(gateRoot!, project) : null;
+  let pass: { sibling: any; test: any } | null = null;
+  let refusal = treeSha
+    ? 'no sibling green is tied to this commit'
+    : treeState ? 'no sibling green is tied to this tree state' : 'the state of this tree cannot be read, so no sibling green can be tied to it';
+  for (const s of siblings) {
+    if (pass || s.id === item.id || s.status !== Status.DONE) continue;
+    // Same checkout as the one the command runs in, or nothing transfers.
+    if (!sharesRoot || resolveCommitRoot(await withEffectiveWorktree(s), project?.projectRoot).root !== gateRoot) continue;
+    // EVERY matching test, not the first: a sibling re-verified after a
+    // rollback has an older record that must not shadow the current one.
+    for (const test of testRecords(s.tests)) {
+      if (pass || test.status !== 'PASSED' || test.command !== command) continue;
+      if (treeState && currentTreeState(test) === treeState && test.commitRoot === gateRoot) { pass = { sibling: s, test }; continue; }
+      const gate = mayPropagate(treeSha, test);
+      if (gate.allowed) pass = { sibling: s, test };
+      else if (treeSha || !currentTreeState(test)) refusal = gate.reason ?? refusal;
+      else refusal = 'the tree changed since the sibling verified: its content is not the state the green was recorded at';
+    }
+  }
+  return { pass, refusal, treeSha, treeState };
+}
+
+async function entryCaptureOf(item: any, sorted: any[], index: number): Promise<any | null> {
+  const prevStep = sorted[index - 1];
+  if (!prevStep || ['testing', 'refactoring'].includes((sorted[index] as any)?.role)) return null;
+  const before: any[] = ((await storage.getItem(item.id)) as any)?.stepRecords ?? [];
+  let entry = [...before].reverse().find((r: any) => r?.kind === 'capture' && r.step === prevStep.name) ?? null;
+  // 80920048: reads leave a capture's file map as a reference; the entry is the one record that needs it.
+  if (entry && typeof entry.fileShasBlob === 'string' && entry.fileShas === undefined) {
+    const fileShas = await storage.readBlob?.(entry.fileShasBlob).catch(() => null);
+    if (fileShas) entry = { ...entry, fileShas };
+  }
+  return entry;
+}
+
 /** A person's override of the entry-baseline hold on this step, as the gate honours it (passkey on a passkey step; the same hold). */
 function entryHoldOverride(item: any, flow: { steps: any[] }, detail: string): any | undefined {
   return [...((item as any)?.stepRecords ?? [])].reverse().find((r: any) =>
@@ -7734,6 +7787,56 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown 
   };
 }
 
+/** 2ebacb23: the mode leaving would run in on this tree, predicted read-only. */
+export interface LeavePrediction {
+  mode: 'reuse' | 'test-files' | 'affected-tests' | 'full' | 'sibling-green' | 'none';
+  /** The test files a partial run would be given. */
+  files?: string[];
+  /** Whose green a reuse would take. */
+  reusedFrom?: { itemId: string; step: string };
+  /** The sibling whose green of this tree a final verify would propagate. */
+  sibling?: { id: string; title: string };
+  advice: string;
+}
+
+/**
+ * 2ebacb23 - the dry run. The same choices captureStepRecord and the final gate
+ * make, asked without running or writing anything: the step's entry capture
+ * and lazyPlan for a partial run, reusableCapture for a green of this tree,
+ * siblingGreenOf on the final step. Single-flight sharing and a partial run
+ * falling back to the whole suite are only known while running.
+ */
+async function predictLeave(item: any, plan: LeavePlan, flow: { steps: any[] }, project: any): Promise<LeavePrediction> {
+  if (plan.runs === 'nothing') return { mode: 'none', advice: 'On this tree it would run nothing.' };
+  const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
+  if (plan.runs === 'verify-command') {
+    if (item.parentId && root && plan.command) {
+      const siblings = await storage.listItems({ parentId: item.parentId });
+      const { pass } = await siblingGreenOf(item, siblings, project, root, plan.command);
+      if (pass) return { mode: 'sibling-green', sibling: { id: pass.sibling.id, title: pass.sibling.title }, advice: `On this tree it would not run the command: [${String(pass.sibling.id).slice(0, 8)}] "${pass.sibling.title}" already verified this very tree, and its green carries over.` };
+    }
+    return { mode: 'full', advice: `On this tree it would run \`${plan.command}\` in full.` };
+  }
+  const setting: TestReportSetting | undefined = project?.testReport;
+  if (root && setting) {
+    const sorted = sortedFlowSteps(flow as any);
+    const entry = await entryCaptureOf(item, sorted, sorted.findIndex(st => st.name === item.status));
+    const lazy = entry ? lazyPlan(root, setting, entry) : null;
+    if (lazy) {
+      const files = [...lazy.ran];
+      return lazy.related
+        ? { mode: 'affected-tests', files, advice: `On this tree it would run only the ${files.length} test file(s) the change affects: ${files.join(', ')}.` }
+        : { mode: 'test-files', files, advice: `On this tree it would run only the changed test file(s): ${files.join(', ')}.` };
+    }
+    const reused = await reusableCapture(item, project, root, readCleanTreeSha(root, gitRun), treeStateOf(root, project), suiteStateOf(root, setting));
+    if (reused) {
+      const from = reused.reusedFrom ?? { itemId: item.id, step: reused.step };
+      return { mode: 'reuse', reusedFrom: { itemId: String(from.itemId ?? item.id), step: String(from.step ?? '') }, advice: 'On this tree it would run nothing new: a green of this very tree is reused.' };
+    }
+  }
+  return { mode: 'full', advice: 'On this tree it would run the whole suite.' };
+}
+
 /** The leave plan for a card as it stands now, or null when it has no flow step to leave. */
 async function leavePlanOf(itemId: string): Promise<LeavePlan | null> {
   const item: any = await storage.getItem(itemId);
@@ -7751,6 +7854,12 @@ app.get("/items/:id/leave-plan", limitBoardRoutes, asyncHandler(async (req: any,
   if (!item) return res.status(404).json({ error: 'Item not found' });
   const plan = await leavePlanOf(req.params.id);
   if (!plan) return res.status(409).json({ error: `${(item as any).status} is not a step of the project's flow that a card leaves` });
+  // 2ebacb23: ?predict=1 - the mode on this tree, asked read-only.
+  if (req.query.predict === '1' || req.query.predict === 'true') {
+    const project: any = await storage.getProject((item as any).projectId);
+    const flow = getActiveFlow(project?.flowId, await storage.listFlows());
+    return res.json({ ...plan, prediction: await predictLeave(item, plan, flow, project) });
+  }
   res.json(plan);
 }));
 
@@ -7796,17 +7905,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const { nextNeedsPerTestEntry, entryHeld } = planned;
   if (planned.runs) {
     const run = opts?.run;
-    // acceaa54: the capture this step entered with, for a test-only change to run over.
-    const prevStep = sorted[index - 1];
-    const before: any[] = ((await storage.getItem(item.id)) as any)?.stepRecords ?? [];
-    // de5e5a03: a testing step's whole job is the suite - it never runs a part of it. 83c1cbca: nor does refactoring,
-    // which changes code and not tests - where an import graph misses most.
-    let lazyOver = prevStep && !['testing', 'refactoring'].includes((sorted[index] as any)?.role) ? [...before].reverse().find((r: any) => r?.kind === 'capture' && r.step === prevStep.name) ?? null : null;
-    // 80920048: reads leave a capture's file map as a reference; the entry is the one record that needs it.
-    if (lazyOver && typeof lazyOver.fileShasBlob === 'string' && lazyOver.fileShas === undefined) {
-      const fileShas = await storage.readBlob?.(lazyOver.fileShasBlob).catch(() => null);
-      if (fileShas) lazyOver = { ...lazyOver, fileShas };
-    }
+    const lazyOver = await entryCaptureOf(item, sorted, index);
     const out = await captureStepRecord(item, { ...(run ? { onOutput: (chunk: string) => appendRunOutput(run, chunk), onPhase: (phase: VerifyPhase) => setRunPhase(run, phase) } : {}), lazyOver });
     if ('error' in out) captureError = out.message; else capture = out.record;
     // beae41a0: the suite is done; what follows (command checks, fetches) is the step's checks again.
@@ -8479,29 +8578,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
        * (CGLAB-366).
        */
       const gateRoot = effectiveRoot;
-      const sharesRoot = !!gateRoot;
-      const treeSha = sharesRoot ? readCleanTreeSha(gateRoot, gitRun) : null;
-      // 3ffc9651: or at this very STATE, dirty or not - every file's content, as the green recorded it.
-      const treeState = sharesRoot ? treeStateOf(gateRoot, project) : null;
-      let pass: { sibling: any; test: any } | null = null;
-      let refusal = treeSha
-        ? 'no sibling green is tied to this commit'
-        : treeState ? 'no sibling green is tied to this tree state' : 'the state of this tree cannot be read, so no sibling green can be tied to it';
-      for (const s of siblings) {
-        if (pass || s.id === item.id || s.status !== Status.DONE) continue;
-        // Same checkout as the one the command runs in, or nothing transfers.
-        if (!sharesRoot || resolveCommitRoot(await withEffectiveWorktree(s), (project as any)?.projectRoot).root !== gateRoot) continue;
-        // EVERY matching test, not the first: a sibling re-verified after a
-        // rollback has an older record that must not shadow the current one.
-        for (const test of testRecords(s.tests)) {
-          if (pass || test.status !== 'PASSED' || test.command !== resolvedCommand) continue;
-          if (treeState && currentTreeState(test) === treeState && test.commitRoot === gateRoot) { pass = { sibling: s, test }; continue; }
-          const gate = mayPropagate(treeSha, test);
-          if (gate.allowed) pass = { sibling: s, test };
-          else if (treeSha || !currentTreeState(test)) refusal = gate.reason ?? refusal;
-          else refusal = 'the tree changed since the sibling verified: its content is not the state the green was recorded at';
-        }
-      }
+      const { pass, refusal, treeState } = await siblingGreenOf(item, siblings, project, gateRoot, resolvedCommand!);
       if (pass) {
         // Asked again: a re-entry (a slow gate, a sibling that waited) skipped the early check, and a close happened since.
         const strays = await checkStrays(res);

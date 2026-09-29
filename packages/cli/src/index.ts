@@ -4050,7 +4050,30 @@ program
   .option('--wait-minutes <n>', 'How long to wait for a person\'s approval before giving up (default 9)')
   .option('--check <name=outcome>', 'Report an agent check of this step: <name>=pass or <name>=fail (repeatable)', (v: string, acc: string[] = []) => [...acc, v])
   .option('--check-note <name=text>', 'What you found for a reported agent check, or your answer to one of the step\'s failing warnings: <name>=<text> (repeatable)', (v: string, acc: string[] = []) => [...acc, v])
+  .option('--plan', 'Dry run: say what leaving the current step would run on this tree (reuse, only the changed or affected tests, the whole suite, a sibling\'s green, or nothing) - runs nothing, moves nothing')
+  .option('--json', 'With --plan: print the plan as JSON')
   .action(async (id, command, options) => {
+    // 2ebacb23: the dry run needs no evidence and never posts a verify.
+    if (options.plan) {
+      try {
+        let targetId = id;
+        if (id.length < 36) {
+          const { data: allItems } = await axios.get(`${API_URL}/items`);
+          const found = allItems.filter((i: any) => i.id.startsWith(id));
+          if (found.length !== 1) { console.error(chalk.red(found.length ? `Ambiguous ID ${id}` : `No item found starting with ${id}`)); process.exit(1); return; }
+          targetId = found[0].id;
+        }
+        const { data: plan } = await axios.get(`${API_URL}/items/${targetId}/leave-plan?predict=1`);
+        if (options.json) console.log(JSON.stringify(plan));
+        else console.log(`${plan.advice}${plan.prediction?.advice ? `\n${plan.prediction.advice}` : ''}\n${chalk.gray('(Dry run: nothing ran and the card did not move.)')}`);
+      } catch (e: any) {
+        console.error(chalk.red('Error reading the leave plan:'), e.response?.data?.error || e.message);
+        process.exit(1);
+        return;
+      }
+      process.exit(0);
+      return;
+    }
     if (!options.evidence) {
       console.error(chalk.red('Error: --evidence is required. Describe how you satisfied the current step\'s exit criteria.'));
       process.exit(1);

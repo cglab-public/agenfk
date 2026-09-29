@@ -543,6 +543,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             itemId: { type: "string" },
             evidence: { type: "string", description: "REQUIRED: Describe how you satisfied the current step's exit criteria (e.g. 'Wrote failing tests in foo.test.ts covering cases X and Y'). This is logged as a comment and serves as your confirmation." },
             command: { type: "string", description: "Optional command to run on an INTERMEDIATE step (e.g. 'npm run build'). Ignored on the final step and on any boundary step, where the server always runs the project verifyCommand." },
+            plan: { type: "boolean", description: "Dry run: answer what leaving the current step would run on this tree (reuse, only the changed or affected tests, the whole suite, a sibling's green, or nothing) without running anything or moving the card." },
             agentChecks: {
               type: "array",
               description: "Your report of the current step's agent checks: for each, what its instruction asked you to do or check. A refused verify names them and their instructions. Recorded as agent-reported.",
@@ -781,11 +782,20 @@ async function callToolHandler(request: any): Promise<any> {
         }
       }
       case "validate_progress": {
-        const { itemId, evidence, command, agentChecks, checkAnswers } = z.object({
-          itemId: z.string(), evidence: z.string(), command: z.string().optional(),
+        const { itemId, evidence, command, agentChecks, checkAnswers, plan } = z.object({
+          itemId: z.string(), evidence: z.string(), command: z.string().optional(), plan: z.boolean().optional(),
           agentChecks: z.array(z.object({ name: z.string(), outcome: z.enum(['pass', 'fail']), note: z.string().optional() })).optional(),
           checkAnswers: z.array(z.object({ id: z.string(), note: z.string() })).optional(),
         }).parse(request.params.arguments);
+        // 2ebacb23: a dry run - what leaving the step would run on this tree. Nothing runs, nothing moves.
+        if (plan) {
+          try {
+            const { data } = await api.get(`/items/${itemId}/leave-plan?predict=1`);
+            return { content: [{ type: "text", text: `${data.advice}${data.prediction?.advice ? `\n${data.prediction.advice}` : ''}\n\n(Dry run: nothing ran and the card did not move. Call again without plan to advance.)` }] };
+          } catch (error: any) {
+            return { isError: true, content: [{ type: "text", text: error.response?.data?.error || error.message }] };
+          }
+        }
         // The author, as the harness that launched this MCP server names it (CGLAB-381).
         const actor = actorFromEnv(process.env);
         const result = await validateViaApi(itemId, { evidence, command, cwd: process.cwd(), ...(actor ? { actor } : {}), ...(agentChecks ? { agentChecks } : {}), ...(checkAnswers ? { checkAnswers } : {}) });
