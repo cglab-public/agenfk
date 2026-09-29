@@ -167,4 +167,35 @@ describe('6e0d2fd6: partial runs on a dirty tree, after a partial run', () => {
     expect((await validate(t.id)).status).toBe(200);
     expect(t.runs().at(-1)).toBe('ALL');
   });
+
+  // 83c1cbca (second review, finding 3; user 2026-09-28): work beside the project that is the same as at entry does
+  // not refuse a partial run - in a shared monorepo worktree there nearly always is some.
+  it('in a project that is a subdirectory, a change beside it that is unchanged since entry: only the affected tests run', async () => {
+    const t = await setup(true, [
+      s('START', 0, { isAnchor: true }), s('PLAN', 1, { checks: [{ id: 'suite-green' }] }), s('BUILD', 2, { checks: [{ id: 'suite-green' }] }), s('END', 3, { isAnchor: true }),
+    ]);
+    expect((await validate(t.id)).status).toBe(200);
+    fs.writeFileSync(path.join(t.top, 'shared.js'), 'module.exports = 99;\n');
+    fs.writeFileSync(path.join(t.top, 'scratch.txt'), 'someone else\'s untracked file\n');
+    t.edit('lib.js', 'module.exports = 10;\n');
+    expect((await validate(t.id)).status).toBe(200);                                  // PLAN -> BUILD: entry with work beside it
+    t.edit('lib.js', 'module.exports = 11;\n');                                       // ... which is left as it was
+    expect((await validate(t.id)).status).toBe(200);
+    expect(t.runs().at(-1)).toEqual({ related: ['lib.js'], ran: ['a.test.js'] });
+  });
+
+  it('in a project that is a subdirectory, a change beside it that moved on since entry: the whole suite runs', async () => {
+    const t = await setup(true, [
+      s('START', 0, { isAnchor: true }), s('PLAN', 1, { checks: [{ id: 'suite-green' }] }), s('BUILD', 2, { checks: [{ id: 'suite-green' }] }), s('END', 3, { isAnchor: true }),
+    ]);
+    expect((await validate(t.id)).status).toBe(200);
+    fs.writeFileSync(path.join(t.top, 'shared.js'), 'module.exports = 99;\n');
+    t.edit('lib.js', 'module.exports = 10;\n');
+    expect((await validate(t.id)).status).toBe(200);
+    fs.writeFileSync(path.join(t.top, 'shared.js'), 'module.exports = 100;\n');
+    t.edit('lib.js', 'module.exports = 11;\n');
+    expect((await validate(t.id)).status).toBe(200);
+    expect(t.runs().at(-1)).toBe('ALL');
+  });
 });
+

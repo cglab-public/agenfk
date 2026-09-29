@@ -303,4 +303,21 @@ describe('de5e5a03: an affected-only run never stands in for tests it cannot tra
     await whole(t);                                                // CHECK -> SHIP: the suite, all of it
     expect(await captureAt(t.id, 'CHECK')).not.toHaveProperty('lazy');
   });
+
+  // 83c1cbca (second review, finding 2; user 2026-09-28): refactoring changes code, not tests - where the graph misses most.
+  it('a refactoring step runs the whole suite, even over an affected-only entry', async () => {
+    const t = await setup({ steps: [
+      s('START', 0, { isAnchor: true }), s('PLAN', 1, { checks: [{ id: 'suite-green' }] }), s('BUILD', 2, { checks: [{ id: 'suite-green' }] }),
+      s('TIDY', 3, { role: 'refactoring' }), s('SHIP', 4), s('END', 5, { isAnchor: true }),
+    ] });
+    await enterBuild(t);
+    t.edit('lib.js', 'module.exports = 10;\n');
+    expect((await validate(t.id)).status).toBe(200);            // BUILD -> TIDY: affected-only
+    expect(t.runs().slice(1)).toEqual([{ related: ['lib.js'], ran: ['a.test.js'] }]);
+    expect(((await storage.getItem(t.id)) as any).status).toBe('TIDY');
+    t.edit('lib.js', 'module.exports = 11;\n');
+    await whole(t);                                                // TIDY -> SHIP: all of it
+    expect(await captureAt(t.id, 'TIDY')).not.toHaveProperty('lazy');
+  });
 });
+

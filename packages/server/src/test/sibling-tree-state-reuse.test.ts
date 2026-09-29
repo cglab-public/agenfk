@@ -205,6 +205,23 @@ describe('3ffc9651: the final verify propagates a sibling green recorded at the 
     expect(t.count()).toBe(1);
   });
 
+  // 83c1cbca (second review of 6caae168, finding 1): a tree state an older build recorded is not compared - before
+  // `--relative`, a subdirectory project's uncommitted edit to a tracked file hashed as the committed file.
+  it('a sibling green whose tree state an older build recorded does not pass the final step', async () => {
+    const t = await verifySetup();
+    fs.writeFileSync(path.join(t.repo, 'notes.txt'), 'another agent is mid-edit\n');
+    const a = await t.child();
+    expect((await validate(a)).body.status).toBe('DONE');
+    expect(t.count()).toBe(1);
+    const done: any = await storage.getItem(a);
+    await storage.updateItem(a, { tests: testRecordsOf(done).map((x: any) => { const { treeStateVersion: _v, ...rest } = x; return rest; }) } as any);
+    const b = await t.child();
+    const rb = await validate(b);
+    expect(rb.body.status, JSON.stringify(rb.body)).toBe('DONE');
+    expect(rb.body.output).not.toBe('Sibling propagation');
+    expect(t.count()).toBe(2);
+  });
+
   it('a chain of siblings, each closing with its own commit: the command runs once for all of them', async () => {
     // The test process makes no close commit (autoGitCommit is off under vitest), so each close is committed here,
     // exactly as the server would: the card's own files, content unchanged.

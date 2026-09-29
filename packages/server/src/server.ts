@@ -3639,6 +3639,8 @@ function suiteStateOf(root: string, setting: TestReportSetting | undefined, read
  */
 const STATE_VERSION = 2;
 const currentStates = (r: any): boolean => r?.stateVersion === STATE_VERSION;
+/** A final-step test record's tree state, when this build's hashing recorded it (83c1cbca); else none. */
+const currentTreeState = (t: any): string | undefined => (t?.treeStateVersion === STATE_VERSION && typeof t.treeState === 'string' ? t.treeState : undefined);
 /** A capture record's reuse state (32045202); null for a record from before it, or one that did not fence its run. */
 const suiteStateOfRecord = (r: any): string | null => (currentStates(r) && typeof r?.suiteState === 'string' ? r.suiteState : null);
 
@@ -3855,6 +3857,41 @@ function changedSince(root: string, head: string, reportRel: TreeExclude): { ins
 
 const isFileMap = (m: unknown): m is Record<string, string> => !!m && typeof m === 'object' && !Array.isArray(m);
 
+/** Past this many changed files beside the root, their state is not worth hashing: no partial run. */
+const OUTSIDE_MAX_FILES = 2000;
+/**
+ * 83c1cbca — the content of what differs from `head` OUTSIDE `root` (tracked
+ * changes and untracked files, by path and content), as one hash; '' when
+ * nothing does. Null when it cannot be read, or is too large to. A partial
+ * run over an entry needs this unchanged since it: the entry's results were
+ * taken with that work beside it.
+ */
+function outsideState(root: string, head: string): string | null {
+  try {
+    const run = (args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 64 * 1024 * 1024 });
+    const prefix = run(['rev-parse', '--show-prefix']).trim();
+    const top = run(['rev-parse', '--show-toplevel']).trim();
+    const names = new Set([
+      ...run(['diff', '--no-renames', '--name-only', '-z', head]).split('\0'),
+      ...run(['ls-files', '-z', '--others', '--exclude-standard', '--full-name', '--', ':/']).split('\0'),
+    ].filter(f => f && !f.startsWith(prefix)));
+    if (!names.size) return '';
+    if (names.size > OUTSIDE_MAX_FILES) return null;
+    const entries: [string, string][] = [...names].map(f => {
+      const abs = path.join(top, f);
+      try {
+        const st = fs.lstatSync(abs);
+        if (st.isSymbolicLink()) return [f, `120000:${blobSha(Buffer.from(fs.readlinkSync(abs)))}`];
+        if (st.isFile()) return [f, `${st.mode & 0o111 ? '100755' : '100644'}:${blobSha(fs.readFileSync(abs))}`];
+        return [f, 'other'];
+      } catch { return [f, 'absent']; }
+    });
+    return hashEntries(entries);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 6e0d2fd6 — files changed since an entry capture: from its per-file map when
  * it recorded one (a dirty tree, a partial run), else from git against its
@@ -3862,15 +3899,16 @@ const isFileMap = (m: unknown): m is Record<string, string> => !!m && typeof m =
  * the whole suite.
  */
 function changedSinceEntry(root: string, entry: any, reportRel: TreeExclude): { inside: string[]; outside: boolean } | null {
-  const viaGit = changedSince(root, entry.head, reportRel);
-  if (!isFileMap(entry.fileShas)) return viaGit;
+  if (!isFileMap(entry.fileShas)) return changedSince(root, entry.head, reportRel);
   const now = treeFiles(root, reportRel);
-  if (!now || !viaGit) return null;
+  // 83c1cbca: beside `root`, what matters is whether the work there is what the entry ran with.
+  const beside = outsideState(root, entry.head);
+  if (!now || beside === null) return null;
   const before: Record<string, string> = entry.fileShas;
   const inside = new Set<string>();
   for (const [f, v] of Object.entries(now.files)) if (before[f] !== v) inside.add(f);
   for (const f of Object.keys(before)) if (!(f in now.files)) inside.add(f);
-  return { inside: [...inside].sort(), outside: viaGit.outside };
+  return { inside: [...inside].sort(), outside: beside !== entry.outsideState };
 }
 
 /**
@@ -3878,8 +3916,8 @@ function changedSinceEntry(root: string, entry: any, reportRel: TreeExclude): { 
  * the whole suite. All of these, or null:
  *  - the step's entry capture is per-test, in this tree, with the report
  *    setting as it is now, and says what it ran on: a whole run on a clean
- *    tree (git against its head), or a recorded file map with nothing changed
- *    beside `root` (6e0d2fd6, de5e5a03);
+ *    tree (git against its head), or a recorded file map with the work
+ *    beside `root` as it was then (6e0d2fd6, 83c1cbca);
  *  - nothing changed outside `root`, and EVERY file changed since then is
  *    itself a test file: under the test surface AND named as one (a test file
  *    that exports helpers for others is the rare case this misses). A helper,
@@ -3894,7 +3932,7 @@ function changedSinceEntry(root: string, entry: any, reportRel: TreeExclude): { 
 function lazyPlan(root: string, setting: TestReportSetting, entry: any): LazyPlan | null {
   // 6e0d2fd6: an entry that recorded its files works dirty or partial - which is how a TDD coding step is entered.
   if (!(entry?.kind === 'capture' && entry.root === root && entry.available === true && typeof entry.head === 'string'
-    && ((entry.clean === true && !entry.lazy) || (isFileMap(entry.fileShas) && entry.outsideDirty === false))
+    && ((entry.clean === true && !entry.lazy) || (isFileMap(entry.fileShas) && typeof entry.outsideState === 'string'))
     && Array.isArray(entry.tests) && ranAsSetNow(entry, setting))) return null;
   const since = changedSinceEntry(root, entry, reportsOwned(root, setting));
   if (!since || since.outside) return null;
@@ -3985,8 +4023,8 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
   const reportRel = reportAbs ? insideRoot(root, reportAbs) : null;
   const owned = setting ? reportsOwned(root, setting) : [];
   const stateBefore = treeContentState(root, owned);
-  // de5e5a03: work beside `root` as the run starts - read on both sides, so a change undone meanwhile still counts.
-  const besideBefore = typeof record.head === 'string' ? changedSince(root, record.head, owned) : null;
+  // de5e5a03/83c1cbca: the work beside `root` as the run starts - read on both sides, so a change meanwhile counts.
+  const besideBefore = typeof record.head === 'string' ? outsideState(root, record.head) : null;
   // The plan was made before the run was fenced: the tree must still be what it saw.
   if (lazy && JSON.stringify(changedSinceEntry(root, lazy.entry, owned)) !== JSON.stringify({ inside: lazy.changed, outside: false })) return null;
   if (lazy) {
@@ -4013,9 +4051,9 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
       record.stateVersion = STATE_VERSION;
       // 6e0d2fd6: which file held what, for the next step's partial run.
       record.fileShas = after!.tree.files;
-      // de5e5a03: the map covers `root` only; work beside it at this moment makes it no base for a partial run.
-      const besideAfter = typeof record.head === 'string' ? changedSince(root, record.head, owned) : null;
-      record.outsideDirty = !besideBefore || !besideAfter || besideBefore.outside || besideAfter.outside;
+      // The map covers `root` only: the work beside it is recorded as one state, when the run saw it stay put (83c1cbca).
+      const besideAfter = typeof record.head === 'string' ? outsideState(root, record.head) : null;
+      if (besideBefore !== null && besideBefore === besideAfter) record.outsideState = besideAfter;
       // 32045202: what reuse compares, docs no test names aside.
       const suite = suiteStateOf(root, setting, after!.tree);
       if (suite) record.suiteState = suite;
@@ -7491,8 +7529,9 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     // acceaa54: the capture this step entered with, for a test-only change to run over.
     const prevStep = sorted[index - 1];
     const before: any[] = ((await storage.getItem(item.id)) as any)?.stepRecords ?? [];
-    // de5e5a03: a testing step's whole job is the suite - it never runs a part of it.
-    let lazyOver = prevStep && (sorted[index] as any)?.role !== 'testing' ? [...before].reverse().find((r: any) => r?.kind === 'capture' && r.step === prevStep.name) ?? null : null;
+    // de5e5a03: a testing step's whole job is the suite - it never runs a part of it. 83c1cbca: nor does refactoring,
+    // which changes code and not tests - where an import graph misses most.
+    let lazyOver = prevStep && !['testing', 'refactoring'].includes((sorted[index] as any)?.role) ? [...before].reverse().find((r: any) => r?.kind === 'capture' && r.step === prevStep.name) ?? null : null;
     // 80920048: reads leave a capture's file map as a reference; the entry is the one record that needs it.
     if (lazyOver && typeof lazyOver.fileShasBlob === 'string' && lazyOver.fileShas === undefined) {
       const fileShas = await storage.readBlob?.(lazyOver.fileShasBlob).catch(() => null);
@@ -8170,10 +8209,10 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         // rollback has an older record that must not shadow the current one.
         for (const test of testRecords(s.tests)) {
           if (pass || test.status !== 'PASSED' || test.command !== resolvedCommand) continue;
-          if (treeState && test.treeState === treeState && test.commitRoot === gateRoot) { pass = { sibling: s, test }; continue; }
+          if (treeState && currentTreeState(test) === treeState && test.commitRoot === gateRoot) { pass = { sibling: s, test }; continue; }
           const gate = mayPropagate(treeSha, test);
           if (gate.allowed) pass = { sibling: s, test };
-          else if (treeSha || !test.treeState) refusal = gate.reason ?? refusal;
+          else if (treeSha || !currentTreeState(test)) refusal = gate.reason ?? refusal;
           else refusal = 'the tree changed since the sibling verified: its content is not the state the green was recorded at';
         }
       }
@@ -8185,7 +8224,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         const { sibling: passedSibling, test: siblingTest } = pass;
         const where = siblingTest.commit ? `\`${String(siblingTest.commit).slice(0, 12)}\`` : `\`${String(siblingTest.treeState).slice(0, 12)}\` with the same uncommitted content`;
         const sibComment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).\n**Command**: \`${resolvedCommand}\` at ${where}`, timestamp: new Date() };
-        const inherited = { ...(siblingTest.commit ? { commit: siblingTest.commit } : {}), ...(siblingTest.treeState ? { treeState: siblingTest.treeState } : {}), commitRoot: gateRoot };
+        const inherited = { ...(siblingTest.commit ? { commit: siblingTest.commit } : {}), ...(currentTreeState(siblingTest) ? { treeState: siblingTest.treeState, treeStateVersion: STATE_VERSION } : {}), commitRoot: gateRoot };
         const updates: any = { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), sibComment], tests: [...testRecords(item.tests), { id: uuidv4(), command: resolvedCommand, output: `Sibling propagation: verified by ${passedSibling.id}`, status: 'PASSED', executedAt: new Date(), ...inherited }], ...(isExitStep ? { failureCount: 0 } : {}) };
         const updated = await storage.updateItem(itemId, updates);
         io.emit('items_updated');
@@ -8466,7 +8505,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         if (verifiedSha || treeState) {
           const current = await storage.getItem(itemId);
           const tests = testRecords(current?.tests).map((t: any) =>
-            t.id === testId ? { ...t, ...(verifiedSha ? { commit: verifiedSha } : {}), ...(treeState ? { treeState } : {}), commitRoot: gateRoot } : t,
+            t.id === testId ? { ...t, ...(verifiedSha ? { commit: verifiedSha } : {}), ...(treeState ? { treeState, treeStateVersion: STATE_VERSION } : {}), commitRoot: gateRoot } : t,
           );
           await storage.updateItem(itemId, { tests });
           io.emit('items_updated');
