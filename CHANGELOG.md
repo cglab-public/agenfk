@@ -2,6 +2,36 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.11] — 2026-09-29
+
+Beta, cumulative over `2.0.0-beta.10`: everything in beta.10, plus the changes below (CGLAB-164).
+
+### Quieter install, upgrade and services
+
+- **An upgrade prints two lines** (`Upgrading AgEnFK X → Y...`, `✓ Upgraded to Y`) instead of ~130. `up`, `down`,
+  `restart` and `kill` print one line each. A first install prints a short next-steps block and the telemetry
+  notice once; re-installs print neither. `install.mjs --quiet` (what `agenfk upgrade` runs) prints only warnings.
+- **The step-by-step log is behind `--debuglog`** on `agenfk upgrade`, `agenfk up`, `scripts/install.mjs` and the
+  npx installer. Warnings and errors always print, prefixed ⚠, including a failing child's own output (npm ci, tar,
+  `mcp add`), which is otherwise no longer shown.
+- **The ASCII banners are gone**, from the CLI and from the npx installer, and so is the `figlet` dependency.
+- **`agenfk down` says what happened**: it stopped the server, found nothing, or could not stop it (a warning and
+  exit 1). It used to say "stopped" either way. `kill` reports how many processes it killed.
+- **Only the listener is killed.** `up`, `restart` and `kill` stop the process listening on the board's port, not a
+  browser or the desktop app connected to it, and no longer kill whatever listens on vite's port 5173.
+- **`agenfk restart` runs `up` in the foreground**, so its line - and any warning: a moved port, a server that never
+  reported one - reaches the terminal.
+- The PATH hint prints only when `~/.local/bin` really is off PATH.
+
+An upgrade *from* beta.10 still shows beta.10's own upgrade output: that code runs before the new version lands.
+
+### Also
+
+- The board's lifecycle is the server's: no separate vite UI process anywhere.
+- The Settings dialog keeps its tallest section's height, capped at the viewport, and scrolls inside.
+- Agent Runs label runs by harness; Claude Code runs record the real model.
+- Rate limits on `GET /verify-runs` and `PUT`/`DELETE /items/:id`.
+
 ## [2.0.0-beta.10] — 2026-09-29
 
 Beta, cumulative over `2.0.0-beta.9`: everything in beta.9, plus the changes below (CGLAB-429, CGLAB-430).
