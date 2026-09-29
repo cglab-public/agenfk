@@ -180,7 +180,31 @@ async function activeItem(readActiveWork, sessionId, projectId) {
   return item?.id ? item : null;
 }
 
-async function ensureRun(sessionId, readActiveWork, projectId) {
+/**
+ * 7251a4f7 - the model a run records. AGENFK_MODEL when set; else the last
+ * model the session's transcript shows (Claude Code writes one per assistant
+ * message; '<synthetic>' entries are its own, not a model); else 'claude'.
+ * Read from the end: the transcript grows for the whole session.
+ */
+export function runModel(env, payload) {
+  if (env && env.AGENFK_MODEL) return env.AGENFK_MODEL;
+  const file = payload && typeof payload.transcript_path === 'string' ? payload.transcript_path : '';
+  if (file) {
+    try {
+      const lines = readFileSync(file, 'utf8').split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (!lines[i].includes('"model"')) continue;
+        try {
+          const model = JSON.parse(lines[i])?.message?.model;
+          if (typeof model === 'string' && model && !model.startsWith('<')) return model;
+        } catch { /* a line being written: skip it */ }
+      }
+    } catch { /* no transcript: fall back */ }
+  }
+  return 'claude';
+}
+
+async function ensureRun(sessionId, readActiveWork, projectId, payload) {
   // The note is consulted FIRST, every time. Keying the cache on the session
   // alone let it short-circuit ahead of the note, so switching cards mid
   // session kept posting to the first card's run — the wrong-card failure this
@@ -203,7 +227,7 @@ async function ensureRun(sessionId, readActiveWork, projectId) {
       step: item.status,
       actor: 'worker',
       harness: CLIENT,
-      model: process.env.AGENFK_MODEL || 'claude',
+      model: runModel(process.env, payload),
       sessionId: sessionId || undefined,
     }),
   });
@@ -283,7 +307,7 @@ async function main() {
 
   // The session's OWN project, from its cwd — not from the note. Comparing
   // the two is what stops one session's card capturing another's runs.
-  const run = await ensureRun(payload.session_id, readActiveWork, projectIdFromCwd(payload.cwd));
+  const run = await ensureRun(payload.session_id, readActiveWork, projectIdFromCwd(payload.cwd), payload);
   if (!run) return;
 
   const posted = await api(`/agent-runs/${run.runId}/events`, {

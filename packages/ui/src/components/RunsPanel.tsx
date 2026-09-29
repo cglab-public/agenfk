@@ -6,6 +6,7 @@ import remarkGfm from 'remark-gfm';
 import { api } from '../api';
 import { stripAnsi } from '../utils';
 import { appendEvent } from '../runEvents';
+import { agentLabel } from '../agentLabels';
 
 export interface AgentRun {
   id: string;
@@ -50,9 +51,22 @@ const IS_MACHINE_OUTPUT: Record<RunEvent['kind'], boolean> = {
 
 const LANE = {
   orchestrator: { label: 'orchestrator', ini: 'C', avatar: 'bg-story-blue/60', tag: 'text-story-blue' },
-  worker: { label: 'pi · worker', ini: 'π', avatar: 'bg-amber-500/60', tag: 'text-amber-600 dark:text-amber-300' },
+  worker: { label: 'worker', ini: 'W', avatar: 'bg-amber-500/60', tag: 'text-amber-600 dark:text-amber-300' },
   reviewer: { label: 'reviewer', ini: 'R', avatar: 'bg-teal-500/60', tag: 'text-teal-600 dark:text-teal-300' },
 } as const;
+
+/**
+ * 7251a4f7 - a lane as a given run shows it. The worker lane was hard-coded
+ * 'pi · worker', from when every worker was a pi agent, so a Claude Code run
+ * read as pi's. The worker is named by the run's own harness; pi keeps its π.
+ */
+function laneOf(actor: string | undefined, harness: string | undefined) {
+  const lane = LANE[actor as keyof typeof LANE] || LANE.worker;
+  if (lane !== LANE.worker) return lane;
+  const h = harness || 'pi';
+  const name = agentLabel(h);
+  return { ...lane, label: `${name} · worker`, ini: h === 'pi' ? 'π' : name.charAt(0).toUpperCase() };
+}
 
 function fmtTokens(n?: number): string {
   return typeof n === 'number' ? n.toLocaleString('en-US') : '';
@@ -160,7 +174,8 @@ const TranscriptRow = React.memo(function TranscriptRow({
   selected: AgentRun | null;
   isLast: boolean;
 }) {
-  const lane = LANE[ev.lane as keyof typeof LANE] || LANE.worker;
+  // The run's own harness names its worker lane; other lanes keep their role.
+  const lane = laneOf(ev.lane, ev.lane === selected?.actor ? selected?.harness : undefined);
   // Identity caption: for the lane that matches this run's own actor (the agent
   // that ran it — pi worker, or the reviewer/orchestrator), show
   // "<harness> · <model>" from the run, omitting the separator when the model is
@@ -289,7 +304,7 @@ export const RunsPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
            * surface is every run the server returns, including ones written by
            * an older build or a client that did not set an actor.
            */
-          const lane = LANE[run.actor as keyof typeof LANE] || LANE.worker;
+          const lane = laneOf(run.actor, run.harness);
           const isSel = run.id === selectedRunId;
           return (
             <button
