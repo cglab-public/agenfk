@@ -7152,7 +7152,8 @@ const ANSWER_REQUIRED = new Set(['new-tests-born-green']);
  * kept the tests' names and repointed them, hiding the change. Never on a
  * refactoring step, where behaviour must not change.
  */
-const ANSWERABLE_REMOVALS = new Set(['test-count-not-lower', 'red-set-passes-by-name']);
+// 6dd15e6e: not red-set-passes-by-name - the red set is the card's own specification, and deleting it is no change of behaviour.
+const ANSWERABLE_REMOVALS = new Set(['test-count-not-lower']);
 
 /** A card's descendants, breadth first (at most 5000). */
 async function descendantsOf(item: any): Promise<any[]> {
@@ -7587,10 +7588,11 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   if ((sorted[index] as any)?.role !== 'refactoring') {
     let lifted = false;
     for (const r of outcome.results) {
+      const missing: unknown = (r as any).meta?.missing;
+      if (r.id === 'red-set-passes-by-name' && r.outcome === 'fail' && r.blocking && !r.overridden && Array.isArray(missing) && missing.length) {
+        r.detail = `${r.detail}. The red tests are this card's own specification: renaming or removing them is not answered by the agent. Put them back, or a person can override this check on the board.`;
+      }
       if (!ANSWERABLE_REMOVALS.has(r.id) || r.outcome !== 'fail' || !r.blocking || r.overridden) continue;
-      // A red test that still fails is not a removal: only renamed or removed ones may be answered.
-      const meta: any = (r as any).meta;
-      if (r.id === 'red-set-passes-by-name' && !(Array.isArray(meta?.missing) && meta.missing.length && Array.isArray(meta?.notPassing) && !meta.notPassing.length)) continue;
       if (r.answer) { r.blocking = false; (r as any).answeredRemoval = true; lifted = true; }
       else r.detail = `${r.detail}. If these tests pinned behaviour this card changes, say why they go: agenfk verify ${item.id} --check-note ${r.id}="<why they go>" --evidence "..." (MCP: validate_progress with checkAnswers); the reviewer and the PR will see it.`;
     }

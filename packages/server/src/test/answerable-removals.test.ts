@@ -4,9 +4,10 @@
  * Field report (2026-09-28): changing a behaviour, an agent had to delete two
  * tests that pinned the old one; test-count-not-lower refused, so it kept
  * their names and repointed them at another case - hiding the change, which
- * is worse than deleting them. Now a lower count, and a red test renamed or
- * removed (red-set-passes-by-name), still hold the card and name the tests,
- * until the agent says why: --check-note <check>="...". The answer goes on
+ * is worse than deleting them. Now a lower count still holds the card and
+ * names the tests, until the agent says why: --check-note <check>="...".
+ * A red test renamed or removed (red-set-passes-by-name) is the card's own
+ * specification, and only a person passes that, on the board (6dd15e6e). The answer goes on
  * the record, to the reviewer (tree-warnings) and the PR. A red test that
  * still FAILS is never answered away, and a refactoring step - where
  * behaviour must not change - stays strict.
@@ -70,7 +71,7 @@ async function project(steps: any[], start: string) {
   const c = await agent().post('/items').send({ type: 'TASK', title: `ar-${++seq}`, projectId: p.body.id });
   await storage.updateItem(c.body.id, { status: start } as any);
   const write = (rel: string, text: string) => fs.writeFileSync(path.join(repo, rel), text);
-  return { id: c.body.id as string, write };
+  return { id: c.body.id as string, repo, write };
 }
 const validate = (id: string, checkAnswers?: Array<{ id: string; note: string }>) =>
   agent().post(`/items/${id}/validate`).set(internal()).send({ evidence: 'ok', ...(checkAnswers ? { checkAnswers } : {}) });
@@ -133,16 +134,18 @@ async function intoBuildWithRed(t: Awaited<ReturnType<typeof project>>) {
 }
 
 describe('red-set-passes-by-name: a red test renamed or removed is answered with a reason', () => {
-  it('holds the card when a red test is renamed, and an answer lets it leave', async () => {
+  // 6dd15e6e: was answerable (e2ab4ced). The red set is the card's own specification: a person passes a rename.
+  it('holds the card when a red test is renamed, and an agent\'s answer does not lift it', async () => {
     const t = await project(tddFlow(), 'START');
     await intoBuildWithRed(t);
     t.write('b.test.js', 'pass new rule, clearer name\n');
     const held = await validate(t.id);
     expect(held.status, JSON.stringify(held.body)).toBe(422);
     expect(result(held.body, 'red-set-passes-by-name').detail).toMatch(/new rule \[missing\]/);
-    expect(held.body.message).toMatch(/--check-note red-set-passes-by-name=/);
+    expect(held.body.message).not.toMatch(/--check-note red-set-passes-by-name=/);
     const r = await validate(t.id, [{ id: 'red-set-passes-by-name', note: 'renamed to say what the rule is' }]);
-    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.status, JSON.stringify(r.body)).toBe(422);
+    expect(result(r.body, 'red-set-passes-by-name').blocking).toBe(true);
   });
 
   it('a red test that still fails is never answered away', async () => {
@@ -162,6 +165,28 @@ describe('red-set-passes-by-name: a red test renamed or removed is answered with
     const r = await validate(t.id, [{ id: 'red-set-passes-by-name', note: 'renamed the first' }]);
     expect(r.status, JSON.stringify(r.body)).toBe(422);
     expect(result(r.body, 'red-set-passes-by-name').blocking).toBe(true);
+  });
+});
+
+/*
+ * 6dd15e6e (review of 6caae168, finding 5): the red set is the card's own
+ * specification. Deleting it on the coding step and answering both removal
+ * checks let a card leave without building anything. Only a person passes it.
+ */
+describe('red-set-passes-by-name: the card\'s own red tests are not answered away by the agent', () => {
+  it('every red test deleted, both removal checks answered: the card is held, and told a person must pass it', async () => {
+    const t = await project(tddFlow(), 'START');
+    await intoBuildWithRed(t);
+    fs.rmSync(path.join(t.repo, 'b.test.js'));
+    const r = await validate(t.id, [
+      { id: 'red-set-passes-by-name', note: 'no longer needed' },
+      { id: 'test-count-not-lower', note: 'no longer needed' },
+    ]);
+    expect(r.status, JSON.stringify(r.body)).toBe(422);
+    const red = result(r.body, 'red-set-passes-by-name');
+    expect(red.blocking).toBe(true);
+    expect(red.detail).not.toMatch(/--check-note/);
+    expect(red.detail).toMatch(/a person .*override .*board/i);
   });
 });
 

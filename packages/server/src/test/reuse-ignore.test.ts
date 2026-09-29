@@ -71,6 +71,20 @@ describe('namedByTests', () => {
   it('names nothing when no test mentions a candidate', () => {
     expect(namedByTests(['README.md'], ['expect(1).toBe(1)']).size).toBe(0);
   });
+
+  // 6dd15e6e (review of 6caae168, finding 4): a test that reads a DIRECTORY of Markdown files names none of them.
+  it('names a file whose directory a test builds from quoted parts', () => {
+    const named = namedByTests(['.claude/commands/agenfk-release-foo.md'], ["const dir = path.join(REPO_ROOT, '.claude', 'commands'); readdirSync(dir)"]);
+    expect([...named]).toEqual(['.claude/commands/agenfk-release-foo.md']);
+  });
+
+  it('names a file whose directory path a test spells out', () => {
+    expect([...namedByTests(['skills/pdf/SKILL-notes.md'], ['for (const d of readdirSync("repo/skills/pdf")) {}'])]).toEqual(['skills/pdf/SKILL-notes.md']);
+  });
+
+  it('a directory\'s name as a bare word in prose names nothing', () => {
+    expect(namedByTests(['docs/guide.md'], ['// see the docs for the details']).size).toBe(0);
+  });
 });
 
 let seq = 0;
