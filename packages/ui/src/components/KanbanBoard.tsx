@@ -18,6 +18,7 @@ import { isDesktop } from '../desktop';
 import { useActiveProject } from '../ActiveProject';
 import { CardDetailModal } from './CardDetailModal';
 import { VerifyRunBadge } from './VerifyRunBadge';
+import { VerifyRunsChip } from './VerifyRunsChip';
 import { ColumnContractBadges, ColumnRole } from './ColumnContractBadges';
 import { checkText } from '@agenfk/flow-editor';
 import { CardAnimationWrapper } from '../animations/CardAnimationWrapper';
@@ -522,7 +523,7 @@ export const KanbanBoard: React.FC = () => {
   // Shared with the desktop sidebar (CGLAB-168). Same rules as before — a
   // ?project= deep link beats the remembered choice — they just live in
   // ActiveProject now so the sidebar and the board cannot disagree.
-  const { activeProjectId: selectedProjectId, setActiveProjectId: setSelectedProjectId, focusedItemId, newItemRequest, markProjectWorked, requestTerminalFor } = useActiveProject();
+  const { activeProjectId: selectedProjectId, setActiveProjectId: setSelectedProjectId, focusedItemId, focusOpens, newItemRequest, markProjectWorked, requestTerminalFor } = useActiveProject();
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [projectSearch, setProjectSearch] = useState('');
   const [highlightedProjectIndex, setHighlightedProjectIndex] = useState(-1);
@@ -1377,6 +1378,13 @@ export const KanbanBoard: React.FC = () => {
     const itemId = focusedItemId.slice(0, focusedItemId.lastIndexOf('#'));
     setSearchTerm(itemId);
     runSearch(itemId);
+    // 3aea49f1: a focus that opens the card - on Overview, where a running verify shows its output.
+    if (focusOpens) {
+      const card = items.find((i: AgEnFKItem) => i.id === itemId);
+      // A request from outside the board (the header's running verifies), applied once like the deep link above.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      if (card) setSelectedItem(card);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusedItemId, items, isFetchingItems, isLoadingFlow, activeFlow]);
 
@@ -1833,6 +1841,8 @@ export const KanbanBoard: React.FC = () => {
                   <span className="hidden xl:inline">Org Flows</span>
                 </button>
               )}
+
+              <VerifyRunsChip />
 
               {!isDesktop() && (
                 <button

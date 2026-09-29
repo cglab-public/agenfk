@@ -123,6 +123,26 @@ export interface ActiveRun {
   startedAt: string;
 }
 
+/** 3aea49f1: what a running verify is doing (server: VerifyPhase, plus a wait on a person). */
+export type VerifyRunPhase =
+  | { state: 'checking' }
+  | { state: 'queued'; ahead: number }
+  | { state: 'running'; kind: 'whole' | 'affected' | 'tests-only' | 'reused'; files?: number }
+  | { state: 'awaiting-person' };
+
+/** 3aea49f1: one verify running now, in any project (GET /verify-runs, the 'verify_runs' event). */
+export interface VerifyRunEntry {
+  runId?: string;
+  itemId: string;
+  title?: string;
+  projectId?: string;
+  projectName?: string;
+  step: string;
+  startedAt: string;
+  phase: VerifyRunPhase;
+  lastLine?: string;
+}
+
 /** The run's latest output, as the board reads it while the run lasts. */
 export interface ActiveRunOutput extends ActiveRun {
   output: string;

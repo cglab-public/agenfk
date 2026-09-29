@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { AgEnFKItem, ItemType, Status, Flow, RegistryFlow, ActiveRunOutput } from './types'; // We need to copy types or import from core if possible, but symlinking in Vite monorepo can be tricky without proper setup.
+import { AgEnFKItem, ItemType, Status, Flow, RegistryFlow, ActiveRunOutput, VerifyRunEntry } from './types'; // We need to copy types or import from core if possible, but symlinking in Vite monorepo can be tricky without proper setup.
 import { API_URL } from './apiUrl';
 
 /** One check's verdict on a verify (CGLAB-380), as the server records it. */
@@ -184,6 +184,11 @@ export const api = {
       console.error("API Error listing items:", e);
       throw e;
     }
+  },
+  /** 3aea49f1: every verify running now, across projects. */
+  getVerifyRuns: async (): Promise<VerifyRunEntry[]> => {
+    const { data } = await axios.get(`${API_URL}/verify-runs`);
+    return Array.isArray(data) ? data : [];
   },
   getItem: async (id: string) => {
     try {

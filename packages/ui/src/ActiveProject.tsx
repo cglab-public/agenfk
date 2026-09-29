@@ -28,8 +28,10 @@ interface ActiveProjectValue {
   /** Record real work in a project, for the sidebar's "Last used" ordering. */
   markProjectWorked: (projectId: string) => void;
   focusedItemId: string | null;
-  /** Go to a card: switch to its project if needed, then point the board at it. */
-  focusItem: (itemId: string, projectId?: string) => void;
+  /** 3aea49f1: the focus asks the board to open the card too, on Overview - not only point at it. */
+  focusOpens: boolean;
+  /** Go to a card: switch to its project if needed, then point the board at it (and open it, with `open`). */
+  focusItem: (itemId: string, projectId?: string, opts?: { open?: boolean }) => void;
   /**
    * A request to start a new card, as `<projectId>#<nonce>`.
    *
@@ -76,6 +78,7 @@ export function ActiveProjectProvider({ children }: { children: React.ReactNode 
   // Not persisted: this is a navigation, not a preference. Restoring it on
   // launch would yank the board to wherever you happened to click last time.
   const [focusedItemId, setFocusedItemId] = useState<string | null>(null);
+  const [focusOpens, setFocusOpens] = useState(false);
   const [newItemRequest, setNewItemRequest] = useState<string | null>(null);
   const [terminalRequest, setTerminalRequest] = useState<{ item: AgEnFKItem; nonce: number } | null>(null);
   const nonce = useRef(0);
@@ -115,11 +118,12 @@ export function ActiveProjectProvider({ children }: { children: React.ReactNode 
     if (projectId) touchProjectUsed(projectId);
   }, []);
 
-  const focusItem = useCallback((itemId: string, projectId?: string) => {
+  const focusItem = useCallback((itemId: string, projectId?: string, opts?: { open?: boolean }) => {
     // The board can only find a card that belongs to the project it is
     // showing, so bring the project along.
     if (projectId) setActiveProjectId(projectId);
     nonce.current += 1;
+    setFocusOpens(!!opts?.open);
     setFocusedItemId(`${itemId}#${nonce.current}`);
   }, [setActiveProjectId]);
 
@@ -150,8 +154,8 @@ export function ActiveProjectProvider({ children }: { children: React.ReactNode 
   // Memoised because KanbanBoard is a very large consumer: a fresh object each
   // render would re-render the whole board on any parent update.
   const value = useMemo(
-    () => ({ activeProjectId, setActiveProjectId, focusedItemId, focusItem, newItemRequest, requestNewItem, markProjectWorked, terminalRequest, requestTerminalFor }),
-    [activeProjectId, setActiveProjectId, focusedItemId, focusItem, newItemRequest, requestNewItem, markProjectWorked, terminalRequest, requestTerminalFor],
+    () => ({ activeProjectId, setActiveProjectId, focusedItemId, focusOpens, focusItem, newItemRequest, requestNewItem, markProjectWorked, terminalRequest, requestTerminalFor }),
+    [activeProjectId, setActiveProjectId, focusedItemId, focusOpens, focusItem, newItemRequest, requestNewItem, markProjectWorked, terminalRequest, requestTerminalFor],
   );
 
   return (
