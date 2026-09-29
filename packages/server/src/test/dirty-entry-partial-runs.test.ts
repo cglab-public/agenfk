@@ -232,5 +232,24 @@ describe('6e0d2fd6: partial runs on a dirty tree, after a partial run', () => {
     expect((await validate(t.id)).status).toBe(200);
     expect(t.runs().at(-1)).toBe('ALL');
   });
+
+  // 62f87741: a nested repository's status names its changed files, not their content.
+  it('in a project that is a subdirectory, a nested repository beside it with uncommitted work edited again: the whole suite runs', async () => {
+    const t = await setup(true, [
+      s('START', 0, { isAnchor: true }), s('PLAN', 1, { checks: [{ id: 'suite-green' }] }), s('BUILD', 2, { checks: [{ id: 'suite-green' }] }), s('END', 3, { isAnchor: true }),
+    ]);
+    expect((await validate(t.id)).status).toBe(200);
+    const nested = path.join(t.top, 'vendor');
+    fs.mkdirSync(nested);
+    fs.writeFileSync(path.join(nested, 'x.js'), 'module.exports = 1;\n');
+    git(nested, 'git init -q -b main && git config user.email t@t && git config user.name t && git add . && git commit -qm one');
+    fs.writeFileSync(path.join(nested, 'x.js'), 'module.exports = 2;\n');                // uncommitted work in it at entry
+    t.edit('lib.js', 'module.exports = 10;\n');
+    expect((await validate(t.id)).status).toBe(200);
+    fs.writeFileSync(path.join(nested, 'x.js'), 'module.exports = 3;\n');                // the same file, edited again
+    t.edit('lib.js', 'module.exports = 11;\n');
+    expect((await validate(t.id)).status).toBe(200);
+    expect(t.runs().at(-1)).toBe('ALL');
+  });
 });
 

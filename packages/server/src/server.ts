@@ -3889,9 +3889,11 @@ function outsideState(root: string, head: string): string | null {
       if (st.isSymbolicLink()) entries.push([f, `120000:${blobSha(Buffer.from(fs.readlinkSync(abs)))}`]);
       else if (st.isFile()) entries.push([f, `${st.mode & 0o111 ? '100755' : '100644'}:${blobSha(fs.readFileSync(abs))}`]);
       else if (st.isDirectory() && fs.existsSync(path.join(abs, '.git'))) {
-        // c03ae9f7: a submodule or nested repository - its commit and its own work, as treeFiles reads one inside.
+        // c03ae9f7: a submodule or nested repository - by its commit. 62f87741: its own uncommitted work is not
+        // hashed (its status names files, not content), so with any, no partial run.
         const sub = (args: string[]) => execFileSync('git', ['-C', abs, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 64 * 1024 * 1024 });
-        entries.push([f, `160000:${sub(['rev-parse', 'HEAD']).trim()}:${crypto.createHash('sha1').update(sub(['status', '--porcelain', '-z'])).digest('hex')}`]);
+        if (sub(['status', '--porcelain', '-z'])) return null;
+        entries.push([f, `160000:${sub(['rev-parse', 'HEAD']).trim()}`]);
       } else return null;   // anything else cannot be told apart from itself changed: no partial run
     }
     return hashEntries(entries);
