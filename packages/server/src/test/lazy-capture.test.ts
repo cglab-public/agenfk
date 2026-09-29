@@ -173,14 +173,16 @@ describe('acceaa54: a test-only change runs only the changed test files', () => 
     expect(t.runs().slice(1)).toEqual(['ALL']);
   });
 
-  it('an entry captured on a dirty tree falls back: what changed since it cannot be told from git', async () => {
+  // 6e0d2fd6: this pinned the old limit (a dirty entry meant the whole suite). An entry now records its files, so
+  // what changed since it is known on a dirty tree too - which is how a TDD coding step is entered.
+  it('an entry captured on a dirty tree runs only what changed since it, told from its recorded files', async () => {
     const t = await setup();
     fs.writeFileSync(path.join(t.repo, 'wip.test.js'), 'pass wip\n');
     expect((await validate(t.id)).status).toBe(200);
     expect((await captureAt(t.id, 'PLAN')).clean).toBe(false);
     fs.writeFileSync(path.join(t.repo, 'b.test.js'), 'pass divides\n');
     await validate(t.id);
-    expect(t.runs()).toEqual(['ALL', 'ALL']);
+    expect(t.runs()).toEqual(['ALL', ['b.test.js']]);
   });
 
   it('a merged record is never stamped or reused as a green', async () => {
