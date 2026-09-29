@@ -41,4 +41,15 @@ describe('rate limits on routes CodeQL flagged', () => {
     // limitExpensive (60/min): it reaches the network.
     expect(limited(res)).toMatch(/^60;/);
   });
+
+  // d929cb53: flagged on PR #194 after 2.0.0-beta.10 (CGLAB-430 touched them). The board edits and lists these
+  // all day, so a generous ceiling: a loop-breaker, not a quota.
+  it('GET /verify-runs, PUT /items/:id and DELETE /items/:id are limited', async () => {
+    expect(limited(await agent().get('/verify-runs'))).toMatch(/^1200;/);
+    const p = (await agent().post('/projects').send({ name: 'rl-items' })).body;
+    const c = (await agent().post('/items').send({ type: 'TASK', title: 'rl', projectId: p.id })).body;
+    expect(limited(await agent().put(`/items/${c.id}`).send({ title: 'rl 2' }))).toMatch(/^1200;/);
+    expect(limited(await agent().delete(`/items/${c.id}`))).toMatch(/^1200;/);
+  });
 });
+

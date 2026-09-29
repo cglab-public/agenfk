@@ -5277,6 +5277,22 @@ const limitFlowWrites = rateLimit({
   },
 });
 
+/**
+ * d929cb53 - the board's own item routes and the running-verifies list (CodeQL js/missing-rate-limiting on PR #194).
+ * The board edits, moves and deletes cards and reads the list all day, several panes at once: a ceiling far above
+ * that, which still stops a runaway loop. Per route, as limitFlowWrites.
+ */
+const limitBoardRoutes = rateLimit({
+  windowMs: 60_000,
+  limit: 1200,
+  keyGenerator: (req: any) => `${ipKeyGenerator(req.ip ?? '127.0.0.1')}\u0000${req.route?.path ?? req.path}`,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  handler: (req: any, res: any) => {
+    res.status(429).json({ error: `Too many requests to ${req.path}. This route is capped at 1200 a minute; this is almost always a loop.` });
+  },
+});
+
 app.post("/flows", limitFlowWrites, asyncHandler(async (req: any, res: any) => {
   const { name, description, version, steps, verifyAt } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
@@ -6026,7 +6042,7 @@ app.get("/items/:id", asyncHandler(async (req: any, res: any) => {
  * every one waiting on a person - the board's header chip. No agent token, like
  * active-run: card titles and each run's last line, no records or bodies.
  */
-app.get("/verify-runs", asyncHandler(async (_req: any, res: any) => {
+app.get("/verify-runs", limitBoardRoutes, asyncHandler(async (_req: any, res: any) => {
   res.json(await verifyRunsList());
 }));
 
@@ -6636,7 +6652,7 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
   });
 }));
 
-app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
+app.put("/items/:id", limitBoardRoutes, asyncHandler(async (req: any, res: any) => {
   console.log(`[API_DEBUG] PUT /items/${req.params.id} body keys: ${Object.keys(req.body).join(', ')}`);
   const { title, description, status, type, parentId, context, implementationPlan, reviews, tests, comments, sortOrder, branchName, prUrl, prNumber, prStatus, claims, externalId, externalUrl, worktree } = req.body;
   // BUG 93d9fbd0: a card's tests are a list of records; anything else is refused
@@ -6962,7 +6978,7 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   }
 }));
 
-app.delete("/items/:id", asyncHandler(async (req: any, res: any) => {
+app.delete("/items/:id", limitBoardRoutes, asyncHandler(async (req: any, res: any) => {
   const itemToDelete = await storage.getItem(req.params.id);
   if (!itemToDelete) {
     return res.status(404).json({ error: "Item not found" });
