@@ -104,7 +104,8 @@ describe('de5e5a03 (2): a capture records the tree it fenced, not the tree a mom
     expect(gap.edit, 'the edit landed in the gap').toBeNull();
     const rec = await lastCapture(a);
     expect(rec).toMatchObject({ available: true, exitCode: 0 });
-    expect(rec.fileShas['lib.js']).toContain(ranOn);
+    const fileShas: any = await storage.readBlob!(rec.fileShasBlob);   // 80920048: reads keep the map as a reference
+    expect(fileShas['lib.js']).toContain(ranOn);
     // Another card on the tree as it is now: nothing ever ran on this content.
     const b = await t.card();
     expect((await capture(b)).status).toBe(200);

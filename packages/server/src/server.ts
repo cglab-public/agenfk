@@ -2657,6 +2657,7 @@ app.put("/settings", asyncHandler(async (req: any, res: any) => {
   }
   const settled = await storage.updateSettings(patch);
   suiteRunSetting = settled.maxConcurrentSuiteRuns ?? 0;
+  suiteSlots.recheck();
   // The whole settled state, so a caller never has to re-read to find out what
   // it now has.
   io.emit("settings_updated", settled);
@@ -7491,7 +7492,12 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     const prevStep = sorted[index - 1];
     const before: any[] = ((await storage.getItem(item.id)) as any)?.stepRecords ?? [];
     // de5e5a03: a testing step's whole job is the suite - it never runs a part of it.
-    const lazyOver = prevStep && (sorted[index] as any)?.role !== 'testing' ? [...before].reverse().find((r: any) => r?.kind === 'capture' && r.step === prevStep.name) ?? null : null;
+    let lazyOver = prevStep && (sorted[index] as any)?.role !== 'testing' ? [...before].reverse().find((r: any) => r?.kind === 'capture' && r.step === prevStep.name) ?? null : null;
+    // 80920048: reads leave a capture's file map as a reference; the entry is the one record that needs it.
+    if (lazyOver && typeof lazyOver.fileShasBlob === 'string' && lazyOver.fileShas === undefined) {
+      const fileShas = await storage.readBlob?.(lazyOver.fileShasBlob).catch(() => null);
+      if (fileShas) lazyOver = { ...lazyOver, fileShas };
+    }
     const out = await captureStepRecord(item, { ...(run ? { onOutput: (chunk: string) => appendRunOutput(run, chunk) } : {}), lazyOver });
     if ('error' in out) captureError = out.message; else capture = out.record;
     // a36047ea: a whole run that only code changes caused, in a project that could have run fewer.

@@ -45,6 +45,11 @@ export class SuiteSlots {
     try { return await fn(); } finally { release(); }
   }
 
+  /** Start whatever the limit now has room for: a raised setting lets the queue through at once (80920048). */
+  recheck(): void {
+    this.drain();
+  }
+
   private releaser(): () => void {
     let done = false;
     return () => {

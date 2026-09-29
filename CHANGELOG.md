@@ -12,17 +12,21 @@ Beta, cumulative over `2.0.0-beta.9`: everything in beta.9, plus the changes bel
   (`agenfk update-project <id> --test-report-related-command "npx vitest related --run {files}"`, `jest
   --findRelatedTests {files}`, ...) runs, on a step that changed code, only the tests related to the changed files,
   merged over the step's entry results by file. It runs the whole suite instead for a config, lockfile or setup
-  change, a deleted file, a declared test-path file, too many files, a change outside the tree, or a changed test
-  file the run did not report. The final step always runs the whole suite. A whole run that only code changes caused
-  suggests the command.
+  change, a deleted file, a declared test-path file, too many files, a change outside the tree, a changed test
+  file the run did not report, a changed file that is not JS/TS source (a snapshot, a fixture, a template - a related
+  run follows imports and cannot trace them), or a related run that finds no test at all. A step with the `testing`
+  role always runs the whole suite, and so does the final step. The partial runs also work from a step entered on an
+  uncommitted tree or through a partial run - how a TDD coding step is entered - from the per-file map each capture
+  records. A whole run that only code changes caused suggests the command.
 - **A Markdown edit no test names no longer re-runs the suite.** Capture reuse compares the tree without the
   project's reuse-ignore globs (default `**/*.md`, `--test-report-reuse-ignore '<globs>|none'`), except a file some
-  test names (this repo's release test reads `CHANGELOG.md`). The final step, sibling propagation and command-check
+  test names (this repo's release test reads `CHANGELOG.md`), or whose directory a test names - by its path, or its
+  name as a quoted string, as a test that lists `.claude/commands` does. The final step, sibling propagation and command-check
   sharing still see every file.
 - **Suite runs are queued server-wide.** At most `maxConcurrentSuiteRuns` run at once across every project (0 =
   automatic = half the CPUs; 1 up to the CPU count). The rest wait first in first out and say they are waiting.
   Several agents' suites at full parallelism had put a 12-core machine at load 76-88, and timing tests failed only
-  under agenfk.
+  under agenfk. Raising the limit starts waiting runs at once.
 
 ### Fixes
 
@@ -34,14 +38,28 @@ Beta, cumulative over `2.0.0-beta.9`: everything in beta.9, plus the changes bel
   and every verify made every open board refetch it, blocking the server for seconds. The list leaves them out, and
   capture records' per-test results now live in their own table (deduplicated, read back only when asked); existing
   databases are moved over once at startup.
+- **What a capture records is what it ran on.** The file map and the reuse state were read after the check that the
+  run saw one stable tree, so an edit in that moment was recorded as tested. They now come from that one read. A
+  record whose per-test results cannot be read back is never green; the close-commit stamp judges green by the report
+  too, not the exit code alone; and tree states recorded before this release are not compared (in a project that is
+  a subdirectory of its repository, an uncommitted edit to a tracked file had hashed as the committed file).
+
+### Upgrading
+
+- **`GET /items` (and `agenfk list --json`) no longer carries `stepRecords` or `supersededRecords`.** Read a card
+  with `GET /items/:id` / `agenfk get <id> --json` for them.
+- **The database is migrated at startup** (per-test results move to a `blobs` table). A server older than beta.10
+  does not read the moved results, and would take such a record for a green run: to be able to downgrade, take a
+  backup first (`agenfk backup`) and restore it.
 
 ### Removing tests while changing behaviour
 
-- `test-count-not-lower`, and a red test renamed or removed under `red-set-passes-by-name`, still hold a coding
-  step, naming the tests - until the agent answers why they go (`--check-note <check>="..."`). The answer and the
-  names go to the reviewer and the PR. An agent refused a legitimate deletion had kept the tests' names and repointed
-  them at another case, hiding the change. A red test that still fails is never answered away; refactoring stays
-  strict.
+- `test-count-not-lower` still holds a coding step, naming the tests that went - until the agent answers why they go
+  (`--check-note test-count-not-lower="..."`). The answer and the names go to the reviewer and the PR. An agent
+  refused a legitimate deletion had kept the tests' names and repointed them at another case, hiding the change.
+- The card's own red tests (`red-set-passes-by-name`) are its specification: renaming or removing one is not
+  answered by the agent - it is put back, or a person overrides the check on the board. A red test that still fails
+  is never passed either way, and refactoring stays strict.
 
 ### Settings
 

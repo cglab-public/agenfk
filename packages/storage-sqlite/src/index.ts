@@ -66,6 +66,8 @@ export class SQLiteStorageProvider implements StorageProvider {
   private static readonly RECORD_LISTS = ['stepRecords', 'supersededRecords'] as const;
   /** What a record's field is stored as (6e0d2fd6: a capture's per-file map rides along with its results). */
   private static readonly HEAVY_FIELDS = [['tests', 'testsBlob'], ['fileShas', 'fileShasBlob']] as const;
+  /** What a read puts back (80920048): not the file map, which only a partial run reads - through readBlob. */
+  private static readonly HYDRATED_FIELDS = [['tests', 'testsBlob']] as const;
   private static heavy(v: unknown): boolean {
     return Array.isArray(v) ? v.length > 0 : !!v && typeof v === 'object' && Object.keys(v as object).length > 0;
   }
@@ -100,10 +102,10 @@ export class SQLiteStorageProvider implements StorageProvider {
     const it: any = item;
     for (const key of SQLiteStorageProvider.RECORD_LISTS) {
       const records = it?.[key];
-      if (!Array.isArray(records) || !records.some((r: any) => typeof r?.testsBlob === 'string' || typeof r?.fileShasBlob === 'string')) continue;
+      if (!Array.isArray(records) || !records.some((r: any) => typeof r?.testsBlob === 'string')) continue;
       it[key] = records.map((r: any) => {
         let out = r;
-        for (const [field, ref] of SQLiteStorageProvider.HEAVY_FIELDS) {
+        for (const [field, ref] of SQLiteStorageProvider.HYDRATED_FIELDS) {
           if (typeof out?.[ref] !== 'string') continue;
           const row = this.database.prepare('SELECT data FROM blobs WHERE hash = ?').get(out[ref]) as { data: string } | undefined;
           const { [ref]: _ref, ...rest } = out;
@@ -114,6 +116,11 @@ export class SQLiteStorageProvider implements StorageProvider {
       });
     }
     return item;
+  }
+
+  async readBlob(hash: string): Promise<unknown | null> {
+    const row = this.database.prepare('SELECT data FROM blobs WHERE hash = ?').get(hash) as { data: string } | undefined;
+    return row ? JSON.parse(row.data) : null;
   }
 
   /** Once per database: rows an older build wrote, with the results inline, get them moved out. */

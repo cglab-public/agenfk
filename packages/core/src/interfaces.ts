@@ -56,6 +56,12 @@ export interface StorageProvider extends AgEnFKPlugin {
   updateItem(id: string, updates: Partial<AgEnFKItem>): Promise<AgEnFKItem>;
   deleteItem(id: string): Promise<boolean>;
   getItem(id: string): Promise<AgEnFKItem | null>;
+  /**
+   * 80920048: one stored value by its hash - a capture record's file map
+   * (`fileShasBlob`), which reads leave as a reference. Null when it is not
+   * there. Optional: a provider without it gives no partial runs from a map.
+   */
+  readBlob?(hash: string): Promise<unknown | null>;
   listItems(query?: StorageQuery): Promise<AgEnFKItem[]>;
   listChildren(parentId: string): Promise<AgEnFKItem[]>;
 

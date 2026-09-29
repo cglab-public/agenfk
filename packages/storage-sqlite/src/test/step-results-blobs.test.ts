@@ -149,6 +149,7 @@ describe('an existing database', () => {
 });
 
 describe('a capture\'s file map (6e0d2fd6)', () => {
+  // 80920048: read back through readBlob - a read of the item keeps the reference.
   it('is kept out of the item row like the per-test results, and read back', async () => {
     const c = await storage.createItem(item());
     const fileShas = Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`src/f${i}.ts`, `100644:${String(i).padStart(40, '0')}`]));
@@ -156,7 +157,37 @@ describe('a capture\'s file map (6e0d2fd6)', () => {
     const row = JSON.parse(raw(c.id));
     expect(row.stepRecords[0].fileShas).toBeUndefined();
     expect(typeof row.stepRecords[0].fileShasBlob).toBe('string');
-    expect(((await storage.getItem(c.id)) as any).stepRecords[0].fileShas).toEqual(fileShas);
+    expect(await storage.readBlob(((await storage.getItem(c.id)) as any).stepRecords[0].fileShasBlob)).toEqual(fileShas);
+  });
+});
+
+/*
+ * 80920048 (review of 6caae168, finding 7): a map per capture, read back on
+ * every getItem, put the weight e248239d took off each card back on. Only a
+ * partial run reads one - its entry's - so a read keeps the reference and the
+ * caller resolves the one it needs.
+ */
+describe('a capture\'s file map is read on demand (80920048)', () => {
+  it('a read of the item keeps the reference, and readBlob resolves it', async () => {
+    const c = await storage.createItem(item());
+    const fileShas = Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`src/f${i}.ts`, `100644:${String(i).padStart(40, '0')}`]));
+    await storage.updateItem(c.id, { stepRecords: [{ ...capture(tests(10)), fileShas }] } as any);
+    const rec = ((await storage.getItem(c.id)) as any).stepRecords[0];
+    expect(rec.fileShas).toBeUndefined();
+    expect(typeof rec.fileShasBlob).toBe('string');
+    expect(rec.tests).toHaveLength(10);
+    expect(await (storage as any).readBlob(rec.fileShasBlob)).toEqual(fileShas);
+  });
+
+  it('an item written back as it was read keeps its map', async () => {
+    const c = await storage.createItem(item());
+    const fileShas = { 'src/a.ts': '100644:' + 'a'.repeat(40) };
+    await storage.updateItem(c.id, { stepRecords: [{ ...capture(tests(3)), fileShas }] } as any);
+    const read: any = await storage.getItem(c.id);
+    await storage.updateItem(c.id, { stepRecords: [...read.stepRecords, capture(tests(2), 'b')] } as any);
+    const again = ((await storage.getItem(c.id)) as any).stepRecords[0];
+    expect(typeof (storage as any).readBlob).toBe('function');
+    expect(await (storage as any).readBlob(again.fileShasBlob)).toEqual(fileShas);
   });
 });
 

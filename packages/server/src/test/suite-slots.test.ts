@@ -192,6 +192,20 @@ describe('suite runs across projects take a slot', () => {
     expect(Math.max(...starts)).toBeGreaterThanOrEqual(Math.min(...ends));
   });
 
+  // 80920048 (review of 6caae168, finding 9): the queue was drained only when a slot freed.
+  it('raising the limit while a run waits starts it at once, not when the running one ends', async () => {
+    await agent().put('/settings').send({ maxConcurrentSuiteRuns: 1 });
+    const t = await twoProjects('capture');
+    const pending = t.cards.map(id => agent().post(`/items/${id}/step-records/capture`).set(internal()).send({}).then(r => r));
+    const started = () => { try { return t.intervals().starts.length; } catch { return 0; } };
+    for (let i = 0; i < 200 && started() < 1; i++) await new Promise(r => setTimeout(r, 10));
+    expect(started()).toBe(1);
+    expect((await agent().put('/settings').send({ maxConcurrentSuiteRuns: 2 })).status).toBe(200);
+    for (const r of await Promise.all(pending)) expect(r.status, JSON.stringify(r.body)).toBe(200);
+    const { starts, ends } = t.intervals();
+    expect(Math.max(...starts)).toBeLessThan(Math.min(...ends));
+  });
+
   it('with room for both, they run at once', async () => {
     await agent().put('/settings').send({ maxConcurrentSuiteRuns: 2 });
     const t = await twoProjects('capture');
