@@ -3659,7 +3659,7 @@ const stateOfRecord = (r: any): string | null => (currentStates(r) && typeof r?.
  * record, or to a refusal.
  */
 type CaptureOutcome = { record: any } | { status: number; error: string; message: string };
-async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) => void; lazyOver?: any }): Promise<CaptureOutcome> {
+async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) => void; lazyOver?: any; onPhase?: (phase: VerifyPhase) => void }): Promise<CaptureOutcome> {
   const project: any = await storage.getProject(item.projectId);
   const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
   if (!root) {
@@ -3697,6 +3697,7 @@ async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) 
     const state = treeStateOf(root, project);
     const reused = await reusableCapture(item, project, root, cleanSha, state, suiteStateOf(root, setting));
     if (reused) {
+      opts?.onPhase?.({ state: 'running', kind: 'reused' });
       const fresh: any = await storage.getItem(item.id);
       if (!fresh || fresh.status !== item.status) return { status: 409, error: 'CARD_MOVED', message: `The card moved (${item.status} -> ${fresh?.status ?? 'deleted'}); nothing was recorded.` };
       await storage.updateItem(item.id, { stepRecords: [...(fresh.stepRecords ?? []), reused] } as any);
@@ -3975,12 +3976,20 @@ async function withReportLock<T>(key: string, fn: () => Promise<T>, onOutput?: (
 /** runCapture's answer when a lazy run cannot stand for the whole suite: the caller captures the ordinary way. */
 const LAZY_FALLBACK = Symbol('lazy-fallback');
 
-async function runCapture(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts: { onOutput?: (chunk: string) => void; lazy: LazyPlan }): Promise<CaptureOutcome | typeof LAZY_FALLBACK>;
-async function runCapture(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts?: { onOutput?: (chunk: string) => void }): Promise<CaptureOutcome>;
-async function runCapture(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts?: { onOutput?: (chunk: string) => void; lazy?: LazyPlan }): Promise<CaptureOutcome | typeof LAZY_FALLBACK> {
+type CaptureRunOpts = { onOutput?: (chunk: string) => void; onPhase?: (phase: VerifyPhase) => void };
+async function runCapture(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts: CaptureRunOpts & { lazy: LazyPlan }): Promise<CaptureOutcome | typeof LAZY_FALLBACK>;
+async function runCapture(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts?: CaptureRunOpts): Promise<CaptureOutcome>;
+async function runCapture(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts?: CaptureRunOpts & { lazy?: LazyPlan }): Promise<CaptureOutcome | typeof LAZY_FALLBACK> {
   const lockKey = `${root}\0${reportPathsOf(setting).join('\0')}`;
+  const lazy = opts?.lazy;
+  // cf6941e0: what the run is, once it has its slot.
+  const running: VerifyPhase = !lazy ? { state: 'running', kind: 'whole' }
+    : lazy.related ? { state: 'running', kind: 'affected', files: lazy.changed.length } : { state: 'running', kind: 'tests-only', files: lazy.ran.length };
   // f8d0a752: inside the report lock, so a card waiting on the lock holds no suite-run slot.
-  const record = await withReportLock(lockKey, () => suiteSlots.run(() => runAndRead(item, root, setting, command, cleanSha, opts, opts?.lazy), w => opts?.onOutput?.(waitingLine(w))), opts?.onOutput);
+  const record = await withReportLock(lockKey, () => suiteSlots.run(() => { opts?.onPhase?.(running); return runAndRead(item, root, setting, command, cleanSha, opts, lazy); }, w => {
+    opts?.onOutput?.(waitingLine(w));
+    opts?.onPhase?.({ state: 'queued', ahead: w.ahead });
+  }), opts?.onOutput);
   if (record === null) return LAZY_FALLBACK;
   // The card may have moved while the command ran: a record for a step it
   // no longer occupies (or was rolled back over) must not be written.
@@ -6009,6 +6018,15 @@ app.get("/items/:id", asyncHandler(async (req: any, res: any) => {
  * the board. No agent token: it is the project's own test output, which the
  * card's comments already carry a preview of. 404 when nothing runs.
  */
+/**
+ * cf6941e0 (CGLAB-430): every verify running now, across all projects, and
+ * every one waiting on a person - the board's header chip. No agent token, like
+ * active-run: card titles and each run's last line, no records or bodies.
+ */
+app.get("/verify-runs", asyncHandler(async (_req: any, res: any) => {
+  res.json(await verifyRunsList());
+}));
+
 app.get("/items/:id/active-run", asyncHandler(async (req: any, res: any) => {
   const active = activeRunOf(req.params.id);
   if (!active) return res.status(404).json({ error: 'NO_ACTIVE_RUN' });
@@ -7036,7 +7054,17 @@ export interface ValidateRun {
   step?: string;
   /** The last few KiB of what the run printed, for the board (9569b4d7); `output` is the bounded head followers stream. */
   tail?: string;
+  /** cf6941e0: the card's project and title, for the list of running verifies across projects. */
+  projectId?: string;
+  title?: string;
+  /** cf6941e0: what the run is doing now. */
+  phase?: VerifyPhase;
 }
+/** cf6941e0 — what a running verify is doing: its checks, waiting for a suite-run slot, or running a suite. */
+export type VerifyPhase =
+  | { state: 'checking' }
+  | { state: 'queued'; ahead: number }
+  | { state: 'running'; kind: 'whole' | 'affected' | 'tests-only' | 'reused'; files?: number };
 const validateRuns = new Map<string, ValidateRun>();
 /** 9569b4d7: how much of a run's latest output the board is shown. */
 const RUN_TAIL_BYTES = 8192;
@@ -7044,12 +7072,81 @@ const RUN_TAIL_BYTES = 8192;
 function appendRunOutput(run: ValidateRun, chunk: string, headCap = 256 * 1024): void {
   if (run.output.length < headCap) run.output += chunk.slice(0, headCap - run.output.length);
   run.tail = ((run.tail ?? '') + chunk).slice(-RUN_TAIL_BYTES);
+  notifyVerifyRuns();
 }
 /** 9569b4d7: a run has started in the background - the board shows it on the card. */
-function markRunStarted(run: ValidateRun, step: string): void {
+function markRunStarted(run: ValidateRun, step: string, item?: { projectId?: string; title?: string }): void {
   run.started = true;
   run.step = step;
+  run.projectId = item?.projectId;
+  run.title = item?.title;
+  run.phase ??= { state: 'checking' };
   io.emit('items_updated');
+  notifyVerifyRuns();
+}
+/** cf6941e0: what a run is doing now, for the list of running verifies. */
+function setRunPhase(run: ValidateRun | undefined, phase: VerifyPhase): void {
+  if (!run) return;
+  run.phase = phase;
+  notifyVerifyRuns();
+}
+
+/**
+ * cf6941e0 — verifies held only by a person (the step's approval, or a command
+ * waiting for its approval), by card. The CLI waits for the approval up to 9
+ * minutes and then gives up, so an entry is shown for 10 at most; a new verify
+ * of the card replaces it.
+ */
+const awaitingPerson = new Map<string, { step: string; since: Date; projectId?: string; title?: string }>();
+const AWAITING_PERSON_TTL_MS = 10 * 60 * 1000;
+
+/** The last line a run printed, colour codes stripped, for the list (cf6941e0). */
+function lastLineOf(text: string | undefined): string | undefined {
+  // eslint-disable-next-line no-control-regex
+  const lines = (text ?? '').replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').split(/\r?\n|\r/).map(l => l.trim()).filter(Boolean);
+  const last = lines[lines.length - 1];
+  return last === undefined ? undefined : last.slice(0, 200);
+}
+
+/**
+ * cf6941e0 — every verify running now, in any project, and every one held by a
+ * person: what the board's header lists. Deliberately small - no step records,
+ * no output bodies - since it is pushed on every change.
+ */
+async function verifyRunsList(): Promise<any[]> {
+  const names = new Map<string, string | undefined>();
+  const nameOf = async (projectId?: string) => {
+    if (!projectId) return undefined;
+    if (!names.has(projectId)) names.set(projectId, ((await storage.getProject(projectId).catch(() => null)) as any)?.name);
+    return names.get(projectId);
+  };
+  const out: any[] = [];
+  const running = new Set<string>();
+  for (const run of validateRuns.values()) {
+    if (run.status !== 'running' || !run.started) continue;
+    running.add(run.itemId);
+    const lastLine = lastLineOf(run.tail);
+    out.push({ runId: run.runId, itemId: run.itemId, title: run.title, projectId: run.projectId, projectName: await nameOf(run.projectId),
+      step: run.step ?? '', startedAt: new Date(run.startedAt).toISOString(), phase: run.phase ?? { state: 'checking' }, ...(lastLine ? { lastLine } : {}) });
+  }
+  const now = Date.now();
+  for (const [itemId, w] of awaitingPerson) {
+    if (now - w.since.getTime() > AWAITING_PERSON_TTL_MS) { awaitingPerson.delete(itemId); continue; }
+    if (running.has(itemId)) continue;
+    out.push({ itemId, title: w.title, projectId: w.projectId, projectName: await nameOf(w.projectId), step: w.step, startedAt: w.since.toISOString(), phase: { state: 'awaiting-person' } });
+  }
+  return out.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+}
+
+/** cf6941e0: push the list, coalescing a burst (output chunks, phase changes) into one event. */
+let verifyRunsPush: NodeJS.Timeout | null = null;
+function notifyVerifyRuns(): void {
+  if (verifyRunsPush) return;
+  verifyRunsPush = setTimeout(() => {
+    verifyRunsPush = null;
+    verifyRunsList().then(list => io.emit('verify_runs', list)).catch(() => { /* the next change pushes again */ });
+  }, 250);
+  if (typeof verifyRunsPush.unref === 'function') verifyRunsPush.unref();
 }
 /** The verify running on a card now, as item responses carry it; undefined when none runs. */
 function activeRunOf(itemId: string): { runId: string; step: string; startedAt: string } | undefined {
@@ -7547,7 +7644,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
       const fileShas = await storage.readBlob?.(lazyOver.fileShasBlob).catch(() => null);
       if (fileShas) lazyOver = { ...lazyOver, fileShas };
     }
-    const out = await captureStepRecord(item, { ...(run ? { onOutput: (chunk: string) => appendRunOutput(run, chunk) } : {}), lazyOver });
+    const out = await captureStepRecord(item, { ...(run ? { onOutput: (chunk: string) => appendRunOutput(run, chunk), onPhase: (phase: VerifyPhase) => setRunPhase(run, phase) } : {}), lazyOver });
     if ('error' in out) captureError = out.message; else capture = out.record;
     // a36047ea: a whole run that only code changes caused, in a project that could have run fewer.
     if (capture && !capture.lazy && !capture.reusedFrom && lazyOver && project?.testReport && project.projectRoot) {
@@ -7747,7 +7844,14 @@ function disabledLine(gate: StepGate): string {
   return `🔕 Switched off by your org's hub on this step (not run): ${gate.disabled.map(d => `${d.id} [${d.source}]`).join(', ')}`;
 }
 
+/** cf6941e0: a check that holds the card for a PERSON - the step's approval, or a command awaiting its approval. */
+const waitsForPerson = (r: any): boolean => r?.id === 'human-approval' || (String(r?.id ?? '').startsWith('command-check:') && r?.meta?.waiting?.kind === 'command-approval');
 async function refuseOnChecks(res: any, item: any, gate: StepGate) {
+  // cf6941e0: held by a person alone, the verify waits on them (the CLI waits for the approval): list it so.
+  const blocking = gate.results.filter((r: any) => r.blocking);
+  if (blocking.length && blocking.every(waitsForPerson)) awaitingPerson.set(item.id, { step: item.status, since: new Date(), projectId: item.projectId, title: item.title });
+  else awaitingPerson.delete(item.id);
+  notifyVerifyRuns();
   const ran = describeCapture(gate.capture);
   const off = disabledLine(gate);
   const text = `${ran ? `${ran}\n` : ''}${formatCheckResults(gate.results)}${off ? `\n${off}` : ''}`;
@@ -7785,6 +7889,7 @@ function runRecorder(run: ValidateRun) {
       // Keep the live full output when we have it; fall back to the preview.
       if (!run.output && payload?.output) run.output = payload.output;
       run.finishedAt = new Date();
+      notifyVerifyRuns();
       return this;
     },
   };
@@ -7922,7 +8027,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         command: null,
         message: `⏳ Step checks and validation running in background (run ${run.runId.slice(0, 8)}…). Follow with GET /items/validate-runs/${run.runId}.`,
       });
-      markRunStarted(run, item.status);
+      markRunStarted(run, item.status, item);
       const recorder = await withReviewBrief(runRecorder(run), itemId, { done: () => !!run.finishedAt });
       void (async () => {
         const fresh: any = await storage.getItem(itemId);
@@ -7939,6 +8044,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         .finally(() => {
           if (activeValidateRunByItem.get(itemId) === run.runId) activeValidateRunByItem.delete(itemId);
           io.emit('items_updated');
+          notifyVerifyRuns();
         });
       return;
     }
@@ -8335,7 +8441,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const line = waitingLine(w);
     capture.note(line);
     if (run) appendRunOutput(run, line);
+    setRunPhase(run, { state: 'queued', ahead: w.ahead });
   });
+  setRunPhase(run, { state: 'running', kind: 'whole' });
 
   // The commit and the working-tree state the command actually ran against,
   // captured BEFORE the spawn. A long run during which another agent commits
@@ -8610,7 +8718,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       command: resolvedCommand,
       message: `⏳ Validation running in background (run ${runId.slice(0, 8)}…). Follow with GET /items/validate-runs/${runId}.`,
     });
-    markRunStarted(run, item.status);
+    markRunStarted(run, item.status, item);
     const recorder = await withReviewBrief(runRecorder(run), itemId, { done: () => !!run.finishedAt });
     void runOrJoin(commandNote ? withNote(recorder, commandNote) : recorder, run, recorder)
       .catch((err: any) => {
@@ -8621,6 +8729,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       .finally(() => {
         if (activeValidateRunByItem.get(itemId) === runId) activeValidateRunByItem.delete(itemId);
         io.emit('items_updated');
+        notifyVerifyRuns();
       });
     return;
   }
@@ -8990,6 +9099,8 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
   if ('error' in parsedAnswers) return res.status(400).json({ error: parsedAnswers.error });
   const answers = parsedAnswers.answers;
   const asyncMode = req.body.async === true || req.body.async === 'true';
+  // cf6941e0: a new verify of the card ends its wait on a person; a refusal held by one sets it again.
+  if (awaitingPerson.delete(req.params.id)) notifyVerifyRuns();
   if (asyncMode) {
     // Reserve the run in the SAME tick as the guard — a check-then-set gap
     // spanning the handler's awaits would let a double-submit spawn twice.
@@ -10594,7 +10705,7 @@ export function resolveUiDir(explicit?: string | null): string | null {
 export const API_PATH_PREFIXES = [
   '/api', '/version', '/db', '/backup', '/projects', '/flows', '/prs',
   '/token-events', '/registry', '/items', '/internal', '/jira', '/github',
-  '/releases', '/agent-runs', '/settings', '/terminal-sessions', '/socket.io', '/webauthn', '/webauthn',
+  '/releases', '/agent-runs', '/settings', '/terminal-sessions', '/socket.io', '/webauthn', '/webauthn', '/verify-runs',
 ];
 
 /**
