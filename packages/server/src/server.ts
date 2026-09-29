@@ -3839,7 +3839,8 @@ function changedSince(root: string, head: string, reportRel: TreeExclude): { ins
   try {
     const run = (args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 64 * 1024 * 1024 });
     const prefix = run(['rev-parse', '--show-prefix']).trim();
-    const diff = run(['diff', '--no-renames', '--name-only', '-z', head]).split('\0');
+    // --no-relative (c03ae9f7): a user's diff.relative would list only what is under `root`, relative to it.
+    const diff = run(['diff', '--no-relative', '--no-renames', '--name-only', '-z', head]).split('\0');
     const untracked = run(['ls-files', '-z', '--others', '--exclude-standard', '--full-name', '--', ':/']).split('\0');
     let outside = false;
     const inside = new Set<string>();
@@ -3870,22 +3871,29 @@ function outsideState(root: string, head: string): string | null {
   try {
     const run = (args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 64 * 1024 * 1024 });
     const prefix = run(['rev-parse', '--show-prefix']).trim();
+    // c03ae9f7: a project at the repository's top has nothing beside it.
+    if (!prefix) return '';
     const top = run(['rev-parse', '--show-toplevel']).trim();
     const names = new Set([
-      ...run(['diff', '--no-renames', '--name-only', '-z', head]).split('\0'),
+      // --no-relative (c03ae9f7): a user's diff.relative would list only what is under `root`.
+      ...run(['diff', '--no-relative', '--no-renames', '--name-only', '-z', head]).split('\0'),
       ...run(['ls-files', '-z', '--others', '--exclude-standard', '--full-name', '--', ':/']).split('\0'),
-    ].filter(f => f && !f.startsWith(prefix)));
+    ].filter(f => f && !f.startsWith(prefix)).map(f => (f.endsWith('/') ? f.slice(0, -1) : f)));
     if (!names.size) return '';
     if (names.size > OUTSIDE_MAX_FILES) return null;
-    const entries: [string, string][] = [...names].map(f => {
+    const entries: [string, string][] = [];
+    for (const f of names) {
       const abs = path.join(top, f);
-      try {
-        const st = fs.lstatSync(abs);
-        if (st.isSymbolicLink()) return [f, `120000:${blobSha(Buffer.from(fs.readlinkSync(abs)))}`];
-        if (st.isFile()) return [f, `${st.mode & 0o111 ? '100755' : '100644'}:${blobSha(fs.readFileSync(abs))}`];
-        return [f, 'other'];
-      } catch { return [f, 'absent']; }
-    });
+      let st: fs.Stats;
+      try { st = fs.lstatSync(abs); } catch { entries.push([f, 'absent']); continue; }
+      if (st.isSymbolicLink()) entries.push([f, `120000:${blobSha(Buffer.from(fs.readlinkSync(abs)))}`]);
+      else if (st.isFile()) entries.push([f, `${st.mode & 0o111 ? '100755' : '100644'}:${blobSha(fs.readFileSync(abs))}`]);
+      else if (st.isDirectory() && fs.existsSync(path.join(abs, '.git'))) {
+        // c03ae9f7: a submodule or nested repository - its commit and its own work, as treeFiles reads one inside.
+        const sub = (args: string[]) => execFileSync('git', ['-C', abs, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 64 * 1024 * 1024 });
+        entries.push([f, `160000:${sub(['rev-parse', 'HEAD']).trim()}:${crypto.createHash('sha1').update(sub(['status', '--porcelain', '-z'])).digest('hex')}`]);
+      } else return null;   // anything else cannot be told apart from itself changed: no partial run
+    }
     return hashEntries(entries);
   } catch {
     return null;

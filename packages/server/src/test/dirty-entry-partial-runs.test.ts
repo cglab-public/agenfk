@@ -197,5 +197,40 @@ describe('6e0d2fd6: partial runs on a dirty tree, after a partial run', () => {
     expect((await validate(t.id)).status).toBe(200);
     expect(t.runs().at(-1)).toBe('ALL');
   });
+
+  // c03ae9f7 (third review of 6caae168): a repository nested beside the project is a directory - its commit is content.
+  it('in a project that is a subdirectory, a repository nested beside it that moved on since entry: the whole suite runs', async () => {
+    const t = await setup(true, [
+      s('START', 0, { isAnchor: true }), s('PLAN', 1, { checks: [{ id: 'suite-green' }] }), s('BUILD', 2, { checks: [{ id: 'suite-green' }] }), s('END', 3, { isAnchor: true }),
+    ]);
+    expect((await validate(t.id)).status).toBe(200);
+    const nested = path.join(t.top, 'vendor');
+    fs.mkdirSync(nested);
+    fs.writeFileSync(path.join(nested, 'x.js'), 'module.exports = 1;\n');
+    git(nested, 'git init -q -b main && git config user.email t@t && git config user.name t && git add . && git commit -qm one');
+    t.edit('lib.js', 'module.exports = 10;\n');
+    expect((await validate(t.id)).status).toBe(200);                                  // PLAN -> BUILD: entry with vendor/ at one commit
+    fs.writeFileSync(path.join(nested, 'x.js'), 'module.exports = 2;\n');
+    git(nested, 'git commit -qam two');                                              // ... now at another
+    t.edit('lib.js', 'module.exports = 11;\n');
+    expect((await validate(t.id)).status).toBe(200);
+    expect(t.runs().at(-1)).toBe('ALL');
+  });
+
+  // c03ae9f7: diff.relative=true in a user's git config narrows a bare `git diff` to the working directory.
+  it('in a project that is a subdirectory, with diff.relative set, an outside edit since entry still means the whole suite', async () => {
+    const t = await setup(true, [
+      s('START', 0, { isAnchor: true }), s('PLAN', 1, { checks: [{ id: 'suite-green' }] }), s('BUILD', 2, { checks: [{ id: 'suite-green' }] }), s('END', 3, { isAnchor: true }),
+    ]);
+    git(t.top, 'git config diff.relative true');
+    expect((await validate(t.id)).status).toBe(200);
+    fs.writeFileSync(path.join(t.top, 'shared.js'), 'module.exports = 99;\n');
+    t.edit('lib.js', 'module.exports = 10;\n');
+    expect((await validate(t.id)).status).toBe(200);
+    fs.writeFileSync(path.join(t.top, 'shared.js'), 'module.exports = 100;\n');
+    t.edit('lib.js', 'module.exports = 11;\n');
+    expect((await validate(t.id)).status).toBe(200);
+    expect(t.runs().at(-1)).toBe('ALL');
+  });
 });
 
