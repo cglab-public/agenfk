@@ -10,6 +10,7 @@ import { api } from '../api';
 vi.mock('../api', () => ({
   api: {
     getLatestRelease: vi.fn(() => Promise.resolve(null)),
+    getCurrentRelease: vi.fn(() => Promise.resolve(null)),
     getReadme: vi.fn(() => Promise.resolve(null)),
     listItems: vi.fn(() => Promise.resolve([])),
     listProjects: vi.fn(() => Promise.resolve([])),
@@ -64,6 +65,10 @@ describe('App', () => {
 import { WhatsNewModal } from '../components/WhatsNewModal';
 
 describe('WhatsNewModal', () => {
+  // Each test sets the source it reads; nothing inherits the previous one's.
+  beforeEach(() => {
+    (api.getCurrentRelease as any).mockReset().mockReturnValue(new Promise(() => {}));
+  });
   it('should not render when isOpen is false', () => {
     const qc = makeQueryClient();
     const { container } = render(
@@ -74,7 +79,8 @@ describe('WhatsNewModal', () => {
   });
 
   it('should render the modal when isOpen is true (loading state)', () => {
-    (api.getLatestRelease as any).mockReturnValue(new Promise(() => {})); // never resolves
+    // 4aac7076: the notes are the installed release's (getCurrentRelease); getLatestRelease feeds only the footer.
+    (api.getCurrentRelease as any).mockReturnValue(new Promise(() => {})); // never resolves
     const qc = makeQueryClient();
     render(<WhatsNewModal isOpen={true} onClose={() => {}} />, {
       wrapper: wrapper(qc),
@@ -84,7 +90,8 @@ describe('WhatsNewModal', () => {
   });
 
   it('should render release data when loaded', async () => {
-    (api.getLatestRelease as any).mockResolvedValue({
+    (api.getCurrentRelease as any).mockResolvedValue({
+      published: true,
       version: '2.0.0',
       name: 'Big Release',
       body: 'Lots of changes',
@@ -150,7 +157,7 @@ describe('WhatsNewModal', () => {
   });
 
   it('should show "Unable to load release notes" when no data', async () => {
-    (api.getLatestRelease as any).mockResolvedValue(null);
+    (api.getCurrentRelease as any).mockResolvedValue(null);
     const qc = makeQueryClient();
     render(<WhatsNewModal isOpen={true} onClose={() => {}} />, {
       wrapper: wrapper(qc),

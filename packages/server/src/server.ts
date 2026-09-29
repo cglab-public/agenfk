@@ -10476,8 +10476,13 @@ app.post("/projects/:id/tasks-from-pr", limitExpensive, asyncHandler(async (req:
 // ── Release Check ─────────────────────────────────────────────────────────────
 
 let releaseCache: { data: any; fetchedAt: number } | null = null;
+// The installed version's own release (What's New, 4aac7076), keyed by that version.
+let currentReleaseCache: { version: string; data: any; fetchedAt: number; ttl: number } | null = null;
+// An unpublished version, or a failed read, is kept only briefly: the release may appear any minute, and a
+// failure must not send every open of What's New back to GitHub (and `gh auth token`) while it is rate-limited.
+const CURRENT_RELEASE_SHORT_TTL = 60 * 1000;
 const RELEASE_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
-export const clearReleaseCache = (): void => { releaseCache = null; };
+export const clearReleaseCache = (): void => { releaseCache = null; currentReleaseCache = null; };
 
 const getCurrentVersion = (): string => {
   try {
@@ -10596,6 +10601,46 @@ app.get("/releases/update/:jobId", (req: any, res: any) => {
   if (!job) return res.status(404).json({ error: 'Job not found' });
   res.json({ status: job.status, output: job.output.join(''), exitCode: job.exitCode });
 });
+
+/*
+ * 4aac7076: the notes of the release that is INSTALLED - what What's New shows.
+ * /releases/latest is GitHub's latest stable (the CLI's tier gate and the
+ * update reminder rely on it), so on a beta What's New showed an older
+ * stable's notes. A version with no published release (a local build) answers
+ * published:false with the releases page, never another version's notes.
+ */
+app.get("/releases/current", limitBoardRoutes, asyncHandler(async (_req: any, res: any) => {
+  const currentVersion = getCurrentVersion();
+  if (currentReleaseCache && currentReleaseCache.version === currentVersion
+      && (Date.now() - currentReleaseCache.fetchedAt) < currentReleaseCache.ttl) {
+    const { data } = currentReleaseCache;
+    return data.error ? res.status(502).json(data) : res.json({ ...data, currentVersion });
+  }
+
+  const repo = getGitHubRepo();
+  const token = getGitHubToken();
+  const headers: Record<string, string> = { Accept: 'application/vnd.github+json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const tag = `v${currentVersion.replace(/^v/, '')}`;
+
+  let data: any;
+  try {
+    data = (await axios.get(`https://api.github.com/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`, { headers, timeout: 10_000 })).data;
+  } catch (e: any) {
+    if (e?.response?.status !== 404) {
+      const failure = { error: `Could not read the release notes for ${tag}: ${e?.message ?? e}`, url: `https://github.com/${repo}/releases` };
+      currentReleaseCache = { version: currentVersion, data: failure, fetchedAt: Date.now(), ttl: CURRENT_RELEASE_SHORT_TTL };
+      return res.status(502).json(failure);
+    }
+    data = null;
+  }
+
+  const releaseData = data
+    ? { version: currentVersion, published: true, tagName: data.tag_name ?? tag, name: data.name || tag, body: data.body || '', publishedAt: data.published_at ?? null, url: data.html_url ?? `https://github.com/${repo}/releases/tag/${tag}` }
+    : { version: currentVersion, published: false, tagName: tag, name: '', body: '', publishedAt: null, url: `https://github.com/${repo}/releases` };
+  currentReleaseCache = { version: currentVersion, data: releaseData, fetchedAt: Date.now(), ttl: data ? RELEASE_CACHE_TTL : CURRENT_RELEASE_SHORT_TTL };
+  res.json({ ...releaseData, currentVersion });
+}));
 
 app.get("/releases/latest", asyncHandler(async (_req: any, res: any) => {
   const currentVersion = getCurrentVersion();

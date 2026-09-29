@@ -82,6 +82,7 @@ vi.mock('../api', () => ({
     trashArchivedItems: vi.fn(() => Promise.resolve({})),
     getJiraStatus: vi.fn(() => Promise.resolve({ configured: false, connected: false })),
     getLatestRelease: vi.fn(() => Promise.resolve(null)),
+    getCurrentRelease: vi.fn(() => Promise.resolve(null)),
     getVersion: vi.fn(() => Promise.resolve({ version: '1.0.0' })),
     getProjectFlow: vi.fn(() => Promise.resolve(DEFAULT_FLOW_MOCK)),
     getGitHubStatus: vi.fn(() => Promise.resolve({ configured: false })),

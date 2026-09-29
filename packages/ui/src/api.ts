@@ -518,6 +518,11 @@ export const api = {
     const { data } = await axios.get(`${API_URL}/releases/latest`);
     return data;
   },
+  /** The INSTALLED version's own release notes - what What's New shows (4aac7076). */
+  getCurrentRelease: async () => {
+    const { data } = await axios.get(`${API_URL}/releases/current`);
+    return data;
+  },
   /**
    * The telemetry opt-in, read from the same place `agenfk config set
    * telemetry` writes it.
