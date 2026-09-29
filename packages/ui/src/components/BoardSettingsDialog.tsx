@@ -28,7 +28,8 @@ export function BoardSettingsDialog({ onClose }: { onClose: () => void }): React
       onClick={onClose}
     >
       <div
-        className="relative flex max-h-full w-full max-w-4xl flex-col overflow-auto rounded-2xl border border-border-soft bg-canvas shadow-xl"
+        // 35e1fe96: the tallest section's height, capped at the viewport - the panel's body scrolls, not the dialog.
+        className="relative flex max-h-full w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-border-soft bg-canvas shadow-xl"
         onClick={e => e.stopPropagation()}
       >
         <button

@@ -136,4 +136,40 @@ describe('the browser board reaches Settings (7b640e64)', () => {
     fireEvent.keyDown(dialog, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog', { name: /settings/i })).toBeNull());
   });
+
+  /*
+   * User 2026-09-29: the dialog changed height with every section. Every
+   * section now stays in one cell, so the body is always the tallest one's
+   * height (capped at the viewport, scrolling inside); only the current one
+   * can be read or reached. jsdom has no layout: the height itself is checked
+   * in a browser, this pins the structure that gives it.
+   */
+  it('keeps every section in place while one is shown, so its height never changes', async () => {
+    render(<KanbanBoard />, { wrapper });
+    fireEvent.click(await screen.findByTestId('board-settings-btn'));
+    const dialog = await screen.findByRole('dialog', { name: /settings/i });
+    const rail = within(dialog).getByRole('navigation', { name: /settings sections/i });
+    const panes = () => Array.from(dialog.querySelectorAll<HTMLElement>('[data-testid="settings-pane"]'));
+    const before = panes();
+    expect(before).toHaveLength(within(rail).getAllByRole('button').length);
+    const shown = () => panes().filter(p => p.getAttribute('aria-hidden') !== 'true');
+    expect(shown()).toHaveLength(1);
+    fireEvent.click(within(rail).getByRole('button', { name: /Verification/ }));
+    // The same elements, not re-mounted ones: switching changes which one shows, nothing else.
+    expect(panes()).toEqual(before);
+    expect(shown()).toHaveLength(1);
+    expect(shown()[0]).toHaveTextContent(/Suite runs at once/);
+  });
+
+  it('the sections not shown cannot be reached: hidden from assistive tech and inert', async () => {
+    render(<KanbanBoard />, { wrapper });
+    fireEvent.click(await screen.findByTestId('board-settings-btn'));
+    const dialog = await screen.findByRole('dialog', { name: /settings/i });
+    const hidden = Array.from(dialog.querySelectorAll<HTMLElement>('[data-testid="settings-pane"][aria-hidden="true"]'));
+    expect(hidden.length).toBeGreaterThan(0);
+    for (const p of hidden) expect(p.hasAttribute('inert')).toBe(true);
+    expect(within(dialog).queryByText(/Suite runs at once/)).not.toBeNull();   // mounted, for its height
+    expect(within(dialog).queryByRole('combobox', { name: /suite runs at once/i })).toBeNull();   // but not reachable
+  });
 });
+

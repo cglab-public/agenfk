@@ -880,14 +880,34 @@ export function SettingsPanel(): React.ReactElement {
             <Alert>{soundRefused ?? 'Could not change the sound.'}</Alert>
           )}
 
-          <section data-testid="settings-section" className="mt-8">
-            <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-ink-tertiary">
-              {shown.label === 'Account' ? 'Connected account' : 'Preferences'}
-            </h2>
-            <div className="mt-2 rounded-xl border border-border-soft bg-nav-surface px-5">
-              {shown.rows}
-            </div>
-          </section>
+          {/* 35e1fe96 - every section in one grid cell, so the pane is always the
+              tallest one's height and the dialog no longer jumps between tabs
+              (capped at the viewport, it scrolls here instead). The ones not
+              shown keep their space but are invisible, hidden from assistive
+              tech and inert: nothing in them can be read, focused or clicked. */}
+          <div className="mt-8 grid">
+            {sections.map(section => {
+              const isShown = section.id === shown.id;
+              return (
+                <div
+                  key={section.id}
+                  data-testid="settings-pane"
+                  className={clsx('[grid-area:1/1]', !isShown && 'invisible')}
+                  aria-hidden={isShown ? undefined : true}
+                  inert={!isShown}
+                >
+                  <section data-testid="settings-section">
+                    <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-ink-tertiary">
+                      {section.label === 'Account' ? 'Connected account' : 'Preferences'}
+                    </h2>
+                    <div className="mt-2 rounded-xl border border-border-soft bg-nav-surface px-5">
+                      {section.rows}
+                    </div>
+                  </section>
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
     </div>
