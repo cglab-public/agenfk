@@ -180,6 +180,93 @@ describe('GET /items/:id/leave-plan', () => {
     expect(p.narrowing).toContain('affected-tests');
   });
 
+  it('the final step with a test report: a capture AND then the verify command run - the plan says both, and verify does both', async () => {
+    const dir = makeRepo();
+    const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('WORK', 1), s('TEST', 2, { role: 'testing' }), s('END', 3, { isAnchor: true, role: 'closing' })]), withReport(dir));
+    const id = await card(pid, 'TEST');
+    const p = await plan(id);
+    expect(p).toMatchObject({ runs: 'suite', thenCommand: JUNIT });
+    expect(p.advice).toMatch(/then the project's verify command/i);
+    const res = await validate(id);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(await capturesOf(id, 'TEST')).toHaveLength(1);
+    expect(((await agent().get(`/items/${id}`)).body.tests ?? []).some((t: any) => t.command === JUNIT && t.status === 'PASSED')).toBe(true);
+  });
+
+  it('a final step with no verify command: says verify will refuse, not that the tests are the agent\'s - and verify refuses', async () => {
+    const dir = makeRepo();
+    const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('WORK', 1), s('CHECK', 2, { role: 'review' }), s('END', 3, { isAnchor: true, role: 'closing' })]), { projectRoot: dir });
+    const id = await card(pid, 'CHECK');
+    const p = await plan(id);
+    expect(p).toMatchObject({ runs: 'nothing', refuses: 'NO_VERIFY_COMMAND' });
+    expect(p.advice).toMatch(/refuse/i);
+    expect(p.advice).not.toMatch(/runs no tests/i);
+    expect((await validate(id)).status).toBe(400);
+  });
+
+  it("verifyAt 'parent' with a capture check of its own: the capture still runs, and the plan says so - as verify does", async () => {
+    const dir = makeRepo();
+    const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('WORK', 1), s('CHECK', 2, { role: 'review', checks: [{ id: 'no-broken-test-files' }] }), s('END', 3, { isAnchor: true, role: 'closing' })], { verifyAt: 'parent' }), withReport(dir));
+    const parent = await card(pid, 'WORK');
+    const id = await card(pid, 'CHECK', { parentId: parent });
+    const p = await plan(id);
+    expect(p).toMatchObject({ runs: 'suite' });
+    expect(p.deferredTo?.id).toBe(parent);
+    expect(p.checks).toContain('no-broken-test-files');
+    expect(p.advice).not.toMatch(/runs no tests/i);
+    await validate(id);
+    expect(await capturesOf(id, 'CHECK')).toHaveLength(1);
+  });
+
+  it('a card with no tree to run in: says verify cannot run the suite', async () => {
+    const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('MAKE', 1, { role: 'coding' }), s('CHECK', 2, { role: 'review' }), s('END', 3, { isAnchor: true, role: 'closing' })]), { verifyCommand: 'exit 0' });
+    const id = await card(pid, 'MAKE');
+    const p = await plan(id);
+    expect(p.refuses).toBe('NO_TREE');
+    expect(p.advice).toMatch(/no tree/i);
+  });
+
+  it('a mid-flow anchor step: verify skips its checks, so the plan runs nothing', async () => {
+    const dir = makeRepo();
+    const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('MAKE', 1, { role: 'coding' }), s('PARKED', 2, { isAnchor: true }), s('FIX', 3, { role: 'test-authoring' }), s('END', 4, { isAnchor: true, role: 'closing' })]), withReport(dir));
+    const id = await card(pid, 'PARKED');
+    expect((await plan(id)).runs).toBe('nothing');
+  });
+
+  it('held, with a capture check of its own: the advice names the capture and the hold', async () => {
+    const dir = makeRepo();
+    const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('PLAN', 1, { role: 'planning', checks: [{ id: 'suite-green' }] }), s('TESTS', 2, { role: 'test-authoring' }), s('MAKE', 3, { role: 'coding' }), s('END', 4, { isAnchor: true, role: 'closing' })]), { projectRoot: dir, verifyCommand: 'exit 0' });
+    const id = await card(pid, 'PLAN');
+    const p = await plan(id);
+    expect(p).toMatchObject({ runs: 'suite' });
+    expect(p.held).toMatch(/TESTS/);
+    expect(p.advice).toMatch(/suite/i);
+    expect(p.advice).toMatch(/hold/i);
+  });
+
+  it('no tree, but only the verify command runs (no check reads a capture): not a refusal', async () => {
+    const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('WORK', 1), s('CHECK', 2, { role: 'review' }), s('END', 3, { isAnchor: true, role: 'closing' })]), { verifyCommand: 'exit 0' });
+    const id = await card(pid, 'CHECK');
+    const p = await plan(id);
+    expect(p.runs).toBe('verify-command');
+    expect(p.refuses).toBeUndefined();
+  });
+
+  it('no tree, and the next step\'s blocking checks need its entry baseline: a refusal - as verify refuses', async () => {
+    const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('PLAN', 1, { role: 'planning' }), s('TESTS', 2, { role: 'test-authoring' }), s('MAKE', 3, { role: 'coding' }), s('END', 4, { isAnchor: true, role: 'closing' })]), { verifyCommand: JUNIT, testReport: { format: 'junit-xml', path: 'report.xml' } });
+    const id = await card(pid, 'PLAN');
+    const p = await plan(id);
+    expect(p.refuses).toBe('NO_TREE');
+    expect((await validate(id)).status).toBe(422);
+  });
+
+  it('a mid-flow anchor right before the end: its checks are skipped, but the verify command still runs', async () => {
+    const dir = makeRepo();
+    const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('MAKE', 1, { role: 'coding' }), s('PARKED', 2, { isAnchor: true }), s('DONE', 3, { isAnchor: true, role: 'closing' })]), { projectRoot: dir, verifyCommand: 'exit 0' });
+    const id = await card(pid, 'PARKED');
+    expect(await plan(id)).toMatchObject({ runs: 'verify-command', command: 'exit 0' });
+  });
+
   it('404 for an unknown card', async () => {
     expect((await agent().get('/items/does-not-exist/leave-plan')).status).toBe(404);
   });

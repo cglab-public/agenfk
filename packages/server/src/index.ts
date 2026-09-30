@@ -555,7 +555,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               items: { type: "object", properties: { id: { type: "string" }, note: { type: "string" } }, required: ["id", "note"] },
             },
           },
-          required: ["itemId", "evidence"],
+          // evidence is checked in the handler: required to advance, not for a dry run (plan).
+          required: ["itemId"],
         },
       },
       {
@@ -783,7 +784,8 @@ async function callToolHandler(request: any): Promise<any> {
       }
       case "validate_progress": {
         const { itemId, evidence, command, agentChecks, checkAnswers, plan } = z.object({
-          itemId: z.string(), evidence: z.string(), command: z.string().optional(), plan: z.boolean().optional(),
+          // evidence is required to advance; a dry run (plan) needs none, as the CLI's --plan.
+          itemId: z.string(), evidence: z.string().optional(), command: z.string().optional(), plan: z.boolean().optional(),
           agentChecks: z.array(z.object({ name: z.string(), outcome: z.enum(['pass', 'fail']), note: z.string().optional() })).optional(),
           checkAnswers: z.array(z.object({ id: z.string(), note: z.string() })).optional(),
         }).parse(request.params.arguments);
@@ -796,6 +798,7 @@ async function callToolHandler(request: any): Promise<any> {
             return { isError: true, content: [{ type: "text", text: error.response?.data?.error || error.message }] };
           }
         }
+        if (evidence === undefined) return { isError: true, content: [{ type: "text", text: "evidence is required: describe how you satisfied the current step's exit criteria (or pass plan: true for a dry run)." }] };
         // The author, as the harness that launched this MCP server names it (CGLAB-381).
         const actor = actorFromEnv(process.env);
         const result = await validateViaApi(itemId, { evidence, command, cwd: process.cwd(), ...(actor ? { actor } : {}), ...(agentChecks ? { agentChecks } : {}), ...(checkAnswers ? { checkAnswers } : {}) });

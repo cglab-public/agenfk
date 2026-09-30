@@ -7705,9 +7705,9 @@ async function entryCaptureOf(item: any, sorted: any[], index: number): Promise<
 }
 
 /** A person's override of the entry-baseline hold on this step, as the gate honours it (passkey on a passkey step; the same hold). */
-function entryHoldOverride(item: any, flow: { steps: any[] }, detail: string): any | undefined {
+function entryHoldOverride(item: any, flow: { steps: any[] }, detail: string, status: string): any | undefined {
   return [...((item as any)?.stepRecords ?? [])].reverse().find((r: any) =>
-    r?.step === item.status && r.kind === 'override' && r.check === ENTRY_BASELINE && (!stepWantsPasskey(flow as Flow, item.status) || r.authority === 'passkey')
+    r?.step === status && r.kind === 'override' && r.check === ENTRY_BASELINE && (!stepWantsPasskey(flow as Flow, status) || r.authority === 'passkey')
     && (r.detail === undefined || r.detail === detail));
 }
 
@@ -7736,14 +7736,18 @@ export interface LeavePlan {
   checks: string[];
   /** The next step whose entry baseline this capture records, if any. */
   entryBaseline: string | null;
-  /** The command that runs (the project's verify command). */
+  /** The command that runs (the project's verify command, or the test report's). */
   command?: string;
-  /** The parent the card's suite is deferred to (verifyAt 'parent'): nothing runs on this card. */
+  /** On the final move with a capture: the verify command that runs AFTER it and gates the close. */
+  thenCommand?: string;
+  /** The parent the card's suite is deferred to (verifyAt 'parent'). */
   deferredTo?: { id: string; title: string };
   /** The step waits for a person's approval first; the suite runs on the verify after it. */
   waitsOnPerson: boolean;
   /** Why the card will be held instead of advancing, when it will be. */
   held?: string;
+  /** Why verify will refuse before running anything: no verify command on the final step, or no tree to run in. */
+  refuses?: 'NO_VERIFY_COMMAND' | 'NO_TREE';
   /** How a run may be smaller than the whole suite: 'affected-tests' (a related-tests command), 'reuse' (an unchanged tree's green). */
   narrowing: string[];
   /** One line for the agent. */
@@ -7754,48 +7758,73 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown 
   const sorted = sortedFlowSteps(flow as any);
   const index = sorted.findIndex(st => st.name === item.status);
   const next = sorted[index + 1];
+  const step = item.status as string;
+  const base = { step, next: next?.name ?? null, checks: [] as string[], entryBaseline: null, waitsOnPerson: false, narrowing: [] as string[] };
+  // The gate skips a mid-flow anchor's checks (handleValidateProgress): no capture leaving one - the final gate still applies.
+  const midAnchor = !!(sorted[index] as any)?.isAnchor && index !== 0;
   const final = !next || next.name === Status.DONE || isBoundaryStep(next);
   const toParent = await parentToDeferTo(item, flow);
   const deferToCommand = deferredToCommand(flow, item.status, project, toParent);
-  const cap = captureOnLeave(flow, item.status, project, deferToCommand, { holdOverridden: !!entryHoldOverride(item, flow, entryHoldDetailOf(next)) });
-  const waiting = await waitsOnPerson(item, flow, project);
-  const command: string | undefined = project?.verifyCommand || undefined;
-  const runs: LeavePlan['runs'] = cap.runs ? 'suite' : final && !toParent && command ? 'verify-command' : 'nothing';
+  const judged = captureOnLeave(flow, item.status, project, deferToCommand, { holdOverridden: !!entryHoldOverride(item, flow, entryHoldDetailOf(next), item.status) });
+  const cap = midAnchor ? { ...judged, runs: false, checks: [] as string[], entryBaseline: null, entryHeld: false } : judged;
+  // A mid-flow anchor skips the whole gate block - the person-first wait included.
+  const waiting = midAnchor ? false : await waitsOnPerson(item, flow, project);
+  const verifyCommand: string | undefined = project?.verifyCommand || undefined;
+  const captureCommand: string | undefined = project?.testReport?.command || verifyCommand;
+  // On the move a verify command gates (the final step, a boundary), it runs unless the suite is deferred to the parent.
+  const gateCommand = final && !toParent ? verifyCommand : undefined;
+  const runs: LeavePlan['runs'] = cap.runs ? 'suite' : gateCommand ? 'verify-command' : 'nothing';
+  const thenCommand = cap.runs && gateCommand ? gateCommand : undefined;
+  const root = item.id ? resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root : project?.projectRoot ?? null;
+  // NO_TREE refuses when something needs the capture: a check of THIS step, or the next step's BLOCKING
+  // checks reading its entry baseline (the gate's entry-baseline hold). An entry only non-blocking checks
+  // read lets the card move without one, and a verify command alone runs wherever it is spawned.
+  const refuses: LeavePlan['refuses'] = final && !toParent && !verifyCommand ? 'NO_VERIFY_COMMAND'
+    : !root && (cap.checks.length > 0 || (!!cap.entryBaseline && cap.nextNeedsPerTestEntry)) ? 'NO_TREE' : undefined;
   const role = (sorted[index] as any)?.role;
   const narrowing = runs === 'nothing' ? [] : [
     ...(runs === 'suite' && project?.testReport?.relatedCommand && !['testing', 'refactoring'].includes(role) ? ['affected-tests'] : []),
     'reuse',
   ];
   const held = cap.entryHeld ? `${next?.name} judges its tests against per-test results recorded as the card enters it, and this project records none (set a test report)` : undefined;
-  const step = item.status as string;
-  const cmd = command ? ` (\`${command}\`)` : '';
+  const q = (c?: string) => (c ? ` (\`${c}\`)` : '');
   const why = cap.checks.length ? ` for ${cap.checks.join(', ')}` : '';
   const entry = cap.entryBaseline ? `${why ? ' and' : ' for'} ${cap.entryBaseline}'s entry baseline` : '';
-  const smaller = narrowing.includes('affected-tests') ? ' It may run only the tests the change affects, or reuse the last green run of an unchanged tree.' : runs !== 'nothing' ? ' It may reuse the last green run of an unchanged tree.' : '';
-  let advice: string;
-  if (toParent) advice = `Leaving ${step} runs no tests on this card: the project's suite is deferred to the parent [${String(toParent.id).slice(0, 8)}] "${toParent.title}", whose final verify runs it.`;
-  else if (held) advice = `Leaving ${step} will hold the card: ${held}.`;
-  else if (runs === 'suite') advice = `Leaving ${step} runs the project's suite${cmd} for you${why}${entry}. Don't run the full suite yourself first - run only the tests you are iterating on, then verify.${smaller}`;
-  else if (runs === 'verify-command') advice = `Leaving ${step} runs the project's verify command${cmd} for you, and it closes the card only if it passes. Don't run it yourself first - run only the tests you are iterating on, then verify.${smaller}`;
-  else advice = `Leaving ${step} runs no tests. If its exit criteria ask for passing tests, running them is yours${command ? ` (\`${command}\`, or only the tests your change affects)` : ''}.`;
-  if (waiting && runs !== 'nothing') advice += ' It first waits for a person\'s approval on the board; the suite runs on the verify after it.';
+  const smaller = narrowing.includes('affected-tests') ? ' The suite part may run only the tests the change affects, or reuse the last green run of an unchanged tree.'
+    : runs === 'suite' ? ' The suite part may reuse the last green run of an unchanged tree.' : '';
+  const dontPreRun = ` Don't run the full suite yourself first - run only the tests you are iterating on, then verify.`;
+  const parts: string[] = [];
+  if (refuses === 'NO_VERIFY_COMMAND') parts.push(`Leaving ${step} needs the project's verify command, and none is set: verify will refuse until one is (\`agenfk update-project <id> --verify-command "<cmd>"\`).`);
+  else if (refuses === 'NO_TREE') parts.push(`Leaving ${step} runs the suite, but this card has no tree to run it in: verify will refuse until the project root is set or the card has a worktree.`);
+  else if (runs === 'suite') {
+    parts.push(`Leaving ${step} runs the project's suite${q(captureCommand)} for you${why}${entry}${thenCommand ? `, then the project's verify command${q(thenCommand)}, which gates the close` : ''}.${dontPreRun}${smaller}`);
+    if (toParent) parts.push(`The suite's green itself is deferred to the parent [${String(toParent.id).slice(0, 8)}] "${toParent.title}", whose final verify runs it.`);
+  } else if (runs === 'verify-command') parts.push(`Leaving ${step} runs the project's verify command${q(gateCommand)} for you, and the card moves only if it passes.${dontPreRun}`);
+  else if (toParent) parts.push(`Leaving ${step} runs no tests on this card: the project's suite is deferred to the parent [${String(toParent.id).slice(0, 8)}] "${toParent.title}", whose final verify runs it.`);
+  else parts.push(`Leaving ${step} runs no tests. If its exit criteria ask for passing tests, running them is yours${verifyCommand ? ` (\`${verifyCommand}\`, or only the tests your change affects)` : ''}.`);
+  if (held) parts.push(`${runs === 'suite' ? 'After that, verify' : 'Verify'} will hold the card: ${held}.`);
+  if (waiting && runs !== 'nothing') parts.push('It first waits for a person\'s approval on the board; the suite runs on the verify after it.');
   return {
-    step, next: next?.name ?? null, runs, checks: cap.checks, entryBaseline: cap.entryBaseline,
-    ...(command && runs !== 'nothing' ? { command } : {}),
+    ...base, runs, checks: cap.checks, entryBaseline: cap.entryBaseline,
+    ...(runs !== 'nothing' && (runs === 'suite' ? captureCommand : gateCommand) ? { command: runs === 'suite' ? captureCommand : gateCommand } : {}),
+    ...(thenCommand ? { thenCommand } : {}),
     ...(toParent ? { deferredTo: { id: toParent.id, title: toParent.title } } : {}),
-    waitsOnPerson: waiting, ...(held ? { held } : {}), narrowing, advice,
+    waitsOnPerson: waiting, ...(held ? { held } : {}), ...(refuses ? { refuses } : {}), narrowing,
+    advice: parts.join(' '),
   };
 }
 
 /** 2ebacb23: the mode leaving would run in on this tree, predicted read-only. */
 export interface LeavePrediction {
   mode: 'reuse' | 'test-files' | 'affected-tests' | 'full' | 'sibling-green' | 'none';
-  /** The test files a partial run would be given. */
+  /** The test files a partial run would be given, or (affected-tests) the changed files the related-tests command picks tests from. */
   files?: string[];
   /** Whose green a reuse would take. */
   reusedFrom?: { itemId: string; step: string };
   /** The sibling whose green of this tree a final verify would propagate. */
   sibling?: { id: string; title: string };
+  /** On a final move with a capture: the verify command that runs after it. */
+  command?: { mode: 'full' | 'sibling-green'; sibling?: { id: string; title: string } };
   advice: string;
 }
 
@@ -7803,38 +7832,54 @@ export interface LeavePrediction {
  * 2ebacb23 - the dry run. The same choices captureStepRecord and the final gate
  * make, asked without running or writing anything: the step's entry capture
  * and lazyPlan for a partial run, reusableCapture for a green of this tree,
- * siblingGreenOf on the final step. Single-flight sharing and a partial run
- * falling back to the whole suite are only known while running.
+ * siblingGreenOf on the move that ends the flow (only there does a sibling's
+ * green carry over). A final move with a capture predicts both legs. Single-
+ * flight sharing and a partial run falling back to the whole suite are only
+ * known while running.
  */
 async function predictLeave(item: any, plan: LeavePlan, flow: { steps: any[] }, project: any): Promise<LeavePrediction> {
+  // The step's checks run before the final gate's refusal: a capture is still spent on a verify that then refuses.
+  if (plan.refuses === 'NO_TREE' || (plan.refuses && plan.runs !== 'suite')) return { mode: 'none', advice: `On this tree it would run nothing: verify refuses (${plan.refuses}).` };
   if (plan.runs === 'nothing') return { mode: 'none', advice: 'On this tree it would run nothing.' };
   const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
+  const sorted = sortedFlowSteps(flow as any);
+  const index = sorted.findIndex(st => st.name === item.status);
+  const commandLeg = async (command: string): Promise<{ mode: 'full' | 'sibling-green'; sibling?: { id: string; title: string } }> => {
+    if (item.parentId && leavingEndsFlow(sorted as any, index)) {
+      const { pass } = await siblingGreenOf(item, await storage.listItems({ parentId: item.parentId }), project, root, command);
+      if (pass) return { mode: 'sibling-green', sibling: { id: pass.sibling.id, title: pass.sibling.title } };
+    }
+    return { mode: 'full' };
+  };
+  const sayCommand = (c: { mode: string; sibling?: { id: string; title: string } }, command: string) => c.mode === 'sibling-green'
+    ? `would not run \`${command}\`: [${String(c.sibling!.id).slice(0, 8)}] "${c.sibling!.title}" already verified this very tree, and its green carries over`
+    : `would run \`${command}\` in full`;
   if (plan.runs === 'verify-command') {
-    if (item.parentId && root && plan.command) {
-      const siblings = await storage.listItems({ parentId: item.parentId });
-      const { pass } = await siblingGreenOf(item, siblings, project, root, plan.command);
-      if (pass) return { mode: 'sibling-green', sibling: { id: pass.sibling.id, title: pass.sibling.title }, advice: `On this tree it would not run the command: [${String(pass.sibling.id).slice(0, 8)}] "${pass.sibling.title}" already verified this very tree, and its green carries over.` };
-    }
-    return { mode: 'full', advice: `On this tree it would run \`${plan.command}\` in full.` };
+    const c = await commandLeg(plan.command!);
+    return { mode: c.mode, ...(c.sibling ? { sibling: c.sibling } : {}), advice: `On this tree it ${sayCommand(c, plan.command!)}.` };
   }
+  // The capture leg. With no tree there is nothing to diff or reuse against (and the tree readers need one).
+  let capture: Omit<LeavePrediction, 'advice' | 'command'> & { said: string };
   const setting: TestReportSetting | undefined = project?.testReport;
-  if (root && setting) {
-    const sorted = sortedFlowSteps(flow as any);
-    const entry = await entryCaptureOf(item, sorted, sorted.findIndex(st => st.name === item.status));
-    const lazy = entry ? lazyPlan(root, setting, entry) : null;
-    if (lazy) {
-      const files = [...lazy.ran];
-      return lazy.related
-        ? { mode: 'affected-tests', files, advice: `On this tree it would run only the ${files.length} test file(s) the change affects: ${files.join(', ')}.` }
-        : { mode: 'test-files', files, advice: `On this tree it would run only the changed test file(s): ${files.join(', ')}.` };
-    }
+  if (!root) capture = { mode: 'full', said: 'would try to run the suite with no tree to run it in (its result cannot be used)' };
+  else {
+  const entry = setting ? await entryCaptureOf(item, sorted, index) : null;
+  const lazy = setting && entry ? lazyPlan(root, setting, entry) : null;
+  if (lazy?.related) capture = { mode: 'affected-tests', files: [...lazy.changed], said: `would run only the tests the related-tests command picks for the changed files ${lazy.changed.join(', ')}` };
+  else if (lazy) capture = { mode: 'test-files', files: [...lazy.ran], said: `would run only the changed test file(s) ${lazy.ran.join(', ')}` };
+  else {
     const reused = await reusableCapture(item, project, root, readCleanTreeSha(root, gitRun), treeStateOf(root, project), suiteStateOf(root, setting));
     if (reused) {
       const from = reused.reusedFrom ?? { itemId: item.id, step: reused.step };
-      return { mode: 'reuse', reusedFrom: { itemId: String(from.itemId ?? item.id), step: String(from.step ?? '') }, advice: 'On this tree it would run nothing new: a green of this very tree is reused.' };
-    }
+      capture = { mode: 'reuse', reusedFrom: { itemId: String(from.itemId ?? item.id), step: String(from.step ?? '') }, said: 'would run nothing new for the suite: a green of this very tree is reused' };
+    } else capture = { mode: 'full', said: 'would run the whole suite' };
   }
-  return { mode: 'full', advice: 'On this tree it would run the whole suite.' };
+  }
+  const { said, ...rest } = capture;
+  if (plan.refuses) return { ...rest, advice: `On this tree it ${said}, and then verify refuses (${plan.refuses}): set a verify command first, and the suite is not spent for nothing.` };
+  if (!plan.thenCommand) return { ...rest, advice: `On this tree it ${said}.` };
+  const c = await commandLeg(plan.thenCommand);
+  return { ...rest, command: c, advice: `On this tree it ${said}, then ${sayCommand(c, plan.thenCommand)}.` };
 }
 
 /** The leave plan for a card as it stands now, or null when it has no flow step to leave. */
@@ -7896,7 +7941,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const entryHoldDetail = entryHoldDetailOf(next);
   // One read decides both the capture and the hold (review): a person's override of it, as the hold will honour it.
   // 37a292a7: the same predicate the leave plan reads.
-  const holdOverride = entryHoldOverride(await storage.getItem(item.id), flow, entryHoldDetail);
+  const holdOverride = entryHoldOverride(await storage.getItem(item.id), flow, entryHoldDetail, item.status);
   const holdOverridden = !!holdOverride;
   // 5a8d22e6: the next step's BLOCKING checks read a per-test entry baseline this project cannot record.
   // 8876747c: held anyway, the next step's entry capture could only be an exit code - so it is not run.

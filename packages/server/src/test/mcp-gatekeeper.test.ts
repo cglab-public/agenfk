@@ -129,7 +129,8 @@ describe('workflow_gatekeeper MCP handler: a STORY is directly actionable (CGLAB
   it('validate_progress with plan: true answers what leaving runs, without moving the card (2ebacb23)', async () => {
     const result = await mcp.client.callTool({
       name: 'validate_progress',
-      arguments: { itemId: storyId, evidence: 'dry run', plan: true },
+      // A dry run needs no evidence (as the CLI's --plan).
+      arguments: { itemId: storyId, plan: true },
     } as any);
     const text = toolText(result);
     expect(result.isError).not.toBe(true);

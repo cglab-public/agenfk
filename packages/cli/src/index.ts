@@ -3988,7 +3988,7 @@ program
           activeFlow: decision.activeFlow ?? null,
           codingStep: decision.codingStep ?? null,
           finalStep: decision.finalStep ?? null,
-          onLeave,
+          leavePlan: onLeave,
           flowFetchFailed,
         }));
       } else {
@@ -4846,9 +4846,12 @@ flowCommand
         // waiting for the 5-minute poll (falls back to the local flow on error).
         ({ data: flow } = await axios.get(`${API_URL}/projects/${projectId}/flow?refresh=true`));
         // 37a292a7: what leaving each step runs, under this project's settings - shown, never saved into the flow.
-        const plans: any[] = await axios.get(`${API_URL}/projects/${projectId}/flow/leave-plans`, { timeout: 5000 }).then(r => r.data).catch(() => []);
+        // `leavePlan`, not `onLeave`: the flow contract already names its resolved checks onLeave.
+        let plansFailed = false;
+        const plans: any[] = await axios.get(`${API_URL}/projects/${projectId}/flow/leave-plans`, { timeout: 5000 }).then(r => r.data).catch(() => { plansFailed = true; return []; });
         const byStep = new Map((Array.isArray(plans) ? plans : []).map((p: any) => [p.step, p]));
-        if (byStep.size) flow = { ...flow, steps: (flow.steps ?? []).map((st: any) => byStep.has(st.name) ? { ...st, onLeave: byStep.get(st.name) } : st) };
+        if (byStep.size) flow = { ...flow, steps: (flow.steps ?? []).map((st: any) => byStep.has(st.name) ? { ...st, leavePlan: byStep.get(st.name) } : st) };
+        if (plansFailed && !(program.opts().toon || options.json)) console.error(chalk.yellow('⚠️  Could not read what leaving each step runs; the table shows the flow without it.'));
       }
       if (program.opts().toon || options.json) {
         console.log(structuredOutput(flow));
@@ -4867,7 +4870,7 @@ flowCommand
         Name: s.name,
         Label: s.label,
         Special: s.isSpecial ? 'yes' : 'no',
-        ...(sorted.some((x: any) => x.onLeave) ? { 'On leave': s.onLeave ? ({ suite: 'runs the suite', 'verify-command': 'runs the verify command', nothing: 'runs no tests' } as Record<string, string>)[s.onLeave.runs] ?? '-' : '-' } : {}),
+        ...(sorted.some((x: any) => x.leavePlan) ? { 'On leave': s.leavePlan ? ({ suite: 'runs the suite', 'verify-command': 'runs the verify command', nothing: 'runs no tests' } as Record<string, string>)[s.leavePlan.runs] ?? '-' : '-' } : {}),
         'Exit Criteria': s.exitCriteria ? s.exitCriteria.substring(0, 50) : '-',
       })));
     } catch (error: any) {

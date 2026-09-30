@@ -105,23 +105,24 @@ describe('agenfk gatekeeper: what leaving the step runs', () => {
     expect(text).toContain(PLAN.advice);
   });
 
-  it('--json carries the plan as onLeave', async () => {
+  it('--json carries the plan as leavePlan', async () => {
     server(PLAN);
     const json = jsonOf(await gatekeeper('--json'));
     expect(json.authorized).toBe(true);
-    expect(json.onLeave).toMatchObject({ step: 'MAKE', runs: 'suite', checks: ['suite-green'] });
+    expect(json.leavePlan).toMatchObject({ step: 'MAKE', runs: 'suite', checks: ['suite-green'] });
   });
 
-  it('a server that cannot answer the plan does not stop the authorization (onLeave null)', async () => {
+  it('a server that cannot answer the plan does not stop the authorization (leavePlan null)', async () => {
     server(new Error('404'));
     const json = jsonOf(await gatekeeper('--json'));
     expect(json.authorized).toBe(true);
-    expect(json.onLeave).toBeNull();
+    expect(json.leavePlan).toBeNull();
   });
 });
 
 describe('agenfk flow show --json: each step carries what leaving it runs', () => {
-  it("merges the project's per-step plans in as onLeave", async () => {
+  // leavePlan, not onLeave: the flow contract already uses onLeave for the resolved checks.
+  it("merges the project's per-step plans in as leavePlan", async () => {
     mockedAxios.get.mockImplementation(async (url: string) => {
       if (url.includes('/projects/p1/flow/leave-plans')) return { data: [{ step: 'MAKE', runs: 'suite', checks: ['suite-green'] }, { step: 'CHECK', runs: 'verify-command', checks: [] }] } as any;
       if (url.includes('/projects/p1/flow')) return { data: FLOW } as any;
@@ -129,7 +130,7 @@ describe('agenfk flow show --json: each step carries what leaving it runs', () =
     });
     try { await program.parseAsync(['node', 'agenfk', 'flow', 'show', '--project', 'p1', '--json']); } catch (e: any) { if (e?.message !== 'exit') throw e; }
     const shown = JSON.parse(out.join('\n'));
-    const by = Object.fromEntries(shown.steps.map((st: any) => [st.name, st.onLeave?.runs ?? null]));
+    const by = Object.fromEntries(shown.steps.map((st: any) => [st.name, st.leavePlan?.runs ?? null]));
     expect(by).toEqual({ START: null, MAKE: 'suite', CHECK: 'verify-command', END: null });
   });
 });

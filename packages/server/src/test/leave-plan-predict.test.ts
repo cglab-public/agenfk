@@ -171,6 +171,74 @@ describe('GET /items/:id/leave-plan?predict=1', () => {
     expect(res.body.message).toMatch(/sibling propagation/i);
   });
 
+  it('on the final step with a test report, predicts the verify command too - never "nothing new" for the whole move', async () => {
+    const f = await agent().post('/flows').send({ name: `pr-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('PLAN', 1), s('TEST', 2, { role: 'testing' }), s('END', 3, { isAnchor: true })] });
+    const t = await setup();
+    const project: any = (await storage.getItem(t.id) as any)?.projectId;
+    await storage.updateProject(project, { flowId: f.body.id } as never);
+    await validate(t.id); // PLAN -> TEST
+    const p = await predict(t.id);
+    expect(p.thenCommand).toBeTruthy();
+    expect(p.prediction.command).toMatchObject({ mode: 'full' });
+    expect(p.prediction.advice).toMatch(/then/i);
+  });
+
+  it('on a mid-flow boundary, never predicts a sibling green: only the move that ends the flow propagates one', async () => {
+    const f = await agent().post('/flows').send({ name: `pr-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('A', 1), s('HOLD', 2, { isSpecial: true }), s('B', 3), s('DONE', 4, { isAnchor: true })] });
+    const repo = tmp('agenfk-pr-bound-');
+    git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo x > f && git add . && git commit -qm one');
+    const p = await agent().post('/projects').send({ name: `pr-${++seq}` });
+    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0' } as never);
+    const parent = await agent().post('/items').send({ type: 'STORY', title: `pr-${++seq}`, projectId: p.body.id });
+    await storage.updateItem(parent.body.id, { status: 'A' } as any);
+    const mk = async (status: string) => {
+      const c = await agent().post('/items').send({ type: 'TASK', title: `pr-${++seq}`, projectId: p.body.id, parentId: parent.body.id });
+      await storage.updateItem(c.body.id, { status } as any);
+      return c.body.id as string;
+    };
+    const first = await mk('B');
+    expect((await validate(first)).status).toBe(200); // B -> DONE, a PASSED green of this tree
+    const second = await mk('A');
+    expect((await predict(second)).prediction).toMatchObject({ mode: 'full' });
+  });
+
+  it('with a related-tests command and a code change, names the changed files the command picks tests from', async () => {
+    const t = await setup();
+    const pid = (await storage.getItem(t.id) as any).projectId;
+    const proj: any = await storage.getProject(pid);
+    await storage.updateProject(pid, { testReport: { ...proj.testReport, relatedCommand: 'node related.js {files}' } } as never);
+    await enterTests(t);
+    fs.writeFileSync(path.join(t.repo, 'lib.js'), 'module.exports = 5;\n');
+    const p = await predict(t.id);
+    expect(p.prediction).toMatchObject({ mode: 'affected-tests', files: ['lib.js'] });
+    expect(p.prediction.advice).toMatch(/lib\.js/);
+  });
+
+  it('a final step with a capture but no verify command: predicts the capture, then the refusal - not "nothing"', async () => {
+    const f = await agent().post('/flows').send({ name: `pr-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('PLAN', 1), s('TEST', 2, { role: 'testing' }), s('END', 3, { isAnchor: true })] });
+    const t = await setup();
+    const pid = (await storage.getItem(t.id) as any).projectId;
+    await validate(t.id); // PLAN -> TESTS on the original flow, recording a capture
+    await storage.updateProject(pid, { flowId: f.body.id, verifyCommand: null } as never);
+    await storage.updateItem(t.id, { status: 'TEST' } as any);
+    const p = await predict(t.id);
+    expect(p.refuses).toBe('NO_VERIFY_COMMAND');
+    expect(p.prediction.mode).not.toBe('none');
+    expect(p.prediction.advice).toMatch(/refuse/i);
+  });
+
+  it('a card with no tree and a test report: answers (never a 500) when the capture is only a non-blocking entry', async () => {
+    const f = await agent().post('/flows').send({ name: `pr-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('PLAN', 1), s('TESTS', 2, { checks: [{ id: 'existing-tests-still-green', severity: 'warn' }] }), s('END', 3, { isAnchor: true })] });
+    const p = await agent().post('/projects').send({ name: `pr-${++seq}` });
+    await storage.updateProject(p.body.id, { flowId: f.body.id, verifyCommand: 'true', testReport: { format: 'junit-xml', command: 'true', reportPath: 'report.xml' } } as never);
+    const c = await agent().post('/items').send({ type: 'TASK', title: `pr-${++seq}`, projectId: p.body.id });
+    await storage.updateItem(c.body.id, { status: 'PLAN' } as any);
+    const res = await agent().get(`/items/${c.body.id}/leave-plan?predict=1`);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.refuses).toBeUndefined();
+    expect(res.body.prediction.mode).toBe('full');
+  });
+
   it('the dry run changes nothing: no record, no step change, no run', async () => {
     const t = await setup();
     await enterTests(t);
