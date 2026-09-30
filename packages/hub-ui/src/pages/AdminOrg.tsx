@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Building2, Copy, Check, AlertTriangle } from 'lucide-react';
+import { Building2, AlertTriangle } from 'lucide-react';
 import { api, MeResponse } from '../api';
 import { validateOrgIdInput, spokeRepointCommand } from './adminOrgRename';
 import { AdminFederation } from './AdminFederation';
 import { AdminChildHubs } from './AdminChildHubs';
-import { buttonClass, cardClass, cn, controlClass } from '../components/ui';
+import { buttonClass, cardClass, cn, controlClass, CopyButton } from '../components/ui';
 
 const inputCls = controlClass;
 const cardCls = cardClass;
@@ -50,7 +50,6 @@ function OrgIdentity() {
   const [draft, setDraft] = useState('');
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [success, setSuccess] = useState<RenameResponse | null>(null);
-  const [copied, setCopied] = useState(false);
 
   const rename = useMutation({
     mutationFn: async (to: string) => {
@@ -145,13 +144,7 @@ function OrgIdentity() {
           </header>
           <pre className="mt-3 px-3 py-2.5 rounded-lg bg-canvas text-ink text-xs font-mono overflow-x-auto select-all">{spokeCmd}</pre>
           <div className="mt-2 flex items-center gap-3">
-            <button
-              onClick={async () => { try { await navigator.clipboard.writeText(spokeCmd); setCopied(true); } catch { /* ignore */ } }}
-              className="inline-flex items-center gap-1.5 text-xs font-semibold text-accent-ink hover:underline"
-            >
-              {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-              {copied ? 'Copied command' : 'Copy command'}
-            </button>
+            <CopyButton value={spokeCmd} label="Copy command" copiedLabel="Copied command" />
             <button onClick={() => setSuccess(null)} className="text-xs font-medium text-ink-tertiary hover:text-ink">Dismiss</button>
           </div>
           <p className="mt-3 text-[11px] text-ink-tertiary">

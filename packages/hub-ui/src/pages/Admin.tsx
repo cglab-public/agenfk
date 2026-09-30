@@ -1,15 +1,15 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { ADMIN_GROUPS } from './adminSections';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { KeyRound, Users, Trash2, Copy, Check, X, EyeOff, Eye, Archive, ArchiveRestore } from 'lucide-react';
+import { KeyRound, Users, Trash2, X, EyeOff, Eye, Archive, ArchiveRestore } from 'lucide-react';
 import { api } from '../api';
 import { fmtDate } from '../dates';
 import { canDeleteUserRow } from './canDeleteUserRow';
 import { hideTargetKey, partitionHiddenRows, canHideRow } from './hiddenPeople';
 import { canRetireRow, canUnretireRow, countRetired, retireConfirmMessage } from './retiredInstallations';
 import { isAttributedByUsername, attributionWarning, countAttributedByUsername } from './attributionWarning';
-import { Toggle, RowMenu, buttonClass, cardClass, controlClass } from '../components/ui';
+import { Toggle, RowMenu, CopyButton, buttonClass, cardClass, controlClass } from '../components/ui';
 import { silentDays } from './installationStaleness';
 
 export function AdminLayout() {
@@ -91,7 +91,9 @@ export function AdminAuth() {
     mutationFn: (body: any) => api.put('/v1/admin/auth-config', body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['auth-config'] }),
   });
-  const [draft, setDraft] = useState<any>({});
+  const [draft, setDraftState] = useState<any>({});
+  // An edit after a save makes "✓ Saved" untrue.
+  const setDraft = (d: any) => { save.reset(); setDraftState(d); };
   if (!cfg.data) return <div className="text-sm text-ink-tertiary">Loading…</div>;
   const c = { ...cfg.data, ...draft };
 
@@ -201,8 +203,16 @@ export function AdminKeys() {
   });
   const [label, setLabel] = useState('');
   const [issued, setIssued] = useState<string | null>(null);
-  const [issuedCopied, setIssuedCopied] = useState(false);
-  interface InviteEntry { id: string; joinCommand: string; expiresAt: string; copied: boolean }
+  // The token is shown once. Leaving the page while it is up loses it, so
+  // the browser asks first. (In-app route changes can't be held under
+  // BrowserRouter; the notice above the token says to save it now.)
+  useEffect(() => {
+    if (!issued) return;
+    const onLeave = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = 'unsaved'; };
+    window.addEventListener('beforeunload', onLeave);
+    return () => window.removeEventListener('beforeunload', onLeave);
+  }, [issued]);
+  interface InviteEntry { id: string; joinCommand: string; expiresAt: string }
   const [invites, setInvites] = useState<InviteEntry[]>([]);
 
   return (
@@ -223,7 +233,7 @@ export function AdminKeys() {
             const data = r.data as { joinCommand: string; expiresAt: string };
             setInvites(prev => [
               ...prev,
-              { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, joinCommand: data.joinCommand, expiresAt: data.expiresAt, copied: false },
+              { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, joinCommand: data.joinCommand, expiresAt: data.expiresAt },
             ]);
           }}
           disabled={createInvite.isPending}
@@ -251,18 +261,7 @@ export function AdminKeys() {
                   </div>
                 </div>
                 <pre className="mt-2 px-3 py-2.5 rounded-lg bg-canvas text-ink text-xs font-mono overflow-x-auto select-all">{inv.joinCommand}</pre>
-                <button
-                  onClick={async () => {
-                    try {
-                      await navigator.clipboard.writeText(inv.joinCommand);
-                      setInvites(prev => prev.map(p => p.id === inv.id ? { ...p, copied: true } : p));
-                    } catch { /* ignore */ }
-                  }}
-                  className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-accent-ink hover:underline"
-                >
-                  {inv.copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                  {inv.copied ? 'Copied' : 'Copy to clipboard'}
-                </button>
+                <CopyButton value={inv.joinCommand} label="Copy to clipboard" className="mt-2" />
               </div>
             ))}
           </div>
@@ -278,7 +277,6 @@ export function AdminKeys() {
           e.preventDefault();
           const r = await create.mutateAsync(label);
           setIssued((r.data as any).token);
-          setIssuedCopied(false);
           setLabel('');
         }}>
           <input className={`${inputCls} flex-1`} placeholder="Label, e.g. laptop-alice" value={label} onChange={(e) => setLabel(e.target.value)} />
@@ -289,13 +287,7 @@ export function AdminKeys() {
             <div className="text-[11px] uppercase tracking-[0.14em] text-status-warn-text font-semibold">Save this token now — it won't be shown again</div>
             <pre className="mt-2 px-3 py-2.5 rounded-lg bg-canvas text-ink text-xs font-mono break-all overflow-x-auto select-all">{issued}</pre>
             <div className="mt-2 flex items-center gap-3">
-              <button
-                onClick={async () => { try { await navigator.clipboard.writeText(issued); setIssuedCopied(true); } catch { /* ignore */ } }}
-                className="inline-flex items-center gap-1.5 text-xs font-semibold text-accent-ink hover:underline"
-              >
-                {issuedCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                {issuedCopied ? 'Copied' : 'Copy'}
-              </button>
+              <CopyButton value={issued} label="Copy" />
               <button onClick={() => setIssued(null)} className="text-xs font-medium text-ink-tertiary hover:text-ink">I've saved it</button>
             </div>
           </div>
@@ -672,6 +664,7 @@ export function AdminInstallations() {
                   </td>
                   <td className="px-2 py-2.5">
                     <span className="font-mono text-[11px] text-ink-secondary" title={r.id}>{r.id.slice(0, 8)}</span>
+                    <CopyButton value={r.id} iconOnly label={`Copy installation id for ${personLabel(r)}`} copiedLabel={`Copied installation id for ${personLabel(r)}`} className="ml-1.5 align-middle" />
                     {r.hidden && (
                       <span className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-status-warn-text">hidden</span>
                     )}

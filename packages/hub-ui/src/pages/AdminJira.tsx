@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
 import { apiErrorText } from '../apiError';
-import { buttonClass, cardClass, controlClass } from '../components/ui';
+import { buttonClass, cardClass, controlClass, CopyButton } from '../components/ui';
 
 /**
  * Admin → JIRA (CGLAB-412). The admin registers the org's Atlassian OAuth app
@@ -98,6 +98,7 @@ export function AdminJira() {
           <span className="font-mono"> read:jira-user</span> and <span className="font-mono">read:jira-work</span>, and register this callback URL:
         </p>
         <p className="mt-2 font-mono text-xs break-all text-ink">{c.redirectUri}</p>
+        <CopyButton value={c.redirectUri} label="Copy callback URL" className="mt-1" />
         <p className="mt-3 text-xs text-status-warn-text" data-testid="jira-distribution-step">
           Then, in the app's <span className="font-semibold">Distribution</span> tab, set the distribution status to
           <span className="font-semibold"> Sharing</span>. Atlassian keeps a new app private: until it is shared, only the
@@ -106,7 +107,7 @@ export function AdminJira() {
         <div className="mt-4 grid sm:grid-cols-2 gap-3">
           <label className="block">
             <span className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">Client ID</span>
-            <input className={`${inputCls} mt-1.5`} value={idValue} onChange={(e) => setClientId(e.target.value)} />
+            <input className={`${inputCls} mt-1.5`} value={idValue} onChange={(e) => { save.reset(); setClientId(e.target.value); }} />
           </label>
           <label className="block">
             <span className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">Client secret</span>
@@ -116,7 +117,7 @@ export function AdminJira() {
               autoComplete="off"
               placeholder={c.clientSecretSet ? '•••••• (leave blank to keep)' : 'client secret'}
               value={clientSecret}
-              onChange={(e) => setClientSecret(e.target.value)}
+              onChange={(e) => { save.reset(); setClientSecret(e.target.value); }}
             />
           </label>
         </div>

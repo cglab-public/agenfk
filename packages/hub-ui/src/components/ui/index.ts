@@ -11,3 +11,4 @@ export { StatTile } from './StatTile';
 export { ChipRow } from './ChipRow';
 export { RowMenu } from './RowMenu';
 export type { RowMenuItem } from './RowMenu';
+export { CopyButton } from './CopyButton';

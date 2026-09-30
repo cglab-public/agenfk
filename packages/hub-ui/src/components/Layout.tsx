@@ -2,7 +2,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, MeResponse } from '../api';
 import { LayoutDashboard, Shield, LogOut, GitPullRequest } from 'lucide-react';
-import { Button, Callout } from './ui';
+import { Button, Callout, CopyButton } from './ui';
 import { Logo } from './Logo';
 import { ThemeToggle, sidebarButtonClass } from './ThemeToggle';
 
@@ -116,6 +116,7 @@ function PendingEnvOrgIdBanner() {
       action={<Button size="sm" disabled={ack.isPending} onClick={() => ack.mutate()}>I've updated my deployment</Button>}
     >
       Set <code className="font-mono">AGENFK_HUB_ORG_ID={value}</code> in your hub deployment manifest before the next restart. Otherwise the hub will boot in maintenance mode on the wrong env.
+      {' '}<CopyButton value={`AGENFK_HUB_ORG_ID=${value}`} label="Copy setting" />
     </Callout>
   );
 }
