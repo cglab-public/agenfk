@@ -1,5 +1,5 @@
 import { Link, useSearchParams } from 'react-router-dom';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronRight, GitBranch } from 'lucide-react';
 import { api } from '../api';
@@ -11,6 +11,7 @@ import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
 import { fmtRelative } from '../dates';
 import { useToggleSet } from '../hooks/useToggleSet';
+import { useUrlFilters } from '../hooks/useUrlFilters';
 import { useChildHubs } from '../hooks/useChildHubs';
 import { csvParam } from '../urlParams';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
@@ -33,32 +34,47 @@ const KNOWN_ITEM_TYPES = ['EPIC', 'STORY', 'TASK', 'BUG'] as const;
 
 const formatLastSeen = fmtRelative;
 
-export function OrgPage() {
-  // Default to "shipped today/this week" framing — answers the most common
-  // org-level question without requiring a click. Persisted in localStorage
-  // so a refresh doesn't drop the user's hand-tuned filter back to default.
-  const eventTypeSel = useToggleSet(['item.closed'], { storageKey: 'agenfk-hub:org:eventTypes' });
-  const projectSel = useToggleSet([], { storageKey: 'agenfk-hub:org:projects' });
-  const itemTypeSel = useToggleSet([], { storageKey: 'agenfk-hub:org:itemTypes' });
-  const [range, setRange] = useState<RangeKey>('30d');
+const ORG_FILTER_KEYS = ['types', 'projects', 'itemTypes', 'range'] as const;
+const ORG_LEGACY_KEYS = {
+  types: 'agenfk-hub:org:eventTypes',
+  projects: 'agenfk-hub:org:projects',
+  itemTypes: 'agenfk-hub:org:itemTypes',
+};
+const readRange = (v: string | null): RangeKey => (RANGES.some(r => r.key === v) ? v : '30d') as RangeKey;
 
-  // The child hub facet persists to the URL, NOT to localStorage like every
-  // other facet on this page. Deliberate: "here is what your hub contributes"
-  // is a thing one person sends another, and localStorage cannot be shared.
-  const [searchParams, setSearchParams] = useSearchParams();
+export function OrgPage() {
+  // Every filter lives in the URL, so a reload or a shared link shows the same
+  // view. A bare visit opens as this browser left it (useUrlFilters).
+  const filters = useUrlFilters({ keys: ORG_FILTER_KEYS, storageKey: 'agenfk-hub:org:filters', legacy: ORG_LEGACY_KEYS });
+  const fp = filters.params;
+  // Default to "shipped today/this week" framing — answers the most common
+  // org-level question without requiring a click. `types=` (present, empty)
+  // is an explicit "none", not the default.
+  const eventTypeSel = useToggleSet(fp.has('types') ? csvParam(fp, 'types') : ['item.closed']);
+  const projectSel = useToggleSet(csvParam(fp, 'projects'));
+  const itemTypeSel = useToggleSet(csvParam(fp, 'itemTypes'));
+  const range = readRange(fp.get('range'));
+  const setRange = (r: RangeKey) => filters.write({ range: r });
+
+  // The child hub is in the URL too, but never remembered for a bare visit:
+  // it is a scope someone sends, and a stored one would silently narrow the
+  // next unrelated visit.
+  const [searchParams] = useSearchParams();
   const childHubSel = useToggleSet(csvParam(searchParams, 'childHubId'));
   const childHubs = useChildHubs(childHubSel.set);
 
+  // ONE writer for the query string. React Router's functional setSearchParams
+  // hands every call in a commit the same render-time `prev`, so a second
+  // effect writing the URL in the same tick silently undid the first.
+  const { write: writeFilters } = filters;
   useEffect(() => {
-    const p = new URLSearchParams(searchParams);
-    if (childHubSel.set.size) p.set('childHubId', [...childHubSel.set].join(','));
-    else p.delete('childHubId');
-    if (p.toString() !== searchParams.toString()) setSearchParams(p, { replace: true });
-    // searchParams is read through a ref-like comparison above rather than
-    // listed here: including it re-runs this on every URL change and fights
-    // any other writer of the query string.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [childHubSel.set, setSearchParams]);
+    writeFilters({
+      types: [...eventTypeSel.set].join(','),
+      projects: projectSel.set.size ? [...projectSel.set].join(',') : null,
+      itemTypes: itemTypeSel.set.size ? [...itemTypeSel.set].join(',') : null,
+      childHubId: childHubSel.set.size ? [...childHubSel.set].join(',') : null,
+    });
+  }, [eventTypeSel.set, projectSel.set, itemTypeSel.set, childHubSel.set, writeFilters]);
 
   // Build the query string once for everything that needs the same filters.
   const qs = useMemo(() => {

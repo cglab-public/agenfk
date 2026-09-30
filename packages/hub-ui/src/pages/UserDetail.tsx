@@ -1,5 +1,5 @@
 import { Link, useParams, useSearchParams } from 'react-router-dom';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, ChevronDown, GitBranch, Server } from 'lucide-react';
 import { api } from '../api';
@@ -13,6 +13,7 @@ import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
 import { fmtDateTime, browserTimezone } from '../dates';
 import { useToggleSet } from '../hooks/useToggleSet';
+import { useUrlFilters } from '../hooks/useUrlFilters';
 import { useChildHubs } from '../hooks/useChildHubs';
 import { scrollPageToTop } from '../scroll';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
@@ -23,6 +24,17 @@ const RANGES: Array<{ key: RangeKey; label: string }> = [
   { key: '30d', label: '30d' },
   { key: '90d', label: '90d' },
 ];
+
+const USER_FILTER_KEYS = ['types', 'projects', 'itemTypes', 'range', 'from', 'to'] as const;
+// A custom date range is chosen for one person; a bare visit to the next one
+// starts from the remembered preset instead.
+const USER_TRANSIENT_KEYS = ['from', 'to'] as const;
+const USER_LEGACY_KEYS = {
+  types: 'agenfk-hub:user:eventTypes',
+  projects: 'agenfk-hub:user:projects',
+  itemTypes: 'agenfk-hub:user:itemTypes',
+};
+const readRange = (v: string | null): RangeKey => (RANGES.some(r => r.key === v) ? v : '30d') as RangeKey;
 
 interface MetricsResponse { bucket: string; series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; validate_passes: number; validate_fails: number; prs_opened: number }> }
 
@@ -51,12 +63,24 @@ export function UserDetailPage() {
   const decoded = decodeURIComponent(userKey);
 
   useEffect(() => { scrollPageToTop(); }, [userKey]);
+  // Every filter lives in the URL, so a reload or a shared link shows the same
+  // view. A bare visit opens as this browser left it (useUrlFilters).
+  const filters = useUrlFilters({ keys: USER_FILTER_KEYS, storageKey: 'agenfk-hub:user:filters', legacy: USER_LEGACY_KEYS, forget: USER_TRANSIENT_KEYS });
+  const fp = filters.params;
   // Default to "what did this user ship?" — closures only — until the dev
-  // widens the chip selection. Persisted in localStorage so a refresh
-  // restores the developer's last selection rather than snapping back.
-  const eventTypeSel = useToggleSet(['item.closed'], { storageKey: 'agenfk-hub:user:eventTypes' });
-  const projectSel = useToggleSet([], { storageKey: 'agenfk-hub:user:projects' });
-  const itemTypeSel = useToggleSet([], { storageKey: 'agenfk-hub:user:itemTypes' });
+  // widens the chip selection. `types=` (present, empty) is an explicit "none".
+  const eventTypeSel = useToggleSet(fp.has('types') ? csvParam(fp, 'types') : ['item.closed']);
+  const projectSel = useToggleSet(csvParam(fp, 'projects'));
+  const itemTypeSel = useToggleSet(csvParam(fp, 'itemTypes'));
+  // The one URL writer for the chips (see useUrlFilters on why only one).
+  const { write: writeFilters } = filters;
+  useEffect(() => {
+    writeFilters({
+      types: [...eventTypeSel.set].join(','),
+      projects: projectSel.set.size ? [...projectSel.set].join(',') : null,
+      itemTypes: itemTypeSel.set.size ? [...itemTypeSel.set].join(',') : null,
+    });
+  }, [eventTypeSel.set, projectSel.set, itemTypeSel.set, writeFilters]);
   // The child hub arrives in the link, not from a picker on this page: you got
   // here by clicking a person out of a board that was already scoped, and a
   // person page aggregating them across the whole federation would quietly
@@ -74,9 +98,10 @@ export function UserDetailPage() {
   // Filters panel shows no filter that would explain it.
   const hubLabels = useChildHubs(new Set(childHubs));
 
-  const [range, setRange] = useState<RangeKey>('30d');
-  const [customStart, setCustomStart] = useState('');
-  const [customEnd, setCustomEnd] = useState('');
+  // The period is read straight from the URL; its controls write it there.
+  const range = readRange(fp.get('range'));
+  const customStart = fp.get('from') ?? '';
+  const customEnd = fp.get('to') ?? '';
 
   const customFromIso = useMemo(() => customStart ? startOfDateInput(customStart) : '', [customStart]);
   const customToIso = useMemo(() => customEnd ? endOfDateInput(customEnd) : '', [customEnd]);
@@ -237,11 +262,7 @@ export function UserDetailPage() {
                   key={r.key}
                   type="button"
                   aria-pressed={range === r.key && !customFromIso && !customToIso}
-                  onClick={() => {
-                    setRange(r.key);
-                    setCustomStart('');
-                    setCustomEnd('');
-                  }}
+                  onClick={() => filters.write({ range: r.key, from: null, to: null })}
                   className={`px-2.5 py-1 rounded-md transition-colors ${range === r.key && !customFromIso && !customToIso
                     ? 'bg-surface text-accent-ink shadow-sm'
                     : 'text-ink-tertiary hover:text-ink'}`}
@@ -255,7 +276,7 @@ export function UserDetailPage() {
               <input
                 type="date"
                 value={customStart}
-                onChange={e => setCustomStart(e.target.value)}
+                onChange={e => filters.write({ from: e.target.value || null })}
                 className="h-7 rounded-md border border-border-soft bg-surface px-2 text-[11px] text-ink-secondary"
               />
             </label>
@@ -264,7 +285,7 @@ export function UserDetailPage() {
               <input
                 type="date"
                 value={customEnd}
-                onChange={e => setCustomEnd(e.target.value)}
+                onChange={e => filters.write({ to: e.target.value || null })}
                 className="h-7 rounded-md border border-border-soft bg-surface px-2 text-[11px] text-ink-secondary"
               />
             </label>
@@ -280,7 +301,7 @@ export function UserDetailPage() {
         childHubs={childHubs}
         title="Activity timeline"
         range={range}
-        onRangeChange={setRange}
+        onRangeChange={r => filters.write({ range: r, from: null, to: null })}
         fromIsoOverride={customFromIso || undefined}
         toIsoOverride={customToIso || undefined}
       />

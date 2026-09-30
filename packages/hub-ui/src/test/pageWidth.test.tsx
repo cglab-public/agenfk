@@ -38,6 +38,11 @@ describe('top-level hub pages render inside Page', () => {
     get.mockImplementation(async (url: string) => {
       if (url.startsWith('/auth/me')) return { data: { userId: 'admin@x', orgId: 'acme', role: 'admin' } };
       if (url.startsWith('/auth/providers')) return { data: { password: true, google: false, entra: false, requiresSetup: false } };
+      // Valid empty answers: `{}` is not a timeline or a user list.
+      if (url.startsWith('/v1/timeline')) return { data: { events: [] } };
+      if (url.startsWith('/v1/users')) return { data: [] };
+      if (url.startsWith('/v1/metrics')) return { data: { bucket: 'day', series: [] } };
+      if (url.startsWith('/v1/histogram')) return { data: { bucket: 'day', buckets: [] } };
       // PR overview reads its lists straight off the response; an empty period.
       if (url.startsWith('/v1/prs/overview')) return { data: {
         period: { from: '2026-09-01T00:00:00.000Z', to: '2026-09-30T23:59:59.999Z' },
