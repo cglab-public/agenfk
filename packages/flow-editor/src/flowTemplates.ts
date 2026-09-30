@@ -123,7 +123,7 @@ export const FLOW_TEMPLATES: Record<"tdd" | "default" | "docs", FlowTemplate> = 
         "name": "TEST",
         "label": "Test",
         "order": 3,
-        "exitCriteria": "The project's full test suite passes, and the new behaviour is covered by tests that fail if the change is reverted. Report the actual numbers rather than 'tests pass'. Compare the test names before and after your work and confirm none was deleted, renamed away, skipped or had its assertions weakened — a green suite with fewer tests than you started with is a regression, not a pass.",
+        "exitCriteria": "The new behaviour is covered by tests that fail if the change is reverted, and the project's full suite passes. Leaving this step runs the project's verify command for you (the verify that brought the card here says so, and `agenfk verify <id> --plan` shows the command), so do not run the whole suite yourself first: run only the tests you are working on, then verify. If that command does not run the tests (a build-only command, say), run them yourself. verify records its own run's results on the card; your evidence names the tests you added or changed and the actual numbers of the ones you ran, rather than 'tests pass'. Compare the test names before and after your work and confirm none was deleted, renamed away, skipped or had its assertions weakened — a green suite with fewer tests than you started with is a regression, not a pass.",
         "role": "testing"
       },
       {
