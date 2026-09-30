@@ -173,7 +173,7 @@ export function AgentPicker({ value, onChange, listAgents }: AgentPickerProps): 
           ref={menuRef}
           role="listbox"
           onKeyDown={onMenuKeyDown}
-          className="absolute z-20 mt-1.5 max-h-[22rem] w-full origin-top animate-[popIn_120ms_cubic-bezier(0.2,0,0,1)] overflow-y-auto rounded-xl border border-border-soft bg-nav-surface p-2 shadow-2xl scrollbar-slim motion-reduce:animate-none"
+          className="absolute z-20 mt-1.5 max-h-[22rem] w-full origin-top animate-[popIn_120ms_cubic-bezier(0.2,0,0,1)] overflow-y-auto rounded-xl border border-border-soft bg-surface p-2 shadow-2xl scrollbar-slim motion-reduce:animate-none"
         >
           <div className="relative mb-2">
             <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-tertiary" />

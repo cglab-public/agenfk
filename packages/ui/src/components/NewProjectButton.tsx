@@ -77,7 +77,7 @@ export function NewProjectButton({ onCreated }: { onCreated?: (id: string) => vo
         }}
         placeholder="Project name"
         aria-label="New project name"
-        className="w-full rounded border border-border-soft bg-canvas px-2 py-1 text-xs text-ink outline-none focus:border-border-brand"
+        className="w-full rounded border border-border-soft bg-canvas px-2 py-1 text-xs text-ink outline-none focus:border-accent"
       />
       {create.isError && (
         <p className="mt-1 px-1 text-[10px] leading-snug text-danger-text">

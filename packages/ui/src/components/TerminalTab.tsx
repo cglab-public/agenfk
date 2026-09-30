@@ -651,7 +651,7 @@ export function TerminalTab({
               }}
               className={clsx(
                 'group relative flex max-w-[220px] items-center gap-2 border-r border-border-soft px-3 py-2',
-                selected ? 'bg-canvas' : 'hover:bg-canvas/50',
+                selected ? 'bg-accent-fill text-accent-ink' : 'hover:bg-canvas/50',
               )}
             >
               {reorderHint?.overId === session.id && (

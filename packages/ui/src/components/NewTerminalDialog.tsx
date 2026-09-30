@@ -109,7 +109,7 @@ export function NewTerminalDialog({
         aria-modal="true"
         aria-label={`Open a terminal on ${cardTitle}`}
         onKeyDown={onKeyDown}
-        className="w-full max-w-md animate-[popIn_140ms_cubic-bezier(0.2,0,0,1)] rounded-2xl border border-border-soft bg-nav-surface shadow-2xl motion-reduce:animate-none"
+        className="w-full max-w-md animate-[popIn_140ms_cubic-bezier(0.2,0,0,1)] rounded-2xl border border-border-soft bg-surface shadow-2xl motion-reduce:animate-none"
       >
         <div className="flex items-start gap-3 border-b border-border-soft px-5 py-4">
           <div className="min-w-0 flex-1">

@@ -1652,7 +1652,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <span
             className={clsx(
               'inline-block h-1.5 w-1.5 rounded-full',
-              connection === 'connected' ? 'bg-brand' : 'bg-ink-tertiary',
+              connection === 'connected' ? 'bg-status-ok-text' : 'bg-ink-tertiary',
             )}
           />
           <span data-testid="connection-state">{CONNECTION_LABEL[connection]}</span>
@@ -2062,7 +2062,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
             if (e.key === 'ArrowLeft') { e.preventDefault(); onNudge(-16); }
             if (e.key === 'ArrowRight') { e.preventDefault(); onNudge(16); }
           }}
-          className="absolute inset-y-0 right-0 z-10 w-[5px] translate-x-[2px] cursor-col-resize hover:bg-brand/30 focus-visible:bg-brand/40 focus-visible:outline-none"
+          className="absolute inset-y-0 right-0 z-10 w-[5px] translate-x-[2px] cursor-col-resize hover:bg-accent/30 focus-visible:bg-accent/40 focus-visible:outline-none"
         />
       )}
       {/* Traffic-light strip, macOS only: Electron hides the native title bar
@@ -2214,7 +2214,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                     'flex w-full items-center gap-2 rounded-md py-1.5 text-left text-[13px] transition-colors',
                     open ? 'px-2' : 'justify-center px-0',
                     current
-                      ? 'bg-canvas font-semibold text-ink'
+                      ? 'bg-accent-fill font-semibold text-accent-ink'
                       : 'text-ink-secondary hover:bg-canvas/60 hover:text-ink',
                     disabled && 'cursor-not-allowed opacity-50 hover:bg-transparent hover:text-ink-secondary',
                   )}
@@ -2374,7 +2374,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                 className={clsx(
                   'flex min-w-0 flex-1 items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors',
                   isActive
-                    ? 'bg-canvas font-semibold text-ink'
+                    ? 'bg-accent-fill font-semibold text-accent-ink'
                     : 'text-ink-secondary hover:bg-canvas/60 hover:text-ink',
                 )}
               >
@@ -2740,7 +2740,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
             role="menu"
             aria-label={`Actions for ${cardMenu.item.title}`}
             style={{ top: cardMenu.y, left: cardMenu.x }}
-            className="fixed z-50 min-w-[10rem] overflow-hidden rounded-lg border border-border-soft bg-nav-surface py-1 shadow-2xl"
+            className="fixed z-50 min-w-[10rem] overflow-hidden rounded-lg border border-border-soft bg-surface py-1 shadow-2xl"
           >
             <button
               role="menuitem"

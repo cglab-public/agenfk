@@ -824,8 +824,8 @@ export function SettingsPanel(): React.ReactElement {
             className={clsx(
               'mb-0.5 flex w-full items-center rounded-md px-3 py-1.5 text-left text-[13px] transition-colors',
               section.id === shown.id
-                ? 'bg-canvas font-medium text-ink'
-                : 'text-ink-secondary hover:bg-canvas hover:text-ink',
+                ? 'bg-accent-fill font-medium text-accent-ink'
+                : 'text-ink-secondary hover:bg-nav-surface hover:text-ink',
             )}
           >
             {/* Decorative: the button's text already names the section, and a

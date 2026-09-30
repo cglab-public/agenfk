@@ -131,7 +131,7 @@ export function CardPicker({ items, currentItemId, projectNames, onPick, onClose
         // at the dialog directly and so could not see that.
         tabIndex={-1}
         onKeyDown={e => { if (e.key === 'Escape') onClose(); }}
-        className="flex max-h-[70vh] w-full max-w-md animate-[popIn_140ms_cubic-bezier(0.2,0,0,1)] flex-col rounded-2xl border border-border-soft bg-nav-surface shadow-2xl motion-reduce:animate-none"
+        className="flex max-h-[70vh] w-full max-w-md animate-[popIn_140ms_cubic-bezier(0.2,0,0,1)] flex-col rounded-2xl border border-border-soft bg-surface shadow-2xl motion-reduce:animate-none"
       >
         <div className="flex items-start gap-3 border-b border-border-soft px-5 py-4">
           <div className="min-w-0 flex-1">

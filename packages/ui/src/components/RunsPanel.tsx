@@ -320,7 +320,7 @@ export const RunsPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
               <div className="flex items-center gap-2">
                 <span className={
                   'w-2 h-2 rounded-full shrink-0 ' +
-                  (run.status === 'running' ? 'bg-status-info-text animate-pulse motion-reduce:animate-none' : run.status === 'failed' ? 'bg-status-danger-text' : 'bg-ink-tertiary')
+                  (run.status === 'running' ? 'bg-status-ok-text animate-pulse motion-reduce:animate-none' : run.status === 'failed' ? 'bg-status-danger-text' : 'bg-ink-tertiary')
                 } />
                 <span className="font-mono text-xs font-bold text-slate-700 dark:text-slate-200 truncate">{run.step}</span>
               </div>
@@ -341,7 +341,7 @@ export const RunsPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
             <span className={
               'font-mono text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ' +
               (selected.status === 'running'
-                ? 'text-accent-ink bg-accent-fill animate-pulse'
+                ? 'text-status-ok-text bg-status-ok-bg animate-pulse'
                 : selected.status === 'failed'
                   ? 'text-status-danger-text bg-status-danger-bg'
                   : 'text-ink-secondary bg-canvas')

@@ -121,7 +121,7 @@ export function FleetSheet({ parent, all, depth, running, terminalStatuses, onLa
   const launchable = plan.children.filter(c => c.launch).map(c => c.id);
 
   return (
-    <div data-testid="fleet-sheet" className="flex max-h-[70vh] w-[520px] flex-col rounded-lg border border-border-soft bg-nav-surface shadow-xl">
+    <div data-testid="fleet-sheet" className="flex max-h-[70vh] w-[520px] flex-col rounded-lg border border-border-soft bg-surface shadow-xl">
       <div className="flex items-start gap-3 border-b border-border-soft px-4 py-3">
         <span className="min-w-0 flex-1">
           <span className="block font-mono text-[10px] uppercase tracking-widest text-ink-tertiary">

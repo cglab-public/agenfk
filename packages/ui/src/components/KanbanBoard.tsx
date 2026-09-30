@@ -2011,10 +2011,12 @@ export const KanbanBoard: React.FC = () => {
               <div
                 data-testid={`column-header-${status}`}
                 className="group flex flex-col gap-0.5 mb-3 px-1 border-t-4 pt-2"
+                // The flow step's own stored colour: user data, not chrome.
+                data-user-colour=""
                 style={{ borderTopColor: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? colorForUnknownStatus(status) }}
               >
                 <div data-testid={`column-title-${status}`} className="flex items-center gap-2 min-w-0">
-                  <div className="p-1 rounded-md text-slate-500 bg-slate-50 dark:bg-slate-800 shrink-0" style={{ color: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? colorForUnknownStatus(status) }}>
+                  <div className="p-1 rounded-md text-slate-500 bg-slate-50 dark:bg-slate-800 shrink-0" data-user-colour="" style={{ color: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? colorForUnknownStatus(status) }}>
                     {renderStepIcon(flowStep?.icon, statusIcons[status as Status] ?? <Briefcase size={14} />)}
                   </div>
                   <h2 title={columnLabel} className="flex-1 min-w-0 truncate font-bold text-ink-secondary text-sm">{titleCaseLabel(columnLabel)}</h2>

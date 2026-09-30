@@ -5,7 +5,8 @@
  * screen, so every existing test of a component also proves it renders on the
  * tokens: no raw Tailwind palette colours (slate stays - tokens.css remaps it
  * to the neutral ramp), no gradients, glow or old teal chrome, teal only on the
- * brand mark and primary buttons (navy text on them), no inline hex/rgba colours (neutral black
+ * brand mark and primary buttons (navy text on them), no inline hex/rgba colours
+ * except on elements marked data-user-colour (a colour the user chose) (neutral black
  * shadows aside). Call it at the top level of a test file, AFTER the file's own
  * afterEach(cleanup) if it has one: after-hooks run last-registered-first, so
  * the sweep sees the DOM before cleanup empties it. One cleanup per guard
@@ -32,7 +33,8 @@ export function expectOnTokens(root: HTMLElement = document.body): void {
       // Only navy reads on the teal (white or canvas text is about 2:1).
       expect(/(?:^|\s)text-navy(?:\s|$)/.test(c), `text on bg-brand is not text-navy: ${where}`).toBe(true);
     }
-    const style = (el.getAttribute('style') ?? '').replace(/rgba?\(\s*0[\s,]+0[\s,]+0\b[^)]*\)/g, '');
+    // A colour the user chose (a flow step's) is data, marked data-user-colour.
+    const style = el.hasAttribute('data-user-colour') ? '' : (el.getAttribute('style') ?? '').replace(/rgba?\(\s*0[\s,]+0[\s,]+0\b[^)]*\)/g, '');
     expect(style.match(/#[0-9a-f]{3,8}\b|rgba?\(/i)?.[0] ?? null, `inline colour on ${where}`).toBeNull();
   }
 }

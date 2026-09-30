@@ -56,6 +56,10 @@ export function VerifyRunsChip({ placement = 'down' }: { placement?: 'down' | 'u
   }, [open]);
   if (!shown.length) return null;
   const label = `${shown.length} ${shown.length === 1 ? 'verify' : 'verifies'} running`;
+  // Green only while a check actually runs; entries that only wait on a person are a warning.
+  const tone = shown.some(e => e.runId)
+    ? 'bg-status-ok-bg text-status-ok-text border-status-ok-text/40 hover:border-status-ok-text'
+    : 'bg-status-warn-bg text-status-warn-text border-status-warn-text/40 hover:border-status-warn-text';
   return (
     <div ref={rootRef} className="relative">
       <button
@@ -66,7 +70,7 @@ export function VerifyRunsChip({ placement = 'down' }: { placement?: 'down' | 'u
         aria-controls={open ? listId : undefined}
         onClick={() => setOpen(o => !o)}
         title="Verifies running for more than 10 seconds, in every project"
-        className={`flex items-center gap-1.5 rounded-lg font-bold bg-accent-fill text-accent-ink border border-accent/40 hover:bg-accent-fill/70 transition-all ${placement === 'up' ? 'px-2 py-0 text-[11px]' : 'px-2.5 py-1.5 text-xs'}`}
+        className={`flex items-center gap-1.5 rounded-lg font-bold border ${tone} transition-all ${placement === 'up' ? 'px-2 py-0 text-[11px]' : 'px-2.5 py-1.5 text-xs'}`}
       >
         <Loader2 size={13} aria-hidden="true" className="animate-spin motion-reduce:animate-none" />
         <span>{label}</span>

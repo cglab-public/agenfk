@@ -11,6 +11,7 @@ import { api } from '../api';
 import { ItemType, Status } from '../types';
 import { io } from 'socket.io-client';
 import { SocketProvider } from '../SocketContext';
+import { expectOnTokens, guardTokens } from './helpers/tokenGuard';
 
 // Mock socket.io-client. Handlers are recorded rather than dropped so a test
 // can fire a server event — `project_switched` in particular, since the pin
@@ -116,6 +117,9 @@ describe('KanbanBoard', () => {
   afterEach(() => {
     cleanup();
   });
+
+  // CGLAB-434: every test here also proves the board renders on tokens.
+  guardTokens();
 
   describe('switching project from outside the board (CGLAB-168)', () => {
     it('clears the drill-down so the new project is not filtered by the old one\'s epic', async () => {
@@ -315,6 +319,7 @@ describe('KanbanBoard', () => {
       }
     };
     afterEach(() => asDesktop(false));
+  guardTokens();
 
     const withProject = async () => {
       const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
@@ -1366,30 +1371,7 @@ describe('the terminal button on a card', () => {
  * done/blocked/paused, series or accent for working steps.
  */
 describe('board colours are on tokens (CGLAB-434)', () => {
-  const RAW_PALETTE = /\b(?:bg|text|border(?:-[trblxy])?|ring|ring-offset|from|to|via|fill|stroke|outline|divide|shadow|caret|accent|decoration|placeholder)-(?:(?:red|rose|amber|yellow|orange|emerald|green|teal|cyan|sky|blue|indigo|violet|purple|pink|fuchsia|lime|gray|zinc|neutral|stone)-\d{2,3}|white)\b|\b(?:bg|text|border|ring)-black\b(?!\/\d)|\b(?:text|border|ring)-black\/\d+/;
-  const OLD_ACCENT = /(?:^|\s|:)(?:(?:bg|from|to|via)-chip(?:\/\d+)?|(?:border|outline|ring)-border-brand(?:\/\d+)?|bg-mint(?:\/\d+)?|bg-brand\/\d+|text-brand-dark|text-brand-light|shadow-glow|bg-gradient-[\w-]+|bg-\[image:var\(--gradient-accent\)\]|(?:border|ring|outline)-brand(?:\/\d+)?|ring-brand)(?=\s|$)/;
-
-  function expectOnTokens(root: HTMLElement) {
-    // Only the brand mark is exempt; icons are checked like everything else.
-    const marks = Array.from(root.querySelectorAll('[data-brand-mark]'));
-    const els = [root, ...Array.from(root.querySelectorAll('*'))]
-      // The brand mark is exempt, itself included.
-      .filter(el => !marks.some(m => m.contains(el)));
-    const cls = els.map(el => el.getAttribute('class') ?? '').join(' ');
-    const offender = els.find(el => RAW_PALETTE.test(el.getAttribute('class') ?? ''));
-    expect(cls.match(RAW_PALETTE)?.[0] ?? null, `raw palette colour on ${offender?.outerHTML.slice(0, 160)}`).toBeNull();
-    const oldOffender = els.find(el => OLD_ACCENT.test(el.getAttribute('class') ?? '') || /(?:^|\s|:)text-accent-text(?:\s|$)/.test(el.getAttribute('class') ?? ''));
-    expect(cls.match(OLD_ACCENT)?.[0]?.trim() ?? null, `old teal accent on ${oldOffender?.outerHTML.slice(0, 160)}`).toBeNull();
-    expect(cls.match(/(?:^|\s|:)text-accent-text(?:\s|$)/)?.[0] ?? null, `teal text on ${oldOffender?.outerHTML.slice(0, 160)}`).toBeNull();
-    for (const el of els) {
-      if (/(?:^|\s)bg-brand(?:\s|$)/.test(el.getAttribute('class') ?? '')) {
-        expect(el.tagName, `bg-brand on <${el.tagName.toLowerCase()}> "${el.textContent?.slice(0, 24)}"`).toBe('BUTTON');
-      }
-      // Neutral black shadows (the card's drag lift) are not colour.
-      const style = (el.getAttribute('style') ?? '').replace(/rgba?\(\s*0[\s,]+0[\s,]+0\b[^)]*\)/g, '');
-      expect(style.match(/#[0-9a-f]{3,8}\b|rgba?\(/i)?.[0] ?? null, `inline colour on <${el.tagName.toLowerCase()}> style="${style}"`).toBeNull();
-    }
-  }
+  // The sweep itself is the shared helper (test/helpers/tokenGuard.ts).
 
   const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
   const at = { createdAt: new Date(), updatedAt: new Date(), history: [] };
@@ -1415,6 +1397,7 @@ describe('board colours are on tokens (CGLAB-434)', () => {
     localStorage.setItem('agenfk_project_id', 'p1');
   });
   afterEach(() => cleanup());
+  guardTokens();
 
   it('the board, every item type, blocked and archive open, is on tokens only', async () => {
     render(<KanbanBoard />, { wrapper });
