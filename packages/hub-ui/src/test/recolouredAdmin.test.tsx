@@ -190,9 +190,9 @@ describe('admin sections are on tokens only', () => {
     });
   }
 
-  it('the admin tab bar', async () => {
+  it('the admin section rail', async () => {
     const { container } = mountLayout();
-    await screen.findByRole('link', { name: /Auth/ });
+    await screen.findByRole('link', { name: 'Sign-in' });
     expectOnTokens(container);
   });
 });
@@ -208,7 +208,7 @@ describe('admin controls use the shared primitives', () => {
 
   it('the current admin section is announced as current', async () => {
     mountLayout();
-    const tab = await screen.findByRole('link', { name: /Auth/ });
+    const tab = await screen.findByRole('link', { name: 'Sign-in' }); // the auth section, renamed
     expect(tab).toHaveAttribute('aria-current', 'page');
     expect(tab.className).toMatch(/(?:^|\s)text-accent-ink(?:\s|$)/);
   });

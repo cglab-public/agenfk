@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { Outlet, NavLink } from 'react-router-dom';
+import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
+import { ADMIN_GROUPS } from './adminSections';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ShieldCheck, KeyRound, Users, Trash2, Copy, Check, GitBranch, ArrowUpCircle, Server, Building2, X, EyeOff, Eye, Archive, ArchiveRestore, ArrowRightLeft, Tags, Ticket } from 'lucide-react';
+import { KeyRound, Users, Trash2, Copy, Check, X, EyeOff, Eye, Archive, ArchiveRestore } from 'lucide-react';
 import { api } from '../api';
 import { fmtDate } from '../dates';
 import { canDeleteUserRow } from './canDeleteUserRow';
@@ -11,55 +12,62 @@ import { isAttributedByUsername, attributionWarning, countAttributedByUsername }
 import { Toggle, buttonClass, cardClass, controlClass } from '../components/ui';
 
 export function AdminLayout() {
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const current = pathname.replace(/^\/admin\/?/, '').split('/')[0];
   const link = ({ isActive }: { isActive: boolean }) =>
-    'px-3 py-1.5 rounded-lg text-[12px] font-semibold transition-colors ' + (isActive
+    'flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[13px] font-medium transition-colors ' + (isActive
       ? 'bg-accent-fill text-accent-ink'
-      : 'text-ink-secondary hover:bg-accent-fill/50 hover:text-ink');
+      : 'text-ink-secondary hover:bg-nav-surface hover:text-ink');
   return (
     <div className="max-w-[1100px] mx-auto space-y-6">
       <header>
         <p className="text-[11px] uppercase tracking-[0.18em] text-accent-ink font-semibold">Settings</p>
         <h1 className="mt-1 text-2xl font-bold tracking-tight text-ink">Admin</h1>
-        <p className="mt-1 text-sm text-ink-tertiary">Configure sign-in providers, distribute installation tokens, and manage organization users.</p>
+        <p className="mt-1 text-sm text-ink-tertiary">People, access, fleet-wide settings and the hub itself.</p>
       </header>
 
-      <nav aria-label="Admin sections" className="inline-flex flex-wrap gap-0.5 p-1 rounded-xl border border-border-soft bg-surface">
-        <NavLink to="auth" className={link}>
-          <span className="inline-flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5" /> Auth</span>
-        </NavLink>
-        <NavLink to="keys" className={link}>
-          <span className="inline-flex items-center gap-1.5"><KeyRound className="w-3.5 h-3.5" /> API keys</span>
-        </NavLink>
-        <NavLink to="users" className={link}>
-          <span className="inline-flex items-center gap-1.5"><Users className="w-3.5 h-3.5" /> Users</span>
-        </NavLink>
-        <NavLink to="flows" className={link}>
-          <span className="inline-flex items-center gap-1.5"><GitBranch className="w-3.5 h-3.5" /> Flows</span>
-        </NavLink>
-        <NavLink to="upgrades" className={link}>
-          <span className="inline-flex items-center gap-1.5"><ArrowUpCircle className="w-3.5 h-3.5" /> Upgrades</span>
-        </NavLink>
-        <NavLink to="installations" className={link}>
-          <span className="inline-flex items-center gap-1.5"><Server className="w-3.5 h-3.5" /> Installations</span>
-        </NavLink>
-        <NavLink to="repoint" className={link}>
-          <span className="inline-flex items-center gap-1.5"><ArrowRightLeft className="w-3.5 h-3.5" /> Repoint</span>
-        </NavLink>
-        <NavLink to="identities" className={link}>
-          <span className="inline-flex items-center gap-1.5"><Users className="w-3.5 h-3.5" /> Identities</span>
-        </NavLink>
-        <NavLink to="models" className={link}>
-          <span className="inline-flex items-center gap-1.5"><Tags className="w-3.5 h-3.5" /> Models</span>
-        </NavLink>
-        <NavLink to="jira" className={link}>
-          <span className="inline-flex items-center gap-1.5"><Ticket className="w-3.5 h-3.5" /> JIRA</span>
-        </NavLink>
-        <NavLink to="org" className={link}>
-          <span className="inline-flex items-center gap-1.5"><Building2 className="w-3.5 h-3.5" /> Organization</span>
-        </NavLink>
-      </nav>
+      {/* Narrow screens: one select instead of a rail. */}
+      <label className="block lg:hidden">
+        <span className="sr-only">Admin section</span>
+        <select
+          aria-label="Admin section"
+          value={current || ''}
+          onChange={e => navigate(e.target.value ? `/admin/${e.target.value}` : '/admin')}
+          className={controlClass}
+        >
+          <option value="">Overview</option>
+          {ADMIN_GROUPS.map(g => (
+            <optgroup key={g.id} label={g.label}>
+              {g.sections.map(s => <option key={s.to} value={s.to}>{s.label}</option>)}
+            </optgroup>
+          ))}
+        </select>
+      </label>
 
-      <Outlet />
+      <div className="lg:grid lg:grid-cols-[200px_minmax(0,1fr)] lg:gap-8">
+        <nav aria-label="Admin sections" className="hidden lg:block space-y-5">
+          <NavLink to="/admin" end className={link}>Overview</NavLink>
+          {ADMIN_GROUPS.map(g => (
+            <div key={g.id} role="group" aria-labelledby={`admin-nav-${g.id}`}>
+              <p id={`admin-nav-${g.id}`} className="px-2.5 mb-1 text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{g.label}</p>
+              <ul className="space-y-0.5">
+                {g.sections.map(s => (
+                  <li key={s.to}>
+                    <NavLink to={s.to} className={link}>
+                      <s.icon className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+                      {s.label}
+                    </NavLink>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </nav>
+        <div className="min-w-0">
+          <Outlet />
+        </div>
+      </div>
     </div>
   );
 }
