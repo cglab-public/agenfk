@@ -79,6 +79,10 @@ export function AdminUpgrades() {
   const [selectedInstallationIds, setSelectedInstallationIds] = useState<Set<string>>(new Set());
   const [installationFilter, setInstallationFilter] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // Separate from the issue form's error: that banner renders only while the
+  // form is open, so a refused cancel written there showed nothing.
+  // Keyed to the directive so the message sits on the row the admin clicked.
+  const [cancelError, setCancelError] = useState<{ directiveId: string; message: string } | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const directivesQ = useQuery<{ directives: Directive[] }>({
@@ -120,12 +124,13 @@ export function AdminUpgrades() {
       const r = await api.post(`/v1/admin/upgrade/${directiveId}/cancel`, force ? { force: true } : {});
       return r.data;
     },
+    onMutate: () => setCancelError(null),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['admin-upgrade'] });
     },
-    onError: (e: any) => {
+    onError: (e: any, { directiveId }) => {
       const data = e?.response?.data;
-      setError(data?.error ?? e?.message ?? "Couldn't cancel the upgrade");
+      setCancelError({ directiveId, message: data?.error ?? e?.message ?? "Couldn't cancel the upgrade" });
     },
   });
 
@@ -427,6 +432,11 @@ export function AdminUpgrades() {
                   )}
                 </span>
               </div>
+              {cancelError?.directiveId === d.directiveId && (
+                <div role="alert" className="px-3 pb-2 text-[12px] text-status-danger-text flex items-start gap-1 whitespace-pre-line">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" /> {cancelError.message}
+                </div>
+              )}
               {isOpen && d.targets.length > 0 && (
                 <div className="border-t border-border-soft divide-y divide-border-soft">
                   {d.targets.map(t => (
