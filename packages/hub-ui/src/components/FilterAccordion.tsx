@@ -76,14 +76,14 @@ export function FilterAccordion({
         onClick={toggle}
         aria-expanded={open}
         aria-controls="pr-overview-filters-body"
-        className="w-full flex items-center gap-2.5 px-5 py-3 text-left hover:bg-chip/40 transition-colors"
+        className="w-full flex items-center gap-2.5 px-5 py-3 text-left hover:bg-accent-fill/40 transition-colors"
       >
         <SlidersHorizontal className="w-4 h-4 text-ink-tertiary shrink-0" aria-hidden="true" />
         <span className="text-sm font-semibold text-ink">Filters</span>
 
         {activeCount > 0 && (
           <span
-            className="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-mono border text-accent-text border-border-brand bg-chip"
+            className="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-mono border text-accent-ink border-accent bg-accent-fill"
             title={`${activeCount} filter${activeCount === 1 ? '' : 's'} active`}
           >
             {activeCount} active

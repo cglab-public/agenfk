@@ -33,7 +33,7 @@ function fmtAverage(n: number): string {
 /** One stat tile under the volume chart (Total / Average / Max). */
 function VolumeStat({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="rounded-lg border border-border-soft bg-chip px-3 py-2">
+    <div className="rounded-lg border border-border-soft bg-canvas px-3 py-2">
       <div className="text-[10px] uppercase tracking-[0.12em] font-mono text-ink-tertiary">{label}</div>
       <div className="mt-0.5 font-mono text-[15px] font-bold tabular-nums text-ink">{value}</div>
     </div>
@@ -105,7 +105,7 @@ function DeltaBadge({ value }: { value: number | null }) {
   if (value == null) return <span className="text-[11px] text-ink-tertiary">— no prior period</span>;
   const up = value >= 0;
   return (
-    <span className={`inline-flex items-center gap-1 text-[11px] font-semibold ${up ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+    <span className={`inline-flex items-center gap-1 text-[11px] font-semibold ${up ? 'text-status-ok-text' : 'text-status-danger-text'}`}>
       {up ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
       {up ? '+' : ''}{value}%
     </span>
@@ -143,8 +143,8 @@ function SizeCounts({ sizes }: { sizes: SizeDist }) {
           key={s.key}
           title={`${s.label} PRs`}
           className={`min-w-[26px] text-center rounded-md px-1 py-0.5 font-mono text-[11px] tabular-nums ${sizes[s.key] === 0
-            ? 'text-ink-tertiary bg-chip'
-            : 'text-ink-secondary bg-chip'}`}
+            ? 'text-ink-tertiary bg-canvas'
+            : 'text-ink-secondary bg-canvas'}`}
         >
           {sizes[s.key]}
         </span>
@@ -232,7 +232,7 @@ function PrDrilldownModal({ dev, day, prs, onClose }: {
             ref={closeRef}
             onClick={onClose}
             aria-label="Close"
-            className="rounded-lg border border-border-soft px-2 py-1 text-[12px] text-ink-tertiary hover:text-ink hover:bg-chip transition-colors"
+            className="rounded-lg border border-border-soft px-2 py-1 text-[12px] text-ink-tertiary hover:text-ink hover:bg-accent-fill transition-colors"
           >
             ✕
           </button>
@@ -244,7 +244,7 @@ function PrDrilldownModal({ dev, day, prs, onClose }: {
             const rowBody = (
               <>
                 {p.url ? (
-                  <span className="font-mono text-[13px] font-bold text-accent-text shrink-0">
+                  <span className="font-mono text-[13px] font-bold text-accent-ink shrink-0">
                     #{p.prNumber}
                   </span>
                 ) : (
@@ -283,7 +283,7 @@ function PrDrilldownModal({ dev, day, prs, onClose }: {
                   target="_blank"
                   rel="noreferrer"
                   title="Open on GitHub"
-                  className="flex items-center gap-3 px-5 py-2.5 hover:bg-chip/40 transition-colors"
+                  className="flex items-center gap-3 px-5 py-2.5 hover:bg-accent-fill/40 transition-colors"
                 >
                   {rowBody}
                 </a>
@@ -664,9 +664,9 @@ export function PrOverviewPage() {
     <div className="max-w-[1200px] mx-auto space-y-6">
       <header className="flex items-end justify-between gap-4 flex-wrap">
         <div>
-          <p className="text-[11px] uppercase tracking-[0.18em] text-accent-text font-semibold">Analytics</p>
+          <p className="text-[11px] uppercase tracking-[0.18em] text-accent-ink font-semibold">Analytics</p>
           <h1 className="mt-1 text-2xl font-bold tracking-tight text-ink flex items-center gap-2">
-            <GitPullRequest className="w-6 h-6 text-accent-text" /> PR Overview
+            <GitPullRequest className="w-6 h-6 text-accent-ink" /> PR Overview
           </h1>
           <p className="mt-1 text-sm text-ink-tertiary">Pull requests per developer, weighted by size — for the selected period, with a daily breakdown.</p>
         </div>
@@ -679,18 +679,20 @@ export function PrOverviewPage() {
             ? 'A PR search supersedes the date range — this selection is kept but does not apply until the search is cleared'
             : undefined}
         >
-          <div className="inline-flex rounded-lg border border-border-soft bg-chip p-0.5 text-[11px] font-medium">
+          <div className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium">
             {RANGES.map(r => {
               const active = !customFrom && !customTo && range === r.key;
               return (
                 <button
                   key={r.key}
+                  type="button"
+                  aria-pressed={active}
                   onClick={() => pickRange(r.key)}
                   // Superseded by a PR search: disabled, not hidden, and the
                   // selection survives so clearing the search restores it.
                   disabled={searchActive}
                   className={`px-2.5 py-1 rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${active
-                    ? 'bg-surface text-accent-text shadow-sm'
+                    ? 'bg-surface text-accent-ink shadow-sm'
                     : 'text-ink-tertiary hover:text-ink'}`}
                 >
                   {r.label}
@@ -722,7 +724,7 @@ export function PrOverviewPage() {
               <button
                 onClick={() => { setCustomFrom(''); setCustomTo(''); }}
                 disabled={searchActive}
-                className="ml-0.5 px-1.5 py-1 rounded-md text-ink-tertiary hover:text-rose-600 dark:hover:text-rose-400 disabled:cursor-not-allowed disabled:opacity-50"
+                className="ml-0.5 px-1.5 py-1 rounded-md text-ink-tertiary hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
                 title="Clear date range"
               >
                 ✕
@@ -758,7 +760,7 @@ export function PrOverviewPage() {
             </button>
           )}
         </div>
-        <div className="mt-1.5 flex items-center gap-2 rounded-lg border border-border-soft bg-surface px-2.5 py-1.5 focus-within:border-border-brand">
+        <div className="mt-1.5 flex items-center gap-2 rounded-lg border border-border-soft bg-surface px-2.5 py-1.5 focus-within:border-accent focus-within:ring-2 focus-within:ring-focus-ring">
           <Search className="w-3.5 h-3.5 text-ink-tertiary shrink-0" aria-hidden="true" />
           <input
             id="pr-number-search"
@@ -863,7 +865,7 @@ export function PrOverviewPage() {
           so the stale answer is already gone; the banner explains the gap rather
           than dressing it up.) */}
       {overview.isError && (
-        <div role="alert" className="rounded-2xl border border-border-soft bg-surface px-4 py-2.5 text-xs font-medium text-red-600 dark:text-red-400">
+        <div role="alert" className="rounded-2xl border border-border-soft bg-surface px-4 py-2.5 text-xs font-medium text-status-danger-text">
           Could not load this overview.
         </div>
       )}
@@ -904,12 +906,12 @@ export function PrOverviewPage() {
 
           {/* Resize strip */}
           {d.resized.count > 0 && (
-            <div className="flex items-center gap-3 flex-wrap rounded-xl border border-border-soft border-l-[3px] border-l-brand bg-gradient-to-r from-chip to-transparent px-4 py-3">
-              <RefreshCw className="w-4 h-4 text-accent-text" />
+            <div className="flex items-center gap-3 flex-wrap rounded-xl border border-border-soft border-l-[3px] border-l-accent bg-surface px-4 py-3">
+              <RefreshCw className="w-4 h-4 text-accent-ink" />
               <span className="text-[13px] text-ink-secondary">
                 <b className="text-ink">{d.resized.count} PRs re-sized</b> this period —{' '}
-                <span className="text-emerald-600 dark:text-emerald-400 font-semibold">{d.resized.grew} grew ↑</span>,{' '}
-                <span className="text-rose-600 dark:text-rose-400 font-semibold">{d.resized.shrank} shrank ↓</span>.
+                <span className="text-ink font-semibold">{d.resized.grew} grew ↑</span>,{' '}
+                <span className="text-ink font-semibold">{d.resized.shrank} shrank ↓</span>.
               </span>
               <span className="ml-auto text-[11px] text-ink-tertiary">Each PR counts once, at its latest sizing.</span>
             </div>
@@ -925,14 +927,14 @@ export function PrOverviewPage() {
                     <span className="w-3 h-3 rounded-sm" style={{ background: s.color }} /> {s.label}
                   </span>
                 ))}
-                <div className="inline-flex rounded-lg border border-border-soft bg-chip p-0.5 text-[11px] font-medium" role="group" aria-label="Chart granularity">
+                <div className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium" role="group" aria-label="Chart granularity">
                   {GRANULARITIES.map(g => (
                     <button
                       key={g.key}
                       onClick={() => setGran(g.key)}
                       aria-pressed={gran === g.key}
                       className={`px-2.5 py-1 rounded-md transition-colors ${gran === g.key
-                        ? 'bg-surface text-accent-text shadow-sm'
+                        ? 'bg-surface text-accent-ink shadow-sm'
                         : 'text-ink-tertiary hover:text-ink'}`}
                     >
                       {g.label}
@@ -1002,10 +1004,10 @@ export function PrOverviewPage() {
                 </thead>
                 <tbody className="divide-y divide-border-soft">
                   {d.byDeveloper.map(dev => (
-                    <tr key={dev.user_key} className="hover:bg-chip/50 transition-colors">
+                    <tr key={dev.user_key} className="hover:bg-accent-fill/50 transition-colors">
                       <td className="px-5 py-3">
                         <div className="flex items-center gap-2.5">
-                          <div className="w-7 h-7 rounded-lg bg-[image:var(--gradient-accent)] text-navy text-[10px] font-bold flex items-center justify-center shrink-0">
+                          <div className="w-7 h-7 rounded-lg bg-accent-fill text-accent-ink text-[10px] font-bold flex items-center justify-center shrink-0">
                             {dev.user_key.slice(0, 2).toUpperCase()}
                           </div>
                           <span className="font-mono text-[12px] text-ink-secondary truncate max-w-[200px]">{dev.user_key}</span>
@@ -1040,7 +1042,7 @@ export function PrOverviewPage() {
                 </thead>
                 <tbody className="divide-y divide-border-soft">
                   {d.byModel.map(m => (
-                    <tr key={m.model} className="hover:bg-chip/50 transition-colors">
+                    <tr key={m.model} className="hover:bg-accent-fill/50 transition-colors">
                       <td className="px-5 py-3">
                         <div className="font-mono text-[12px] text-ink-secondary">{m.model}</div>
                         {m.harnesses.length > 0 && <div className="text-[10px] text-ink-tertiary">via {m.harnesses.join(', ')}</div>}
@@ -1073,7 +1075,7 @@ export function PrOverviewPage() {
                   <div
                     key={`${band.label}-${i}`}
                     style={{ gridColumn: `span ${band.span}` }}
-                    className="text-center font-mono text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-tertiary border-b-2 border-border-brand pb-1"
+                    className="text-center font-mono text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-tertiary border-b-2 border-border-soft pb-1"
                   >
                     {band.label}
                   </div>
@@ -1088,12 +1090,12 @@ export function PrOverviewPage() {
                       key={day}
                       data-testid="heatmap-day"
                       className={`text-center rounded-md py-0.5 ${h.isToday
-                        ? 'bg-chip outline outline-1 outline-border-brand'
-                        : h.isWeekend ? 'bg-chip' : ''}`}
+                        ? 'bg-canvas outline outline-1 outline-accent'
+                        : h.isWeekend ? 'bg-canvas' : ''}`}
                     >
                       <span className={`block font-mono text-[8px] uppercase leading-tight ${h.isWeekend ? 'text-ink-tertiary' : 'text-ink-tertiary'}`}>{h.weekday}</span>
                       <span className={`block font-mono text-[11px] font-bold tabular-nums leading-tight ${h.isToday
-                        ? 'text-accent-text'
+                        ? 'text-accent-ink'
                         : h.isWeekend ? 'text-ink-tertiary' : 'text-ink-secondary'}`}>{h.dayNum}</span>
                     </div>
                   );
@@ -1110,8 +1112,8 @@ export function PrOverviewPage() {
                         <span title={dev.user_key} className="font-mono text-[11px] text-ink-tertiary truncate">{dev.user_key}</span>
                         {/* stacked vertically so long dev emails keep the width */}
                         <span className="ml-auto flex flex-col items-end gap-0.5 shrink-0">
-                          <span className="font-mono text-[9px] font-bold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-accent-text bg-chip border border-border-brand">{pct.prPct}% PRs</span>
-                          <span className="font-mono text-[9px] font-bold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-brand-dark dark:text-brand-light bg-mint/40 dark:bg-brand/10 border border-border-brand">{pct.ptsPct}% pts</span>
+                          <span className="font-mono text-[9px] font-bold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-accent-ink bg-accent-fill border border-accent">{pct.prPct}% PRs</span>
+                          <span className="font-mono text-[9px] font-bold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-ink-secondary bg-canvas border border-border-soft">{pct.ptsPct}% pts</span>
                         </span>
                       </div>
                       {axis.map((day, i) => {
@@ -1155,7 +1157,7 @@ export function PrOverviewPage() {
               defect). Coordinates are viewport-relative, from placeTooltip. */}
           {heatTip && (
             <div
-              className={`pointer-events-none fixed z-50 -translate-x-1/2 whitespace-nowrap rounded-md bg-surface text-ink border border-slate-200 dark:border-slate-700 font-mono text-[10px] px-2 py-1 shadow-lg ${heatTip.below ? '' : '-translate-y-full'}`}
+              className={`pointer-events-none fixed z-50 -translate-x-1/2 whitespace-nowrap rounded-md bg-surface text-ink border border-border-soft font-mono text-[10px] px-2 py-1 shadow-lg ${heatTip.below ? '' : '-translate-y-full'}`}
               style={{ left: heatTip.x, top: heatTip.y }}
             >
               {heatTip.text}
@@ -1166,9 +1168,9 @@ export function PrOverviewPage() {
           {/* Size model explainer */}
           <section className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5">
             <h2 className="text-sm font-semibold text-ink mb-3">How size is derived</h2>
-            <div className="font-mono text-[13px] rounded-lg bg-chip border border-border-soft px-4 py-3 text-ink-secondary">
+            <div className="font-mono text-[13px] rounded-lg bg-canvas border border-border-soft px-4 py-3 text-ink-secondary">
               <span className="text-ink-tertiary">// count leaves — the unit of work in each branch</span><br />
-              <span className="text-accent-text">size_points</span> = leafStory·<b>4</b> + task·<b>2</b> + bug·<b>1</b>
+              <span className="text-accent-ink">size_points</span> = leafStory·<b>4</b> + task·<b>2</b> + bug·<b>1</b>
             </div>
             <p className="text-[12px] text-ink-tertiary mt-3 max-w-2xl">
               An Epic rolls up its Stories, and a Story rolls up its Tasks &amp; Bugs — so summing all four tiers

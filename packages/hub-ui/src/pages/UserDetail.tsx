@@ -7,6 +7,8 @@ import { TimelineBar } from '../components/TimelineBar';
 import { csvParam } from '../urlParams';
 import { FacetMultiselect } from '../components/FacetMultiselect';
 import { MetricsTilesRow, MetricsTotals } from '../components/MetricsTilesRow';
+import { Badge, ChipRow } from '../components/ui';
+import { eventTone, itemTypeClass } from '../eventTone';
 import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
 import { fmtDateTime, browserTimezone } from '../dates';
@@ -43,67 +45,6 @@ function endOfDateInput(value: string): string {
   return new Date(`${value}T23:59:59.999`).toISOString();
 }
 
-const TYPE_BADGE: Record<string, string> = {
-  'item.created':       'bg-chip text-accent-text border-border-brand',
-  'item.updated':       'bg-mint/40 dark:bg-brand/10 text-brand-dark dark:text-brand-light border-border-brand',
-  'item.moved':         'bg-mint/40 dark:bg-brand/10 text-brand-dark dark:text-brand-light border-border-brand',
-  'step.transitioned':  'bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800',
-  'validate.invoked':   'bg-chip text-ink-secondary border-border-soft',
-  'validate.passed':    'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800',
-  'validate.failed':    'bg-rose-50 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800',
-  'comment.added':      'bg-pink-50 dark:bg-pink-900/30 text-pink-700 dark:text-pink-300 border-pink-200 dark:border-pink-800',
-  'test.logged':        'bg-yellow-50 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300 border-yellow-200 dark:border-yellow-800',
-  'item.closed':        'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800',
-  'item.deleted':       'bg-rose-50 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800',
-};
-const DEFAULT_BADGE = 'bg-chip text-ink-secondary border-border-soft';
-
-const ITEM_TYPE_BADGE: Record<string, string> = {
-  EPIC:  'bg-mint/40 dark:bg-brand/10 text-brand-dark dark:text-brand-light border-border-brand',
-  STORY: 'bg-chip text-accent-text border-border-brand',
-  TASK:  'bg-chip text-ink-secondary border-border-soft',
-  BUG:   'bg-rose-50 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800',
-};
-
-function ChipRow({ label, options, selected, onToggle, onClear, optionLabel }: {
-  label: string;
-  options: string[];
-  selected: Set<string>;
-  onToggle: (v: string) => void;
-  onClear: () => void;
-  optionLabel?: (v: string) => string;
-}) {
-  if (options.length === 0) return null;
-  return (
-    <div>
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{label}</h3>
-        {selected.size > 0 && (
-          <button onClick={onClear} className="text-[11px] font-medium text-ink-tertiary hover:text-rose-600 dark:hover:text-rose-400">
-            Clear ({selected.size})
-          </button>
-        )}
-      </div>
-      <div className="mt-1.5 flex flex-wrap gap-1.5">
-        {options.map(t => {
-          const on = selected.has(t);
-          return (
-            <button
-              key={t}
-              onClick={() => onToggle(t)}
-              title={t}
-              className={`px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors max-w-[260px] truncate ${on
-                ? 'text-accent-text border-border-brand bg-chip'
-                : 'bg-surface border-border-soft text-ink-secondary hover:border-border-brand hover:text-accent-text'}`}
-            >
-              {optionLabel ? optionLabel(t) : t}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 export function UserDetailPage() {
   const { userKey = '' } = useParams();
@@ -232,16 +173,16 @@ export function UserDetailPage() {
           deliberately not stored, so without this the trip out and back
           silently widens to every hub — the same drop, in the other direction. */}
       <Link to={`/${hubCsv ? `?${new URLSearchParams({ childHubId: hubCsv })}` : ''}`}
-        className="inline-flex items-center gap-1.5 text-[12px] text-ink-tertiary hover:text-accent-text">
+        className="inline-flex items-center gap-1.5 text-[12px] text-ink-tertiary hover:text-accent-ink">
         <ArrowLeft className="w-3.5 h-3.5" /> Back to org
       </Link>
 
       <header className="flex items-center gap-4">
-        <div className="w-12 h-12 rounded-2xl bg-[image:var(--gradient-accent)] text-navy text-base font-bold flex items-center justify-center shadow-sm">
+        <div className="w-12 h-12 rounded-2xl bg-accent-fill text-accent-ink text-base font-bold flex items-center justify-center">
           {decoded.slice(0, 2).toUpperCase()}
         </div>
         <div className="min-w-0">
-          <p className="text-[11px] uppercase tracking-[0.18em] text-accent-text font-semibold">User</p>
+          <p className="text-[11px] uppercase tracking-[0.18em] text-accent-ink font-semibold">User</p>
           <h1 className="mt-0.5 text-xl font-bold tracking-tight font-mono text-ink truncate">{decoded}</h1>
           {childHubs.length > 0 && (
             <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-ink-tertiary">
@@ -262,7 +203,7 @@ export function UserDetailPage() {
 
       <section className="space-y-4 p-5 bg-card-glass backdrop-blur border border-border-soft rounded-2xl">
         <div className="flex items-center gap-2">
-          <GitBranch className="w-4 h-4 text-accent-text" />
+          <GitBranch className="w-4 h-4 text-accent-ink" />
           <h2 className="text-sm font-semibold text-ink">Filters</h2>
         </div>
         <FacetMultiselect
@@ -290,17 +231,19 @@ export function UserDetailPage() {
         <div>
           <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary mb-1.5">Period</h3>
           <div className="flex flex-wrap items-center gap-2">
-            <div className="inline-flex rounded-lg border border-border-soft bg-chip p-0.5 text-[11px] font-medium">
+            <div className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium">
               {RANGES.map(r => (
                 <button
                   key={r.key}
+                  type="button"
+                  aria-pressed={range === r.key && !customFromIso && !customToIso}
                   onClick={() => {
                     setRange(r.key);
                     setCustomStart('');
                     setCustomEnd('');
                   }}
                   className={`px-2.5 py-1 rounded-md transition-colors ${range === r.key && !customFromIso && !customToIso
-                    ? 'bg-surface text-accent-text shadow-sm'
+                    ? 'bg-surface text-accent-ink shadow-sm'
                     : 'text-ink-tertiary hover:text-ink'}`}
                 >
                   {r.label}
@@ -349,21 +292,19 @@ export function UserDetailPage() {
         </div>
         <div className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl divide-y divide-border-soft overflow-hidden">
           {(tl.data?.events ?? []).map(e => {
-            const badge = TYPE_BADGE[e.type] ?? DEFAULT_BADGE;
-            const itemBadge = e.item_type ? (ITEM_TYPE_BADGE[e.item_type] ?? DEFAULT_BADGE) : null;
             return (
               <details key={e.event_id} className="group">
-                <summary className="flex items-center gap-3 px-5 py-2.5 cursor-pointer list-none hover:bg-chip transition-colors">
+                <summary className="flex items-center gap-3 px-5 py-2.5 cursor-pointer list-none hover:bg-canvas transition-colors">
                   <ChevronDown className="w-3.5 h-3.5 text-ink-tertiary group-open:rotate-180 transition-transform shrink-0" />
-                  <span className={`px-2 py-0.5 rounded-md text-[10px] font-mono border ${badge}`}>{e.type}</span>
-                  {itemBadge && <span className={`px-2 py-0.5 rounded-md text-[10px] font-mono border ${itemBadge}`}>{e.item_type}</span>}
+                  <Badge tone={eventTone(e.type)} className="font-mono text-[10px] font-medium">{e.type}</Badge>
+                  {e.item_type && <span className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-semibold border ${itemTypeClass(e.item_type)}`}>{e.item_type}</span>}
                   {e.external_id && (
-                    <span title={`External tracker: ${e.external_id}`} className="px-2 py-0.5 rounded-md text-[10px] font-mono bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
+                    <span title={`External tracker: ${e.external_id}`} className="px-2 py-0.5 rounded-md text-[10px] font-mono border border-transparent bg-accent-fill text-accent-ink">
                       {e.external_id}
                     </span>
                   )}
                   {e.remote_url && (
-                    <span title={e.remote_url} className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono bg-chip text-ink-tertiary border border-border-soft max-w-[180px] truncate">
+                    <span title={e.remote_url} className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono bg-canvas text-ink-tertiary border border-border-soft max-w-[180px] truncate">
                       <GitBranch className="w-2.5 h-2.5 shrink-0" /> {shortRemote(e.remote_url)}
                     </span>
                   )}
@@ -373,14 +314,14 @@ export function UserDetailPage() {
                   {e.reporting_version && (
                     <span
                       title={`Emitted by AgenFK ${e.reporting_version} (X-Agenfk-Version header)`}
-                      className="hidden md:inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-mono bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 shrink-0"
+                      className="hidden md:inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-mono bg-canvas text-ink-tertiary border border-border-soft shrink-0"
                     >
                       v{e.reporting_version}
                     </span>
                   )}
                   <span className="text-[11px] text-ink-tertiary tabular-nums shrink-0">{formatTime(e.occurred_at)}</span>
                 </summary>
-                <pre className="px-5 pb-3 text-[11px] font-mono text-ink-secondary whitespace-pre-wrap break-words bg-chip/60 border-t border-border-soft -mt-0.5">{JSON.stringify(e.payload, null, 2)}</pre>
+                <pre className="px-5 pb-3 text-[11px] font-mono text-ink-secondary whitespace-pre-wrap break-words bg-canvas/60 border-t border-border-soft -mt-0.5">{JSON.stringify(e.payload, null, 2)}</pre>
               </details>
             );
           })}

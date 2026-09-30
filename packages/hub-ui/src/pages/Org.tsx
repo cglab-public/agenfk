@@ -6,6 +6,7 @@ import { api } from '../api';
 import { TimelineBar } from '../components/TimelineBar';
 import { FacetMultiselect } from '../components/FacetMultiselect';
 import { MetricsTilesRow, MetricsTotals } from '../components/MetricsTilesRow';
+import { ChipRow } from '../components/ui';
 import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
 import { fmtRelative } from '../dates';
@@ -29,45 +30,6 @@ interface ItemTypesResponse { itemTypes: string[]; counts?: Record<string, numbe
 
 const KNOWN_ITEM_TYPES = ['EPIC', 'STORY', 'TASK', 'BUG'] as const;
 
-function ChipRow({ label, options, selected, onToggle, onClear, optionLabel }: {
-  label: string;
-  options: string[];
-  selected: Set<string>;
-  onToggle: (v: string) => void;
-  onClear: () => void;
-  optionLabel?: (v: string) => string;
-}) {
-  if (options.length === 0) return null;
-  return (
-    <div>
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{label}</h3>
-        {selected.size > 0 && (
-          <button onClick={onClear} className="text-[11px] font-medium text-ink-tertiary hover:text-rose-600 dark:hover:text-rose-400">
-            Clear ({selected.size})
-          </button>
-        )}
-      </div>
-      <div className="mt-1.5 flex flex-wrap gap-1.5">
-        {options.map(t => {
-          const on = selected.has(t);
-          return (
-            <button
-              key={t}
-              onClick={() => onToggle(t)}
-              title={t}
-              className={`px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors max-w-[260px] truncate ${on
-                ? 'text-accent-text border-border-brand bg-chip'
-                : 'bg-surface border-border-soft text-ink-secondary hover:border-border-brand hover:text-accent-text'}`}
-            >
-              {optionLabel ? optionLabel(t) : t}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 const formatLastSeen = fmtRelative;
 
@@ -168,7 +130,7 @@ export function OrgPage() {
   return (
     <div className="max-w-[1200px] mx-auto space-y-6">
       <header>
-        <p className="text-[11px] uppercase tracking-[0.18em] text-accent-text font-semibold">Dashboard</p>
+        <p className="text-[11px] uppercase tracking-[0.18em] text-accent-ink font-semibold">Dashboard</p>
         <h1 className="mt-1 text-2xl font-bold tracking-tight text-ink">Organization rollup</h1>
         <p className="mt-1 text-sm text-ink-tertiary">Fleet-wide AgEnFK activity across every connected installation.</p>
       </header>
@@ -177,7 +139,7 @@ export function OrgPage() {
 
       <section className="space-y-4 p-5 bg-card-glass backdrop-blur border border-border-soft rounded-2xl">
         <div className="flex items-center gap-2">
-          <GitBranch className="w-4 h-4 text-accent-text" />
+          <GitBranch className="w-4 h-4 text-accent-ink" />
           <h2 className="text-sm font-semibold text-ink">Filters</h2>
           <span className="text-[11px] text-ink-tertiary">all queries below honor these</span>
         </div>
@@ -217,13 +179,15 @@ export function OrgPage() {
         <ChipRow label="Event type" options={types} selected={eventTypeSel.set} onToggle={eventTypeSel.toggle} onClear={eventTypeSel.clear} />
         <div>
           <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary mb-1.5">Period</h3>
-          <div className="inline-flex rounded-lg border border-border-soft bg-chip p-0.5 text-[11px] font-medium">
+          <div className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium">
             {RANGES.map(r => (
               <button
                 key={r.key}
+                type="button"
+                aria-pressed={range === r.key}
                 onClick={() => setRange(r.key)}
                 className={`px-2.5 py-1 rounded-md transition-colors ${range === r.key
-                  ? 'bg-surface text-accent-text shadow-sm'
+                  ? 'bg-surface text-accent-ink shadow-sm'
                   : 'text-ink-tertiary hover:text-ink'}`}
               >
                 {r.label}
@@ -256,18 +220,18 @@ export function OrgPage() {
               // person aggregated across every hub would contradict the board
               // just left, with nothing saying the scope had been dropped.
               to={`/users/${encodeURIComponent(u.user_key)}${hubQs}`}
-              className="group flex items-center justify-between gap-3 px-5 py-3 hover:bg-chip/50 transition-colors"
+              className="group flex items-center justify-between gap-3 px-5 py-3 hover:bg-accent-fill/50 transition-colors"
             >
               <div className="flex items-center gap-3 min-w-0">
-                <div className="w-8 h-8 rounded-full bg-[image:var(--gradient-accent)] text-navy text-[11px] font-bold flex items-center justify-center shrink-0">
+                <div className="w-8 h-8 rounded-full bg-accent-fill text-accent-ink text-[11px] font-bold flex items-center justify-center shrink-0">
                   {u.user_key.slice(0, 2).toUpperCase()}
                 </div>
                 <div className="min-w-0">
-                  <div className="font-mono text-[13px] text-ink truncate group-hover:text-accent-text transition-colors">{u.user_key}</div>
+                  <div className="font-mono text-[13px] text-ink truncate group-hover:text-accent-ink transition-colors">{u.user_key}</div>
                   <div className="text-[11px] text-ink-tertiary">{u.events_count.toLocaleString()} events · last {formatLastSeen(u.last_seen)}</div>
                 </div>
               </div>
-              <ChevronRight className="w-4 h-4 text-ink-tertiary group-hover:text-accent-text transition-colors shrink-0" />
+              <ChevronRight className="w-4 h-4 text-ink-tertiary group-hover:text-accent-ink transition-colors shrink-0" />
             </Link>
           ))}
           {users.data?.length === 0 && (

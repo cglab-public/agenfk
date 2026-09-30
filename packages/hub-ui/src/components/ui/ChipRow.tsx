@@ -15,9 +15,9 @@ export function ChipRow({ label, options, selected, onToggle, onClear, optionLab
   return (
     <div>
       <div className="flex items-center justify-between gap-3 flex-wrap">
-        <h3 id={id} className="text-xs font-semibold text-ink-tertiary">{label}</h3>
+        <h3 id={id} className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{label}</h3>
         {selected.size > 0 && (
-          <button type="button" onClick={onClear} className="text-xs font-medium text-ink-tertiary hover:text-status-danger-text">
+          <button type="button" onClick={onClear} className="text-xs font-medium text-ink-tertiary hover:text-ink">
             Clear ({selected.size})
           </button>
         )}

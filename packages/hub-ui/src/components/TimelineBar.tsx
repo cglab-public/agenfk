@@ -169,13 +169,15 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
         <div className="flex items-center gap-2">
           {/* Range picker only shown when not controlled externally (standalone usage) */}
           {rangeProp == null && (
-            <div className="inline-flex rounded-lg border border-border-soft bg-chip p-0.5 text-[11px] font-medium">
+            <div className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium">
               {RANGES.map(r => (
                 <button
                   key={r.key}
+                  type="button"
+                  aria-pressed={range === r.key}
                   onClick={() => setRange(r.key)}
                   className={`px-2.5 py-1 rounded-md transition-colors ${range === r.key
-                    ? 'bg-card-glass text-accent-text shadow-sm'
+                    ? 'bg-card-glass text-accent-ink shadow-sm'
                     : 'text-ink-tertiary hover:text-ink'}`}
                 >
                   {r.label}
@@ -183,18 +185,20 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
               ))}
             </div>
           )}
-          <div className="inline-flex rounded-lg border border-border-soft bg-chip p-0.5 text-[11px] font-medium">
+          <div className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium">
             {(['day', 'hour'] as const).map(b => {
               const active = bucket === b;
               const disabled = isToday && b === 'day';
               return (
                 <button
                   key={b}
+                  type="button"
+                  aria-pressed={active}
                   onClick={() => !disabled && setBucketSel(b)}
                   disabled={disabled}
                   title={disabled ? 'Today view is hourly' : undefined}
                   className={`px-2.5 py-1 rounded-md transition-colors ${active
-                    ? 'bg-card-glass text-accent-text shadow-sm'
+                    ? 'bg-card-glass text-accent-ink shadow-sm'
                     : disabled
                       ? 'text-ink-tertiary/50 cursor-not-allowed'
                       : 'text-ink-tertiary hover:text-ink'}`}

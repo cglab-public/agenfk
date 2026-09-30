@@ -112,7 +112,7 @@ export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: P
                 className={`px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors ${
                   off
                     ? 'text-ink-tertiary border-border-soft opacity-50 cursor-not-allowed'
-                    : 'text-ink-secondary border-border-soft hover:text-accent-text hover:border-border-brand'}`}
+                    : 'text-ink-secondary border-border-soft hover:text-accent-ink hover:border-accent'}`}
               >
                 {label}
                 <span className="ml-1 text-ink-tertiary">{n}</span>
@@ -141,7 +141,7 @@ export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: P
                 className={`px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors ${
                   off
                     ? 'text-ink-tertiary border-border-soft opacity-50 cursor-not-allowed'
-                    : 'text-ink-secondary border-border-soft hover:text-accent-text hover:border-border-brand'}`}
+                    : 'text-ink-secondary border-border-soft hover:text-accent-ink hover:border-accent'}`}
               >
                 {LICENSE_CLASS_LABEL[c]}
                 <span className="ml-1 text-ink-tertiary">{n}</span>

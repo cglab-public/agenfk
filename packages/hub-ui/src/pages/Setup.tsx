@@ -40,11 +40,11 @@ export function SetupPage() {
             placeholder="bootstrap token (from hub startup logs)"
             autoComplete="off"
             spellCheck={false}
-            className="w-full px-3 py-2 border border-border-soft rounded-lg bg-canvas text-ink font-mono text-sm focus:outline-none focus:ring-2 focus:ring-brand"
+            className="w-full px-3 py-2 border border-border-soft rounded-lg bg-canvas text-ink font-mono text-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring"
           />
-          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="admin email" className="w-full px-3 py-2 border border-border-soft rounded-lg bg-canvas text-ink focus:outline-none focus:ring-2 focus:ring-brand" />
-          <input type="password" minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="password (≥8 chars)" className="w-full px-3 py-2 border border-border-soft rounded-lg bg-canvas text-ink focus:outline-none focus:ring-2 focus:ring-brand" />
-          <button type="submit" className="w-full px-3 py-2 bg-[image:var(--gradient-accent)] text-navy shadow-glow rounded-lg font-bold disabled:opacity-50" disabled={!submittable}>
+          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="admin email" className="w-full px-3 py-2 border border-border-soft rounded-lg bg-canvas text-ink focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring" />
+          <input type="password" minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="password (≥8 chars)" className="w-full px-3 py-2 border border-border-soft rounded-lg bg-canvas text-ink focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring" />
+          <button type="submit" className="w-full px-3 py-2 bg-brand text-navy rounded-lg font-bold disabled:opacity-50" disabled={!submittable}>
             {setup.isPending ? 'Creating…' : 'Create admin'}
           </button>
           {err && <div className="text-sm text-danger-text">{err}</div>}
