@@ -170,6 +170,11 @@ const SECTIONS: Array<[string, React.ReactNode, () => Promise<unknown>]> = [
     (name.closest('button') as HTMLElement).click();
     return screen.findAllByText(/Available/);
   }],
+  ['Flows registry', <AdminFlows />, async () => {
+    // The registry panels have their own tab now.
+    (await screen.findByRole('tab', { name: 'Registry' })).click();
+    return screen.findByTestId('admin-registry-save');
+  }],
   ['Upgrades', <AdminUpgrades />, () => screen.findAllByText(/2\.0\.1/)],
   ['Repoint', <AdminRepoint />, () => screen.findAllByText(/hub\.acme\.dev/)],
   ['Identities', <AdminIdentities />, () => screen.findAllByText(/carol@acme\.dev/)],

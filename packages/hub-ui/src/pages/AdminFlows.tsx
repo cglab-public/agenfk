@@ -154,6 +154,15 @@ export function AdminFlows() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [initialFlowId, setInitialFlowId] = useState<string | undefined>(undefined);
   const [expandedFlowId, setExpandedFlowId] = useState<string | null>(null);
+  // Flows / Registry. Kept in the URL hash, not router state: the page also
+  // renders outside a router (its tests, the editor harness).
+  const [tab, setTabState] = useState<'flows' | 'registry'>(() =>
+    typeof window !== 'undefined' && window.location.hash === '#registry' ? 'registry' : 'flows');
+  const setTab = (t: 'flows' | 'registry') => {
+    setTabState(t);
+    const url = `${window.location.pathname}${window.location.search}${t === 'registry' ? '#registry' : ''}`;
+    window.history.replaceState(window.history.state, '', url);
+  };
   // Which registry the editor's second tab reads. Held in a ref-like getter so
   // the module-level client factory below can read the current value without
   // being rebuilt on every render (a new client object each render would
@@ -220,7 +229,7 @@ export function AdminFlows() {
         <div>
           <h2 className="text-sm font-semibold text-ink">Org-managed flows</h2>
           <p className="mt-0.5 text-xs text-ink-tertiary">
-            Define and assign workflow flows. Connected installations adopt the most specific assignment (installation &gt; project &gt; org).
+            Define and assign workflow flows. An installation runs the most specific assignment: an installation override, then a repo override, then the org default.
           </p>
         </div>
         <button
@@ -228,14 +237,35 @@ export function AdminFlows() {
           onClick={() => openEditor()}
           data-testid="admin-flows-new-btn"
         >
-          <Plus className="w-3.5 h-3.5" /> New / Import
+          <Plus className="w-3.5 h-3.5" /> New flow
         </button>
       </header>
 
+      <div role="tablist" aria-label="Flows sections" className="inline-flex gap-0.5 p-1 rounded-xl border border-border-soft bg-surface">
+        {(['flows', 'registry'] as const).map(t => (
+          <button
+            key={t}
+            type="button"
+            role="tab"
+            id={`flows-tab-${t}`}
+            aria-selected={tab === t}
+            aria-controls={`flows-panel-${t}`}
+            onClick={() => setTab(t)}
+            className={'px-3 py-1.5 rounded-lg text-[12px] font-semibold transition-colors ' + (tab === t
+              ? 'bg-accent-fill text-accent-ink'
+              : 'text-ink-secondary hover:bg-accent-fill/50 hover:text-ink')}
+          >
+            {t === 'flows' ? 'Flows' : 'Registry'}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'flows' && (
+      <div role="tabpanel" id="flows-panel-flows" aria-labelledby="flows-tab-flows" className="space-y-4">
       <div className="bg-surface border border-border-soft rounded-2xl divide-y divide-border-soft">
         {flows.length === 0 && (
           <div className="p-6 text-sm text-ink-tertiary">
-            No flows yet. Click <span className="font-semibold">New / Import</span> to create one or pull from the community registry.
+            No flows yet. Click <span className="font-semibold">New flow</span> to create one or import one from the community registry.
           </div>
         )}
         {flows.map((f) => {
@@ -307,9 +337,15 @@ export function AdminFlows() {
       </div>
 
       <FlowDispatches flows={flows} isParent={isParent} hasLiveChildren={childHubs.length > 0} />
+      </div>
+      )}
 
-      <RegistryRepoPanel />
-      <RegistryPullsPanel />
+      {tab === 'registry' && (
+        <div role="tabpanel" id="flows-panel-registry" aria-labelledby="flows-tab-registry" className="space-y-4">
+          <RegistryRepoPanel />
+          <RegistryPullsPanel />
+        </div>
+      )}
 
       <FlowEditorModal
         isOpen={editorOpen}
@@ -515,7 +551,7 @@ function AssignmentsPanel({
       <ScopeSection
         scope="repo"
         label="Repo overrides"
-        chipClass="bg-canvas text-ink-secondary border border-border-soft"
+        chipClass="text-ink-secondary"
         rows={assignments.filter(a => a.scope === 'repo')}
         onRemove={(targetId) => remove.mutate({ scope: 'repo', targetId })}
         onAdd={() => setAdding('repo')}
@@ -525,7 +561,7 @@ function AssignmentsPanel({
       <ScopeSection
         scope="installation"
         label="Installation overrides"
-        chipClass="bg-canvas text-ink-secondary border border-border-soft"
+        chipClass="text-ink-secondary"
         rows={assignments.filter(a => a.scope === 'installation')}
         onRemove={(targetId) => remove.mutate({ scope: 'installation', targetId })}
         onAdd={() => setAdding('installation')}
@@ -819,7 +855,7 @@ function ScopeSection({
       )}
       {rows.map((r) => (
         <div key={r.targetId} className="flex items-center justify-between bg-surface border border-border-soft rounded-md px-2 py-1.5">
-          <span className={'text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold ' + chipClass}>
+          <span className={'min-w-0 truncate font-mono text-[11px] ' + chipClass} title={r.remoteUrl ?? r.targetId}>
             {r.remoteUrl ?? r.targetId}
           </span>
           <button
