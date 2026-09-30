@@ -70,6 +70,7 @@
   --size-3: #6364e2;
   --size-4: #4644c2;
   --size-5: #2d2a8c;    /* XL */
+  --on-size-1: #000f3b;  --on-size-2: #000f3b;  --on-size-3: #ffffff;  --on-size-4: #ffffff;  --on-size-5: #ffffff;
   /* Status is reserved for state and always ships with an icon or a word. */
   --status-ok-text: #16703f;      --status-ok-bg: rgba(26, 127, 75, .10);
   --status-warn-text: #8a5d00;    --status-warn-bg: rgba(191, 135, 0, .12);
@@ -133,6 +134,7 @@
     --size-3: #8081ee;
     --size-4: #aaacf6;
     --size-5: #d4d5fb;    /* XL */
+    --on-size-1: #ffffff;  --on-size-2: #ffffff;  --on-size-3: #000f3b;  --on-size-4: #000f3b;  --on-size-5: #000f3b;
     --status-ok-text: #5fd39a;      --status-ok-bg: rgba(95, 211, 154, .12);
     --status-warn-text: #f5c451;    --status-warn-bg: rgba(245, 196, 81, .13);
     --status-danger-text: #f26d7e;  --status-danger-bg: rgba(242, 109, 126, .14);
@@ -202,6 +204,7 @@
   --size-3: #8081ee;
   --size-4: #aaacf6;
   --size-5: #d4d5fb;    /* XL */
+  --on-size-1: #ffffff;  --on-size-2: #ffffff;  --on-size-3: #000f3b;  --on-size-4: #000f3b;  --on-size-5: #000f3b;
   --status-ok-text: #5fd39a;      --status-ok-bg: rgba(95, 211, 154, .12);
   --status-warn-text: #f5c451;    --status-warn-bg: rgba(245, 196, 81, .13);
   --status-danger-text: #f26d7e;  --status-danger-bg: rgba(242, 109, 126, .14);
@@ -279,6 +282,7 @@
   --size-3: #6364e2;
   --size-4: #4644c2;
   --size-5: #2d2a8c;    /* XL */
+  --on-size-1: #000f3b;  --on-size-2: #000f3b;  --on-size-3: #ffffff;  --on-size-4: #ffffff;  --on-size-5: #ffffff;
   /* Status is reserved for state and always ships with an icon or a word. */
   --status-ok-text: #16703f;      --status-ok-bg: rgba(26, 127, 75, .10);
   --status-warn-text: #8a5d00;    --status-warn-bg: rgba(191, 135, 0, .12);
@@ -372,6 +376,11 @@
   --color-status-danger-bg: var(--status-danger-bg);
   --color-status-info-text: var(--status-info-text);
   --color-status-info-bg: var(--status-info-bg);
+  --color-on-size-1: var(--on-size-1);
+  --color-on-size-2: var(--on-size-2);
+  --color-on-size-3: var(--on-size-3);
+  --color-on-size-4: var(--on-size-4);
+  --color-on-size-5: var(--on-size-5);
   --color-type-epic: var(--type-epic);
   --color-type-story: var(--type-story);
   --color-type-task: var(--type-task);

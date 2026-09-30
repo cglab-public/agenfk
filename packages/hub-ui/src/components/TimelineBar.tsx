@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api';
+import { seriesColours, ALL_EVENTS_COLOR } from '../chartColours';
 import {
   buildAxis,
   effectiveBucket,
@@ -36,10 +37,6 @@ const RANGES: Array<{ key: RangeKey; label: string }> = [
   { key: '90d', label: '90d' },
 ];
 
-// Teal ramp matching the CG/lab brand accent when no specific type selected.
-const ACCENT = '#04cc98';
-const TYPE_COLORS = ['#04cc98', '#7fe5ca', '#056f71', '#4f8ef7', '#f59e0b', '#f26d7e', '#ec4899', '#0d9488', '#eab308', '#3b82f6', '#22d3ee', '#06b6d4'];
-const colorForType = (type: string, idx: number) => TYPE_COLORS[idx % TYPE_COLORS.length];
 
 // "Nice" Y-axis ticks for an integer-count chart. Returns at most 5 evenly-spaced values.
 function niceTicks(max: number): number[] {
@@ -122,6 +119,8 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
   }, [q.data]);
 
   const stackedTypes = types && types.length > 0 ? types : null;
+  // One lookup for bars, legend and hover list, so they cannot disagree.
+  const colours = useMemo(() => seriesColours(stackedTypes ?? []), [stackedTypes?.join(',')]);
 
   const maxTotal = useMemo(() => {
     let m = 0;
@@ -231,8 +230,8 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
             const total = b?.total ?? 0;
             const x = m.left + i * (barW + barGap);
             const segs = stackedTypes
-              ? stackedTypes.map((tp, idx) => ({ type: tp, n: b?.by_type[tp] ?? 0, color: colorForType(tp, idx) }))
-              : [{ type: 'all', n: total, color: ACCENT }];
+              ? stackedTypes.map(tp => ({ type: tp, n: b?.by_type[tp] ?? 0, color: colours[tp] }))
+              : [{ type: 'all', n: total, color: ALL_EVENTS_COLOR }];
             let yCursor = m.top + innerH;
             const barH = (total / yTop) * innerH;
             const isHover = hoverIdx === i;
@@ -323,12 +322,13 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
                 {Object.entries(hoveredBucket.by_type)
                   .sort((a, b) => b[1] - a[1])
                   .map(([k, v]) => {
-                    const idx = stackedTypes ? stackedTypes.indexOf(k) : -1;
-                    const color = idx >= 0 ? colorForType(k, idx) : ACCENT;
+                    // A swatch only means something when the chart is split by
+                    // type; unstacked, every row would get the same colour.
+                    const stacked = !!stackedTypes?.includes(k);
                     return (
                       <li key={k} className="flex items-center justify-between gap-3">
                         <span className="flex items-center gap-1.5 min-w-0">
-                          <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ background: color }} />
+                          {stacked && <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ background: colours[k] }} />}
                           <span className="font-mono text-ink-secondary truncate">{k}</span>
                         </span>
                         <span className="font-semibold text-ink">{v}</span>
@@ -344,9 +344,9 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
       {/* Legend (only when filtered by type) */}
       {stackedTypes && stackedTypes.length > 0 && (
         <footer className="flex flex-wrap gap-x-4 gap-y-1.5 px-5 pb-4 pt-1 text-[11px] text-ink-tertiary">
-          {stackedTypes.map((tp, idx) => (
+          {stackedTypes.map(tp => (
             <span key={tp} className="flex items-center gap-1.5">
-              <span className="inline-block w-2 h-2 rounded-sm" style={{ background: colorForType(tp, idx) }} />
+              <span className="inline-block w-2 h-2 rounded-sm" style={{ background: colours[tp] }} />
               <span className="font-mono">{tp}</span>
             </span>
           ))}

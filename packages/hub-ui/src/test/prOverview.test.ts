@@ -38,20 +38,16 @@ describe('SIZE_META', () => {
     expect(SIZE_META.map(s => s.key)).toEqual(['xs', 's', 'm', 'l', 'xl']);
     for (const s of SIZE_META) {
       expect(s.label).toBeTruthy();
-      expect(s.color).toMatch(/^#/);
+      // Theme tokens (CGLAB-434): each theme has its own validated steps.
+      expect(s.color).toMatch(/^var\(--size-[1-5]\)$/);
     }
   });
 
   it('gives each step a badge text color with legible contrast on its own fill (CGLAB-131 drill-down)', () => {
-    // The ramp is light → dark on the dark canvas. Text rendered ON a fill
-    // (the drill-down modal badge) must not use one fixed color: white on the
-    // near-white light end reads as a blank white box. Light steps take the
-    // dark primary ink, dark steps take white.
-    for (const s of ['xs', 's', 'm'] as const) {
-      expect(SIZE_META.find(x => x.key === s)!.text).toBe('#000f3b');
-    }
-    for (const s of ['l', 'xl'] as const) {
-      expect(SIZE_META.find(x => x.key === s)!.text).toBe('#ffffff');
-    }
+    // Text rendered ON a fill (the drill-down modal badge) must not use one
+    // fixed color: the ramp's light end reads as a blank box under white text.
+    // Each step has its own ink token; visualSystemTokens.test.ts checks every
+    // ink passes AA on its fill in every theme.
+    SIZE_META.forEach((s, i) => expect(s.text).toBe(`var(--on-size-${i + 1})`));
   });
 });

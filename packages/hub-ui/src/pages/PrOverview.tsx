@@ -14,6 +14,7 @@ import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useSettledKey } from '../hooks/useSettledKey';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
 import { SIZE_META, type SizeKey, buildDayAxis, pctDelta } from '../prOverview';
+import { heatColor, SPARK_STROKE } from '../chartColours';
 import { parsePrQuery } from '../prSearch';
 import { buildMonthBands, dayHeaderInfo, contributionPcts, cellTooltip, placeTooltip } from '../prPerDay';
 import { buildVolumeSeries, type Granularity } from '../prVolumeGranularity';
@@ -123,9 +124,10 @@ function Tile({ label, value, children }: { label: string; value: React.ReactNod
 
 /** Horizontal stacked size-mix bar for one row of size counts. */
 function MixBar({ sizes, total }: { sizes: SizeDist; total: number }) {
-  if (total === 0) return <div className="h-2 w-full rounded-full bg-chip" />;
+  if (total === 0) return <div className="h-2 w-full rounded-full bg-border-soft" />;
   return (
-    <div className="flex h-2 w-full rounded-full overflow-hidden bg-chip">
+    // 2px gaps keep neighbouring ramp steps apart; the track is neutral.
+    <div className="flex gap-[2px] h-2 w-full rounded-full overflow-hidden bg-border-soft">
       {SIZE_META.filter(s => sizes[s.key] > 0).map(s => (
         <span key={s.key} title={`${s.label}: ${sizes[s.key]}`} style={{ background: s.color, width: `${(sizes[s.key] / total) * 100}%` }} />
       ))}
@@ -159,7 +161,7 @@ function Sparkline({ daily, axis }: { daily: Record<string, number>; axis: strin
   const pts = values.map((v, i) => `${(i * step).toFixed(1)},${(h - (v / max) * (h - 4) - 2).toFixed(1)}`).join(' ');
   return (
     <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-hidden className="overflow-visible">
-      <polyline points={pts} fill="none" stroke="#04cc98" strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" />
+      <polyline points={pts} fill="none" stroke={SPARK_STROKE} strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" />
     </svg>
   );
 }
@@ -1115,7 +1117,7 @@ export function PrOverviewPage() {
                       {axis.map((day, i) => {
                         const c = dev.daily[day] ?? 0;
                         const h = dayInfos[i];
-                        const intensity = c === 0 ? 0 : 0.25 + (c / max) * 0.7;
+                        const intensity = c === 0 ? 0 : c / max; // heatColor owns the visible floor
                         return (
                           <div
                             key={day}
@@ -1133,10 +1135,10 @@ export function PrOverviewPage() {
                             } : undefined}
                             className={`aspect-square rounded-[3px] ${c === 0
                               ? h.isWeekend
-                                ? 'bg-chip border border-dashed border-border-soft'
-                                : 'bg-chip'
+                                ? 'bg-transparent border border-dashed border-ink-tertiary/40'
+                                : 'bg-border-soft'
                               : 'cursor-pointer hover:opacity-75 transition-opacity'}`}
-                            style={{ background: c === 0 ? undefined : `rgba(99,102,241,${intensity.toFixed(2)})` }}
+                            style={{ background: c === 0 ? undefined : heatColor(intensity) }}
                           />
                         );
                       })}

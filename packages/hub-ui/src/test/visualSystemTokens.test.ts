@@ -67,7 +67,8 @@ const SERIES = [1, 2, 3, 4, 5, 6].map(n => `--series-${n}`);
 const SIZES = [1, 2, 3, 4, 5].map(n => `--size-${n}`);
 const STATUS = ['ok', 'warn', 'danger', 'info'];
 const TYPES = ['epic', 'story', 'task', 'bug'].map(t => `--type-${t}`);
-const HEX_TOKENS = ['--accent', '--accent-ink', '--focus-ring', ...SERIES, ...SIZES, ...STATUS.map(s => `--status-${s}-text`), ...TYPES];
+const ON_SIZES = [1, 2, 3, 4, 5].map(n => `--on-size-${n}`);
+const HEX_TOKENS = ['--accent', '--accent-ink', '--focus-ring', ...SERIES, ...SIZES, ...ON_SIZES, ...STATUS.map(s => `--status-${s}-text`), ...TYPES];
 const FILL_TOKENS = ['--accent-fill', ...STATUS.map(s => `--status-${s}-bg`)];
 
 const THEMES = {
@@ -137,6 +138,14 @@ describe('visual system tokens', () => {
             expect(deltaE(v[TYPES[i]], v[TYPES[j]]), `${TYPES[i]} vs ${TYPES[j]}`).toBeGreaterThanOrEqual(12);
           }
         }
+      });
+
+      it('text on a size-ramp fill (the PR size badge) passes AA with its own ink token', () => {
+        SIZES.forEach((t, i) => {
+          const ink = v[`--on-size-${i + 1}`];
+          expect(ink, `--on-size-${i + 1}`).toMatch(HEX);
+          expect(contrast(ink, v[t]), `--on-size-${i + 1} on ${t} ${v[t]}`).toBeGreaterThanOrEqual(4.5);
+        });
       });
 
       it('status chips are readable: status text passes AA on its own tinted background', () => {

@@ -211,18 +211,17 @@ describe('PrOverviewPage drill-down modal (CGLAB-131)', () => {
     const badge = (label: string) =>
       Array.from(scope.getAllByText(label)).find(el => (el as HTMLElement).style.background) as HTMLElement;
 
-    // XS: near-white fill #dbf7f0 → dark ink, NOT white.
+    // Each step writes with its own ink token on its own fill token; the token
+    // test checks the pair passes AA in every theme (CGLAB-434).
     const xs = badge('XS');
     expect(xs).toBeTruthy();
-    expect(xs.style.background).toContain('219, 247, 240'); // #dbf7f0
-    expect(xs.style.color).not.toContain('255, 255, 255');
-    expect(xs.style.color).toContain('0, 15, 59'); // #000f3b
+    expect(xs.style.background).toBe('var(--size-1)');
+    expect(xs.style.color).toBe('var(--on-size-1)');
 
-    // L: dark fill #056f71 → white.
     const l = badge('L');
     expect(l).toBeTruthy();
-    expect(l.style.background).toContain('5, 111, 113'); // #056f71
-    expect(l.style.color).toContain('255, 255, 255');
+    expect(l.style.background).toBe('var(--size-4)');
+    expect(l.style.color).toBe('var(--on-size-4)');
   });
 
   // CGLAB-184: on a parent hub, (repo, prNumber) is no longer unique — two

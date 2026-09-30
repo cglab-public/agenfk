@@ -1,19 +1,16 @@
 // Pure helpers for the PR Overview page — kept out of the component so they can
 // be unit-tested without a DOM.
 
-/** Ordinal PR-size ramp (XS→XL): a single teal hue climbing in weight, so a
- *  bigger PR reads as a denser colour. Separate from status colours on purpose. */
-/** Size ramp: light → dark on the dark canvas. `color` is the fill; `text`
- *  is the label color when text is rendered ON the fill (the drill-down modal
- *  badge, CGLAB-131) — the ramp's light end is near-white, so one fixed
- *  `text-white` reads as a blank white box there; light steps take the dark
- *  primary ink, dark steps take white. */
+/** Ordinal PR-size ramp (XS→XL): one indigo hue climbing in weight, from the
+ *  --size-N tokens so each theme gets its own validated steps (CGLAB-434).
+ *  `text` is the ink for a label drawn ON the fill (the drill-down badge,
+ *  CGLAB-131): --on-size-N is the readable ink for that step in each theme. */
 export const SIZE_META = [
-  { key: 'xs', label: 'XS', color: '#dbf7f0', text: '#000f3b' },
-  { key: 's', label: 'S', color: '#7fe5ca', text: '#000f3b' },
-  { key: 'm', label: 'M', color: '#04cc98', text: '#000f3b' },
-  { key: 'l', label: 'L', color: '#056f71', text: '#ffffff' },
-  { key: 'xl', label: 'XL', color: '#00332f', text: '#ffffff' },
+  { key: 'xs', label: 'XS', color: 'var(--size-1)', text: 'var(--on-size-1)' },
+  { key: 's', label: 'S', color: 'var(--size-2)', text: 'var(--on-size-2)' },
+  { key: 'm', label: 'M', color: 'var(--size-3)', text: 'var(--on-size-3)' },
+  { key: 'l', label: 'L', color: 'var(--size-4)', text: 'var(--on-size-4)' },
+  { key: 'xl', label: 'XL', color: 'var(--size-5)', text: 'var(--on-size-5)' },
 ] as const;
 
 export type SizeKey = typeof SIZE_META[number]['key'];
