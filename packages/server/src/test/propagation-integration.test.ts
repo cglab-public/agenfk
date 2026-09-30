@@ -158,6 +158,77 @@ describe('which last steps end the flow', () => {
   });
 });
 
+/**
+ * 6b34e5cc: "the sibling finished" used to mean `status === 'DONE'`, so on a
+ * flow whose exit step has another name no green ever carried over and every
+ * child ran the command again. Finished is the step the move that ends the flow
+ * lands on - DONE, or a last step that is a boundary - and nothing short of it.
+ */
+describe('sibling propagation on a flow whose exit step is not named DONE', () => {
+  const onFlow = async (steps: any[]) => {
+    const p = (await internal(agent().post('/projects')).send({ name: `exit-${Date.now()}` })).body;
+    await storage.updateProject(p.id, { projectRoot: repo, verifyCommand: 'true' } as never);
+    const f = (await internal(agent().post('/flows')).send({ name: `Exit ${Date.now()}`, steps })).body;
+    await internal(agent().post(`/projects/${p.id}/flow`)).send({ flowId: f.id });
+    const parent = (await internal(agent().post('/items')).send({ type: 'STORY', title: 'p', projectId: p.id })).body;
+    const make = async (title: string, status: string) => {
+      const c = (await internal(agent().post('/items')).send({ type: 'TASK', title, projectId: p.id, parentId: parent.id })).body;
+      await storage.updateItem(c.id, { status } as any);
+      return c;
+    };
+    return { make };
+  };
+
+  // `agenfk flow create` marks a boundary with isSpecial; a hand-written or default flow with isAnchor.
+  it.each([['isAnchor'], ['isSpecial']])("carries a sibling's green of this commit to the next card when the exit step is a boundary (%s) named SHIPPED", async (flag) => {
+    const { make } = await onFlow([
+      { name: 'TODO', label: 'To Do', order: 0, isAnchor: true },
+      { name: 'CODE', label: 'Code', order: 1 },
+      { name: 'SHIPPED', label: 'Shipped', order: 2, [flag]: true },
+    ]);
+    const c1 = await make('c1', 'CODE');
+    const r1 = await validate(c1.id);
+    expect(r1.body.status, JSON.stringify(r1.body)).toBe('SHIPPED');
+
+    const c2 = await make('c2', 'CODE');
+    const r2 = await validate(c2.id);
+    expect(r2.body.status).toBe('SHIPPED');
+    expect(r2.body.output, 'the sibling on SHIPPED was not read as finished').toBe('Sibling propagation');
+  });
+
+  it('does not read a sibling still WORKING the last step as finished, when that step is not a boundary', async () => {
+    // No terminal boundary: the last step is work, and leaving it goes to DONE.
+    const { make } = await onFlow([
+      { name: 'TODO', label: 'To Do', order: 0, isAnchor: true },
+      { name: 'CODE', label: 'Code', order: 1 },
+      { name: 'SHIP', label: 'Ship', order: 2 },
+    ]);
+    const c1 = await make('c1', 'SHIP');
+    await storage.updateItem(c1.id, { tests: [{ id: 'g', command: 'true', output: '', status: 'PASSED', executedAt: new Date(), commit: sha(), commitRoot: repo }] } as never);
+
+    const c2 = await make('c2', 'SHIP');
+    const r2 = await validate(c2.id);
+    expect(r2.body.status).toBe('DONE');
+    expect(r2.body.output, 'a sibling still on a working step carried its green').not.toBe('Sibling propagation');
+  });
+
+  it('does not read a sibling parked on a MID-flow boundary step as finished', async () => {
+    // A boundary that is not the last step (a hold) is not where a flow ends.
+    const { make } = await onFlow([
+      { name: 'TODO', label: 'To Do', order: 0, isAnchor: true },
+      { name: 'CODE', label: 'Code', order: 1 },
+      { name: 'HOLD', label: 'Hold', order: 2, isSpecial: true },
+      { name: 'SHIPPED', label: 'Shipped', order: 3, isAnchor: true },
+    ]);
+    const c1 = await make('c1', 'HOLD');
+    await storage.updateItem(c1.id, { tests: [{ id: 'g', command: 'true', output: '', status: 'PASSED', executedAt: new Date(), commit: sha(), commitRoot: repo }] } as never);
+    const c2 = await make('c2', 'HOLD');
+    const r2 = await validate(c2.id);
+    expect(r2.body.status).toBe('SHIPPED');
+    expect(r2.body.output, 'a sibling on a mid-flow hold carried its green').not.toBe('Sibling propagation');
+  });
+});
+
 describe('the sibling gate on a real tree', () => {
   it('lets a green earned at this very commit carry the next card', async () => {
     const { make } = await setup();

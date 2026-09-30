@@ -171,6 +171,30 @@ describe('GET /items/:id/leave-plan?predict=1', () => {
     expect(res.body.message).toMatch(/sibling propagation/i);
   });
 
+  it("predicts a sibling's green on a flow whose exit step is not named DONE - and verify propagates it (6b34e5cc)", async () => {
+    const f = await agent().post('/flows').send({ name: `pr-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('A', 1), s('SHIPPED', 2, { isAnchor: true })] });
+    const repo = tmp('agenfk-pr-sib-custom-');
+    git(repo, 'git init -q -b main && git config user.email t@t && git config user.name t && echo x > f && git add . && git commit -qm one');
+    const p = await agent().post('/projects').send({ name: `pr-${++seq}` });
+    await storage.updateProject(p.body.id, { flowId: f.body.id, projectRoot: repo, verifyCommand: 'exit 0' } as never);
+    const parent = await agent().post('/items').send({ type: 'STORY', title: `pr-${++seq}`, projectId: p.body.id });
+    await storage.updateItem(parent.body.id, { status: 'A' } as any);
+    const mk = async () => {
+      const c = await agent().post('/items').send({ type: 'TASK', title: `pr-${++seq}`, projectId: p.body.id, parentId: parent.body.id });
+      await storage.updateItem(c.body.id, { status: 'A' } as any);
+      return c.body.id as string;
+    };
+    const first = await mk();
+    const second = await mk();
+    const done = await validate(first);
+    expect(done.body.status, JSON.stringify(done.body)).toBe('SHIPPED');
+    const pr = await predict(second);
+    expect(pr.prediction).toMatchObject({ mode: 'sibling-green' });
+    expect(pr.prediction.sibling?.id).toBe(first);
+    const res = await validate(second);
+    expect(res.body.message).toMatch(/sibling propagation/i);
+  });
+
   it('on the final step with a test report, predicts the verify command too - never "nothing new" for the whole move', async () => {
     const f = await agent().post('/flows').send({ name: `pr-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('PLAN', 1), s('TEST', 2, { role: 'testing' }), s('END', 3, { isAnchor: true })] });
     const t = await setup();

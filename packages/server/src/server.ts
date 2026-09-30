@@ -7659,12 +7659,12 @@ const ENTRY_BASELINE = 'entry-baseline';
  * dry run, so the mode predicted is the mode run.
  */
 /**
- * b29a8b3a / 3ffc9651: a DONE sibling's green of the command, tied to THIS
+ * b29a8b3a / 3ffc9651: a finished sibling's green of the command, tied to THIS
  * tree - its commit, or its exact state - in the same checkout; or why not.
  * Every candidate is asked: a stale older sibling must not shadow a younger one
  * still green here. 2ebacb23: shared by the final gate and the dry run.
  */
-async function siblingGreenOf(item: any, siblings: any[], project: any, gateRoot: string | null | undefined, command: string) {
+async function siblingGreenOf(item: any, siblings: any[], flow: TransitionFlow, project: any, gateRoot: string | null | undefined, command: string) {
   const sharesRoot = !!gateRoot;
   const treeSha = sharesRoot ? readCleanTreeSha(gateRoot!, gitRun) : null;
   // 3ffc9651: or at this very STATE, dirty or not - every file's content, as the green recorded it.
@@ -7674,7 +7674,8 @@ async function siblingGreenOf(item: any, siblings: any[], project: any, gateRoot
     ? 'no sibling green is tied to this commit'
     : treeState ? 'no sibling green is tied to this tree state' : 'the state of this tree cannot be read, so no sibling green can be tied to it';
   for (const s of siblings) {
-    if (pass || s.id === item.id || s.status !== Status.DONE) continue;
+    // 6b34e5cc: finished is where the move that ends the flow lands (DONE, or a boundary last step), not the literal word.
+    if (pass || s.id === item.id || !isCompletionStep(s.status, flow)) continue;
     // Same checkout as the one the command runs in, or nothing transfers.
     if (!sharesRoot || resolveCommitRoot(await withEffectiveWorktree(s), project?.projectRoot).root !== gateRoot) continue;
     // EVERY matching test, not the first: a sibling re-verified after a
@@ -7846,7 +7847,7 @@ async function predictLeave(item: any, plan: LeavePlan, flow: { steps: any[] }, 
   const index = sorted.findIndex(st => st.name === item.status);
   const commandLeg = async (command: string): Promise<{ mode: 'full' | 'sibling-green'; sibling?: { id: string; title: string } }> => {
     if (item.parentId && leavingEndsFlow(sorted as any, index)) {
-      const { pass } = await siblingGreenOf(item, await storage.listItems({ parentId: item.parentId }), project, root, command);
+      const { pass } = await siblingGreenOf(item, await storage.listItems({ parentId: item.parentId }), flow as TransitionFlow, project, root, command);
       if (pass) return { mode: 'sibling-green', sibling: { id: pass.sibling.id, title: pass.sibling.title } };
     }
     return { mode: 'full' };
@@ -8598,7 +8599,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   let siblingFlightKey: string | null = null;
   if (item.parentId) {
     const siblings = await storage.listItems({ parentId: item.parentId });
-    // For final step (→ DONE), check siblings already DONE with same verifyCommand
+    // On the move that ends the flow, check siblings that finished it with the same verifyCommand
     if (endsFlow) {
       /*
        * THE GREEN MUST BELONG TO THIS TREE (b29a8b3a). A sibling's suite ran
@@ -8623,7 +8624,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
        * (CGLAB-366).
        */
       const gateRoot = effectiveRoot;
-      const { pass, refusal, treeState } = await siblingGreenOf(item, siblings, project, gateRoot, resolvedCommand!);
+      const { pass, refusal, treeState } = await siblingGreenOf(item, siblings, activeFlow as TransitionFlow, project, gateRoot, resolvedCommand!);
       if (pass) {
         // Asked again: a re-entry (a slow gate, a sibling that waited) skipped the early check, and a close happened since.
         const strays = await checkStrays(res);
