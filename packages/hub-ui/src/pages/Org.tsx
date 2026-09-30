@@ -14,6 +14,8 @@ import { mergeEventTypes } from '../eventTypes';
 import { fmtRelative } from '../dates';
 import { useToggleSet } from '../hooks/useToggleSet';
 import { useUrlFilters } from '../hooks/useUrlFilters';
+import { usePeopleNames } from '../hooks/usePeopleNames';
+import { initialsOf } from '../components/PersonName';
 import { useChildHubs } from '../hooks/useChildHubs';
 import { csvParam } from '../urlParams';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
@@ -112,6 +114,7 @@ export function OrgPage() {
     return p.toString();
   }, [qs, eventTypeSel.set]);
   const typeScoped = eventTypeSel.set.size > 0;
+  const nameOf = usePeopleNames();
   const users = useQuery<UsersResponse[]>({
     queryKey: ['users', usersQs],
     queryFn: async () => (await api.get(`/v1/users${usersQs ? `?${usersQs}` : ''}`)).data,
@@ -270,10 +273,17 @@ export function OrgPage() {
                 >
                   <div className="flex items-center gap-3 min-w-0">
                     <div className="w-8 h-8 rounded-full bg-accent-fill text-accent-ink text-[11px] font-bold flex items-center justify-center shrink-0">
-                      {u.user_key.slice(0, 2).toUpperCase()}
+                      {initialsOf(nameOf(u.user_key), u.user_key)}
                     </div>
                     <div className="min-w-0">
-                      <div className="font-mono text-[13px] text-ink truncate group-hover:text-accent-ink transition-colors">{u.user_key}</div>
+                      {nameOf(u.user_key) ? (
+                        <>
+                          <div className="text-[13px] text-ink truncate group-hover:text-accent-ink transition-colors">{nameOf(u.user_key)}</div>
+                          <div className="font-mono text-[11px] text-ink-tertiary truncate">{u.user_key}</div>
+                        </>
+                      ) : (
+                        <div className="font-mono text-[13px] text-ink truncate group-hover:text-accent-ink transition-colors">{u.user_key}</div>
+                      )}
                       <div className="text-[11px] text-ink-tertiary">{u.events_count.toLocaleString()} {typeScoped ? 'matching events · last match' : 'events · last'} {formatLastSeen(u.last_seen)}</div>
                     </div>
                   </div>

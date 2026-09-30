@@ -20,6 +20,8 @@ import { buildMonthBands, dayHeaderInfo, contributionPcts, cellTooltip, placeToo
 import { buildVolumeSeries, type Granularity } from '../prVolumeGranularity';
 import { Page, QueryError, Skeleton } from '../components/ui';
 import { describeFilters } from '../filterSummary';
+import { usePeopleNames } from '../hooks/usePeopleNames';
+import { PersonName, initialsOf } from '../components/PersonName';
 
 const GRANULARITIES: Array<{ key: Granularity; label: string; unit: string }> = [
   { key: 'daily', label: 'daily', unit: 'day' },
@@ -551,6 +553,27 @@ export function PrOverviewPage() {
   const universe = optionsQuery.data ?? (mainIsUniverse ? overview.data : undefined);
   const modelOptions = universe?.byModel.map(m => m.model) ?? [];
   const devOptions = universe?.byDeveloper.map(x => x.user_key) ?? [];
+  const nameOf = usePeopleNames();
+  // A person's name where a label has room for one thing; the key is added
+  // when two keys share a name (one person, two machines without a git email),
+  // or the two would be indistinguishable.
+  // Counted once per answer, not per call: the heatmap asks for a label twice
+  // per cell and re-renders on every hover.
+  const sharedNames = useMemo(() => {
+    const count = new Map<string, number>();
+    for (const k of new Set([...devOptions, ...(overview.data?.byDeveloper ?? []).map(x => x.user_key)])) {
+      const n = nameOf(k);
+      if (n) count.set(n, (count.get(n) ?? 0) + 1);
+    }
+    return count;
+    // devOptions is derived from `universe` each render; its content is what matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [devOptions.join('\u0000'), overview.data, nameOf]);
+  const labelOf = (key: string): string => {
+    const name = nameOf(key);
+    if (!name) return key;
+    return (sharedNames.get(name) ?? 0) > 1 ? `${name} (${key})` : name;
+  };
   // Partitioned by hub, like the model and developer lists: a repo chip from a
   // hub the board is not showing is a dead end.
   const hubQs = childHubSel.set.size
@@ -842,6 +865,7 @@ export function PrOverviewPage() {
       <FacetMultiselect
         label="Developer"
         options={devOptions}
+        optionLabel={labelOf}
         selected={devSel.set}
         onToggle={devSel.toggle}
         onClear={devSel.clear}
@@ -1022,9 +1046,9 @@ export function PrOverviewPage() {
                       <td className="px-5 py-3">
                         <div className="flex items-center gap-2.5">
                           <div className="w-7 h-7 rounded-lg bg-accent-fill text-accent-ink text-[10px] font-bold flex items-center justify-center shrink-0">
-                            {dev.user_key.slice(0, 2).toUpperCase()}
+                            {initialsOf(nameOf(dev.user_key), dev.user_key)}
                           </div>
-                          <span className="font-mono text-[12px] text-ink-secondary truncate max-w-[200px]">{dev.user_key}</span>
+                          <PersonName name={nameOf(dev.user_key)} userKey={dev.user_key} className="max-w-[200px]" />
                         </div>
                       </td>
                       <td className="px-3 py-3 text-right font-mono tabular-nums text-lg font-bold text-ink">{dev.prs}</td>
@@ -1123,7 +1147,9 @@ export function PrOverviewPage() {
                     <Fragment key={dev.user_key}>
                       {/* sticky so names + pills stay visible when the day axis scrolls */}
                       <div className="sticky left-0 z-10 self-stretch flex items-center gap-2 pr-2 min-w-0 bg-surface">
-                        <span title={dev.user_key} className="font-mono text-[11px] text-ink-tertiary truncate">{dev.user_key}</span>
+                        {nameOf(dev.user_key)
+                          ? <span title={dev.user_key} className="text-[11px] text-ink-secondary truncate">{labelOf(dev.user_key)}</span>
+                          : <span title={dev.user_key} className="font-mono text-[11px] text-ink-tertiary truncate">{dev.user_key}</span>}
                         {/* stacked vertically so long dev emails keep the width */}
                         <span className="ml-auto flex flex-col items-end gap-0.5 shrink-0">
                           <span className="font-mono text-[9px] font-bold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-accent-ink bg-accent-fill border border-accent">{pct.prPct}% PRs</span>
@@ -1137,7 +1163,7 @@ export function PrOverviewPage() {
                         return (
                           <div
                             key={day}
-                            onMouseEnter={showHeatTip(cellTooltip(dev.user_key, day, c))}
+                            onMouseEnter={showHeatTip(cellTooltip(labelOf(dev.user_key), day, c))}
                             onMouseLeave={() => setHeatTip(null)}
                             // CGLAB-131 — non-empty cells are drillable: open the PR list.
                             // (Clear the tooltip so it cannot peek out from the modal.)
@@ -1145,7 +1171,7 @@ export function PrOverviewPage() {
                             onClick={c > 0 ? () => openDrill(dev.user_key, day) : undefined}
                             role={c > 0 ? 'button' : undefined}
                             tabIndex={c > 0 ? 0 : undefined}
-                            aria-label={c > 0 ? `${c} PR${c === 1 ? '' : 's'} by ${dev.user_key} on ${day} — open list` : undefined}
+                            aria-label={c > 0 ? `${c} PR${c === 1 ? '' : 's'} by ${labelOf(dev.user_key)} on ${day} — open list` : undefined}
                             onKeyDown={c > 0 ? (e) => {
                               if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDrill(dev.user_key, day); }
                             } : undefined}

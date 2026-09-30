@@ -12,6 +12,8 @@ import { loadModelMeta, resolveModelMetaAll } from '../util/modelMeta.js';
 import { resolveModelId } from '../util/modelMapping.js';
 import { childHubPredicate, childHubClause, selectedHubIds, HUB_COL_EVENTS, HUB_COL_ROLLUPS } from '../queries/childHub.js';
 import { asyncRoute } from '../util/asyncRoute.js';
+import { userKeyFor } from '../util/userKey.js';
+import { loadAliasMap, resolveAliasKey } from '../util/userKeyAlias.js';
 
 /**
  * A query parameter that is not the shape the route reads. Express parses
@@ -122,6 +124,37 @@ export function queriesRouter(ctx: HubServerContext): Router {
       params,
     );
     res.json(rows);
+  }));
+
+  // The display name behind each user_key, so a dashboard can show "Carol Diaz"
+  // rather than carol@acme.com. Keyed exactly as ingest keys events (email, or a
+  // namespaced OS user, then aliases), so every key the other routes return can
+  // be looked up. The most recently seen installation's name wins; a hidden
+  // person is never named.
+  router.get('/people/names', guard, asyncRoute(async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const rows = await ctx.db.all<{ id: string; os_user: string | null; git_name: string | null; git_email: string | null }>(
+      `SELECT id, os_user, git_name, git_email FROM installations
+       WHERE org_id = ? AND git_name IS NOT NULL
+       ORDER BY last_seen DESC`,
+      [orgId],
+    );
+    const aliases = await loadAliasMap(ctx.db, orgId);
+    const hidden = new Set((await ctx.db.all<{ user_key: string }>(
+      'SELECT user_key FROM hidden_users WHERE org_id = ?', [orgId],
+    )).map(h => h.user_key));
+    const names: Record<string, string> = {};
+    for (const row of rows) {
+      const name = row.git_name?.trim();
+      if (!name) continue;
+      const key = resolveAliasKey(
+        userKeyFor({ osUser: row.os_user ?? '', gitName: name, gitEmail: row.git_email }, row.id),
+        aliases,
+      );
+      if (hidden.has(key) || key in names) continue;
+      names[key] = name;
+    }
+    res.json({ names });
   }));
 
   router.get('/timeline', guard, asyncRoute(async (req: Request, res: Response) => {

@@ -16,6 +16,8 @@ import { mergeEventTypes } from '../eventTypes';
 import { fmtDateTime, browserTimezone } from '../dates';
 import { useToggleSet } from '../hooks/useToggleSet';
 import { useUrlFilters } from '../hooks/useUrlFilters';
+import { usePeopleNames } from '../hooks/usePeopleNames';
+import { initialsOf } from '../components/PersonName';
 import { useChildHubs } from '../hooks/useChildHubs';
 import { scrollPageToTop } from '../scroll';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
@@ -63,6 +65,7 @@ function endOfDateInput(value: string): string {
 export function UserDetailPage() {
   const { userKey = '' } = useParams();
   const decoded = decodeURIComponent(userKey);
+  const personName = usePeopleNames()(decoded);
 
   useEffect(() => { scrollPageToTop(); }, [userKey]);
   // Every filter lives in the URL, so a reload or a shared link shows the same
@@ -206,11 +209,18 @@ export function UserDetailPage() {
 
       <header className="flex items-center gap-4">
         <div className="w-12 h-12 rounded-2xl bg-accent-fill text-accent-ink text-base font-bold flex items-center justify-center">
-          {decoded.slice(0, 2).toUpperCase()}
+          {initialsOf(personName, decoded)}
         </div>
         <div className="min-w-0">
           <p className="text-[11px] uppercase tracking-[0.18em] text-accent-ink font-semibold">User</p>
-          <h1 className="mt-0.5 text-xl font-bold tracking-tight font-mono text-ink truncate">{decoded}</h1>
+          {personName ? (
+            <>
+              <h1 className="mt-0.5 text-xl font-bold tracking-tight text-ink truncate">{personName}</h1>
+              <p className="font-mono text-[12px] text-ink-tertiary truncate">{decoded}</p>
+            </>
+          ) : (
+            <h1 className="mt-0.5 text-xl font-bold tracking-tight font-mono text-ink truncate">{decoded}</h1>
+          )}
           {childHubs.length > 0 && (
             <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-ink-tertiary">
               <Server className="w-3 h-3" />
