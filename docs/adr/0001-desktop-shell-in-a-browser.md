@@ -36,10 +36,12 @@ wants to use the app itself.
 
 ## How to run it
 
-1. **Build the UI.**
+1. **Build.** The UI alone when only the UI changed; the whole monorepo on a
+   fresh clone or when the change touches the server or core, because the
+   sandbox runs this checkout's `packages/server/dist`.
 
    ```sh
-   npm run build -w packages/ui
+   npm run build -w packages/ui   # or: npm run build
    ```
 
 2. **Start a sandboxed server** from the repository root. Each variable closes
@@ -51,14 +53,18 @@ wants to use the app itself.
 
    ```sh
    SANDBOX=$(mktemp -d)
+   # Telemetry off: otherwise every sandbox reports itself as a new installation.
+   mkdir -p "$SANDBOX/.agenfk" && echo '{"telemetry":false}' > "$SANDBOX/.agenfk/config.json"
    HOME=$SANDBOX AGENFK_DB_PATH=$SANDBOX/scratch.sqlite AGENFK_PORT=3190 \
      AGENFK_SERVE_UI=$PWD/packages/ui/dist node packages/server/dist/server.js
+   # afterwards, Ctrl+C and: rm -rf "$SANDBOX"
    ```
 
    It logs `Using Database: …/scratch.sqlite` and
-   `API Server running on 127.0.0.1:3190`. Stop it with Ctrl+C. It starts
-   empty: create what the screen needs (a project, a card) through its own UI
-   or API.
+   `API Server running on 127.0.0.1:3190` — or a higher port if 3190 is taken,
+   so open the one the log names. A `verify-token not found … ephemeral token`
+   warning is expected: the sandbox HOME has none. It starts empty: create
+   what the screen needs (a project, a card) through its own UI or API.
 
 3. **Open `http://127.0.0.1:3190`** — the address, not `localhost`: the server
    binds 127.0.0.1 only, and on a machine where another dev server holds the

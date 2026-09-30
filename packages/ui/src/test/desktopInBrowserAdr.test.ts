@@ -27,8 +27,8 @@ function initScript(): string {
 function preloadBridges(): string[] {
   const m = /const api: AgenfkDesktopApi = \{([\s\S]*?)\n\};/.exec(preload);
   if (!m) throw new Error('could not find the preload api object');
-  // A spread or a quoted key would add a bridge this parser cannot name - and the test would pass blind.
-  if (/^\s{2}(\.\.\.|['"])/m.test(m[1])) throw new Error('the preload api object has a spread or quoted key: name its bridges plainly');
+  // A spread, a quoted or a computed key would add a bridge this parser cannot name - and the test would pass blind.
+  if (/^\s{2}(\.\.\.|['"\[])/m.test(m[1])) throw new Error('the preload api object has a spread, quoted or computed key: name its bridges plainly');
   const identity = new Set(['isDesktop', 'platform', 'versions']);
   return [...m[1].matchAll(/^\s{2}(\w+)[,:]/gm)].map(k => k[1]).filter(k => !identity.has(k));
 }
