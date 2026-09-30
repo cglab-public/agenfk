@@ -196,6 +196,30 @@ describe('sibling propagation on a flow whose exit step is not named DONE', () =
     expect(r2.body.output, 'the sibling on SHIPPED was not read as finished').toBe('Sibling propagation');
   });
 
+  // 9e26970a: the close commit is made on every move that ends the flow, so its outcome and the push must be told there too.
+  it('tells the agent what the close commit did and to push, on a close onto SHIPPED - run or propagated - and not before', async () => {
+    const { make } = await onFlow([
+      { name: 'TODO', label: 'To Do', order: 0, isAnchor: true },
+      { name: 'CODE', label: 'Code', order: 1 },
+      { name: 'CHECK', label: 'Check', order: 2 },
+      { name: 'SHIPPED', label: 'Shipped', order: 3, isAnchor: true, exitCriteria: 'Released to users.' },
+    ]);
+    const c1 = await make('c1', 'CODE');
+    // With a command, so the move reaches the reply that tells of the commit (without one it advances before it).
+    const mid = await internal(agent().post(`/items/${c1.id}/validate`)).send({ evidence: 'ok', command: 'true' });
+    expect(mid.body.status).toBe('CHECK');
+    expect(mid.body.message, 'a move that does not end the flow told the agent to push').not.toMatch(/Push your branch/);
+    const r1 = await validate(c1.id);
+    expect(r1.body.status).toBe('SHIPPED');
+    expect(r1.body.message, 'the run close said nothing of its commit').toMatch(/Push your branch/);
+    expect(r1.body.message, 'a closed card was handed the exit step\'s criteria as work to do').not.toMatch(/MANDATORY EXIT CRITERIA for SHIPPED/);
+
+    const c2 = await make('c2', 'CHECK');
+    const r2 = await validate(c2.id);
+    expect(r2.body.output).toBe('Sibling propagation');
+    expect(r2.body.message, 'the propagated close said nothing of its commit').toMatch(/Push your branch/);
+  });
+
   it('does not read a sibling still WORKING the last step as finished, when that step is not a boundary', async () => {
     // No terminal boundary: the last step is work, and leaving it goes to DONE.
     const { make } = await onFlow([

@@ -8497,7 +8497,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // Exit criteria of the step the item is moving INTO — returned as mandatory agent instructions
   const nextStepCriteria = (nextStep as any)?.exitCriteria as string | undefined;
   const nextCommitNote = commitOnLeaveNote(nextStatus, stepCommitsOnLeave(sorted as any, nextStatus));
-  const mandatoryInstructions = ((nextStatus !== Status.DONE && nextStepCriteria)
+  // 9e26970a: a close has no next step to work, whatever its exit step is named (endsFlowHere is endsFlow, read before it is declared).
+  const mandatoryInstructions = ((!endsFlowHere && nextStepCriteria)
     ? criteriaBanner(nextStatus, nextStepCriteria)
     : '') + (nextCommitNote ? `\n\n${nextCommitNote}` : '');
   const branchRef = (item as any).branchName || 'HEAD';
@@ -8515,7 +8516,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
    */
   const UNSTAGED_SHOWN = 20;
   const describePush = (result?: AutoGitCommitResult): string => {
-    if (nextStatus !== Status.DONE) return '';
+    // 9e26970a: the close commit is made on every move that ends the flow, whatever its exit step is named.
+    if (!endsFlow) return '';
     // The configured report (and a directory holding only it) is agenfk's own,
     // never the card's work to stage (d26832d6 #3).
     const owned = effectiveRoot ? reportOwnedOf(effectiveRoot, project) : [];
