@@ -395,8 +395,10 @@ describe('the settings tab', () => {
       value: 'TDD Flow', origin: 'set-here', from: 'Chosen for this project.',
     },
     {
+      // What core's describeProjectSettings produces: 'On'/'Off', capitalised. A
+      // lowercase stand-in here is how the switch shipped reading every project as off.
       key: 'autoWorktree', label: 'A worktree per card', description: 'Cut a worktree when a card starts.',
-      value: 'on', origin: 'set-here', from: 'Set for this project.',
+      value: 'On', origin: 'set-here', from: 'Set for this project.',
     },
     {
       key: 'verifyCommand', label: 'Verify command', description: 'Run on the last step.',
@@ -432,6 +434,33 @@ describe('the settings tab', () => {
     await openSettings();
     fireEvent.click(screen.getByTestId('setting-toggle-autoWorktree'));
     await waitFor(() => expect(updateProject).toHaveBeenCalledWith('p1', { autoWorktree: false }));
+  });
+
+  it('draws the switch in the state the project is in', async () => {
+    await openSettings();
+    expect(screen.getByTestId('setting-toggle-autoWorktree').getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('turns it on from off, too', async () => {
+    const updateProject = vi.fn(async () => ({}));
+    (api as unknown as { updateProject: typeof updateProject }).updateProject = updateProject;
+    (api.projectSettings as never as ReturnType<typeof vi.fn>).mockResolvedValue({
+      rows: settings.map(r => (r.key === 'autoWorktree' ? { ...r, value: 'Off' } : r)),
+    } as never);
+    open();
+    fireEvent.click(screen.getByTestId('project-tab-settings'));
+    const toggle = await waitFor(() => screen.getByTestId('setting-toggle-autoWorktree'));
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    fireEvent.click(toggle);
+    await waitFor(() => expect(updateProject).toHaveBeenCalledWith('p1', { autoWorktree: true }));
+  });
+
+  it('lets the switch be the value, instead of repeating it as text underneath', async () => {
+    await openSettings();
+    const row = screen.getByTestId('setting-autoWorktree');
+    expect(row.querySelector('[data-testid="setting-value-autoWorktree"]')).toBeNull();
+    // The rows without a switch keep their value box.
+    expect(screen.getByTestId('setting-value-flow').textContent).toBe('TDD Flow');
   });
 
   it('offers no switch for a value this screen may not write', async () => {
@@ -553,7 +582,7 @@ describe('settings the project file decided', () => {
     },
     {
       key: 'autoWorktree', label: 'A worktree per card', description: 'Cut a worktree when a card starts.',
-      value: 'on', origin: 'from-file',
+      value: 'On', origin: 'from-file',
       from: 'Declared by the repository, in .agenfk/project.json.',
     },
   ];
@@ -574,6 +603,8 @@ describe('settings the project file decided', () => {
   it('does not offer a switch for a worktree setting the file fixed', async () => {
     await openSettings();
     expect(screen.queryByTestId('setting-toggle-autoWorktree')).toBeNull();
+    // With no switch, the text is the only thing saying which way it is.
+    expect(screen.getByTestId('setting-value-autoWorktree').textContent).toBe('On');
   });
 
   it('says where the value came from, with the file', async () => {

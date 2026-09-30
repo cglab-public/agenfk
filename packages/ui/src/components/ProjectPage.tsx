@@ -6,6 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '../api';
 import type { AgEnFKItem, Project } from '../types';
 import { ItemTypeSquare } from './ItemTypeSquare';
+import { Switch } from './ui/switch';
 import { ItemType } from '../types';
 
 /**
@@ -131,32 +132,16 @@ const ORIGIN_TEXT: Record<string, string> = {
   'main-only': 'Only the desktop app can set this.',
 };
 
-/** A switch. Two states, both visible, and the label says which is which. */
-function Toggle(
-  { testId, on, busy, onToggle }: {
-    testId: string; on: boolean; busy?: boolean; onToggle: () => void;
-  },
-) {
-  return (
-    <button
-      type="button"
-      data-testid={testId}
-      role="switch"
-      aria-checked={on}
-      disabled={busy}
-      onClick={onToggle}
-      className={`relative h-5 w-9 shrink-0 rounded-full border transition-colors disabled:opacity-50 ${
-        on ? 'border-border-brand bg-brand' : 'border-border-soft bg-canvas'
-      }`}
-    >
-      <span
-        className={`absolute top-0.5 h-3.5 w-3.5 rounded-full transition-all ${
-          on ? 'left-[1.15rem] bg-navy' : 'left-0.5 bg-ink-tertiary'
-        }`}
-      />
-    </button>
-  );
-}
+/**
+ * Whether a row's value reads as ON. Core writes 'On'/'Off'; this page compared
+ * against 'on', so the switch drew every project as off and every press sent
+ * `true` - it could never turn anything off.
+ */
+const isOn = (value: string | null): boolean => value?.toLowerCase() === 'on';
+
+/** The one row this page writes, unless the repository's file decided it. */
+const hasSwitch = (row: { key: string; origin: string }): boolean =>
+  row.key === 'autoWorktree' && row.origin !== 'from-file';
 
 /**
  * One filter control, as a menu.
@@ -408,15 +393,16 @@ export function ProjectPage({
                     * lose silently — which is worse than no control. The row
                     * still shows the value and says where it came from.
                     */}
-                  {row.key === 'autoWorktree' && row.origin !== 'from-file' && (
-                    <Toggle
-                      testId="setting-toggle-autoWorktree"
-                      on={row.value === 'on'}
-                      busy={togglingWorktree}
-                      onToggle={async () => {
+                  {hasSwitch(row) && (
+                    <Switch
+                      data-testid="setting-toggle-autoWorktree"
+                      aria-label={row.label}
+                      checked={isOn(row.value)}
+                      disabled={togglingWorktree}
+                      onCheckedChange={async next => {
                         setTogglingWorktree(true);
                         try {
-                          await api.updateProject(project.id, { autoWorktree: row.value !== 'on' });
+                          await api.updateProject(project.id, { autoWorktree: next });
                           await refetchSettings();
                         } finally {
                           setTogglingWorktree(false);
@@ -426,13 +412,16 @@ export function ProjectPage({
                   )}
                 </div>
                 <p className="mt-1 text-xs text-ink-tertiary">{row.description}</p>
-                <p className={`mt-2 truncate rounded-lg border px-3 py-2 font-mono text-[11px] ${
-                  row.value
-                    ? 'border-border-soft bg-canvas text-ink-secondary'
-                    : 'border-dashed border-border-soft text-ink-tertiary'
-                }`}>
-                  {row.value ?? 'not set'}
-                </p>
+                {/* The switch IS the value where there is one; the text repeated under it read as the control. */}
+                {!hasSwitch(row) && (
+                  <p data-testid={`setting-value-${row.key}`} className={`mt-2 truncate rounded-lg border px-3 py-2 font-mono text-[11px] ${
+                    row.value
+                      ? 'border-border-soft bg-canvas text-ink-secondary'
+                      : 'border-dashed border-border-soft text-ink-tertiary'
+                  }`}>
+                    {row.value ?? 'not set'}
+                  </p>
+                )}
                 {row.warning && (
                   <p data-testid={`setting-warning-${row.key}`} className="mt-1.5 text-[11px] text-danger-text">
                     {row.warning}
