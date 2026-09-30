@@ -2,6 +2,26 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.15] — 2026-09-30
+
+Beta, cumulative over `2.0.0-beta.14`: everything in beta.14, plus the fixes below (CGLAB-164).
+
+- **The suite no longer runs twice on the move that ends the flow.** With a test report whose command is the
+  project's verify command, leaving the last working step captured the suite and then ran the verify command
+  again. The close now stands on the step's own capture when it is a whole green that ran on this move, of the
+  same command, in the same tree, with the tree unchanged since. A reused green, a partial run, a step with a
+  command check, or a project with no report path still runs the command. The leave plan says which (`closes`
+  instead of `then`), and `verify --plan` predicts it. In a simulated walk of the same cards: 10 suite runs on
+  beta.14, 7 now.
+- **Sibling propagation works on flows whose exit step is not named DONE.** A sibling's green of the same tree
+  only carried over when the sibling sat on the literal `DONE`, so on any `agenfk flow create` flow (exit step
+  `SHIPPED`, say) every child ran the verify command again. "Finished" is now the step the move that ends the flow
+  lands on - the same rule the hub's `item.closed` uses - and the dry run follows it.
+- **The default flow's TEST step no longer tells the agent to run the full suite itself.** Leaving it runs the
+  project's verify command, so the criteria now say to run only the tests being worked on, then verify, and to
+  report the numbers of the tests the agent ran. Projects on the built-in default flow get the new text on
+  upgrade; a flow copied from it keeps its own.
+
 ## [2.0.0-beta.14] — 2026-09-30
 
 Beta, cumulative over `2.0.0-beta.13`: everything in beta.13, plus the change below (CGLAB-164).
