@@ -33,6 +33,34 @@ export function resolveRulesScope({ rulesScopeArg, envScope, existingScope, isTT
   return { scope: 'global', shouldPrompt: Boolean(isTTY) };
 }
 
+// --- Windows hook commands under Git Bash (issue #192) ---------------------
+//
+// Claude Code hands a hook `command` to `bash -c` (Git Bash on Windows). An
+// unquoted `C:\Users\x\.local\bin\agenfk-*.cmd` loses every backslash to bash's
+// escape handling and fails "command not found" -- non-blocking, so the guard is
+// silently skipped. The command must be a quoted, forward-slash path to the
+// extensionless `#!/bin/sh` wrapper (a `.cmd` cannot be run by bash anyway).
+
+// Forward-slash form of a path; safe inside bash and accepted by Windows APIs.
+export function toBashPath(p) {
+  return String(p).replace(/\\/g, '/');
+}
+
+// The hook `command` string to register for Claude Code. `destBase` is the
+// extensionless path (e.g. ~/.local/bin/agenfk-mcp-enforcer); `args` is appended
+// outside the quotes. Off Windows the plain path is kept as-is.
+export function buildClaudeHookCommand(destBase, { platform = process.platform, args = '' } = {}) {
+  const suffix = args ? ` ${args}` : '';
+  if (platform === 'win32') return `"${toBashPath(destBase)}"${suffix}`;
+  return `${destBase}${suffix}`;
+}
+
+// Body of the extensionless POSIX wrapper that forwards to a hook's .mjs. The
+// .mjs path uses forward slashes so no backslash survives anywhere in the chain.
+export function buildPosixWrapper(mjsPath) {
+  return `#!/bin/sh\nexec node "${toBashPath(mjsPath)}" "$@"\n`;
+}
+
 // Build a valid Codex CLI hooks.json config that registers the AgEnFK PR-sizing
 // hook (CGLAB-12). Codex rejects a Claude-Code-style top-level `PostToolUse` key
 // ("unknown field `PostToolUse`, expected `description` or `hooks`") and refuses

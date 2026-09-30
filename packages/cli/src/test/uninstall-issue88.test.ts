@@ -52,6 +52,8 @@ describe('issue #88 — uninstall-helpers', () => {
     expect(hookBinFilenames('win32')).toEqual([
       'agenfk.cmd', 'agenfk-gatekeeper.cmd', 'agenfk-mcp-enforcer.cmd',
       'agenfk-pr-hook.cmd', 'agenfk-run-hook.cmd',
+      // #192: the extensionless sh wrappers Claude Code's Git Bash hooks run
+      'agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook', 'agenfk-run-hook',
     ]);
   });
 
@@ -75,7 +77,12 @@ describe('issue #88 — uninstall-helpers', () => {
     // firing into a framework that is gone. Opencode plugins are deliberately
     // NOT tied to this count — not every hook has one.
     expect(hookBinFilenames('linux')).toEqual(['agenfk', ...HOOK_VARIANTS]);
-    expect(hookBinFilenames('win32')).toEqual(['agenfk', ...HOOK_VARIANTS].map(n => `${n}.cmd`));
+    // On win32 each hook is also an extensionless sh wrapper: Claude Code runs
+    // hooks through Git Bash, which cannot execute a .cmd (#192).
+    expect(hookBinFilenames('win32')).toEqual([
+      ...['agenfk', ...HOOK_VARIANTS].map(n => `${n}.cmd`),
+      ...HOOK_VARIANTS,
+    ]);
     expect(HOOK_VARIANTS).toContain('agenfk-run-hook');
   });
 

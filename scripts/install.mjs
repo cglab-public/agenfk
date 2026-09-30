@@ -6,7 +6,7 @@ import { spawn, spawnSync, execSync } from 'child_process';
 import crypto from 'crypto';
 import { fileURLToPath, pathToFileURL } from 'url';
 import readline from 'readline';
-import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry } from './install-helpers.mjs';
+import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, buildClaudeHookCommand, buildPosixWrapper } from './install-helpers.mjs';
 
 const GREEN = '\x1b[32m';
 const BLUE = '\x1b[34m';
@@ -1345,11 +1345,10 @@ async function run() {
         if (os.platform() === 'win32') {
             // Always write .cmd on Windows
             await fs.writeFile(`${gatekeeperDestBase}.cmd`, `@echo off\nnode "${gatekeeperSource}" %*`, 'utf8');
-            // If MinGW, also write extension-less version for bash
-            if (isMinGW) {
-                await fs.writeFile(gatekeeperDestBase, `#!/bin/sh\nnode "${gatekeeperSource}" "$@"`, 'utf8');
-                chmodSync(gatekeeperDestBase, 0o755);
-            }
+            // Always write the extension-less sh wrapper too: Claude Code runs hooks
+            // through Git Bash, which cannot execute a .cmd (#192).
+            await fs.writeFile(gatekeeperDestBase, buildPosixWrapper(gatekeeperSource), 'utf8');
+            chmodSync(gatekeeperDestBase, 0o755);
         } else {
             if (existsSync(gatekeeperSource)) {
                 await fs.copyFile(gatekeeperSource, gatekeeperDestBase);
@@ -1363,10 +1362,8 @@ async function run() {
 
         if (os.platform() === 'win32') {
             await fs.writeFile(`${enforcerDestBase}.cmd`, `@echo off\nnode "${enforcerSource}" %*`, 'utf8');
-            if (isMinGW) {
-                await fs.writeFile(enforcerDestBase, `#!/bin/sh\nnode "${enforcerSource}" "$@"`, 'utf8');
-                chmodSync(enforcerDestBase, 0o755);
-            }
+            await fs.writeFile(enforcerDestBase, buildPosixWrapper(enforcerSource), 'utf8');
+            chmodSync(enforcerDestBase, 0o755);
         } else {
             if (existsSync(enforcerSource)) {
                 await fs.copyFile(enforcerSource, enforcerDestBase);
@@ -1381,10 +1378,8 @@ async function run() {
 
         if (os.platform() === 'win32') {
             await fs.writeFile(`${prHookDestBase}.cmd`, `@echo off\nnode "${prHookSource}" %*`, 'utf8');
-            if (isMinGW) {
-                await fs.writeFile(prHookDestBase, `#!/bin/sh\nnode "${prHookSource}" "$@"`, 'utf8');
-                chmodSync(prHookDestBase, 0o755);
-            }
+            await fs.writeFile(prHookDestBase, buildPosixWrapper(prHookSource), 'utf8');
+            chmodSync(prHookDestBase, 0o755);
         } else {
             if (existsSync(prHookSource)) {
                 await fs.copyFile(prHookSource, prHookDestBase);
@@ -1646,12 +1641,12 @@ async function run() {
 
         settings.hooks.PreToolUse.push({
             matcher: 'Edit|Write|NotebookEdit',
-            hooks: [{ type: 'command', command: gatekeeperDest }]
+            hooks: [{ type: 'command', command: buildClaudeHookCommand(gatekeeperDestBase) }]
         });
 
         settings.hooks.PreToolUse.push({
             matcher: 'Bash|Read',
-            hooks: [{ type: 'command', command: enforcerDest }]
+            hooks: [{ type: 'command', command: buildClaudeHookCommand(enforcerDestBase) }]
         });
 
         // PostToolUse hook for PR sizing (fires on Bash so it can react to
@@ -1663,7 +1658,7 @@ async function run() {
         );
         settings.hooks.PostToolUse.push({
             matcher: 'Bash',
-            hooks: [{ type: 'command', command: `${prHookDest} --client claude-code` }]
+            hooks: [{ type: 'command', command: buildClaudeHookCommand(prHookDestBase, { args: '--client claude-code' }) }]
         });
         // Records tool calls as agent-run events (CGLAB-177). Matches the tools
         // worth a transcript line; the hook itself filters further and never

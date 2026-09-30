@@ -12,10 +12,17 @@
 export const HOOK_VARIANTS = ['agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook', 'agenfk-run-hook'];
 
 // Bin filenames the installer drops into ~/.local/bin. The `agenfk` CLI symlink
-// plus all three hook variants. On Windows each is a `.cmd` shim.
+// plus all three hook variants. On Windows each is a `.cmd` shim, and each hook
+// also has an extensionless `#!/bin/sh` wrapper (the one Claude Code's Git Bash
+// hook command points at, issue #192).
 export function hookBinFilenames(platform) {
-  const suffix = platform === 'win32' ? '.cmd' : '';
-  return ['agenfk', ...HOOK_VARIANTS].map((n) => `${n}${suffix}`);
+  if (platform === 'win32') {
+    return [
+      ...['agenfk', ...HOOK_VARIANTS].map((n) => `${n}.cmd`),
+      ...HOOK_VARIANTS,
+    ];
+  }
+  return ['agenfk', ...HOOK_VARIANTS];
 }
 
 // Not every hook has an Opencode plugin. The installer copies one only where a
