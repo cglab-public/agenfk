@@ -2,6 +2,27 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.14] — 2026-09-30
+
+Beta, cumulative over `2.0.0-beta.13`: everything in beta.13, plus the change below (CGLAB-164).
+
+### What leaving a step runs, told before it runs
+
+Agents ran the full suite themselves and then `agenfk verify` ran it again. The server now says, in advance,
+what leaving the current step will run - from the same code the verify uses, so the two cannot disagree.
+
+- **`agenfk gatekeeper` and every verify reply** end with it: the project's suite (and why: which checks, or
+  the next step's entry baseline), then the verify command on the final step, or nothing - with "don't run the
+  full suite yourself first" when it runs, and "the tests your exit criteria ask for are yours" when it does not.
+  It also says when the suite is deferred to the parent, waits on a person's approval, or when verify will refuse
+  (no verify command, no tree to run in).
+- **`agenfk verify <id> --plan`** (MCP: `validate_progress` with `plan: true`) predicts it on the current tree -
+  a reuse of a green of this tree, only the changed or affected tests, the whole suite, a sibling's green, or
+  nothing - without running anything or moving the card. A final move with a capture predicts both legs.
+- **`agenfk flow show`** gets an "On leave" column; `--json` adds each step's `leavePlan`.
+  New endpoints: `GET /items/:id/leave-plan[?predict=1]`, `GET /projects/:id/flow/leave-plans`.
+- The rules for every client say to read it before running the suite.
+
 ## [2.0.0-beta.13] — 2026-09-29
 
 Beta, cumulative over `2.0.0-beta.12`: everything in beta.12, plus the changes below (CGLAB-164).
