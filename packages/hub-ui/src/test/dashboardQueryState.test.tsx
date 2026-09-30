@@ -103,7 +103,8 @@ describe('Org rollup', () => {
     serve();
     renderAt('/');
     expect(await screen.findByText(/No users match the current filters/)).toBeInTheDocument();
-    expect(screen.getByText('0 reporting')).toBeInTheDocument();
+    // The default selection (item.closed) scopes the count, and the label says so.
+    expect(screen.getByText('0 with matching events')).toBeInTheDocument();
   });
 });
 

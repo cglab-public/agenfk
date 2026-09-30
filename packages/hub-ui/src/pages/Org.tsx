@@ -104,9 +104,17 @@ export function OrgPage() {
     queryKey: ['metrics', qs],
     queryFn: async () => (await api.get(`/v1/metrics${qs ? `?${qs}` : ''}`)).data,
   });
+  // The Users panel counts what the Event type filter selects, like the chart
+  // beside it. The tiles above deliberately do not (and say so).
+  const usersQs = useMemo(() => {
+    const p = new URLSearchParams(qs);
+    if (eventTypeSel.set.size) p.set('types', [...eventTypeSel.set].join(','));
+    return p.toString();
+  }, [qs, eventTypeSel.set]);
+  const typeScoped = eventTypeSel.set.size > 0;
   const users = useQuery<UsersResponse[]>({
-    queryKey: ['users', qs],
-    queryFn: async () => (await api.get(`/v1/users${qs ? `?${qs}` : ''}`)).data,
+    queryKey: ['users', usersQs],
+    queryFn: async () => (await api.get(`/v1/users${usersQs ? `?${usersQs}` : ''}`)).data,
   });
   // Both chip lists are partitioned by hub — offering a repo or an event type
   // from a hub the board is not showing is a dead end.
@@ -153,7 +161,10 @@ export function OrgPage() {
         <p className="mt-1 text-sm text-ink-tertiary">Fleet-wide AgEnFK activity across every connected installation.</p>
       </header>
 
-      <QueryState query={metrics} label="activity totals">{() => <MetricsTilesRow totals={totals} />}</QueryState>
+      <div className="space-y-1.5">
+        <p className="text-[11px] text-ink-tertiary">Totals apply every filter except event type.</p>
+        <QueryState query={metrics} label="activity totals">{() => <MetricsTilesRow totals={totals} />}</QueryState>
+      </div>
 
       {/* The period is always in view; the facets fold behind one summary line. */}
       <div role="group" aria-label="Period" className="flex items-center gap-2">
@@ -236,7 +247,9 @@ export function OrgPage() {
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-ink-secondary">Users</h2>
-          {users.data && <span className="text-[11px] text-ink-tertiary">{users.data.length} reporting</span>}
+          {/* Scoped to the event types when some are picked: say so, or a person
+              active a minute ago drops out of "reporting" for no visible reason. */}
+          {users.data && <span className="text-[11px] text-ink-tertiary">{users.data.length} {typeScoped ? 'with matching events' : 'reporting'}</span>}
         </div>
         <QueryState
           query={users}
@@ -261,7 +274,7 @@ export function OrgPage() {
                     </div>
                     <div className="min-w-0">
                       <div className="font-mono text-[13px] text-ink truncate group-hover:text-accent-ink transition-colors">{u.user_key}</div>
-                      <div className="text-[11px] text-ink-tertiary">{u.events_count.toLocaleString()} events · last {formatLastSeen(u.last_seen)}</div>
+                      <div className="text-[11px] text-ink-tertiary">{u.events_count.toLocaleString()} {typeScoped ? 'matching events · last match' : 'events · last'} {formatLastSeen(u.last_seen)}</div>
                     </div>
                   </div>
                   <ChevronRight className="w-4 h-4 text-ink-tertiary group-hover:text-accent-ink transition-colors shrink-0" />
