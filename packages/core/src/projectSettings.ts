@@ -66,12 +66,19 @@ export interface ProjectSettingsContext {
   homeDir?: string;
 }
 
+/** Trailing slashes off, in one linear pass: `/\/+$/` is quadratic on a long run of '/' (CodeQL js/polynomial-redos). */
+const trimTrailingSlashes = (p: string): string => {
+  let end = p.length;
+  while (end > 0 && p[end - 1] === '/') end--;
+  return p.slice(0, end);
+};
+
 export function describeProjectSettings(
   project: Project,
   ctx: ProjectSettingsContext,
 ): ProjectSettingRow[] {
-  const root = project.projectRoot?.replace(/\/+$/, '') || null;
-  const home = ctx.homeDir?.replace(/\/+$/, '');
+  const root = (project.projectRoot != null ? trimTrailingSlashes(project.projectRoot) : '') || null;
+  const home = ctx.homeDir != null ? trimTrailingSlashes(ctx.homeDir) : undefined;
 
   /*
    * THE FILE OVERRIDES THE ROW, and says so.

@@ -75,6 +75,34 @@ describe('the values people need to see', () => {
     expect(row(rows, 'projectRoot').warning).toMatch(/home directory/i);
   });
 
+  it('recognises the home directory whatever trailing slashes either side carries', () => {
+    const rows = describeProjectSettings(
+      { ...(project as any), projectRoot: '/Users/me///' } as never,
+      { flowName: null, worktreeRoot: '~/.agenfk-worktrees', homeDir: '/Users/me/' },
+    );
+    expect(row(rows, 'projectRoot').warning).toMatch(/home directory/i);
+  });
+
+  it('reads a root of nothing but slashes as no folder', () => {
+    const rows = describeProjectSettings(
+      { ...(project as any), projectRoot: '///' } as never,
+      { flowName: null, worktreeRoot: '~/.agenfk-worktrees' },
+    );
+    expect(row(rows, 'projectRoot').value).toBeNull();
+  });
+
+  it('trims in linear time, however many slashes a path holds (CodeQL js/polynomial-redos)', () => {
+    // `/\/+$/` retries from every slash of a run that does not end the string:
+    // 100k of them took seconds. Both inputs reach the trim.
+    const long = '/'.repeat(100_000) + 'x';
+    const started = Date.now();
+    describeProjectSettings(
+      { ...(project as any), projectRoot: long } as never,
+      { flowName: null, worktreeRoot: '~/.agenfk-worktrees', homeDir: long },
+    );
+    expect(Date.now() - started).toBeLessThan(250);
+  }, 30_000);
+
   it('warns when there is no folder at all', () => {
     const rows = describeProjectSettings(
       { ...(project as any), projectRoot: undefined } as never,
