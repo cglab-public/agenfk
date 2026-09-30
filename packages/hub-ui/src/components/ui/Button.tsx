@@ -23,6 +23,13 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   size?: ButtonSize;
 }
 
+/** Button classes for places that style a <button> or <a> directly. */
+export const buttonClass = (variant: ButtonVariant = 'secondary', size: ButtonSize = 'md', className?: string) => cn(
+  'inline-flex items-center justify-center rounded-lg border border-transparent transition-colors',
+  'disabled:opacity-50 disabled:cursor-not-allowed',
+  VARIANT[variant], SIZE[size], className,
+);
+
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
   { variant = 'secondary', size = 'md', type = 'button', className, ...rest }, ref,
 ) {
@@ -30,13 +37,9 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
     <button
       ref={ref}
       type={type}
-      className={cn(
-        // Every variant carries a border (transparent unless it sets one), so
-        // buttons side by side are the same height.
-        'inline-flex items-center justify-center rounded-lg border border-transparent transition-colors',
-        'disabled:opacity-50 disabled:cursor-not-allowed',
-        VARIANT[variant], SIZE[size], className,
-      )}
+      // Every variant carries a border (transparent unless it sets one), so
+      // buttons side by side are the same height.
+      className={buttonClass(variant, size, className)}
       {...rest}
     />
   );

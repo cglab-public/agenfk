@@ -79,7 +79,7 @@ export function RegistryPullsPanel() {
 
   return (
     <section
-      className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-4 space-y-3"
+      className="bg-surface border border-border-soft rounded-2xl p-4 space-y-3"
       data-testid="admin-registry-pulls"
     >
       <div className="flex items-start justify-between gap-2">
@@ -93,7 +93,7 @@ export function RegistryPullsPanel() {
           type="button"
           onClick={() => q.refetch()}
           disabled={q.isFetching}
-          className="shrink-0 px-2 py-1 rounded-lg bg-chip border border-border-soft text-xs text-ink disabled:opacity-50"
+          className="shrink-0 px-2 py-1 rounded-lg bg-canvas border border-border-soft text-xs text-ink disabled:opacity-50"
         >
           {q.isFetching ? 'Refreshing…' : 'Refresh'}
         </button>
@@ -102,7 +102,7 @@ export function RegistryPullsPanel() {
       {q.isLoading && <p className="text-xs text-ink-tertiary">Loading…</p>}
 
       {q.isError && (
-        <p data-testid="registry-pulls-error" className="text-xs text-red-600 dark:text-red-400">
+        <p data-testid="registry-pulls-error" className="text-xs text-status-danger-text">
           {errorText(q.error)}
         </p>
       )}
@@ -116,7 +116,7 @@ export function RegistryPullsPanel() {
 
       {q.data && !q.data.isPublic && q.data.pulls.length === 0 && (
         <p data-testid="registry-pulls-empty" className="text-xs text-ink-tertiary">
-          No open pull requests on <code className="px-1 rounded bg-chip text-ink">{q.data.repo}</code>.
+          No open pull requests on <code className="px-1 rounded bg-canvas text-ink">{q.data.repo}</code>.
         </p>
       )}
 
@@ -142,7 +142,7 @@ export function RegistryPullsPanel() {
                     <span className="font-medium text-ink">{p.title}</span>
                   )}
                   {isPublishedFlow(p) && (
-                    <span className="ml-1.5 px-1.5 py-0.5 rounded bg-chip text-[10px] text-ink-tertiary align-middle">
+                    <span className="ml-1.5 px-1.5 py-0.5 rounded bg-canvas text-[10px] text-ink-tertiary align-middle">
                       published flow
                     </span>
                   )}

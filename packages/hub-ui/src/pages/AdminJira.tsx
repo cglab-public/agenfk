@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
 import { apiErrorText } from '../apiError';
+import { buttonClass, cardClass, controlClass } from '../components/ui';
 
 /**
  * Admin → JIRA (CGLAB-412). The admin registers the org's Atlassian OAuth app
@@ -18,10 +19,10 @@ export interface JiraAdminView {
   redirectUri: string;
 }
 
-const inputCls = 'w-full px-3 py-2 rounded-lg border border-border-soft bg-chip text-ink dark:text-white text-sm placeholder:text-ink-tertiary focus:outline-none focus:ring-2 focus:ring-brand';
-const cardCls = 'bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5';
-const primaryBtnCls = 'px-4 py-2 rounded-lg bg-[image:var(--gradient-accent)] text-navy shadow-glow disabled:opacity-50 text-sm font-bold transition-colors';
-const dangerBtnCls = 'px-4 py-2 rounded-lg border border-rose-500/50 text-rose-600 dark:text-rose-400 text-sm font-semibold hover:bg-rose-500/10 disabled:opacity-50 transition-colors';
+const inputCls = controlClass;
+const cardCls = cardClass;
+const primaryBtnCls = buttonClass('primary');
+const dangerBtnCls = buttonClass('danger');
 
 export function AdminJira() {
   const qc = useQueryClient();
@@ -77,7 +78,7 @@ export function AdminJira() {
             >
               Disconnect everyone
             </button>
-            {disconnectAll.isError && <span className="text-xs text-rose-600 dark:text-rose-400">{apiErrorText(disconnectAll.error)}</span>}
+            {disconnectAll.isError && <span className="text-xs text-status-danger-text">{apiErrorText(disconnectAll.error)}</span>}
           </div>
         )}
       </section>
@@ -97,7 +98,7 @@ export function AdminJira() {
           <span className="font-mono"> read:jira-user</span> and <span className="font-mono">read:jira-work</span>, and register this callback URL:
         </p>
         <p className="mt-2 font-mono text-xs break-all text-ink">{c.redirectUri}</p>
-        <p className="mt-3 text-xs text-amber-700 dark:text-amber-300" data-testid="jira-distribution-step">
+        <p className="mt-3 text-xs text-status-warn-text" data-testid="jira-distribution-step">
           Then, in the app's <span className="font-semibold">Distribution</span> tab, set the distribution status to
           <span className="font-semibold"> Sharing</span>. Atlassian keeps a new app private: until it is shared, only the
           app's contributors can connect their JIRA, and everyone else is stopped at the consent screen.
@@ -124,8 +125,8 @@ export function AdminJira() {
           <button type="submit" disabled={save.isPending} className={primaryBtnCls}>
             {save.isPending ? 'Saving…' : 'Save'}
           </button>
-          {save.isSuccess && <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">✓ Saved</span>}
-          {save.isError && <span className="text-xs text-rose-600 dark:text-rose-400 font-medium">{apiErrorText(save.error)}</span>}
+          {save.isSuccess && <span className="text-xs text-status-ok-text font-medium">✓ Saved</span>}
+          {save.isError && <span className="text-xs text-status-danger-text font-medium">{apiErrorText(save.error)}</span>}
         </div>
       </form>
     </div>

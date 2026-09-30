@@ -5,11 +5,12 @@ import { api, MeResponse } from '../api';
 import { validateOrgIdInput, spokeRepointCommand } from './adminOrgRename';
 import { AdminFederation } from './AdminFederation';
 import { AdminChildHubs } from './AdminChildHubs';
+import { buttonClass, cardClass, cn, controlClass } from '../components/ui';
 
-const inputCls = 'w-full px-3 py-2 rounded-lg border border-border-soft bg-chip text-ink dark:text-white text-sm placeholder:text-ink-tertiary focus:outline-none focus:ring-2 focus:ring-brand';
-const cardCls = 'bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5';
-const primaryBtnCls = 'px-4 py-2 rounded-lg bg-[image:var(--gradient-accent)] text-navy shadow-glow disabled:opacity-50 text-sm font-bold transition-colors';
-const ghostBtnCls = 'px-4 py-2 rounded-lg border border-border-soft text-ink-secondary text-sm font-semibold hover:bg-chip';
+const inputCls = controlClass;
+const cardCls = cardClass;
+const primaryBtnCls = buttonClass('primary');
+const ghostBtnCls = buttonClass('secondary');
 
 interface RenameResponse {
   ok: boolean;
@@ -77,7 +78,7 @@ function OrgIdentity() {
       <section className={cardCls}>
         <header>
           <div className="flex items-center gap-2">
-            <Building2 className="w-4 h-4 text-accent-text" />
+            <Building2 className="w-4 h-4 text-accent-ink" />
             <h2 className="text-sm font-semibold text-ink">Organization</h2>
           </div>
           <p className="mt-1 text-xs text-ink-tertiary">
@@ -114,7 +115,7 @@ function OrgIdentity() {
               autoComplete="off"
               spellCheck={false}
             />
-            {inputError && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{inputError}</p>}
+            {inputError && <p className="mt-1 text-xs text-status-danger-text">{inputError}</p>}
           </div>
           <button type="submit" className={primaryBtnCls} disabled={!canSubmit}>
             Rename
@@ -134,19 +135,19 @@ function OrgIdentity() {
       )}
 
       {success && (
-        <section className={`${cardCls} border-emerald-200 dark:border-emerald-800 bg-emerald-50/60 dark:bg-emerald-900/10`}>
+        <section className={cn(cardCls, 'border-status-ok-text/40 bg-status-ok-bg')}>
           <header>
-            <div className="text-[11px] uppercase tracking-[0.14em] text-emerald-700 dark:text-emerald-300 font-semibold">Rename complete</div>
+            <div className="text-[11px] uppercase tracking-[0.14em] text-status-ok-text font-semibold">Rename complete</div>
             <h3 className="mt-1 text-sm font-semibold text-ink">Now repoint your spoke installations</h3>
             <p className="mt-1 text-xs text-ink-secondary">
               Send this command to anyone running an <code className="font-mono">agenfk</code> installation against this hub (or run it on every machine via your fleet tool):
             </p>
           </header>
-          <pre className="mt-3 px-3 py-2.5 rounded-lg bg-card-glass text-ink text-xs font-mono overflow-x-auto select-all">{spokeCmd}</pre>
+          <pre className="mt-3 px-3 py-2.5 rounded-lg bg-canvas text-ink text-xs font-mono overflow-x-auto select-all">{spokeCmd}</pre>
           <div className="mt-2 flex items-center gap-3">
             <button
               onClick={async () => { try { await navigator.clipboard.writeText(spokeCmd); setCopied(true); } catch { /* ignore */ } }}
-              className="inline-flex items-center gap-1.5 text-xs font-semibold text-accent-text hover:underline"
+              className="inline-flex items-center gap-1.5 text-xs font-semibold text-accent-ink hover:underline"
             >
               {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
               {copied ? 'Copied command' : 'Copy command'}
@@ -170,7 +171,7 @@ function ConfirmRenameModal(props: {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-card-glass p-4">
       <div className="w-full max-w-md rounded-2xl bg-surface border border-border-soft p-5 space-y-3">
         <div className="flex items-start gap-2">
-          <AlertTriangle className="w-5 h-5 text-amber-500 mt-0.5" />
+          <AlertTriangle className="w-5 h-5 text-status-warn-text mt-0.5" />
           <div>
             <h3 className="text-sm font-semibold text-ink">Rename org id</h3>
             <p className="mt-1 text-sm text-ink-secondary">
@@ -185,7 +186,7 @@ function ConfirmRenameModal(props: {
           <li>Spoke installations must run <code className="font-mono">agenfk hub repoint</code> afterward (we'll show you the command).</li>
         </ul>
         {props.error && (
-          <p className="text-xs text-red-600 dark:text-red-400 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/30">{props.error}</p>
+          <p className="text-xs text-status-danger-text px-3 py-2 rounded-lg bg-status-danger-bg">{props.error}</p>
         )}
         <div className="flex justify-end gap-2 pt-1">
           <button className={ghostBtnCls} disabled={props.pending} onClick={props.onCancel}>Cancel</button>

@@ -3,24 +3,24 @@ import { cn } from './cn';
 
 // outline-hidden (not outline-none) keeps a transparent outline that
 // forced-colors mode can paint; the box-shadow ring alone vanishes there.
-const CONTROL = 'w-full px-3 py-2 rounded-lg border border-border-soft bg-surface text-ink text-sm placeholder:text-ink-tertiary '
+export const controlClass = 'w-full px-3 py-2 rounded-lg border border-ink-tertiary/75 bg-surface text-ink text-sm placeholder:text-ink-tertiary '
   + 'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring aria-[invalid=true]:border-status-danger-text';
 
 /** A text input. `icon` draws a leading glyph inside the box; the input stays the labelled control. */
 export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement> & { icon?: ReactNode }>(function Input(
   { className, icon, ...rest }, ref,
 ) {
-  if (!icon) return <input ref={ref} className={cn(CONTROL, className)} {...rest} />;
+  if (!icon) return <input ref={ref} className={cn(controlClass, className)} {...rest} />;
   return (
     <div className="relative">
       <span aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-tertiary [&>svg]:w-4 [&>svg]:h-4">{icon}</span>
-      <input ref={ref} className={cn(CONTROL, 'pl-9', className)} {...rest} />
+      <input ref={ref} className={cn(controlClass, 'pl-9', className)} {...rest} />
     </div>
   );
 });
 
 export const Select = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSelectElement>>(function Select({ className, ...rest }, ref) {
-  return <select ref={ref} className={cn(CONTROL, className)} {...rest} />;
+  return <select ref={ref} className={cn(controlClass, className)} {...rest} />;
 });
 
 type ControlProps = { id?: string; 'aria-describedby'?: string; 'aria-invalid'?: boolean };

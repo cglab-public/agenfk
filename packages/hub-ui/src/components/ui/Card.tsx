@@ -1,9 +1,12 @@
 import { HTMLAttributes, ReactNode } from 'react';
 import { cn } from './cn';
 
+/** Card classes, for containers that are not a <section>. */
+export const cardClass = 'bg-surface border border-border-soft rounded-2xl p-5';
+
 /** A neutral surface. Colour belongs to what sits on it, never to the card. */
 export function Card({ className, ...rest }: HTMLAttributes<HTMLElement>) {
-  return <section className={cn('bg-surface border border-border-soft rounded-2xl p-5', className)} {...rest} />;
+  return <section className={cn(cardClass, className)} {...rest} />;
 }
 
 export function CardHeader({ title, description, actions, level = 2, id, className }: {

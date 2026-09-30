@@ -8,21 +8,22 @@ import { canDeleteUserRow } from './canDeleteUserRow';
 import { hideTargetKey, partitionHiddenRows, canHideRow } from './hiddenPeople';
 import { canRetireRow, canUnretireRow, countRetired, retireConfirmMessage } from './retiredInstallations';
 import { isAttributedByUsername, attributionWarning, countAttributedByUsername } from './attributionWarning';
+import { Toggle, buttonClass, cardClass, controlClass } from '../components/ui';
 
 export function AdminLayout() {
   const link = ({ isActive }: { isActive: boolean }) =>
     'px-3 py-1.5 rounded-lg text-[12px] font-semibold transition-colors ' + (isActive
-      ? 'bg-[image:var(--gradient-accent)] text-navy shadow-glow'
-      : 'text-ink-secondary hover:bg-chip');
+      ? 'bg-accent-fill text-accent-ink'
+      : 'text-ink-secondary hover:bg-accent-fill/50 hover:text-ink');
   return (
     <div className="max-w-[1100px] mx-auto space-y-6">
       <header>
-        <p className="text-[11px] uppercase tracking-[0.18em] text-accent-text font-semibold">Settings</p>
+        <p className="text-[11px] uppercase tracking-[0.18em] text-accent-ink font-semibold">Settings</p>
         <h1 className="mt-1 text-2xl font-bold tracking-tight text-ink">Admin</h1>
         <p className="mt-1 text-sm text-ink-tertiary">Configure sign-in providers, distribute installation tokens, and manage organization users.</p>
       </header>
 
-      <nav className="inline-flex p-1 rounded-xl border border-border-soft bg-surface">
+      <nav aria-label="Admin sections" className="inline-flex flex-wrap gap-0.5 p-1 rounded-xl border border-border-soft bg-surface">
         <NavLink to="auth" className={link}>
           <span className="inline-flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5" /> Auth</span>
         </NavLink>
@@ -70,9 +71,9 @@ interface AuthConfig {
   emailAllowlist: string[];
 }
 
-const inputCls = 'w-full px-3 py-2 rounded-lg border border-border-soft bg-chip text-ink dark:text-white text-sm placeholder:text-ink-tertiary focus:outline-none focus:ring-2 focus:ring-brand';
-const cardCls = 'bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5';
-const primaryBtnCls = 'px-4 py-2 rounded-lg bg-[image:var(--gradient-accent)] text-navy shadow-glow disabled:opacity-50 text-sm font-bold transition-colors';
+const inputCls = controlClass;
+const cardCls = cardClass;
+const primaryBtnCls = buttonClass('primary');
 
 export function AdminAuth() {
   const qc = useQueryClient();
@@ -90,7 +91,7 @@ export function AdminAuth() {
       <section className={cardCls}>
         <header className="flex items-center justify-between">
           <h3 className="text-sm font-semibold text-ink">Email + password</h3>
-          <Toggle checked={c.passwordEnabled} onChange={(v) => setDraft({ ...draft, passwordEnabled: v })} />
+          <Toggle label="Email + password sign-in" checked={c.passwordEnabled} onChange={(v) => setDraft({ ...draft, passwordEnabled: v })} />
         </header>
         <p className="mt-1 text-xs text-ink-tertiary">Allow users to sign in with email and a hashed password stored on this hub.</p>
       </section>
@@ -101,7 +102,7 @@ export function AdminAuth() {
             <h3 className="text-sm font-semibold text-ink">Google</h3>
             <p className="mt-0.5 text-xs text-ink-tertiary">OAuth 2.0 sign-in with Google Workspace or consumer accounts.</p>
           </div>
-          <Toggle checked={c.googleEnabled} onChange={(v) => setDraft({ ...draft, googleEnabled: v })} />
+          <Toggle label="Google sign-in" checked={c.googleEnabled} onChange={(v) => setDraft({ ...draft, googleEnabled: v })} />
         </header>
         <div className="mt-4 grid sm:grid-cols-2 gap-3">
           <Field label="Client ID">
@@ -119,7 +120,7 @@ export function AdminAuth() {
             <h3 className="text-sm font-semibold text-ink">Microsoft Entra</h3>
             <p className="mt-0.5 text-xs text-ink-tertiary">OAuth 2.0 sign-in via Azure AD / Entra ID tenants.</p>
           </div>
-          <Toggle checked={c.entraEnabled} onChange={(v) => setDraft({ ...draft, entraEnabled: v })} />
+          <Toggle label="Microsoft Entra sign-in" checked={c.entraEnabled} onChange={(v) => setDraft({ ...draft, entraEnabled: v })} />
         </header>
         <div className="mt-4 grid sm:grid-cols-2 gap-3">
           <Field label="Tenant ID">
@@ -147,8 +148,8 @@ export function AdminAuth() {
         <button type="submit" disabled={save.isPending} className={primaryBtnCls}>
           {save.isPending ? 'Saving…' : 'Save changes'}
         </button>
-        {save.isSuccess && <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">✓ Saved</span>}
-        {save.isError && <span className="text-xs text-rose-600 dark:text-rose-400 font-medium">Error: {(save.error as any)?.message}</span>}
+        {save.isSuccess && <span className="text-xs text-status-ok-text font-medium">✓ Saved</span>}
+        {save.isError && <span className="text-xs text-status-danger-text font-medium">Error: {(save.error as any)?.message}</span>}
       </div>
     </form>
   );
@@ -163,19 +164,6 @@ function Field({ label, children, className }: { label: string; children: React.
   );
 }
 
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      onClick={() => onChange(!checked)}
-      className={`relative w-10 h-5 rounded-full transition-colors ${checked ? 'bg-brand' : 'bg-border-soft'}`}
-    >
-      <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-surface shadow-sm transition-transform ${checked ? 'translate-x-5' : ''}`} />
-    </button>
-  );
-}
 
 interface KeyRow {
   tokenHashPreview: string;
@@ -212,7 +200,7 @@ export function AdminKeys() {
     <div className="space-y-6">
       <section className={`${cardCls} max-w-2xl`}>
         <header className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-[image:var(--gradient-accent)] text-navy flex items-center justify-center">
+          <div className="w-9 h-9 rounded-xl bg-accent-fill text-accent-ink flex items-center justify-center">
             <KeyRound className="w-4 h-4" />
           </div>
           <div>
@@ -237,9 +225,9 @@ export function AdminKeys() {
         {invites.length > 0 && (
           <div className="mt-4 space-y-3">
             {invites.map((inv, idx) => (
-              <div key={inv.id} className="rounded-xl border border-border-brand bg-chip p-4">
+              <div key={inv.id} className="rounded-xl border border-border-soft bg-canvas p-4">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] uppercase tracking-[0.14em] text-accent-text font-semibold">
+                  <span className="text-[11px] uppercase tracking-[0.14em] text-accent-ink font-semibold">
                     Share this command{invites.length > 1 ? ` · #${idx + 1}` : ''}
                   </span>
                   <div className="flex items-center gap-3">
@@ -247,13 +235,13 @@ export function AdminKeys() {
                     <button
                       onClick={() => setInvites(prev => prev.filter(p => p.id !== inv.id))}
                       title="Dismiss"
-                      className="text-ink-tertiary hover:text-rose-600 dark:hover:text-rose-400"
+                      className="text-ink-tertiary hover:text-status-danger-text"
                     >
                       <X className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 </div>
-                <pre className="mt-2 px-3 py-2.5 rounded-lg bg-card-glass text-ink text-xs font-mono overflow-x-auto select-all">{inv.joinCommand}</pre>
+                <pre className="mt-2 px-3 py-2.5 rounded-lg bg-canvas text-ink text-xs font-mono overflow-x-auto select-all">{inv.joinCommand}</pre>
                 <button
                   onClick={async () => {
                     try {
@@ -261,7 +249,7 @@ export function AdminKeys() {
                       setInvites(prev => prev.map(p => p.id === inv.id ? { ...p, copied: true } : p));
                     } catch { /* ignore */ }
                   }}
-                  className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-accent-text hover:underline"
+                  className="mt-2 inline-flex items-center gap-1.5 text-xs font-semibold text-accent-ink hover:underline"
                 >
                   {inv.copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                   {inv.copied ? 'Copied' : 'Copy to clipboard'}
@@ -288,13 +276,13 @@ export function AdminKeys() {
           <button type="submit" className={primaryBtnCls}>Issue key</button>
         </form>
         {issued && (
-          <div className="mt-3 rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50/70 dark:bg-amber-900/20 p-4">
-            <div className="text-[11px] uppercase tracking-[0.14em] text-amber-700 dark:text-amber-300 font-semibold">Save this token now — it won't be shown again</div>
-            <pre className="mt-2 px-3 py-2.5 rounded-lg bg-card-glass text-ink text-xs font-mono break-all overflow-x-auto select-all">{issued}</pre>
+          <div className="mt-3 rounded-xl border border-status-warn-text/40 bg-status-warn-bg p-4">
+            <div className="text-[11px] uppercase tracking-[0.14em] text-status-warn-text font-semibold">Save this token now — it won't be shown again</div>
+            <pre className="mt-2 px-3 py-2.5 rounded-lg bg-canvas text-ink text-xs font-mono break-all overflow-x-auto select-all">{issued}</pre>
             <div className="mt-2 flex items-center gap-3">
               <button
                 onClick={async () => { try { await navigator.clipboard.writeText(issued); setIssuedCopied(true); } catch { /* ignore */ } }}
-                className="inline-flex items-center gap-1.5 text-xs font-semibold text-accent-text hover:underline"
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-accent-ink hover:underline"
               >
                 {issuedCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                 {issuedCopied ? 'Copied' : 'Copy'}
@@ -326,7 +314,7 @@ export function AdminKeys() {
               {(keys.data ?? []).map(k => {
                 const ident = k.gitEmail ?? k.osUser;
                 return (
-                <tr key={k.tokenHashPreview} className="hover:bg-chip transition-colors">
+                <tr key={k.tokenHashPreview} className="hover:bg-accent-fill transition-colors">
                   <td className="px-5 py-2.5 font-mono text-xs text-ink-secondary">{k.tokenHashPreview}…</td>
                   <td className="px-2 py-2.5 text-ink-secondary">{k.label ?? <span className="text-ink-tertiary">—</span>}</td>
                   <td className="px-2 py-2.5 text-xs text-ink-secondary">
@@ -346,13 +334,13 @@ export function AdminKeys() {
                   <td className="px-2 py-2.5 text-xs text-ink-tertiary tabular-nums">{fmtDate(k.createdAt)}</td>
                   <td className="px-2 py-2.5">
                     {k.revokedAt
-                      ? <span className="px-2 py-0.5 rounded-md text-[10px] font-mono bg-rose-50 dark:bg-rose-900/30 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800">revoked</span>
-                      : <span className="px-2 py-0.5 rounded-md text-[10px] font-mono bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">active</span>}
+                      ? <span className="px-2 py-0.5 rounded-md text-[10px] font-mono bg-status-danger-bg text-status-danger-text border border-status-danger-text/40">revoked</span>
+                      : <span className="px-2 py-0.5 rounded-md text-[10px] font-mono bg-status-ok-bg text-status-ok-text border border-status-ok-text/40">active</span>}
                   </td>
                   <td className="px-5 py-2.5 text-right">
                     {!k.revokedAt && (
                       <button onClick={() => revoke.mutate(k.tokenHashPreview)}
-                              className="inline-flex items-center gap-1 text-xs font-semibold text-ink-tertiary hover:text-rose-600 dark:hover:text-rose-400">
+                              className="inline-flex items-center gap-1 text-xs font-semibold text-ink-tertiary hover:text-status-danger-text">
                         <Trash2 className="w-3 h-3" /> Revoke
                       </button>
                     )}
@@ -374,9 +362,9 @@ export function AdminKeys() {
 interface UserRow { id: string; email: string; provider: string; role: string; active: number; created_at: string; last_login_at: string | null }
 
 const PROVIDER_BADGE: Record<string, string> = {
-  password: 'bg-chip text-ink-secondary border-border-soft',
-  google:   'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800',
-  entra:    'bg-cyan-50 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-300 border-cyan-200 dark:border-cyan-800',
+  password: 'bg-canvas text-ink-secondary border-border-soft',
+  google:   'bg-canvas text-ink-secondary border-border-soft',
+  entra:    'bg-canvas text-ink-secondary border-border-soft',
 };
 
 export function AdminUsers() {
@@ -415,13 +403,13 @@ export function AdminUsers() {
           }}
         >
           <Field label="Auth method" className="sm:col-span-12">
-            <div className="inline-flex p-1 rounded-lg border border-border-soft bg-chip">
+            <div className="inline-flex p-1 rounded-lg border border-border-soft bg-canvas">
               {(['password', 'sso'] as const).map(m => (
                 <button
                   key={m}
                   type="button"
                   onClick={() => setDraft({ ...draft, authMethod: m, password: m === 'sso' ? '' : draft.password })}
-                  className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${draft.authMethod === m ? 'bg-surface text-accent-text shadow-sm' : 'text-ink-tertiary hover:text-ink'}`}
+                  className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${draft.authMethod === m ? 'bg-surface text-accent-ink shadow-sm' : 'text-ink-tertiary hover:text-ink'}`}
                 >
                   {m === 'password' ? 'Password' : 'SSO only'}
                 </button>
@@ -469,10 +457,10 @@ export function AdminUsers() {
             </thead>
             <tbody className="divide-y divide-border-soft">
               {(users.data ?? []).map(u => (
-                <tr key={u.id} className="hover:bg-chip transition-colors">
+                <tr key={u.id} className="hover:bg-accent-fill transition-colors">
                   <td className="px-5 py-2.5">
                     <div className="flex items-center gap-2.5">
-                      <div className="w-7 h-7 rounded-full bg-[image:var(--gradient-accent)] text-navy text-[10px] font-bold flex items-center justify-center shrink-0">
+                      <div className="w-7 h-7 rounded-full bg-accent-fill text-accent-ink text-[10px] font-bold flex items-center justify-center shrink-0">
                         {u.email.slice(0, 2).toUpperCase()}
                       </div>
                       <span className="font-mono text-xs text-ink-secondary">{u.email}</span>
@@ -485,7 +473,7 @@ export function AdminUsers() {
                     <select
                       value={u.role}
                       onChange={(e) => update.mutate({ id: u.id, role: e.target.value })}
-                      className="bg-transparent text-xs font-medium text-ink-secondary hover:bg-chip rounded-md px-1.5 py-0.5"
+                      className="bg-transparent text-xs font-medium text-ink-secondary hover:bg-accent-fill rounded-md px-1.5 py-0.5"
                     >
                       <option value="viewer">viewer</option>
                       <option value="admin">admin</option>
@@ -493,7 +481,7 @@ export function AdminUsers() {
                   </td>
                   <td className="px-2 py-2.5 text-xs text-ink-tertiary tabular-nums">{u.last_login_at ? fmtDate(u.last_login_at) : <span className="text-ink-tertiary">never</span>}</td>
                   <td className="px-2 py-2.5 text-right">
-                    <Toggle checked={!!u.active} onChange={(v) => update.mutate({ id: u.id, active: v })} />
+                    <Toggle label={`Active: ${u.email}`} checked={!!u.active} onChange={(v) => update.mutate({ id: u.id, active: v })} />
                   </td>
                   <td className="px-5 py-2.5 text-right">
                     {canDeleteUserRow(u.id, me.data?.userId) && (
@@ -505,7 +493,7 @@ export function AdminUsers() {
                         }}
                         disabled={remove.isPending}
                         title="Delete user"
-                        className="inline-flex items-center gap-1 text-xs font-semibold text-ink-tertiary hover:text-rose-600 dark:hover:text-rose-400 disabled:opacity-50"
+                        className="inline-flex items-center gap-1 text-xs font-semibold text-ink-tertiary hover:text-status-danger-text disabled:opacity-50"
                       >
                         <Trash2 className="w-3 h-3" /> Delete
                       </button>
@@ -631,7 +619,7 @@ export function AdminInstallations() {
             </button>
             {attributedByUsername > 0 && (
               <span
-                className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 cursor-help"
+                className="text-[11px] font-semibold text-status-warn-text cursor-help"
                 title="These installs have no git email, so their work is filed under an OS username instead of a person."
               >
                 {attributedByUsername} attributed by username
@@ -654,11 +642,11 @@ export function AdminInstallations() {
             </thead>
             <tbody className="divide-y divide-border-soft">
               {rows.map(r => (
-                <tr key={r.id} className={`hover:bg-chip transition-colors ${r.hidden || r.retired ? 'opacity-50' : ''}`}>
+                <tr key={r.id} className={`hover:bg-accent-fill transition-colors ${r.hidden || r.retired ? 'opacity-50' : ''}`}>
                   <td className="px-5 py-2.5">
                     <span className="font-mono text-[11px] text-ink-secondary">{r.id}</span>
                     {r.hidden && (
-                      <span className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">hidden</span>
+                      <span className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-status-warn-text">hidden</span>
                     )}
                     {r.retired && (
                       <span
@@ -677,7 +665,7 @@ export function AdminInstallations() {
                         // Their whole history is filed under an OS username, and
                         // fixing it later splits them into two identities.
                         <div
-                          className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 cursor-help"
+                          className="text-[11px] font-semibold text-status-warn-text cursor-help"
                           title={attributionWarning(r.osUser)}
                         >
                           no git email — attributed by username
@@ -686,7 +674,7 @@ export function AdminInstallations() {
                   </td>
                   <td className="px-2 py-2.5">
                     {r.agenfkVersion
-                      ? <span className="font-mono text-[11px] px-2 py-0.5 rounded-md border border-border-brand bg-chip text-accent-text">{r.agenfkVersion}</span>
+                      ? <span className="font-mono text-[11px] px-2 py-0.5 rounded-md border border-accent bg-accent-fill text-accent-ink">{r.agenfkVersion}</span>
                       : <span className="text-[11px] text-ink-tertiary italic">unknown</span>}
                   </td>
                   <td className="px-2 py-2.5 text-xs text-ink-tertiary tabular-nums">
@@ -706,7 +694,7 @@ export function AdminInstallations() {
                           }
                         }}
                         disabled={hide.isPending}
-                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-amber-600 dark:hover:text-amber-400"
+                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-status-warn-text"
                         title="Hide this person from selection surfaces"
                       >
                         <EyeOff className="w-3.5 h-3.5" /> Hide
@@ -716,7 +704,7 @@ export function AdminInstallations() {
                       <button
                         onClick={() => { if (confirm(retireConfirmMessage(r.id))) retire.mutate(r.id); }}
                         disabled={retire.isPending}
-                        className="ml-3 inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-red-600 dark:hover:text-red-400"
+                        className="ml-3 inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-status-danger-text"
                         title="Retire this dead installation so campaigns stop waiting on it"
                       >
                         <Archive className="w-3.5 h-3.5" /> Retire
@@ -726,7 +714,7 @@ export function AdminInstallations() {
                       <button
                         onClick={() => unretire.mutate(r.id)}
                         disabled={unretire.isPending}
-                        className="ml-3 inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-accent-text"
+                        className="ml-3 inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-accent-ink"
                         title="Restore this installation to the fleet (revoked keys are not restored)"
                       >
                         <ArchiveRestore className="w-3.5 h-3.5" /> Restore
@@ -763,7 +751,7 @@ export function AdminInstallations() {
                 <button
                   onClick={() => unhide.mutate(p.userKey)}
                   disabled={unhide.isPending}
-                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-accent-text hover:opacity-80"
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-accent-ink hover:opacity-80"
                 >
                   <Eye className="w-3.5 h-3.5" /> Unhide
                 </button>
