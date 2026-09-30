@@ -162,14 +162,14 @@ export function CardPicker({ items, currentItemId, projectNames, onPick, onClose
               onChange={e => setQuery(e.target.value)}
               aria-label="Search cards by name"
               placeholder="Search cards…"
-              className="min-w-0 flex-1 rounded-md border border-border-soft bg-canvas px-2 py-1 text-[11px] text-ink placeholder:text-ink-tertiary focus:border-border-brand focus:outline-none"
+              className="min-w-0 flex-1 rounded-md border border-border-soft bg-canvas px-2 py-1 text-[11px] text-ink placeholder:text-ink-tertiary focus:border-accent focus:outline-none focus:ring-2 focus:ring-focus-ring"
             />
             {projectOptions.length > 1 && (
               <select
                 value={projectId}
                 onChange={e => setProjectId(e.target.value)}
                 aria-label="Filter by project"
-                className="shrink-0 rounded-md border border-border-soft bg-canvas px-2 py-1 text-[11px] text-ink-secondary focus:border-border-brand focus:outline-none"
+                className="shrink-0 rounded-md border border-border-soft bg-canvas px-2 py-1 text-[11px] text-ink-secondary focus:border-accent focus:outline-none focus:ring-2 focus:ring-focus-ring"
               >
                 <option value="">All projects</option>
                 {projectOptions.map(([id, name]) => (

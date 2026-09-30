@@ -284,7 +284,8 @@ describe('ProjectSelection', () => {
     // clickable, or it advertises a click the guard deliberately ignores.
     const armed = rowOf('Delete "Zebra"?');
     expect(armed.className).not.toContain('cursor-pointer');
-    expect(armed.className).not.toContain('hover:bg-chip');
+    // No hover fill of any colour: the armed row is not a click target.
+    expect(armed.className).not.toMatch(/(?:^|\s)hover:bg-/);
   });
 
   it('the trash button arms the delete confirm and does NOT select the project', async () => {

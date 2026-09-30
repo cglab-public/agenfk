@@ -74,12 +74,12 @@ export function tabIndicator(state: SessionState | undefined): TabIndicator {
  */
 export function tabDotClass(state: SessionState): string {
   switch (state) {
-    case 'failed':  return 'bg-red-500';
-    case 'blocked': return 'bg-amber-500';
+    case 'failed':  return 'bg-status-danger-text';
+    case 'blocked': return 'bg-status-warn-text';
     // Hollow rather than filled: the dot says "we cannot see in", and a solid
     // colour would claim knowledge the state exists to deny.
-    case 'unverifiable': return 'border border-amber-500 bg-transparent';
-    case 'running': return 'bg-emerald-500';
+    case 'unverifiable': return 'border border-status-warn-text bg-transparent';
+    case 'running': return 'bg-status-ok-text';
     default:        return 'bg-ink-tertiary';
   }
 }

@@ -76,10 +76,11 @@
   --status-warn-text: #8a5d00;    --status-warn-bg: rgba(191, 135, 0, .12);
   --status-danger-text: #b8324a;  --status-danger-bg: rgba(194, 58, 82, .10);
   --status-info-text: #1a62ad;    --status-info-bg: rgba(31, 111, 192, .10);
-  --type-epic: #b03fc4;
-  --type-story: #2b8fd9;
-  --type-task: #0f9f8f;
-  --type-bug: #d6457a;
+  /* Item types: text on a 10% tint of itself passes AA (chips are 9-10px). */
+  --type-epic: #9e39b0;
+  --type-story: #1e4b72;
+  --type-task: #0b776b;
+  --type-bug: #b63b68;
 
   /* Gradients (theme-independent). Not a recognized Tailwind @theme
    * namespace, so kept as plain custom properties and consumed via
@@ -140,7 +141,7 @@
     --status-danger-text: #f26d7e;  --status-danger-bg: rgba(242, 109, 126, .14);
     --status-info-text: #6cb4f5;    --status-info-bg: rgba(108, 180, 245, .13);
     --type-epic: #cc5fe0;
-    --type-story: #4a9be0;
+    --type-story: #15a8ea;
     --type-task: #1ba592;
     --type-bug: #e05a8c;
     /* Tailwind's slate, made neutral gray (user request 2026-09-24). The Kanban UI
@@ -210,7 +211,7 @@
   --status-danger-text: #f26d7e;  --status-danger-bg: rgba(242, 109, 126, .14);
   --status-info-text: #6cb4f5;    --status-info-bg: rgba(108, 180, 245, .13);
   --type-epic: #cc5fe0;
-  --type-story: #4a9be0;
+  --type-story: #15a8ea;
   --type-task: #1ba592;
   --type-bug: #e05a8c;
   /* Tailwind's slate, made neutral gray (user request 2026-09-24). The Kanban UI
@@ -288,10 +289,11 @@
   --status-warn-text: #8a5d00;    --status-warn-bg: rgba(191, 135, 0, .12);
   --status-danger-text: #b8324a;  --status-danger-bg: rgba(194, 58, 82, .10);
   --status-info-text: #1a62ad;    --status-info-bg: rgba(31, 111, 192, .10);
-  --type-epic: #b03fc4;
-  --type-story: #2b8fd9;
-  --type-task: #0f9f8f;
-  --type-bug: #d6457a;
+  /* Item types: text on a 10% tint of itself passes AA (chips are 9-10px). */
+  --type-epic: #9e39b0;
+  --type-story: #1e4b72;
+  --type-task: #0b776b;
+  --type-bug: #b63b68;
   /* Tailwind's own slate again: a forced light theme on a dark OS must not keep
    * the dark-mode neutral ramp above. */
   --color-slate-50: oklch(98.4% 0.003 247.858);

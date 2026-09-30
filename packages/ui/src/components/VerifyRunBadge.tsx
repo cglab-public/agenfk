@@ -21,7 +21,7 @@ export function VerifyRunBadge({ run }: { run: ActiveRun }): React.ReactElement 
     <span
       data-testid="verify-running"
       title={`agenfk verify is running the checks for leaving ${run.step}`}
-      className="inline-flex items-center gap-1 text-[9px] font-semibold px-1.5 py-0.5 rounded border bg-brand/10 text-brand border-brand/30"
+      className="inline-flex items-center gap-1 text-[9px] font-semibold px-1.5 py-0.5 rounded border bg-accent-fill text-accent-ink border-accent/40"
     >
       <Loader2 size={10} aria-hidden="true" className="animate-spin motion-reduce:animate-none" />
       <span>Verifying… {elapsed}</span>

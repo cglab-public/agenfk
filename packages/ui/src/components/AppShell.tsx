@@ -2311,7 +2311,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                   });
                 }}
                 title="Open the projects with work running in them"
-                className="rounded text-emerald-400 underline decoration-dotted underline-offset-2 transition-colors hover:text-emerald-300"
+                className="rounded text-status-ok-text underline decoration-dotted underline-offset-2 transition-colors hover:decoration-solid"
               >
                 {running} running
               </button>
@@ -2325,7 +2325,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                   revealOnBoard({ itemId: first.itemId, projectId: first.projectId });
                 }}
                 title="Go to the first card that needs you"
-                className="rounded text-amber-400 underline decoration-dotted underline-offset-2 transition-colors hover:text-amber-300"
+                className="rounded text-status-warn-text underline decoration-dotted underline-offset-2 transition-colors hover:decoration-solid"
               >
                 {stuck.length} need you
               </button>
@@ -2449,7 +2449,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                 // reach the control by keyboard.
                 className={clsx(
                   'absolute right-1 rounded p-1 text-ink-tertiary transition-colors hover:text-ink focus:opacity-100',
-                  isPinned ? 'opacity-100 text-brand' : 'opacity-0 group-hover:opacity-100',
+                  isPinned ? 'opacity-100 text-accent-ink' : 'opacity-0 group-hover:opacity-100',
                 )}
               >
                 {isPinned ? <PinOff size={11} /> : <Pin size={11} />}
@@ -2607,7 +2607,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                                 title="Plan a fan-out of this card's children"
                                 aria-label={`Plan a fan-out of ${item.title}`}
                                 onClick={e => { e.stopPropagation(); onOpenFleet(item.id); }}
-                                className="shrink-0 rounded px-1 font-mono text-[10px] uppercase leading-[16px] tracking-wide text-ink-tertiary opacity-70 hover:text-brand hover:opacity-100"
+                                className="shrink-0 rounded px-1 font-mono text-[10px] uppercase leading-[16px] tracking-wide text-ink-tertiary opacity-70 hover:text-accent-ink hover:opacity-100"
                               >
                                 fleet
                               </button>
@@ -2644,7 +2644,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                                    * for words somebody has to read.
                                    */
                                   state.rejected.length || state.heldBy.length
-                                    ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                                    ? 'bg-status-warn-bg text-status-warn-text'
                                     : 'text-ink-tertiary opacity-70',
                                 )}
                               >
@@ -2914,7 +2914,7 @@ function SortMenu({ value, onChange }: { value: ProjectSort; onChange: (v: Proje
               )}
             >
               {option.label}
-              {value === option.value && <Check size={12} className="text-brand" />}
+              {value === option.value && <Check size={12} className="text-accent-ink" />}
             </button>
           ))}
         </div>

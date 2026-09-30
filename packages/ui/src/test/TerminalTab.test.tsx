@@ -248,7 +248,7 @@ describe('what the tab strip says about each session', () => {
     const dots = await screen.findAllByTestId('tab-state');
     expect(dots, 'the unselected tab said nothing about its agent').toHaveLength(1);
     expect(dots[0].getAttribute('data-state')).toBe('failed');
-    expect(dots[0].className).toContain('red');
+    expect(dots[0].className).toContain('status-danger');
   });
 
   it('says nothing on a quiet tab, so the strip does not become noise', () => {

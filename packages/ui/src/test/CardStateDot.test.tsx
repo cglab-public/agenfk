@@ -33,7 +33,8 @@ describe('CardStateDot', () => {
 
   it('fills the dot only while an agent is working', () => {
     // Filled vs ring is the greyscale-survivable half of the signal.
-    expect(dotFor('working').className).toMatch(/\bbg-emerald-500\b/);
+    // The status token for a running agent (CGLAB-434), not a raw palette hue.
+    expect(dotFor('working').className).toMatch(/(?:^|\s)bg-status-ok-text(?:\s|$)/);
     expect(dotFor('needs-person').className).toMatch(/\bbg-transparent\b/);
     expect(dotFor('quiet').className).toMatch(/\bbg-transparent\b/);
   });
@@ -81,7 +82,9 @@ describe('CardStateDot', () => {
         .split(/\s+/)
         // Anything naming a hue: bg-*, border-<colour>, ring-<colour>, and
         // the `/50` opacity suffixes. What survives is the box model.
-        .filter(c => !/^(bg-|(border|ring)-(?!\d)[a-z]+-\d)/.test(c))
+        // Token colours too (border-status-warn-text, ring-status-ok-text/20,
+        // border-ink-tertiary/50): they name a hue as much as a palette class.
+        .filter(c => !/^(bg-|(border|ring)-(?!\d)[a-z]+-\d|(border|ring)-(status|ink|accent|series|type|brand)[\w-]*(\/\d+)?$)/.test(c))
         .sort()
         .join(' ');
 

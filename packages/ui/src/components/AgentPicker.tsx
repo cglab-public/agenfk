@@ -150,7 +150,7 @@ export function AgentPicker({ value, onChange, listAgents }: AgentPickerProps): 
           {INSTALL_HINT[agent.id] ?? 'Not installed'}
         </span>
       )}
-      {agent.id === value && agent.installed && <Check size={15} className="shrink-0 text-brand" />}
+      {agent.id === value && agent.installed && <Check size={15} className="shrink-0 text-accent-ink" />}
     </div>
   );
 
@@ -161,7 +161,7 @@ export function AgentPicker({ value, onChange, listAgents }: AgentPickerProps): 
         onClick={() => setOpen(o => !o)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="flex w-full items-center gap-2.5 rounded-xl border border-border-soft bg-canvas px-3 py-2.5 text-sm text-ink transition-colors hover:border-border-brand"
+        className="flex w-full items-center gap-2.5 rounded-xl border border-border-soft bg-canvas px-3 py-2.5 text-sm text-ink transition-colors hover:border-accent"
       >
         <AgentIcon agentId={value} size={18} />
         <span className="flex-1 text-left">{current?.label ?? FALLBACK_LABELS[value] ?? value}</span>
@@ -182,7 +182,7 @@ export function AgentPicker({ value, onChange, listAgents }: AgentPickerProps): 
               value={query}
               onChange={e => setQuery(e.target.value)}
               placeholder="Search agents..."
-              className="w-full rounded-lg border border-border-soft bg-canvas py-2 pl-8 pr-3 text-sm text-ink outline-none focus:border-border-brand"
+              className="w-full rounded-lg border border-border-soft bg-canvas py-2 pl-8 pr-3 text-sm text-ink outline-none focus:border-accent focus:ring-2 focus:ring-focus-ring"
             />
           </div>
 

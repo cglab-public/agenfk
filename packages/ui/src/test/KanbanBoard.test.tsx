@@ -1356,3 +1356,102 @@ describe('the terminal button on a card', () => {
     expect(screen.queryByRole('button', { name: /open a terminal on/i })).toBeNull();
   });
 });
+
+/**
+ * The board renders on the visual-system tokens only (CGLAB-434 S5.1): no raw
+ * Tailwind palette colours (slate stays: tokens.css remaps it to the neutral
+ * ramp), no gradients, glow or old teal chrome, teal only on primary buttons
+ * and the brand mark, and no inline hex/rgba colours except a step's own
+ * stored colour. A step without one falls back to a token: status tokens for
+ * done/blocked/paused, series or accent for working steps.
+ */
+describe('board colours are on tokens (CGLAB-434)', () => {
+  const RAW_PALETTE = /\b(?:bg|text|border(?:-[trblxy])?|ring|ring-offset|from|to|via|fill|stroke|outline|divide|shadow|caret|accent|decoration|placeholder)-(?:(?:red|rose|amber|yellow|orange|emerald|green|teal|cyan|sky|blue|indigo|violet|purple|pink|fuchsia|lime|gray|zinc|neutral|stone)-\d{2,3}|white)\b|\b(?:bg|text|border|ring)-black\b(?!\/\d)|\b(?:text|border|ring)-black\/\d+/;
+  const OLD_ACCENT = /(?:^|\s|:)(?:(?:bg|from|to|via)-chip(?:\/\d+)?|(?:border|outline|ring)-border-brand(?:\/\d+)?|bg-mint(?:\/\d+)?|bg-brand\/\d+|text-brand-dark|text-brand-light|shadow-glow|bg-gradient-[\w-]+|bg-\[image:var\(--gradient-accent\)\]|(?:border|ring|outline)-brand(?:\/\d+)?|ring-brand)(?=\s|$)/;
+
+  function expectOnTokens(root: HTMLElement) {
+    // Only the brand mark is exempt; icons are checked like everything else.
+    const marks = Array.from(root.querySelectorAll('[data-brand-mark]'));
+    const els = [root, ...Array.from(root.querySelectorAll('*'))]
+      // The brand mark is exempt, itself included.
+      .filter(el => !marks.some(m => m.contains(el)));
+    const cls = els.map(el => el.getAttribute('class') ?? '').join(' ');
+    const offender = els.find(el => RAW_PALETTE.test(el.getAttribute('class') ?? ''));
+    expect(cls.match(RAW_PALETTE)?.[0] ?? null, `raw palette colour on ${offender?.outerHTML.slice(0, 160)}`).toBeNull();
+    const oldOffender = els.find(el => OLD_ACCENT.test(el.getAttribute('class') ?? '') || /(?:^|\s|:)text-accent-text(?:\s|$)/.test(el.getAttribute('class') ?? ''));
+    expect(cls.match(OLD_ACCENT)?.[0]?.trim() ?? null, `old teal accent on ${oldOffender?.outerHTML.slice(0, 160)}`).toBeNull();
+    expect(cls.match(/(?:^|\s|:)text-accent-text(?:\s|$)/)?.[0] ?? null, `teal text on ${oldOffender?.outerHTML.slice(0, 160)}`).toBeNull();
+    for (const el of els) {
+      if (/(?:^|\s)bg-brand(?:\s|$)/.test(el.getAttribute('class') ?? '')) {
+        expect(el.tagName, `bg-brand on <${el.tagName.toLowerCase()}> "${el.textContent?.slice(0, 24)}"`).toBe('BUTTON');
+      }
+      // Neutral black shadows (the card's drag lift) are not colour.
+      const style = (el.getAttribute('style') ?? '').replace(/rgba?\(\s*0[\s,]+0[\s,]+0\b[^)]*\)/g, '');
+      expect(style.match(/#[0-9a-f]{3,8}\b|rgba?\(/i)?.[0] ?? null, `inline colour on <${el.tagName.toLowerCase()}> style="${style}"`).toBeNull();
+    }
+  }
+
+  const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+  const at = { createdAt: new Date(), updatedAt: new Date(), history: [] };
+  const items = [
+    { id: 'e1', projectId: 'p1', type: ItemType.EPIC, title: 'Epic A', status: Status.IN_PROGRESS, ...at },
+    { id: 's1', projectId: 'p1', type: ItemType.STORY, title: 'Story B', status: Status.REVIEW, ...at },
+    { id: 't1', projectId: 'p1', type: ItemType.TASK, title: 'Task C', status: Status.TODO, ...at },
+    { id: 'b1', projectId: 'p1', type: ItemType.BUG, title: 'Bug D', status: Status.TEST, ...at },
+    { id: 'x1', projectId: 'p1', type: ItemType.TASK, title: 'Blocked E', status: Status.BLOCKED, ...at },
+    { id: 'a1', projectId: 'p1', type: ItemType.TASK, title: 'Archived F', status: Status.ARCHIVED, ...at },
+    // A PR chip and a progress bar render too.
+    { id: 'pr1', projectId: 'p1', type: ItemType.TASK, title: 'PR G', status: Status.IN_PROGRESS, prUrl: 'https://github.com/acme/api/pull/7', prNumber: 7, prStatus: 'merged', ...at },
+    { id: 'c1', projectId: 'p1', parentId: 'e1', type: ItemType.TASK, title: 'Child H', status: Status.DONE, ...at },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    queryClient.clear();
+    vi.mocked(api.getProjectFlow).mockResolvedValue(DEFAULT_FLOW_MOCK as any);
+    vi.mocked(api.listProjects).mockResolvedValue([project as any]);
+    vi.mocked(api.listItems).mockResolvedValue(items as any);
+    localStorage.setItem('agenfk_project_id', 'p1');
+  });
+  afterEach(() => cleanup());
+
+  it('the board, every item type, blocked and archive open, is on tokens only', async () => {
+    render(<KanbanBoard />, { wrapper });
+    await screen.findByText('Bug D');
+    // Open the collapsed Blocked and Archived columns (their labels sit inside
+    // the toggle buttons). Asserted, so a renamed label fails instead of skipping.
+    for (const label of ['Blocked', 'Archived']) {
+      const btn = screen.queryAllByText(label).map(el => el.closest('button')).find(Boolean);
+      expect(btn, `${label} toggle`).toBeTruthy();
+      fireEvent.click(btn!);
+    }
+    await screen.findByText('Blocked E');
+    await screen.findByText('Archived F');
+    expectOnTokens(document.body);
+  });
+
+  it('the card detail modal, overview and subitems, is on tokens only', async () => {
+    vi.mocked(api.getItem).mockImplementation((async (id: string) => items.find(i => i.id === id)) as any);
+    render(<KanbanBoard />, { wrapper });
+    const card = await screen.findByText('Epic A');
+    fireEvent.doubleClick(card.closest('[draggable="true"]') || card.closest('.group') || card.parentElement!);
+    const title = await screen.findAllByText('Epic A');
+    expect(title.length).toBeGreaterThan(1);
+    expectOnTokens(document.body);
+    const subTab = screen.queryAllByRole('button').find(b => /^Subitems/.test(b.textContent?.trim() ?? ''));
+    expect(subTab, 'Subitems tab').toBeTruthy();
+    fireEvent.click(subTab!);
+    await screen.findAllByText('Child H');
+    expectOnTokens(document.body);
+  });
+
+  it('item types wear their type tokens on the card', async () => {
+    render(<KanbanBoard />, { wrapper });
+    for (const [title, token] of [['Epic A', 'type-epic'], ['Story B', 'type-story'], ['Task C', 'type-task'], ['Bug D', 'type-bug']] as const) {
+      const card = (await screen.findByText(title)).closest('[draggable="true"]') as HTMLElement;
+      const cls = [card, ...Array.from(card.querySelectorAll('*'))].map(el => el.getAttribute('class') ?? '').join(' ');
+      expect(cls, title).toMatch(new RegExp(`(?:^|\\s)(?:text|bg|border)-${token}(?:/\\d+)?(?:\\s|$)`));
+    }
+  });
+});

@@ -17,6 +17,7 @@ import { VerifyRunBadge, VerifyRunOutput } from './VerifyRunBadge';
 import { RunsPanel, type AgentRun } from './RunsPanel';
 import { StepChecksPanel } from './StepChecksPanel';
 import { CheckHistoryTab } from './CheckHistoryTab';
+import { itemTypeClass } from '../itemTypeStyle';
 
 interface CardDetailModalProps {
   item: AgEnFKItem;
@@ -234,7 +235,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 dark:bg-black/70 backdrop-blur-sm">
-      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-6xl h-[calc(100vh-2rem)] overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200 border border-slate-200 dark:border-slate-800">
+      <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-6xl h-[calc(100vh-2rem)] overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200 border border-slate-200 dark:border-slate-800">
         {/* Modal Header */}
         <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50 relative z-20 shrink-0">
           <div className="flex items-center justify-between">
@@ -242,7 +243,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
             {parentItem && (
               <button 
                 onClick={() => { onSelectItem(parentItem); setActiveTab('subitems'); }}
-                className="mr-2 p-1.5 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-md text-accent-text transition-colors flex items-center gap-1 text-xs font-bold uppercase"
+                className="mr-2 p-1.5 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-md text-accent-ink transition-colors flex items-center gap-1 text-xs font-bold uppercase"
                 title={`Back to ${parentItem.title}`}
               >
                 <ArrowLeft size={14} />
@@ -252,10 +253,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
             {!isNew ? (
               <span className={clsx(
                 "text-xs font-bold px-2.5 py-1 rounded-md border uppercase tracking-wider flex items-center gap-1.5",
-                item.type === ItemType.EPIC ? "bg-chip text-accent-text border-border-brand" :
-                item.type === ItemType.STORY ? "bg-story-blue/10 text-story-blue border-story-blue/30" :
-                item.type === ItemType.TASK ? "bg-brand/10 text-brand border-brand/30" :
-                "bg-danger-muted/10 text-danger-muted border-danger-muted/30"
+                itemTypeClass(item.type)
               )}>
                 {item.type === ItemType.EPIC && <Layout size={12} />}
                 {item.type === ItemType.STORY && <Tag size={12} />}
@@ -267,7 +265,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               <select 
                 value={type}
                 onChange={(e) => setType(e.target.value as ItemType)}
-                className="text-xs font-bold px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-brand uppercase tracking-wider"
+                className="text-xs font-bold px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700 bg-surface text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-focus-ring uppercase tracking-wider"
               >
                 {Object.values(ItemType).map(t => (
                   <option key={t} value={t}>{t}</option>
@@ -278,8 +276,8 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               <span className={clsx(
                 "text-xs font-bold px-2.5 py-1 rounded-md border uppercase tracking-wider",
                 String(item.status).toUpperCase().includes('DONE')
-                  ? "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border-emerald-100 dark:border-emerald-800"
-                  : "bg-chip text-accent-text border-border-brand"
+                  ? "bg-status-ok-bg text-status-ok-text border-status-ok-text/40"
+                  : "bg-accent-fill text-accent-ink border-accent"
               )} title="Workflow status">
                 {item.status}
               </span>
@@ -290,10 +288,10 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">{item.id.substring(0, 8)}</span>
                 <button 
                   onClick={() => handleCopyId(item.id)}
-                  className="p-1 -mr-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition-colors text-slate-400 hover:text-accent-text"
+                  className="p-1 -mr-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition-colors text-slate-400 hover:text-accent-ink"
                   title="Copy full ID"
                 >
-                  {copiedId === item.id ? <Check size={10} className="text-emerald-500" /> : <Copy size={10} />}
+                  {copiedId === item.id ? <Check size={10} className="text-status-ok-text" /> : <Copy size={10} />}
                 </button>
               </div>
             )}
@@ -302,7 +300,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 href={item.externalUrl} 
                 target="_blank" 
                 rel="noopener noreferrer"
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-all text-[10px] font-bold uppercase tracking-wider"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-accent-fill border border-accent/40 text-accent-ink hover:border-accent transition-all text-[10px] font-bold uppercase tracking-wider"
                 title={`Open JIRA: ${item.externalId}`}
               >
                 <ExternalLink size={12} />
@@ -330,7 +328,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 className={clsx(
                   "p-2 rounded-full transition-colors",
                   isEditing
-                    ? "bg-chip text-accent-text"
+                    ? "bg-accent-fill text-accent-ink"
                     : "hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300"
                 )}
               >
@@ -356,7 +354,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
         </div>
 
         {/* Tab Navigation */}
-        <div className="flex px-6 border-b border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-x-auto relative z-30 shrink-0">
+        <div className="flex px-6 border-b border-slate-100 dark:border-slate-800 bg-surface overflow-x-auto relative z-30 shrink-0">
           {tabs.map(tab => (
             <button
               key={tab.id}
@@ -364,7 +362,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               className={clsx(
                 "flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-all whitespace-nowrap outline-none",
                 activeTab === tab.id
-                  ? "border-brand text-accent-text"
+                  ? "border-accent text-accent-ink"
                   : "border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
               )}
             >
@@ -372,7 +370,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               {tab.badge !== undefined && (
                 <span className={clsx(
                   "ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold",
-                  activeTab === tab.id ? "bg-chip text-accent-text" : "bg-slate-100 text-slate-500"
+                  activeTab === tab.id ? "bg-accent-fill text-accent-ink" : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"
                 )}>
                   {tab.badge}
                 </span>
@@ -401,7 +399,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                       value={title}
                       onChange={(e) => setTitle(e.target.value)}
                       placeholder="Title of your new task..."
-                      className="w-full text-lg font-bold bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2 focus:outline-none focus:ring-2 focus:ring-brand"
+                      className="w-full text-lg font-bold bg-canvas border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2 focus:outline-none focus:ring-2 focus:ring-focus-ring"
                     />
                   </div>
                 ) : isEditing ? (
@@ -411,7 +409,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                     value={editTitle}
                     onChange={(e) => setEditTitle(e.target.value)}
                     data-testid="edit-title"
-                    className="w-full text-2xl font-bold bg-white dark:bg-slate-950 border border-border-brand rounded-xl px-4 py-2 focus:outline-none focus:ring-2 focus:ring-brand text-slate-900 dark:text-slate-100 mb-2"
+                    className="w-full text-2xl font-bold bg-canvas border border-accent/60 rounded-xl px-4 py-2 focus:outline-none focus:ring-2 focus:ring-focus-ring text-slate-900 dark:text-slate-100 mb-2"
                   />
                 ) : (
                   <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100 leading-tight mb-2">
@@ -434,7 +432,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                         value={editType}
                         onChange={(e) => setEditType(e.target.value as ItemType)}
                         data-testid="edit-type"
-                        className="text-xs font-bold px-2 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-brand uppercase"
+                        className="text-xs font-bold px-2 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-surface text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-focus-ring uppercase"
                       >
                         {Object.values(ItemType).map(t => (
                           <option key={t} value={t}>{t}</option>
@@ -447,7 +445,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                         value={editStatus}
                         onChange={(e) => setEditStatus(e.target.value as Status)}
                         data-testid="edit-status"
-                        className="text-xs font-bold px-2 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-brand uppercase"
+                        className="text-xs font-bold px-2 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-surface text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-focus-ring uppercase"
                       >
                         {Object.values(Status).map(s => (
                           <option key={s} value={s}>{s}</option>
@@ -467,14 +465,14 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
                     placeholder="Describe what needs to be done..."
-                    className="w-full bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand min-h-[150px]"
+                    className="w-full bg-canvas border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-focus-ring min-h-[150px]"
                   />
                 ) : isEditing ? (
                   <textarea
                     value={editDescription}
                     onChange={(e) => setEditDescription(e.target.value)}
                     data-testid="edit-description"
-                    className="w-full bg-white dark:bg-slate-950 border border-border-brand rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand min-h-[150px] text-slate-700 dark:text-slate-300"
+                    className="w-full bg-canvas border border-accent/60 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-focus-ring min-h-[150px] text-slate-700 dark:text-slate-300"
                   />
                 ) : (
                   <div className="prose prose-slate dark:prose-invert prose-sm max-w-none bg-slate-50 dark:bg-slate-950 rounded-xl p-4 min-h-[100px] border border-slate-100 dark:border-slate-800 overflow-x-auto break-words">
@@ -490,13 +488,13 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 <div>
                   <div className="flex items-center justify-between mb-2">
                     <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Progress</h4>
-                    <span className="text-xs font-bold text-accent-text">
+                    <span className="text-xs font-bold text-accent-ink">
                       {Math.round((subitems.filter(i => i.status === Status.DONE).length / subitems.length) * 100)}%
                     </span>
                   </div>
                   <div className="h-2 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
                     <div 
-                      className="h-full bg-[image:var(--gradient-accent)] rounded-full transition-all duration-500" 
+                      className="h-full bg-accent rounded-full transition-all duration-500" 
                       style={{ width: `${(subitems.filter(i => i.status === Status.DONE).length / subitems.length) * 100}%` }}
                     />
                   </div>
@@ -506,9 +504,9 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="flex flex-col">
                   <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3">Metrics</h4>
-                  <div className="flex-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex items-center justify-between shadow-sm">
+                  <div className="flex-1 bg-surface border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex items-center justify-between shadow-sm">
                     <div className="flex items-center gap-3">
-                      <div className="w-9 h-9 flex items-center justify-center bg-amber-100 dark:bg-amber-900/30 rounded-lg text-amber-600 dark:text-amber-400 shrink-0">
+                      <div className="w-9 h-9 flex items-center justify-center bg-canvas rounded-lg text-ink-secondary shrink-0">
                         <Clock size={18} />
                       </div>
                       <div>
@@ -523,7 +521,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
 
                 <div className="flex flex-col">
                   <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3">Hierarchy</h4>
-                  <div className="flex-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex items-center justify-between shadow-sm">
+                  <div className="flex-1 bg-surface border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex items-center justify-between shadow-sm">
                     <div className="flex items-center gap-3">
                       <div className="w-9 h-9 flex items-center justify-center bg-slate-100 dark:bg-slate-800 rounded-lg text-slate-600 dark:text-slate-400 font-mono text-sm shrink-0">
                         #
@@ -532,8 +530,8 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                         <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-tight leading-none mb-1">Parent</div>
                         <div 
                           className={clsx(
-                            "text-sm font-mono truncate max-w-[150px] cursor-pointer hover:text-accent-text transition-colors leading-none",
-                            parentItem ? "text-accent-text font-bold" : "text-slate-400"
+                            "text-sm font-mono truncate max-w-[150px] cursor-pointer hover:text-accent-ink transition-colors leading-none",
+                            parentItem ? "text-accent-ink font-bold" : "text-slate-400"
                           )} 
                           title={item.parentId}
                           /* v8 ignore next */
@@ -557,10 +555,10 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 {item.comments && item.comments.length > 0 ? (
                   <div className="space-y-3">
                     {[...item.comments].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).map((comment) => (
-                      <div key={comment.id} className="bg-slate-50/50 dark:bg-slate-950/30 rounded-xl p-4 border border-slate-100 dark:border-slate-800/50 group hover:border-border-brand transition-colors">
+                      <div key={comment.id} className="bg-slate-50/50 dark:bg-slate-950/30 rounded-xl p-4 border border-slate-100 dark:border-slate-800/50 group hover:border-accent transition-colors">
                         <div className="flex items-center justify-between mb-2">
-                          <span className="text-xs font-bold text-accent-text flex items-center gap-1.5">
-                            <div className="w-1.5 h-1.5 rounded-full bg-brand"></div>
+                          <span className="text-xs font-bold text-accent-ink flex items-center gap-1.5">
+                            <div className="w-1.5 h-1.5 rounded-full bg-accent"></div>
                             @{comment.author}
                             {comment.step && (
                               <span data-testid="comment-step-badge" className="text-[10px] font-mono font-normal px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
@@ -614,13 +612,13 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                     placeholder={`Quick add ${item.type === ItemType.EPIC ? 'Story' : 'Task'}...`}
                     value={newSubitemTitle}
                     onChange={(e) => setNewSubitemTitle(e.target.value)}
-                    className="text-xs bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-brand min-w-[200px]"
+                    className="text-xs bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-focus-ring min-w-[200px]"
                     disabled={isSubmitting}
                   />
                   <button 
                     type="submit"
                     disabled={!newSubitemTitle.trim() || isSubmitting}
-                    className="p-1.5 bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 disabled:opacity-50 disabled:bg-[image:none] disabled:bg-slate-400 rounded transition-colors"
+                    className="p-1.5 bg-brand text-navy hover:opacity-90 disabled:opacity-50 disabled:bg-[image:none] disabled:bg-slate-400 rounded transition-colors"
                   >
                     {isSubmitting ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
                   </button>
@@ -648,10 +646,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                           <td className="px-4 py-3">
                             <span className={clsx(
                               "text-[10px] font-bold px-1.5 py-0.5 rounded border uppercase",
-                              sub.type === ItemType.EPIC ? "bg-chip text-accent-text border-border-brand" :
-                              sub.type === ItemType.STORY ? "bg-blue-50 text-blue-700 border-blue-100 dark:bg-blue-900/20 dark:text-blue-300 dark:border-blue-800" :
-                              sub.type === ItemType.TASK ? "bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 border-emerald-100 dark:border-emerald-800" :
-                              "bg-rose-50 dark:bg-rose-900/20 text-red-700 border-red-100 dark:bg-rose-900/20 dark:text-red-300 border-red-800"
+                              itemTypeClass(sub.type)
                             )}>
                               {sub.type}
                             </span>
@@ -660,8 +655,8 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                           <td className="px-4 py-3 text-right">
                             <span className={clsx(
                               "text-[10px] font-bold px-2 py-0.5 rounded-full uppercase",
-                              sub.status === Status.DONE ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" :
-                              sub.status === Status.IN_PROGRESS ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400" :
+                              sub.status === Status.DONE ? "bg-status-ok-bg text-status-ok-text" :
+                              sub.status === Status.IN_PROGRESS ? "bg-status-info-bg text-status-info-text" :
                               "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400"
                             )}>
                               {sub.status}
@@ -678,8 +673,8 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                               className={clsx(
                                 "p-1 rounded transition-colors text-xs font-medium flex items-center gap-1",
                                 confirmDeleteId === sub.id
-                                  ? "bg-rose-100 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 hover:bg-rose-200 dark:hover:bg-rose-900/50"
-                                  : "text-slate-300 dark:text-slate-500 hover:text-rose-500 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-900/20"
+                                  ? "bg-status-danger-bg text-status-danger-text hover:border-status-danger-text"
+                                  : "text-slate-300 dark:text-slate-500 hover:text-status-danger-text hover:bg-status-danger-bg"
                               )}
                             >
                               <Trash2 size={13} />
@@ -713,15 +708,15 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                       <div className={clsx(
                         "px-4 py-2 border-b flex items-center justify-between",
                         test.status === 'PASSED' 
-                          ? "bg-emerald-50/50 dark:bg-emerald-900/10 border-emerald-100 dark:border-emerald-900/30" 
-                          : "bg-rose-50/50 dark:bg-rose-900/10 border-rose-100 dark:border-rose-900/30"
+                          ? "bg-status-ok-bg border-status-ok-text/40" 
+                          : "bg-status-danger-bg border-status-danger-text/40"
                       )}>
                         <div className="flex items-center gap-2">
                           <span className={clsx(
                             "text-[10px] font-bold px-1.5 py-0.5 rounded-full uppercase",
                             test.status === 'PASSED' 
-                              ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" 
-                              : "bg-rose-100 text-red-700 dark:bg-rose-900/30 dark:text-red-400"
+                              ? "bg-status-ok-bg text-status-ok-text" 
+                              : "bg-status-danger-bg text-status-danger-text"
                           )}>
                             {test.status}
                           </span>
@@ -759,7 +754,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 <div className="relative space-y-4 before:absolute before:left-3.5 before:top-1.5 before:bottom-1.5 before:w-0.5 before:bg-slate-100 dark:before:bg-slate-800">
                   {[...item.history].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).map((record) => (
                     <div key={record.id} className="relative pl-10">
-                      <div className="absolute left-1.5 top-1.5 w-4 h-4 rounded-full bg-white dark:bg-slate-900 border-2 border-brand z-10" />
+                      <div className="absolute left-1.5 top-1.5 w-4 h-4 rounded-full bg-surface border-2 border-accent z-10" />
                       <div className="bg-slate-50 dark:bg-slate-950/50 rounded-xl p-3 border border-slate-100 dark:border-slate-800/50">
                         <div className="flex items-center justify-between mb-1">
                           <div className="flex items-center gap-2">
@@ -769,9 +764,9 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                             <span className="text-slate-400">→</span>
                             <span className={clsx(
                               "text-[10px] font-bold px-1.5 py-0.5 rounded uppercase",
-                              record.toStatus === Status.DONE ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" :
-                              record.toStatus === Status.IN_PROGRESS ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400" :
-                              "bg-chip text-accent-text"
+                              record.toStatus === Status.DONE ? "bg-status-ok-bg text-status-ok-text" :
+                              record.toStatus === Status.IN_PROGRESS ? "bg-status-info-bg text-status-info-text" :
+                              "bg-accent-fill text-accent-ink"
                             )}>
                               {record.toStatus}
                             </span>
@@ -811,7 +806,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                     {item.tokenUsage.map((u, i) => (
                       <tr key={i} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
-                        <td className="px-4 py-3 font-mono text-xs text-accent-text">{u.model}</td>
+                        <td className="px-4 py-3 font-mono text-xs text-accent-ink">{u.model}</td>
                         <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{u.input.toLocaleString()}</td>
                         <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{u.output.toLocaleString()}</td>
                         {pricesData && <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{formatCost(calculateCost([u], pricesData))}</td>}
@@ -836,7 +831,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               <button
                 onClick={handleDelete}
                 disabled={isSubmitting}
-                className="bg-rose-50 hover:bg-rose-100 dark:bg-rose-900/20 dark:hover:bg-rose-900/40 text-rose-600 dark:text-rose-400 px-4 py-2 rounded-lg font-bold text-sm transition-all shadow-sm active:scale-95 border border-rose-100 dark:border-rose-900/30 flex items-center gap-2"
+                className="bg-status-danger-bg hover:border-status-danger-text text-status-danger-text px-4 py-2 rounded-lg font-bold text-sm transition-all shadow-sm active:scale-95 border border-status-danger-text/40 flex items-center gap-2"
               >
                 Delete
               </button>
@@ -848,7 +843,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 <button
                   onClick={handleCancelEdit}
                   disabled={isSubmitting}
-                  className="bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 px-4 py-2 rounded-lg font-medium text-sm transition-all shadow-sm active:scale-95"
+                  className="bg-surface hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 px-4 py-2 rounded-lg font-medium text-sm transition-all shadow-sm active:scale-95"
                   data-testid="cancel-edit"
                 >
                   Cancel
@@ -856,7 +851,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 <button
                   onClick={handleSave}
                   disabled={!editTitle.trim() || isSubmitting}
-                  className="bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 disabled:opacity-50 px-6 py-2 rounded-lg font-bold text-sm transition-all active:scale-95 flex items-center gap-2"
+                  className="bg-brand text-navy hover:opacity-90 disabled:opacity-50 px-6 py-2 rounded-lg font-bold text-sm transition-all active:scale-95 flex items-center gap-2"
                   data-testid="save-edit"
                 >
                   {isSubmitting ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}
@@ -867,7 +862,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               <>
                 <button
                   onClick={onClose}
-                  className="bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 px-4 py-2 rounded-lg font-medium text-sm transition-all shadow-sm active:scale-95"
+                  className="bg-surface hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 px-4 py-2 rounded-lg font-medium text-sm transition-all shadow-sm active:scale-95"
                 >
                   {isNew ? 'Cancel' : 'Close'}
                 </button>
@@ -875,7 +870,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                   <button
                     onClick={handleCreateItem}
                     disabled={!title.trim() || isSubmitting}
-                    className="bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 disabled:opacity-50 px-6 py-2 rounded-lg font-bold text-sm transition-all active:scale-95 flex items-center gap-2"
+                    className="bg-brand text-navy hover:opacity-90 disabled:opacity-50 px-6 py-2 rounded-lg font-bold text-sm transition-all active:scale-95 flex items-center gap-2"
                   >
                     {isSubmitting ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
                     Create {type.toLowerCase()}

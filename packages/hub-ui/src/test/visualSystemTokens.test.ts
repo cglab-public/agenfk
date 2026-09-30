@@ -148,6 +148,19 @@ describe('visual system tokens', () => {
         });
       });
 
+      it('item types never pass for the selection accent (a STORY chip beside an accent chip)', () => {
+        for (const t of TYPES) for (const a of ['--accent', '--accent-ink']) {
+          expect(deltaE(v[t], v[a]), `${t} ${v[t]} vs ${a} ${v[a]}`).toBeGreaterThanOrEqual(12);
+        }
+      });
+
+      it('item-type chips are readable: type text passes AA on its own 10% tint', () => {
+        for (const t of TYPES) {
+          const tint = over(`rgba(${rgb(v[t]).join(', ')}, 0.1)`, v['--surface']);
+          expect(contrast(v[t], tint), `${t} ${v[t]} on its tint`).toBeGreaterThanOrEqual(4.5);
+        }
+      });
+
       it('status chips are readable: status text passes AA on its own tinted background', () => {
         for (const s of STATUS) {
           for (const bg of ['--canvas', '--surface']) {
