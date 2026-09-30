@@ -249,7 +249,8 @@ describe('approving a command declared by the repository', () => {
       .set('x-agenfk-internal', VERIFY_TOKEN)
       .send({ evidence: 'leaving PLAN' });
     expect(res.body.error, JSON.stringify(res.body)).toBe('NO_TEST_REPORT');
-    expect(String(res.body.fix ?? '')).not.toContain('unapproved-marker');
+    // The whole answer, not only `fix`: a regression moving the command into `message` counts too.
+    expect(JSON.stringify(res.body)).not.toContain('unapproved-marker');
   });
 
   it('offers the repository command to run by hand only once it is approved', async () => {
