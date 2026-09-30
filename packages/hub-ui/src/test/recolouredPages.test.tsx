@@ -22,6 +22,7 @@ import { SetupPage } from '../pages/Setup';
 import { ConnectPage } from '../pages/Connect';
 import { ThemeProvider } from '../ThemeContext';
 import { api } from '../api';
+import { withFiltersOpen } from './filtersOpen';
 
 vi.mock('../api', () => ({ api: { get: vi.fn(), post: vi.fn() } }));
 const get = api.get as unknown as ReturnType<typeof vi.fn>;
@@ -72,7 +73,7 @@ function mount(entry: string, path: string, element: React.ReactNode) {
   return render(
     <ThemeProvider>
       <QueryClientProvider client={qc}>
-        <MemoryRouter initialEntries={[entry]}>
+        <MemoryRouter initialEntries={[withFiltersOpen(entry)]}>
           <Routes><Route path={path} element={element} /></Routes>
         </MemoryRouter>
       </QueryClientProvider>

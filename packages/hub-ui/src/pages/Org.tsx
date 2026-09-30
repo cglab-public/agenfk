@@ -1,10 +1,12 @@
 import { Link, useSearchParams } from 'react-router-dom';
 import { useEffect, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { ChevronRight, GitBranch } from 'lucide-react';
+import { ChevronRight } from 'lucide-react';
 import { api } from '../api';
 import { TimelineBar } from '../components/TimelineBar';
 import { FacetMultiselect } from '../components/FacetMultiselect';
+import { FilterAccordion, FILTERS_OPEN, parseFiltersOpen } from '../components/FilterAccordion';
+import { describeFilters } from '../filterSummary';
 import { MetricsTilesRow, MetricsTotals } from '../components/MetricsTilesRow';
 import { ChipRow, Page, QueryState } from '../components/ui';
 import { shortRemote } from '../components/facetSearch';
@@ -153,12 +155,38 @@ export function OrgPage() {
 
       <QueryState query={metrics} label="activity totals">{() => <MetricsTilesRow totals={totals} />}</QueryState>
 
-      <section className="space-y-4 p-5 bg-card-glass backdrop-blur border border-border-soft rounded-2xl">
-        <div className="flex items-center gap-2">
-          <GitBranch className="w-4 h-4 text-accent-ink" />
-          <h2 className="text-sm font-semibold text-ink">Filters</h2>
-          <span className="text-[11px] text-ink-tertiary">all queries below honor these</span>
+      {/* The period is always in view; the facets fold behind one summary line. */}
+      <div role="group" aria-label="Period" className="flex items-center gap-2">
+        <span className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">Period</span>
+        <div className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium">
+          {RANGES.map(r => (
+            <button
+              key={r.key}
+              type="button"
+              aria-pressed={range === r.key}
+              onClick={() => setRange(r.key)}
+              className={`px-2.5 py-1 rounded-md transition-colors ${range === r.key
+                ? 'bg-surface text-accent-ink shadow-sm'
+                : 'text-ink-tertiary hover:text-ink'}`}
+            >
+              {r.label}
+            </button>
+          ))}
         </div>
+      </div>
+
+      <FilterAccordion
+        activeCount={[projectSel.set, itemTypeSel.set, childHubSel.set].filter(x => x.size > 0).length}
+        summary={describeFilters({
+          range,
+          types: [...eventTypeSel.set],
+          projects: [...projectSel.set].map(shortRemote),
+          itemTypes: [...itemTypeSel.set],
+          childHubs: childHubSel.set.size,
+        })}
+        open={parseFiltersOpen(searchParams.get(FILTERS_OPEN))}
+        onOpenChange={open => filters.write({ [FILTERS_OPEN]: open ? '1' : null })}
+      >
         {childHubs.show && (
           <FacetMultiselect
             label="Child hub"
@@ -193,25 +221,7 @@ export function OrgPage() {
           }}
         />
         <ChipRow label="Event type" options={types} selected={eventTypeSel.set} onToggle={eventTypeSel.toggle} onClear={eventTypeSel.clear} />
-        <div>
-          <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary mb-1.5">Period</h3>
-          <div className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium">
-            {RANGES.map(r => (
-              <button
-                key={r.key}
-                type="button"
-                aria-pressed={range === r.key}
-                onClick={() => setRange(r.key)}
-                className={`px-2.5 py-1 rounded-md transition-colors ${range === r.key
-                  ? 'bg-surface text-accent-ink shadow-sm'
-                  : 'text-ink-tertiary hover:text-ink'}`}
-              >
-                {r.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      </section>
+      </FilterAccordion>
 
       <TimelineBar
         types={[...eventTypeSel.set]}

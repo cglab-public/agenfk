@@ -25,6 +25,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PrOverviewPage } from '../pages/PrOverview';
 import { OrgPage } from '../pages/Org';
 import { api } from '../api';
+import { withFiltersOpen } from './filtersOpen';
 
 vi.mock('../api', () => ({ api: { get: vi.fn() } }));
 const get = api.get as unknown as ReturnType<typeof vi.fn>;
@@ -80,7 +81,7 @@ const renderPage = (Page: React.ComponentType, entry: string) => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={[entry]}>
+      <MemoryRouter initialEntries={[withFiltersOpen(entry)]}>
         <Page />
         <UrlProbe />
       </MemoryRouter>
@@ -110,13 +111,13 @@ describe('PR Overview — child hub facet', () => {
     renderPage(PrOverviewPage, '/prs');
     // Wait for the page to settle so this is "never appeared", not "not yet".
     await screen.findByText(/Project \(git remote\)/i);
-    expect(screen.queryByText(/Child hub/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('Child hub')).not.toBeInTheDocument();
   });
 
   it('offers this hub and each child once there are children', async () => {
     mockApi(FEDERATED);
     renderPage(PrOverviewPage, '/prs');
-    const facet = await screen.findByText(/Child hub/i);
+    const facet = await screen.findByText('Child hub');
     expect(facet).toBeInTheDocument();
     // Named, not raw UUIDs — the id is a machine detail.
     expect(await screen.findByText('alpha')).toBeInTheDocument();
@@ -154,7 +155,7 @@ describe('PR Overview — child hub facet', () => {
   it('sends nothing at all when no hub is selected — absent means every hub', async () => {
     mockApi(FEDERATED);
     renderPage(PrOverviewPage, '/prs');
-    await screen.findByText(/Child hub/i);
+    await screen.findByText('Child hub');
     await waitFor(() => expect(callsTo('/v1/prs/overview').length).toBeGreaterThan(0));
     for (const u of callsTo('/v1/prs/overview')) {
       expect(new URLSearchParams(u.split('?')[1] ?? '').has('childHubId')).toBe(false);
@@ -167,7 +168,7 @@ describe('Org — child hub facet', () => {
     mockApi(STANDALONE);
     renderPage(OrgPage, '/org');
     await screen.findByText(/Project \(git remote\)/i);
-    expect(screen.queryByText(/Child hub/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('Child hub')).not.toBeInTheDocument();
   });
 
   it('appears and reaches the metrics query', async () => {
@@ -261,7 +262,7 @@ describe('the facet cannot hide a filter that is still applied', () => {
     // one hub's data with no control to clear it and nothing saying it is filtered.
     mockApi('fail');
     renderPage(PrOverviewPage, `/prs?childHubId=${ALPHA}`);
-    expect(await screen.findByText(/Child hub/i)).toBeInTheDocument();
+    expect(await screen.findByText('Child hub')).toBeInTheDocument();
   });
 
   it('still hides the facet when the request fails and nothing is selected', async () => {
@@ -270,7 +271,7 @@ describe('the facet cannot hide a filter that is still applied', () => {
     mockApi('fail');
     renderPage(PrOverviewPage, '/prs');
     await screen.findByText(/Project \(git remote\)/i);
-    expect(screen.queryByText(/Child hub/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('Child hub')).not.toBeInTheDocument();
   });
 
   it('asks the server to keep the selected hub listed', async () => {
@@ -335,7 +336,7 @@ describe('contract details', () => {
     // Mid-flight: still named, still a facet.
     expect(screen.getByText('alpha')).toBeInTheDocument();
     expect(screen.queryByText(ALPHA)).not.toBeInTheDocument();
-    expect(screen.getByText(/Child hub/i)).toBeInTheDocument();
+    expect(screen.getByText('Child hub')).toBeInTheDocument();
     gate?.();
   });
 
@@ -358,7 +359,7 @@ describe('contract details', () => {
     renderPage(PrOverviewPage, `/prs?childHubId=${ALPHA}`);
     fireEvent.click(await screen.findByText('alpha'));
     await waitFor(() => expect(facetCalls).toBeGreaterThan(1));
-    expect(screen.getByText(/Child hub/i)).toBeInTheDocument();
+    expect(screen.getByText('Child hub')).toBeInTheDocument();
     gate?.();
   });
 
@@ -384,7 +385,7 @@ describe('contract details', () => {
     // be there.
     mockApi({ childHubs: [{ id: BETA, name: 'beta', detached: false, events: 3 }], hasLocal: true });
     renderPage(PrOverviewPage, `/prs?childHubId=${ALPHA}`);
-    await screen.findByText(/Child hub/i);
+    await screen.findByText('Child hub');
     expect(screen.getByText(ALPHA)).toBeInTheDocument();
     fireEvent.click(screen.getByText(ALPHA));
     await waitFor(() => expect(urlNow().has('childHubId')).toBe(false));
@@ -395,7 +396,7 @@ describe('contract details', () => {
     // APPLIED filter outranks it, or the filter is invisible and permanent.
     mockApi(STANDALONE);
     renderPage(PrOverviewPage, `/prs?childHubId=${ALPHA}`);
-    expect(await screen.findByText(/Child hub/i)).toBeInTheDocument();
+    expect(await screen.findByText('Child hub')).toBeInTheDocument();
   });
 
   it('clears childHubId out of the URL when the selection is cleared', async () => {

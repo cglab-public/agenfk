@@ -16,6 +16,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { OrgPage } from '../pages/Org';
 import { UserDetailPage } from '../pages/UserDetail';
 import { api } from '../api';
+import { withFiltersOpen } from './filtersOpen';
 
 vi.mock('../api', () => ({ api: { get: vi.fn() } }));
 const get = api.get as unknown as ReturnType<typeof vi.fn>;
@@ -55,7 +56,7 @@ const renderAt = (entry: string | string[]) => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={entries} initialIndex={entries.length - 1}>
+      <MemoryRouter initialEntries={entries.map(withFiltersOpen)} initialIndex={entries.length - 1}>
         <Where />
         <Routes>
           <Route path="/" element={<OrgPage />} />

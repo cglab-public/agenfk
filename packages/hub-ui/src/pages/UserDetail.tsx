@@ -6,6 +6,8 @@ import { api } from '../api';
 import { TimelineBar } from '../components/TimelineBar';
 import { csvParam } from '../urlParams';
 import { FacetMultiselect } from '../components/FacetMultiselect';
+import { FilterAccordion, FILTERS_OPEN, parseFiltersOpen } from '../components/FilterAccordion';
+import { describeFilters } from '../filterSummary';
 import { MetricsTilesRow, MetricsTotals } from '../components/MetricsTilesRow';
 import { Badge, ChipRow, Page, QueryState } from '../components/ui';
 import { eventTone, itemTypeClass } from '../eventTone';
@@ -226,11 +228,57 @@ export function UserDetailPage() {
 
       <QueryState query={metrics} label="activity totals">{() => <MetricsTilesRow totals={totals} />}</QueryState>
 
-      <section className="space-y-4 p-5 bg-card-glass backdrop-blur border border-border-soft rounded-2xl">
-        <div className="flex items-center gap-2">
-          <GitBranch className="w-4 h-4 text-accent-ink" />
-          <h2 className="text-sm font-semibold text-ink">Filters</h2>
+      {/* The period is always in view; the facets fold behind one summary line. */}
+      <div role="group" aria-label="Period" className="flex flex-wrap items-center gap-2">
+        <span className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">Period</span>
+        <div className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium">
+          {RANGES.map(r => (
+            <button
+              key={r.key}
+              type="button"
+              aria-pressed={range === r.key && !customFromIso && !customToIso}
+              onClick={() => filters.write({ range: r.key, from: null, to: null })}
+              className={`px-2.5 py-1 rounded-md transition-colors ${range === r.key && !customFromIso && !customToIso
+                ? 'bg-surface text-accent-ink shadow-sm'
+                : 'text-ink-tertiary hover:text-ink'}`}
+            >
+              {r.label}
+            </button>
+          ))}
         </div>
+        <label className="flex items-center gap-1.5 text-[11px] font-medium text-ink-tertiary">
+          Start
+          <input
+            type="date"
+            value={customStart}
+            onChange={e => filters.write({ from: e.target.value || null })}
+            className="h-7 rounded-md border border-border-soft bg-surface px-2 text-[11px] text-ink-secondary"
+          />
+        </label>
+        <label className="flex items-center gap-1.5 text-[11px] font-medium text-ink-tertiary">
+          End
+          <input
+            type="date"
+            value={customEnd}
+            onChange={e => filters.write({ to: e.target.value || null })}
+            className="h-7 rounded-md border border-border-soft bg-surface px-2 text-[11px] text-ink-secondary"
+          />
+        </label>
+      </div>
+
+      <FilterAccordion
+        activeCount={[projectSel.set, itemTypeSel.set].filter(x => x.size > 0).length}
+        summary={describeFilters({
+          range,
+          from: customStart,
+          to: customEnd,
+          types: [...eventTypeSel.set],
+          projects: [...projectSel.set].map(shortRemote),
+          itemTypes: [...itemTypeSel.set],
+        })}
+        open={parseFiltersOpen(searchParams.get(FILTERS_OPEN))}
+        onOpenChange={open => filters.write({ [FILTERS_OPEN]: open ? '1' : null })}
+      >
         <FacetMultiselect
           label="Project (git remote)"
           options={projectOptions}
@@ -253,45 +301,7 @@ export function UserDetailPage() {
           }}
         />
         <ChipRow label="Event type" options={types} selected={eventTypeSel.set} onToggle={eventTypeSel.toggle} onClear={eventTypeSel.clear} />
-        <div>
-          <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary mb-1.5">Period</h3>
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium">
-              {RANGES.map(r => (
-                <button
-                  key={r.key}
-                  type="button"
-                  aria-pressed={range === r.key && !customFromIso && !customToIso}
-                  onClick={() => filters.write({ range: r.key, from: null, to: null })}
-                  className={`px-2.5 py-1 rounded-md transition-colors ${range === r.key && !customFromIso && !customToIso
-                    ? 'bg-surface text-accent-ink shadow-sm'
-                    : 'text-ink-tertiary hover:text-ink'}`}
-                >
-                  {r.label}
-                </button>
-              ))}
-            </div>
-            <label className="flex items-center gap-1.5 text-[11px] font-medium text-ink-tertiary">
-              Start
-              <input
-                type="date"
-                value={customStart}
-                onChange={e => filters.write({ from: e.target.value || null })}
-                className="h-7 rounded-md border border-border-soft bg-surface px-2 text-[11px] text-ink-secondary"
-              />
-            </label>
-            <label className="flex items-center gap-1.5 text-[11px] font-medium text-ink-tertiary">
-              End
-              <input
-                type="date"
-                value={customEnd}
-                onChange={e => filters.write({ to: e.target.value || null })}
-                className="h-7 rounded-md border border-border-soft bg-surface px-2 text-[11px] text-ink-secondary"
-              />
-            </label>
-          </div>
-        </div>
-      </section>
+      </FilterAccordion>
 
       <TimelineBar
         users={[decoded]}

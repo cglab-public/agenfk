@@ -19,6 +19,7 @@ import { parsePrQuery } from '../prSearch';
 import { buildMonthBands, dayHeaderInfo, contributionPcts, cellTooltip, placeTooltip } from '../prPerDay';
 import { buildVolumeSeries, type Granularity } from '../prVolumeGranularity';
 import { Page, QueryError, Skeleton } from '../components/ui';
+import { describeFilters } from '../filterSummary';
 
 const GRANULARITIES: Array<{ key: Granularity; label: string; unit: string }> = [
   { key: 'daily', label: 'daily', unit: 'day' },
@@ -422,8 +423,8 @@ export function PrOverviewPage() {
     // moment: anyone who copied the link, or reloaded, mid-typing got PR #5. The
     // box still follows the keyboard; the committed query is what the URL holds.
     if (queryPrNumber !== null) p.set('pr', String(queryPrNumber));
-    // Only the non-default (collapsed) state is written, so the common URL stays clean.
-    if (!filtersOpen) p.set('filters', '0');
+    // Only the non-default (open) state is written, so the common URL stays clean.
+    if (filtersOpen) p.set('filters', '1');
     // Remembered so the follow-the-URL effect above can tell our own write from
     // somebody else's navigation.
     lastWritten.current = p.toString();
@@ -661,6 +662,19 @@ export function PrOverviewPage() {
     return out;
   }, [searchActive, prNumber, childHubSel.set, projectSel.set, devSel.set, modelSel.set]);
 
+  // A PR search replaces the period; everything else it leaves in play is
+  // already phrased in activeFilters.
+  const filterSummary = searchActive
+    ? activeFilters.join(' · ')
+    : describeFilters({
+      range,
+      from: customFrom,
+      to: customTo,
+      projects: [...projectSel.set].map(shortRemote),
+      extra: activeFilters.filter(f => !/project|child hub/.test(f)),
+      childHubs: childHubSel.set.size,
+    });
+
   return (
     <Page>
       <header className="flex items-end justify-between gap-4 flex-wrap">
@@ -735,14 +749,8 @@ export function PrOverviewPage() {
         </div>
       </header>
 
-      <FilterAccordion
-        activeCount={activeFilters.length}
-        activeSummary={activeFilters}
-        initialOpen={filtersOpen}
-        onOpenChange={setFiltersOpen}
-      >
-      {/* PR search sits with the other filters (it IS one) but first, and stays
-          outside the accordion's fold of facet rows because it outranks them. */}
+      {/* PR search is a filter, but it outranks the facets: it stays in view
+          above the collapsed bar rather than inside its fold. */}
       <div>
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <label
@@ -799,6 +807,13 @@ export function PrOverviewPage() {
           )}
         </p>
       </div>
+
+      <FilterAccordion
+        activeCount={activeFilters.length}
+        summary={filterSummary}
+        open={filtersOpen}
+        onOpenChange={setFiltersOpen}
+      >
 
       {childHubs.show && (
         <FacetMultiselect
