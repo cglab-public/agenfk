@@ -2,6 +2,18 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.17] — 2026-09-30
+
+Beta, cumulative over `2.0.0-beta.16`: everything in beta.16, plus the visual system below (CGLAB-434).
+
+- **One visual system for the hub, the flow editor and the board.** Colours now come from shared tokens in
+  `packages/brand/tokens.css`: teal only for the brand mark and the one primary action on a surface, indigo for
+  selection, focus and links, muted neutral surfaces, status colours only for real state, a validated six-hue chart
+  palette and a size ramp whose ends stay visible in both themes. Item types keep their own colour everywhere.
+- **"Running" is one colour everywhere**, selected rows and tabs are visibly selected in dark mode, and dialogs,
+  dropdowns and menus are opaque instead of letting the page show through.
+- **Focus is visible on every control**, and light-mode helper text now meets 4.5:1 contrast.
+
 ## [2.0.0-beta.16] — 2026-09-30
 
 Beta, cumulative over `2.0.0-beta.15`: everything in beta.15, plus the fix below (CGLAB-164).
