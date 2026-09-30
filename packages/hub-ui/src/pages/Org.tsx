@@ -6,7 +6,7 @@ import { api } from '../api';
 import { TimelineBar } from '../components/TimelineBar';
 import { FacetMultiselect } from '../components/FacetMultiselect';
 import { MetricsTilesRow, MetricsTotals } from '../components/MetricsTilesRow';
-import { ChipRow } from '../components/ui';
+import { ChipRow, Page } from '../components/ui';
 import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
 import { fmtRelative } from '../dates';
@@ -128,7 +128,7 @@ export function OrgPage() {
   }, [itemTypes.data]);
 
   return (
-    <div className="max-w-[1200px] mx-auto space-y-6">
+    <Page>
       <header>
         <p className="text-[11px] uppercase tracking-[0.18em] text-accent-ink font-semibold">Dashboard</p>
         <h1 className="mt-1 text-2xl font-bold tracking-tight text-ink">Organization rollup</h1>
@@ -239,6 +239,6 @@ export function OrgPage() {
           )}
         </div>
       </section>
-    </div>
+    </Page>
   );
 }

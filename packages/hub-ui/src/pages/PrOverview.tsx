@@ -18,6 +18,7 @@ import { heatColor, SPARK_STROKE } from '../chartColours';
 import { parsePrQuery } from '../prSearch';
 import { buildMonthBands, dayHeaderInfo, contributionPcts, cellTooltip, placeTooltip } from '../prPerDay';
 import { buildVolumeSeries, type Granularity } from '../prVolumeGranularity';
+import { Page } from '../components/ui';
 
 const GRANULARITIES: Array<{ key: Granularity; label: string; unit: string }> = [
   { key: 'daily', label: 'daily', unit: 'day' },
@@ -661,7 +662,7 @@ export function PrOverviewPage() {
   }, [searchActive, prNumber, childHubSel.set, projectSel.set, devSel.set, modelSel.set]);
 
   return (
-    <div className="max-w-[1200px] mx-auto space-y-6">
+    <Page>
       <header className="flex items-end justify-between gap-4 flex-wrap">
         <div>
           <p className="text-[11px] uppercase tracking-[0.18em] text-accent-ink font-semibold">Analytics</p>
@@ -1188,6 +1189,6 @@ export function PrOverviewPage() {
           </section>
         </>
       )}
-    </div>
+    </Page>
   );
 }

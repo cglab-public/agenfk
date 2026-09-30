@@ -7,7 +7,7 @@ import { TimelineBar } from '../components/TimelineBar';
 import { csvParam } from '../urlParams';
 import { FacetMultiselect } from '../components/FacetMultiselect';
 import { MetricsTilesRow, MetricsTotals } from '../components/MetricsTilesRow';
-import { Badge, ChipRow } from '../components/ui';
+import { Badge, ChipRow, Page } from '../components/ui';
 import { eventTone, itemTypeClass } from '../eventTone';
 import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
@@ -168,7 +168,7 @@ export function UserDetailPage() {
   }, [itemTypes.data]);
 
   return (
-    <div className="max-w-[1200px] mx-auto space-y-6">
+    <Page>
       {/* Carries the scope back. Org's hub facet is URL-persisted and
           deliberately not stored, so without this the trip out and back
           silently widens to every hub — the same drop, in the other direction. */}
@@ -330,6 +330,6 @@ export function UserDetailPage() {
           )}
         </div>
       </section>
-    </div>
+    </Page>
   );
 }

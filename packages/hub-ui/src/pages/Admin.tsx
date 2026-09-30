@@ -9,7 +9,7 @@ import { canDeleteUserRow } from './canDeleteUserRow';
 import { hideTargetKey, partitionHiddenRows, canHideRow } from './hiddenPeople';
 import { canRetireRow, canUnretireRow, countRetired, retireConfirmMessage } from './retiredInstallations';
 import { isAttributedByUsername, attributionWarning, countAttributedByUsername } from './attributionWarning';
-import { Toggle, RowMenu, CopyButton, Badge, QueryError, buttonClass, cardClass, controlClass } from '../components/ui';
+import { Page, Toggle, RowMenu, CopyButton, Badge, QueryError, buttonClass, cardClass, controlClass } from '../components/ui';
 import { inviteErrors } from './adminValidation';
 import { providerStatus, ProviderRequirement } from './signInProviderStatus';
 import { silentDays } from './installationStaleness';
@@ -23,7 +23,7 @@ export function AdminLayout() {
       ? 'bg-accent-fill text-accent-ink'
       : 'text-ink-secondary hover:bg-nav-surface hover:text-ink');
   return (
-    <div className="max-w-[1100px] mx-auto space-y-6">
+    <Page>
       <header>
         <p className="text-[11px] uppercase tracking-[0.18em] text-accent-ink font-semibold">Settings</p>
         <h1 className="mt-1 text-2xl font-bold tracking-tight text-ink">Admin</h1>
@@ -71,7 +71,7 @@ export function AdminLayout() {
           <Outlet />
         </div>
       </div>
-    </div>
+    </Page>
   );
 }
 
