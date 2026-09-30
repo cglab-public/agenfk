@@ -158,7 +158,8 @@ export function describeProjectSettings(
       key: 'autoWorktree',
       label: 'A worktree per card',
       description: 'Cut a worktree when a card starts. Off means every card shares this checkout.',
-      value: project.autoWorktree === false ? 'Off' : 'On',
+      // Opt-in, as the server reads it: ensureWorktreeForItem cuts nothing unless this is true.
+      value: project.autoWorktree === true ? 'On' : 'Off',
       origin: 'set-here',
       from: 'The one thing on this page the screen itself owns.',
     },

@@ -34,6 +34,18 @@ describe('what each row says about itself', () => {
     expect(row(rows, 'autoWorktree').origin).toBe('set-here');
   });
 
+  it('reads a worktree per card as OFF until somebody turns it on, as the server does', () => {
+    // ensureWorktreeForItem cuts nothing unless autoWorktree is true. Saying
+    // "On" for an unset project drew the switch on over a project that cut no
+    // worktrees, and its first press "turned off" something already off.
+    const unset = describeProjectSettings(
+      { ...(project as any), autoWorktree: undefined } as never,
+      { flowName: null, worktreeRoot: '~/.agenfk-worktrees' },
+    );
+    expect(row(unset, 'autoWorktree').value).toBe('Off');
+    expect(row(rows, 'autoWorktree').value).toBe('On');
+  });
+
   it('marks a fallback as inherited, and names what it fell back to', () => {
     const flow = row(rows, 'flow');
     expect(flow.origin).toBe('inherited');
