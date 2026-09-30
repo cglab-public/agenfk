@@ -49,7 +49,6 @@ vi.mock('child_process', () => ({
   spawnSync: vi.fn(),
   default: { execSync: vi.fn(), spawn: vi.fn(), spawnSync: vi.fn() },
 }));
-vi.mock('figlet', () => ({ default: { textSync: vi.fn().mockReturnValue('AgEnFK') } }));
 vi.mock('inquirer', () => ({ default: { prompt: vi.fn() } }));
 
 import { program } from '../index';
@@ -140,3 +139,66 @@ describe('agenfk update-project --test-report-surface', () => {
     expect(outputText()).toMatch(/--test-report none/);
   });
 });
+
+describe('agenfk update-project --test-report-reuse-ignore (32045202)', () => {
+  it('exposes the option', () => {
+    const cmd = program.commands.find(c => c.name() === 'update-project');
+    expect((cmd as any).options.map((o: any) => o.long)).toContain('--test-report-reuse-ignore');
+  });
+
+  it('sets the globs, keeping the rest of the stored setting', async () => {
+    withToken();
+    mockedAxios.get.mockResolvedValue({ data: { id: PROJECT, testReport: stored } });
+    mockedAxios.put.mockResolvedValue({ data: { id: PROJECT } });
+    await program.parseAsync(['node', 'agenfk', 'update-project', PROJECT, '--test-report-reuse-ignore', 'docs/**, **/*.md']);
+    expect(sentTestReport()?.[1]).toEqual({ ...stored, reuseIgnore: ['docs/**', '**/*.md'] });
+  });
+
+  it('"none" sends an empty list, which ignores nothing', async () => {
+    withToken();
+    mockedAxios.get.mockResolvedValue({ data: { id: PROJECT, testReport: stored } });
+    mockedAxios.put.mockResolvedValue({ data: { id: PROJECT } });
+    await program.parseAsync(['node', 'agenfk', 'update-project', PROJECT, '--test-report-reuse-ignore', 'none']);
+    expect(sentTestReport()?.[1]).toEqual({ ...stored, reuseIgnore: [] });
+  });
+
+  it('changing the command keeps the stored globs', async () => {
+    withToken();
+    mockedAxios.get.mockResolvedValue({ data: { id: PROJECT, testReport: { ...stored, reuseIgnore: ['docs/**'] } } });
+    mockedAxios.put.mockResolvedValue({ data: { id: PROJECT } });
+    await program.parseAsync(['node', 'agenfk', 'update-project', PROJECT, '--test-report-command', 'npm run test:ci']);
+    expect(sentTestReport()?.[1]).toEqual({ ...stored, command: 'npm run test:ci', reuseIgnore: ['docs/**'] });
+  });
+});
+
+describe('agenfk update-project --test-report-related-command (a36047ea)', () => {
+  it('exposes the option', () => {
+    const cmd = program.commands.find(c => c.name() === 'update-project');
+    expect((cmd as any).options.map((o: any) => o.long)).toContain('--test-report-related-command');
+  });
+
+  it('sets the template, keeping the rest of the stored setting', async () => {
+    withToken();
+    mockedAxios.get.mockResolvedValue({ data: { id: PROJECT, testReport: stored } });
+    mockedAxios.put.mockResolvedValue({ data: { id: PROJECT } });
+    await program.parseAsync(['node', 'agenfk', 'update-project', PROJECT, '--test-report-related-command', 'npx vitest related --run {files}']);
+    expect(sentTestReport()?.[1]).toEqual({ ...stored, relatedCommand: 'npx vitest related --run {files}' });
+  });
+
+  it('"none" clears it', async () => {
+    withToken();
+    mockedAxios.get.mockResolvedValue({ data: { id: PROJECT, testReport: { ...stored, relatedCommand: 'x {files}' } } });
+    mockedAxios.put.mockResolvedValue({ data: { id: PROJECT } });
+    await program.parseAsync(['node', 'agenfk', 'update-project', PROJECT, '--test-report-related-command', 'none']);
+    expect(sentTestReport()?.[1]).toEqual(stored);
+  });
+
+  it('changing the command keeps the stored template', async () => {
+    withToken();
+    mockedAxios.get.mockResolvedValue({ data: { id: PROJECT, testReport: { ...stored, relatedCommand: 'x {files}' } } });
+    mockedAxios.put.mockResolvedValue({ data: { id: PROJECT } });
+    await program.parseAsync(['node', 'agenfk', 'update-project', PROJECT, '--test-report-command', 'npm run test:ci']);
+    expect(sentTestReport()?.[1]).toEqual({ ...stored, command: 'npm run test:ci', relatedCommand: 'x {files}' });
+  });
+});
+

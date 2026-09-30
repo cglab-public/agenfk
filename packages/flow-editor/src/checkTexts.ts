@@ -16,6 +16,7 @@ export interface CheckText {
 
 export const CHECK_TEXTS: Record<string, CheckText> = {
   'tree-clean': { title: 'Clean working tree', stops: 'starting on top of someone else\'s half-finished edits', must: 'Start with no uncommitted changes' },
+  'tree-in-sync': { title: 'In sync with its remote', stops: 'building on a checkout that is behind (or has diverged from) its remote', must: 'Start from a tree that is not behind its remote: git pull --ff-only' },
   'on-card-branch': { title: 'On the card\'s branch', stops: 'working on the wrong branch', must: 'Be on the card\'s own branch' },
   'jira-key-valid': { title: 'Linked to a JIRA item', stops: 'work nobody can trace back to an issue', must: 'Link the card to a valid JIRA key that its branch carries' },
   'has-children': { title: 'Broken down into child cards', stops: 'building an epic or story as one lump', must: 'Break the card down into child cards' },
@@ -23,7 +24,10 @@ export const CHECK_TEXTS: Record<string, CheckText> = {
   'no-broken-test-files': { title: 'Every test file loads', stops: 'a "failing" test that is really a file that will not import', must: 'Make every test file load' },
   'new-tests-exist': { title: 'New tests were added', stops: 'leaving the step without writing a test', must: 'Add at least one test' },
   'some-new-test-red': { title: 'New tests fail first', stops: 'tests that never proved anything', must: 'Add at least one test that fails before the code exists' },
-  'new-tests-born-green': { title: 'New tests already passing', stops: 'nothing on its own: it flags tests that passed before any code', must: '' },
+  'new-tests-born-green': { title: 'New tests already passing', stops: 'nothing on its own: it flags tests that passed before any code. On the step that writes tests, the card leaves once the agent answers it', must: '' },
+  'fixes-reviewed': { title: 'Fixes reviewed', stops: 'nothing on its own: it flags changes made after the reviewer began - the fixes to its findings - so a reviewer reads them', must: '' },
+  'tree-warnings': { title: 'Warnings for the reviewer', stops: 'nothing on its own: it lists the warnings the card and its children raised, and their answers, so the reviewer sees them', must: '' },
+  'tests-added-late': { title: 'Tests added after they were written', stops: 'nothing on its own: it flags test files added after the tests were frozen, and runs no suite', must: '' },
   'red-is-assertion': { title: 'Fails on an assertion', stops: 'nothing on its own: it flags red caused by a crash, not a check', must: '' },
   'existing-tests-still-green': { title: 'Existing tests still pass', stops: 'breaking old behaviour while writing new tests', must: 'Keep every existing test passing' },
   'suite-green': { title: 'Whole test suite passes', stops: 'handing over broken code', must: 'Get the whole suite passing' },
@@ -34,6 +38,8 @@ export const CHECK_TEXTS: Record<string, CheckText> = {
   'review-record': { title: 'Independent review', stops: 'authors reviewing their own work, and shipping with open findings', must: 'Record a review by someone else, with every finding fixed or rejected with a reason' },
   'human-approval': { title: 'A person approves', stops: 'agents moving on without a person\'s say-so', must: 'Wait for a person to approve on the board' },
   'server-owned-verify': { title: 'Project verify command passes', stops: 'passing "true" as the verify command', must: 'Pass the project\'s own verify command' },
+  'command-check': { title: 'A command the flow defines passes', stops: 'moving on while the team\'s own check (lint, types, a script) fails', must: 'Pass the flow\'s command, run by the server in the card\'s tree' },
+  'agent-check': { title: 'The agent carried out an instruction', stops: 'moving on without doing what the step asks', must: 'Carry out the step\'s instruction and report it (agent-reported)' },
 };
 
 /** A check's words; one the editor does not know yet falls back to the server's description. */
@@ -44,9 +50,10 @@ export function checkText(id: string, description?: string): CheckText {
 export interface RoleText { name: string; desc: string; color: string }
 
 export const ROLE_TEXTS: Record<string, RoleText> = {
+  backlog: { name: 'Backlog', desc: 'Work waiting to start. A card leaves it only from a tree in sync with its remote, so nothing is built on stale code.', color: '#94a3b8' },
   planning: { name: 'Planning', desc: 'Decide what to build. Cards are broken down, and a person can give the go-ahead.', color: '#a3c46b' },
-  'test-authoring': { name: 'Writing tests', desc: 'Tests come first and must fail. They are frozen when the step ends, so they can\'t be weakened later.', color: '#498373' },
-  coding: { name: 'Implementing', desc: 'Make the failing tests pass without touching them. Its test checks need a Writing-tests step before it.', color: '#3b82f6' },
+  'test-authoring': { name: 'Writing tests', desc: 'Tests come first and must fail; they become the red set that must pass later. Add test-surface-frozen to a later step to forbid changing them there.', color: '#498373' },
+  coding: { name: 'Implementing', desc: 'Make the failing tests pass. Existing tests may change where the behaviour they pin is what the card changes. Its test checks need a Writing-tests step before it.', color: '#3b82f6' },
   refactoring: { name: 'Refactoring', desc: 'Tidy the code. The list of tests must stay exactly the same.', color: '#8b5cf6' },
   review: { name: 'Review', desc: 'Someone other than the author reviews the work, and every finding is fixed or rejected with a reason.', color: '#d97706' },
   testing: { name: 'Testing', desc: 'The whole test suite must pass.', color: '#0ea5e9' },
@@ -57,7 +64,7 @@ export const ROLE_TEXTS: Record<string, RoleText> = {
 export const RECORD_TEXTS: Record<string, string> = {
   stepEntryTests: 'Tests at the start of the step',
   redSet: 'Failing-test list',
-  testSurface: 'Frozen tests',
+  testSurface: 'The tests as written',
   authoredTests: 'Tests as written',
 };
 
@@ -66,4 +73,5 @@ export const GROUP_TEXTS: Record<string, string> = {
   tests: 'Tests',
   review: 'Review',
   approvals: 'Approvals',
+  custom: 'Custom',
 };

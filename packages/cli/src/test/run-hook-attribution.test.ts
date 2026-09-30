@@ -25,7 +25,9 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { noteMatchesProject, projectIdFromCwd } from '../../../../bin/agenfk-run-hook.mjs';
+import * as hook from '../../../../bin/agenfk-run-hook.mjs';
+
+const { noteMatchesProject, projectIdFromCwd } = hook as any;
 
 describe('a note only authorizes its own project', () => {
   it('accepts a note for the session project', () => {
@@ -84,3 +86,43 @@ describe('the session project comes from the cwd', () => {
     expect(projectIdFromCwd(root)).toBeNull();
   });
 });
+
+/*
+ * 7251a4f7 - a Claude Code run recorded its model as the placeholder 'claude'
+ * unless AGENFK_MODEL was set, which nothing sets. The hook's payload names the
+ * session's transcript; its last assistant message says which model ran.
+ */
+describe('the model a Claude Code run records', () => {
+  const made: string[] = [];
+  afterEach(() => { for (const dir of made.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
+  const transcript = (lines: unknown[]): string => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-model-'));
+    made.push(dir);
+    const file = path.join(dir, 'session.jsonl');
+    fs.writeFileSync(file, lines.map(l => JSON.stringify(l)).join('\n') + '\n');
+    return file;
+  };
+  const runModel = (env: Record<string, string | undefined>, payload: unknown) => (hook as any).runModel(env, payload);
+
+  it('is the last model the transcript shows, skipping synthetic entries', () => {
+    const file = transcript([
+      { type: 'user', message: { role: 'user', content: 'hi' } },
+      { type: 'assistant', message: { model: 'claude-sonnet-5-5', content: [] } },
+      { type: 'assistant', message: { model: 'claude-opus-5-5', content: [] } },
+      { type: 'assistant', message: { model: '<synthetic>', content: [] } },
+    ]);
+    expect(runModel({}, { transcript_path: file })).toBe('claude-opus-5-5');
+  });
+
+  it('AGENFK_MODEL still wins when it is set', () => {
+    const file = transcript([{ type: 'assistant', message: { model: 'claude-opus-5-5' } }]);
+    expect(runModel({ AGENFK_MODEL: 'qwen3.8:27b' }, { transcript_path: file })).toBe('qwen3.8:27b');
+  });
+
+  it("falls back to 'claude' when the transcript is missing or names no model", () => {
+    expect(runModel({}, {})).toBe('claude');
+    expect(runModel({}, { transcript_path: path.join(os.tmpdir(), 'no-such-agenfk-transcript.jsonl') })).toBe('claude');
+    expect(runModel({}, { transcript_path: transcript([{ type: 'user', message: { content: 'x' } }]) })).toBe('claude');
+  });
+});
+

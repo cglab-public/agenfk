@@ -80,42 +80,48 @@ export interface ClaimCard {
   readonly id: string;
   readonly status: string;
   readonly claims?: readonly string[];
-  /** For claim scoping — see `claimScopes`. Mirrors core's `ScopeItem`. */
-  readonly projectId?: string | null;
+  /** Tree resolution (aaa01834): own worktree, else an ancestor's, else the project root. */
   readonly parentId?: string | null;
   readonly worktreePath?: string | null;
+  /** 686fdbf6: the tree the card chose - 'root' or a checkout path. Wins over worktreePath. */
+  readonly worktreeChoice?: string | null;
+  readonly projectId?: string;
 }
 
 /**
- * The tree each card works in, keyed for comparison. Mirrors core's
- * `claimScopes` (this file cannot import core — see the header).
- *
- * Two cards in DIFFERENT worktrees cannot overwrite each other: git gives a
- * merge conflict a person resolves, which is the recoverable case claims are
- * not for. Only cards sharing a tree contend.
+ * Mirrors `claimTreeOf` and `sameClaimTree` in packages/core/src/claimGate.ts
+ * (aaa01834): claims are per worktree, and an unknown tree collides with every
+ * tree. Pinned against core by the drift test, like `collide`.
  */
-export function scopesOf(cards: readonly ClaimCard[]): Map<string, string> {
-  const byId = new Map(cards.map(c => [c.id, c]));
-  const memo = new Map<string, string>();
-  const visiting = new Set<string>();
-  const resolve = (id: string): string => {
-    const cached = memo.get(id);
-    if (cached !== undefined) return cached;
-    const card = byId.get(id);
-    const fallback = `project:${card?.projectId ?? ''}`;
-    if (!card || visiting.has(id)) return fallback;
-    visiting.add(id);
-    const wt = typeof card.worktreePath === 'string'
-      ? card.worktreePath.trim().replace(/\\/g, '/').replace(/\/+$/, '')
-      : '';
-    const key = wt || (card.parentId && byId.has(card.parentId) ? resolve(card.parentId) : fallback);
-    visiting.delete(id);
-    memo.set(id, key);
-    return key;
-  };
-  const out = new Map<string, string>();
-  for (const c of cards) out.set(c.id, resolve(c.id));
-  return out;
+export function treeOf(card: ClaimCard, byId: ReadonlyMap<string, ClaimCard>, rootOf?: (projectId?: string) => string | null | undefined): string | null {
+  const seen = new Set<string>();
+  let cur: ClaimCard | undefined = card;
+  for (let depth = 0; cur && depth < 32; depth++) {
+    const chosen = typeof cur.worktreeChoice === 'string' ? cur.worktreeChoice.trim() : '';
+    if (chosen === 'root') break;
+    if (chosen) return chosen;
+    const wt = typeof cur.worktreePath === 'string' ? cur.worktreePath.trim() : '';
+    if (wt) return wt;
+    const parentId = cur.parentId;
+    if (!parentId || seen.has(parentId)) break;
+    seen.add(parentId);
+    cur = byId.get(parentId);
+  }
+  const root = rootOf?.(card.projectId);
+  return typeof root === 'string' && root.trim() ? root.trim() : null;
+}
+
+/** Drop trailing path separators in one linear pass (a `[\\/]+$` regex is quadratic on long runs). */
+const trimSeparators = (t: string): string => {
+  let end = t.length;
+  while (end > 0 && (t[end - 1] === '/' || t[end - 1] === '\\')) end--;
+  return t.slice(0, end);
+};
+
+export function sameTree(a: string | null, b: string | null): boolean {
+  const norm = (t: string | null) => trimSeparators((t ?? '').trim());
+  const x = norm(a), y = norm(b);
+  return !x || !y || x === y;
 }
 
 export interface CardClaimState {
@@ -143,21 +149,20 @@ const EMPTY: CardClaimState = { owns: [], heldBy: [], rejected: [] };
  * filtering by activity here would quietly drop the holders that matter most.
  * claimGate decides release by terminal status, and this defers to it.
  */
-export function claimStateOf(cardId: string, all: readonly ClaimCard[]): CardClaimState {
+export function claimStateOf(
+  cardId: string,
+  all: readonly ClaimCard[],
+  /** The project's root, for cards with no worktree. Unknown stays strict. */
+  rootOf?: (projectId?: string) => string | null | undefined,
+): CardClaimState {
   const card = all.find(c => c.id === cardId);
   const owns = card?.claims ?? [];
-  if (!owns.length) return EMPTY;
+  if (!owns.length || !card) return EMPTY;
 
-  /*
-   * ONLY the same tree. A card in another worktree cannot collide with this
-   * one — and reporting it as `held` would show the user a conflict the server
-   * would not refuse. An unknown scope on either side still contends, matching
-   * `gateOnClaims`: a key we cannot compare is not evidence of isolation.
-   */
-  const scopes = scopesOf(all);
-  const mine = scopes.get(cardId);
-  const sameTree = (c: ClaimCard): boolean =>
-    mine === undefined || scopes.get(c.id) === undefined || scopes.get(c.id) === mine;
+  // Only cards in this card's tree can hold its files (aaa01834).
+  const byId = new Map(all.map(c => [c.id, c]));
+  const mine = treeOf(card, byId, rootOf);
+  const here = all.filter(c => c.id === cardId || sameTree(mine, treeOf(c, byId, rootOf)));
 
   /*
    * De-duplicated: one card holding a directory produces a conflict per file
@@ -172,15 +177,13 @@ export function claimStateOf(cardId: string, all: readonly ClaimCard[]): CardCla
    */
   const rejected = [...new Set([
     ...owns.filter(c => !wellFormed(c)),
-    ...all.filter(c => !RELEASED.has(c.status.toUpperCase()))
-         .filter(sameTree)
+    ...here.filter(c => !RELEASED.has(c.status.toUpperCase()))
          .flatMap(c => (c.claims ?? []).filter(x => !wellFormed(x))),
   ])];
 
   const heldBy = [...new Set(
-    all
+    here
       .filter(c => c.id !== cardId && !RELEASED.has(c.status.toUpperCase()))
-      .filter(sameTree)
       .filter(c => (c.claims ?? []).some(theirs => owns.some(mine => collide(mine, theirs))))
       .map(c => c.id),
   )];

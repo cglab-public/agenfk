@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { AgEnFKItem, ItemType, Status, Flow, RegistryFlow } from './types'; // We need to copy types or import from core if possible, but symlinking in Vite monorepo can be tricky without proper setup.
+import { AgEnFKItem, ItemType, Status, Flow, RegistryFlow, ActiveRunOutput, VerifyRunEntry } from './types'; // We need to copy types or import from core if possible, but symlinking in Vite monorepo can be tricky without proper setup.
 import { API_URL } from './apiUrl';
 
 /** One check's verdict on a verify (CGLAB-380), as the server records it. */
@@ -25,6 +25,11 @@ export interface StepGates {
   overrides: Record<string, GateOverride>;
   lastChecks: { step: string; at: string; blocked: boolean; results: StepCheckResult[] } | null;
 }
+/** One entry of a card's check history (4a428bb0): a verify's checks, an approval, or an override. */
+export type CheckHistoryEntry =
+  | { kind: 'verify'; step: string; at: string; blocked: boolean; results: Array<{ id: string; outcome: StepCheckResult['outcome']; blocking: boolean; severity: 'block' | 'warn'; detail: string; overridden?: boolean }> }
+  | { kind: 'approval'; step: string; at: string; by: string; authority?: string; note?: string }
+  | { kind: 'override'; step: string; at: string; by: string; authority?: string; check: string; reason: string };
 // For MVP, we'll duplicate the types interface or use `any`.
 // Better: configure vite to aliase @agenfk/core to the local package.
 
@@ -85,7 +90,12 @@ export interface AppSettingsDto {
   pinnedProjects: string[];
   /** Keep the board on the chosen project instead of following project_switched. */
   boardPinned: boolean;
+  /** f8d0a752: suite runs the server runs at once, across every project; 0 is automatic (half the CPUs). */
+  maxConcurrentSuiteRuns: number;
 }
+
+/** 7b640e64: what the machine makes of maxConcurrentSuiteRuns. */
+export interface SettingsRuntimeDto { cpus: number; automaticSuiteRuns: number; suiteRunLimit: number }
 
 export const api = {
   listProjects: async () => {
@@ -185,6 +195,11 @@ export const api = {
       console.error("API Error listing items:", e);
       throw e;
     }
+  },
+  /** 3aea49f1: every verify running now, across projects. */
+  getVerifyRuns: async (): Promise<VerifyRunEntry[]> => {
+    const { data } = await axios.get(`${API_URL}/verify-runs`);
+    return Array.isArray(data) ? data : [];
   },
   getItem: async (id: string) => {
     try {
@@ -372,6 +387,12 @@ export const api = {
     }
   },
 
+  /** 7b640e64: the CPUs the server sees, what automatic comes to, and the suite-run limit in force. */
+  getSettingsRuntime: async (): Promise<SettingsRuntimeDto> => {
+    const { data } = await axios.get(`${API_URL}/settings/runtime`);
+    return data;
+  },
+
   updateItem: async (id: string, updates: Partial<AgEnFKItem>) => {
     try {
       // The board header: the server lets only the board move a card forward
@@ -391,6 +412,21 @@ export const api = {
   /** The card's current step: go-ahead needed, approvals, overrides, last checks (CGLAB-382). */
   getGates: async (id: string): Promise<StepGates> => {
     const { data } = await axios.get(`${API_URL}/items/${id}/gates`);
+    return data;
+  },
+  /** The verify running on the card and its latest output; null when none runs (9569b4d7). */
+  getActiveRun: async (id: string): Promise<ActiveRunOutput | null> => {
+    try {
+      const { data } = await axios.get(`${API_URL}/items/${id}/active-run`);
+      return data;
+    } catch (e) {
+      if (axios.isAxiosError(e) && e.response?.status === 404) return null;
+      throw e;
+    }
+  },
+  /** The card's history of checks, approvals and overrides, newest first (5ee2c3b1). */
+  getCheckHistory: async (id: string): Promise<CheckHistoryEntry[]> => {
+    const { data } = await axios.get(`${API_URL}/items/${id}/check-history`);
     return data;
   },
   /** A person's go-ahead for the card's current step. The board header is what the server accepts. */
@@ -452,7 +488,7 @@ export const api = {
       throw e;
     }
   },
-  getJiraStatus: async (): Promise<{ configured: boolean; connected: boolean; cloudId?: string; email?: string; message?: string; reason?: string }> => {
+  getJiraStatus: async (): Promise<{ source?: 'hub' | 'local'; configured: boolean; connected: boolean; cloudId?: string; cloudUrl?: string; email?: string; message?: string; reason?: string }> => {
     const { data } = await axios.get(`${API_URL}/jira/status`);
     return data;
   },
@@ -543,6 +579,11 @@ export const api = {
   },
   getLatestRelease: async () => {
     const { data } = await axios.get(`${API_URL}/releases/latest`);
+    return data;
+  },
+  /** The INSTALLED version's own release notes - what What's New shows (4aac7076). */
+  getCurrentRelease: async () => {
+    const { data } = await axios.get(`${API_URL}/releases/current`);
     return data;
   },
   /**

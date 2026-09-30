@@ -78,11 +78,11 @@ export interface CloseCommitResult {
    * Files this card staged that fall OUTSIDE everything it claimed
    * (CGLAB-198).
    *
-   * Reported, never blocked. An agent can touch a file legitimately and forget
-   * to widen its claim, and turning that into a refusal at close time punishes
-   * the common case to catch the rare one. What this is for is the pattern
-   * over time: a claim that is systematically too narrow shows up as a habit
-   * rather than as an incident.
+   * Reported here, never blocked HERE. The refusal is the validate route's
+   * (aaa01834, a user decision after a card's unclaimed file was left staged
+   * past DONE): it refuses the move that ends the flow while such a file is
+   * claimed by nobody in the tree, and only notes it when a working card there
+   * claims nothing and may own it. This module stays a pure commit.
    *
    * Empty when the card claimed nothing, which is most of them - a report on
    * every close is noise nobody reads.
@@ -129,7 +129,9 @@ export function commitStagedForCard(
     // `--name-only` rather than a status parse: the question is only whether
     // the index holds anything, and a filename with a newline in it cannot
     // turn a yes into a no.
-    staged = deps.run(at('diff', '--cached', '--name-only'));
+    // --no-renames: otherwise a rename lists only its destination, and the
+    // commit leaves the source's staged deletion behind (aaa01834 review).
+    staged = deps.run(at('diff', '--cached', '--name-only', '--no-renames'));
   } catch (e: any) {
     return { committed: false, reason: `Could not read the index: ${gitSaid(e)}` };
   }

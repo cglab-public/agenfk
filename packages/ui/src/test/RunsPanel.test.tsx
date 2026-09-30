@@ -593,4 +593,29 @@ describe('RunsPanel', () => {
     expect(link?.getAttribute('rel')).toContain('noopener');
     expect(link?.getAttribute('rel')).toContain('noreferrer');
   });
+
+  // 7251a4f7: the worker lane was hard-coded 'π pi · worker', so a Claude Code run read as pi's.
+  it("names a worker run by its own harness: a Claude Code run is not listed as pi's", async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'c1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'claude-code', model: 'claude-opus-5-5', status: 'done', startedAt: '2026-09-28T23:35:46.736Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'c1', seq: 0, ts: '2026-09-28T23:36:00.000Z', lane: 'worker', kind: 'tool', tool: 'bash', text: 'git status' },
+    ] as any);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('git status')).toBeDefined());
+    expect(screen.getByText(/Claude Code · worker/)).toBeDefined();
+    expect(screen.queryByText(/pi · worker/i)).toBeNull();
+    expect(screen.queryByText('π')).toBeNull();
+  });
+
+  it("still names a pi worker run as pi's", async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'p1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([] as any);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText(/Pi · worker/)).toBeDefined());
+  });
 });
+

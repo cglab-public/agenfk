@@ -10,14 +10,18 @@ import {
   Sun, Moon, Search, Archive, ArchiveRestore, ChevronLeft,
   FolderOpen, Briefcase, Clock, FlaskConical, ShieldCheck,
   Copy, Check, Download, Pin, PinOff, ExternalLink, Trash2, Lightbulb, Book, Pause,
-  ChevronUp, ChevronDown, X, FolderInput, GitBranch, SquareTerminal
+  ChevronUp, ChevronDown, X, FolderInput, GitBranch, SquareTerminal,
+  Settings,
 } from 'lucide-react';
 import { useSocketEvent } from '../SocketContext';
 import { isDesktop } from '../desktop';
 import { useActiveProject } from '../ActiveProject';
 import { CardDetailModal } from './CardDetailModal';
 import { ItemTypeBadge, ITEM_TYPE_VISUAL } from './ItemTypeSquare';
-import { ColumnContractBadges } from './ColumnContractBadges';
+import { VerifyRunBadge } from './VerifyRunBadge';
+import { VerifyRunsChip } from './VerifyRunsChip';
+import { ColumnContractBadges, ColumnRole } from './ColumnContractBadges';
+import { checkText } from '@agenfk/flow-editor';
 import { CardAnimationWrapper } from '../animations/CardAnimationWrapper';
 import '../animations'; // Side-effect: registers all easter egg animations
 import { useEasterEggs } from '../useEasterEggs';
@@ -31,6 +35,7 @@ import { ReleaseReminder } from './ReleaseReminder';
 import { WhatsNewModal } from './WhatsNewModal';
 import { ReadmeModal } from './ReadmeModal';
 import { FlowEditorModal, renderStepIcon } from './FlowEditorModal';
+import { BoardSettingsDialog } from './BoardSettingsDialog';
 import { OrgFlowPicker } from './OrgFlowPicker';
 import { useTheme } from '../ThemeContext';
 import { Logo } from './Logo';
@@ -364,6 +369,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
         </div>
       </div>
       <h3 className="font-semibold text-slate-800 dark:text-slate-100 text-[13px] leading-snug mb-1.5 group-hover:text-accent-text transition-colors">{item.title}</h3>
+      {item.activeRun && <div className="mb-1.5"><VerifyRunBadge run={item.activeRun} /></div>}
       {!item.parentId && (item.branchName || item.prUrl) && (
         <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
           {item.branchName && (
@@ -496,15 +502,17 @@ const stripDeepLinkParams = () => {
 };
 
 /**
- * The blank card every "add an item" entry point opens.
- *
- * There are five of them — the header button, three per-column placeholders and
- * the sidebar's per-project + — and they were five copies of the same object
- * literal, each with its own cast. Drift between them means the modal opens
- * differently depending on where you clicked. The cast lives here and nowhere
- * else: a draft genuinely has no id or timestamps until it is saved, so it is
- * not an AgEnFKItem yet and no honest type says otherwise.
+ * A step label as the column shows it: one written in capitals ('IN PROGRESS',
+ * or a status name with its underscores turned to spaces) in title case, and
+ * one the flow already wrote in mixed case left alone - which is how a flow
+ * keeps an acronym ('QA Review'). A word holding a '/' or a digit ('CI/CD',
+ * 'V2') is kept as written. The full label stays the heading's tooltip.
  */
+function titleCaseLabel(label: string): string {
+  if (/\p{Ll}/u.test(label)) return label;
+  return label.replace(/\S+/g, w => (/[/\d]/.test(w) ? w : w.charAt(0) + w.slice(1).toLowerCase()));
+}
+
 export const KanbanBoard: React.FC = () => {
   const queryClient = useQueryClient();
   const { theme, toggleTheme } = useTheme();
@@ -514,7 +522,7 @@ export const KanbanBoard: React.FC = () => {
   // Shared with the desktop sidebar (CGLAB-168). Same rules as before — a
   // ?project= deep link beats the remembered choice — they just live in
   // ActiveProject now so the sidebar and the board cannot disagree.
-  const { activeProjectId: selectedProjectId, setActiveProjectId: setSelectedProjectId, focusedItemId, newItemRequest, newItemTitle, markProjectWorked, requestTerminalFor } = useActiveProject();
+  const { activeProjectId: selectedProjectId, setActiveProjectId: setSelectedProjectId, focusedItemId, focusOpens, newItemRequest, newItemTitle, markProjectWorked, requestTerminalFor } = useActiveProject();
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [projectSearch, setProjectSearch] = useState('');
   const [highlightedProjectIndex, setHighlightedProjectIndex] = useState(-1);
@@ -567,6 +575,8 @@ export const KanbanBoard: React.FC = () => {
   const [isWhatsNewOpen, setIsWhatsNewOpen] = useState(false);
   const [isReadmeOpen, setIsReadmeOpen] = useState(false);
   const [isFlowEditorOpen, setIsFlowEditorOpen] = useState(false);
+  // 7b640e64: the desktop shell has its own Settings; a browser reaches them from here.
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isOrgFlowPickerOpen, setIsOrgFlowPickerOpen] = useState(false);
 
   const { data: versionData } = useQuery({
@@ -665,10 +675,11 @@ export const KanbanBoard: React.FC = () => {
   });
   // What verify runs, and blocks on, to leave the column: warn-only checks
   // (all a flow from before roles has) are not counted, so they add no badge.
-  type ContractStep = { name: string; checks: Array<{ applicable: boolean; severity: string }>; onLeave?: Array<{ applicable: boolean; severity: string }> };
-  const checkCountOf = (name: string): number | undefined => {
+  type ContractCheck = { id: string; applicable: boolean; severity: string };
+  type ContractStep = { name: string; checks: ContractCheck[]; onLeave?: ContractCheck[] };
+  const blockingChecksOf = (name: string): ContractCheck[] | undefined => {
     const st = (flowContract as { steps?: ContractStep[] } | undefined)?.steps?.find(x => x.name === name);
-    return st ? (st.onLeave ?? st.checks).filter(c => c.applicable && c.severity === 'block').length : undefined;
+    return st ? (st.onLeave ?? st.checks).filter(c => c.applicable && c.severity === 'block') : undefined;
   };
 
   const flowStepByStatus = React.useMemo((): Record<string, FlowStep> => {
@@ -1366,6 +1377,14 @@ export const KanbanBoard: React.FC = () => {
     deepLinkAppliedRef.current = true;
     setSearchTerm(itemId);
     runSearch(itemId);
+    // ?view=overview (c8e35fb8): open the card itself, on Overview - where a
+    // person approves a step - not only highlight it. Exact id or unique prefix.
+    if (getUrlParam('view') === 'overview') {
+      const want = itemId.toLowerCase();
+      const hits = items.filter((i: AgEnFKItem) => i.id.toLowerCase().startsWith(want));
+      const card = hits.find((i: AgEnFKItem) => i.id.toLowerCase() === want) ?? (hits.length === 1 ? hits[0] : undefined);
+      if (card) setSelectedItem(card);
+    }
     stripDeepLinkParams();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, isLoadingFlow, activeFlow]);
@@ -1397,6 +1416,13 @@ export const KanbanBoard: React.FC = () => {
     const itemId = focusedItemId.slice(0, focusedItemId.lastIndexOf('#'));
     setSearchTerm(itemId);
     runSearch(itemId);
+    // 3aea49f1: a focus that opens the card - on Overview, where a running verify shows its output.
+    if (focusOpens) {
+      const card = items.find((i: AgEnFKItem) => i.id === itemId);
+      // A request from outside the board (the header's running verifies), applied once like the deep link above.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      if (card) setSelectedItem(card);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusedItemId, items, isFetchingItems, isLoadingFlow, activeFlow]);
 
@@ -1920,6 +1946,21 @@ agenfk update-project <id> --setup-command "npm ci"`}
                 </button>
               )}
 
+              {/* The desktop shell shows its own, in the status bar that every tab keeps (beae41a0). */}
+              {!isDesktop() && <VerifyRunsChip />}
+
+              {!isDesktop() && (
+                <button
+                  data-testid="board-settings-btn"
+                  onClick={() => setIsSettingsOpen(true)}
+                  title="Settings"
+                  aria-label="Settings"
+                  className="p-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-slate-500 hover:text-accent-text transition-all"
+                >
+                  <Settings size={16} />
+                </button>
+              )}
+
               <button
                 onClick={toggleTheme}
                 className="p-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-slate-500 hover:text-accent-text transition-all"
@@ -2080,26 +2121,31 @@ agenfk update-project <id> --setup-command "npm ci"`}
           {(!isLoadingFlow || activeFlow) && mainColumnStatuses.map(status => {
             const flowStep = flowStepByStatus[status];
             const columnLabel = flowStep ? (flowStep.label || flowStep.name) : status.replace(/_/g, ' ');
+            const blocking = flowStep ? blockingChecksOf(flowStep.name) : undefined;
             return (
             <div key={status} className="flex flex-col w-full md:flex-1 md:min-w-[180px] h-full min-h-[300px] md:min-h-0" onDrop={(e) => handleDrop(e, status as Status)} onDragOver={handleDragOver} onDragEnter={handleColumnDragEnter}>
               <div
                 data-testid={`column-header-${status}`}
-                className="flex items-center justify-between mb-3 px-1 border-t-4 pt-2"
+                className="group flex flex-col gap-0.5 mb-3 px-1 border-t-4 pt-2"
                 style={{ borderTopColor: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? colorForUnknownStatus(status) }}
               >
-                <div className="flex items-center gap-2">
-                  <div className="p-1 rounded-md text-slate-500 bg-slate-50 dark:bg-slate-800" style={{ color: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? colorForUnknownStatus(status) }}>
+                <div data-testid={`column-title-${status}`} className="flex items-center gap-2 min-w-0">
+                  <div className="p-1 rounded-md text-slate-500 bg-slate-50 dark:bg-slate-800 shrink-0" style={{ color: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? colorForUnknownStatus(status) }}>
                     {renderStepIcon(flowStep?.icon, statusIcons[status as Status] ?? <Briefcase size={14} />)}
                   </div>
-                  <h2 className="font-bold text-ink-secondary text-sm uppercase tracking-wider">{columnLabel}</h2>
-                  {flowStep && <ColumnContractBadges step={flowStep} checkCount={checkCountOf(flowStep.name)} />}
-                  <button onClick={() => handleArchiveColumn(status as Status)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 dark:text-slate-500 transition-colors" title="Archive Column">
+                  <h2 title={columnLabel} className="flex-1 min-w-0 truncate font-bold text-ink-secondary text-sm">{titleCaseLabel(columnLabel)}</h2>
+                  <button onClick={() => handleArchiveColumn(status as Status)} className="p-1 shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 dark:text-slate-500 transition-opacity" title="Archive Column">
                     <Archive size={12} />
                   </button>
+                  <span className="shrink-0 bg-chip text-accent-text text-xs font-mono font-bold px-2 py-1 rounded-full shadow-sm border border-border-soft">
+                    {getItemsByStatus(status as Status).length}
+                  </span>
                 </div>
-                <span className="bg-chip text-accent-text text-xs font-mono font-bold px-2 py-1 rounded-full shadow-sm border border-border-soft">
-                  {getItemsByStatus(status as Status).length}
-                </span>
+                {/* Always rendered, so every header is the same height (85b59d8c). */}
+                <div data-testid={`column-meta-${status}`} className="flex items-center gap-2 min-h-[16px] pl-[30px] min-w-0">
+                  {flowStep && <ColumnRole step={flowStep} />}
+                  {flowStep && <ColumnContractBadges step={flowStep} checkCount={blocking?.length} checkNames={blocking?.map(c => checkText(c.id).title)} />}
+                </div>
               </div>
 
               <div className={clsx("flex-1 px-3 pb-10 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
@@ -2383,6 +2429,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
       <WhatsNewModal isOpen={isWhatsNewOpen} onClose={() => setIsWhatsNewOpen(false)} />
       <ReadmeModal isOpen={isReadmeOpen} onClose={() => setIsReadmeOpen(false)} />
 
+      {isSettingsOpen && <BoardSettingsDialog onClose={() => setIsSettingsOpen(false)} />}
       {isFlowEditorOpen && selectedProjectId && (
         <FlowEditorModal
           isOpen={isFlowEditorOpen}

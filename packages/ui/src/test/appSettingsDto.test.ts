@@ -47,6 +47,7 @@ const SAMPLE: AppSettingsDto = {
   osNotifications: true,
   pinnedProjects: [],
   boardPinned: false,
+  maxConcurrentSuiteRuns: 0,
 };
 
 describe('the settings type the UI writes through', () => {

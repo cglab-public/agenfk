@@ -128,3 +128,17 @@ describe('pinned projects, the one LIST setting', () => {
     expect(isLegalSettingValue('pinnedProjects', [null])).toBe(false);
   });
 });
+
+describe('maxConcurrentSuiteRuns (f8d0a752)', () => {
+  it('is server-wide and automatic by default: 0 means half the CPUs', () => {
+    expect(DEFAULT_APP_SETTINGS.maxConcurrentSuiteRuns).toBe(0);
+  });
+
+  it('accepts 0 (automatic) or a whole number of runs', () => {
+    for (const v of [0, 1, 4, 64]) expect(isLegalSettingValue('maxConcurrentSuiteRuns', v), String(v)).toBe(true);
+  });
+
+  it('refuses a negative, fractional, non-finite or non-number value', () => {
+    for (const v of [-1, 2.5, Number.NaN, Number.POSITIVE_INFINITY, '4', null]) expect(isLegalSettingValue('maxConcurrentSuiteRuns', v), String(v)).toBe(false);
+  });
+});

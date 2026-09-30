@@ -158,6 +158,101 @@ describe('which last steps end the flow', () => {
   });
 });
 
+/**
+ * 6b34e5cc: "the sibling finished" used to mean `status === 'DONE'`, so on a
+ * flow whose exit step has another name no green ever carried over and every
+ * child ran the command again. Finished is the step the move that ends the flow
+ * lands on - DONE, or a last step that is a boundary - and nothing short of it.
+ */
+describe('sibling propagation on a flow whose exit step is not named DONE', () => {
+  const onFlow = async (steps: any[]) => {
+    const p = (await internal(agent().post('/projects')).send({ name: `exit-${Date.now()}` })).body;
+    await storage.updateProject(p.id, { projectRoot: repo, verifyCommand: 'true' } as never);
+    const f = (await internal(agent().post('/flows')).send({ name: `Exit ${Date.now()}`, steps })).body;
+    await internal(agent().post(`/projects/${p.id}/flow`)).send({ flowId: f.id });
+    const parent = (await internal(agent().post('/items')).send({ type: 'STORY', title: 'p', projectId: p.id })).body;
+    const make = async (title: string, status: string) => {
+      const c = (await internal(agent().post('/items')).send({ type: 'TASK', title, projectId: p.id, parentId: parent.id })).body;
+      await storage.updateItem(c.id, { status } as any);
+      return c;
+    };
+    return { make };
+  };
+
+  // `agenfk flow create` marks a boundary with isSpecial; a hand-written or default flow with isAnchor.
+  it.each([['isAnchor'], ['isSpecial']])("carries a sibling's green of this commit to the next card when the exit step is a boundary (%s) named SHIPPED", async (flag) => {
+    const { make } = await onFlow([
+      { name: 'TODO', label: 'To Do', order: 0, isAnchor: true },
+      { name: 'CODE', label: 'Code', order: 1 },
+      { name: 'SHIPPED', label: 'Shipped', order: 2, [flag]: true },
+    ]);
+    const c1 = await make('c1', 'CODE');
+    const r1 = await validate(c1.id);
+    expect(r1.body.status, JSON.stringify(r1.body)).toBe('SHIPPED');
+
+    const c2 = await make('c2', 'CODE');
+    const r2 = await validate(c2.id);
+    expect(r2.body.status).toBe('SHIPPED');
+    expect(r2.body.output, 'the sibling on SHIPPED was not read as finished').toBe('Sibling propagation');
+  });
+
+  // 9e26970a: the close commit is made on every move that ends the flow, so its outcome and the push must be told there too.
+  it('tells the agent what the close commit did and to push, on a close onto SHIPPED - run or propagated - and not before', async () => {
+    const { make } = await onFlow([
+      { name: 'TODO', label: 'To Do', order: 0, isAnchor: true },
+      { name: 'CODE', label: 'Code', order: 1 },
+      { name: 'CHECK', label: 'Check', order: 2 },
+      { name: 'SHIPPED', label: 'Shipped', order: 3, isAnchor: true, exitCriteria: 'Released to users.' },
+    ]);
+    const c1 = await make('c1', 'CODE');
+    // With a command, so the move reaches the reply that tells of the commit (without one it advances before it).
+    const mid = await internal(agent().post(`/items/${c1.id}/validate`)).send({ evidence: 'ok', command: 'true' });
+    expect(mid.body.status).toBe('CHECK');
+    expect(mid.body.message, 'a move that does not end the flow told the agent to push').not.toMatch(/Push your branch/);
+    const r1 = await validate(c1.id);
+    expect(r1.body.status).toBe('SHIPPED');
+    expect(r1.body.message, 'the run close said nothing of its commit').toMatch(/Push your branch/);
+    expect(r1.body.message, 'a closed card was handed the exit step\'s criteria as work to do').not.toMatch(/MANDATORY EXIT CRITERIA for SHIPPED/);
+
+    const c2 = await make('c2', 'CHECK');
+    const r2 = await validate(c2.id);
+    expect(r2.body.output).toBe('Sibling propagation');
+    expect(r2.body.message, 'the propagated close said nothing of its commit').toMatch(/Push your branch/);
+  });
+
+  it('does not read a sibling still WORKING the last step as finished, when that step is not a boundary', async () => {
+    // No terminal boundary: the last step is work, and leaving it goes to DONE.
+    const { make } = await onFlow([
+      { name: 'TODO', label: 'To Do', order: 0, isAnchor: true },
+      { name: 'CODE', label: 'Code', order: 1 },
+      { name: 'SHIP', label: 'Ship', order: 2 },
+    ]);
+    const c1 = await make('c1', 'SHIP');
+    await storage.updateItem(c1.id, { tests: [{ id: 'g', command: 'true', output: '', status: 'PASSED', executedAt: new Date(), commit: sha(), commitRoot: repo }] } as never);
+
+    const c2 = await make('c2', 'SHIP');
+    const r2 = await validate(c2.id);
+    expect(r2.body.status).toBe('DONE');
+    expect(r2.body.output, 'a sibling still on a working step carried its green').not.toBe('Sibling propagation');
+  });
+
+  it('does not read a sibling parked on a MID-flow boundary step as finished', async () => {
+    // A boundary that is not the last step (a hold) is not where a flow ends.
+    const { make } = await onFlow([
+      { name: 'TODO', label: 'To Do', order: 0, isAnchor: true },
+      { name: 'CODE', label: 'Code', order: 1 },
+      { name: 'HOLD', label: 'Hold', order: 2, isSpecial: true },
+      { name: 'SHIPPED', label: 'Shipped', order: 3, isAnchor: true },
+    ]);
+    const c1 = await make('c1', 'HOLD');
+    await storage.updateItem(c1.id, { tests: [{ id: 'g', command: 'true', output: '', status: 'PASSED', executedAt: new Date(), commit: sha(), commitRoot: repo }] } as never);
+    const c2 = await make('c2', 'HOLD');
+    const r2 = await validate(c2.id);
+    expect(r2.body.status).toBe('SHIPPED');
+    expect(r2.body.output, 'a sibling on a mid-flow hold carried its green').not.toBe('Sibling propagation');
+  });
+});
+
 describe('the sibling gate on a real tree', () => {
   it('lets a green earned at this very commit carry the next card', async () => {
     const { make } = await setup();
@@ -322,5 +417,58 @@ describe('the sibling gate on a real tree', () => {
     const r2 = await validate(c2.id);
     expect(r2.body.status).toBe('DONE');
     expect(r2.body.output, 'a stale green was spent as proof').not.toBe('Sibling propagation');
+  });
+});
+
+/*
+ * CGLAB-418: on a step that needs no command, "a sibling is further along"
+ * carries the card once its own checks have passed. Nothing is skipped there,
+ * so the reply must not say so, and its comment carries the checks that ran
+ * like every other passing verify's does.
+ */
+describe('sibling propagation on an intermediate step says what happened', () => {
+  const shipFlow = async () => {
+    const p = (await internal(agent().post('/projects')).send({ name: `midprop-${Date.now()}` })).body;
+    await storage.updateProject(p.id, { projectRoot: repo, verifyCommand: 'true' } as never);
+    const f = (await internal(agent().post('/flows')).send({
+      name: `Mid Flow ${Date.now()}`,
+      steps: [
+        { name: 'TODO', label: 'To Do', order: 0, isAnchor: true },
+        { name: 'SPEC', label: 'Spec', order: 1 },
+        { name: 'CODE', label: 'Code', order: 2 },
+        { name: 'SHIPPED', label: 'Shipped', order: 3, isAnchor: true },
+      ],
+    })).body;
+    await internal(agent().post(`/projects/${p.id}/flow`)).send({ flowId: f.id });
+    const parent = (await internal(agent().post('/items')).send({ type: 'STORY', title: 'p', projectId: p.id })).body;
+    const make = async (title: string, status: string) => {
+      const c = (await internal(agent().post('/items')).send({ type: 'TASK', title, projectId: p.id, parentId: parent.id })).body;
+      await storage.updateItem(c.id, { status } as any);
+      return c;
+    };
+    return { ahead: await make('ahead', 'CODE'), card: await make('behind', 'SPEC') };
+  };
+  const lastComment = async (id: string) => {
+    const comments: any[] = ((await storage.getItem(id)) as any).comments ?? [];
+    return String(comments[comments.length - 1]?.content ?? '');
+  };
+
+  it('does not claim a skip when the step runs no command, and lists the checks', async () => {
+    const { card } = await shipFlow();
+    const r = await validate(card.id);
+    expect(r.body.status, JSON.stringify(r.body)).toBe('CODE');
+    expect(r.body.output).toBe('Sibling propagation');
+    const comment = await lastComment(card.id);
+    expect(r.body.message).not.toMatch(/skipped|already verified/i);
+    expect(comment).not.toMatch(/skipped|already verified/i);
+    expect(comment).toMatch(/ahead/);
+    expect(comment).toMatch(/on-card-branch/);
+  });
+
+  it('runs a command it was handed instead of propagating past it', async () => {
+    const { card } = await shipFlow();
+    const r = await internal(agent().post(`/items/${card.id}/validate`)).send({ evidence: 'ok', command: 'false' });
+    expect(r.body.output, JSON.stringify(r.body)).not.toBe('Sibling propagation');
+    expect(((await storage.getItem(card.id)) as any).status).toBe('SPEC');
   });
 });

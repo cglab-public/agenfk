@@ -32,8 +32,17 @@ describe('describeFlowContract', () => {
     expect(specs.checks.map(k => k.id)).toContain('some-new-test-red');
     expect(specs.produces).toEqual(expect.arrayContaining(['redSet', 'testSurface', 'authoredTests']));
     expect(c.steps[2].checks.find(k => k.id === 'red-set-passes-by-name')).toMatchObject({ applicable: true, source: 'role' });
-    expect(c.steps[2].consumes).toEqual(expect.arrayContaining(['redSet', 'testSurface', 'authoredTests']));
+    expect(c.steps[2].consumes).toEqual(expect.arrayContaining(['redSet', 'authoredTests']));
     expect(c.steps[1].consumes).toEqual([]);
+  });
+
+  it("lists entry-baseline on leaving the step before one that judges against its entry results (d26832d6 #10)", () => {
+    // Leaving DISCOVERY on marketing-lab was held by entry-baseline, a check the
+    // contract never showed: the next step's needs decide what leaving this one takes.
+    const c = describeFlowContract(tdd());
+    expect(c.steps[0].onLeave.map(k => k.id)).toContain('entry-baseline');
+    // A step whose successor reads no entry results carries no such hold.
+    expect(c.steps[2].onLeave.map(k => k.id)).not.toContain('entry-baseline');
   });
 
   it("shows a role built-in that has nothing to check as not applicable, naming the missing record", () => {
@@ -64,7 +73,7 @@ describe('describeFlowContract', () => {
   it('carries every role with its built-ins, and every catalogue check with its params', () => {
     const c = describeFlowContract(tdd());
     expect(c.roles.map(r => r.id)).toEqual([...STEP_ROLES]);
-    expect(c.roles.find(r => r.id === 'review')!.builtins.map(b => b.id)).toEqual(['review-record']);
+    expect(c.roles.find(r => r.id === 'review')!.builtins.map(b => b.id)).toEqual(['review-record', 'fixes-reviewed', 'tests-added-late', 'tree-warnings']); // d26832d6 #21, CGLAB-420
     expect(c.catalogue.map(k => k.id).sort()).toEqual(Object.keys(CHECK_CATALOGUE).sort());
     const ha = c.catalogue.find(k => k.id === 'human-approval')!;
     expect(ha.params.signature).toMatchObject({ values: ['none', 'passkey'], default: 'none' });

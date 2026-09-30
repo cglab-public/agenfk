@@ -35,6 +35,12 @@ export interface StorageQuery {
   parentId?: string;
   limit?: number;
   offset?: number;
+  /**
+   * e248239d: false leaves each capture record's per-test results as a
+   * `testsBlob` reference instead of reading them back - for a caller that
+   * never reads them (the item list, claim scans). Default true.
+   */
+  hydrate?: boolean;
 }
 
 export interface StorageProvider extends AgEnFKPlugin {
@@ -50,6 +56,12 @@ export interface StorageProvider extends AgEnFKPlugin {
   updateItem(id: string, updates: Partial<AgEnFKItem>): Promise<AgEnFKItem>;
   deleteItem(id: string): Promise<boolean>;
   getItem(id: string): Promise<AgEnFKItem | null>;
+  /**
+   * 80920048: one stored value by its hash - a capture record's file map
+   * (`fileShasBlob`), which reads leave as a reference. Null when it is not
+   * there. Optional: a provider without it gives no partial runs from a map.
+   */
+  readBlob?(hash: string): Promise<unknown | null>;
   listItems(query?: StorageQuery): Promise<AgEnFKItem[]>;
   listChildren(parentId: string): Promise<AgEnFKItem[]>;
 
@@ -133,6 +145,8 @@ export type HubEventType =
   // A passkey enrolled on, or removed from, the board (CGLAB-383).
   | 'passkey.enrolled'
   | 'passkey.removed'
+  // A person's approval of a command check's exact argv for a project (efcacdeb).
+  | 'command.approved'
   | 'comment.added'
   | 'test.logged'
   // Legacy inbound-only event. Spokes no longer emit this, and Hub skips it

@@ -208,6 +208,8 @@ const UpdateItemSchema = z.object({
   // match and cycles.
   parentId: z.string().nullable().optional(),
   implementationPlan: z.string().optional(),
+  // 686fdbf6: where the card runs - an absolute checkout path, 'none' or 'inherit'.
+  worktree: z.string().optional(),
   // JIRA issue key to link, or "none" to unlink. zod strips unknown keys, so
   // without this the MCP surface silently could not link at all — and this repo
   // documents the CLI and MCP surfaces as interchangeable.
@@ -340,6 +342,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             type: { type: "string", enum: ["EPIC", "STORY", "TASK", "BUG"] },
             parentId: { type: ["string", "null"], description: "Re-parent the item under this id; null detaches it to top level." },
             implementationPlan: { type: "string" },
+            worktree: { type: "string", description: "Where the card runs: an ABSOLUTE path to a checkout of the project's repository, 'none' (the project root, whatever its parents have) or 'inherit' (clear the choice). Use this, never parentId, to move a card to another tree." },
             jiraItem: { type: "string", description: "JIRA issue key to link this card to, e.g. 'CGLAB-163'; pass 'none' to unlink. Reference only: the card keeps its own title and description. Omit to leave any existing link untouched." },
           },
           required: ["id"],
@@ -511,7 +514,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "workflow_gatekeeper",
-        description: "Mandatory pre-flight check before any code change. Verifies that an active task exists in any working flow step and returns context (exit criteria, flow steps, branch). role= is accepted for backward compatibility but is no longer enforced.",
+        description: "Mandatory pre-flight check before any code change. Verifies that an active task exists in any working flow step and returns context (exit criteria, flow steps, branch, and what leaving the step will run: when it says the suite or the verify command runs, do not run it yourself first - verify does; when it says nothing runs, the tests the exit criteria ask for are yours). role= is accepted for backward compatibility but is no longer enforced.",
         inputSchema: {
           type: "object",
           properties: {
@@ -538,15 +541,27 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "validate_progress",
-        description: "Step-completion gate: you MUST describe how you satisfied the current step's exit criteria before the step advances. Provide your evidence in the 'evidence' field — it will be logged as a comment tagged with the current step name, creating an audit trail. Optionally run a command; on intermediate steps it is not required — pass one only when the current step's exit criteria call for it, and only a command those criteria expect to succeed. On success, advances to the next flow step and returns the next step's exit criteria — treat those as your new mandatory work definition. If the command exits non-zero the advance is refused and the item stays on its current step (on the final step this is the hard gate that keeps a red suite out of DONE); nothing is rolled back. On the final step (and any boundary step) the server runs the project's verifyCommand and ignores the 'command' field, with a warning in the reply.",
+        description: "Step-completion gate: you MUST describe how you satisfied the current step's exit criteria before the step advances. Provide your evidence in the 'evidence' field — it will be logged as a comment tagged with the current step name, creating an audit trail. Optionally run a command; on intermediate steps it is not required — pass one only when the current step's exit criteria call for it, and only a command those criteria expect to succeed. On success, advances to the next flow step and returns the next step's exit criteria — treat those as your new mandatory work definition — and what leaving THAT step will run (leavePlan): when it runs the suite, do not run the full suite yourself before calling this again. If the command exits non-zero the advance is refused and the item stays on its current step (on the final step this is the hard gate that keeps a red suite out of DONE); nothing is rolled back. On the final step (and any boundary step) the server runs the project's verifyCommand and ignores the 'command' field, with a warning in the reply.",
         inputSchema: {
           type: "object",
           properties: {
             itemId: { type: "string" },
             evidence: { type: "string", description: "REQUIRED: Describe how you satisfied the current step's exit criteria (e.g. 'Wrote failing tests in foo.test.ts covering cases X and Y'). This is logged as a comment and serves as your confirmation." },
             command: { type: "string", description: "Optional command to run on an INTERMEDIATE step (e.g. 'npm run build'). Ignored on the final step and on any boundary step, where the server always runs the project verifyCommand." },
+            plan: { type: "boolean", description: "Dry run: answer what leaving the current step would run on this tree (reuse, only the changed or affected tests, the whole suite, a sibling's green, or nothing) without running anything or moving the card." },
+            agentChecks: {
+              type: "array",
+              description: "Your report of the current step's agent checks: for each, what its instruction asked you to do or check. A refused verify names them and their instructions. Recorded as agent-reported.",
+              items: { type: "object", properties: { name: { type: "string" }, outcome: { type: "string", enum: ["pass", "fail"] }, note: { type: "string" } }, required: ["name", "outcome"] },
+            },
+            checkAnswers: {
+              type: "array",
+              description: "Your answer to a failing warning of the step (e.g. new-tests-born-green): why it is fine, or what you changed. On the step that writes tests a failing new-tests-born-green holds the card until it is answered; answers go on the record for the reviewer and the PR.",
+              items: { type: "object", properties: { id: { type: "string" }, note: { type: "string" } }, required: ["id", "note"] },
+            },
           },
-          required: ["itemId", "evidence"],
+          // evidence is checked in the handler: required to advance, not for a dry run (plan).
+          required: ["itemId"],
         },
       },
       {
@@ -646,6 +661,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 required: ["name", "order"],
               },
             },
+            verifyAt: { type: "string", enum: ["leaf", "parent"], description: "Where the project's suite runs: 'leaf' (default) on every card's final step, or 'parent' once at the top-level card - a card with an open parent then closes without its own run." },
             projectId: { type: "string", description: "Optional: if provided, immediately activate the new flow for this project." },
           },
           required: ["name", "steps"],
@@ -660,6 +676,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             id: { type: "string", description: "The flow ID to update." },
             name: { type: "string" },
             description: { type: "string" },
+            verifyAt: { type: "string", enum: ["leaf", "parent"], description: "Where the project's suite runs: 'leaf' (default) on every card's final step, or 'parent' once at the top-level card - a card with an open parent then closes without its own run." },
             steps: {
               type: "array",
               items: {
@@ -771,10 +788,25 @@ async function callToolHandler(request: any): Promise<any> {
         }
       }
       case "validate_progress": {
-        const { itemId, evidence, command } = z.object({ itemId: z.string(), evidence: z.string(), command: z.string().optional() }).parse(request.params.arguments);
+        const { itemId, evidence, command, agentChecks, checkAnswers, plan } = z.object({
+          // evidence is required to advance; a dry run (plan) needs none, as the CLI's --plan.
+          itemId: z.string(), evidence: z.string().optional(), command: z.string().optional(), plan: z.boolean().optional(),
+          agentChecks: z.array(z.object({ name: z.string(), outcome: z.enum(['pass', 'fail']), note: z.string().optional() })).optional(),
+          checkAnswers: z.array(z.object({ id: z.string(), note: z.string() })).optional(),
+        }).parse(request.params.arguments);
+        // 2ebacb23: a dry run - what leaving the step would run on this tree. Nothing runs, nothing moves.
+        if (plan) {
+          try {
+            const { data } = await api.get(`/items/${itemId}/leave-plan?predict=1`);
+            return { content: [{ type: "text", text: `${data.advice}${data.prediction?.advice ? `\n${data.prediction.advice}` : ''}\n\n(Dry run: nothing ran and the card did not move. Call again without plan to advance.)` }] };
+          } catch (error: any) {
+            return { isError: true, content: [{ type: "text", text: error.response?.data?.error || error.message }] };
+          }
+        }
+        if (evidence === undefined) return { isError: true, content: [{ type: "text", text: "evidence is required: describe how you satisfied the current step's exit criteria (or pass plan: true for a dry run)." }] };
         // The author, as the harness that launched this MCP server names it (CGLAB-381).
         const actor = actorFromEnv(process.env);
-        const result = await validateViaApi(itemId, { evidence, command, cwd: process.cwd(), ...(actor ? { actor } : {}) });
+        const result = await validateViaApi(itemId, { evidence, command, cwd: process.cwd(), ...(actor ? { actor } : {}), ...(agentChecks ? { agentChecks } : {}), ...(checkAnswers ? { checkAnswers } : {}) });
         if (!result.ok) return { isError: true, content: [{ type: "text", text: result.text }] };
         return { content: [{ type: "text", text: result.text }] };
       }
@@ -890,9 +922,13 @@ async function callToolHandler(request: any): Promise<any> {
          * see the header there for why a write in the wrong tree is worse than
          * a read in one.
          */
-        const branchHint = resolveBranchHint(task, {
-          run: args => execFileSync('git', args, { encoding: 'utf8' }),
-        });
+        // 686fdbf6: never switch branches in a tree the card chose - it may be
+        // a person's checkout or another card's worktree.
+        const branchHint = task?.worktreeChoice
+          ? `\nℹ️ This card runs in a tree it chose (${task.worktreeChoice === 'root' ? 'the project root' : task.worktreeChoice}); its branch is not switched there.`
+          : resolveBranchHint(task, {
+            run: args => execFileSync('git', args, { encoding: 'utf8' }),
+          });
 
         /*
          * The base moved underneath the agent (CGLAB-197).
@@ -912,7 +948,10 @@ async function callToolHandler(request: any): Promise<any> {
           ? dispatchDriftNotice({ ...driftTarget, deps: { run: args => execFileSync('git', args, { encoding: 'utf8' }) } })
           : '';
 
-        return { content: [{ type: "text", text: `✅ AUTHORIZED.\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${branchHint}${exitCriteriaHint}${driftNotice}` }] };
+        // 37a292a7: what leaving this step will run - advice, so a failed read never stops the authorization.
+        const leavePlan = await api.get(`/items/${task.id}/leave-plan`).then((r: any) => r.data).catch(() => null);
+        const leaveNote = typeof leavePlan?.advice === 'string' ? `\n\n${leavePlan.advice}` : '';
+        return { content: [{ type: "text", text: `✅ AUTHORIZED.\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${branchHint}${exitCriteriaHint}${leaveNote}${driftNotice}` }] };
       }
       case "analyze_request": {
         const { request: userRequest, mode } = z.object({
@@ -1151,6 +1190,7 @@ async function callToolHandler(request: any): Promise<any> {
           name: z.string(),
           description: z.string().optional(),
           steps: z.array(FlowStepToolSchema),
+          verifyAt: z.enum(['leaf', 'parent']).optional(),
           projectId: z.string().optional(),
         }).parse(request.params.arguments);
         const { projectId, ...flowBody } = args;
@@ -1167,6 +1207,7 @@ async function callToolHandler(request: any): Promise<any> {
           name: z.string().optional(),
           description: z.string().optional(),
           steps: z.array(FlowStepToolSchema).optional(),
+          verifyAt: z.enum(['leaf', 'parent']).optional(),
         }).parse(request.params.arguments);
         const { id, ...updates } = args;
         try {

@@ -16,7 +16,7 @@
  * a chip that renders on all of them is thirty rows announcing an absence.
  */
 import { describe, it, expect } from 'vitest';
-import { claimStateOf, claimChipLabel, claimChipTitle, collide, type ClaimCard } from '../claimState';
+import { claimStateOf, claimChipLabel, claimChipTitle, collide, sameTree, type ClaimCard } from '../claimState';
 
 const card = (id: string, status: string, claims?: string[]): ClaimCard => ({ id, status, claims });
 
@@ -217,61 +217,64 @@ describe('claims it cannot read', () => {
   });
 });
 
-describe('claims are scoped to the tree', () => {
-  it('does NOT report held for a card in another worktree', () => {
-    // Two separate checkouts: git resolves the overlap, so the sidebar must not
-    // show a conflict the server would not refuse.
-    const state = claimStateOf('a', [
-      { id: 'a', status: 'IN_PROGRESS', claims: ['src/x.ts'], projectId: 'p', worktreePath: '/wt/a' },
-      { id: 'b', status: 'IN_PROGRESS', claims: ['src/x.ts'], projectId: 'p', worktreePath: '/wt/b' },
+/**
+ * Claims are per worktree (aaa01834), and the sidebar must say what the server
+ * says: a chip reading `held` for a card the gatekeeper authorizes sends
+ * somebody to renegotiate files nobody is racing for.
+ */
+describe('claims are per worktree in the sidebar', () => {
+  const at = (id: string, claims: string[], extra: Partial<ClaimCard>): ClaimCard => ({ id, status: 'IN_PROGRESS', claims, ...extra });
+
+  it('a card in another worktree does not hold this one', () => {
+    const state = claimStateOf('mine', [
+      at('epicA', [], { worktreePath: '/wt/a' }),
+      at('mine', ['x.ts'], { parentId: 'epicA' }),
+      at('theirs', ['x.ts'], { worktreePath: '/wt/b' }),
     ]);
     expect(state.heldBy).toEqual([]);
   });
 
-  it('reports held for a child sharing its parent worktree', () => {
-    const state = claimStateOf('a', [
-      { id: 'a', status: 'IN_PROGRESS', claims: ['src/x.ts'], projectId: 'p', worktreePath: '/wt/a' },
-      { id: 'b', status: 'IN_PROGRESS', claims: ['src/x.ts'], projectId: 'p', parentId: 'a' },
-    ]);
-    expect(state.heldBy).toEqual(['b']);
+  it('a card at the project root collides with one whose worktree IS the root', () => {
+    const state = claimStateOf('mine', [
+      at('mine', ['x.ts'], { projectId: 'p' }),
+      at('theirs', ['x.ts'], { worktreePath: '/repo' }),
+    ], () => '/repo');
+    expect(state.heldBy).toEqual(['theirs']);
   });
 
-  it('treats no worktree as the PROJECT tree, not as unknown', () => {
-    // Two cards with no worktree both work in the project root, so they still
-    // collide there — this is not a fail-open, it is the root being a tree.
-    const root = claimStateOf('a', [
-      { id: 'a', status: 'IN_PROGRESS', claims: ['src/x.ts'], projectId: 'p' },
-      { id: 'b', status: 'IN_PROGRESS', claims: ['src/x.ts'], projectId: 'p' },
-    ]);
-    expect(root.heldBy).toEqual(['b']);
-    // And a root card does NOT collide with one in a worktree: different trees.
-    const mixed = claimStateOf('a', [
-      { id: 'a', status: 'IN_PROGRESS', claims: ['src/x.ts'], projectId: 'p' },
-      { id: 'b', status: 'IN_PROGRESS', claims: ['src/x.ts'], projectId: 'p', worktreePath: '/wt/b' },
-    ]);
-    expect(mixed.heldBy).toEqual([]);
+  it('agrees with the core gate across trees', async () => {
+    const { gateOnClaims, claimTreeOf } = await import('@agenfk/core');
+    // 686fdbf6: a card's chosen tree ('root' or a path) wins over its parent's worktree.
+    type Place = Partial<Pick<ClaimCard, 'worktreePath' | 'worktreeChoice'>>;
+    const places: Place[] = [
+      { worktreePath: '/wt/a' }, { worktreePath: '/wt/b' }, { worktreePath: '/wt/a/' }, {},
+      { worktreeChoice: 'root' }, { worktreeChoice: '/wt/a' }, { worktreePath: '/wt/b', worktreeChoice: '/wt/a' },
+      { worktreePath: '/wt/a', worktreeChoice: 'root' },
+    ];
+    for (const p1 of places) for (const p2 of places) {
+      const cards: ClaimCard[] = [
+        at('parent', [], { worktreePath: '/wt/b', projectId: 'p' }),
+        at('mine', ['x.ts'], { ...p1, parentId: 'parent', projectId: 'p' }),
+        at('theirs', ['x.ts'], { ...p2, projectId: 'p' }),
+      ];
+      const t1 = JSON.stringify(p1), t2 = JSON.stringify(p2);
+      const byId = new Map(cards.map(c => [c.id, c]));
+      const coreTree = (c: ClaimCard) => claimTreeOf(c, (id: string) => byId.get(id), '/repo');
+      const gateRefuses = !gateOnClaims({ id: 'mine', claims: ['x.ts'], tree: coreTree(cards[1]) },
+        cards.map(c => ({ id: c.id, status: c.status, claims: c.claims, tree: coreTree(c) }))).authorized;
+      expect(claimStateOf('mine', cards, () => '/repo').heldBy.length > 0, `${t1} vs ${t2}`).toBe(gateRefuses);
+    }
   });
 });
 
-describe('the scope copy agrees with core', () => {
-  it('gives the same tree key as claimScopes on every case that matters', async () => {
-    // The same obligation `collide` carries: a copy that DRIFTS is worse than
-    // either sharing or not.
-    const { claimScopes } = await import('@agenfk/core');
-    const { scopesOf } = await import('../claimState');
-    const cases = [
-      [{ id: 'a', status: 'IN_PROGRESS', projectId: 'p', worktreePath: '/wt/a' }],
-      [{ id: 'epic', status: 'IN_PROGRESS', projectId: 'p', worktreePath: '/wt/epic' },
-       { id: 'sib', status: 'IN_PROGRESS', projectId: 'p', parentId: 'epic' }],
-      [{ id: 'a', status: 'IN_PROGRESS', projectId: 'p' }, { id: 'b', status: 'IN_PROGRESS', projectId: 'p' }],
-      [{ id: 'a', status: 'IN_PROGRESS', projectId: 'p', worktreePath: 'C:\\wt\\a' }],
-    ];
-    for (const cards of cases) {
-      const mine = scopesOf(cards as never);
-      const core = claimScopes(cards as never);
-      for (const id of core.keys()) {
-        expect(mine.get(id), `scope copy drifted on ${id}`).toBe(core.get(id));
-      }
+describe('sameTree on hostile input (CodeQL js/polynomial-redos)', () => {
+  it('agrees with core and stays linear', async () => {
+    const { sameClaimTree } = await import('@agenfk/core');
+    for (const [a, b] of [['/wt/a///', '/wt/a'], ['/wt/a', '/wt/b'], [null, '/wt/a']] as const) {
+      expect(sameTree(a, b)).toBe(sameClaimTree(a, b));
     }
+    const t = Date.now();
+    expect(sameTree('/'.repeat(200_000) + 'x', '/y')).toBe(false);
+    expect(Date.now() - t).toBeLessThan(200);
   });
 });

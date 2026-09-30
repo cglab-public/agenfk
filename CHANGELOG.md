@@ -97,10 +97,453 @@ on whatever branch you had out, with no worktree.
 - What an agent prints while it is asked for a decomposition is now on screen, stderr
   marked — "out of tokens" arrived on a stream nobody displayed — and its stdin is closed at
   launch, which is why `pi` appeared to hang forever.
-||||||| 7f1d6cc4
-## [2.0.0-beta.2] — 2026-09-24
 
-Beta, cumulative over `2.0.0-beta.1`: everything in beta.1, plus the fixes below.
+## [2.0.0-beta.16] — 2026-09-30
+
+Beta, cumulative over `2.0.0-beta.15`: everything in beta.15, plus the fix below (CGLAB-164).
+
+- **A close onto an exit step not named DONE now tells the agent what the close commit did.** The close commit
+  was made, but the verify reply only reported it, with the push instructions, when the card landed on the
+  literal `DONE`. On a flow ending in `SHIPPED`, say, the agent was not told the commit had FAILED or what was
+  left unstaged, and could push a branch without its work. The reply now follows the move that ends the flow,
+  whatever the exit step is named. The same close also stops handing the agent the exit step's criteria as work
+  still to do.
+
+## [2.0.0-beta.15] — 2026-09-30
+
+Beta, cumulative over `2.0.0-beta.14`: everything in beta.14, plus the fixes below (CGLAB-164).
+
+- **The suite no longer runs twice on the move that ends the flow.** With a test report whose command is the
+  project's verify command, leaving the last working step captured the suite and then ran the verify command
+  again. The close now stands on the step's own capture when it is a whole green that ran on this move, of the
+  same command, in the same tree, with the tree unchanged since. A reused green, a partial run, a step with a
+  command check, or a project with no report path still runs the command. The leave plan says which (`closes`
+  instead of `then`), and `verify --plan` predicts it. In a simulated walk of the same cards: 10 suite runs on
+  beta.14, 7 now.
+- **Sibling propagation works on flows whose exit step is not named DONE.** A sibling's green of the same tree
+  only carried over when the sibling sat on the literal `DONE`, so on any `agenfk flow create` flow (exit step
+  `SHIPPED`, say) every child ran the verify command again. "Finished" is now the step the move that ends the flow
+  lands on - the same rule the hub's `item.closed` uses - and the dry run follows it.
+- **The default flow's TEST step no longer tells the agent to run the full suite itself.** Leaving it runs the
+  project's verify command, so the criteria now say to run only the tests being worked on, then verify, and to
+  report the numbers of the tests the agent ran. Projects on the built-in default flow get the new text on
+  upgrade; a flow copied from it keeps its own.
+
+## [2.0.0-beta.14] — 2026-09-30
+
+Beta, cumulative over `2.0.0-beta.13`: everything in beta.13, plus the change below (CGLAB-164).
+
+### What leaving a step runs, told before it runs
+
+Agents ran the full suite themselves and then `agenfk verify` ran it again. The server now says, in advance,
+what leaving the current step will run - from the same code the verify uses, so the two cannot disagree.
+
+- **`agenfk gatekeeper` and every verify reply** end with it: the project's suite (and why: which checks, or
+  the next step's entry baseline), then the verify command on the final step, or nothing - with "don't run the
+  full suite yourself first" when it runs, and "the tests your exit criteria ask for are yours" when it does not.
+  It also says when the suite is deferred to the parent, waits on a person's approval, or when verify will refuse
+  (no verify command, no tree to run in).
+- **`agenfk verify <id> --plan`** (MCP: `validate_progress` with `plan: true`) predicts it on the current tree -
+  a reuse of a green of this tree, only the changed or affected tests, the whole suite, a sibling's green, or
+  nothing - without running anything or moving the card. A final move with a capture predicts both legs.
+- **`agenfk flow show`** gets an "On leave" column; `--json` adds each step's `leavePlan`.
+  New endpoints: `GET /items/:id/leave-plan[?predict=1]`, `GET /projects/:id/flow/leave-plans`.
+- The rules for every client say to read it before running the suite.
+
+## [2.0.0-beta.13] — 2026-09-29
+
+Beta, cumulative over `2.0.0-beta.12`: everything in beta.12, plus the changes below (CGLAB-164).
+
+- **Bare `agenfk` no longer offers an older stable as an update.** On a beta it offered 1.1.20: it asked only the
+  stable channel and fired whenever the versions differed. It now compares against the newest release the install's
+  channel reaches - the latest stable, and on a beta also the latest beta - offers only a strictly newer one, and
+  names the command that installs it (`agenfk upgrade --beta` for a beta). A stable install is never pointed at a
+  beta, even one published without the pre-release flag.
+- **The latest beta is the newest version, not the newest publish date.** A hotfix beta for an older line,
+  published later, is no longer "the latest beta", so `agenfk upgrade --beta` cannot downgrade to it.
+- **What's New shows the installed release's notes.** The version chip showed the latest stable's notes on a beta.
+  It now reads the new `GET /releases/current` - the installed version's own release - and says so, with a link to
+  the releases page, when that version has none. `GET /releases/latest` is unchanged.
+
+## [2.0.0-beta.12] — 2026-09-29
+
+Beta, cumulative over `2.0.0-beta.11`: everything in beta.11, plus the change below (CGLAB-164).
+
+- **The Settings dialog's edge is visible in dark mode.** It was filled with the board's own colour, outlined at
+  10% and set over an unblurred backdrop, so it blended into the board. It now wears the Org Flows picker's frame
+  (fill, outline, shadow) over the GitHub Import modal's blurred backdrop, in both themes.
+
+## [2.0.0-beta.11] — 2026-09-29
+
+Beta, cumulative over `2.0.0-beta.10`: everything in beta.10, plus the changes below (CGLAB-164).
+
+### Quieter install, upgrade and services
+
+- **An upgrade prints two lines** (`Upgrading AgEnFK X → Y...`, `✓ Upgraded to Y`) instead of ~130. `up`, `down`,
+  `restart` and `kill` print one line each. A first install prints a short next-steps block and the telemetry
+  notice once; re-installs print neither. `install.mjs --quiet` (what `agenfk upgrade` runs) prints only warnings.
+- **The step-by-step log is behind `--debuglog`** on `agenfk upgrade`, `agenfk up`, `scripts/install.mjs` and the
+  npx installer. Warnings and errors always print, prefixed ⚠, including a failing child's own output (npm ci, tar,
+  `mcp add`), which is otherwise no longer shown.
+- **The ASCII banners are gone**, from the CLI and from the npx installer, and so is the `figlet` dependency.
+- **`agenfk down` says what happened**: it stopped the server, found nothing, or could not stop it (a warning and
+  exit 1). It used to say "stopped" either way. `kill` reports how many processes it killed.
+- **Only the listener is killed.** `up`, `restart` and `kill` stop the process listening on the board's port, not a
+  browser or the desktop app connected to it, and no longer kill whatever listens on vite's port 5173.
+- **`agenfk restart` runs `up` in the foreground**, so its line - and any warning: a moved port, a server that never
+  reported one - reaches the terminal.
+- The PATH hint prints only when `~/.local/bin` really is off PATH.
+
+An upgrade *from* beta.10 still shows beta.10's own upgrade output: that code runs before the new version lands.
+
+### Also
+
+- The board's lifecycle is the server's: no separate vite UI process anywhere.
+- The Settings dialog keeps its tallest section's height, capped at the viewport, and scrolls inside.
+- Agent Runs label runs by harness; Claude Code runs record the real model.
+- Rate limits on `GET /verify-runs` and `PUT`/`DELETE /items/:id`.
+
+## [2.0.0-beta.10] — 2026-09-29
+
+Beta, cumulative over `2.0.0-beta.9`: everything in beta.9, plus the changes below (CGLAB-429, CGLAB-430).
+
+### Running verifies, in every project
+
+- **A "N verifies running" chip** appears once a verify has run for more than 10 seconds, in any project: in the
+  browser board's header, and in the desktop app's status bar (on every tab, terminals included). Its list shows,
+  for each: the project and card, the step, how long, what it is doing (running the whole suite, only the affected
+  tests, reusing a green run, waiting for a suite-run slot and how many are ahead, waiting on another run of the
+  same tree, or waiting on a person's approval) and the last line it printed.
+- **Clicking one opens its card** - switching project if needed - on Overview, where the run's output streams.
+- Served by the new `GET /verify-runs` and pushed over the socket as `verify_runs` (coalesced); it carries no step
+  records or output bodies, and the board reads it again when its connection comes back.
+
+### Faster step verifies
+
+- **Only the tests the change affects, on intermediate steps.** A project that sets a related-tests command
+  (`agenfk update-project <id> --test-report-related-command "npx vitest related --run {files}"`, `jest
+  --findRelatedTests {files}`, ...) runs, on a step that changed code, only the tests related to the changed files,
+  merged over the step's entry results by file. It runs the whole suite instead for a config, lockfile or setup
+  change, a deleted file, a declared test-path file, too many files, a change outside the tree, a changed test
+  file the run did not report, a changed file that is not JS/TS source (a snapshot, a fixture, a template - a related
+  run follows imports and cannot trace them), or a related run that finds no test at all. A step with the `testing`
+  role always runs the whole suite, and so does the final step. The partial runs also work from a step entered on an
+  uncommitted tree or through a partial run - how a TDD coding step is entered - from the per-file map each capture
+  records. A whole run that only code changes caused suggests the command.
+- **A Markdown edit no test names no longer re-runs the suite.** Capture reuse compares the tree without the
+  project's reuse-ignore globs (default `**/*.md`, `--test-report-reuse-ignore '<globs>|none'`), except a file some
+  test names (this repo's release test reads `CHANGELOG.md`), or whose directory a test names - by its path, or its
+  name as a quoted string, as a test that lists `.claude/commands` does. The final step, sibling propagation and command-check
+  sharing still see every file.
+- **Suite runs are queued server-wide.** At most `maxConcurrentSuiteRuns` run at once across every project (0 =
+  automatic = half the CPUs; 1 up to the CPU count). The rest wait first in first out and say they are waiting.
+  Several agents' suites at full parallelism had put a 12-core machine at load 76-88, and timing tests failed only
+  under agenfk. Raising the limit starts waiting runs at once.
+
+### Fixes
+
+- **A red run is no longer replayed as green.** A capture counted as green on exit code 0 alone, so a test report
+  command joining suites with `;` (the last suite's exit wins) recorded a run with failures as the tree's green, and
+  every later verify at the same content re-judged that stale red report - no retry could clear it. Green now needs
+  exit 0 and a report with no failed test and no broken file.
+- **The board no longer stalls during verifies.** `GET /items` left step records in: one project's list was 88 MB,
+  and every verify made every open board refetch it, blocking the server for seconds. The list leaves them out, and
+  capture records' per-test results now live in their own table (deduplicated, read back only when asked); existing
+  databases are moved over once at startup.
+- **What a capture records is what it ran on.** The file map and the reuse state were read after the check that the
+  run saw one stable tree, so an edit in that moment was recorded as tested. They now come from that one read. A
+  record whose per-test results cannot be read back is never green; the close-commit stamp judges green by the report
+  too, not the exit code alone; and tree states recorded before this release are not compared (in a project that is
+  a subdirectory of its repository, an uncommitted edit to a tracked file had hashed as the committed file).
+
+### Upgrading
+
+- **`GET /items` (and `agenfk list --json`) no longer carries `stepRecords` or `supersededRecords`.** Read a card
+  with `GET /items/:id` / `agenfk get <id> --json` for them.
+- **The database is migrated at startup** (per-test results move to a `blobs` table). A server older than beta.10
+  does not read the moved results, and would take such a record for a green run: to be able to downgrade, take a
+  backup first (`agenfk backup`) and restore it.
+
+### Removing tests while changing behaviour
+
+- `test-count-not-lower` still holds a coding step, naming the tests that went - until the agent answers why they go
+  (`--check-note test-count-not-lower="..."`). The answer and the names go to the reviewer and the PR. An agent
+  refused a legitimate deletion had kept the tests' names and repointed them at another case, hiding the change.
+- The card's own red tests (`red-set-passes-by-name`) are its specification: renaming or removing one is not
+  answered by the agent - it is put back, or a person overrides the check on the board. A red test that still fails
+  is never passed either way, and refactoring stays strict.
+
+### Settings
+
+- **The browser board has Settings** (a gear in its toolbar; the panel had only been reachable in the desktop app),
+  with a new Verification section: "Suite runs at once".
+- **`agenfk config get [key]` / `agenfk config set <key> <value>`** reach every server setting by name, the value
+  read by the setting's type and validated by the server. `telemetry` and `flowRegistry` stay local.
+
+## [2.0.0-beta.9] — 2026-09-28
+
+Beta, cumulative over `2.0.0-beta.8`: everything in beta.8, plus the change below (CGLAB-428).
+
+### A hub admin can switch individual checks off on a step
+
+- **In Admin → Flows, the step dialog has an on/off switch for each check**: the step role's built-ins (until now
+  locked as "always on"), the checks every step runs (`tree-clean`, `on-card-branch`) and the flow's own, a custom
+  check by its name. A human approval keeps its own setting and gets no switch. It is stored per step as
+  `disabledChecks` and reaches installations with the flow.
+- **A switched-off check does not run**, and it produces no record, so a later check that needs that record does not
+  apply either (or, if the flow added it, the save is refused, naming it).
+- **Only the org's hub can do this.** An installation keeps `disabledChecks` only on a flow the hub sync delivered: a
+  local `POST`/`PUT /flows` with it is refused (400), a registry install or a local copy drops it, and a flow row that
+  carries it without coming from the hub is read as if it did not. An installation on an older version ignores the
+  field and runs every check.
+- **Never silently.** A switched-off check is struck through in the editor and named in the step's preview; the
+  verify reply carries `🔕 Switched off by your org's hub on this step (not run): ...`, pass or refusal; the card's
+  `GET /items/:id/gates` lists `disabledChecks`; and the PR check history (`agenfk pr create`, `agenfk pr-register`)
+  gains a "Checks switched off by the org's hub" section, from the new `GET /items/:id/disabled-checks`.
+- The agent rules say how to read it: the org's decision, not a flow bug, and never something an agent sets.
+
+## [2.0.0-beta.8] — 2026-09-28
+
+Beta, cumulative over `2.0.0-beta.7`: everything in beta.7, plus the change below (CGLAB-427).
+
+### `agenfk create` returns the card it created
+
+- **The created card is printed as JSON.** Agents used to create a card and then query agenfk again (`get`/`list`)
+  to learn its id. `agenfk create` now prints the card's JSON after the confirmation line; `--json` (or `--toon`)
+  prints the card alone, with a JIRA-link warning sent to stderr so stdout stays parseable.
+- **A failed create exits non-zero.** It printed the error and exited 0, so an agent could not tell a failure from a
+  success without querying again.
+- The rules and skills (`SKILL.md`, `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, the Cursor rule, `agenfk-plan`) tell agents
+  to rely on it.
+
+## [2.0.0-beta.7] — 2026-09-26
+
+Beta, cumulative over `2.0.0-beta.6`: everything in beta.6, plus the changes below (CGLAB-420). Found by following a
+real story (five tasks in one tree, reviewed once at the story) end to end, and replayed in the TDD harness before
+release.
+
+### The fixes to a review's findings are flagged
+
+- **New `fixes-reviewed` check at the review step.** The fixes to a review's findings are written after the reviewer
+  read the diff, and recording the review afterwards certified code nobody reviewed. When a review is recorded, the
+  server now notes the card's changes made after the reviewer began - its commits since, not main merged in, not other
+  cards' commits, and its uncommitted work in files written since or removed - counted against the last commit before
+  the reviewer began. Over 20 lines it warns, naming the files, on the verify and on the PR: have a reviewer read them
+  (a new one, or the same one given a new message) and record that review. The card's own reviewed work, however large
+  and uncommitted, is not counted. It warns rather than refuses: file times are evidence to tell a reviewer, not to
+  hold an honest card.
+
+### A parent's review sees what its children recorded
+
+- **New `tree-warnings` check at the review step**: it lists the warnings the card and its children raised, with each
+  answer, so the reviewer sees them.
+- **The verify that brings a card onto its review step hands those warnings over** in its reply. On a parent that is
+  the verify of the child that pushed it there, the only reply anyone reads at that moment.
+- **`tests-added-late` works at a parent**: it reads the tests its children froze, and a test file one child
+  committed after its own freeze is late even when a later child's freeze holds it.
+
+### Warnings are answered, and the PR shows them
+
+- **A test that passes on arrival must be answered.** On the step that writes tests, a failing `new-tests-born-green`
+  holds the card until the agent says why it is fine, or what it changed:
+  `agenfk verify <id> --check-note new-tests-born-green="..."` (MCP: `checkAnswers`). Any warning can be answered the
+  same way; the answers go on the record, to the reviewer and on the PR. Red on a missing symbol - the normal path of
+  TDD - needs no answer.
+- **The PR carries the check history.** `agenfk pr create` lists the warnings in the body; `agenfk pr-register`, which
+  follows a PR opened with plain `gh pr create`, posts the history (overrides, approvals, custom checks, warnings) as
+  one comment.
+
+### on-card-branch judges the branch when none is recorded
+
+- With no branch recorded it used to pass without looking. It now refuses a tree on a branch named for another JIRA key
+  (`feat/OTHER-9_...`) and passes on the card's own; a branch that names no key (main, develop, release/...) is not
+  judged.
+
+## [2.0.0-beta.6] — 2026-09-26
+
+Beta, cumulative over `2.0.0-beta.5`: everything in beta.5, plus the changes below (CGLAB-418).
+
+### A vitest test file that fails to import is no longer a phantom red test
+
+- **The JUnit reader recognises vitest's load failure.** vitest writes a file that fails to import as one failed
+  testcase named after the file (in a multi-project repository, the file relative to its project's root). It used
+  to be read as a red test: it entered the red set at the test-writing step, and once the module existed the name
+  was gone, so `red-set-passes-by-name` refused the card until a person overrode it. It is now a broken file, as
+  the vitest JSON reader already had it. A failed top-level hook in a file whose tests ran stays a failing test,
+  and jest-junit / mocha tests whose classname equals their title are untouched.
+- **Red sets recorded before this fix unstick themselves.** An entry of that old shape is read as its file's tests:
+  it passes once the file reports tests and every one of them passes, and not before.
+- **`no-broken-test-files` says what to do**: import code that does not exist yet inside the test (in JavaScript,
+  `await import(...)`), so the missing module fails that test rather than the whole file.
+
+### Sibling propagation on an intermediate step says what happened
+
+- It no longer reports "Skipped - already verified by sibling" after the step's own checks ran: the comment names
+  the step, the sibling that is further along, and the checks that passed.
+- A command handed to `agenfk verify` on such a step now runs instead of being dropped.
+
+## [2.0.0-beta.5] — 2026-09-26
+
+Beta, cumulative over `2.0.0-beta.4`: everything in beta.4, plus the changes below. Found by following a real
+TDD Flow card end to end.
+
+### Checks run the suite only where something changed
+
+- **A verify reuses a capture the tree's content still matches** instead of running the suite again: a no-op
+  REFACTOR, a rollback and re-entry on an unchanged tree, and a test-path declaration that adds no test file run
+  no suite. A change to code, tests or `.gitignore` still runs it. The verify output says when a capture was
+  reused.
+- **A failed capture blocks instead of disarming the checks.** A capture that could not be read or tied to the
+  tree used to degrade the TDD checks to soft-unavailable on a new card; now it blocks and asks for a re-capture.
+  `entry-baseline` passes only when per-test results tied to the tree were produced.
+- **New `tests-added-late` warning at review**: it flags test files added after the tests were written and frozen,
+  which nothing has shown to fail without the change. It reads git and runs no suite.
+
+### The CLI says what happened
+
+- A refused `agenfk verify` exits non-zero, prints every check it judged (soft, warn and pass included), and
+  prints its verdict last.
+- The gatekeeper names the role of the step the card is on instead of `CODING` everywhere.
+- `agenfk pr create` / `pr check` mention `/agenfk-release` only in a repository that has that command.
+- `--test-report-path` takes a comma list, one report per suite, read as one run; a report the command did not
+  write is named.
+- Model detection no longer gives up because a subagent wrote recently when that subagent has already handed back:
+  a reviewer that finished minutes before `agenfk pr create` used to send the PR out with the model unverified.
+
+## [2.0.0-beta.4] — 2026-09-25
+
+Beta, cumulative over `2.0.0-beta.3`: everything in beta.3, plus the changes below.
+
+### Work starts from an up-to-date tree
+
+- **A new `backlog` role, with a `tree-in-sync` check.** A card leaves a backlog step only from a tree that is not
+  behind its remote and has not diverged from it: the server fetches the tree's upstream itself (in the background,
+  bounded, never interactive, no auto-gc) and refuses with the count and `git pull --ff-only`. Ahead - unpushed work -
+  is fine. A fresh branch that tracks nothing is checked as a base: sitting strictly behind the remote's default
+  branch is refused. A tree with no remote passes; an unreachable remote only warns. Nothing is fetched while a
+  person's approval is still missing.
+- **The shipped flows start with it.** The default flow's, the TDD preset's and the flow editor's templates' TODO
+  steps now carry the `backlog` role, so **leaving TODO now runs a `git fetch` of the card's tree**. To opt out, remove
+  the role from the TODO step of your flow. A project with no flow of its own uses the built-in default flow and gets it.
+- **Org flows using the role need this version everywhere.** An older agenfk rejects a flow whose step has the
+  `backlog` role (`unknown role`): upgrade every member before dispatching such a flow from the hub.
+- **Resuming a card pulls too.** The rules' Clean Start pull applies when resuming an existing card, in the tree it
+  works in - a card resumed on a checkout 25 commits behind origin is what prompted this.
+
+### Implementing may change existing tests
+
+- **`test-surface-frozen` is no longer part of the Implementing (coding) role.** Implementing a behaviour change
+  rightly changes the tests that pin the old behaviour. Refactoring keeps it (strict: its tests must stay identical),
+  and any flow can still add it to a step explicitly. `red-set-passes-by-name` and `test-count-not-lower` still stop a
+  red test from disappearing.
+
+### Fewer suite runs
+
+- **A close's green becomes the next card's baseline.** A card's last per-test capture, taken on its dirty tree just
+  before its close commit, is re-stamped as a green of that commit when the close leaves the tree holding exactly the
+  files it ran on, so the next card's entry baseline runs nothing. Identical captures that start at once are
+  single-flight: one runs, the others take its record.
+- **Lazy capture.** A step that changed only test files runs just those files, merged over its clean per-test entry
+  baseline; anything else - a helper, a fixture, a config, a change outside the project - runs the whole suite.
+
+### A card chooses where it runs
+
+- **`agenfk update <id> --worktree <path>|none|inherit`** picks the tree a card runs and commits in (a git worktree of
+  the repository, the project root, or its parent's), instead of re-parenting the card to move it.
+
+### Board and rules
+
+- **Calmer column headers:** a one-line title-case name with the card count, a muted second line (role, checks as an
+  icon and a number with the names on hover, approval), add and archive on hover.
+- **Review sub-agents are exempt from Standard Mode's single-agent rule:** an independent review asked for by a step
+  may be run by a separate agent.
+
+### Cards in one tree share step-check work at the same tree state
+
+- **Reuse no longer needs a clean tree.** A test capture, the final verify's sibling propagation and single-flight
+  waiting all used to key on a clean commit, so one untracked file anywhere in a shared worktree made every card run
+  everything again: three siblings walking one flow ran the suite 9 times where a clean tree ran it twice. They now key
+  on the tree's state - the content of every tracked and untracked (non-ignored) file - so cards that see the same
+  content share one green, the card's own earlier one included. Content that differs, or that changed while the
+  command ran, still runs its own. HEAD is not part of it: a sibling's close commit commits files without changing
+  them, and must not make the next sibling run everything again.
+- **The final verify runs once for siblings closing together.** A sibling that reaches its final verify while another
+  runs the same command on the same tree state waits for that run, then propagates its green (or runs its own if it
+  failed or the tree moved). In a TDD simulation of three siblings the project's verify command now runs once, not
+  three times.
+- **Command checks share a pass the same way.** A command check sees only its argv and its tree, so the project's
+  cards reaching it at the same tree state take one run's pass (named in the result and on the PR as the card whose
+  run it was), and a card arriving while it runs waits for it. A failure is never shared. A check whose command reads
+  something outside the tree - a remote, a PR, the clock - opts out with the new param `share: none`.
+- **Approvals and overrides stay per card.** Nothing a person gives is shared.
+
+### Siblings in one tree are judged on their own tests
+
+- **A test in a file another active card claims is that card's.** The per-test checks judged the whole shared tree: a
+  sibling's legitimately red test blocked this card's `suite-green`, so siblings could only leave their coding step one
+  after another, and `new-tests-exist` / `some-new-test-red` counted every sibling's new tests - a card that wrote none
+  passed on another's red one. The new-test checks now count only the card's own tests; `suite-green` and
+  `no-broken-test-files` leave a sibling's unfinished tests to it; `test-set-identical` and `test-count-not-lower`
+  compare the card's own tests. `test-surface-frozen` is not relaxed: a new file under a claim can load on its own (a
+  `conftest.py`, an `init()`) and mask the tests.
+- **A regression still blocks.** A sibling's test that passed when the card entered the step and now fails - or is gone
+  - counts as before, whoever claims its file (a claim costs nothing, so it excuses no deletion); so does an edit to, or
+  deletion of, an existing test file. Only a card working beside this one counts as "another card": not its own
+  ancestors, and not a card that never left a step through verify (whatever its status - BLOCKED and PAUSED need no
+  verify). A parent that claims its children's files leaves their tests shared between them, as before this change.
+- **Where it applies.** It needs a per-test entry record, so it acts on steps whose entry is captured (the TDD flow's);
+  elsewhere a sibling's red test still blocks. A runner that names tests by class rather than file (pytest via JUnit)
+  cannot be matched to a claim and keeps the old behaviour, broken modules included. A non-zero exit is taken as explained by a sibling's red
+  tests only when nothing of this card's fails, and never for a killed or timed-out run; the final verify command still
+  runs the whole suite and needs exit 0 (a flow with `verifyAt: parent` runs it once at the parent).
+
+## [2.0.0-beta.3] — 2026-09-25
+
+Beta, cumulative over `2.0.0-beta.2`: everything in beta.2, plus the changes below. It is about one thing: a
+person asked for an approval is shown the card at once, and nobody waits on a suite that cannot help.
+
+### Approvals
+
+- **`--no-wait` and `AGENFK_NO_BROWSER` are gone.** When only a person's approval holds a card, `agenfk verify`
+  always opens the card on the board and waits for it (not in `CI`, where no person can approve). An old script
+  passing `--no-wait` still runs: the flag is ignored with a warning, and verify waits all the same.
+- **The approval is asked for first.** While a step waits for a person - its own approval, or a command waiting for
+  theirs - verify answers at once, before any test capture or command check runs; cheap checks are still judged, so
+  they can be seen and overridden while approving. The slow ones show as "deferred" and run on the verify after
+  the approval.
+- **The request reaches the chat.** Verify prints an `APPROVAL NEEDED` block naming the card, its link and how to
+  reopen it if the board's tab was closed - before it waits, again at the deadline, and in CI. The rules tell agents
+  to relay it as it is, to run a verify that may wait in the background where their harness can, and never to
+  claim or relay an approval: only a person approves, on the board. Card titles are shown as one plain line.
+
+### Seeing a verify run
+
+- **A running verify is on the card, animated, with the card closed**: "Verifying… 1m 12s" with a spinner (still
+  under reduced motion), one shared clock for the whole board. The card's Overview shows the run's latest output.
+- **The chat is no longer silent while the suite runs.** A step's test capture now streams its output to whoever
+  follows the run, like the verify command always did; a runner's leftover process no longer holds a run open.
+
+### Fewer suite runs
+
+- **A green on record is reused as the entry baseline.** When a card enters a step on a clean tree at a commit a run
+  of the same command already went green in (the commit a close stamps, or an earlier per-test capture), in the same
+  tree of the same project, that run is the baseline and no suite runs. Records now carry the tree they ran in.
+
+### A missing test report
+
+- **`NO_TEST_REPORT` is the agent's to fix.** A refusal for want of per-test results now says so once, with a ready
+  `agenfk update-project <id> --test-report-...` command built from the project's own verify command (vitest,
+  `npm test` over vitest, pytest, `node --test`; nothing is made up for other runners), and warns when the report
+  path is not git-ignored. The rules tell agents to run it and verify again rather than ask for an override.
+- **It is raised on the way in.** A card is held before entering a step whose blocking checks judge its tests
+  against a per-test baseline the project cannot record - where setting the report still gives that card a real
+  baseline - instead of letting those checks degrade to warnings. No suite runs for a hold. A person can still pass
+  the hold on the board (a runner that writes no report), and overrides given against the old wording still count.
+- The board labels a deferred check "deferred" (its detail says to what), not "run by the verify command".
+
+## [2.0.0-beta.2] — 2026-09-25
+
+Beta, cumulative over `2.0.0-beta.1`: everything in beta.1, plus the changes below.
 
 ### Dark and light mode
 
@@ -126,6 +569,77 @@ Beta, cumulative over `2.0.0-beta.1`: everything in beta.1, plus the fixes below
   (`items_closed`, the Org and User pages) were low; expect them to rise after upgrading. (On a flow with a
   review step the roll-up stops a parent there, and the parent's own verify closes it - that was counted
   already.) Every step move verify makes now reaches the hub as `step.transitioned`, not only command runs.
+
+### JIRA, configured once on the hub
+
+- **A hub admin registers the org's Atlassian OAuth app once** (Admin → JIRA on the hub: client id, write-only
+  encrypted secret, the callback URL to register, a count of connected installations and "Disconnect everyone").
+- **Every joined installation connects its own JIRA identity through the hub** (per-user OAuth; the token is bound
+  to that installation's hub API key and stored encrypted on the hub) and reaches JIRA only through the hub's
+  read-only relay with its own token, so JIRA's permissions apply per person. No JIRA credential lives on laptops.
+- **While joined there is no fallback to a local JIRA config.** `agenfk jira setup` on a joined installation says to
+  ask a hub admin; `agenfk jira status` shows the hub's app and this user's connection; `agenfk jira disconnect`
+  drops this user's hub connection. The board says "Ask your hub admin to configure JIRA", offers Connect JIRA, or
+  shows the connection with Disconnect. Installations not joined to a hub keep today's local behaviour.
+
+### Checks on the board
+
+- **A Checks tab on every card** lists its check runs, approvals and overrides by date, with each check's status.
+  The server keeps every verify's check results on the card (bounded) and serves them with the approvals.
+- **Each column shows its step's role** under the step name.
+- **`agenfk verify` waits for a person.** When the only thing holding a card is a person's approval - of the step,
+  or of a command a custom check wants to run - verify opens the board on the card's Overview (where the approval
+  is given) and waits up to 9 minutes, then verifies again by itself. It does not wait in `CI`, where no
+  person can approve; `--wait-minutes <n>` changes the wait. It wakes only for the approval it is waiting on, and stops
+  if a person moves the card on the board meanwhile.
+- **`agenfk ui --open <id> --details`** opens the card itself on its Overview tab instead of only highlighting it.
+  Every "a person must approve this" hint now gives that form.
+
+### Custom checks
+
+- **Two new check kinds a flow step can carry**: a *command check* (an argv list the server runs in the card's
+  tree, without a shell; it passes on exit 0, can ask for a person's passkey approval of the exact command, and
+  never runs from a flow installed from the community registry) and an *agent check* (an instruction the coding
+  agent carries out and reports). The flow editor adds and edits both.
+- **Agents report agent checks with `agenfk verify <id> --check <name>=pass|fail --check-note <name>=<text>`**
+  (repeatable; MCP: `validate_progress` with `agentChecks`). A malformed flag is refused before anything is sent.
+- **The PR body gets a Custom checks section**: each result, whether the server ran it or took the agent's word,
+  and who approved a command. A command that never ran, an override and an unreported agent check say so.
+
+### Where the suite runs
+
+- **A flow can run the project's suite once, at the top-level card** (`verifyAt: parent`, a flow-level setting;
+  a toggle in the flow editor, a field on the MCP flow tools). A card whose parent is still open then closes
+  without its own run, and the parent's final verify runs the suite over everything its children did. A child
+  whose parent has already finished, is paused or blocked, lives in another project, or whose work is in another
+  worktree runs its own; so does a child whose parent's verify is already running. The roll-up never closes a
+  parent a child deferred to - its own verify has to run - even if the flow is switched back to `leaf`. The default
+  (`leaf`) is unchanged: every card runs it. Carried by registry install/publish and the hub flow sync.
+- Known limits: a parent trashed, deleted or detached after children deferred to it leaves those children DONE
+  without a suite run; and a synchronous REST verify of the parent is not guarded against a child deferring
+  meanwhile (the CLI and MCP always verify asynchronously, which is guarded).
+
+### Claims
+
+- **Claims lock files only between cards in the same worktree.** Cards in different worktrees meet at worst as a
+  merge conflict, so a claim no longer refuses them; a card whose worktree cannot be told stays strict. (Claims
+  mechanism: 819e7192.)
+- **A card does not close with ownerless staged files.** The move that ends a card's flow is refused while files
+  are staged outside its claims that no other card in the same worktree claims; the reply lists them and gives
+  the `--claims` or `git restore --staged` fix. A working card in that worktree that claims nothing may own them,
+  so then it is a note instead. A step that must commit refuses the same way. Cards without claims are unaffected.
+
+### Test reports (JUnit)
+
+- JUnit reports from `node:test`, pytest and xUnit are read correctly: a file that fails to load or a pytest
+  collection error is a broken file (not a new red test), and errors are no longer read as assertion failures.
+- **`node:test` and xUnit projects must declare their test paths** (`agenfk update-project <id> --test-report-surface <paths>`): their JUnit reports
+  name no file, so without it the test surface is empty and the surface-freeze check cannot see edits.
+
+### Contributors
+
+- `npm run e2e:tdd` builds this tree's server and CLI into a container with a temp HOME and walks a full TDD
+  cycle through every check, the human gates (a software WebAuthn authenticator) and the review record.
 
 ### Security
 

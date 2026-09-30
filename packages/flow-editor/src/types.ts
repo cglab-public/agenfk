@@ -18,6 +18,8 @@ export interface FlowStep {
   role?: string | null;
   /** CGLAB-380: checks this flow adds to the step. */
   checks?: StepCheckRef[] | null;
+  /** CGLAB-428: resolved check ids the org's hub switched off on this step. */
+  disabledChecks?: string[] | null;
   /** CGLAB-388: commit the card's work when it leaves the step, and whether that is required. */
   autoCommit?: boolean | null;
   requireCommit?: boolean | null;
@@ -50,14 +52,14 @@ export interface FlowContract {
   valid: boolean;
   errors: string[];
   /** `onLeave`: what verify runs to leave the step (absent from an older server: use `checks`). */
-  steps: Array<{ name: string; role: string | null; checks: ResolvedCheck[]; onLeave?: ResolvedCheck[]; terminal?: boolean; produces: string[]; consumes?: string[]; /** Leaving the step makes a step commit (absent from an older server). */ commitsOnLeave?: 'auto' | 'required' | null }>;
+  steps: Array<{ name: string; role: string | null; checks: ResolvedCheck[]; /** CGLAB-428: switched off (absent from an older server). */ disabled?: ResolvedCheck[]; onLeave?: ResolvedCheck[]; terminal?: boolean; produces: string[]; consumes?: string[]; /** Leaving the step makes a step commit (absent from an older server). */ commitsOnLeave?: 'auto' | 'required' | null }>;
   roles: Array<{ id: string; builtins: StepCheckRef[] }>;
   catalogue: Array<{
     id: string;
     group: 'git' | 'tests' | 'review' | 'approvals' | string;
     description: string;
     defaultSeverity: 'block' | 'warn';
-    params: Record<string, { values: readonly string[]; default: string; description: string }>;
+    params: Record<string, { values: readonly string[]; default: string; description: string; kind?: 'enum' | 'name' | 'argv' | 'text'; required?: boolean }>;
     needsCapture: boolean;
     unavailable?: string;
   }>;
@@ -77,6 +79,8 @@ export interface Flow {
   hubVersion?: number;
   /** Hub-only: whether the flow is offered in the org-wide flow picker. */
   orgAvailable?: boolean;
+  /** Where the project's suite runs: every card's final step ('leaf', default) or once at the top-level card ('parent'). */
+  verifyAt?: 'leaf' | 'parent';
 }
 
 export interface RegistryFlow {

@@ -177,16 +177,21 @@ export function driftTargets(
 ): { branch: string; repoRoot: string } | null {
   const byId = new Map(items.map(i => [i.id, i]));
   let branch = task.branchName || undefined;
-  let tree = task.worktreePath || undefined;
+  // 686fdbf6: a card's (or an ancestor's) chosen tree settles it: 'root' is the project root.
+  const ownTree = (n: DriftNode): { settled: boolean; tree?: string } =>
+    n.worktreeChoice === 'root' ? { settled: true }
+      : n.worktreeChoice ? { settled: true, tree: n.worktreeChoice }
+        : n.worktreePath ? { settled: true, tree: n.worktreePath } : { settled: false };
+  let { settled: treeSettled, tree } = ownTree(task);
   let cursor: DriftNode | undefined = task;
   const visited = new Set<string>();
   while (cursor?.parentId && !visited.has(cursor.parentId)) {
-    if (branch && tree) break;
+    if (branch && treeSettled) break;
     visited.add(cursor.parentId);
     const parent = byId.get(cursor.parentId);
     if (!parent) break;
     branch = branch || parent.branchName || undefined;
-    tree = tree || parent.worktreePath || undefined;
+    if (!treeSettled) ({ settled: treeSettled, tree } = ownTree(parent));
     cursor = parent;
   }
   const repoRoot = tree || projectRoot;
@@ -198,6 +203,7 @@ interface DriftNode {
   readonly id?: string;
   readonly branchName?: string;
   readonly worktreePath?: string;
+  readonly worktreeChoice?: string;
   readonly parentId?: string | null;
 }
 

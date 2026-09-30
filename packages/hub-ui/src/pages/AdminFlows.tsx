@@ -325,6 +325,8 @@ export function AdminFlows() {
         // org-default assignment rather than "using" anything. Left as the
         // editor's own wording, both read as a pipeline that does not exist.
         labels={EDITOR_LABELS_HUB}
+        // CGLAB-428: the org's hub is the one place a step's checks may be switched off.
+        canDisableChecks
         tabLabels={{
           myFlows: tabLabels.myFlows,
           // While the picker is showing, the tab names the repo it is CURRENTLY

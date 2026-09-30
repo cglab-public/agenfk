@@ -124,7 +124,8 @@ function cloneFlow(source: Flow, newName: string): Omit<Flow, 'id' | 'createdAt'
   const [todo, done] = makeFreshAnchors();
   const middle = source.steps
     .filter(s => !s.isAnchor)
-    .map((s, i) => ({ ...s, id: generateUUID(), order: i + 1 }));
+    // CGLAB-428 review: a local copy cannot keep the hub's switched-off checks (the server refuses them).
+    .map(({ disabledChecks: _hubOnly, ...s }, i) => ({ ...s, id: generateUUID(), order: i + 1 }));
   done.order = middle.length + 1;
   return {
     name: newName,
@@ -150,6 +151,12 @@ interface FlowEditorModalProps {
   // was offering a guaranteed failure. The hub admin leaves this false: over
   // there, hub-sourced flows are exactly the ones you are meant to edit.
   hubManagedReadOnly?: boolean;
+  /**
+   * CGLAB-428: the step dialog may switch individual checks off. Only the hub
+   * admin sets this - the org's hub is the one place a safeguard may be
+   * removed; a local server refuses the field on any flow it did not sync.
+   */
+  canDisableChecks?: boolean;
   /**
    * Tab captions. Defaults to "My Flows" / "Community", which is correct for
    * the standalone client. The hub admin overrides them: its first tab is the
@@ -226,6 +233,7 @@ function serializeDefinition(
   name: string,
   description: string,
   steps: FlowStep[],
+  verifyAt: 'leaf' | 'parent' = 'leaf',
 ): string {
   const canonical = (Array.isArray(steps) ? steps : [])
     .map((s, i) => ({
@@ -239,11 +247,14 @@ function serializeDefinition(
       // CGLAB-384: a change to a role or a check is a change to the flow.
       ...(typeof s?.role === 'string' && s.role ? { role: s.role } : {}),
       ...(Array.isArray(s?.checks) && s.checks.length ? { checks: s.checks } : {}),
+      // CGLAB-428: so is switching a check off.
+      ...(Array.isArray(s?.disabledChecks) && s.disabledChecks.length ? { disabledChecks: s.disabledChecks } : {}),
       ...(s?.autoCommit ? { autoCommit: true } : {}),
       ...(s?.requireCommit ? { requireCommit: true } : {}),
     }))
     .sort((a, b) => a.order - b.order);
-  return JSON.stringify({ name, description, steps: canonical });
+  // 281adef0: where the flow runs the suite is part of it; the default is absent.
+  return JSON.stringify({ name, description, steps: canonical, ...(verifyAt === 'parent' ? { verifyAt } : {}) });
 }
 
 // ── Exit criteria summary trigger (CGLAB-109) ─────────────────────────────────
@@ -298,6 +309,7 @@ interface EditorPanelProps {
   onUseDefault?: () => void;    // only provided for the builtin default flow row
   canSelectFlow: boolean;       // false → hide "Use this Flow" (selection is hub-owned)
   isHubManaged: boolean;        // true → owned by the org Hub, not editable here
+  canDisableChecks: boolean;    // CGLAB-428: the step dialog may switch checks off (hub admin only)
 }
 
 const EditorPanel: React.FC<EditorPanelProps> = ({
@@ -311,6 +323,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   onUseDefault,
   canSelectFlow,
   isHubManaged,
+  canDisableChecks,
 }) => {
   // Two independent reasons this panel can't be edited: it's the built-in
   // default flow, or (BUG 269eeec8 (b)) it's owned by the org Hub and this host
@@ -324,6 +337,8 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  // 281adef0: 'parent' runs the project's suite once, at the top-level card.
+  const [verifyAt, setVerifyAt] = useState<'leaf' | 'parent'>('leaf');
   const [steps, setSteps] = useState<FlowStep[]>([]);
   const [saved, setSaved] = useState(false);
   // The definition as last persisted, as the editor serialises it. `saved`
@@ -349,6 +364,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
     if (flow) {
       setName(flow.name);
       setDescription(flow.description ?? '');
+      setVerifyAt(flow.verifyAt === 'parent' ? 'parent' : 'leaf');
       // Filter out platform statuses — they are never part of flow definitions
       const flowSteps = [...flow.steps]
         .filter(s => {
@@ -359,10 +375,11 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       setSteps(flowSteps);
       // Baseline the dirty check on the SAME canonical shape the save mutation
       // sends, so a round-trip through the editor is not itself a change.
-      setPersisted(serializeDefinition(flow.name, flow.description ?? '', flowSteps));
+      setPersisted(serializeDefinition(flow.name, flow.description ?? '', flowSteps, flow.verifyAt === 'parent' ? 'parent' : 'leaf'));
     } else {
       setName('');
       setDescription('');
+      setVerifyAt('leaf');
       const [todo, done] = makeFreshAnchors();
       const blank = makeBlankStep(1);
       done.order = 2;
@@ -435,7 +452,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
   // is not a new question for the server.
   // The commit flags and isSpecial count too: the server validates where a
   // step commit can run, which depends on both (CGLAB-388).
-  const contractKey = JSON.stringify(steps.map((s, i) => ({ id: s.id, name: s.name, order: i, isAnchor: s.isAnchor, isSpecial: s.isSpecial, role: s.role, checks: s.checks, autoCommit: s.autoCommit, requireCommit: s.requireCommit })));
+  const contractKey = JSON.stringify(steps.map((s, i) => ({ id: s.id, name: s.name, order: i, isAnchor: s.isAnchor, isSpecial: s.isSpecial, role: s.role, checks: s.checks, disabledChecks: s.disabledChecks, autoCommit: s.autoCommit, requireCommit: s.requireCommit })));
   const [askedKey, setAskedKey] = useState(contractKey);
   useEffect(() => {
     const t = setTimeout(() => setAskedKey(contractKey), 250);
@@ -485,6 +502,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
     const payload: Partial<Flow> = {
       name,
       description,
+      verifyAt,
       // order is authoritative from array position; ids are backfilled so a
       // flow loaded without them (MCP create_flow never sent ids) still
       // satisfies the Hub's id rule.
@@ -493,7 +511,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
     return flow?.id
       ? flowClient.updateFlow(flow.id, payload)
       : flowClient.createFlow(payload);
-  }, [flow?.id, name, description, steps, flowClient]);
+  }, [flow?.id, name, description, steps, verifyAt, flowClient]);
 
   /**
    * Re-baseline the dirty check after a write.
@@ -511,6 +529,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
       savedFlow.name,
       savedFlow.description ?? '',
       [...(savedFlow.steps ?? [])].sort((a, b) => a.order - b.order),
+      savedFlow.verifyAt === 'parent' ? 'parent' : 'leaf',
     ));
   }, []);
 
@@ -560,7 +579,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
    * when its serialised definition differs from the one it was loaded with or
    * last saved.
    */
-  const isDirty = persisted === null || serializeDefinition(name, description, steps) !== persisted;
+  const isDirty = persisted === null || serializeDefinition(name, description, steps, verifyAt) !== persisted;
 
   // BUG 269eeec8 (a): read the server's `{ error }` body, not Error.message —
   // the latter is only ever "Request failed with status code N".
@@ -739,6 +758,24 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-brand resize-none disabled:opacity-60 disabled:cursor-not-allowed"
           />
         </div>
+
+        {/* Where the suite runs (281adef0) */}
+        <label className="flex items-start gap-2 text-sm text-slate-700 dark:text-slate-200">
+          <input
+            type="checkbox"
+            data-testid="flow-verify-at-parent"
+            checked={verifyAt === 'parent'}
+            disabled={isReadOnly}
+            onChange={e => { setVerifyAt(e.target.checked ? 'parent' : 'leaf'); setSaved(false); }}
+            className="mt-0.5"
+          />
+          <span>
+            Run the project's suite once, at the top-level card
+            <span className="block text-xs text-slate-500 dark:text-slate-400">
+              A card whose parent is still open closes without its own run; the parent's verify runs it over everything. A red there cannot be pinned on one child.
+            </span>
+          </span>
+        </label>
 
         {/* Version — read-only, auto-managed */}
         {flow?.version && (
@@ -1003,6 +1040,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               stepContract={stepContractOf(contractStepIndex)}
               contract={contract}
               disabled={isReadOnly}
+              canDisableChecks={canDisableChecks}
               readOnlyNote={isHubManaged ? 'Set by your org admin: this flow can\'t be changed here.' : 'This is the built-in flow: clone it to change it.'}
               onChange={patch => updateStep(contractStepIndex, patch)}
               onClose={() => setContractStepIndex(null)}
@@ -1335,6 +1373,8 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
   // Defaults false so the hub admin — which must edit hub-sourced flows — keeps
   // working without opting out; only the local agenfk UI sets it.
   const hubManagedReadOnly = isLegacy ? false : ((props as FlowEditorModalProps).hubManagedReadOnly ?? false);
+  // CGLAB-428: off unless the host is the hub admin.
+  const canDisableChecks = isLegacy ? false : ((props as FlowEditorModalProps).canDisableChecks ?? false);
   const tabLabels = useTabLabels();
   const { registryToolbar } = useHost();
 
@@ -1826,6 +1866,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               flow={selectedFlow}
               isReadOnly={isReadOnly}
               isHubManaged={isHubManagedSelected}
+              canDisableChecks={canDisableChecks}
               projectId={projectId}
               activeFlowId={effectiveActiveFlowId}
               onSaved={handleFlowSaved}

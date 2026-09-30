@@ -15,6 +15,7 @@ import { AdminRepoint } from './pages/AdminRepoint';
 import { AdminIdentities } from './pages/AdminIdentities';
 import { AdminModels } from './pages/AdminModels';
 import { AdminOrg } from './pages/AdminOrg';
+import { AdminJira } from './pages/AdminJira';
 import { Layout } from './components/Layout';
 
 function useMe() {
@@ -71,6 +72,7 @@ export function App() {
         <Route path="repoint" element={<AdminRepoint />} />
         <Route path="identities" element={<AdminIdentities />} />
         <Route path="models" element={<AdminModels />} />
+        <Route path="jira" element={<AdminJira />} />
         <Route path="org" element={<AdminOrg />} />
         <Route index element={<Navigate to="auth" replace />} />
       </Route>

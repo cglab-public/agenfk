@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import {
   StorageProvider,
   PluginConfig,
@@ -49,6 +50,115 @@ export class SQLiteStorageProvider implements StorageProvider {
     // fs.watch() on the main file to detect writes (see server.ts).
     this.database.prepare('PRAGMA journal_mode = WAL').run();
     this.createTables();
+    // e248239d: rows written before per-test results moved out, then what nothing references any more.
+    this.moveInlineResults();
+    this.dropUnreferencedBlobs();
+  }
+
+  // ── Per-test results (e248239d) ──────────────────────────────────────────
+  //
+  // A capture record holds a whole run's per-test results; inline, one card
+  // weighed 1.8 MB and every listItems parsed hundreds of MB. Each record's
+  // `tests` is kept in `blobs` under the hash of its JSON (identical result
+  // sets share one row) and the item row keeps `testsBlob`. Reads put the
+  // results back unless the caller asks for `hydrate: false`.
+
+  private static readonly RECORD_LISTS = ['stepRecords', 'supersededRecords'] as const;
+  /** What a record's field is stored as (6e0d2fd6: a capture's per-file map rides along with its results). */
+  private static readonly HEAVY_FIELDS = [['tests', 'testsBlob'], ['fileShas', 'fileShasBlob']] as const;
+  /** What a read puts back (80920048): not the file map, which only a partial run reads - through readBlob. */
+  private static readonly HYDRATED_FIELDS = [['tests', 'testsBlob']] as const;
+  private static heavy(v: unknown): boolean {
+    return Array.isArray(v) ? v.length > 0 : !!v && typeof v === 'object' && Object.keys(v as object).length > 0;
+  }
+
+  /** The item as its row stores it: results out, references in. */
+  private rowOf(item: any): string {
+    let changed = false;
+    const lists: Record<string, unknown> = {};
+    for (const key of SQLiteStorageProvider.RECORD_LISTS) {
+      const records = item?.[key];
+      if (!Array.isArray(records)) continue;
+      lists[key] = records.map((r: any) => {
+        if (!r || typeof r !== 'object') return r;
+        let out = r;
+        for (const [field, ref] of SQLiteStorageProvider.HEAVY_FIELDS) {
+          if (!SQLiteStorageProvider.heavy(out[field])) continue;
+          const json = JSON.stringify(out[field]);
+          const hash = crypto.createHash('sha256').update(json).digest('hex');
+          this.database.prepare('INSERT OR IGNORE INTO blobs (hash, data) VALUES (?, ?)').run(hash, json);
+          changed = true;
+          const { [field]: _heavy, ...rest } = out;
+          out = { ...rest, [ref]: hash };
+        }
+        return out;
+      });
+    }
+    return JSON.stringify(changed ? { ...item, ...lists } : item);
+  }
+
+  /** The item with its records' results read back. */
+  private hydrated<T>(item: T): T {
+    const it: any = item;
+    for (const key of SQLiteStorageProvider.RECORD_LISTS) {
+      const records = it?.[key];
+      if (!Array.isArray(records) || !records.some((r: any) => typeof r?.testsBlob === 'string')) continue;
+      it[key] = records.map((r: any) => {
+        let out = r;
+        for (const [field, ref] of SQLiteStorageProvider.HYDRATED_FIELDS) {
+          if (typeof out?.[ref] !== 'string') continue;
+          const row = this.database.prepare('SELECT data FROM blobs WHERE hash = ?').get(out[ref]) as { data: string } | undefined;
+          const { [ref]: _ref, ...rest } = out;
+          // A missing blob reads as missing - never as an empty, green run or an unchanged tree.
+          out = row ? { ...rest, [field]: JSON.parse(row.data) } : { ...rest, [`${field}Missing`]: true };
+        }
+        return out;
+      });
+    }
+    return item;
+  }
+
+  async readBlob(hash: string): Promise<unknown | null> {
+    const row = this.database.prepare('SELECT data FROM blobs WHERE hash = ?').get(hash) as { data: string } | undefined;
+    return row ? JSON.parse(row.data) : null;
+  }
+
+  /** Once per database: rows an older build wrote, with the results inline, get them moved out. */
+  private moveInlineResults(): void {
+    const rows = this.database.prepare(`SELECT id, data FROM items WHERE data LIKE '%"tests":[{%'`).all() as { id: string; data: string }[];
+    if (!rows.length) return;
+    this.database.exec('BEGIN');
+    try {
+      for (const row of rows) {
+        let item: any;
+        try { item = JSON.parse(row.data); } catch { continue; }
+        const next = this.rowOf(item);
+        if (next !== row.data) this.database.prepare('UPDATE items SET data = ? WHERE id = ?').run(next, row.id);
+      }
+      this.database.exec('COMMIT');
+    } catch (e) {
+      this.database.exec('ROLLBACK');
+      throw e;
+    }
+  }
+
+  /** Blobs no item row references: a rollback or a later capture replaced them. */
+  private dropUnreferencedBlobs(): void {
+    const keep = new Set<string>();
+    const rows = this.database.prepare(`SELECT data FROM items WHERE data LIKE '%Blob"%'`).all() as { data: string }[];
+    for (const row of rows) for (const m of row.data.matchAll(/"(?:testsBlob|fileShasBlob)":"([0-9a-f]{64})"/g)) keep.add(m[1]);
+    const all = this.database.prepare('SELECT hash FROM blobs').all() as { hash: string }[];
+    const drop = all.filter(b => !keep.has(b.hash));
+    if (!drop.length) return;
+    this.database.exec('BEGIN');
+    try {
+      const del = this.database.prepare('DELETE FROM blobs WHERE hash = ?');
+      for (const b of drop) del.run(b.hash);
+      this.database.exec('COMMIT');
+    } catch (e) {
+      this.database.exec('ROLLBACK');
+      throw e;
+    }
   }
 
   async shutdown(): Promise<void> {
@@ -67,6 +177,10 @@ export class SQLiteStorageProvider implements StorageProvider {
     this.database.exec(`
       CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
+        data TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS blobs (
+        hash TEXT PRIMARY KEY,
         data TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS items (
@@ -443,12 +557,14 @@ export class SQLiteStorageProvider implements StorageProvider {
     });
     this.database.prepare(
       'INSERT INTO items (id, project_id, type, status, parent_id, data) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(item.id, item.projectId, item.type, item.status, item.parentId ?? null, JSON.stringify(item));
+    ).run(item.id, item.projectId, item.type, item.status, item.parentId ?? null, this.rowOf(item));
     return item;
   }
 
   async updateItem(id: string, updates: Partial<AgEnFKItem>): Promise<AgEnFKItem> {
-    const existing = await this.getItem(id);
+    // e248239d: merged onto the row as stored - unchanged results stay references, never re-read or re-hashed.
+    const stored = this.database.prepare('SELECT data FROM items WHERE id = ?').get(id) as { data: string } | undefined;
+    const existing = stored ? this.parseItem(stored.data) : null;
     if (!existing) throw new Error(`Item ${id} not found`);
 
     if (updates.status !== undefined && updates.status !== existing.status) {
@@ -478,8 +594,9 @@ export class SQLiteStorageProvider implements StorageProvider {
     }
     this.database.prepare(
       'UPDATE items SET project_id = ?, type = ?, status = ?, parent_id = ?, data = ? WHERE id = ?'
-    ).run(updated.projectId, updated.type, updated.status, updated.parentId ?? null, JSON.stringify(updated), id);
-    return updated;
+    ).run(updated.projectId, updated.type, updated.status, updated.parentId ?? null, this.rowOf(updated), id);
+    // The caller gets its results, as getItem would give them.
+    return this.hydrated({ ...updated });
   }
 
   async deleteItem(id: string): Promise<boolean> {
@@ -494,7 +611,7 @@ export class SQLiteStorageProvider implements StorageProvider {
 
   async getItem(id: string): Promise<AgEnFKItem | null> {
     const row = this.database.prepare('SELECT data FROM items WHERE id = ?').get(id) as { data: string } | undefined;
-    return row ? this.parseItem(row.data) : null;
+    return row ? this.hydrated(this.parseItem(row.data)) : null;
   }
 
   async listItems(query?: StorageQuery): Promise<AgEnFKItem[]> {
@@ -512,7 +629,8 @@ export class SQLiteStorageProvider implements StorageProvider {
     }
 
     const rows = this.database.prepare(sql).all(...params) as { data: string }[];
-    return rows.map(r => this.parseItem(r.data));
+    // e248239d: hydrate: false for a caller that never reads per-test results.
+    return query?.hydrate === false ? rows.map(r => this.parseItem(r.data)) : rows.map(r => this.hydrated(this.parseItem(r.data)));
   }
 
   async listChildren(parentId: string): Promise<AgEnFKItem[]> {

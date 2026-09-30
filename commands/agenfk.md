@@ -78,7 +78,7 @@ Before creating any item, evaluate the request against these signals:
    - Run `git status` to check for uncommitted or modified files. If the working tree is dirty, **STOP** and ask the user how to proceed (stash, commit, or discard). Never start new work on a dirty working tree.
    - Run `git branch --show-current` to check the current branch.
    - If you are NOT on `main` (or `master`), and the current branch does NOT belong to the item you're about to resume, run `git checkout main` (or `master`).
-   - Run `git pull` to ensure you have the latest upstream changes.
+   - Run `git pull` to ensure you have the latest upstream changes - also when RESUMING an existing card, in the tree it works in (its worktree, else the project root). The `backlog` role's `tree-in-sync` check refuses a card leaving the backlog from a tree behind or diverged from its remote.
    - This prevents new feature branches from being based on stale/unrelated branches and avoids carrying uncommitted changes into new work.
 1. Resolve the current project id by running `agenfk current-project` (it walks up from the cwd to the nearest `.agenfk/project.json`). Use the printed id as `<projectId>` in every command below. If it errors, the directory is not initialized — run `agenfk list-projects --json` and ask the user whether to link an existing project or create a new one (per the base agenfk skill's Initialization procedure) before continuing. Never auto-create a project without asking.
 2. Identify the item to work on:
@@ -124,8 +124,10 @@ defines none, so this is the common case — empty criteria never mean "no work"
 
 2. **Do the work this step calls for.** Follow the criteria if there are any. If there are
    none, default by position: on the **first working step**, explore the codebase and understand the
-   context, then implement the change; on the **final step**, get the project's test suite
-   green; on any **other** step, verify what the previous steps produced — at minimum satisfy
+   context, then implement the change; on the **final step**, get the work into a state
+   that passes the project's suite - leaving it runs the verify command for you, so run only
+   the tests you are iterating on, not the whole suite first (`agenfk verify <id> --plan` says
+   what it will run); on any **other** step, verify what the previous steps produced — at minimum satisfy
    step 3 and step 4 below. Along the way:
    - **Evidence-based claims**: before claiming a feature already exists, search the codebase
      for the specific UI components, API endpoints and database queries. Never assume
@@ -201,6 +203,8 @@ defines none, so this is the common case — empty criteria never mean "no work"
    4. Retry `agenfk verify <itemId> --evidence "<evidence>"`.
    5. Only if no config files exist and the stack cannot be detected, ask the developer.
 
+   If verify reports `NO_TEST_REPORT`, per-test results the project does not record are needed - by the step's checks, or by the step the card is entering (its baseline is recorded on the way in) - and that is yours to fix, not a person's to override: run the `agenfk update-project` command the refusal gives (built from the project's own verify command), add the report path to `.gitignore` if the refusal says it is not ignored, and run the same verify again. Where it gives no command, set a report for the project's runner yourself (`vitest-json`, or `junit-xml` from any runner that writes JUnit XML); only a runner that can write neither is a reason to ask a person to pass the check on the board. A project with several suites names every report: `--test-report-path a.xml,b.xml` (read as one run; a report the command did not write is named). The report, and the directory it is written into when that is plainly a report directory (a dot-directory or one named for reports, holding no tracked file and outside the declared test paths), is agenfk's own: its checks never count it as the card's change. If verify reports `CAPTURE_UNUSABLE`, the run taken as the next step's baseline could not be used (the refusal says why): fix that and verify again - it is yours, not a person's to override.
+
 **Stage this item's work before that final verify.** The DONE transition makes a
 `close(<type>)` commit of whatever is in the git index, and the server stages nothing for
 you — `git add` the files belonging to THIS item (new files included; they are the ones
@@ -226,7 +230,7 @@ placeholders deliberately: substitute the real step names from the flow you load
 |------|-----------------|-------------|-----------------|
 | 1 | `<first working step>` — first non-anchor step | Explore, then implement (step 2 default), then review it (step 3 floor) | `agenfk verify <id> --evidence "..."` — command optional; a build check if the criteria want one |
 | n | any middle step | Whatever its criteria say; review it if they are silent | `agenfk verify <id> --evidence "..."` — command optional; never the test runner on a red-tests step |
-| last | `<final step>` — last step before `DONE` | Suite green, criteria met | `agenfk verify <id> --evidence "..."` — **no command**, uses `verifyCommand` → **DONE** |
+| last | `<final step>` — last step before `DONE` | Criteria met (verify runs the suite) | `agenfk verify <id> --evidence "..."` — **no command**, uses `verifyCommand` → **DONE** |
 
 The number of passes equals the number of working steps in your flow, not three. A flow whose
 second step is `CREATE_UNIT_TESTS` writes tests on that pass because its criteria say so — the

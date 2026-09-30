@@ -9,6 +9,7 @@ import { flowsRouter } from './routes/flows.js';
 import { authRouter, setupRouter } from './routes/auth.js';
 import { adminRouter } from './routes/admin.js';
 import { orgRenameRouter } from './routes/orgRename.js';
+import { jiraAdminRouter, jiraInstallationRouter } from './routes/jira.js';
 import { googleRouter } from './auth/google.js';
 import { entraRouter } from './auth/entra.js';
 import { ensureBootstrapToken } from './auth/bootstrapToken.js';
@@ -201,6 +202,10 @@ export async function createHubApp(
     res.json({ ok: true, service: 'agenfk-hub', version: HUB_VERSION });
   });
 
+  // Org-wide JIRA (CGLAB-412). Ahead of the broad /v1 routers so neither the
+  // admin router's limiter nor any /v1 fallthrough sees these paths first.
+  app.use('/v1/admin/jira', jiraAdminRouter(ctx));
+  app.use('/v1/jira', jiraInstallationRouter(ctx));
   app.use('/v1', eventsRouter(ctx));
   app.use('/v1', flowsRouter(ctx));
   app.use('/auth', authRouter(ctx));

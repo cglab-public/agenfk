@@ -44,6 +44,18 @@ describe('MCP flow tools carry the step contract', () => {
     });
   }
 
+  it('create_flow and update_flow advertise and forward the flow-level verifyAt (281adef0)', async () => {
+    for (const tool of ['create_flow', 'update_flow']) {
+      expect(Object.keys(tools.find(t => t.name === tool)?.inputSchema?.properties ?? {}), tool).toContain('verifyAt');
+    }
+    axiosMock.post.mockResolvedValue({ data: { id: 'f1', name: 'F' } });
+    await mcp.client.callTool({ name: 'create_flow', arguments: { name: 'F', steps: [step], verifyAt: 'parent' } });
+    expect(axiosMock.post.mock.calls.find(([u]: [string]) => u === '/flows')[1].verifyAt).toBe('parent');
+    axiosMock.put.mockResolvedValue({ data: { id: 'f1', name: 'F' } });
+    await mcp.client.callTool({ name: 'update_flow', arguments: { id: 'f1', verifyAt: 'leaf' } });
+    expect(axiosMock.put.mock.calls[0][1].verifyAt).toBe('leaf');
+  });
+
   it('create_flow forwards them to POST /flows', async () => {
     axiosMock.post.mockResolvedValue({ data: { id: 'f1', name: 'F' } });
     await mcp.client.callTool({ name: 'create_flow', arguments: { name: 'F', steps: [step] } });

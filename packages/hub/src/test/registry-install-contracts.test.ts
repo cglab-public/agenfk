@@ -72,6 +72,14 @@ describe('hub registry installs keep the step contract', () => {
     expect(steps.find((s: any) => s.name === 'DONE')).toMatchObject({ isAnchor: true, role: 'closing' });
   });
 
+  it('both install paths keep a registry flow\'s verifyAt (281adef0)', async () => {
+    vi.stubGlobal('fetch', registryFile({ ...REGISTRY_FLOW, verifyAt: 'parent' }));
+    const laptop = await supertest(server).post('/v1/registry/flows/install').set('Authorization', `Bearer ${key}`).send({ filename: 'contract-flow.json' });
+    expect(laptop.body.flow.verifyAt).toBe('parent');
+    const admin = await supertest(server).post('/v1/admin/flows/install').set('Cookie', cookieAdmin).send({ filename: 'contract-flow.json' });
+    expect(admin.body.definition.verifyAt).toBe('parent');
+  });
+
   it('POST /v1/admin/flows/install refuses an invalid contract whole, rather than installing it with parts dropped', async () => {
     vi.stubGlobal('fetch', registryFile({ ...REGISTRY_FLOW, steps: [{ name: 'BUILD', role: 'no-such-role' }] }));
     const r = await supertest(server).post('/v1/admin/flows/install').set('Cookie', cookieAdmin).send({ filename: 'bad.json' });

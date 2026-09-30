@@ -86,6 +86,22 @@ describe('flowSync.reconcileHubFlow', () => {
     expect(emit).toHaveBeenCalledWith('flow:updated', expect.objectContaining({ flowId: f.id }));
   });
 
+  it("keeps a hub flow's verifyAt (281adef0)", async () => {
+    const fetchImpl = makeFetchSequence([{ status: 200, etag: 'W/"9"', body: { flow: { id: 'remote-va', name: 'VA Flow', description: '', verifyAt: 'parent', steps: baseSteps }, hubVersion: 9 } }]);
+    await reconcileHubFlow({ storage, hubConfig: { url: HUB_URL, token: HUB_TOKEN, orgId: HUB_ORG }, lastEtag: null, fetchImpl, emit });
+    const f = (await storage.listFlows()).find(x => x.hubFlowId === 'remote-va');
+    expect((f as any)?.verifyAt).toBe('parent');
+  });
+
+  it("turns verifyAt back off when the hub does (281adef0 review): updateFlow merges, so the key is always written", async () => {
+    const first = makeFetchSequence([{ status: 200, etag: 'W/"10"', body: { flow: { id: 'remote-off', name: 'Off Flow', description: '', verifyAt: 'parent', steps: baseSteps }, hubVersion: 10 } }]);
+    await reconcileHubFlow({ storage, hubConfig: { url: HUB_URL, token: HUB_TOKEN, orgId: HUB_ORG }, lastEtag: null, fetchImpl: first, emit });
+    const second = makeFetchSequence([{ status: 200, etag: 'W/"11"', body: { flow: { id: 'remote-off', name: 'Off Flow', description: '', steps: baseSteps }, hubVersion: 11 } }]);
+    await reconcileHubFlow({ storage, hubConfig: { url: HUB_URL, token: HUB_TOKEN, orgId: HUB_ORG }, lastEtag: 'W/"10"', fetchImpl: second, emit });
+    const f = (await storage.listFlows()).find(x => x.hubFlowId === 'remote-off');
+    expect((f as any)?.verifyAt).toBe('leaf');
+  });
+
   it('304 with matching ETag → no-op', async () => {
     const fetchImpl = makeFetchSequence([{ status: 304 }]);
     const result = await reconcileHubFlow({

@@ -219,6 +219,14 @@ export interface AppSettings {
    * must not be forgotten because 3000 was busy.
    */
   boardPinned: boolean;
+  /**
+   * f8d0a752: how many suite runs (step captures and the final step's verify
+   * command) the server runs at once, across every project - one value for
+   * the whole server, not per project. 0 is automatic: half the CPUs, at least
+   * 1. Any other whole number is used as given, up to the CPU count; the rest
+   * wait in line.
+   */
+  maxConcurrentSuiteRuns: number;
 }
 
 /** The legal values for `soundTiming`, in the order the UI offers them. */
@@ -266,7 +274,10 @@ export function isLegalSettingValue(key: keyof AppSettings, value: unknown): boo
   }
   if (typeof value !== typeof DEFAULT_APP_SETTINGS[key]) return false;
   const allowed = APP_SETTING_VALUES[key];
-  return allowed ? allowed.includes(value) : true;
+  if (allowed) return allowed.includes(value);
+  // A count: `typeof` says number, and so are -1, 2.5 and NaN.
+  if (key === 'maxConcurrentSuiteRuns') return Number.isInteger(value) && (value as number) >= 0 && (value as number) <= 1024;
+  return true;
 }
 
 /*
@@ -316,6 +327,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   // Off by default: following the work an agent switches to is the behaviour
   // every install had before this existed. The setting is an opt-in override.
   boardPinned: false,
+  maxConcurrentSuiteRuns: 0,
 };
 
 export interface IngestionState {
@@ -461,6 +473,19 @@ export interface TestReportSetting {
   reportPath: string;
   /** Extra files or directories the tests depend on (helpers, fixtures, setup), hashed into the surface. */
   surface?: string[];
+  /**
+   * 32045202: globs capture reuse leaves out of the tree's content, unless a
+   * test names the file. Absent: every Markdown file (**\/*.md); [] leaves
+   * nothing out.
+   */
+  reuseIgnore?: string[];
+  /**
+   * a36047ea: the runner's related-tests command, with {files} where the
+   * changed files go (e.g. `npx vitest related --run {files}`). With it, a
+   * step that changed code runs only the tests those files affect, merged
+   * over its entry results; without it, the whole suite.
+   */
+  relatedCommand?: string;
 }
 
 /**
@@ -600,6 +625,16 @@ export interface BaseItem {
    */
   worktreePath?: string;
   /**
+   * Where the card chose to run (686fdbf6), set by `agenfk update --worktree`:
+   * 'root' (the project root, whatever worktree its parents have) or the path
+   * of a checkout of the project's repository, as git lists it. Unset: its own
+   * worktree, else its nearest ancestor's. Kept apart from worktreePath on
+   * purpose: that one is a checkout agenfk CREATED and may remove or prune; a
+   * chosen tree may be a person's checkout or another card's worktree, and
+   * nothing that manages worktrees may touch it.
+   */
+  worktreeChoice?: string;
+  /**
    * Files and directories this item owns while it is being worked (819e7192).
    *
    * Only meaningful because several agents share one worktree: there, two of
@@ -685,8 +720,10 @@ export interface FlowStep {
   isSpecial?: boolean;    // True for terminal steps like DONE, BLOCKED, ARCHIVED
   /** What the step is (CGLAB-380): brings built-in checks. See flowChecks.ts. */
   role?: import('./flowChecks').StepRole | null;
-  /** Checks the flow adds to this step (CGLAB-380). A flow can add, never remove. */
+  /** Checks the flow adds to this step (CGLAB-380). A flow can add, never remove; only the hub switches off (disabledChecks). */
   checks?: import('./flowChecks').StepCheckRef[] | null;
+  /** Resolved check ids this step switches off (CGLAB-428). Only a flow the org's hub delivered may carry any. */
+  disabledChecks?: string[] | null;
   /** Commit the card's work when it leaves this step (CGLAB-388). */
   autoCommit?: boolean | null;
   /** With autoCommit: refuse to leave the step when that commit does not happen. */
@@ -707,6 +744,10 @@ export interface Flow {
   hubFlowId?: string;
   /** Monotonic version number on the Hub side; bumps on every Hub-side update. */
   hubVersion?: number;
+  /** 'registry' when installed from the community registry: its command checks never run (efcacdeb). */
+  origin?: 'registry';
+  /** Where the project's suite runs: every card's final step ('leaf', default) or once at the top-level card ('parent'). See verifyAt.ts. */
+  verifyAt?: 'leaf' | 'parent';
 }
 
 export interface PauseSnapshot {

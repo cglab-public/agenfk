@@ -49,7 +49,7 @@ describe('TDD_FLOW_PRESET', () => {
   });
 
   it('gives each step its role', () => {
-    expect(TDD_FLOW_PRESET.steps.map(s => s.role ?? null)).toEqual([null, 'planning', 'test-authoring', 'coding', 'refactoring', 'review', 'closing']);
+    expect(TDD_FLOW_PRESET.steps.map(s => s.role ?? null)).toEqual(['backlog', 'planning', 'test-authoring', 'coding', 'refactoring', 'review', 'closing']);
   });
 
   it('adds jira-key-valid and has-children to discovery', () => {
@@ -57,7 +57,8 @@ describe('TDD_FLOW_PRESET', () => {
   });
 
   it('turns the red set green when implementing, and keeps the tests identical when refactoring', () => {
-    expect(applicable(TDD_FLOW_PRESET.steps, 'IN_PROGRESS')).toEqual(expect.arrayContaining(['suite-green', 'red-set-passes-by-name', 'test-surface-frozen', 'test-count-not-lower']));
+    expect(applicable(TDD_FLOW_PRESET.steps, 'IN_PROGRESS')).toEqual(expect.arrayContaining(['suite-green', 'red-set-passes-by-name', 'test-count-not-lower']));
+    expect(applicable(TDD_FLOW_PRESET.steps, 'IN_PROGRESS')).not.toContain('test-surface-frozen');
     expect(applicable(TDD_FLOW_PRESET.steps, 'REFACTOR')).toEqual(expect.arrayContaining(['suite-green', 'test-set-identical', 'test-surface-frozen']));
   });
 });

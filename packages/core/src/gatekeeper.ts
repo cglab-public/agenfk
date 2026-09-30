@@ -9,7 +9,7 @@
  * CREATE_UNIT_TESTS). Centralising the logic here kills that drift.
  */
 
-import { gateOnClaims, claimScopes, scopeAt } from './claimGate';
+import { gateOnClaims, claimTreeOf } from './claimGate';
 
 export interface GatekeeperFlow {
   /** Flow name, echoed back so the caller can see which flow is governing. */
@@ -25,10 +25,10 @@ export interface GatekeeperItem {
   branchName?: string;
   /** Paths this item owns while worked. See claimGate.ts. */
   claims?: string[];
-  /** Where the item's tree comes from — for scoping claims. See `claimScopes`. */
-  projectId?: string | null;
+  /** Tree resolution for claims (aaa01834): own worktree, else an ancestor's. */
   parentId?: string | null;
   worktreePath?: string | null;
+  worktreeChoice?: string | null;
 }
 
 /** Statuses that are never considered "active working" steps regardless of flow. */
@@ -296,17 +296,8 @@ export interface GatekeeperDecisionOptions {
   intent?: string;
   /** Advisory role label (coding/review/testing/...). Echoed, NOT used as a status gate. */
   role?: string;
-  /**
-   * The caller's working directory.
-   *
-   * Claims are scoped by the tree the caller is IN, not only the one its card
-   * declares: an agent editing the main checkout must contend with the cards
-   * working there, whatever worktree its card owns. Omitted means "unknown" —
-   * the gate then falls back to the declared tree.
-   */
-  cwd?: string;
-  /** The project the caller resolved, for the no-worktree scope key. */
-  projectId?: string | null;
+  /** The project's root: the tree of a card with no worktree (aaa01834). */
+  projectRoot?: string | null;
 }
 
 /**
@@ -384,16 +375,13 @@ export function decideGatekeeperAuthorization(
    * files must not be handed to somebody else - it finds out on resume, which
    * is the worst moment. claimGate decides release by terminal status instead.
    */
-  const scopes = claimScopes(items);
-  /*
-   * BOTH trees, not one. The declared worktree catches a card whose agent edits
-   * it by absolute path from a shell sitting elsewhere; the cwd catches an
-   * agent editing the main checkout. `gateOnClaims` unions them.
-   */
-  const cwdScope = opts?.cwd ? scopeAt(opts.cwd, items, opts.projectId) : undefined;
+  // Claims are per worktree (aaa01834): each card carries the tree it works
+  // in, and an unknown tree stays strict. See sameClaimTree.
+  const byId = new Map(items.map(i => [i.id, i]));
+  const treeOf = (i: GatekeeperItem) => claimTreeOf(i, id => byId.get(id), opts.projectRoot);
   const gate = gateOnClaims(
-    { id: task.id, claims: task.claims, scope: scopes.get(task.id), cwdScope },
-    items.map(i => ({ id: i.id, status: i.status, claims: i.claims, scope: scopes.get(i.id) })),
+    { id: task.id, claims: task.claims, tree: treeOf(task) },
+    items.map(i => ({ id: i.id, status: i.status, claims: i.claims, tree: treeOf(i) })),
   );
   if (!gate.authorized) {
     return {
@@ -407,6 +395,10 @@ export function decideGatekeeperAuthorization(
   // handler cannot drift — that drift is what produced false claims in the docs.
   const contract = resolveStepContract(flow, task.status);
   const advanceHint = `advance with \`agenfk verify ${task.id.substring(0, 8)} --evidence "<what you did>"\``;
+  // The label names the step the card is on (d26832d6 #11): CODING on a
+  // test-authoring step read as leave to write the implementation.
+  const stepRole = (flow as any)?.steps?.find((st: any) => st?.name === task!.status)?.role;
+  const shown = (opts.role || (typeof stepRole === 'string' && stepRole) || role).toUpperCase();
 
   return {
     authorized: true,
@@ -417,7 +409,7 @@ export function decideGatekeeperAuthorization(
     codingStep: contract.codingStep,
     finalStep: contract.finalStep,
     ...(contract.commitOnLeave ? { commitOnLeave: contract.commitOnLeave } : {}),
-    message: `✅ AUTHORIZED (${role.toUpperCase()}).\n\n${task.type}: [${task.id.substring(0, 8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"`
+    message: `✅ AUTHORIZED (${shown}).\n\n${task.type}: [${task.id.substring(0, 8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"`
       + renderStepContract(contract, task.status, advanceHint),
   };
 }

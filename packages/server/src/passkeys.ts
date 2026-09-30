@@ -126,7 +126,8 @@ export function saveCredentials(creds: Credential[]): void {
 
 /** What a challenge is for: a signature over it authorises exactly this and nothing else. */
 export interface Act {
-  purpose: 'enroll' | 'add-passkey' | 'remove' | 'approval' | 'override';
+  /** command: approve a command check's argv for a project (itemId = project, checkId = argv hash). */
+  purpose: 'enroll' | 'add-passkey' | 'remove' | 'approval' | 'override' | 'command';
   itemId?: string;
   step?: string;
   note?: string;
@@ -137,7 +138,7 @@ export interface Act {
   publicKey?: string;
 }
 
-const PURPOSES = new Set(['enroll', 'add-passkey', 'remove', 'approval', 'override']);
+const PURPOSES = new Set(['enroll', 'add-passkey', 'remove', 'approval', 'override', 'command']);
 const actKey = (act: Act) => sha256(JSON.stringify([act.purpose, act.itemId ?? '', act.step ?? '', act.note ?? '', act.checkId ?? '', act.reason ?? '', act.credentialId ?? '', act.publicKey ?? ''])).toString('hex');
 const issued = new Map<string, { key: string; expires: number }>();
 

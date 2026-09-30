@@ -93,6 +93,7 @@ import {
 } from '../agentFilter';
 import { cardState, itemsNeedingAPerson, NEEDS_A_PERSON } from '../cardState';
 import { AttentionAlerts } from './AttentionAlerts';
+import { VerifyRunsChip } from './VerifyRunsChip';
 import { clampSidebarWidth, sidebarIsResizable, SIDEBAR_MIN_PX, SIDEBAR_MAX_PX, SIDEBAR_COLLAPSED_PX } from '../sidebarWidth';
 
 /**
@@ -1879,6 +1880,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </span>
         <span className="font-mono">{window.location.host}</span>
 
+        {/* beae41a0: on every tab - the board's header, which has it in a browser, is hidden behind a terminal. */}
+        <VerifyRunsChip placement="up" />
+
         <button
           onClick={() => setWhatsNewOpen(true)}
           data-testid="app-version"
@@ -2231,14 +2235,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
    */
   const { data: allItemsForClaims = [] } = useQuery<AgEnFKItem[]>({
     queryKey: ['items-claims'],
-    /*
-     * ARCHIVED INCLUDED, deliberately. The chip scopes a claim by the card's
-     * EFFECTIVE worktree, which can be an ancestor's — and an archived parent
-     * is still that ancestor. Without it the child falls back to the project
-     * scope here and disagrees with the server, the same divergence the CLI
-     * had. The cost is a bigger payload; freshness still comes from the socket.
-     */
-    queryFn: () => api.listItems({ includeArchived: true }),
+    queryFn: () => api.listItems(),
     /*
      * Measured after review: `GET /items` returns FULL records - description,
      * comments, history - and on this machine that is 582 items and 8.1 MB,
@@ -3205,7 +3202,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                              * a failure - it is the mechanism working, and the
                              * card is waiting rather than broken.
                              */
-                            const state = claimStateOf(item.id, allItemsForClaims as never);
+                            const state = claimStateOf(item.id, allItemsForClaims as never, pid => (projects as Array<{ id: string; projectRoot?: string }>).find(p => p.id === pid)?.projectRoot);
                             const label = claimChipLabel(state);
                             if (!label) return null;
                             return (

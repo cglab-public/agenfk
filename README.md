@@ -135,13 +135,13 @@ After installation, complete the setup:
     ```bash
     agenfk up
     ```
-    This launches the API server on `http://localhost:3000` and the Kanban UI (typically `http://localhost:5173`).
+    This launches the server on `http://localhost:3000`, which serves both the API and the Kanban board. The
+    board starts, stops and restarts with it (an upgrade's restart included).
 
-    To access the dashboard through a reverse proxy or tunnel, publish the UI
-    origin only (for example, `https://agenfk.example.com` → `localhost:5173`).
-    The dashboard uses same-origin API and WebSocket URLs, and the bundled Vite
-    preview server proxies those requests to the local API. Protect remote
-    access with authentication; the dashboard can modify workflow data.
+    To access the dashboard through a reverse proxy or tunnel, publish that one
+    origin (for example, `https://agenfk.example.com` → `localhost:3000`). The
+    dashboard uses same-origin API and WebSocket URLs. Protect remote access
+    with authentication; the dashboard can modify workflow data.
 
     Allow the public hostname when starting or restarting the services:
 

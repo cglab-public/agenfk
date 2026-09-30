@@ -36,7 +36,7 @@
  */
 import React from 'react';
 import { clsx } from 'clsx';
-import { UserRound, AppWindow, Bell, Bot, SquareTerminal, type LucideIcon } from 'lucide-react';
+import { UserRound, AppWindow, Bell, Bot, SquareTerminal, Gauge, type LucideIcon } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Switch } from './ui/switch';
 import {
@@ -361,6 +361,10 @@ export function SettingsPanel(): React.ReactElement {
     // to pick up a change another client made in the meantime.
     onError: () => { void queryClient.invalidateQueries({ queryKey: ['settings'] }); },
   });
+
+  // 7b640e64: what "Automatic" means on this machine, and how far a number may go.
+  const runtime = useQuery({ queryKey: ['settings-runtime'], queryFn: api.getSettingsRuntime });
+  const suiteRuns = settings?.maxConcurrentSuiteRuns ?? 0;
 
   /** Whether a particular key is the one currently being written. */
   const saving = (key: keyof AppSettingsDto): boolean =>
@@ -848,6 +852,34 @@ export function SettingsPanel(): React.ReactElement {
       rows: <HerdrRows />,
     },
     {
+      // 7b640e64: one value for the whole server, whatever project is open.
+      id: 'verification',
+      label: 'Verification',
+      icon: Gauge,
+      rows: (
+        <SettingRow
+          testId="suite-runs-row"
+          title="Suite runs at once"
+          description="How many test-suite runs agenfk runs at the same time, across every project, when agents verify their cards. The rest wait in line. Too many at once starve each other of CPU, and timing tests start failing."
+          control={
+            <select
+              aria-label="Suite runs at once"
+              value={String(suiteRuns)}
+              disabled={saving('maxConcurrentSuiteRuns') || !runtime.data}
+              onChange={e => save.mutate({ maxConcurrentSuiteRuns: Number(e.target.value) })}
+              className="rounded-lg border border-border-soft bg-canvas px-2.5 py-1.5 text-[13px] text-ink-secondary disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <option value="0">{`Automatic (half the CPUs: ${runtime.data?.automaticSuiteRuns ?? '…'} here)`}</option>
+              {/* 1 up to the CPU count: the server caps any higher value there anyway. */}
+              {Array.from({ length: runtime.data?.cpus ?? 0 }, (_, i) => (
+                <option key={i + 1} value={String(i + 1)}>{i + 1}</option>
+              ))}
+            </select>
+          }
+        />
+      ),
+    },
+    {
       id: 'agents',
       label: 'Agents',
       icon: Bot,
@@ -960,14 +992,34 @@ export function SettingsPanel(): React.ReactElement {
             <Alert>{soundRefused ?? 'Could not change the sound.'}</Alert>
           )}
 
-          <section data-testid="settings-section" className="mt-8">
-            <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-ink-tertiary">
-              {shown.label === 'Account' ? 'Connected account' : 'Preferences'}
-            </h2>
-            <div className="mt-2 rounded-xl border border-border-soft bg-nav-surface px-5">
-              {shown.rows}
-            </div>
-          </section>
+          {/* 35e1fe96 - every section in one grid cell, so the pane is always the
+              tallest one's height and the dialog no longer jumps between tabs
+              (capped at the viewport, it scrolls here instead). The ones not
+              shown keep their space but are invisible, hidden from assistive
+              tech and inert: nothing in them can be read, focused or clicked. */}
+          <div className="mt-8 grid">
+            {sections.map(section => {
+              const isShown = section.id === shown.id;
+              return (
+                <div
+                  key={section.id}
+                  data-testid="settings-pane"
+                  className={clsx('[grid-area:1/1]', !isShown && 'invisible')}
+                  aria-hidden={isShown ? undefined : true}
+                  inert={!isShown}
+                >
+                  <section data-testid="settings-section">
+                    <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-ink-tertiary">
+                      {section.label === 'Account' ? 'Connected account' : 'Preferences'}
+                    </h2>
+                    <div className="mt-2 rounded-xl border border-border-soft bg-nav-surface px-5">
+                      {section.rows}
+                    </div>
+                  </section>
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
     </div>

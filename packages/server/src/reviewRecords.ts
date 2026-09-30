@@ -27,6 +27,12 @@ export interface TranscriptIdentity extends Identity {
   transcript: string;
   /** The latest timestamp in the transcript's records. */
   lastAt: string | null;
+  /**
+   * When the reviewer began reading (CGLAB-420): the last prompt it was given
+   * (a reviewer continued with a new message reads again from there), else
+   * its earliest record.
+   */
+  startedAt: string | null;
   /** When the file itself was last written. */
   mtime: string;
   /** Files the reviewer's tool calls edited: a reviewer that edits the card's tree is an author. */
@@ -102,6 +108,30 @@ function toolCalls(rec: unknown, out: Array<{ name: string; input: any }>, depth
   for (const v of Object.values(o)) if (v && typeof v === 'object') toolCalls(v, out, depth + 1);
 }
 
+/**
+ * CGLAB-420: a prompt the reviewer was given - the task, or a person's or a
+ * coordinator's new message - and not a tool result handed back or a note the
+ * harness injects (a cut-off, a hand-back reminder, an interruption), which
+ * would move "when it began reading" to the end of the review. Claude Code
+ * (type user), Codex (response_item, role user) and pi (message, role user).
+ */
+const INJECTED = /^\s*(\[Request interrupted|\[handback-|Your response above was|Caveat: The messages below)/;
+function isPrompt(rec: any): boolean {
+  let text: string | null = null;
+  if (rec.type === 'user') {
+    const c = rec.message?.content;
+    text = typeof c === 'string' ? c : Array.isArray(c) && c.some((x: any) => x?.type === 'text') ? c.filter((x: any) => x?.type === 'text').map((x: any) => String(x.text ?? '')).join(' ') : null;
+    if (text !== null && rec.isMeta === true && !/sent a message/i.test(text)) return false;
+  } else if (rec.type === 'response_item' && rec.payload?.role === 'user') {
+    const c = rec.payload.content;
+    text = Array.isArray(c) ? c.filter((x: any) => x?.type === 'input_text').map((x: any) => String(x.text ?? '')).join(' ') : null;
+  } else if (rec.type === 'message' && rec.message?.role === 'user') {
+    const c = rec.message.content;
+    text = typeof c === 'string' ? c : Array.isArray(c) ? c.filter((x: any) => x?.type === 'text').map((x: any) => String(x.text ?? '')).join(' ') : null;
+  }
+  return !!text && text.trim().length > 0 && !INJECTED.test(text);
+}
+
 /** Largest transcript read, so a huge file cannot pin the server. */
 const MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
 
@@ -125,6 +155,9 @@ export function readTranscriptIdentity(file: string): TranscriptIdentity {
   let sessionId: string | null = null;
   let agentId: string | null = null;
   let lastAt: string | null = null;
+  // CGLAB-420: when the reviewer began - a change made after it cannot have been read.
+  let firstAt: string | null = null;
+  let promptAt: string | null = null;
   const calls: Array<{ name: string; input: any }> = [];
   for (const raw of fs.readFileSync(real, 'utf8').split('\n')) {
     if (!raw.trim()) continue;
@@ -140,6 +173,9 @@ export function readTranscriptIdentity(file: string): TranscriptIdentity {
     if (!agentId && rec.isSidechain === true && typeof rec.agentId === 'string') agentId = rec.agentId;
     const ts = typeof rec.timestamp === 'string' ? rec.timestamp : null;
     if (ts && !Number.isNaN(Date.parse(ts)) && (!lastAt || Date.parse(ts) > Date.parse(lastAt))) lastAt = ts;
+    if (ts && !Number.isNaN(Date.parse(ts)) && (!firstAt || Date.parse(ts) < Date.parse(firstAt))) firstAt = ts;
+    const prompt = isPrompt(rec);
+    if (prompt && ts && !Number.isNaN(Date.parse(ts)) && (!promptAt || Date.parse(ts) > Date.parse(promptAt))) promptAt = ts;
   }
   if (!sessionId) throw new Error(`${file} names no session: it is not a transcript`);
   const layout = layoutError(where, sessionId, agentId);
@@ -149,7 +185,7 @@ export function readTranscriptIdentity(file: string): TranscriptIdentity {
     .filter((f): f is string => typeof f === 'string'))];
   const commandOf = (c: { input: any }) => (Array.isArray(c.input?.command) ? c.input.command.join(' ') : c.input?.command);
   const advancedCards = calls.some(c => SHELL_TOOLS.has(c.name) && typeof commandOf(c) === 'string' && ADVANCES.test(commandOf(c)));
-  return { client: where.client, sessionId, agentId, transcript: real, lastAt, mtime: st.mtime.toISOString(), edits, advancedCards };
+  return { client: where.client, sessionId, agentId, transcript: real, lastAt, startedAt: promptAt ?? firstAt, mtime: st.mtime.toISOString(), edits, advancedCards };
 }
 
 /** Findings as recorded: each fixed, or rejected with a reason. Throws on anything else. */

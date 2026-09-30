@@ -35,11 +35,12 @@ let tseq = 0;
  * the commits it reviews). `agentId` makes it a sub-agent of `sessionId`;
  * `tools` are tool calls it made.
  */
-export function transcript({ sessionId = `reviewer-${++tseq}`, agentId = null, tools = [] } = {}) {
+export function transcript({ sessionId = `reviewer-${++tseq}`, agentId = null, tools = [], startedAt } = {}) {
   const dir = join(HOME, '.claude', 'projects', '-work');
   mkdirSync(dir, { recursive: true });
   const now = new Date(Date.now() + 1000).toISOString();
-  const lines = [{ sessionId, timestamp: now, ...(agentId ? { isSidechain: true, agentId } : {}) }];
+  // `startedAt`: when the reviewer began (CGLAB-420); what changed after it, it cannot have read.
+  const lines = [...(startedAt ? [{ sessionId, timestamp: startedAt, ...(agentId ? { isSidechain: true, agentId } : {}) }] : []), { sessionId, timestamp: now, ...(agentId ? { isSidechain: true, agentId } : {}) }];
   for (const t of tools) lines.push({ sessionId, timestamp: now, message: { content: [{ type: 'tool_use', ...t }] } });
   const text = lines.map(l => JSON.stringify(l)).join('\n') + '\n';
   if (!agentId) { const f = join(dir, `${sessionId}.jsonl`); writeFileSync(f, text); return f; }

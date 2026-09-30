@@ -2,7 +2,8 @@
  * CGLAB-384 — one step's contract, in plain words.
  *
  * What the step is for (its role) and the checks that brings, locked: a flow
- * may add requirements, never take a role's away. The checks this flow adds,
+ * may add requirements, never take a role's away - only the org's hub may
+ * switch a check off (CGLAB-428, `canDisableChecks`). The checks this flow adds,
  * with their params as real controls and Block or Warn. Whether a person must
  * approve, and whether that approval is signed with a passkey. And what an
  * agent must do to leave the step, exactly as `agenfk verify` will enforce it.
@@ -11,10 +12,13 @@
  * validate and run the flow). Edits go out as a patch to the step.
  */
 import React, { useState } from 'react';
-import { Lock, Plus, Search, Trash2, UserCheck, KeyRound } from 'lucide-react';
+import { Lock, Plus, Search, Trash2, UserCheck, KeyRound, BellOff } from 'lucide-react';
 import { clsx } from 'clsx';
 import { checkText, GROUP_TEXTS, RECORD_TEXTS, ROLE_TEXTS } from './checkTexts';
 import type { FlowContract, FlowStep, StepCheckRef } from './types';
+
+/** CGLAB-428: checks that cannot be switched off (core's NEVER_DISABLED): no switch is offered. */
+const NO_SWITCH = new Set(['human-approval', 'server-owned-verify']);
 
 /** Checks with their own control, or that every step runs anyway: not offered in the gallery. */
 const NOT_IN_GALLERY = new Set(['human-approval', 'tree-clean', 'on-card-branch', 'server-owned-verify']);
@@ -24,12 +28,17 @@ export interface StepContractPanelProps {
   stepContract: FlowContract['steps'][number] | undefined;
   contract: FlowContract;
   disabled: boolean;
+  /**
+   * CGLAB-428: offer a switch to turn each check off (the hub admin only). A
+   * check already switched off is shown as such either way.
+   */
+  canDisableChecks?: boolean;
   onChange: (patch: Partial<FlowStep>) => void;
 }
 
 const recordWords = (recs: readonly string[] | undefined) => (recs ?? []).map(r => RECORD_TEXTS[r] ?? r).join(', ');
 
-export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, stepContract, contract, disabled, onChange }) => {
+export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, stepContract, contract, disabled, canDisableChecks, onChange }) => {
   const [pickingRole, setPickingRole] = useState(false);
   const [browsing, setBrowsing] = useState(false);
   const [query, setQuery] = useState('');
@@ -41,23 +50,64 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
   const approval = added.find(c => c.id === 'human-approval');
   const role = typeof step.role === 'string' ? step.role : null;
   const roleText = role ? ROLE_TEXTS[role] : null;
-  const builtins = (stepContract?.checks ?? []).filter(c => c.source === 'role');
+  // CGLAB-428: a check the hub switched off is still the step's, shown in its place.
+  const offIds: string[] = Array.isArray(step.disabledChecks) ? step.disabledChecks : [];
+  // A check that cannot be switched off is never shown as off: it runs.
+  const off = new Set(offIds.filter(id => !NO_SWITCH.has(id)));
+  const canSwitch = !!canDisableChecks && !disabled;
+  const toggle = (id: string) => onChange({ disabledChecks: off.has(id) ? offIds.filter(x => x !== id) : [...offIds, id] });
+  const own = [...(stepContract?.checks ?? []), ...(stepContract?.disabled ?? [])];
+  const builtinOrder = (contract.roles.find(r => r.id === role)?.builtins ?? []).map(b => b.id);
+  const builtins = own.filter(c => c.source === 'role').sort((a, b) => builtinOrder.indexOf(a.id) - builtinOrder.indexOf(b.id));
+  const universal = stepContract?.terminal ? [] : own.filter(c => c.source === 'universal');
+  // Review: an id the save would refuse - one the step no longer runs (its role changed, its check was
+  // removed), one that can never be switched off, or a universal check on a terminal step - has no switch
+  // to clear it, so it is listed with a Remove. Only once the contract has described the step: before,
+  // every id would look stale.
+  const refused = (id: string) => NO_SWITCH.has(id) || !own.some(c => c.id === id)
+    || (!!stepContract?.terminal && own.some(c => c.id === id && c.source === 'universal'));
+  const stale = stepContract ? offIds.filter(refused) : [];
   const titleOf = (id: string) => checkText(id, catalogue.get(id)?.description).title;
+  const offNote = "Switched off by your org's hub: it does not run.";
+  /** The on/off switch for one check, by its resolved id. */
+  const switchFor = (id: string, label: string) => canSwitch && !NO_SWITCH.has(id) && (
+    <button type="button" onClick={() => toggle(id)} aria-label={`${off.has(id) ? 'Switch on' : 'Switch off'}: ${label}`}
+      className="shrink-0 text-xs font-semibold px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700">
+      {off.has(id) ? 'Switch on' : 'Switch off'}
+    </button>
+  );
 
   const setChecks = (checks: StepCheckRef[]) => onChange({ checks });
-  const replace = (id: string, next: StepCheckRef | null) =>
-    setChecks(added.flatMap(c => (c.id === id ? (next ? [next] : []) : [c])));
-  /** A param at its default is left out, so the stored step stays minimal. */
-  const withParam = (ref: StepCheckRef, key: string, value: string): StepCheckRef => {
-    const def = catalogue.get(ref.id)?.params[key]?.default;
-    const params = { ...(ref.params ?? {}) };
-    if (value === def) delete params[key]; else params[key] = value;
+  /** A custom check (efcacdeb) is one of several of its kind on a step: it is known by its name too. */
+  const isCustom = (id: string) => catalogue.get(id)?.group === 'custom';
+  const keyOf = (ref: StepCheckRef) => (isCustom(ref.id) ? `${ref.id}:${String((ref.params as any)?.name ?? '')}` : ref.id);
+  const replace = (key: string, next: StepCheckRef | null) => {
+    const checks = added.flatMap(c => (keyOf(c) === key ? (next ? [next] : []) : [c]));
+    // CGLAB-428 review: a check removed or renamed takes its switched-off entry with it.
+    const offList = Array.isArray(step.disabledChecks) ? step.disabledChecks : [];
+    const nextKey = next ? keyOf(next) : null;
+    if (offList.includes(key) && nextKey !== key) {
+      onChange({ checks, disabledChecks: offList.flatMap(x => (x === key ? (nextKey ? [nextKey] : []) : [x])) });
+    } else setChecks(checks);
+  };
+  /** A param at its default is left out, so the stored step stays minimal; a required one always stays. */
+  const withParam = (ref: StepCheckRef, key: string, value: string | string[]): StepCheckRef => {
+    const def = catalogue.get(ref.id)?.params[key];
+    const params: Record<string, unknown> = { ...(ref.params ?? {}) };
+    if (!def?.required && value === def?.default) delete params[key]; else params[key] = value;
     const { params: _drop, ...rest } = ref;
-    return Object.keys(params).length ? { ...rest, params } : rest;
+    return Object.keys(params).length ? { ...rest, params: params as any } : rest;
+  };
+  /** A new custom check: a draft with a name no other check of its kind on the step uses. */
+  const draft = (id: string): StepCheckRef => {
+    const taken = new Set(added.filter(a => a.id === id).map(a => String((a.params as any)?.name ?? '')));
+    let n = 1;
+    while (taken.has(`check-${n}`)) n++;
+    return { id, params: (id === 'command-check' ? { name: `check-${n}`, argv: [] } : { name: `check-${n}`, instruction: '' }) as any };
   };
 
   const gallery = contract.catalogue
-    .filter(c => !NOT_IN_GALLERY.has(c.id) && !c.unavailable && !added.some(a => a.id === c.id))
+    .filter(c => !NOT_IN_GALLERY.has(c.id) && !c.unavailable && (c.group === 'custom' || !added.some(a => a.id === c.id)))
     .filter(c => group === 'all' || c.group === group)
     .filter(c => {
       const q = query.trim().toLowerCase();
@@ -75,6 +125,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
     return c.id === 'human-approval' && c.params.signature === 'passkey' ? `${must}, signed with a passkey` : must;
   }).filter(Boolean);
   const warns = preview.filter(c => c.severity === 'warn').map(c => titleOf(c.id));
+  const notRun = (stepContract?.disabled ?? []).map(c => titleOf(c.id.split(':')[0]));
   // The same rule the gatekeeper and verify give the agent (CGLAB-388), from
   // the server's contract: it knows where the move ends the flow and the
   // close commit takes the work instead.
@@ -132,19 +183,61 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
       {/* Built-ins */}
       {builtins.length > 0 && (
         <div data-testid="contract-builtins" className="space-y-1">
-          <div className={section}>Checks from this role · always on</div>
+          <div className={section}>Checks from this role{canSwitch || builtins.some(c => off.has(c.id)) ? '' : ' · always on'}</div>
           {builtins.map(c => {
             const t = checkText(c.id, catalogue.get(c.id)?.description);
+            const isOff = off.has(c.id);
             return (
-              <div key={`${c.id}-${JSON.stringify(c.params)}`} className={clsx('flex items-start gap-2', chip, !c.applicable && 'opacity-60')}>
-                <Lock size={13} className="mt-0.5 shrink-0 text-slate-400" aria-hidden />
+              <div key={`${c.id}-${JSON.stringify(c.params)}`} className={clsx('flex items-start gap-2', chip, (!c.applicable || isOff) && 'opacity-60')}>
+                {isOff ? <BellOff size={13} className="mt-0.5 shrink-0 text-amber-600" aria-hidden /> : !canSwitch && <Lock size={13} className="mt-0.5 shrink-0 text-slate-400" aria-hidden />}
                 <div className="flex-1">
-                  <div className="font-medium">{t.title}</div>
+                  <div className={clsx('font-medium', isOff && 'line-through')}>{t.title}</div>
                   <div className="text-xs text-slate-500 dark:text-slate-400">
-                    {c.applicable ? `Stops: ${t.stops}` : `Nothing to check here: it needs the ${recordWords(c.missing)}, which no earlier step makes.`}
+                    {isOff ? offNote : c.applicable ? `Stops: ${t.stops}` : `Nothing to check here: it needs the ${recordWords(c.missing)}, which no earlier step makes.`}
                   </div>
                 </div>
-                <span className="text-xs font-semibold text-slate-500">{c.severity === 'block' ? 'Block' : 'Warn'}</span>
+                {!isOff && <span className="text-xs font-semibold text-slate-500">{c.severity === 'block' ? 'Block' : 'Warn'}</span>}
+                {switchFor(c.id, t.title)}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Switched off, but no longer on the step (CGLAB-428 review) */}
+      {stale.length > 0 && !disabled && (
+        <div data-testid="contract-stale-off" className="space-y-1">
+          <div className={section}>Switched off, but no longer on this step</div>
+          {stale.map(id => (
+            <div key={id} className={clsx('flex items-start gap-2', chip)}>
+              <div className="flex-1">
+                <div className="font-medium">{titleOf(id.split(':')[0])}{id.includes(':') ? ` (${id.split(':').slice(1).join(':')})` : ''}</div>
+                <div className="text-xs text-slate-500 dark:text-slate-400">The step no longer runs this check, so the setting cannot be saved. Remove it.</div>
+              </div>
+              <button type="button" aria-label={`Remove the switched-off setting: ${id}`} onClick={() => onChange({ disabledChecks: offIds.filter(x => x !== id) })}
+                className="shrink-0 text-xs font-semibold px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700">
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Checks every step runs (CGLAB-428): shown where they can be, or were, switched off */}
+      {(canSwitch || universal.some(c => off.has(c.id))) && universal.length > 0 && (
+        <div data-testid="contract-universal" className="space-y-1">
+          <div className={section}>Checks every step runs</div>
+          {universal.map(c => {
+            const t = checkText(c.id, catalogue.get(c.id)?.description);
+            const isOff = off.has(c.id);
+            return (
+              <div key={c.id} className={clsx('flex items-start gap-2', chip, isOff && 'opacity-60')}>
+                {isOff && <BellOff size={13} className="mt-0.5 shrink-0 text-amber-600" aria-hidden />}
+                <div className="flex-1">
+                  <div className={clsx('font-medium', isOff && 'line-through')}>{t.title}</div>
+                  <div className="text-xs text-slate-500 dark:text-slate-400">{isOff ? offNote : `Stops: ${t.stops}`}</div>
+                </div>
+                {switchFor(c.id, t.title)}
               </div>
             );
           })}
@@ -164,32 +257,61 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
           const warn = (ref.severity ?? byDefault) === 'warn';
           const setSeverity = (sev: 'block' | 'warn') => {
             const { severity: _s, ...rest } = ref;
-            replace(ref.id, sev === byDefault ? rest : { ...rest, severity: sev });
+            replace(keyOf(ref), sev === byDefault ? rest : { ...rest, severity: sev });
           };
+          const name = String((ref.params as any)?.name ?? '');
+          const isOff = off.has(keyOf(ref));
           return (
-            <div key={ref.id} className={clsx('space-y-2', chip)}>
+            <div key={keyOf(ref)} className={clsx('space-y-2', chip)}>
               <div className="flex items-start gap-2">
+                {isOff && <BellOff size={13} className="mt-0.5 shrink-0 text-amber-600" aria-hidden />}
                 <div className="flex-1">
-                  <div className="font-medium">{t.title}</div>
-                  <div className="text-xs text-slate-500 dark:text-slate-400">Stops: {t.stops}</div>
+                  <div className={clsx('font-medium', isOff && 'line-through')}>{t.title}</div>
+                  <div className="text-xs text-slate-500 dark:text-slate-400">{isOff ? offNote : `Stops: ${t.stops}`}</div>
                 </div>
+                {switchFor(keyOf(ref), isCustom(ref.id) ? `${t.title} (${name})` : t.title)}
                 {!disabled && (
-                  <button type="button" aria-label={`Remove ${t.title}`} onClick={() => replace(ref.id, null)}
+                  <button type="button" aria-label={`Remove ${t.title}`} onClick={() => replace(keyOf(ref), null)}
                     className="p-1 rounded text-slate-400 hover:text-red-500">
                     <Trash2 size={14} />
                   </button>
                 )}
               </div>
-              {Object.entries(d?.params ?? {}).map(([k, p]) => (
-                <label key={k} className="block text-xs">
-                  <span className="text-slate-500 dark:text-slate-400">{p.description}</span>
-                  <select aria-label={p.description} disabled={disabled} value={ref.params?.[k] ?? p.default}
-                    onChange={e => replace(ref.id, withParam(ref, k, e.target.value))}
-                    className="mt-1 block w-full rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1">
-                    {p.values.map(v => <option key={v} value={v}>{v}</option>)}
-                  </select>
-                </label>
-              ))}
+              {Object.entries(d?.params ?? {}).map(([k, p]) => {
+                const field = 'mt-1 block w-full rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1';
+                const value = (ref.params as any)?.[k];
+                const set = (v: string | string[]) => replace(keyOf(ref), withParam(ref, k, v));
+                // Controls by what the param holds (efcacdeb): a name, a command as a list, a text.
+                if (p.kind === 'name') return (
+                  <label key={k} className="block text-xs">
+                    <span className="text-slate-500 dark:text-slate-400">{p.description}</span>
+                    <input aria-label={`Name (${name})`} disabled={disabled} value={String(value ?? '')} onChange={e => set(e.target.value)} className={field} />
+                  </label>
+                );
+                if (p.kind === 'argv') return (
+                  <label key={k} className="block text-xs">
+                    <span className="text-slate-500 dark:text-slate-400">{p.description} One argument per line.</span>
+                    <textarea aria-label={`Command (${name}), one argument per line`} disabled={disabled} rows={3}
+                      value={Array.isArray(value) ? value.join('\n') : ''}
+                      onChange={e => set(e.target.value.split('\n').map(a => a.trim()).filter(Boolean))}
+                      className={clsx(field, 'font-mono')} />
+                  </label>
+                );
+                if (p.kind === 'text') return (
+                  <label key={k} className="block text-xs">
+                    <span className="text-slate-500 dark:text-slate-400">{p.description}</span>
+                    <textarea aria-label={`Instruction (${name})`} disabled={disabled} rows={3} value={String(value ?? '')} onChange={e => set(e.target.value)} className={field} />
+                  </label>
+                );
+                return (
+                  <label key={k} className="block text-xs">
+                    <span className="text-slate-500 dark:text-slate-400">{p.description}</span>
+                    <select aria-label={p.description} disabled={disabled} value={String(value ?? p.default)} onChange={e => set(e.target.value)} className={field}>
+                      {p.values.map(v => <option key={v} value={v}>{v}</option>)}
+                    </select>
+                  </label>
+                );
+              })}
               <div className="flex gap-1 text-xs" role="group" aria-label={`If ${t.title} fails`}>
                 <button type="button" disabled={disabled} aria-pressed={!warn} aria-label={`Block the step: ${t.title}`}
                   onClick={() => setSeverity('block')}
@@ -234,7 +356,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
                     <div className="font-medium">{t.title} <span className="text-xs font-normal text-slate-400">· {GROUP_TEXTS[c.group] ?? c.group}</span></div>
                     <div className="text-xs text-slate-500 dark:text-slate-400">Stops: {t.stops}</div>
                   </div>
-                  <button type="button" aria-label={`Add ${t.title}`} onClick={() => { setChecks([...added, { id: c.id }]); setBrowsing(false); setQuery(''); }}
+                  <button type="button" aria-label={`Add ${t.title}`} onClick={() => { setChecks([...added, c.group === 'custom' ? draft(c.id) : { id: c.id }]); setBrowsing(false); setQuery(''); }}
                     className="text-xs font-semibold px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700">
                     Add
                   </button>
@@ -313,6 +435,9 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
           {musts.map((m, i) => <li key={`m${i}`}>{m}</li>)}
           {warns.map((w, i) => <li key={`w${i}`} className="text-slate-500">Warning only: {w}</li>)}
         </ul>
+        {notRun.length > 0 && (
+          <div className="text-xs text-amber-700 dark:text-amber-400">Not run, switched off by your org's hub: {notRun.join(', ')}</div>
+        )}
       </div>
     </div>
   );

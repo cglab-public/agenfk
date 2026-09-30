@@ -635,6 +635,19 @@ describe('mutation hardening for the gatekeeper (CGLAB-110)', () => {
     expect(d2.message).not.toContain('Active flow ""');
   });
 
+  it("names the role of the step the card is on when none is given (d26832d6 #11)", () => {
+    const withRoles = { name: 'TDD', steps: [
+      { name: 'TODO', order: 0, isAnchor: true },
+      { name: 'CREATE_UNIT_TESTS', order: 1, role: 'test-authoring' },
+      { name: 'REVIEW', order: 2, role: 'review' },
+      { name: 'DONE', order: 3, isAnchor: true },
+    ] } as unknown as GatekeeperFlow;
+    expect(decideGatekeeperAuthorization([item('a', 'CREATE_UNIT_TESTS')], withRoles, {}).message).toContain('AUTHORIZED (TEST-AUTHORING)');
+    expect(decideGatekeeperAuthorization([item('a', 'REVIEW')], withRoles, {}).message).toContain('AUTHORIZED (REVIEW)');
+    // An explicit --role is still the caller's to state.
+    expect(decideGatekeeperAuthorization([item('a', 'REVIEW')], withRoles, { role: 'testing' }).message).toContain('AUTHORIZED (TESTING)');
+  });
+
   it('echoes the no-intent fallback and the default role in the message', () => {
     const d = decideGatekeeperAuthorization([item('a', 'IN_PROGRESS')], tddFlow, {});
     expect(d.message).toContain('Intent: "(no intent provided)"');
@@ -791,6 +804,35 @@ describe('claim conflicts reach the gatekeeper', () => {
   });
 });
 
+describe('claims are per worktree through the gatekeeper (aaa01834)', () => {
+  const card = (id: string, status: string, extra: Partial<GatekeeperItem>): GatekeeperItem => ({ ...item(id, status), ...extra });
+
+  it("authorizes a card whose claim is held by a card in another worktree, resolving each through its parent", () => {
+    const d = decideGatekeeperAuthorization([
+      card('epicA', 'IN_PROGRESS', { type: 'EPIC', worktreePath: '/wt/a' }),
+      card('mine', 'IN_PROGRESS', { parentId: 'epicA', claims: ['packages/server/src/server.ts'] }),
+      card('epicB', 'IN_PROGRESS', { type: 'EPIC', worktreePath: '/wt/b', claims: ['packages/server/src/server.ts'] }),
+    ], tddFlow, { itemId: 'mine', projectRoot: '/repo' });
+    expect(d.authorized, d.message).toBe(true);
+  });
+
+  it('still refuses when both cards fall back to the project root', () => {
+    const d = decideGatekeeperAuthorization([
+      card('mine', 'IN_PROGRESS', { claims: ['a.ts'] }),
+      card('theirs', 'REVIEW', { claims: ['a.ts'] }),
+    ], tddFlow, { itemId: 'mine', projectRoot: '/repo' });
+    expect(d.authorized).toBe(false);
+  });
+
+  it('a card with its own worktree still collides with one at the root when the root is unknown', () => {
+    const d = decideGatekeeperAuthorization([
+      card('mine', 'IN_PROGRESS', { worktreePath: '/wt/a', claims: ['a.ts'] }),
+      card('theirs', 'REVIEW', { claims: ['a.ts'] }),
+    ], tddFlow, { itemId: 'mine' });
+    expect(d.authorized).toBe(false);
+  });
+});
+
 describe('the gatekeeper says when a step commits on leave (CGLAB-388 follow-up)', () => {
   const flowWith = (plan: Record<string, unknown>): GatekeeperFlow => ({
     name: 'Commit Flow',
@@ -841,35 +883,3 @@ describe('stepCommitsOnLeave: one answer to "does leaving this step commit?"', (
   });
 });
 
-
-describe('the claim gate uses the tree the caller is in', () => {
-  it("refuses a collision inside the card's DECLARED worktree even when the shell is at the repo root", () => {
-    const items: GatekeeperItem[] = [
-      { id: 'epic', status: 'IN_PROGRESS', type: 'TASK', worktreePath: '/wt/epic' },
-      { id: 'sib', status: 'IN_PROGRESS', type: 'TASK', parentId: 'epic', claims: ['packages/ui/src/App.tsx'] },
-      { id: 'me', status: 'IN_PROGRESS', type: 'TASK', worktreePath: '/wt/epic', claims: ['packages/ui/src/App.tsx'] },
-    ];
-    const d = decideGatekeeperAuthorization(items, tddFlow, { itemId: 'me', cwd: '/repo' });
-    expect(d.authorized).toBe(false);
-    expect(d.message).toMatch(/CLAIM CONFLICT/);
-  });
-
-  it("refuses a MAIN-checkout collision when the card's own worktree is elsewhere", () => {
-    const items: GatekeeperItem[] = [
-      { id: 'main', status: 'IN_PROGRESS', type: 'TASK', claims: ['src/x.ts'] },
-      { id: 'me', status: 'IN_PROGRESS', type: 'TASK', worktreePath: '/wt/me', claims: ['src/x.ts'] },
-    ];
-    // The agent is editing the main checkout despite owning a worktree.
-    const d = decideGatekeeperAuthorization(items, tddFlow, { itemId: 'me', cwd: '/repo' });
-    expect(d.authorized).toBe(false);
-  });
-
-  it('allows the same path in two separate worktrees', () => {
-    const items: GatekeeperItem[] = [
-      { id: 'a', status: 'IN_PROGRESS', type: 'TASK', worktreePath: '/wt/a', claims: ['src/x.ts'] },
-      { id: 'b', status: 'IN_PROGRESS', type: 'TASK', worktreePath: '/wt/b', claims: ['src/x.ts'] },
-    ];
-    const d = decideGatekeeperAuthorization(items, tddFlow, { itemId: 'a', cwd: '/wt/a/src' });
-    expect(d.authorized).toBe(true);
-  });
-});

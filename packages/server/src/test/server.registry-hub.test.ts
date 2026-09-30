@@ -186,6 +186,20 @@ describe('GET /registry/flows with a hub connection (CGLAB-138)', () => {
     expect(axiosGet).not.toHaveBeenCalled();
   });
 
+  it('keeps the flow-level verifyAt of a hub registry flow (281adef0)', async () => {
+    hubReply = {
+      ok: true, status: 200,
+      body: { repo: 'acme-corp/agenfk-flows', flow: { name: 'Org Parent Flow', description: '', verifyAt: 'parent', steps: [
+        { name: 'TODO', label: 'To Do', order: 0, isAnchor: true },
+        { name: 'BUILD', label: 'Build', order: 1 },
+        { name: 'DONE', label: 'Done', order: 2, isAnchor: true },
+      ] } },
+    };
+    const res = await agent().post('/registry/flows/install').send({ filename: 'org-parent.json' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.verifyAt).toBe('parent');
+  });
+
   it('refuses to install when the hub is unreachable', async () => {
     hubReply = { error: 'ECONNREFUSED' };
     const res = await agent().post('/registry/flows/install').send({ filename: 'x.json' });

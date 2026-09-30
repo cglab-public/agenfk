@@ -70,9 +70,27 @@ function ask(rl, question) {
 }
 
 async function run() {
-    console.log(`${BLUE}=== AgenFK Framework Installation ===${NC}`);
-
     const debuglog = process.argv.includes('--debuglog');
+    // e04dac92: quiet by default. The step-by-step log is `--debuglog` only;
+    // warnings and errors always print; `--quiet` (what `agenfk upgrade` runs,
+    // since it prints its own summary) drops the closing summary too.
+    const quiet = process.argv.includes('--quiet') && !debuglog;
+    const detail = debuglog ? (...args) => console.log(...args) : () => {};
+    const say = quiet ? () => {} : (...args) => console.log(...args);
+    const warn = (msg) => console.log(`${YELLOW}⚠ ${msg}${NC}`);
+    // A child's own output is detail too; on failure, it is the explanation.
+    const childStdio = debuglog ? 'inherit' : 'pipe';
+    // Piped output is buffered; the 1MB default is not enough for an npm ci or
+    // an old macOS-built archive's per-entry tar warnings (ENOBUFS reads as failure).
+    const childMaxBuffer = 64 * 1024 * 1024;
+    const childOutput = (r) => `${r?.stdout ?? ''}${r?.stderr ?? ''}`.trim();
+    // The telemetry notice and next steps are a first install's alone. Keyed on
+    // the CLI shim only this installer writes - not ~/.agenfk/config.json, which
+    // `agenfk config set`, the desktop's settings and hub setup create too.
+    const firstInstall = !existsSync(path.join(os.homedir(), '.local', 'bin', os.platform() === 'win32' ? 'agenfk.cmd' : 'agenfk'));
+    let installedVersion = '';
+    try { installedVersion = JSON.parse(readFileSync(path.join(rootDir, 'package.json'), 'utf8')).version || ''; } catch { /* unversioned tree */ }
+    detail(`${BLUE}=== AgenFK Framework Installation ===${NC}`);
     const onlyPlatform = process.argv.find(arg => arg.startsWith('--only='))?.split('=')[1];
     const skipPlatform = process.argv.find(arg => arg.startsWith('--skip='))?.split('=')[1];
     const rulesScopeArg = process.argv.find(arg => arg.startsWith('--rules-scope='))?.split('=')[1];
@@ -284,7 +302,7 @@ async function run() {
         // Without this guard, running install.mjs from a clone wipes
         // packages/*/src (the cleanup assumes a dist-only tarball layout).
         if (existsSync(path.join(rootDir, '.git'))) {
-            console.log('  Skipping stale-source cleanup (dev checkout detected: .git present).');
+            detail('  Skipping stale-source cleanup (dev checkout detected: .git present).');
             return;
         }
         let cleaned = 0;
@@ -295,7 +313,7 @@ async function run() {
                 cleaned++;
             }
         }
-        if (cleaned > 0) console.log(`  Removed ${cleaned} stale source director${cleaned === 1 ? 'y' : 'ies'} (pre-built mode).`);
+        if (cleaned > 0) detail(`  Removed ${cleaned} stale source director${cleaned === 1 ? 'y' : 'ies'} (pre-built mode).`);
     }
 
     // If dists are missing, attempt to re-download the release tarball for this version.
@@ -315,7 +333,7 @@ async function run() {
         const url = `https://github.com/${REPO}/releases/download/${tag}/agenfk-dist.tar.gz`;
         const tmpFile = path.join(os.tmpdir(), `agenfk-heal-${Date.now()}.tar.gz`);
 
-        console.log(`${YELLOW}[1/14] Pre-built artifacts missing — auto-heal re-download for ${tag}...${NC}`);
+        warn(`Pre-built artifacts missing — re-downloading ${tag}...`);
         try {
             // Try curl first
             const curlResult = spawnSync('curl', ['-fsSL', '-o', tmpFile, url], { stdio: 'pipe' });
@@ -335,8 +353,8 @@ async function run() {
             const tarArgs = os.platform() === 'win32'
                 ? ['--force-local', '-xzf', toPosixPath(tmpFile), '-C', toPosixPath(rootDir)]
                 : ['-xzf', tmpFile, '-C', rootDir];
-            const tarResult = spawnSync('tar', tarArgs, { stdio: 'inherit' });
-            if (tarResult.status !== 0) return false;
+            const tarResult = spawnSync('tar', tarArgs, { stdio: childStdio, encoding: 'utf8', maxBuffer: childMaxBuffer });
+            if (tarResult.status !== 0) { if (childOutput(tarResult)) console.error(childOutput(tarResult)); return false; }
             // This extraction is an overlay like any other, and it holds the
             // only authoritative listing this run will ever see — the finally
             // below deletes it. Prune here or the auto-healed install keeps
@@ -344,7 +362,7 @@ async function run() {
             // exact leak step 1c exists to close. (1c cannot help: it runs
             // before this, and there is no --dist-tarball on this path.)
             healedArchive = tmpFile;
-            console.log(`${GREEN}  Re-download complete.${NC}`);
+            detail(`${GREEN}  Re-download complete.${NC}`);
             return true;
         } catch { return false; } finally {
             // Kept alive ONLY when step 1a will still run and needs its listing.
@@ -391,7 +409,7 @@ async function run() {
         }
 
         debugLog('decision: all pre-built dists present');
-        console.log(`${GREEN}[1/14] Pre-built dist bundles verified.${NC}`);
+        detail(`${GREEN}[1/14] Pre-built dist bundles verified.${NC}`);
 
     // 1a. Prune the INSTALL DIR against the tarball that was just extracted.
     //
@@ -442,7 +460,7 @@ async function run() {
     // read "Skipped: not found" and silently degrade to no prune.
     delete process.env.AGENFK_DIST_TARBALL;
     if (tarball) {
-        console.log(`${GREEN}[1a/14] Pruning install dir against the release archive...${NC}`);
+        detail(`${GREEN}[1a/14] Pruning install dir against the release archive...${NC}`);
         // A distributed tarball never contains .git, so its presence means a
         // developer's working tree, and pruning that against a RELEASE archive
         // would silently delete their in-flight commands, skills and rules.
@@ -461,9 +479,9 @@ async function run() {
         const installDir = path.join(os.homedir(), '.agenfk-system');
         const isInstallDir = path.resolve(rootDir) === path.resolve(installDir);
         if (existsSync(path.join(rootDir, '.git')) && !isInstallDir) {
-            console.log('  Skipping (dev checkout detected: .git present).');
+            detail('  Skipping (dev checkout detected: .git present).');
         } else if (!existsSync(tarball)) {
-            console.log(`${YELLOW}  Skipped: ${tarball} not found${NC}`);
+            warn(`Not pruning the install dir: ${tarball} not found`);
         } else {
             try {
                 const { pruneInstallDirAgainstManifest } = await import(
@@ -476,12 +494,12 @@ async function run() {
                 const listing = execSync(`tar ${listFlags} "${toPosixPath(tarball)}"`, { encoding: 'utf8' })
                     .split('\n').filter(Boolean);
                 const { removed, failed } = pruneInstallDirAgainstManifest(rootDir, listing);
-                for (const rel of removed) console.log(`  Pruned (no longer shipped): ${rel}`);
-                for (const f of failed) console.log(`${YELLOW}  Could not prune ${f.path}: ${f.reason}${NC}`);
-                if (removed.length === 0 && failed.length === 0) console.log('  Nothing stale found');
+                for (const rel of removed) detail(`  Pruned (no longer shipped): ${rel}`);
+                for (const f of failed) warn(`Could not prune ${f.path}: ${f.reason}`);
+                if (removed.length === 0 && failed.length === 0) detail('  Nothing stale found');
             } catch (e) {
                 // Never fail an upgrade over the prune, but never hide it either.
-                console.log(`${YELLOW}  Skipped: ${e.message}${NC}`);
+                warn(`Not pruning the install dir: ${e.message}`);
             }
         }
         if (healedArchive) {
@@ -509,23 +527,26 @@ async function run() {
         const nodeModulesPath = path.join(rootDir, 'node_modules');
         const npmCiCmd = (os.platform() === 'win32' && !isMinGW) ? 'npm.cmd' : 'npm';
         if (!existsSync(nodeModulesPath)) {
-            console.log(`${GREEN}[1b/14] Installing production dependencies (npm ci --omit=dev)...${NC}`);
+            detail(`${GREEN}[1b/14] Installing production dependencies (npm ci --omit=dev)...${NC}`);
         } else {
-            console.log(`${GREEN}[1b/14] Production dependencies already present, skipping npm ci.${NC}`);
+            detail(`${GREEN}[1b/14] Refreshing production dependencies (npm ci --omit=dev)...${NC}`);
         }
         const npmCiResult = spawnSync(npmCiCmd, ['ci', '--omit=dev', '--ignore-scripts'], {
             cwd: rootDir,
-            stdio: 'inherit',
+            stdio: childStdio,
+            encoding: 'utf8',
+            maxBuffer: childMaxBuffer,
             shell: os.platform() === 'win32', // .cmd scripts need shell on Windows (MinGW + native)
         });
         if (npmCiResult.status !== 0) {
-            console.log(`${YELLOW}  Warning: npm ci failed (exit ${npmCiResult.status}). Run 'npm ci --omit=dev' manually in ${rootDir} if agenfk commands fail to resolve modules.${NC}`);
+            if (childOutput(npmCiResult)) console.log(childOutput(npmCiResult));
+            warn(`npm ci failed (${npmCiResult.error ? npmCiResult.error.message : `exit ${npmCiResult.status}`}). Run 'npm ci --omit=dev' manually in ${rootDir} if agenfk commands fail to resolve modules.`);
         }
     }
 
     // 2. Generate install-time secret verify token
     if (!onlyPlatform) {
-        console.log(`${GREEN}[2/14] Generating secret verify token...${NC}`);
+        detail(`${GREEN}[2/14] Generating secret verify token...${NC}`);
         if (!existsSync(agenfkHome)) {
             await fs.mkdir(agenfkHome, { recursive: true });
         }
@@ -534,9 +555,9 @@ async function run() {
             const token = crypto.randomBytes(32).toString('hex');
             await fs.writeFile(tokenPath, token, 'utf8');
             chmodSync(tokenPath, 0o600);
-            console.log(`  Generated: ${tokenPath}`);
+            detail(`  Generated: ${tokenPath}`);
         } else {
-            console.log(`  Token already exists: ${tokenPath}`);
+            detail(`  Token already exists: ${tokenPath}`);
         }
     }
 
@@ -550,7 +571,7 @@ async function run() {
             existingConfig = JSON.parse(readFileSync(agenfkConfigPath, 'utf8'));
             if (existingConfig.dbPath) {
                 dbPath = existingConfig.dbPath;
-                if (!onlyPlatform) console.log(`  Using existing database configuration: ${dbPath}`);
+                if (!onlyPlatform) detail(`  Using existing database configuration: ${dbPath}`);
             }
         } catch (e) {}
     }
@@ -565,7 +586,7 @@ async function run() {
         ? false
         : (withMcpArg || process.env.AGENFK_WITH_MCP === '1' || existingConfig.withMcp === true);
     if (!onlyPlatform) {
-        console.log(withMcp
+        detail(withMcp
             ? `  MCP: enabled (registering agenfk MCP server with detected clients)`
             : `  MCP: disabled — CLI-only mode (pass --with-mcp to register the MCP server)`);
     }
@@ -575,7 +596,7 @@ async function run() {
     // across flag-less upgrades instead of silently re-registering.
     const codexMcp = shouldRegisterCodexMcp({ noMcp: noMcpArg, withMcp, persistedCodexMcp: existingConfig.codexMcp });
     if (!onlyPlatform || onlyPlatform === 'codex') {
-        console.log(`  MCP (Codex): ${codexMcp ? 'enabled by default' : 'disabled (--no-mcp)'}`);
+        detail(`  MCP (Codex): ${codexMcp ? 'enabled by default' : 'disabled (--no-mcp)'}`);
     }
 
     // Resolve rulesScope: CLI flag → AGENFK_RULES_SCOPE env → config → prompt (TTY only).
@@ -595,19 +616,19 @@ async function run() {
         rl.close();
         rulesScope = answer.trim().toLowerCase() === 'project' ? 'project' : 'global';
     }
-    if (!onlyPlatform) console.log(`  Rules scope: ${rulesScope}`);
+    if (!onlyPlatform) detail(`  Rules scope: ${rulesScope}`);
 
     let configDirty = false;
 
     if (!dbPath || dbPath.endsWith('.json')) {
         // Always use SQLite. If a legacy .json path was configured, remap it.
         if (dbPath && dbPath.endsWith('.json')) {
-            console.log(`  Remapping legacy JSON database path to SQLite...`);
+            detail(`  Remapping legacy JSON database path to SQLite...`);
         } else if (!onlyPlatform) {
-            console.log(`${GREEN}[3/14] Configuring database engine (SQLite)...${NC}`);
+            detail(`${GREEN}[3/14] Configuring database engine (SQLite)...${NC}`);
         }
         dbPath = path.join(rootDir, '.agenfk', 'db.sqlite');
-        console.log(`  Using: SQLITE (${dbPath})`);
+        detail(`  Using: SQLITE (${dbPath})`);
         configDirty = true;
     }
 
@@ -627,7 +648,7 @@ async function run() {
         // 3a. Write ~/.agenfk/config.json
         const configData = { ...existingConfig, dbPath, rulesScope, withMcp, codexMcp, telemetry: existingConfig.telemetry ?? true };
         await fs.writeFile(agenfkConfigPath, JSON.stringify(configData, null, 2), 'utf8');
-        console.log(`  Config written: ${agenfkConfigPath}`);
+        detail(`  Config written: ${agenfkConfigPath}`);
     }
 
     debugLog('dbPath resolved:', dbPath || '(empty — not yet set)');
@@ -650,7 +671,7 @@ async function run() {
 
     // --rules-only: skip steps 3b–12, jump straight to rules installation (step 13)
     if (rulesOnly) {
-        console.log(`${BLUE}  --rules-only: skipping non-rules steps, jumping to rules installation...${NC}`);
+        detail(`${BLUE}  --rules-only: skipping non-rules steps, jumping to rules installation...${NC}`);
     }
 
     if (!rulesOnly) {
@@ -670,9 +691,9 @@ async function run() {
                     projects: data.projects || [],
                     items: data.items || [],
                 }, null, 2));
-                console.log(`  ${GREEN}Legacy db.json detected — data staged for migration to SQLite on first server start.${NC}`);
+                detail(`  ${GREEN}Legacy db.json detected — data staged for migration to SQLite on first server start.${NC}`);
             } catch (e) {
-                console.log(`  ${YELLOW}Warning: Could not read db.json for migration: ${e.message}${NC}`);
+                warn(`Could not read db.json for migration: ${e.message}`);
             }
         }
     }
@@ -687,7 +708,7 @@ async function run() {
                 .sort()
                 .reverse();
             if (backups.length > 0) {
-                console.log(`\n${YELLOW}  Found ${backups.length} backup(s) in ${backupDir}.${NC}`);
+                console.log(`${YELLOW}Found ${backups.length} backup(s) in ${backupDir}.${NC}`);
                 backups.slice(0, 5).forEach((f, i) => console.log(`  [${i + 1}] ${f}`));
                 const rl2 = readline.createInterface({ input: process.stdin, output: process.stdout });
                 try {
@@ -706,10 +727,10 @@ async function run() {
 
     // 4. Ensure configuration exists
     if (!onlyPlatform) {
-        console.log(`${GREEN}[4/14] Initializing configuration...${NC}`);
+        detail(`${GREEN}[4/14] Initializing configuration...${NC}`);
         const localConfigDir = path.join(rootDir, '.agenfk');
         if (!existsSync(localConfigDir)) {
-            spawnSync(process.execPath, [path.join(rootDir, 'packages/cli/bin/agenfk.js'), 'init'], { stdio: 'inherit' });
+            spawnSync(process.execPath, [path.join(rootDir, 'packages/cli/bin/agenfk.js'), 'init'], { stdio: childStdio });
         }
     }
 
@@ -726,7 +747,7 @@ async function run() {
 
     // 6. Configure Opencode MCP
     if (withMcp && shouldRun('opencode')) {
-        console.log(`${GREEN}[6/14] Configuring Opencode MCP...${NC}`);
+        detail(`${GREEN}[6/14] Configuring Opencode MCP...${NC}`);
         const opencodeConfigPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
         const opencodeInstalled = spawnSync(getCliCommand('opencode'), ['--version'], { stdio: 'ignore' }).status === 0;
         if (existsSync(opencodeConfigPath) || opencodeInstalled) {
@@ -739,7 +760,7 @@ async function run() {
                     }
                 } else {
                     await fs.mkdir(path.dirname(opencodeConfigPath), { recursive: true });
-                    console.log(`  Opencode detected but opencode.json missing — creating it.`);
+                    detail(`  Opencode detected but opencode.json missing — creating it.`);
                 }
                 if (!config.mcp) config.mcp = {};
 
@@ -754,18 +775,18 @@ async function run() {
                 };
 
                 await fs.writeFile(opencodeConfigPath, JSON.stringify(config, null, 2));
-                console.log(`  Written: ${opencodeConfigPath}`);
+                detail(`  Written: ${opencodeConfigPath}`);
             } catch (e) {
                 console.error('Error updating opencode.json:', e.message);
             }
         } else if (!onlyPlatform) {
-            console.log(`Opencode not found. Skipping opencode.json configuration.`);
+            detail(`Opencode not found. Skipping opencode.json configuration.`);
         }
     }
 
     // 6b. Configure Cursor MCP
     if (withMcp && shouldRun('cursor')) {
-        console.log(`${GREEN}[6b/14] Configuring Cursor MCP...${NC}`);
+        detail(`${GREEN}[6b/14] Configuring Cursor MCP...${NC}`);
         const cursorMcpPath = getCursorMcpPath();
         const cursorConfigDir = path.dirname(cursorMcpPath);
         const cursorCmd = getCliCommand('cursor');
@@ -781,7 +802,7 @@ async function run() {
                     }
                 } else {
                     await fs.mkdir(cursorConfigDir, { recursive: true });
-                    console.log(`  Cursor config dir not found — creating it.`);
+                    detail(`  Cursor config dir not found — creating it.`);
                 }
                 if (!cursorMcp.mcpServers) cursorMcp.mcpServers = {};
 
@@ -800,12 +821,12 @@ async function run() {
                 };
 
                 await fs.writeFile(cursorMcpPath, JSON.stringify(cursorMcp, null, 2));
-                console.log(`  Written: ${cursorMcpPath}`);
+                detail(`  Written: ${cursorMcpPath}`);
             } catch (e) {
                 console.error('Error updating Cursor mcp.json:', e.message);
             }
         } else if (!onlyPlatform) {
-            console.log(`  Cursor not found. Skipping Cursor MCP configuration.`);
+            detail(`  Cursor not found. Skipping Cursor MCP configuration.`);
         }
     }
 
@@ -813,12 +834,12 @@ async function run() {
     // clients. Codex's sandbox often blocks outbound localhost, so the CLI can't
     // reach the local API server; the MCP stdio server is not sandbox-restricted.
     if (codexMcp && shouldRun('codex')) {
-        console.log(`${GREEN}[6c/14] Configuring Codex MCP (default for Codex)...${NC}`);
+        detail(`${GREEN}[6c/14] Configuring Codex MCP (default for Codex)...${NC}`);
         const codexCmd = getCliCommand('codex');
         const codexInstalled = spawnSync(codexCmd, ['--version'], { stdio: 'ignore' }).status === 0;
         if (codexInstalled) {
             try {
-                console.log("  Registering AgenFK MCP server with Codex...");
+                detail("  Registering AgenFK MCP server with Codex...");
                 // Remove any existing registration first (ignore errors if not registered)
                 spawnSync(codexCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'ignore' });
                 const result = spawnSync(codexCmd, [
@@ -827,28 +848,29 @@ async function run() {
                     '--',
                     'agenfk',
                     'node', serverPath
-                ], { stdio: 'inherit' });
+                ], { stdio: childStdio, encoding: 'utf8', maxBuffer: childMaxBuffer });
                 if (result.status === 0) {
-                    console.log(`  ${GREEN}Registered agenfk MCP server with Codex.${NC}`);
+                    detail(`  ${GREEN}Registered agenfk MCP server with Codex.${NC}`);
                 } else {
-                    console.log(`  ${YELLOW}Warning: codex mcp add returned non-zero. Verify manually.${NC}`);
+                    if (childOutput(result)) console.log(childOutput(result));
+                    warn(`codex mcp add returned non-zero. Verify manually.`);
                 }
             } catch (e) {
                 console.error('  Error configuring Codex MCP:', e.message);
             }
         } else if (!onlyPlatform) {
-            console.log(`  Codex not found. Skipping Codex MCP configuration.`);
+            detail(`  Codex not found. Skipping Codex MCP configuration.`);
         }
     }
 
     // 6d. Configure Gemini CLI MCP
     if (withMcp && shouldRun('gemini')) {
-        console.log(`${GREEN}[6d/14] Configuring Gemini CLI MCP...${NC}`);
+        detail(`${GREEN}[6d/14] Configuring Gemini CLI MCP...${NC}`);
         const geminiCmd = getCliCommand('gemini');
         const geminiInstalled = spawnSync(geminiCmd, ['--version'], { stdio: 'ignore' }).status === 0;
         if (geminiInstalled) {
             try {
-                console.log("  Registering AgenFK MCP server with Gemini CLI...");
+                detail("  Registering AgenFK MCP server with Gemini CLI...");
                 // Remove any existing registration first (ignore errors if not registered)
                 spawnSync(geminiCmd, ['mcp', 'remove', '-s', 'user', 'agenfk'], { stdio: 'ignore' });
                 const result = spawnSync(geminiCmd, [
@@ -857,17 +879,18 @@ async function run() {
                     '-e', `AGENFK_DB_PATH=${dbPath}`,
                     'agenfk',
                     'node', serverPath
-                ], { stdio: 'inherit' });
+                ], { stdio: childStdio, encoding: 'utf8', maxBuffer: childMaxBuffer });
                 if (result.status === 0) {
-                    console.log(`  ${GREEN}Registered agenfk MCP server with Gemini CLI.${NC}`);
+                    detail(`  ${GREEN}Registered agenfk MCP server with Gemini CLI.${NC}`);
                 } else {
-                    console.log(`  ${YELLOW}Warning: gemini mcp add returned non-zero. Verify manually.${NC}`);
+                    if (childOutput(result)) console.log(childOutput(result));
+                    warn(`gemini mcp add returned non-zero. Verify manually.`);
                 }
             } catch (e) {
                 console.error('  Error configuring Gemini CLI MCP:', e.message);
             }
         } else if (!onlyPlatform) {
-            console.log(`  Gemini CLI not found. Skipping Gemini CLI MCP configuration.`);
+            detail(`  Gemini CLI not found. Skipping Gemini CLI MCP configuration.`);
         }
     }
 
@@ -876,7 +899,7 @@ async function run() {
     // to CLI-only instead of leaving a half-state where old registrations linger.
     // Idempotent: removing an unregistered server is a no-op.
     if (!withMcp) {
-        console.log(`${GREEN}[6e/14] Ensuring CLI-only mode (unregistering any existing agenfk MCP server)...${NC}`);
+        detail(`${GREEN}[6e/14] Ensuring CLI-only mode (unregistering any existing agenfk MCP server)...${NC}`);
 
         if (shouldRun('claude')) {
             const claudeCmd = getCliCommand('claude');
@@ -907,7 +930,7 @@ async function run() {
                     if (cfg.mcp && cfg.mcp.agenfk) {
                         delete cfg.mcp.agenfk;
                         await fs.writeFile(opencodeConfigPath, JSON.stringify(cfg, null, 2));
-                        console.log(`  Removed agenfk MCP from ${opencodeConfigPath}`);
+                        detail(`  Removed agenfk MCP from ${opencodeConfigPath}`);
                     }
                 } catch (e) {
                     console.error('  Error cleaning opencode.json:', e.message);
@@ -922,7 +945,7 @@ async function run() {
                     if (cursorMcp.mcpServers && cursorMcp.mcpServers.agenfk) {
                         delete cursorMcp.mcpServers.agenfk;
                         await fs.writeFile(cursorMcpPath, JSON.stringify(cursorMcp, null, 2));
-                        console.log(`  Removed agenfk MCP from ${cursorMcpPath}`);
+                        detail(`  Removed agenfk MCP from ${cursorMcpPath}`);
                     }
                 } catch (e) {
                     console.error('  Error cleaning Cursor mcp.json:', e.message);
@@ -935,20 +958,20 @@ async function run() {
 
     // 8. Install AgenFK Skills
     if (shouldRun('opencode')) {
-        console.log(`${GREEN}[8/14] Installing agenfk skills (Opencode)...${NC}`);
+        detail(`${GREEN}[8/14] Installing agenfk skills (Opencode)...${NC}`);
         const skillsDir = path.join(os.homedir(), '.config', 'opencode', 'skills', 'agenfk');
         await fs.mkdir(skillsDir, { recursive: true });
         const skillSource = path.join(rootDir, 'SKILL.md');
         if (existsSync(skillSource)) {
             await fs.copyFile(skillSource, path.join(skillsDir, 'SKILL.md'));
-            console.log(`Successfully installed agenfk skills to ${skillsDir}`);
+            detail(`Successfully installed agenfk skills to ${skillsDir}`);
         } else if (!onlyPlatform) {
-            console.log(`SKILL.md not found in ${rootDir}. Skipping skills installation.`);
+            detail(`SKILL.md not found in ${rootDir}. Skipping skills installation.`);
         }
     }
 
     // 8b. Install agenfk-flow skill for all platforms
-    console.log(`${GREEN}[8b/14] Installing agenfk-flow skill...${NC}`);
+    detail(`${GREEN}[8b/14] Installing agenfk-flow skill...${NC}`);
 
     // Claude Code: ~/.claude/skills/<name>/SKILL.md (all 16 skills)
     if (shouldRun('claude')) {
@@ -984,7 +1007,7 @@ async function run() {
                 }
                 const dest = path.join(skillDir, 'SKILL.md');
                 await fs.writeFile(dest, content, 'utf8');
-                console.log(`  Installed Claude Skill: ${dest}`);
+                detail(`  Installed Claude Skill: ${dest}`);
             }
         }
     }
@@ -996,9 +1019,9 @@ async function run() {
             const opencodeFlowSkillDir = path.join(os.homedir(), '.config', 'opencode', 'skills', 'agenfk-flow');
             await fs.mkdir(opencodeFlowSkillDir, { recursive: true });
             await fs.copyFile(opencodeFlowSkillSource, path.join(opencodeFlowSkillDir, 'SKILL.md'));
-            console.log(`  Installed: ${path.join(opencodeFlowSkillDir, 'SKILL.md')}`);
+            detail(`  Installed: ${path.join(opencodeFlowSkillDir, 'SKILL.md')}`);
         } else if (!onlyPlatform) {
-            console.log(`  ${YELLOW}Warning: skills/opencode/agenfk-flow/SKILL.md not found. Skipping.${NC}`);
+            warn(`skills/opencode/agenfk-flow/SKILL.md not found. Skipping.`);
         }
     }
 
@@ -1009,9 +1032,9 @@ async function run() {
             const cursorRulesDir = getCursorRulesDir();
             await fs.mkdir(cursorRulesDir, { recursive: true });
             await fs.copyFile(cursorFlowSkillSource, path.join(cursorRulesDir, 'agenfk-flow.mdc'));
-            console.log(`  Installed: ${path.join(cursorRulesDir, 'agenfk-flow.mdc')}`);
+            detail(`  Installed: ${path.join(cursorRulesDir, 'agenfk-flow.mdc')}`);
         } else if (!onlyPlatform) {
-            console.log(`  ${YELLOW}Warning: skills/cursor/agenfk-flow.mdc not found. Skipping.${NC}`);
+            warn(`skills/cursor/agenfk-flow.mdc not found. Skipping.`);
         }
     }
 
@@ -1022,9 +1045,9 @@ async function run() {
             const codexDir = path.join(os.homedir(), '.codex');
             await fs.mkdir(codexDir, { recursive: true });
             await fs.copyFile(codexFlowSkillSource, path.join(codexDir, 'agenfk-flow.md'));
-            console.log(`  Installed: ${path.join(codexDir, 'agenfk-flow.md')}`);
+            detail(`  Installed: ${path.join(codexDir, 'agenfk-flow.md')}`);
         } else if (!onlyPlatform) {
-            console.log(`  ${YELLOW}Warning: skills/codex/agenfk-flow.md not found. Skipping.${NC}`);
+            warn(`skills/codex/agenfk-flow.md not found. Skipping.`);
         }
     }
 
@@ -1035,16 +1058,16 @@ async function run() {
             const geminiDir = path.join(os.homedir(), '.gemini');
             await fs.mkdir(geminiDir, { recursive: true });
             await fs.copyFile(geminiFlowSkillSource, path.join(geminiDir, 'agenfk-flow.md'));
-            console.log(`  Installed: ${path.join(geminiDir, 'agenfk-flow.md')}`);
+            detail(`  Installed: ${path.join(geminiDir, 'agenfk-flow.md')}`);
         } else if (!onlyPlatform) {
-            console.log(`  ${YELLOW}Warning: skills/gemini/agenfk-flow.md not found. Skipping.${NC}`);
+            warn(`skills/gemini/agenfk-flow.md not found. Skipping.`);
         }
     }
 
     // 8e. Universal skills: install all commands/*.md to ~/.agents/skills/<name>/SKILL.md
     // This path is the primary skill discovery location for Codex and is also supported
     // by OpenCode, Gemini CLI, Cursor, and other agents-compatible tools.
-    console.log(`${GREEN}[8e/14] Installing universal skills (~/.agents/skills/)...${NC}`);
+    detail(`${GREEN}[8e/14] Installing universal skills (~/.agents/skills/)...${NC}`);
     {
         const agentsSkillsDir = path.join(os.homedir(), '.agents', 'skills');
         const commandsDir = path.join(rootDir, 'commands');
@@ -1063,7 +1086,7 @@ async function run() {
                 }
                 const dest = path.join(skillDir, 'SKILL.md');
                 writeFileSync(dest, content, 'utf8');
-                console.log(`  Installed: ${dest}`);
+                detail(`  Installed: ${dest}`);
             }
         }
     }
@@ -1073,7 +1096,7 @@ async function run() {
     // the agenfk framework itself and moved to the repo's own .claude/commands/;
     // they used to ship globally, so upgrades must delete the old copies from
     // every client target (uninstall already removes them via the agenfk* glob).
-    console.log(`${GREEN}[8f/14] Removing stale repo-private release commands...${NC}`);
+    detail(`${GREEN}[8f/14] Removing stale repo-private release commands...${NC}`);
     {
         const stale = ['agenfk-release', 'agenfk-release-beta', 'agenfk-release-hub'];
         const targets = [];
@@ -1099,7 +1122,7 @@ async function run() {
         for (const target of targets) {
             if (existsSync(target)) {
                 await fs.rm(target, { recursive: true, force: true });
-                console.log(`  Removed stale: ${target}`);
+                detail(`  Removed stale: ${target}`);
             }
         }
     }
@@ -1110,7 +1133,7 @@ async function run() {
     const cliDest = os.platform() === 'win32' ? `${cliDestBase}.cmd` : cliDestBase;
 
     if (!onlyPlatform) {
-        console.log(`${GREEN}[9/14] Installing agenfk command to ~/.local/bin...${NC}`);
+        detail(`${GREEN}[9/14] Installing agenfk command to ~/.local/bin...${NC}`);
         await fs.mkdir(localBinDir, { recursive: true });
         
         if (os.platform() === 'win32') {
@@ -1131,7 +1154,7 @@ async function run() {
                 chmodSync(cliDestBase, 0o755);
             }
         }
-        console.log(`  Installed: ${cliDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);
+        detail(`  Installed: ${cliDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);
 
         // Ensure ~/.local/bin is on PATH in shell rc files (Linux/macOS only)
         if (os.platform() !== 'win32') {
@@ -1151,7 +1174,7 @@ async function run() {
                         if (!existing.includes('.local/bin')) {
                             await fs.appendFile(rc, exportLine, 'utf8');
                             rcModified = true;
-                            console.log(`  Added ~/.local/bin to PATH in ${path.basename(rc)}`);
+                            detail(`  Added ~/.local/bin to PATH in ${path.basename(rc)}`);
                         }
                     } catch { /* skip unwritable files */ }
                 }
@@ -1161,10 +1184,12 @@ async function run() {
             // freshly-created symlink — point at the real fix instead.
             const shell = path.basename(process.env.SHELL || '');
             const sourceHint = shellSourceHint({ rcModified, shell });
+            // e04dac92: nothing to say when ~/.local/bin is already on PATH - the
+            // upgrade case, where this used to print on every run.
             if (sourceHint) {
-                console.log(`\n${YELLOW}  ⚠ Open a new terminal (or run: ${sourceHint}) for 'agenfk' to be available in your PATH.${NC}`);
-            } else {
-                console.log(`\n${YELLOW}  ⚠ '${cliDestBase}' is ready. If your shell doesn't find 'agenfk' yet, open a new terminal (or run: hash -r).${NC}`);
+                warn(`Open a new terminal (or run: ${sourceHint}) for 'agenfk' to be available in your PATH.`);
+            } else if (!alreadyOnPath) {
+                warn(`'${cliDestBase}' is ready. If your shell doesn't find 'agenfk' yet, open a new terminal (or run: hash -r).`);
             }
         }
     }
@@ -1177,7 +1202,7 @@ async function run() {
 
     for (const integration of integrations) {
         if (shouldRun(integration.platform)) {
-            console.log(`${GREEN}[10-11/14] Installing global slash commands (${integration.name})...${NC}`);
+            detail(`${GREEN}[10-11/14] Installing global slash commands (${integration.name})...${NC}`);
             await fs.mkdir(integration.targetBase, { recursive: true });
             const commandsDir = path.join(rootDir, 'commands');
             if (existsSync(commandsDir)) {
@@ -1185,7 +1210,7 @@ async function run() {
                 for (const file of files) {
                     if (isInstallableMarkdown(file) && !isRepoPrivateCommand(file)) {
                         await fs.copyFile(path.join(commandsDir, file), path.join(integration.targetBase, file));
-                        console.log(`  Installed: ${path.join(integration.targetBase, file)}`);
+                        detail(`  Installed: ${path.join(integration.targetBase, file)}`);
                     }
                 }
             }
@@ -1196,7 +1221,7 @@ async function run() {
     if (shouldRun('gemini')) {
         const geminiInstalled = spawnSync(getCliCommand('gemini'), ['--version'], { stdio: 'ignore' }).status === 0;
         if (geminiInstalled) {
-            console.log(`${GREEN}[10c/14] Installing global slash commands (Gemini CLI)...${NC}`);
+            detail(`${GREEN}[10c/14] Installing global slash commands (Gemini CLI)...${NC}`);
             const geminiCommandsBase = path.join(os.homedir(), '.gemini', 'commands');
             const geminiCommandsSubdir = path.join(geminiCommandsBase, 'agenfk');
             await fs.mkdir(geminiCommandsSubdir, { recursive: true });
@@ -1226,11 +1251,11 @@ async function run() {
                         tomlDest = path.join(geminiCommandsSubdir, `${subName}.toml`);
                     }
                     writeFileSync(tomlDest, tomlContent, 'utf8');
-                    console.log(`  Installed: ${tomlDest}`);
+                    detail(`  Installed: ${tomlDest}`);
                 }
             }
         } else if (!onlyPlatform) {
-            console.log(`${GREEN}[10c/14] Gemini CLI not found. Skipping Gemini slash commands.${NC}`);
+            detail(`${GREEN}[10c/14] Gemini CLI not found. Skipping Gemini slash commands.${NC}`);
         }
     }
 
@@ -1246,7 +1271,7 @@ async function run() {
     //
     // MUST run after every sync step (8b/8e skills AND 10/11/10c commands), or
     // it heals only the dirs written before it. (CGLAB-94 / issue #163)
-    console.log(`${GREEN}[11b/14] Sweeping stale macOS metadata artifacts...${NC}`);
+    detail(`${GREEN}[11b/14] Sweeping stale macOS metadata artifacts...${NC}`);
     {
         // Shared dirs: only ever remove OUR litter. An AppleDouble twin is named
         // after the file it shadows, so ours are exactly `._agenfk*`; a bare
@@ -1292,11 +1317,11 @@ async function run() {
             }
         };
         if (isDevCheckout) {
-            console.log('  Skipping install-dir sweep (dev checkout detected: .git present).');
+            detail('  Skipping install-dir sweep (dev checkout detected: .git present).');
         } else {
             sweepTree(rootDir);
         }
-        console.log(swept > 0 ? `  Removed ${swept} stale macOS metadata artifact(s)` : '  None found');
+        detail(swept > 0 ? `  Removed ${swept} stale macOS metadata artifact(s)` : '  None found');
     }
 
 
@@ -1316,7 +1341,7 @@ async function run() {
     }
 
     if (!onlyPlatform) {
-        console.log(`${GREEN}[12/14] Installing agenfk-gatekeeper hook script...${NC}`);
+        detail(`${GREEN}[12/14] Installing agenfk-gatekeeper hook script...${NC}`);
         if (os.platform() === 'win32') {
             // Always write .cmd on Windows
             await fs.writeFile(`${gatekeeperDestBase}.cmd`, `@echo off\nnode "${gatekeeperSource}" %*`, 'utf8');
@@ -1331,7 +1356,7 @@ async function run() {
                 chmodSync(gatekeeperDestBase, 0o755);
             }
         }
-        console.log(`  Installed: ${gatekeeperDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);
+        detail(`  Installed: ${gatekeeperDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);
 
         // 12b. Install MCP enforcer hook script (blocks direct db/REST/CLI bypass routes)
         const enforcerSource = path.join(rootDir, 'bin', 'agenfk-mcp-enforcer.mjs');
@@ -1348,7 +1373,7 @@ async function run() {
                 chmodSync(enforcerDestBase, 0o755);
             }
         }
-        console.log(`  Installed: ${enforcerDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);
+        detail(`  Installed: ${enforcerDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);
 
         // 12d. Install agenfk-pr-hook into ~/.local/bin (the ~/.agenfk/bin mirror
         // is handled unconditionally above so --only installs are self-sufficient).
@@ -1366,7 +1391,7 @@ async function run() {
                 chmodSync(prHookDestBase, 0o755);
             }
         }
-        console.log(`  Installed: ${prHookDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);
+        detail(`  Installed: ${prHookDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);
 
         // 12e. Install agenfk-run-hook (CGLAB-177).
         const runHookSource = path.join(rootDir, 'bin', 'agenfk-run-hook.mjs');
@@ -1385,7 +1410,7 @@ async function run() {
             await fs.writeFile(runHookDestBase, `#!/bin/sh\nexec node "${runHookSource}" "$@"\n`, 'utf8');
             chmodSync(runHookDestBase, 0o755);
         }
-        console.log(`  Installed: ${runHookDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);
+        detail(`  Installed: ${runHookDestBase}${os.platform() === 'win32' ? '.cmd' : ''}`);
     }
 
     // 12c. Install Opencode MCP enforcer plugin
@@ -1397,20 +1422,20 @@ async function run() {
             const opencodeEnforcerSource = path.join(rootDir, 'bin', 'agenfk-mcp-enforcer-opencode.mjs');
             if (existsSync(opencodeEnforcerSource)) {
                 await fs.copyFile(opencodeEnforcerSource, path.join(opencodePluginsDir, 'agenfk-mcp-enforcer.mjs'));
-                console.log(`  Installed Opencode plugin: ${path.join(opencodePluginsDir, 'agenfk-mcp-enforcer.mjs')}`);
+                detail(`  Installed Opencode plugin: ${path.join(opencodePluginsDir, 'agenfk-mcp-enforcer.mjs')}`);
             }
             const opencodeGatekeeperSource = path.join(rootDir, 'bin', 'agenfk-gatekeeper-opencode.mjs');
             if (existsSync(opencodeGatekeeperSource)) {
                 await fs.copyFile(opencodeGatekeeperSource, path.join(opencodePluginsDir, 'agenfk-gatekeeper.mjs'));
-                console.log(`  Installed Opencode plugin: ${path.join(opencodePluginsDir, 'agenfk-gatekeeper.mjs')}`);
+                detail(`  Installed Opencode plugin: ${path.join(opencodePluginsDir, 'agenfk-gatekeeper.mjs')}`);
             }
             const opencodePrHookSource = path.join(rootDir, 'bin', 'agenfk-pr-hook-opencode.mjs');
             if (existsSync(opencodePrHookSource)) {
                 await fs.copyFile(opencodePrHookSource, path.join(opencodePluginsDir, 'agenfk-pr-hook.mjs'));
-                console.log(`  Installed Opencode plugin: ${path.join(opencodePluginsDir, 'agenfk-pr-hook.mjs')}`);
+                detail(`  Installed Opencode plugin: ${path.join(opencodePluginsDir, 'agenfk-pr-hook.mjs')}`);
             }
         } else if (!onlyPlatform) {
-            console.log(`  Opencode not found. Skipping Opencode plugin installation.`);
+            detail(`  Opencode not found. Skipping Opencode plugin installation.`);
         }
     }
 
@@ -1418,7 +1443,7 @@ async function run() {
     // .ts files from ~/.pi/agent/extensions/ via jiti — no build, no node_modules.
     // The extension delegates decisions to ~/.agenfk/bin/*.mjs (installed above).
     if (shouldRun('pi')) {
-        if (!onlyPlatform) console.log(`${GREEN}[12e/14] Installing pi extension (~/.pi/agent/extensions)...${NC}`);
+        if (!onlyPlatform) detail(`${GREEN}[12e/14] Installing pi extension (~/.pi/agent/extensions)...${NC}`);
         const piHome = path.join(os.homedir(), '.pi');
         const piInstalled = spawnSync(getCliCommand('pi'), ['--version'], { stdio: 'ignore' }).status === 0;
         if (existsSync(piHome) || piInstalled) {
@@ -1427,22 +1452,22 @@ async function run() {
             const piExtSource = path.join(rootDir, 'bin', 'agenfk-pi-extension.ts');
             if (existsSync(piExtSource)) {
                 await fs.copyFile(piExtSource, path.join(piExtDir, 'agenfk.ts'));
-                console.log(`  Installed pi extension: ${path.join(piExtDir, 'agenfk.ts')}`);
-                console.log(`  pi enforcement is native (pre-edit gatekeeper + mcp-enforcer + PR-sizing reminder with deterministic model detection). Restart pi to load it.`);
+                detail(`  Installed pi extension: ${path.join(piExtDir, 'agenfk.ts')}`);
+                detail(`  pi enforcement is native (pre-edit gatekeeper + mcp-enforcer + PR-sizing reminder with deterministic model detection). Restart pi to load it.`);
             }
         } else if (!onlyPlatform) {
-            console.log(`  pi not found. Skipping pi extension installation.`);
+            detail(`  pi not found. Skipping pi extension installation.`);
         }
     }
 
     // 7 (deferred). Configure Claude Code MCP via official CLI
     if (withMcp && shouldRun('claude')) {
-        console.log(`${GREEN}[7/14] Configuring Claude Code MCP...${NC}`);
+        detail(`${GREEN}[7/14] Configuring Claude Code MCP...${NC}`);
         try {
             const claudeCmd = getCliCommand('claude');
             const claudeCheck = spawnSync(claudeCmd, ['--version'], { stdio: 'ignore' });
             if (claudeCheck.status === 0) {
-                console.log("  Registering AgenFK MCP server with Claude Code...");
+                detail("  Registering AgenFK MCP server with Claude Code...");
                 // Remove any existing registration first (ignore errors if not registered)
                 spawnSync(claudeCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'ignore' });
                 // Register with correct syntax: options, then -- to end variadic -e, then name + command
@@ -1454,17 +1479,18 @@ async function run() {
                     '--',
                     'agenfk',
                     cliDest, 'mcp'
-                ], { stdio: 'inherit' });
+                ], { stdio: childStdio, encoding: 'utf8', maxBuffer: childMaxBuffer });
                 if (result.status === 0) {
-                    console.log(`  ${GREEN}Registered agenfk MCP server (user scope).${NC}`);
+                    detail(`  ${GREEN}Registered agenfk MCP server (user scope).${NC}`);
                 } else {
-                    console.log(`  ${YELLOW}Warning: claude mcp add returned non-zero. Verify with: claude mcp get agenfk${NC}`);
+                    if (childOutput(result)) console.log(childOutput(result));
+                    warn(`claude mcp add returned non-zero. Verify with: claude mcp get agenfk`);
                 }
             } else if (!onlyPlatform) {
-                console.log("  Claude Code CLI not found. Skipping Claude MCP configuration.");
+                detail("  Claude Code CLI not found. Skipping Claude MCP configuration.");
             }
         } catch (e) {
-            console.log("  Error checking Claude Code CLI. Skipping.");
+            warn(`Error checking the Claude Code CLI (${e?.message ?? e}). Skipped registering its MCP server.`);
         }
     }
 
@@ -1476,7 +1502,7 @@ async function run() {
         const oppositePath = rulesScope === 'project' ? globalPath : projectPath;
 
         if (!existsSync(sourceFile)) {
-            if (!onlyPlatform) console.log(`  ${YELLOW}Warning: ${label} source not found. Skipping.${NC}`);
+            if (!onlyPlatform) warn(`${label} source not found. Skipping.`);
             return;
         }
 
@@ -1494,7 +1520,7 @@ async function run() {
             (existingContent.trim() + '\n\n' + rulesContent.trim() + '\n').trim() + '\n',
             'utf8'
         );
-        console.log(`  Written: ${activePath}`);
+        detail(`  Written: ${activePath}`);
 
         // Clean up opposite scope — remove agenfk blocks
         if (existsSync(oppositePath)) {
@@ -1502,7 +1528,7 @@ async function run() {
             const cleaned = oppositeContent.replace(/\n?<!-- agenfk:start -->[\s\S]*?<!-- agenfk:end -->\n?/g, '');
             if (cleaned !== oppositeContent) {
                 await fs.writeFile(oppositePath, cleaned.trim() ? cleaned.trim() + '\n' : '', 'utf8');
-                console.log(`  Cleaned up opposite scope: ${oppositePath}`);
+                detail(`  Cleaned up opposite scope: ${oppositePath}`);
             }
         }
     }
@@ -1513,25 +1539,25 @@ async function run() {
         const oppositePath = rulesScope === 'project' ? globalPath : projectPath;
 
         if (!existsSync(sourceFile)) {
-            if (!onlyPlatform) console.log(`  ${YELLOW}Warning: ${label} source not found. Skipping.${NC}`);
+            if (!onlyPlatform) warn(`${label} source not found. Skipping.`);
             return;
         }
 
         await fs.mkdir(path.dirname(activePath), { recursive: true });
         await fs.copyFile(sourceFile, activePath);
-        console.log(`  Written: ${activePath}`);
+        detail(`  Written: ${activePath}`);
 
         // Clean up opposite scope
         if (existsSync(oppositePath)) {
             await fs.unlink(oppositePath);
-            console.log(`  Cleaned up opposite scope: ${oppositePath}`);
+            detail(`  Cleaned up opposite scope: ${oppositePath}`);
         }
     }
 
     // 13. Write AgenFK workflow rules — CLAUDE.md
     if (shouldRun('claude')) {
         const scopeLabel = rulesScope === 'project' ? '.claude/CLAUDE.md (project)' : '~/.claude/CLAUDE.md (global)';
-        console.log(`${GREEN}[13/14] Writing AgenFK workflow rules to ${scopeLabel}...${NC}`);
+        detail(`${GREEN}[13/14] Writing AgenFK workflow rules to ${scopeLabel}...${NC}`);
         const globalClaudeMd = path.join(os.homedir(), '.claude', 'CLAUDE.md');
         const projectClaudeMd = path.join(projectDir, '.claude', 'CLAUDE.md');
         const claudeRulesSource = path.join(rootDir, 'clauderules', 'CLAUDE.md');
@@ -1540,7 +1566,7 @@ async function run() {
 
     // 13b. Install Cursor workflow rules (.mdc)
     if (shouldRun('cursor')) {
-        console.log(`${GREEN}[13b/14] Installing Cursor workflow rules (agenfk.mdc)...${NC}`);
+        detail(`${GREEN}[13b/14] Installing Cursor workflow rules (agenfk.mdc)...${NC}`);
         const cursorCmd = getCliCommand('cursor');
         const cursorMcpPath = getCursorMcpPath();
         const cursorConfigDir = path.dirname(cursorMcpPath);
@@ -1556,13 +1582,13 @@ async function run() {
                 console.error('  Error installing Cursor rules:', e.message);
             }
         } else if (!onlyPlatform) {
-            console.log(`  Cursor not found. Skipping Cursor rules installation.`);
+            detail(`  Cursor not found. Skipping Cursor rules installation.`);
         }
     }
 
     // 13c. Install Codex workflow rules (AGENTS.md)
     if (shouldRun('codex')) {
-        console.log(`${GREEN}[13c/14] Installing Codex workflow rules (AGENTS.md)...${NC}`);
+        detail(`${GREEN}[13c/14] Installing Codex workflow rules (AGENTS.md)...${NC}`);
         const codexCmd = getCliCommand('codex');
         const codexInstalled = spawnSync(codexCmd, ['--version'], { stdio: 'ignore' }).status === 0;
         if (codexInstalled) {
@@ -1575,13 +1601,13 @@ async function run() {
                 console.error('  Error installing Codex rules:', e.message);
             }
         } else if (!onlyPlatform) {
-            console.log(`  Codex not found. Skipping Codex rules installation.`);
+            detail(`  Codex not found. Skipping Codex rules installation.`);
         }
     }
 
     // 13d. Install Gemini CLI workflow rules (GEMINI.md)
     if (shouldRun('gemini')) {
-        console.log(`${GREEN}[13d/14] Installing Gemini CLI workflow rules (GEMINI.md)...${NC}`);
+        detail(`${GREEN}[13d/14] Installing Gemini CLI workflow rules (GEMINI.md)...${NC}`);
         const geminiCmd = getCliCommand('gemini');
         const geminiInstalled = spawnSync(geminiCmd, ['--version'], { stdio: 'ignore' }).status === 0;
         if (geminiInstalled) {
@@ -1594,13 +1620,13 @@ async function run() {
                 console.error('  Error installing Gemini CLI rules:', e.message);
             }
         } else if (!onlyPlatform) {
-            console.log(`  Gemini CLI not found. Skipping Gemini CLI rules installation.`);
+            detail(`  Gemini CLI not found. Skipping Gemini CLI rules installation.`);
         }
     }
 
     // 14. Register PreToolUse hook and MCP server in ~/.claude/settings.json
     if (shouldRun('claude')) {
-        console.log(`${GREEN}[14/14] Configuring ~/.claude/settings.json...${NC}`);
+        detail(`${GREEN}[14/14] Configuring ~/.claude/settings.json...${NC}`);
         const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
         let settings = {};
         if (existsSync(settingsPath)) {
@@ -1683,7 +1709,7 @@ async function run() {
         delete settings.mcpServers;
 
         await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf8');
-        console.log(`  Registered Pre/PostToolUse hooks in ${settingsPath}`);
+        detail(`  Registered Pre/PostToolUse hooks in ${settingsPath}`);
     }
 
     // 14b. Configure PostToolUse hook for Codex CLI (~/.codex/hooks.json).
@@ -1699,7 +1725,7 @@ async function run() {
             }
             config = buildCodexHooksConfig(config, `${prHookDest} --client codex`);
             await fs.writeFile(codexHooksPath, JSON.stringify(config, null, 2), 'utf8');
-            console.log(`  Registered PostToolUse hook in ${codexHooksPath}`);
+            detail(`  Registered PostToolUse hook in ${codexHooksPath}`);
         }
     }
 
@@ -1719,7 +1745,7 @@ async function run() {
                 command: `${prHookDest} --client gemini`,
             });
             await fs.writeFile(geminiSettingsPath, JSON.stringify(settings, null, 2), 'utf8');
-            console.log(`  Registered AfterTool hook in ${geminiSettingsPath}`);
+            detail(`  Registered AfterTool hook in ${geminiSettingsPath}`);
         }
     }
 
@@ -1737,7 +1763,7 @@ async function run() {
                 command: `${prHookDest} --client cursor`,
             });
             await fs.writeFile(cursorHooksPath, JSON.stringify(config, null, 2), 'utf8');
-            console.log(`  Registered afterShellExecution hook in ${cursorHooksPath}`);
+            detail(`  Registered afterShellExecution hook in ${cursorHooksPath}`);
         }
     }
 
@@ -1759,8 +1785,9 @@ async function run() {
     // from the CLI, or the in-flight hub upgrade marker). `upgradeInFlight` is
     // already folded into wasReachableBeforeInstall above, but we keep it in
     // the guard so the intent is legible and the trigger is not a lone probe.
+    let restartTriggered = false;
     if ((wasReachableBeforeInstall || upgradeInFlight) && !onlyPlatform) {
-        console.log(`${BLUE}Restarting API server (was running on port ${preInstallServerPort} before upgrade)...${NC}`);
+        detail(`${BLUE}Restarting API server (was running on port ${preInstallServerPort} before upgrade)...${NC}`);
         // Delegate to `agenfk up`. It internally calls killPattern (which
         // already handles Windows via wmic and POSIX via ps/pgrep) and then
         // spawns a fresh server. This keeps the kill logic in one place.
@@ -1780,34 +1807,27 @@ async function run() {
             // error and crash install.mjs at the finish line. Handle it so we
             // degrade to printed guidance instead.
             child.on('error', (e) => {
-                console.log(`${YELLOW}Could not auto-restart server: ${e?.message ?? e}${NC}`);
-                console.log(`${YELLOW}Run \`agenfk restart\` manually to bring the new version online.${NC}`);
+                warn(`Could not auto-restart the server: ${e?.message ?? e}. Run \`agenfk restart\` to bring the new version online.`);
             });
             child.unref();
-            console.log(`${GREEN}Server restart triggered (running in background).${NC}`);
+            restartTriggered = true;
+            detail(`${GREEN}Server restart triggered (running in background).${NC}`);
         } catch (e) {
-            console.log(`${YELLOW}Could not auto-restart server: ${e?.message ?? e}${NC}`);
-            console.log(`${YELLOW}Run \`agenfk restart\` manually to bring the new version online.${NC}`);
+            warn(`Could not auto-restart the server: ${e?.message ?? e}. Run \`agenfk restart\` to bring the new version online.`);
         }
     }
 
-    if (!onlyPlatform) {
-        console.log(`${GREEN}Installation Complete.${NC}`);
-        console.log("");
-        console.log(`${YELLOW}=== Telemetry Notice ===${NC}`);
-        console.log("AgenFK collects anonymous usage data (install count, commands used, feature adoption).");
-        console.log("No personal data, file paths, or project content is ever collected.");
-        console.log(`To opt out at any time: ${BLUE}agenfk config set telemetry false${NC}`);
-        console.log("");
-        console.log(`${BLUE}=== Usage Instructions ===${NC}`);
-        console.log("1. Restart your AI editor/agent (Opencode, Cursor, Codex, and Gemini CLI need a restart to pick up the new MCP server; pi needs a restart to load its native extension).");
-        console.log("2. Run 'node scripts/start-services.mjs' to start the API and Web UI.");
-        console.log("3. Go to ANY project repository and type '/agenfk' (Standard) or '/agenfk-deep' (Multi-Agent) in your AI editor's prompt to initialize your project context and start the workflow.");
-        console.log("4. Phase Commands (Agent Spawn): '/agenfk-plan', '/agenfk-code', '/agenfk-review', '/agenfk-test', '/agenfk-close'.");
-        console.log("5. Run 'agenfk health' to verify your installation at any time.");
+    if (rulesOnly) {
+        say(`${GREEN}✓ AgEnFK workflow rules installed${NC}`);
+    } else if (!onlyPlatform) {
+        say(`${GREEN}✓ AgEnFK ${installedVersion ? `${installedVersion} ` : ''}installed${restartTriggered ? ' (server restarting in the background)' : ''}${NC}`);
+        if (firstInstall) {
+            say(`  Start it: ${BLUE}agenfk up${NC} - then type ${BLUE}/agenfk${NC} in your AI editor, in any repository.`);
+            say(`  Restart your AI editor to load the rules and hooks. Check the install any time: ${BLUE}agenfk health${NC}`);
+            say(`  Anonymous usage data is collected (no paths or project content). Opt out: ${BLUE}agenfk config set telemetry false${NC}`);
+        }
     } else {
-        console.log(`${GREEN}Integration '${onlyPlatform}' Installation Complete.${NC}`);
-        console.log(`Restart ${onlyPlatform} to pick up the changes.`);
+        say(`${GREEN}✓ ${onlyPlatform} integration installed - restart ${onlyPlatform} to pick it up${NC}`);
     }
 }
 

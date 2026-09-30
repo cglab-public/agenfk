@@ -196,7 +196,7 @@ describe('KanbanBoard console calls never let data become a format string', () =
       render(<KanbanBoard />, { wrapper });
 
       const card = (await screen.findByText('Task One')).closest('[draggable="true"]')!;
-      const target = (await screen.findByText('QA COLUMN')).closest('.flex-col')!;
+      const target = (await screen.findByText('Qa Column')).closest('[data-testid^="column-header-"]')!.parentElement!;
 
       const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const dataTransfer = { setData: vi.fn(), getData: vi.fn((key: string) => (key === 'itemId' ? 'i1' : '')), effectAllowed: 'move' };

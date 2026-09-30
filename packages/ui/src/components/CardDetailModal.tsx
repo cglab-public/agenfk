@@ -3,7 +3,7 @@ import { AgEnFKItem, ItemType, Status } from '../types';
 import {
   X, Layout, Tag, AlignLeft, Zap,
   Clock, Calendar, FileText, ArrowLeft, Plus,
-  Loader2, ShieldCheck, FlaskConical, Copy, Check, Pencil, Trash2, ExternalLink
+  Loader2, ShieldCheck, FlaskConical, ListChecks, Copy, Check, Pencil, Trash2, ExternalLink
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import ReactMarkdown from 'react-markdown';
@@ -13,10 +13,12 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSocketEvent } from '../SocketContext';
 import { stripAnsi, calculateCost, formatCost, calculateCycleTimeMs, formatDuration } from '../utils';
 import { api } from '../api';
+import { VerifyRunBadge, VerifyRunOutput } from './VerifyRunBadge';
 import { RunsPanel, type AgentRun } from './RunsPanel';
 import { ItemTypeSquare, ItemTypeBadge, itemTypeHint } from './ItemTypeSquare';
 import { ItemTypePicker } from './ItemTypePicker';
 import { StepChecksPanel } from './StepChecksPanel';
+import { CheckHistoryTab } from './CheckHistoryTab';
 
 interface CardDetailModalProps {
   item: AgEnFKItem;
@@ -31,7 +33,7 @@ interface CardDetailModalProps {
   flowName?: string;
 }
 
-type TabType = 'overview' | 'plan' | 'subitems' | 'history' | 'tests' | 'reviews' | 'usage' | 'runs';
+type TabType = 'overview' | 'plan' | 'subitems' | 'history' | 'checks' | 'tests' | 'reviews' | 'usage' | 'runs';
 
 export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems, pricesData, onClose, onSelectItem, onAddItem, onDeleteItem, onUpdateItem, projectName, flowName }) => {
   const isNew = !item.id;
@@ -44,6 +46,15 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
     enabled: !!item.id,
   });
   const agentRuns = Array.isArray(agentRunsData) ? agentRunsData : [];
+
+  // 9569b4d7: while a verify runs on the card, show what it is printing.
+  const { data: activeRun } = useQuery({
+    // Keyed by the run: a new run must not show the last one's output until it refetches.
+    queryKey: ['active-run', item.id, item.activeRun?.runId],
+    queryFn: () => api.getActiveRun(item.id),
+    enabled: !!item.id && !!item.activeRun,
+    refetchInterval: 2000,
+  });
 
   // Live: the "Runs" tab is conditional on runs existing, so refresh the run
   // list when the server pushes run events — the tab then appears without a
@@ -118,6 +129,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
     { id: 'plan', label: 'Plan', icon: <FileText size={14} />, hidden: isNew || !item.implementationPlan },
     { id: 'subitems', label: 'Subitems', icon: <Layout size={14} />, badge: subitems.length, hidden: isNew || item.type === ItemType.TASK || item.type === ItemType.BUG },
     { id: 'history', label: 'History', icon: <Clock size={14} />, badge: item.history?.length, hidden: isNew },
+    { id: 'checks', label: 'Checks', icon: <ListChecks size={14} />, hidden: isNew },
     { id: 'tests', label: 'Test Results', icon: <FlaskConical size={14} />, badge: item.tests?.length, hidden: isNew },
     { id: 'reviews', label: 'Reviews', icon: <ShieldCheck size={14} />, hidden: true },
     { id: 'usage', label: 'Usage', icon: <Zap size={14} />, hidden: isNew || !item.tokenUsage?.length },
@@ -437,6 +449,12 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
         <div ref={scrollRef} className={clsx("flex-1 overflow-y-auto", isNew ? "p-6 space-y-5" : "p-8 space-y-8")}>
           {activeTab === 'overview' && (
             <>
+              {item.activeRun && (
+                <div>
+                  <VerifyRunBadge run={item.activeRun} />
+                  {activeRun?.output ? <VerifyRunOutput output={activeRun.output} /> : null}
+                </div>
+              )}
               <div>
                 {isNew ? (
                   <div className="space-y-2">
@@ -852,6 +870,8 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               {/* v8 ignore stop */}
             </div>
           )}
+
+          {activeTab === 'checks' && <CheckHistoryTab itemId={item.id} />}
 
           {activeTab === 'usage' && item.tokenUsage && (
             <div className="animate-in slide-in-from-bottom-2 duration-300">

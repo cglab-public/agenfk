@@ -32,12 +32,15 @@ export interface PruneDeps {
 }
 
 export function prunableWorktrees(
-  items: ReadonlyArray<{ id: string; title: string; status: string; worktreePath?: string }>,
+  items: ReadonlyArray<{ id: string; title: string; status: string; worktreePath?: string; worktreeChoice?: string }>,
   deps: PruneDeps,
 ): PrunableWorktree[] {
   const out: PrunableWorktree[] = [];
   for (const item of items) {
     if (!item.worktreePath) continue;
+    // 686fdbf6: another card chose to run in this checkout; removing it would
+    // take that card's work and leave its choice pointing at nothing.
+    if (items.some(o => o.id !== item.id && o.worktreeChoice === item.worktreePath)) continue;
     // "Finished" is whatever the project's flow says, not the word DONE:
     // hardcoding it would offer nothing on a custom flow.
     if (!deps.finalSteps.includes(item.status)) continue;

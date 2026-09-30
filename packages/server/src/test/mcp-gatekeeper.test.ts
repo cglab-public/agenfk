@@ -116,6 +116,29 @@ describe('workflow_gatekeeper MCP handler: a STORY is directly actionable (CGLAB
     expect(text).not.toContain('WORKFLOW BREACH');
   });
 
+  it("says what leaving the card's step will run (37a292a7)", async () => {
+    const result = await mcp.client.callTool({
+      name: 'workflow_gatekeeper',
+      arguments: { intent: 'leave plan', itemId: storyId },
+    } as any);
+    const text = toolText(result);
+    expect(result.isError).not.toBe(true);
+    expect(text).toMatch(/Leaving IN_PROGRESS runs/);
+  });
+
+  it('validate_progress with plan: true answers what leaving runs, without moving the card (2ebacb23)', async () => {
+    const result = await mcp.client.callTool({
+      name: 'validate_progress',
+      // A dry run needs no evidence (as the CLI's --plan).
+      arguments: { itemId: storyId, plan: true },
+    } as any);
+    const text = toolText(result);
+    expect(result.isError).not.toBe(true);
+    expect(text).toMatch(/Leaving IN_PROGRESS runs/);
+    expect(text).toMatch(/On this tree/);
+    expect(((await storage.getItem(storyId)) as any).status).toBe('IN_PROGRESS');
+  });
+
   it('still refuses an EPIC targeted by id, and names the child-item route', async () => {
     const result = await mcp.client.callTool({
       name: 'workflow_gatekeeper',

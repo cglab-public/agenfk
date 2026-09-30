@@ -62,6 +62,14 @@ async function flowWith(steps: any[]) {
 }
 
 describe('gh publish keeps the step contract', () => {
+  it('writes the flow-level verifyAt into the registry file (281adef0)', async () => {
+    const id = await flowWith(rich);
+    await agent().put(`/flows/${id}`).send({ verifyAt: 'parent' });
+    const res = await agent().post('/registry/flows/publish').send({ flowId: id });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(JSON.parse(written!).verifyAt).toBe('parent');
+  });
+
   it('writes role and checks into the registry file', async () => {
     const id = await flowWith(rich);
     const res = await agent().post('/registry/flows/publish').send({ flowId: id });

@@ -22,7 +22,7 @@
  * the gatekeeper's hardcoded status names drifted before it.
  */
 
-import { findClaimConflicts, type Claim, type ClaimConflict } from './claims';
+import { findClaimConflicts, claimsCollide, type Claim, type ClaimConflict } from './claims';
 
 export interface ClaimHolder {
   readonly id: string;
@@ -30,103 +30,15 @@ export interface ClaimHolder {
   readonly status: string;
   readonly claims?: readonly Claim[];
   /**
-   * The tree this card actually works in. Only cards sharing it can collide —
-   * see `gateOnClaims`.
+   * The worktree the card works in (see `claimTreeOf`). Null or absent when
+   * nobody can say, and an unknown tree collides with every tree.
    */
-  readonly scope?: string;
-}
-
-export interface ScopeItem {
-  readonly id: string;
-  readonly projectId?: string | null;
-  readonly parentId?: string | null;
-  readonly worktreePath?: string | null;
-}
-
-/**
- * The tree each item works in, as a comparable key.
- *
- * A child shares its nearest ancestor's worktree (`shouldAutoWorktree` refuses
- * a child its own), so the key is the effective worktree: the item's own path,
- * else the parent's, recursively — else the PROJECT, which is one shared tree
- * for every card that has no worktree of its own.
- *
- * Pure, and here rather than in the server, because the CLI's gatekeeper and
- * the server's declaration route must reach the SAME key or the two gates
- * disagree — one refusing what the other allows.
- */
-export function claimScopes(items: readonly ScopeItem[]): Map<string, string> {
-  const byId = new Map(items.map(i => [i.id, i]));
-  const memo = new Map<string, string>();
-  const visiting = new Set<string>();
-  const resolve = (id: string): string => {
-    const cached = memo.get(id);
-    if (cached !== undefined) return cached;
-    const it = byId.get(id);
-    const fallback = `project:${it?.projectId ?? ''}`;
-    // A parent cycle must not hang the gate; the fallback is the conservative
-    // answer (same project = same tree = contend).
-    if (!it || visiting.has(id)) return fallback;
-    visiting.add(id);
-    // Normalised, so `/wt` and `/wt/` are one key rather than two trees.
-    const wt = typeof it.worktreePath === 'string' ? normaliseTree(it.worktreePath) : '';
-    const key = wt || (it.parentId && byId.has(it.parentId) ? resolve(it.parentId) : fallback);
-    visiting.delete(id);
-    memo.set(id, key);
-    return key;
-  };
-  const out = new Map<string, string>();
-  for (const i of items) out.set(i.id, resolve(i.id));
-  return out;
-}
-
-/** One spelling of a tree path, so two habits cannot invent two trees. */
-const normaliseTree = (p: string): string => p.trim().replace(/\\/g, '/').replace(/\/+$/, '');
-
-/**
- * Is this a path that names a filesystem root, on ANY platform?
- *
- * `startsWith('/')` is a Unix-only test: on Windows every worktree is
- * `C:\…`, so every scope was skipped and every agent fell back to the project
- * — the isolation vanished exactly where it was needed.
- */
-const isAbsoluteTree = (p: string): boolean => /^([A-Za-z]:)?\//.test(p) || /^\/\//.test(p);
-
-/**
- * The tree the caller is ACTUALLY in, from its working directory.
- *
- * The declared worktree is not enough on its own. Nothing stops an agent whose
- * card carries a worktree from editing the MAIN checkout — and scoping the
- * gate by the DECLARED tree then authorizes it alongside a main-tree card, so
- * the silent overwrite the mechanism exists to prevent comes back. The edit
- * happens in the directory the caller is standing in, so that is the tree the
- * gate has to compare against.
- *
- * The LONGEST containing worktree wins, so a nested checkout resolves to the
- * inner one; a directory in no worktree is the project's own tree, which is
- * exactly the `project:<id>` scope `claimScopes` gives to cards without one.
- *
- * A LIMIT, stated because it matters: `cwd` is where the PROCESS is, not the
- * file about to be written. An agent standing in its worktree that writes an
- * absolute path into the main checkout is not caught here — only the edit hook,
- * which sees the file, can catch that.
- */
-export function scopeAt(
-  cwd: string,
-  items: readonly ScopeItem[],
-  projectId?: string | null,
-): string {
-  const scopes = claimScopes(items);
-  const here = normaliseTree(cwd);
-  let best: string | undefined;
-  for (const scope of new Set(scopes.values())) {
-    if (!isAbsoluteTree(scope)) continue;
-    const tree = normaliseTree(scope);
-    if (here === tree || here.startsWith(tree + '/')) {
-      if (best === undefined || tree.length > normaliseTree(best).length) best = scope;
-    }
-  }
-  return best ?? `project:${projectId ?? ''}`;
+  readonly tree?: string | null;
+  /**
+   * 5b48b96b: has the card ever left a step through verify (an exit record)?
+   * A status cannot say: BLOCKED and PAUSED are reachable straight from TODO.
+   */
+  readonly started?: boolean;
 }
 
 export interface ClaimGateResult {
@@ -158,6 +70,133 @@ const RELEASED_STATUSES = new Set(['DONE', 'TRASHED', 'ARCHIVED', 'IDEAS']);
 /** Does this card still own the files it declared? */
 export const stillHolds = (status: string): boolean =>
   !RELEASED_STATUSES.has(status.toUpperCase());
+
+/**
+ * Do two cards share a working tree, as far as claims are concerned? (aaa01834)
+ *
+ * Claims exist because two cards editing one file IN ONE TREE is a silent
+ * overwrite. Cards in different worktrees cannot race - they meet, at worst,
+ * as an ordinary merge conflict - so locking across trees only refuses work.
+ *
+ * An UNKNOWN tree answers yes. "Nobody can say where this card works" is not
+ * evidence that it works elsewhere, and treating it that way would fail open
+ * on exactly the cards this mechanism was written for.
+ */
+/** Drop trailing path separators in one linear pass (a `[\\/]+$` regex is quadratic on long runs). */
+const trimSeparators = (t: string): string => {
+  let end = t.length;
+  while (end > 0 && (t[end - 1] === '/' || t[end - 1] === '\\')) end--;
+  return t.slice(0, end);
+};
+
+/**
+ * 5b48b96b — the claims of OTHER cards that make a path theirs, not this card's,
+ * in this card's checks. Only a card working beside it counts:
+ *  - not the card itself, nor one of its ANCESTORS: a parent claiming its
+ *    children's directory would make every child's own tests foreign, and a
+ *    child cannot claim them back (claims are exclusive);
+ *  - not a card that has NOT STARTED - never left a step through verify, whatever
+ *    its status (BLOCKED and PAUSED need no verify): a claim there costs
+ *    nothing, so it must excuse nothing;
+ *  - not a finished card (stillHolds), and only in this card's tree.
+ * Every option is required: the caller decides who its ancestors are, and a
+ * default would hide passing the wrong one. A holder without `started` has not.
+ */
+export function foreignClaimsFor(
+  item: { id: string },
+  holders: readonly ClaimHolder[],
+  opts: { itemTree: string | null; ancestorIds: ReadonlySet<string> },
+): string[] {
+  return holders
+    .filter(o => o.id !== item.id && !opts.ancestorIds.has(o.id) && Array.isArray(o.claims) && stillHolds(o.status)
+      && o.started === true && sameClaimTree(opts.itemTree, o.tree))
+    .flatMap(o => [...(o.claims ?? [])]);
+}
+
+export function sameClaimTree(a: string | null | undefined, b: string | null | undefined): boolean {
+  const norm = (t: string | null | undefined): string => (typeof t === 'string' ? trimSeparators(t.trim()) : '');
+  const x = norm(a), y = norm(b);
+  if (!x || !y) return true;
+  return x === y;
+}
+
+/**
+ * The tree a card works in: its own worktree, else its nearest ancestor's,
+ * else the project root. Null when none of those is known.
+ *
+ * Mirrors `effectiveWorktreePath` in the server, which resolves the same
+ * question for the close commit; this one takes a lookup rather than storage
+ * so the gatekeeper, the CLI and the claims route can share it. Bounded and
+ * cycle-safe for the same reason: a hand-edited parent loop must not hang.
+ */
+export function claimTreeOf<T extends { id?: string; parentId?: string | null; worktreePath?: string | null; worktreeChoice?: string | null }>(
+  item: T,
+  lookup: (id: string) => T | undefined,
+  projectRoot?: string | null,
+): string | null {
+  const seen = new Set<string>();
+  let cur: T | undefined = item;
+  for (let depth = 0; cur && depth < 32; depth++) {
+    // 686fdbf6: a card's own choice settles it, whatever is above it.
+    const chosen = typeof cur.worktreeChoice === 'string' ? cur.worktreeChoice.trim() : '';
+    if (chosen === 'root') break;
+    if (chosen) return chosen;
+    const wt = typeof cur.worktreePath === 'string' ? cur.worktreePath.trim() : '';
+    if (wt) return wt;
+    const parentId = cur.parentId;
+    if (!parentId || seen.has(parentId)) break;
+    seen.add(parentId);
+    cur = lookup(parentId);
+  }
+  const root = typeof projectRoot === 'string' ? projectRoot.trim() : '';
+  return root || null;
+}
+
+/**
+ * Staged files that belong to nobody (aaa01834).
+ *
+ * The close commit takes only a card's claimed files, so a file the card
+ * changed and forgot to claim stays staged after the card is DONE - and the
+ * next agent in the tree inherits it with no owner. Returns the staged paths
+ * that fall outside the card's claims AND outside every claim still held by
+ * another card in the same tree (those are that card's work, not a stray).
+ *
+ * A card that claims nothing has no strays: its commit takes the whole index,
+ * which is the behaviour every card had before claims existed.
+ */
+export function strayStaged(
+  staged: readonly string[],
+  card: { readonly id: string; readonly claims?: readonly Claim[]; readonly tree?: string | null },
+  holders: readonly ClaimHolder[],
+): string[] {
+  const mine = card.claims ?? [];
+  if (!mine.length) return [];
+  const theirs = holders
+    .filter(h => h.id !== card.id && stillHolds(h.status) && sameClaimTree(card.tree, h.tree))
+    .flatMap(h => h.claims ?? []);
+  return staged.filter(f => !mine.some(c => claimsCollide(f, c)) && !theirs.some(c => claimsCollide(f, c)));
+}
+
+/**
+ * Cards sharing this card's tree that are working and claim NOTHING (aaa01834
+ * review). A claimless card is authorized everywhere, so a staged file outside
+ * every claim may well be its work: ownership there is unknown, not absent.
+ * The close must not be refused over it - both ways out it would offer (claim
+ * the file, or unstage it) take that card's work away from it.
+ *
+ * `isWorking` is the caller's: whether a status counts as being worked is the
+ * flow's question (an unstarted TODO card has nothing staged), and this module
+ * has no flow.
+ */
+export function claimlessNeighbours(
+  card: { readonly id: string; readonly tree?: string | null },
+  holders: readonly ClaimHolder[],
+  isWorking: (status: string) => boolean,
+): string[] {
+  return holders
+    .filter(h => h.id !== card.id && !(h.claims ?? []).length && stillHolds(h.status) && isWorking(h.status) && sameClaimTree(card.tree, h.tree))
+    .map(h => h.id);
+}
 
 /**
  * What to say, given that the agent reads this once and acts on it.
@@ -202,14 +241,7 @@ function explain(conflicts: readonly ClaimConflict[], rejected: readonly Claim[]
  * into a sequence of them, each invalidating the last.
  */
 export function gateOnClaims(
-  asking: {
-    readonly id: string;
-    readonly claims?: readonly Claim[];
-    /** The tree its card DECLARES. */
-    readonly scope?: string;
-    /** The tree the caller is standing in, when we know it. */
-    readonly cwdScope?: string;
-  },
+  asking: { readonly id: string; readonly claims?: readonly Claim[]; readonly tree?: string | null },
   holders: readonly ClaimHolder[],
 ): ClaimGateResult {
   const wanted = asking.claims ?? [];
@@ -219,22 +251,9 @@ export function gateOnClaims(
     return { authorized: true, conflicts: [], rejected: [], message: '' };
   }
 
-  /*
-   * A UNION, not a swap.
-   *
-   * Scoping by the declared tree alone missed an agent editing the main
-   * checkout; scoping by `cwd` alone missed one who edits its own worktree by
-   * ABSOLUTE path from a shell that sits in the repo root — both ordinary. The
-   * agent may be in either tree, so it has to contend with the holders of
-   * both. An empty set means neither tree is known, and then everything
-   * contends.
-   */
-  const askingScopes = new Set(
-    [asking.scope, asking.cwdScope].filter((s): s is string => s !== undefined),
-  );
+  // Only holders in the asking card's tree (aaa01834): see sameClaimTree.
   const held = holders
-    .filter(h => stillHolds(h.status))
-    .filter(h => askingScopes.size === 0 || h.scope === undefined || askingScopes.has(h.scope))
+    .filter(h => stillHolds(h.status) && sameClaimTree(asking.tree, h.tree))
     .map(h => ({ itemId: h.id, claims: h.claims }));
 
   const { conflicts, rejected } = findClaimConflicts(wanted, held, asking.id);

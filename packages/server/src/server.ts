@@ -1,18 +1,20 @@
+import { StringDecoder } from 'string_decoder';
 import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import { SQLiteStorageProvider } from "@agenfk/storage-sqlite";
 import { commitStagedForCard, resolveCommitRoot } from './closeCommit';
 import { mayPropagate, readCleanTreeSha, readHead, readTreeStatus } from './propagation';
-import { insideRoot, parseJunitXml, parseVitestJson, surfaceOf } from './stepRecords';
+import { insideRoot, isTestPath, parseJunitXml, parseVitestJson, surfaceOf } from './stepRecords';
 import { parseActor, parseFindings, readTranscriptIdentity } from './reviewRecords';
 import * as passkeys from './passkeys';
-import { evaluateChecks, judgeReview, formatCheckResults, needsCapture, needsEntryRecord, type CheckResult } from './checkEngine';
+import { argvHash, awaitsPersonApproval, judgeCommandChecks, type CommandApproval } from './commandChecks';
+import { suggestTestReport, withTestFiles } from './testReportHint';
+import { SuiteSlots, suiteRunLimit, waitingLine } from './suiteSlots';
+import { DEFAULT_REUSE_IGNORE, namedByTests, reuseIgnoreMatcher } from './reuseIgnore';
+import { capturedGreen, countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, describeCapture, TEST_FILE_PATTERN, ANY_TEST_FILE_PATTERN, needsCapture, needsEntryRecord, parseAgentReports, parseCheckAnswers, describeTreeWarnings, MAX_UNREVIEWED_LINES, type AgentReport, type CheckResult, type TreeWarning } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import {
-  readProjectFile,
-  approvalFor,
-  commandFingerprint, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimScopes, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave } from "@agenfk/core";
+import { readProjectFile, approvalFor, commandFingerprint, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, foreignClaimsFor, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -52,6 +54,7 @@ import { readGitStatus } from './gitStatus.js';
 import { buildHerdrSnapshot, realHerdrDeps } from './herdrRoutes.js';
 import { sendPaneText, sendPaneKeys, focusPane } from './herdrWrite.js';
 import { readPane } from './herdr.js';
+import { openHubJiraSession, fetchHubJiraStatus, clearHubJiraStatusCache, startHubJiraOAuth, completeHubJiraOAuth, disconnectHubJira, ASK_HUB_ADMIN, CONNECT_FROM_BOARD, type JiraSession, type HubTarget } from './jira/hubJira.js';
 
 // The local API server is for this machine only. It binds to loopback by
 // default (override with AGENFK_HOST) and only accepts browser requests from
@@ -806,6 +809,17 @@ const syncParentStatus = async (parentId: string) => {
         if (!(await approvalSatisfied(parent, parentFlow.steps, ordered[i].name))) { laggard = i; break; }
       }
     }
+    /*
+     * 281adef0: on a flow that runs the suite once at the top-level card, the
+     * parent's own final verify IS that run. Walking it onto the exit step here
+     * would close it - and every child that deferred to it - with the suite run
+     * nowhere. It stops one step short; only verify moves it on.
+     */
+    const owed = children.some(c => (c as any).suiteDeferredTo === parent.id);
+    const endName = sortedFlowSteps(parentFlow as any).slice(-1)[0]?.name;
+    // Keyed on what HAPPENED (a child deferred to it), not on the flow's setting now:
+    // turning 'parent' off must not let the owed run slip.
+    if ((owed || flowVerifyAt(parentFlow) === 'parent') && ordered[laggard]?.name === endName && laggard > 0) laggard -= 1;
     if (parentIdx !== null && laggard > parentIdx) {
       newStatus = ordered[laggard].name as Status;
     }
@@ -983,11 +997,16 @@ const IN_PROGRESS_HEADS = ['MERGE_HEAD', 'REBASE_HEAD', 'CHERRY_PICK_HEAD', 'REV
  * a request.
  */
 export async function effectiveWorktreePath(
-  item: { parentId?: string | null; worktreePath?: string | null } | null | undefined,
+  item: { parentId?: string | null; worktreePath?: string | null; worktreeChoice?: string | null } | null | undefined,
 ): Promise<string | undefined> {
   const seen = new Set<string>();
   let cur: any = item;
   for (let depth = 0; cur && depth < 32; depth++) {
+    // 686fdbf6: a card's (or an ancestor's) chosen tree settles the walk:
+    // 'root' is the project root, whatever worktree sits above it.
+    const chosen = typeof cur.worktreeChoice === 'string' ? cur.worktreeChoice.trim() : '';
+    if (chosen === 'root') return undefined;
+    if (chosen) return chosen;
     const wt = typeof cur.worktreePath === 'string' ? cur.worktreePath.trim() : '';
     if (wt) return wt;
     const parentId = cur.parentId;
@@ -998,10 +1017,173 @@ export async function effectiveWorktreePath(
   return undefined;
 }
 
+/** Whether `tree` comes from a choice on the card or an ancestor, rather than a created worktree. */
+async function chosenBy(item: any, tree: string): Promise<boolean> {
+  const seen = new Set<string>();
+  let cur: any = item;
+  for (let depth = 0; cur && depth < 32; depth++) {
+    if (cur.worktreeChoice) return cur.worktreeChoice === tree;
+    if (cur.worktreePath) return false;
+    if (!cur.parentId || seen.has(cur.parentId) || !storage) return false;
+    seen.add(cur.parentId);
+    cur = await storage.getItem(cur.parentId);
+  }
+  return false;
+}
+
 /** The item as resolveCommitRoot should see it: carrying its effective worktree. */
 async function withEffectiveWorktree<T extends object>(item: T): Promise<T> {
   const wt = await effectiveWorktreePath(item as any);
-  return wt ? { ...item, worktreePath: wt } : item;
+  // Set either way: a card that chose the project root may still carry the
+  // worktree agenfk created for it, and that one is not where it runs.
+  return { ...item, worktreePath: wt };
+}
+
+/**
+ * The checkouts `git worktree list --porcelain` names. One record per
+ * checkout, separated by a blank line. A record flagged `bare` is the
+ * repository directory of a bare layout, not a checkout, so nothing inside it
+ * is "a different checkout". Paths are taken verbatim: trimming would turn a
+ * directory ending in a space into another one.
+ */
+function listedCheckouts(porcelain: string): string[] {
+  return porcelain.split(/\r?\n\r?\n/)
+    .map(rec => rec.split(/\r?\n/))
+    .filter(lines => !lines.includes('bare'))
+    .map(lines => lines.find(l => l.startsWith('worktree '))?.slice('worktree '.length) ?? '')
+    .filter(Boolean);
+}
+
+/**
+ * What `worktree` on PUT /items/:id asks for, as the updates to store
+ * (686fdbf6) - or why it is refused.
+ *
+ * `none`    - the project root, whatever the card's parents have.
+ * `inherit` - no choice of its own.
+ * a path    - a checkout of the project's own repository, stored as git LISTS
+ *             it. Matched against `git worktree list` run in a tree the
+ *             server already holds; the caller's string is compared, never
+ *             handed to git or the filesystem (the pattern placeCaller follows).
+ *
+ * The choice goes in worktreeChoice, never worktreePath: that field is the
+ * checkout agenfk created, which `worktree remove` and prune may delete.
+ */
+async function resolveWorktreeChoice(raw: unknown, item: any): Promise<{ updates: Record<string, unknown> } | { error: string }> {
+  if (raw === 'none') return { updates: { worktreeChoice: 'root' } };
+  if (raw === 'inherit') return { updates: { worktreeChoice: undefined } };
+  if (typeof raw !== 'string' || !raw.trim() || !path.isAbsolute(raw)) {
+    return { error: "worktree must be an absolute path to a checkout of this project's repository, 'none' (the project root) or 'inherit'." };
+  }
+  const project: any = await storage.getProject(item.projectId);
+  const candidates = [project?.projectRoot, await effectiveWorktreePath(item)]
+    .filter((d): d is string => typeof d === 'string' && !!d && fs.existsSync(d));
+  if (!candidates.length) return { error: 'Cannot check that path: this project has no known checkout to compare it with.' };
+  const list = await git(['worktree', 'list', '--porcelain'], candidates[0]);
+  if (!list.ok) return { error: `Cannot check that path: git worktree list failed in ${candidates[0]}.` };
+  // Lexical only: a trailing slash is dropped, a symlinked spelling is not followed.
+  const wanted = path.resolve(raw);
+  const match = listedCheckouts(list.out).find(d => d === wanted || realDir(d) === wanted);
+  // git still lists a checkout whose directory was deleted (a `prunable` record).
+  if (!match || !fs.existsSync(match)) {
+    return { error: `${wanted} is not a checkout of this project's repository (git worktree list in ${candidates[0]} does not list it). Use \`agenfk worktree create\` or \`git worktree add\` first.` };
+  }
+  return { updates: { worktreeChoice: match } };
+}
+
+/** The card as it will be after a PUT's re-parent and tree choice: what claims are judged against. */
+function movingTo(item: any, parentId: unknown, worktreeUpdates: Record<string, unknown>): any {
+  const moved = parentId !== undefined ? { ...item, parentId: parentId === '' || parentId === null ? null : parentId } : item;
+  return { ...moved, ...worktreeUpdates };
+}
+
+/**
+ * The tree a card itself says it runs in, for routes that show that tree: its
+ * chosen checkout, else the worktree agenfk created for it. A card that chose
+ * the project root has none of its own here.
+ */
+function ownTreeOf(item: any): string | undefined {
+  const chosen = typeof item?.worktreeChoice === 'string' ? item.worktreeChoice : '';
+  if (chosen === 'root') return undefined;
+  return chosen || item?.worktreePath || undefined;
+}
+
+/**
+ * Every card in a project as a claim holder, carrying the tree it works in
+ * (aaa01834). Claims are per worktree: `gateOnClaims` compares a card only
+ * with holders in its own tree, and an unknown tree stays strict. One listing,
+ * resolved in memory, rather than a storage round-trip per ancestor.
+ */
+async function claimHoldersIn(projectId: string, projectRoot: string | null | undefined): Promise<{ holders: ClaimHolder[]; treeOf: (item: any) => string | null }> {
+  // e248239d: claims only - no per-test results to read back.
+  const all: any[] = (await storage.listItems({ projectId, limit: 1_000_000, hydrate: false } as any)) as any;
+  const byId = new Map<string, any>(all.map(i => [i.id, i]));
+  /*
+   * A card moved to another project keeps its parentId (move takes only
+   * descendants), and verify commits in THAT parent's worktree
+   * (effectiveWorktreePath reads any project). Resolve the same way, or claims
+   * and strays would be judged against a tree the commit never touches.
+   */
+  for (let round = 0; round < 32; round++) {
+    const missing = [...new Set([...byId.values()].map(i => i.parentId).filter((id: any) => id && !byId.has(id)))] as string[];
+    if (!missing.length) break;
+    for (const id of missing) {
+      const parent = await storage.getItem(id);
+      byId.set(id, parent ?? { id });
+    }
+  }
+  const treeOf = (item: any) => claimTreeOf(item, id => byId.get(id), projectRoot ?? null);
+  const started = (i: any) => Array.isArray(i.stepRecords) && i.stepRecords.some((r: any) => r?.kind === 'exit');
+  return { holders: all.map(i => ({ id: i.id, status: String(i.status), claims: i.claims, tree: treeOf(i), started: started(i) })), treeOf };
+}
+
+/**
+ * Staged files this card's close would leave behind with no owner (aaa01834).
+ *
+ * The close commit (and a step commit) takes only the card's claimed files.
+ * What else is staged is either another card's in the same tree - theirs, left
+ * alone - or nobody's, and a nobody's file sitting in the index after DONE is
+ * how a dirty tree reaches the next agent. Empty for a card that claims
+ * nothing, and when the index cannot be read: the commit then reports that.
+ */
+async function strayStagedFor(
+  item: any,
+  projectRoot: string | null | undefined,
+  isWorking: (status: string) => boolean,
+): Promise<{ strays: string[]; claimless: string[] }> {
+  const none = { strays: [], claimless: [] };
+  if (!Array.isArray(item?.claims) || !item.claims.length) return none;
+  const root = resolveCommitRoot(await withEffectiveWorktree(item), projectRoot).root;
+  if (!root) return none;
+  // --no-renames: with rename detection `--name-only` prints only a rename's
+  // DESTINATION, and the staged deletion of its source would be left behind
+  // unseen - exactly the ownerless file this looks for.
+  const listed = await git(['diff', '--cached', '--name-only', '--no-renames', '-z'], root);
+  if (!listed.ok) return none;
+  const staged = listed.out.split('\0').filter(Boolean);
+  if (!staged.length) return none;
+  const { holders, treeOf } = await claimHoldersIn(item.projectId, projectRoot);
+  const me = { id: item.id, claims: item.claims, tree: treeOf(item) };
+  const strays = strayStaged(staged, me, holders);
+  return { strays, claimless: strays.length ? claimlessNeighbours(me, holders, isWorking) : [] };
+}
+
+/** What an agent reads when strays stop it, and how to get past them. */
+function describeStrays(item: any, strays: readonly string[]): string {
+  const SHOWN = 20;
+  const list = strays.slice(0, SHOWN).map(f => `\`${f}\``).join(', ') + (strays.length > SHOWN ? ` and ${strays.length - SHOWN} more` : '');
+  // Every stray, not the ones listed: a partial command would be refused again.
+  const widened = [...(item.claims ?? []), ...strays].join(',');
+  return `Staged, but outside this card's claims and claimed by no other active card in this worktree: ${list}. `
+    + `The commit takes only claimed files, so these would stay staged with no owner. `
+    + `Claim them (\`agenfk update ${String(item.id).slice(0, 8)} --claims "${widened}"\`) or unstage them (\`git restore --staged <file>\`).`;
+}
+
+/** The note when a stray may belong to a card that claims nothing. */
+function describeUnowned(strays: readonly string[], claimless: readonly string[]): string {
+  const SHOWN = 20;
+  const list = strays.slice(0, SHOWN).map(f => `\`${f}\``).join(', ') + (strays.length > SHOWN ? ` and ${strays.length - SHOWN} more` : '');
+  return `Staged outside this card's claims, and not committed with it: ${list}. `
+    + `They may belong to ${claimless.map(id => String(id).slice(0, 8)).join(', ')}, which ${claimless.length === 1 ? 'works in this tree and claims' : 'work in this tree and claim'} nothing, so they are left staged for ${claimless.length === 1 ? 'it' : 'them'}.`;
 }
 
 /** realpath that canonicalises case on macOS; the input unchanged when it fails. */
@@ -1104,15 +1286,7 @@ async function placeCaller(
     gitTopLevel(tested),
   ]);
   if (!list.ok || !testedTop) return { kind: 'unrelated' };
-  // One record per checkout, separated by a blank line. A record flagged
-  // `bare` is the repository directory of a bare layout, not a checkout, so
-  // nothing inside it is "a different checkout". Paths are taken verbatim:
-  // trimming would turn a directory ending in a space into another one.
-  const listed = list.out.split(/\r?\n\r?\n/)
-    .map(rec => rec.split(/\r?\n/))
-    .filter(lines => !lines.includes('bare'))
-    .map(lines => lines.find(l => l.startsWith('worktree '))?.slice('worktree '.length) ?? '')
-    .filter(Boolean);
+  const listed = listedCheckouts(list.out);
   // As git recorded them, and resolved: the caller may report either spelling.
   const checkouts = [...new Set([...listed, ...listed.map(realDir)])];
   const resolved = checkouts.map(realDir);
@@ -1244,6 +1418,8 @@ const initStorage = async () => {
 
   console.log(`[SERVER_START] Using Database: ${dbPath} (SQLite)`);
   await storage.init({ path: dbPath });
+  // f8d0a752: the server-wide suite-run limit, read from the settings it lives in.
+  await loadSuiteRunSetting();
 
   // Apply pending migration (written by install/upgrade when a db.json was detected)
   const migrationPath = path.join(os.homedir(), '.agenfk', 'migration.json');
@@ -1671,6 +1847,81 @@ function recordsAfterRollback(records: any[] | undefined, toStatus: string, flow
     const i = steps.indexOf(r?.step);
     return i === -1 || i < target;
   });
+}
+
+/**
+ * d26832d6 #0/#20 — the CAPTURES a move back drops, kept aside rather than
+ * lost, stamped with where the card went. They are no step's current record
+ * (recordsAfterRollback still decides that), but:
+ *  - a superseded green is still a green of exactly the content it ran on, so
+ *    re-entering on an unchanged tree reuses it instead of running the suite
+ *    again (the field card re-ran it on an identical tree);
+ *  - (a re-entry cannot swap a frozen step's baseline for one taken after its
+ *    tests changed: frozenTestsRollbackRefusal refuses that rollback).
+ */
+/**
+ * d26832d6 #20 — a rollback cannot launder a change to frozen tests. A step
+ * whose tests must not change (test-set-identical, or test-surface-frozen
+ * since the step's entry) is not left BACKWARDS while its test files differ
+ * from what they were when it began: the re-entry would take its baseline
+ * after the change and compare the change with itself. Measured by file
+ * content under the entry's OWN declared paths (no suite run, and a changed
+ * surface setting cannot hide it). Rolling back to the step that writes tests,
+ * or before it, reopens them and is always allowed; so is any change made
+ * after the rollback, on the earlier step.
+ */
+async function frozenTestsRollbackRefusal(item: any, toStatus: string, flow: TransitionFlow): Promise<string | null> {
+  const steps = flowProgression(flow).map(st => st.name);
+  // The step the card really occupies: on PAUSED/BLOCKED it is the one it left,
+  // or PAUSED -> <earlier step> would be a way around this.
+  const occupied = steps.includes(item?.status) ? item.status : item?.previousStatus;
+  const from = steps.indexOf(occupied);
+  const to = steps.indexOf(toStatus);
+  if (from === -1 || to === -1 || to >= from) return null;
+  const here = resolveStepChecks((flow as any).steps ?? [], occupied).filter(c => c.applicable);
+  const setFrozen = here.some(c => c.id === 'test-set-identical');
+  const surfaceFrozen = here.find(c => c.id === 'test-surface-frozen' && c.params?.since === 'step-entry');
+  if (!setFrozen && !surfaceFrozen) return null;
+  // Whether a NEW test file counts as a change: not where the step only forbids edits (append mode alone).
+  const additionsFrozen = setFrozen || surfaceFrozen?.params?.mode === 'strict';
+  let authoring = -1;
+  steps.forEach((name, i) => { if (i < from && resolveStepChecks((flow as any).steps ?? [], name).some(c => c.id === 'some-new-test-red' || c.id === 'new-tests-exist')) authoring = i; });
+  if (to <= authoring) return null;
+  const prev = steps[from - 1];
+  const entry = [...(item.stepRecords ?? [])].reverse().find((r: any) => r?.kind === 'capture' && r.step === prev);
+  const base = entry?.surface?.files;
+  if (!entry?.available || !base || typeof base !== 'object') return null;
+  const project: any = await storage.getProject(item.projectId);
+  const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
+  if (!root) return null;
+  const listTree = () => execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, maxBuffer: 256 * 1024 * 1024 }).split('\0').filter(Boolean);
+  const owned = reportsOwned(root, project?.testReport);
+  // A brand-new test file is a change too (d26832d6 re-review): with no declared
+  // paths, the entry's own files alone would never look at it.
+  // Only files new SINCE THE ENTRY (re-review): a committed test the suite never
+  // runs (e2e, another package's) is in the tree all along and is no addition.
+  // Known limit: when git cannot diff against the entry's head (it was rebased
+  // away), additions go unchecked here - edits and deletions of the entry's
+  // test files still are. Refusing instead would strand the card: a rollback has no override.
+  const since = additionsFrozen && typeof entry.head === 'string' ? changedSince(root, entry.head, owned) : null;
+  const fresh = (since?.inside ?? []).filter(f => ANY_TEST_FILE_PATTERN.test(f) && !(f in base) && fs.existsSync(path.join(root, f)));
+  const files = [...new Set([...Object.keys(base), ...(entry.tests ?? []).map((t: any) => t.file), ...fresh])];
+  const now = surfaceOf(root, files, entry.surfaceDeclared ?? [], { listTree, exclude: owned }).files;
+  const changed = [...new Set([...Object.keys(base), ...Object.keys(now)])].filter(f => base[f] !== now[f] && (additionsFrozen || f in base))
+    .map(f => (!(f in now) ? `deleted ${f}` : !(f in base) ? `new or changed ${f}` : `edited ${f}`));
+  if (!changed.length) return null;
+  const reopen = authoring >= 0 ? `, or move the card back to ${steps[authoring]} (rollbacks go one step at a time: pause it, then send it to ${steps[authoring]}) to rewrite them there` : '';
+  return `TESTS CHANGED ON ${occupied}: ${changed.slice(0, 5).join(', ')}${changed.length > 5 ? ` and ${changed.length - 5} more` : ''}. ${occupied} does not change the tests, and a rollback would re-take its baseline after the change. Put them back first${reopen}.`;
+}
+
+const SUPERSEDED_KEPT = 20;
+function supersededByRollback(item: any, toStatus: string, flow: TransitionFlow): any[] | undefined {
+  const kept = new Set(recordsAfterRollback(item?.stepRecords, toStatus, flow) ?? []);
+  const dropped = (item?.stepRecords ?? []).filter((r: any) => !kept.has(r) && r?.kind === 'capture');
+  if (!dropped.length) return undefined;
+  const at = new Date().toISOString();
+  // Bounded: only reuse reads them, and the newest greens are the ones worth reusing.
+  return [...(item.supersededRecords ?? []), ...dropped.map((r: any) => ({ ...r, supersededAt: at, rolledBackTo: toStatus }))].slice(-SUPERSEDED_KEPT);
 }
 
 /** Refusal text for completing a card outside verify, whatever the exit step is called. */
@@ -2282,7 +2533,7 @@ app.get("/items/:id/git-status", limitExpensive, asyncHandler(async (req: any, r
   const item: any = await storage.getItem(req.params.id);
   if (!item) return res.status(404).json({ error: "Item not found" });
 
-  const cwd = item.worktreePath;
+  const cwd = ownTreeOf(item);
   if (!cwd || !fs.existsSync(cwd)) {
     // Never the server's own cwd: that would report the state of whatever
     // repository the server happens to be running in — confidently, and about
@@ -2329,14 +2580,15 @@ app.get("/items/:id/git-status", limitExpensive, asyncHandler(async (req: any, r
 app.get("/items/:id/files", limitExpensive, asyncHandler(async (req: any, res: any) => {
   const item: any = await storage.getItem(req.params.id);
   if (!item) return res.status(404).json({ error: "Item not found" });
-  if (!item.worktreePath || !fs.existsSync(item.worktreePath)) {
+  const own = ownTreeOf(item);
+  if (!own || !fs.existsSync(own)) {
     return res.status(409).json({ error: "This item has no worktree on disk yet." });
   }
 
   let root: string;
   let target: string;
   try {
-    root = fs.realpathSync(item.worktreePath);
+    root = fs.realpathSync(own);
     const asked = typeof req.query?.path === 'string' && req.query.path ? req.query.path : root;
     // Resolved relative to the ROOT, never to the server's cwd.
     target = fs.realpathSync(path.resolve(root, asked));
@@ -2394,7 +2646,8 @@ app.get("/items/:id/files", limitExpensive, asyncHandler(async (req: any, res: a
 app.get("/items/:id/diff", limitExpensive, asyncHandler(async (req: any, res: any) => {
   const item: any = await storage.getItem(req.params.id);
   if (!item) return res.status(404).json({ error: "Item not found" });
-  if (!item.worktreePath || !fs.existsSync(item.worktreePath)) {
+  const own = ownTreeOf(item);
+  if (!own || !fs.existsSync(own)) {
     return res.status(409).json({ error: "This item has no worktree on disk yet." });
   }
   const asked = typeof req.query?.path === 'string' ? req.query.path : '';
@@ -2402,7 +2655,7 @@ app.get("/items/:id/diff", limitExpensive, asyncHandler(async (req: any, res: an
   const staged = req.query?.staged === 'true';
 
   let root: string;
-  try { root = fs.realpathSync(item.worktreePath); }
+  try { root = fs.realpathSync(own); }
   catch { return res.status(409).json({ error: "This item's worktree is not readable." }); }
 
   const safe = containedPath(root, path.resolve(root, asked));
@@ -2611,6 +2864,23 @@ app.get("/settings", asyncHandler(async (_req: any, res: any) => {
   res.json(await storage.getSettings());
 }));
 
+/**
+ * f8d0a752: the server-wide limit on concurrent suite runs. Read synchronously
+ * whenever a slot is taken or freed, so it is cached here: loaded with the
+ * storage, refreshed on every settings write.
+ */
+let suiteRunSetting = 0;
+const suiteSlots = new SuiteSlots(() => suiteRunLimit(os.cpus().length, suiteRunSetting));
+async function loadSuiteRunSetting(): Promise<void> {
+  try { suiteRunSetting = (await storage.getSettings()).maxConcurrentSuiteRuns ?? 0; } catch { /* automatic */ }
+}
+
+/** 7b640e64: what the machine makes of the suite-run setting, for the Settings screen. */
+app.get("/settings/runtime", (_req: any, res: any) => {
+  const cpus = os.cpus().length;
+  res.json({ cpus, automaticSuiteRuns: suiteRunLimit(cpus, 0), suiteRunLimit: suiteRunLimit(cpus, suiteRunSetting) });
+});
+
 app.put("/settings", asyncHandler(async (req: any, res: any) => {
   const body = req.body || {};
   const allowed = Object.keys(DEFAULT_APP_SETTINGS);
@@ -2656,6 +2926,8 @@ app.put("/settings", asyncHandler(async (req: any, res: any) => {
     return res.status(400).json({ error: `Provide at least one of: ${allowed.join(", ")}` });
   }
   const settled = await storage.updateSettings(patch);
+  suiteRunSetting = settled.maxConcurrentSuiteRuns ?? 0;
+  suiteSlots.recheck();
   // The whole settled state, so a caller never has to re-read to find out what
   // it now has.
   io.emit("settings_updated", settled);
@@ -2757,7 +3029,15 @@ async function noteGateChangeOnCards(project: any, heading: string, body: string
 // ── Test reports and step records (CGLAB-379) ────────────────────────────────
 
 const TEST_REPORT_FORMATS = new Set(['vitest-json', 'junit-xml']);
-type TestReportSetting = { format: string; command: string; reportPath: string; surface?: string[] };
+type TestReportSetting = { format: string; command: string; reportPath: string | string[]; surface?: string[]; reuseIgnore?: string[]; relatedCommand?: string };
+/**
+ * d26832d6 #6: a project may write several reports (a pytest suite and a
+ * vitest suite, each its own JUnit file); they are read as one. A single path
+ * is the common case and stays a string.
+ */
+const reportPathsOf = (setting: { reportPath?: unknown } | null | undefined): string[] =>
+  Array.isArray(setting?.reportPath) ? (setting!.reportPath as unknown[]).filter((p): p is string => typeof p === 'string' && p.length > 0)
+    : typeof setting?.reportPath === 'string' && setting.reportPath ? [setting.reportPath] : [];
 
 /**
  * How the server gets per-test results for a project: a command that writes a
@@ -2774,15 +3054,24 @@ app.put("/projects/:id/test-report", asyncHandler(async (req: any, res: any) => 
   if (Object.prototype.hasOwnProperty.call(body, 'testReport') && body.testReport === null) {
     next = null;
   } else {
-    const { format, command, reportPath, surface } = body;
+    const { format, command, reportPath, surface, reuseIgnore, relatedCommand } = body;
     const text = (v: unknown) => typeof v === 'string' && v.trim().length > 0;
-    if (!TEST_REPORT_FORMATS.has(format) || !text(command) || !text(reportPath)) {
+    const paths = Array.isArray(reportPath) ? reportPath : [reportPath];
+    if (!TEST_REPORT_FORMATS.has(format) || !text(command) || !paths.length || !paths.every(text)) {
       return res.status(400).json({ error: `testReport needs format (${[...TEST_REPORT_FORMATS].join(' | ')}), command and reportPath, or { "testReport": null } to clear it.` });
     }
     if (surface !== undefined && !(Array.isArray(surface) && surface.every(text))) {
       return res.status(400).json({ error: 'testReport.surface must be an array of paths (files or directories) relative to the tree: helpers, fixtures and setup files the tests depend on.' });
     }
-    next = { format, command, reportPath, ...(surface !== undefined ? { surface } : {}) };
+    // 32045202: the globs capture reuse leaves out; [] leaves out nothing.
+    if (reuseIgnore !== undefined && !(Array.isArray(reuseIgnore) && reuseIgnore.every(text))) {
+      return res.status(400).json({ error: 'testReport.reuseIgnore must be a list of globs relative to the tree (e.g. ["docs/**", "**/*.md"]), or [] to leave nothing out.' });
+    }
+    // a36047ea: the related-tests template must say where the changed files go.
+    if (relatedCommand !== undefined && !(text(relatedCommand) && String(relatedCommand).includes('{files}'))) {
+      return res.status(400).json({ error: 'testReport.relatedCommand must be the runner\'s related-tests command with {files} where the changed files go, e.g. "npx vitest related --run {files}".' });
+    }
+    next = { format, command, reportPath: paths.length === 1 ? paths[0] : paths, ...(surface !== undefined ? { surface } : {}), ...(reuseIgnore !== undefined ? { reuseIgnore } : {}), ...(relatedCommand !== undefined ? { relatedCommand } : {}) };
   }
   const before: any = await storage.getProject(req.params.id);
   if (!before) return res.status(404).json({ error: "Project not found" });
@@ -2793,11 +3082,16 @@ app.put("/projects/:id/test-report", asyncHandler(async (req: any, res: any) => 
     ...(changed ? { testReportChanges: [...(before.testReportChanges ?? []), { from: previous, to: next, at: new Date().toISOString() }] } : {}),
   } as any);
   if (changed) {
-    const shown = (t: TestReportSetting | null) => (t ? `${t.format} from \`${t.command}\` (${t.reportPath})${t.surface?.length ? `, test paths ${t.surface.join(', ')}` : ''}` : '(none)');
+    const shown = (t: TestReportSetting | null) => (t ? `${t.format} from \`${t.command}\` (${reportPathsOf(t).join(', ')})${t.surface?.length ? `, test paths ${t.surface.join(', ')}` : ''}` : '(none)');
     await noteGateChangeOnCards(before, 'Project test report changed', `From ${shown(previous)} to ${shown(next)}. Checks that read per-test results now use it.`);
   }
   io.emit('items_updated');
-  res.json(updated);
+  // d26832d6 #5: said when the report is set, not three steps later. agenfk's
+  // own checks leave the report (and a directory holding only it) alone; git
+  // does not, and a person reading `git status` sees it every run.
+  const root = (before as any).projectRoot;
+  const unignored = next && root ? reportPathsOf(next).filter(p => spawnSync('git', ['-C', root, 'check-ignore', '-q', p], { stdio: 'ignore', timeout: 5000 }).status === 1) : [];
+  res.json(unignored.length ? { ...updated, warning: `${unignored.join(', ')} ${unignored.length === 1 ? 'is' : 'are'} not ignored by git. agenfk's checks leave the report alone, but git status will show it after every run: add ${unignored.length === 1 ? 'it' : 'them'} (or the directory) to .gitignore.` } : updated);
 }));
 
 /**
@@ -2865,10 +3159,24 @@ async function gateTarget(req: any, res: any): Promise<{ item: any; flow: Flow }
 
 const gateText = (v: unknown, max = 2000) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 
+/**
+ * A card's history of its checks, approvals and overrides (4a428bb0): what the
+ * board's Checks tab shows. A log, not live state - unlike step records, a
+ * rollback never drops it - kept to the latest CHECK_HISTORY_MAX entries.
+ * Server-written only: PUT /items/:id takes an allow-list without it.
+ */
+const CHECK_HISTORY_MAX = 100;
+const withHistory = (fresh: any, entry: Record<string, unknown>) => [...(Array.isArray(fresh?.checkHistory) ? fresh.checkHistory : []), entry].slice(-CHECK_HISTORY_MAX);
+const gateEntry = (rec: any) => ({
+  kind: rec.kind, step: rec.step, at: rec.at, by: rec.by, authority: rec.authority,
+  ...(rec.note ? { note: rec.note } : {}), ...(rec.check ? { check: rec.check, reason: rec.reason } : {}),
+});
+
 async function appendGateRecord(item: any, rec: any, comment: string) {
   const fresh: any = await storage.getItem(item.id);
   await storage.updateItem(item.id, {
     stepRecords: [...(fresh?.stepRecords ?? []), rec],
+    checkHistory: withHistory(fresh, gateEntry(rec)),
     comments: [...(fresh?.comments ?? []), { id: uuidv4(), author: 'Board', content: comment, timestamp: new Date(), step: item.status }],
   } as any);
   io.emit('items_updated');
@@ -3002,7 +3310,40 @@ app.get("/items/:id/gates", asyncHandler(async (req: any, res: any) => {
     ].filter(a => !stepWantsPasskey(flow, item.status) || a.authority === 'passkey'),
     overrides,
     lastChecks: item.lastChecks?.step === item.status ? item.lastChecks : null,
+    // C3b: which commands are approved here (hash and when), so a verify waiting
+    // on ONE command wakes for that command, not for any approval in the project.
+    commandApprovals: (Array.isArray(project?.commandApprovals) ? project.commandApprovals : [])
+      .map((a: any) => ({ hash: String(a?.hash ?? ''), at: String(a?.at ?? '') })).filter((a: any) => a.hash),
+    // CGLAB-428: what the org's hub switched off on this step, which verify will not run.
+    disabledChecks: disabledChecksOf(flow.steps, item.status),
   });
+}));
+
+/** CGLAB-428: the checks leaving `step` would run but the org's hub switched off. */
+function disabledChecksOf(steps: any[], step: string): Array<{ id: string; source: string }> {
+  return disabledStepChecks(steps, step).map(c => ({ id: c.id, source: c.source }));
+}
+
+/** CGLAB-428: the checks each card of the tree left a step with switched off by the hub, for the PR. */
+app.get("/items/:id/disabled-checks", asyncHandler(async (req: any, res: any) => {
+  const root: any = await storage.getItem(req.params.id);
+  if (!root) return res.status(404).json({ error: 'Item not found' });
+  const rows: any[] = [];
+  const queue = [root];
+  for (let seen = 0; queue.length && seen < 5000; seen++) {
+    const card = queue.shift();
+    // The LAST exit per step: a step left again after a rollback supersedes the earlier one.
+    const latest = new Map<string, any[]>();
+    for (const r of card.stepRecords ?? []) {
+      if (r?.kind !== 'exit') continue;
+      latest.set(String(r.step), (Array.isArray(r.disabled) ? r.disabled : []).map((d: any) => ({
+        itemId: card.id, title: card.title, step: r.step, check: String(d?.id ?? ''), source: String(d?.source ?? ''), at: r.at,
+      })));
+    }
+    for (const list of latest.values()) rows.push(...list);
+    queue.push(...((await storage.listItems({ parentId: card.id } as any)) as any[]));
+  }
+  res.json(rows);
 }));
 
 /** Every approval and override on a card and its descendants, for the PR body (CGLAB-382). */
@@ -3023,6 +3364,62 @@ app.get("/items/:id/gate-events", asyncHandler(async (req: any, res: any) => {
     queue.push(...((await storage.listItems({ parentId: card.id } as any)) as any[]));
   }
   res.json(events);
+}));
+
+/**
+ * The custom checks a card tree passed its steps with, for the PR body (C3b).
+ *
+ * From each card's EXIT records: the results that let it leave a step, not
+ * attempts that were refused. A command check names who approved its command
+ * when the step asked for a person; an agent check is labelled as the agent's
+ * word, because the server never checked it.
+ */
+app.get("/items/:id/custom-checks", asyncHandler(async (req: any, res: any) => {
+  const root: any = await storage.getItem(req.params.id);
+  if (!root) return res.status(404).json({ error: 'Item not found' });
+  const rows: any[] = [];
+  const queue = [root];
+  for (let seen = 0; queue.length && seen < 5000; seen++) {
+    const card = queue.shift();
+    // The LAST exit per step and check: a step left again after a rollback supersedes the earlier result.
+    const latest = new Map<string, any>();
+    for (const r of card.stepRecords ?? []) {
+      if (r?.kind !== 'exit' || !Array.isArray(r.checks)) continue;
+      for (const c of r.checks) {
+        const id = String(c?.id ?? '');
+        const kind = id.startsWith('command-check:') ? 'command' : id.startsWith('agent-check:') ? 'agent' : null;
+        if (!kind) continue;
+        // What the check DID, from the facts stamped when it was judged - never from its wording.
+        const m = c.meta ?? {};
+        latest.set(`${r.step}\u0000${id}`, {
+          itemId: card.id, title: card.title, step: r.step, check: id.slice(id.indexOf(':') + 1), kind,
+          outcome: c.outcome, at: r.at,
+          ...(kind === 'command' ? { ran: m.ran === true, ...(m.reusedFrom ? { reusedFrom: m.reusedFrom } : {}) } : { reported: m.reported === true }),
+          ...(m.note ? { note: m.note } : {}),
+          ...(typeof c.detail === 'string' ? { detail: c.detail } : {}),
+          ...(m.approval ? { approval: m.approval } : {}),
+          ...(c.overridden ? { overridden: { by: c.overridden.by, reason: c.overridden.reason } } : {}),
+        });
+      }
+    }
+    rows.push(...latest.values());
+    queue.push(...((await storage.listItems({ parentId: card.id } as any)) as any[]));
+  }
+  res.json(rows);
+}));
+
+/** CGLAB-420: the failing warnings a card tree left its steps with, and their answers, for the PR. */
+app.get("/items/:id/warnings", asyncHandler(async (req: any, res: any) => {
+  const root: any = await storage.getItem(req.params.id);
+  if (!root) return res.status(404).json({ error: 'Item not found' });
+  res.json(await treeWarningsOf(root));
+}));
+
+/** The card's check history, newest first (4a428bb0). */
+app.get("/items/:id/check-history", asyncHandler(async (req: any, res: any) => {
+  const item: any = await storage.getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: 'Item not found' });
+  res.json([...(Array.isArray(item.checkHistory) ? item.checkHistory : [])].reverse());
 }));
 
 app.post("/items/:id/approvals", limitExpensive, asyncHandler(async (req: any, res: any) => {
@@ -3046,6 +3443,8 @@ app.post("/items/:id/approvals", limitExpensive, asyncHandler(async (req: any, r
   const rec = { id: uuidv4(), step: item.status, kind: 'approval', at: new Date().toISOString(), head: null, clean: false, by: 'board', ...authority, ...(note ? { note } : {}), covers };
   await appendGateRecord(item, rec, `### Step approved\n\n**Step**: ${item.status} — a person approved it on the board.${note ? `\n\n${note}` : ''}`);
   recordHubEvent({ type: 'step.approved', projectId: item.projectId, itemId: item.id, payload: { step: item.status, by: 'board' } });
+  // beae41a0/2ec08b41: the person it was waiting on has answered - only once the approval is on record.
+  if (awaitingPerson.delete(item.id)) notifyVerifyRuns();
   res.status(201).json(rec);
 }));
 
@@ -3058,7 +3457,8 @@ app.post("/items/:id/overrides", limitExpensive, asyncHandler(async (req: any, r
   const target = await gateTarget(req, res);
   if (!target) return;
   const { item, flow } = target;
-  if (!resolveStepChecks(flow.steps, item.status).some(c => c.id === checkId)) {
+  // The server's own entry hold is no flow check, but a person may pass it like one (5a8d22e6 review).
+  if (checkId !== ENTRY_BASELINE && !resolveStepChecks(flow.steps, item.status).some(c => c.id === checkId)) {
     return res.status(400).json({ error: `Step ${item.status} does not run the check '${checkId}'.` });
   }
   const last = item.lastChecks;
@@ -3075,6 +3475,30 @@ app.post("/items/:id/overrides", limitExpensive, asyncHandler(async (req: any, r
 }));
 
 /**
+ * efcacdeb: a person's approval of a command check's exact argv for this
+ * project, signed with a passkey on the board. The check runs once the argv's
+ * hash is approved, and asks again when the command changes.
+ */
+app.post("/projects/:id/command-approvals", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  if (refuseUnlessBoard(req, res)) return;
+  const project: any = await storage.getProject(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  const argv = req.body?.argv;
+  if (!Array.isArray(argv) || !argv.length || !argv.every((a: unknown) => typeof a === 'string' && a.length > 0)) {
+    return res.status(400).json({ error: 'argv must be the command as a list of strings, exactly as the flow defines it.' });
+  }
+  const hash = argvHash(argv);
+  const authority = gateAuthority(req, res, { purpose: 'command', itemId: project.id, checkId: hash }, true);
+  if (!authority) return;
+  const rec: CommandApproval = { hash, argv, at: new Date().toISOString(), by: 'board', ...(authority as any) };
+  const approvals: CommandApproval[] = Array.isArray(project.commandApprovals) ? project.commandApprovals : [];
+  await storage.updateProject(project.id, { commandApprovals: [...approvals.filter(a => a.hash !== hash), rec] } as any);
+  recordHubEvent({ type: 'command.approved', projectId: project.id, payload: { hash, argv, by: 'board' } });
+  io.emit('items_updated');
+  res.status(201).json(rec);
+}));
+
+/**
  * Record an independent review of a card (CGLAB-381): the reviewer's
  * transcript, the commit range it reviewed, and what became of each finding.
  * The reviewer's identity is read from the transcript - never from the
@@ -3082,6 +3506,62 @@ app.post("/items/:id/overrides", limitExpensive, asyncHandler(async (req: any, r
  * commit, or it cannot have reviewed it. Server-written only: PUT
  * /items/:id never accepts `reviewRecords`.
  */
+/**
+ * CGLAB-420: what the card changed after the reviewer began: its own commits
+ * made since (not ones already on a remote default branch, not other cards'
+ * close and step commits), and its uncommitted work in files written since or
+ * removed. Lines are counted against the last commit before the reviewer
+ * began, so a small fix to a file the card had already changed counts small.
+ * Uncommitted work older than that commit cannot be told from a later edit to
+ * the same file, and is counted with it - the result is a warning, not a gate.
+ */
+function unreviewedAfter(root: string, from: string, since: number, mine: Set<string>, notOurs: (repoPath: string) => boolean): { lines: number; files: string[] } | { notJudged: string } {
+  try {
+    const git = (args: string[]) => gitRun.run(['-C', root, ...args]);
+    const z = (out: string) => out.split('\0').filter(Boolean);
+    const defaults = git(['for-each-ref', '--format=%(refname)', 'refs/remotes/*/HEAD', 'refs/remotes/*/main', 'refs/remotes/*/master']).split('\n').map(r => r.trim()).filter(Boolean);
+    // The committed state when the reviewer began: the last commit before, not before the card's own start.
+    let base = git(['rev-list', '-1', `--before=${Math.floor(since / 1000)}`, 'HEAD']).trim() || from;
+    try { git(['merge-base', '--is-ancestor', from, base]); } catch { base = from; }
+    const touched = new Set<string>();
+    const log = git(['log', '--no-merges', '--no-renames', '--name-only', '-z', '--format=%x01%s', `${base}..HEAD`, ...(defaults.length ? ['--not', ...defaults] : [])]);
+    for (const block of log.split('\x01').filter(Boolean)) {
+      const [subject, ...names] = block.split(/\n|\0/).filter(Boolean);
+      const tagged = /^(close|step)\([^)]*\):.*\[([0-9a-f]{8}-[0-9a-f-]{27,})\]\s*$/.exec(subject ?? '')?.[2];
+      if (tagged && !mine.has(tagged)) continue;
+      for (const n of names) touched.add(n);
+    }
+    const top = git(['rev-parse', '--show-toplevel']).trim();
+    const untracked = new Set(z(git(['ls-files', '--others', '--exclude-standard', '--full-name', '-z'])));
+    for (const f of [...z(git(['diff', '--name-only', '--no-renames', '-z', 'HEAD'])), ...untracked]) {
+      let written = NaN;
+      try { written = fs.statSync(path.join(top, f)).mtimeMs; } catch { /* removed: counted, when is not known */ }
+      if (Number.isNaN(written) || written > since) touched.add(f);
+    }
+    const counts = new Map<string, number>();
+    for (const entry of z(git(['diff', '--numstat', '--no-renames', '-z', base]))) {
+      const [added, deleted, ...rest] = entry.split('\t');
+      const file = rest.join('\t');
+      if (file) counts.set(file, (added === '-' ? 1 : Number(added) || 0) + (deleted === '-' ? 0 : Number(deleted) || 0));
+    }
+    let lines = 0;
+    const files: string[] = [];
+    for (const f of touched) {
+      if (notOurs(f)) continue;
+      let n = counts.get(f);
+      if (n === undefined && untracked.has(f)) {
+        try { const p = path.join(top, f); n = fs.statSync(p).size > (1 << 20) ? 1 : Math.max(1, fs.readFileSync(p, 'utf8').split('\n').filter(Boolean).length); } catch { n = 0; }
+      }
+      if (!n) continue;
+      lines += n;
+      files.push(f);
+    }
+    return { lines, files };
+  } catch (e: any) {
+    return { notJudged: `git could not list the card's changes (${String(e?.message ?? e).split('\n')[0]})` };
+  }
+}
+
 app.post("/items/:id/review-records", asyncHandler(async (req: any, res: any) => {
   if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
     return res.status(401).json({ error: "Unauthorized" });
@@ -3122,13 +3602,32 @@ app.post("/items/:id/review-records", asyncHandler(async (req: any, res: any) =>
   if (last.some(t => Number.isNaN(t) || t < Date.parse(tipAt))) {
     return res.status(400).json({ error: `The transcript was last written ${reviewer.lastAt ?? 'at no recorded time'} (file: ${reviewer.mtime}), before the range's tip commit (${tipAt}): it cannot have reviewed it.` });
   }
+  const recId = uuidv4();
+  // What in the tree is not this card's: the reports a run writes, and files other active cards claim.
+  const under = (f: string, p: string) => { const q = p.replace(/^\.\//, '').replace(/\/+$/, ''); return f === q || f.startsWith(`${q}/`); };
+  let prefix = '';
+  try { prefix = git(['rev-parse', '--show-prefix']); } catch { /* the root is the top */ }
+  const reports = reportOwnedOf(root, project).map(r => `${prefix}${r}`);
+  const ancestorIds = new Set<string>();
+  for (let p = item.parentId, hops = 0; p && hops < 64 && !ancestorIds.has(p); hops++) { ancestorIds.add(p); p = ((await storage.getItem(p)) as any)?.parentId ?? null; }
+  const { holders, treeOf } = await claimHoldersIn(item.projectId, project?.projectRoot);
+  const claimed = foreignClaimsFor(item, holders, { itemTree: treeOf(item), ancestorIds });
+  const notOurs = (f: string) => reports.some(r => under(f, r)) || claimed.some(c => under(f, c));
+  // The card's own work: itself and its descendants (reviews happen at the parent).
+  const mine = new Set<string>([item.id, ...(await descendantsOf(item)).map((d: any) => d.id)]);
   const rec = {
-    id: uuidv4(), at: new Date().toISOString(),
+    id: recId, at: new Date().toISOString(),
+    // CGLAB-420: what the reviewer cannot have read - the card's changes in files written after it began.
+    ...(reviewer.startedAt
+      ? (() => { const u = unreviewedAfter(root, from, Date.parse(reviewer.startedAt!), mine, notOurs); return 'notJudged' in u ? { unreviewedNotJudged: u.notJudged } : { unreviewed: u }; })()
+      : { unreviewedNotJudged: 'the transcript carries no timestamps, so when the reviewer began is not known' }),
     reviewer: { client: reviewer.client, sessionId: reviewer.sessionId, agentId: reviewer.agentId, transcript: reviewer.transcript, edits: reviewer.edits, advancedCards: reviewer.advancedCards },
     range: { from, to }, findings,
     // The tree as reviewed, uncommitted work included: a change after this
-    // needs the review recorded again (CGLAB-381 review).
-    tree: treeContentState(root, null),
+    // needs the review recorded again (CGLAB-381 review). The report a run
+    // writes is not the card's work (d26832d6): a capture after the review
+    // must not read as a change to what was reviewed.
+    tree: treeContentState(root, reportOwnedOf(root, await storage.getProject(item.projectId))),
   };
   const fresh: any = await storage.getItem(item.id);
   await storage.updateItem(item.id, { reviewRecords: [...(fresh?.reviewRecords ?? []), rec] } as any);
@@ -3147,15 +3646,39 @@ app.get("/items/:id/step-records", asyncHandler(async (req: any, res: any) => {
 }));
 
 /** Run `command` in `cwd` without blocking the server; resolves to its exit code (null on a kill). */
-function runForExitCode(command: string, cwd: string, maxMs: number): Promise<number | null> {
+function runForExitCode(command: string, cwd: string, maxMs: number, onOutput?: (chunk: string) => void): Promise<number | null> {
   return new Promise(resolve => {
     // Its own process group, killed whole: a runner's workers outlive a killed
     // shell, and a leftover one could write the NEXT capture's report.
-    const child = spawn(command, { shell: true, cwd, stdio: 'ignore', detached: true });
+    // 9569b4d7: its output streams to whoever follows the run - the agent's chat and the card - when asked.
+    const child = spawn(command, { shell: true, cwd, stdio: onOutput ? ['ignore', 'pipe', 'pipe'] : 'ignore', detached: true });
+    if (onOutput) for (const s of [child.stdout, child.stderr]) {
+      // Whole characters only: a chunk can end inside a multi-byte one.
+      const decoder = new StringDecoder('utf8');
+      s?.on('data', (d: Buffer) => { const text = decoder.write(d); if (text) onOutput(text); });
+    }
     const killGroup = () => { try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ } };
+    let grace: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+    const finish = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (grace) clearTimeout(grace);
+      killGroup();
+      resolve(code);
+    };
     const timer = setTimeout(killGroup, maxMs);
-    child.on('error', () => { clearTimeout(timer); resolve(null); });
-    child.on('close', code => { clearTimeout(timer); killGroup(); resolve(code); });
+    child.on('error', () => finish(null));
+    // With pipes, 'close' waits for every process holding them - a runner's
+    // leftover worker or server would hold the capture open (9569b4d7 review).
+    // The shell's exit is the answer: kill what it left, let stdio drain briefly.
+    child.on('exit', code => {
+      killGroup();
+      grace = setTimeout(() => finish(code), Math.min(KILL_GRACE_MS, 1000));
+      if (typeof grace.unref === 'function') grace.unref();
+    });
+    child.on('close', code => finish(code));
   });
 }
 
@@ -3166,29 +3689,235 @@ function runForExitCode(command: string, cwd: string, maxMs: number): Promise<nu
  * when the tree cannot be read (not a git repository, no commit yet, git
  * failed): the caller treats that as "cannot say", never as unchanged.
  */
-function treeContentState(root: string, excludeRel: string | null): string | null {
+function treeContentState(root: string, excludeRel: TreeExclude): string | null {
+  return treeContentRead(root, excludeRel)?.state ?? null;
+}
+
+/** treeContentState with the read it hashed: what a fenced run records must come from this one read (de5e5a03). */
+function treeContentRead(root: string, excludeRel: TreeExclude): { state: string; tree: TreeRead } | null {
   try {
-    const git = (args: string[]) => execFileSync('git', ['-C', root, ...args], { maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
-    const head = git(['rev-parse', 'HEAD']).toString().trim();
+    const head = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
     if (!head) return null;
-    const files = git(['ls-files', '-z', '--cached', '--others', '--exclude-standard']).toString().split('\0').filter(Boolean).sort();
-    const h = crypto.createHash('sha256').update(head);
-    for (const rel of new Set(files)) {
-      if (rel === excludeRel) continue;
-      const abs = path.join(root, rel);
-      let digest = 'absent';
-      try {
-        const st = fs.lstatSync(abs);
-        digest = st.isSymbolicLink() ? `link:${fs.readlinkSync(abs)}`
-          : st.isFile() ? crypto.createHash('sha1').update(fs.readFileSync(abs)).digest('hex') : 'other';
-      } catch { /* deleted: 'absent' */ }
-      h.update(`\0${rel}\0${digest}`);
-    }
-    return h.digest('hex');
+    const tree = treeFiles(root, excludeRel);
+    return tree === null ? null : { state: `${head}:${tree.hash}`, tree };
   } catch {
     return null;
   }
 }
+
+/**
+ * The files half of treeContentState, without HEAD (e99b5015): what a close
+ * commit leaves unchanged when it commits exactly what the capture ran on, so
+ * a capture on the dirty tree can be tied to the commit that follows it.
+ */
+function treeFilesState(root: string, excludeRel: TreeExclude): string | null {
+  return treeFiles(root, excludeRel)?.hash ?? null;
+}
+
+/**
+ * What a tree state leaves out: a path, or several (the report and the
+ * directory it owns, d26832d6 #3). A path excludes everything under it.
+ */
+type TreeExclude = string | readonly string[] | ((rel: string) => boolean) | null;
+/**
+ * The exclusion test. `.gitignore` counts like any file (d26832d6 review): a
+ * suite can read it (this repository's own tests do), so a green taken before
+ * it changed is no green of the content after.
+ */
+function excludedBy(excludeRel: TreeExclude): (rel: string) => boolean {
+  if (typeof excludeRel === 'function') return excludeRel;
+  const list = excludeRel === null ? [] : typeof excludeRel === 'string' ? [excludeRel] : excludeRel;
+  return rel => list.some(p => rel === p || rel.startsWith(`${p}/`));
+}
+
+/** A file's content as git names a blob, so a digest read from disk equals the index's for the same bytes. */
+const blobSha = (content: Buffer): string => crypto.createHash('sha1').update(`blob ${content.length}\0`).update(content).digest('hex');
+
+/**
+ * Every tracked and untracked (non-ignored) file of the tree, as one hash,
+ * `excludeRel` aside. 3ffc9651 review: read the way git reads it, so the cost
+ * is the files that changed, not the tree - a tracked file git's stat cache
+ * says is unchanged is its index blob; one that differs, and every untracked
+ * file, is read and named as git would name it, so the same bytes give the
+ * same digest either way. The executable bit is content (e99b5015).
+ *
+ * A submodule counts by the commit it is checked out at. One with work of its
+ * own (or an untracked nested repository) is content this does not hash, so
+ * `shareable` is false: the hash still fences a run, but no green or pass may
+ * be shared on it. `index` names what is staged, for a command that reads it.
+ */
+type TreeRead = { hash: string; shareable: boolean; index: string; files: Record<string, string> };
+/** The hash a tree state is: every entry, by path. */
+function hashEntries(entries: Iterable<[string, string]>): string {
+  const h = crypto.createHash('sha256');
+  for (const [rel, v] of [...entries].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) h.update(`\0${rel}\0${v}`);
+  return h.digest('hex');
+}
+function treeFiles(root: string, excludeRel: TreeExclude): TreeRead | null {
+  const excluded = excludedBy(excludeRel);
+  try {
+    const git = (args: string[], cwd = root) => execFileSync('git', ['-C', cwd, ...args], { maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+    const staged = git(['ls-files', '-z', '-s']);
+    // --relative (6e0d2fd6): ls-files names paths from `root`, a bare diff from the repository's top - in a project
+    // that is a subdirectory they never matched, and a modified tracked file kept its stale index hash.
+    const changed = new Set(git(['diff', '--no-renames', '--name-only', '--relative', '-z']).split('\0').filter(Boolean));
+    const untracked = git(['ls-files', '-z', '--others', '--exclude-standard']).split('\0').filter(Boolean);
+    const entries = new Map<string, string>();
+    let shareable = true;
+    const fromDisk = (rel: string): string => {
+      const abs = path.join(root, rel);
+      try {
+        const st = fs.lstatSync(abs);
+        if (st.isSymbolicLink()) return `120000:${blobSha(Buffer.from(fs.readlinkSync(abs)))}`;
+        if (st.isFile()) return `${st.mode & 0o111 ? '100755' : '100644'}:${blobSha(fs.readFileSync(abs))}`;
+        if (st.isDirectory()) {
+          // A submodule, or a repository nested in the tree: its commit, and whether it holds work of its own.
+          if (!fs.existsSync(path.join(abs, '.git'))) return 'dir';
+          const head = git(['rev-parse', 'HEAD'], abs).trim();
+          const own = git(['status', '--porcelain'], abs).trim();
+          if (!own) return `160000:${head}`;
+          // Its work is not hashed: marked, so this state never equals the clean one at the same commit.
+          shareable = false;
+          return `160000:${head}:dirty:${crypto.createHash('sha1').update(own).digest('hex')}`;
+        }
+        return 'other';
+      } catch { return 'absent'; }
+    };
+    for (const line of staged.split('\0')) {
+      if (!line) continue;
+      const tab = line.indexOf('\t');
+      const rel = line.slice(tab + 1);
+      if (excluded(rel) || changed.has(rel) || entries.has(rel)) continue;
+      const [mode, sha] = line.slice(0, tab).split(' ');
+      entries.set(rel, `${mode}:${sha}`);
+    }
+    for (const rel of [...changed, ...untracked]) {
+      const clean = rel.endsWith('/') ? rel.slice(0, -1) : rel;
+      if (excluded(clean)) continue;
+      // `ls-files --others` names a nested repository as `dir/`: its content is not listed, so nothing is shared.
+      if (rel.endsWith('/')) shareable = false;
+      entries.set(clean, fromDisk(clean));
+    }
+    // 6e0d2fd6: the per-file map too, so a later step can tell which files changed since, dirty tree or not.
+    return { hash: hashEntries(entries), shareable, index: crypto.createHash('sha256').update(staged).digest('hex'), files: Object.fromEntries(entries) };
+  } catch {
+    return null;
+  }
+}
+
+/** The project's test report as a path inside `root`, which no tree state counts: it is what a run writes. */
+const reportRelOf = (root: string, project: any): string | null =>
+  reportPathsOf(project?.testReport).map(p => insideRoot(root, path.resolve(root, p))).find(Boolean) ?? null;
+/** Every report the setting names, owned: the files and the directories that hold only them. */
+const reportsOwned = (root: string, setting: any): string[] =>
+  [...new Set(reportPathsOf(setting).flatMap(p => reportOwned(root, insideRoot(root, path.resolve(root, p)), Array.isArray(setting?.surface) ? setting.surface : [])))];
+const toPosixPath = (p: string) => p.split(path.sep).join('/');
+
+/**
+ * d26832d6 #3 — what a run of the report command owns: the report, and the
+ * directory it is written into when that directory holds no tracked file
+ * (`.reports/`, `.agenfk-test-report/`). A command that writes several files
+ * there (per-suite reports it merges) dirtied its own tree on its first run,
+ * so the capture was thrown away, and the step writing tests saw the
+ * directory as a non-test change. A directory holding tracked files (a report
+ * written into `test/`) is never owned: only the report file is.
+ */
+export function reportOwned(root: string, reportRel: string | null, surface: readonly string[] = []): string[] {
+  if (!reportRel) return [];
+  const dir = path.posix.dirname(reportRel);
+  if (!dir || dir === '.') return [reportRel];
+  // Only a directory that is plainly a report's (d26832d6 review): a dot-directory
+  // or one named for reports, outside every declared test path. "Nothing tracked
+  // in it" alone would own a brand-new tests/ directory, whose files are the card's.
+  const base = path.posix.basename(dir);
+  const reportish = base.startsWith('.') || /reports?/i.test(base);
+  const underSurface = surface.some(p => { const d = toPosixPath(path.posix.normalize(p)).replace(/\/$/, ''); return d === '.' || d === '' || dir === d || dir.startsWith(`${d}/`) || d.startsWith(`${dir}/`); });
+  if (!reportish || underSurface) return [reportRel];
+  try {
+    const tracked = execFileSync('git', ['-C', root, 'ls-files', '-z', '--', dir], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000 }).toString();
+    return tracked ? [reportRel] : [reportRel, dir];
+  } catch {
+    return [reportRel];
+  }
+}
+const reportOwnedOf = (root: string, project: any): string[] => reportsOwned(root, project?.testReport);
+
+/**
+ * 3ffc9651 — the state of a tree, clean or dirty: the content of every tracked
+ * and untracked (non-ignored) file, the report aside. Two cards that read the
+ * same state run on the same inputs, so a green or a command check's pass taken
+ * at it speaks for both. Null: cannot say, and nothing is shared.
+ *
+ * NOT HEAD. A sibling's close commit commits files without changing them, and
+ * keying on HEAD made every close break reuse for the next sibling (the TDD
+ * simulation ran the verify command once per sibling). What the tests read is
+ * the files; e99b5015 already leaves HEAD out when it re-stamps a close green.
+ * A command that reads git metadata (a changed-files-only runner) sees a
+ * narrower world at another commit, never content it did not see. Files git
+ * ignores are not seen, exactly as a clean green does not see them.
+ */
+const treeStateOf = (root: string, project: any): string | null => {
+  const t = treeFiles(root, reportOwnedOf(root, project));
+  return t && t.shareable ? t.hash : null;
+};
+/**
+ * The state a command check's pass is shared at (3ffc9651 review): the files,
+ * AND what is staged, AND HEAD. The suite reads files; an arbitrary command may
+ * read the index (a staged-files linter, a secret scan) or the branch, and every
+ * card stages its own files before it closes.
+ */
+const commandStateOf = (root: string, project: any): string | null => {
+  const t = treeFiles(root, reportOwnedOf(root, project));
+  const head = t && t.shareable ? readHead(root, gitRun) : null;
+  return t && head ? `${head}\0${t.index}\0${t.hash}` : null;
+};
+/**
+ * 32045202: the state capture REUSE compares - the tree's files with the
+ * report aside AND the project's reuse-ignore globs (default: every Markdown
+ * file) left out, except a file some test names. Only reuse reads it; the
+ * record's filesState, the final step and command checks keep every file.
+ * Null when the tree cannot be read, or nothing may be shared on it.
+ */
+function suiteStateOf(root: string, setting: TestReportSetting | undefined, read?: TreeRead | null): string | null {
+  if (!setting) return null;
+  // de5e5a03: from the caller's read when it has one - a fenced run's, so the state is the content it ran on.
+  const tree = read === undefined ? treeFiles(root, reportsOwned(root, setting)) : read;
+  if (!tree || !tree.shareable) return null;
+  const patterns = Array.isArray(setting.reuseIgnore) ? setting.reuseIgnore : DEFAULT_REUSE_IGNORE;
+  let ignored = new Set<string>();
+  if (patterns.length) {
+    try {
+      const files = Object.keys(tree.files);
+      const match = reuseIgnoreMatcher(patterns);
+      const candidates = files.filter(f => match(f));
+      if (candidates.length) {
+        const sources: string[] = [];
+        for (const f of files) {
+          if (!(TEST_FILE_NAME.test(f) || isTestPath(f, setting.surface ?? []))) continue;
+          try { sources.push(fs.readFileSync(path.join(root, f), 'utf8')); } catch { /* gone: names nothing */ }
+        }
+        const named = namedByTests(candidates, sources);
+        ignored = new Set(candidates.filter(c => !named.has(c)));
+      }
+    } catch { return null; }
+  }
+  return hashEntries(Object.entries(tree.files).filter(([rel]) => !ignored.has(rel)));
+}
+/**
+ * How a record's tree states were hashed (de5e5a03). Before `--relative`, a
+ * project in a subdirectory hashed its modified tracked files as their index
+ * blobs: a dirty tree's state equalled the clean one's. A state recorded by an
+ * older build is not compared at all.
+ */
+const STATE_VERSION = 2;
+const currentStates = (r: any): boolean => r?.stateVersion === STATE_VERSION;
+/** A final-step test record's tree state, when this build's hashing recorded it (83c1cbca); else none. */
+const currentTreeState = (t: any): string | undefined => (t?.treeStateVersion === STATE_VERSION && typeof t.treeState === 'string' ? t.treeState : undefined);
+/** A capture record's reuse state (32045202); null for a record from before it, or one that did not fence its run. */
+const suiteStateOfRecord = (r: any): string | null => (currentStates(r) && typeof r?.suiteState === 'string' ? r.suiteState : null);
+
+/** A capture record's state, as treeStateOf reads it; null for a record that did not fence its run. */
+const stateOfRecord = (r: any): string | null => (currentStates(r) && typeof r?.filesState === 'string' ? r.filesState : null);
 
 /**
  * Capture a test report for the card's CURRENT step, in the tree its commands
@@ -3225,7 +3954,18 @@ function effectiveVerifyCommand(project: any): { command: string | null; fromFil
   const stored = typeof project?.verifyCommand === 'string' ? project.verifyCommand : null;
   return { command: stored, fromFile: false };
 }
-async function captureStepRecord(item: any): Promise<CaptureOutcome> {
+
+/**
+ * The command the FINAL verify runs: the repository's file, else the stored
+ * row - resolved exactly as the final step resolves it, so what the leave plan
+ * says is what runs. Unlike `effectiveVerifyCommand`, a test report's command
+ * does not stand in for it: the final gate runs the project's own command.
+ */
+function finalVerifyCommandOf(project: any): string | undefined {
+  const declared = readDeclaredSettings(project?.projectRoot).settings.verifyCommand;
+  return (typeof declared === 'string' ? declared : project?.verifyCommand) || undefined;
+}
+async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) => void; lazyOver?: any; onPhase?: (phase: VerifyPhase) => void }): Promise<CaptureOutcome> {
   const project: any = await storage.getProject(item.projectId);
   const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
   if (!root) {
@@ -3256,36 +3996,457 @@ async function captureStepRecord(item: any): Promise<CaptureOutcome> {
     }
   }
 
+  /*
+   * SINGLE-FLIGHT (e99b5015): a capture that starts while an identical one
+   * runs - same tree, state, command, format and surface - waits for it and
+   * takes its record. Two suites in one tree share its on-disk sandbox, and
+   * that gave real false failures. The state is every file's content
+   * (3ffc9651), so a dirty tree is shared too when its content is the same:
+   * the uncommitted work is the tree's, and both cards see it alike. Only a
+   * GREEN is shared: a red or unreadable run may be a flake, and N cards' baselines should not inherit
+   * one. After any wait that yields nothing to share, the capture starts OVER -
+   * the tree may have changed during a whole suite run, and another waiter may
+   * already be the new owner.
+   */
+  const lazy = setting && opts?.lazyOver ? lazyPlan(root, setting, opts.lazyOver) : null;
+  if (lazy) {
+    const out = await runCapture(item, root, setting, command, readCleanTreeSha(root, gitRun), { ...opts, lazy });
+    if (out !== LAZY_FALLBACK) return out;
+    // The partial run could not stand for the whole suite. The tree may have
+    // changed meanwhile, so it is read afresh below, reuse and single-flight included.
+    opts?.onOutput?.('[agenfk] the partial run cannot stand for the whole suite: running all of it\n');
+  }
+  for (let attempt = 0; ; attempt++) {
+    const cleanSha = readCleanTreeSha(root, gitRun);
+    // 3ffc9651: the tree's state, dirty or not - what reuse and single-flight key on.
+    const state = treeStateOf(root, project);
+    const reused = await reusableCapture(item, project, root, cleanSha, state, suiteStateOf(root, setting));
+    if (reused) {
+      opts?.onPhase?.({ state: 'running', kind: 'reused' });
+      const fresh: any = await storage.getItem(item.id);
+      if (!fresh || fresh.status !== item.status) return { status: 409, error: 'CARD_MOVED', message: `The card moved (${item.status} -> ${fresh?.status ?? 'deleted'}); nothing was recorded.` };
+      await storage.updateItem(item.id, { stepRecords: [...(fresh.stepRecords ?? []), reused] } as any);
+      return { record: reused };
+    }
+    // Only a per-test capture is shared, and only one whose run can be tied to the state it waited on.
+    const flightKey = state ? [item.projectId, root, state, command, setting?.format ?? 'exit-code', JSON.stringify(setting?.reportPath ?? ''), JSON.stringify(setting?.surface ?? [])].join('\0') : null;
+    // Bounded: a tree that keeps changing under us stops waiting and runs.
+    if (!flightKey || attempt >= 8) return runCapture(item, root, setting, command, cleanSha, opts);
+    const running = capturesInFlight.get(flightKey);
+    if (running) {
+      opts?.onOutput?.(`[agenfk] waiting on the identical capture another card started in this tree...\n`);
+      opts?.onPhase?.({ state: 'waiting', on: 'identical-run' });
+      let theirs: { out: CaptureOutcome; itemId: string } | null = null;
+      try { theirs = await running; } catch { /* its crash is not this card's: start over */ }
+      const rec = theirs && 'record' in theirs.out ? theirs.out.record : null;
+      // Its run fenced the tree: its record's state is the one it ran on, which must be the one waited on.
+      if (theirs && rec && rec.available === true && capturedGreen(rec) && stateOfRecord(rec) === state) {
+        const fresh: any = await storage.getItem(item.id);
+        if (!fresh || fresh.status !== item.status) return { status: 409, error: 'CARD_MOVED', message: `The card moved (${item.status} -> ${fresh?.status ?? 'deleted'}); nothing was recorded.` };
+        const shared = { ...rec, step: item.status, at: new Date().toISOString(), reusedFrom: { itemId: theirs.itemId, step: rec.step, at: rec.at } };
+        await storage.updateItem(item.id, { stepRecords: [...(fresh.stepRecords ?? []), shared] } as any);
+        return { record: shared };
+      }
+      continue;
+    }
+    const flight = runCapture(item, root, setting, command, cleanSha, opts).then(out => ({ out, itemId: item.id as string }));
+    capturesInFlight.set(flightKey, flight);
+    try {
+      return (await flight).out;
+    } finally {
+      if (capturesInFlight.get(flightKey) === flight) capturesInFlight.delete(flightKey);
+    }
+  }
+}
+
+/**
+ * e99b5015 — the close's per-test green, as a green of the close commit.
+ *
+ * A card's last capture ran on its dirty tree, just before the close commit,
+ * so it was a green of no commit and the next card paid a whole suite for its
+ * entry baseline. It is re-stamped when ALL of these hold, and not otherwise:
+ *  - the tree is clean now, at `sha` - the commit the close just stamped on its
+ *    test record (another agent committing in between is a different commit);
+ *  - the card's LAST own per-test run on exactly these files (HEAD aside) was
+ *    green - an earlier green on the same content does not outvote a later red;
+ *  - it ran in this tree with the project's current report command, format and
+ *    declared surface, and was not itself reused from another card.
+ * HEAD is left out of the comparison on purpose: the close commit is what moves
+ * it. A report command whose results depend on git state (a changed-files-only
+ * run) would see a different world at the clean commit; such a command gives a
+ * narrower baseline, never a green on content it did not see.
+ * Resolves to the stamped record, or null.
+ */
+export async function stampCloseGreen(itemId: string, root: string, sha: string): Promise<any | null> {
+  const item: any = await storage.getItem(itemId);
+  if (!item) return null;
+  const project: any = await storage.getProject(item.projectId);
+  const setting: TestReportSetting | undefined = project?.testReport;
+  if (!setting) return null;
+  const runs = (item.stepRecords ?? []).filter((r: any) => isOwnRun(r, setting, root) && stateOfRecord(r) !== null);
+  if (!runs.length) return null;
+  if (readCleanTreeSha(root, gitRun) !== sha) return null;
+  const files = treeFilesState(root, reportsOwned(root, setting));
+  if (!files) return null;
+  const last = [...runs].reverse().find((r: any) => stateOfRecord(r) === files);
+  if (!last || !capturedGreen(last)) return null;
+  // Already a green of this very commit: nothing to add.
+  if (last.clean === true && last.head === sha) return null;
+  const stamped = { ...last, step: item.status, at: new Date().toISOString(), head: sha, clean: true, stampedFrom: { step: last.step, at: last.at, head: last.head } };
+  // Read again just before writing: an approval or override may have landed meanwhile.
+  const fresh: any = await storage.getItem(itemId);
+  if (!fresh) return null;
+  await storage.updateItem(itemId, { stepRecords: [...(fresh.stepRecords ?? []), stamped] } as any);
+  noteGreen(item.projectId, root, sha, itemId);
+  return stamped;
+}
+
+/** Captures running now, by what they capture: see SINGLE-FLIGHT in captureStepRecord. */
+const capturesInFlight = new Map<string, Promise<{ out: CaptureOutcome; itemId: string }>>();
+
+/** What a lazy capture runs and merges over (acceaa54). */
+interface LazyPlan { entry: any; ran: string[]; changed: string[]; command: string; related?: boolean }
+
+/**
+ * a36047ea: a change to one of these can move ANY test's result - the runner
+ * config, the dependencies, a setup file - so it always means the whole suite.
+ */
+const WHOLE_SUITE_FILE = /(^|\/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|bun\.lockb?|tsconfig[^/]*\.json|jsconfig\.json|\.babelrc[^/]*|babel\.config\.[^/]+|[^/]*\.config\.[cm]?[jt]s|vitest\.workspace\.[^/]+|[^/]*setup[^/]*\.[cm]?[jt]sx?|conftest\.py|pytest\.ini|pyproject\.toml|setup\.cfg|tox\.ini|requirements[^/]*\.txt|poetry\.lock|uv\.lock|Pipfile(\.lock)?)$/i;
+/** A file a related-tests command follows through imports: JS and TS sources (de5e5a03). */
+const GRAPH_FILE = /\.[cm]?[jt]sx?$/i;
+/** One argument per file, whatever its name holds. */
+const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+
+/**
+ * a36047ea — when a step changed code, not just tests: the project's related-
+ * tests command over the changed files, or null for the whole suite. The same
+ * entry preconditions as the test-only run, and all of these: a relatedCommand
+ * is set; no changed file is gone, a whole-suite file (config, lockfile,
+ * setup) or one of the declared test paths (helpers, fixtures). Which test
+ * files run is the runner's to say; every changed test file must be among
+ * them, or the run cannot stand for the suite (runAndRead falls back).
+ */
+function relatedPlan(root: string, setting: TestReportSetting, entry: any, changed: string[]): LazyPlan | null {
+  const template = setting.relatedCommand;
+  if (typeof template !== 'string' || !template.includes('{files}')) return null;
+  const surface = setting.surface ?? [];
+  const declared = (f: string) => surface.some(p => f === p || f.startsWith(`${p.replace(/\/$/, '')}/`));
+  if (changed.some(f => !fs.existsSync(path.join(root, f)) || WHOLE_SUITE_FILE.test(f) || declared(f) || f.startsWith('-'))) return null;
+  const tests = changed.filter(f => isTestPath(f, surface) && TEST_FILE_NAME.test(f));
+  // de5e5a03: a related run follows imports. A snapshot, a fixture read from disk, a template: it traces no test to them.
+  if (changed.some(f => !tests.includes(f) && !GRAPH_FILE.test(f))) return null;
+  return { entry, ran: tests, changed, command: template.split('{files}').join(changed.map(shellQuote).join(' ')), related: true };
+}
+
+/** a36047ea: the hint a whole run gets when only code changed and the project has no related-tests command. */
+function relatedHint(root: string, setting: TestReportSetting, entry: any): string | null {
+  if (setting.relatedCommand || !(entry?.kind === 'capture' && entry.clean === true && typeof entry.head === 'string')) return null;
+  const since = changedSince(root, entry.head, reportsOwned(root, setting));
+  if (!since || since.outside || !since.inside.length || since.inside.every(f => TEST_FILE_NAME.test(f))) return null;
+  const vitest = /\bvitest\b/.test(setting.command), jest = /\bjest\b/.test(setting.command);
+  const example = vitest ? 'npx vitest related --run {files}' : jest ? 'npx jest --findRelatedTests {files}' : "<your runner's related-tests command> {files}";
+  return `💡 code changed, so the whole suite ran. To run only the tests it affects: agenfk update-project <project> --test-report-related-command "${example}"`;
+}
+
+/** A file named as a test file itself - not a helper, fixture, setup or snapshot that happens to live beside tests. */
+const TEST_FILE_NAME = TEST_FILE_PATTERN;
+/** Past this many files a partial run buys little, and the command line gets long. */
+const LAZY_MAX_FILES = 200;
+
+/**
+ * Files changed in the whole repository since `head`, committed or not:
+ * `inside` as paths relative to `root`, and whether anything changed OUTSIDE
+ * `root` (a project in a subdirectory still imports its neighbours, so a
+ * change there is a code change). Renames count as a deletion plus an
+ * addition, so a rename cannot hide the file it removed; NUL-separated so no
+ * name is mis-split. Null: git failed.
+ */
+function changedSince(root: string, head: string, reportRel: TreeExclude): { inside: string[]; outside: boolean } | null {
+  const excluded = excludedBy(reportRel);
+  try {
+    const run = (args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 64 * 1024 * 1024 });
+    const prefix = run(['rev-parse', '--show-prefix']).trim();
+    // --no-relative (c03ae9f7): a user's diff.relative would list only what is under `root`, relative to it.
+    const diff = run(['diff', '--no-relative', '--no-renames', '--name-only', '-z', head]).split('\0');
+    const untracked = run(['ls-files', '-z', '--others', '--exclude-standard', '--full-name', '--', ':/']).split('\0');
+    let outside = false;
+    const inside = new Set<string>();
+    for (const f of [...diff, ...untracked]) {
+      if (!f) continue;
+      if (!f.startsWith(prefix)) { outside = true; continue; }
+      const rel = f.slice(prefix.length);
+      if (!excluded(rel)) inside.add(rel);
+    }
+    return { inside: [...inside].sort(), outside };
+  } catch {
+    return null;
+  }
+}
+
+const isFileMap = (m: unknown): m is Record<string, string> => !!m && typeof m === 'object' && !Array.isArray(m);
+
+/** Past this many changed files beside the root, their state is not worth hashing: no partial run. */
+const OUTSIDE_MAX_FILES = 2000;
+/**
+ * 83c1cbca — the content of what differs from `head` OUTSIDE `root` (tracked
+ * changes and untracked files, by path and content), as one hash; '' when
+ * nothing does. Null when it cannot be read, or is too large to. A partial
+ * run over an entry needs this unchanged since it: the entry's results were
+ * taken with that work beside it.
+ */
+function outsideState(root: string, head: string): string | null {
+  try {
+    const run = (args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 64 * 1024 * 1024 });
+    const prefix = run(['rev-parse', '--show-prefix']).trim();
+    // c03ae9f7: a project at the repository's top has nothing beside it.
+    if (!prefix) return '';
+    const top = run(['rev-parse', '--show-toplevel']).trim();
+    const names = new Set([
+      // --no-relative (c03ae9f7): a user's diff.relative would list only what is under `root`.
+      ...run(['diff', '--no-relative', '--no-renames', '--name-only', '-z', head]).split('\0'),
+      ...run(['ls-files', '-z', '--others', '--exclude-standard', '--full-name', '--', ':/']).split('\0'),
+    ].filter(f => f && !f.startsWith(prefix)).map(f => (f.endsWith('/') ? f.slice(0, -1) : f)));
+    if (!names.size) return '';
+    if (names.size > OUTSIDE_MAX_FILES) return null;
+    const entries: [string, string][] = [];
+    for (const f of names) {
+      const abs = path.join(top, f);
+      let st: fs.Stats;
+      try { st = fs.lstatSync(abs); } catch { entries.push([f, 'absent']); continue; }
+      if (st.isSymbolicLink()) entries.push([f, `120000:${blobSha(Buffer.from(fs.readlinkSync(abs)))}`]);
+      else if (st.isFile()) entries.push([f, `${st.mode & 0o111 ? '100755' : '100644'}:${blobSha(fs.readFileSync(abs))}`]);
+      else if (st.isDirectory() && fs.existsSync(path.join(abs, '.git'))) {
+        // c03ae9f7: a submodule or nested repository - by its commit. 62f87741: its own uncommitted work is not
+        // hashed (its status names files, not content), so with any, no partial run.
+        const sub = (args: string[]) => execFileSync('git', ['-C', abs, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 64 * 1024 * 1024 });
+        if (sub(['status', '--porcelain', '-z'])) return null;
+        entries.push([f, `160000:${sub(['rev-parse', 'HEAD']).trim()}`]);
+      } else return null;   // anything else cannot be told apart from itself changed: no partial run
+    }
+    return hashEntries(entries);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 6e0d2fd6 — files changed since an entry capture: from its per-file map when
+ * it recorded one (a dirty tree, a partial run), else from git against its
+ * clean head. A change outside `root` is read from git either way, and means
+ * the whole suite.
+ */
+function changedSinceEntry(root: string, entry: any, reportRel: TreeExclude): { inside: string[]; outside: boolean } | null {
+  if (!isFileMap(entry.fileShas)) return changedSince(root, entry.head, reportRel);
+  const now = treeFiles(root, reportRel);
+  // 83c1cbca: beside `root`, what matters is whether the work there is what the entry ran with.
+  const beside = outsideState(root, entry.head);
+  if (!now || beside === null) return null;
+  const before: Record<string, string> = entry.fileShas;
+  const inside = new Set<string>();
+  for (const [f, v] of Object.entries(now.files)) if (before[f] !== v) inside.add(f);
+  for (const f of Object.keys(before)) if (!(f in now.files)) inside.add(f);
+  return { inside: [...inside].sort(), outside: beside !== entry.outsideState };
+}
+
+/**
+ * acceaa54 — a capture that can run only the changed test files, or null for
+ * the whole suite. All of these, or null:
+ *  - the step's entry capture is per-test, in this tree, with the report
+ *    setting as it is now, and says what it ran on: a whole run on a clean
+ *    tree (git against its head), or a recorded file map with the work
+ *    beside `root` as it was then (6e0d2fd6, 83c1cbca);
+ *  - nothing changed outside `root`, and EVERY file changed since then is
+ *    itself a test file: under the test surface AND named as one (a test file
+ *    that exports helpers for others is the rare case this misses). A helper,
+ *    fixture, setup file, snapshot or runner config changes OTHER files'
+ *    results, so it means the whole suite. Anyone's changes count, not just
+ *    this card's: another agent's code change moves the other tests too;
+ *  - a changed test file still exists, no name could read as an option, and
+ *    the runner takes a file list (withTestFiles).
+ * Files git ignores (a rebuilt dist/, node_modules) are not seen, exactly as
+ * reuse of a clean green does not see them.
+ */
+function lazyPlan(root: string, setting: TestReportSetting, entry: any): LazyPlan | null {
+  // 6e0d2fd6: an entry that recorded its files works dirty or partial - which is how a TDD coding step is entered.
+  if (!(entry?.kind === 'capture' && entry.root === root && entry.available === true && typeof entry.head === 'string'
+    && ((entry.clean === true && !entry.lazy) || (isFileMap(entry.fileShas) && typeof entry.outsideState === 'string'))
+    && Array.isArray(entry.tests) && ranAsSetNow(entry, setting))) return null;
+  const since = changedSinceEntry(root, entry, reportsOwned(root, setting));
+  if (!since || since.outside) return null;
+  const changed = since.inside;
+  if (!changed.length || changed.length > LAZY_MAX_FILES) return null;
+  // Named as a test file itself: a file the runner merely picked up (a helper it reported as broken) does not count.
+  // a36047ea: anything else changed - the tests that code affects, when the project says how to find them.
+  if (!changed.every(f => isTestPath(f, setting.surface ?? []) && TEST_FILE_NAME.test(f) && !f.startsWith('-'))) return relatedPlan(root, setting, entry, changed);
+  const ran = changed.filter(f => fs.existsSync(path.join(root, f)));
+  let scripts: Record<string, string> = {};
+  try { scripts = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))?.scripts ?? {}; } catch { /* none */ }
+  const command = withTestFiles(setting.command, scripts, ran);
+  return command ? { entry, ran, changed, command } : null;
+}
+
+/** One run at a time per report file: two runs writing one report would read each other's results. */
+const reportLocks = new Map<string, Promise<unknown>>();
+async function withReportLock<T>(key: string, fn: () => Promise<T>, onOutput?: (chunk: string) => void, onHeld?: () => void): Promise<T> {
+  const held = reportLocks.get(key);
+  if (held) { onOutput?.('[agenfk] another capture is writing this tree\'s test report: waiting for it to finish\n'); onHeld?.(); }
+  const prior = held ?? Promise.resolve();
+  const mine = prior.catch(() => undefined).then(fn);
+  const tail = mine.catch(() => undefined);
+  reportLocks.set(key, tail);
+  try { return await mine; }
+  finally { if (reportLocks.get(key) === tail) reportLocks.delete(key); }
+}
+
+/** The run and the record, once no reuse applies. */
+/** runCapture's answer when a lazy run cannot stand for the whole suite: the caller captures the ordinary way. */
+const LAZY_FALLBACK = Symbol('lazy-fallback');
+
+type CaptureRunOpts = { onOutput?: (chunk: string) => void; onPhase?: (phase: VerifyPhase) => void };
+async function runCapture(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts: CaptureRunOpts & { lazy: LazyPlan }): Promise<CaptureOutcome | typeof LAZY_FALLBACK>;
+async function runCapture(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts?: CaptureRunOpts): Promise<CaptureOutcome>;
+async function runCapture(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts?: CaptureRunOpts & { lazy?: LazyPlan }): Promise<CaptureOutcome | typeof LAZY_FALLBACK> {
+  const lockKey = `${root}\0${reportPathsOf(setting).join('\0')}`;
+  const lazy = opts?.lazy;
+  // cf6941e0: what the run is, once it has its slot.
+  const running: VerifyPhase = !lazy ? { state: 'running', kind: 'whole' }
+    : lazy.related ? { state: 'running', kind: 'affected', files: lazy.changed.length } : { state: 'running', kind: 'tests-only', files: lazy.ran.length };
+  // f8d0a752: inside the report lock, so a card waiting on the lock holds no suite-run slot.
+  const record = await withReportLock(lockKey, () => suiteSlots.run(() => { opts?.onPhase?.(running); return runAndRead(item, root, setting, command, cleanSha, opts, lazy); }, w => {
+    opts?.onOutput?.(waitingLine(w));
+    opts?.onPhase?.({ state: 'queued', ahead: w.ahead });
+  }), opts?.onOutput, () => opts?.onPhase?.({ state: 'waiting', on: 'report' }));
+  if (record === null) return LAZY_FALLBACK;
+  // The card may have moved while the command ran: a record for a step it
+  // no longer occupies (or was rolled back over) must not be written.
+  const fresh: any = await storage.getItem(item.id);
+  if (!fresh || fresh.status !== item.status) {
+    return { status: 409, error: 'CARD_MOVED', message: `The card moved (${item.status} -> ${fresh?.status ?? 'deleted'}) while the capture ran; nothing was recorded.` };
+  }
+  await storage.updateItem(item.id, { stepRecords: [...(fresh.stepRecords ?? []), record] } as any);
+  // Only a per-test capture is ever reused (an exit code alone comes from a close's test record); never a merged one.
+  if (record.available && record.clean && capturedGreen(record) && !record.lazy) noteGreen(item.projectId, root, record.head, item.id);
+  // 3ffc9651: and by its state, clean or dirty.
+  if (record.available && capturedGreen(record) && !record.lazy) noteGreen(item.projectId, root, stateOfRecord(record), item.id);
+  if (record.available && capturedGreen(record) && !record.lazy) noteGreen(item.projectId, root, suiteStateOfRecord(record), item.id);
+  return { record };
+}
+
+/**
+ * Run the command and read its report into a capture record. With a lazy plan,
+ * null when the partial run cannot stand for the whole suite: the tree is not
+ * what the plan saw, the runner failed without failing a test it ran, or a
+ * file it ran is missing from its report (a runner that reports no file path,
+ * as pytest's default JUnit does, cannot be merged by file).
+ */
+async function runAndRead(item: any, root: string, setting: TestReportSetting | undefined, command: string, cleanSha: string | null, opts: { onOutput?: (chunk: string) => void } | undefined, lazy: LazyPlan | undefined): Promise<any | null> {
   const record: any = {
     step: item.status, kind: 'capture', at: new Date().toISOString(),
-    head: readHead(root, gitRun), clean: readCleanTreeSha(root, gitRun) !== null,
+    head: readHead(root, gitRun), clean: cleanSha !== null,
     format: setting ? setting.format : 'exit-code', available: false,
+    // What ran, and where: a later card may reuse this record only for the same command in the same tree (961f301d).
+    command, root,
+    // ...and read from the same reports: a green that read one of two never stands for both (d26832d6 review).
+    ...(setting ? { reportPaths: reportPathsOf(setting) } : {}),
   };
   // Inside the tree lexically AND through symlinks: a report path is never a
   // way to delete or read a file somewhere else.
   const insideTree = (abs: string): boolean => insideRoot(root, abs) !== null;
   let reportAbs: string | null = null;
+  // d26832d6 #6: every report the setting names; the first stands for them where one is enough.
+  const reportAbsAll: string[] = [];
   if (setting) {
-    const abs = path.resolve(root, setting.reportPath);
-    if (!insideTree(abs)) {
-      record.parseError = `reportPath ${JSON.stringify(setting.reportPath)} is outside the tree`;
-    } else {
-      reportAbs = abs;
-      // A report left by an earlier run must never be read as this one's.
-      fs.rmSync(reportAbs, { force: true });
+    for (const p of reportPathsOf(setting)) {
+      const abs = path.resolve(root, p);
+      if (!insideTree(abs)) { record.parseError = `reportPath ${JSON.stringify(p)} is outside the tree`; reportAbsAll.length = 0; break; }
+      reportAbsAll.push(abs);
     }
+    // A report left by an earlier run must never be read as this one's.
+    for (const abs of reportAbsAll) fs.rmSync(abs, { force: true });
+    reportAbs = reportAbsAll[0] ?? null;
   }
   const reportRel = reportAbs ? insideRoot(root, reportAbs) : null;
-  const stateBefore = treeContentState(root, reportRel);
-  record.exitCode = await runForExitCode(command, root, verifyMaxMs());
-  const stateAfter = treeContentState(root, reportRel);
+  const owned = setting ? reportsOwned(root, setting) : [];
+  const stateBefore = treeContentState(root, owned);
+  // de5e5a03/83c1cbca: the work beside `root` as the run starts - read on both sides, so a change meanwhile counts.
+  const besideBefore = typeof record.head === 'string' ? outsideState(root, record.head) : null;
+  // The plan was made before the run was fenced: the tree must still be what it saw.
+  if (lazy && JSON.stringify(changedSinceEntry(root, lazy.entry, owned)) !== JSON.stringify({ inside: lazy.changed, outside: false })) return null;
+  if (lazy) {
+    // acceaa54: only the changed test files run; the rest keep their entry results.
+    Object.assign(record, { lazy: true, ranFiles: lazy.ran, lazyCommand: lazy.command, mergedOver: { step: lazy.entry.step, at: lazy.entry.at, head: lazy.entry.head } });
+    if (lazy.related) {
+      Object.assign(record, { related: true, changedFiles: lazy.changed });
+      opts?.onOutput?.(`[agenfk] ${lazy.changed.length} file(s) changed since this step began: running the tests they affect over the entry results\n`);
+    } else opts?.onOutput?.(`[agenfk] only test files changed since this step began: running ${lazy.ran.length} of them over the entry results\n`);
+  }
+  record.exitCode = await runForExitCode(lazy ? lazy.command : command, root, verifyMaxMs(), opts?.onOutput);
+  // de5e5a03: one read for the fence AND everything the record says the run saw - a later read may see a later tree.
+  const after = treeContentRead(root, owned);
+  const stateAfter = after?.state ?? null;
   if (setting && reportAbs) {
     try {
       if (stateBefore === null || stateAfter === null) throw new Error('the tree could not be read (not a git repository, no commit yet, or git failed), so the results cannot be tied to it');
-      if (stateAfter !== stateBefore) throw new Error('the tree changed while the command ran, so the results cannot be tied to it');
-      if (!insideTree(reportAbs)) throw new Error('the report resolves outside the tree');
-      const text = fs.readFileSync(reportAbs, 'utf8');
-      const parsed = setting.format === 'vitest-json' ? parseVitestJson(text, root) : parseJunitXml(text, root);
+      if (stateAfter !== stateBefore) {
+        if (lazy) return null;
+        throw new Error('the tree changed while the command ran, so the results cannot be tied to it');
+      }
+      // What the run saw, without HEAD: a close that commits exactly this can re-stamp it (e99b5015).
+      record.filesState = stateAfter.slice(stateAfter.indexOf(':') + 1);
+      record.stateVersion = STATE_VERSION;
+      // 6e0d2fd6: which file held what, for the next step's partial run.
+      record.fileShas = after!.tree.files;
+      // The map covers `root` only: the work beside it is recorded as one state, when the run saw it stay put (83c1cbca).
+      const besideAfter = typeof record.head === 'string' ? outsideState(root, record.head) : null;
+      if (besideBefore !== null && besideBefore === besideAfter) record.outsideState = besideAfter;
+      // 32045202: what reuse compares, docs no test names aside.
+      const suite = suiteStateOf(root, setting, after!.tree);
+      if (suite) record.suiteState = suite;
+      // Each report the command should have written, read as one run's results.
+      // One that is missing says which: a suite that crashed before writing its
+      // report used to read as a vague "no report" (d26832d6 #6).
+      let parsed: ReturnType<typeof parseJunitXml> = { tests: [], brokenFiles: [], duplicateNames: [] } as any;
+      for (const abs of reportAbsAll) {
+        if (!insideTree(abs)) throw new Error('the report resolves outside the tree');
+        // A narrowed (lazy) run need not write every suite's report: it falls back to the full suite.
+        if (!fs.existsSync(abs) && lazy) return null;
+        if (!fs.existsSync(abs)) throw new Error(`${path.relative(root, abs)} was not written${reportAbsAll.length > 1 ? ' (did that suite fail before it wrote its report?)' : ''}`);
+        const text = fs.readFileSync(abs, 'utf8');
+        const one = setting.format === 'vitest-json' ? parseVitestJson(text, root) : parseJunitXml(text, root);
+        const seen = new Set(parsed.tests.map(t => t.name));
+        parsed = {
+          tests: [...parsed.tests, ...one.tests],
+          brokenFiles: [...parsed.brokenFiles, ...one.brokenFiles],
+          duplicateNames: [...new Set([...parsed.duplicateNames, ...one.duplicateNames, ...one.tests.filter(t => seen.has(t.name)).map(t => t.name)])],
+        } as any;
+      }
+      if (lazy) {
+        // a36047ea: a related run's files are the ones its report names; the changed test files must be among them.
+        const ran = new Set(lazy.related ? [...parsed.tests.map(t => t.file), ...parsed.brokenFiles.map(b => b.file)] : lazy.ran);
+        const changed = new Set([...lazy.changed, ...(lazy.related ? ran : [])]);
+        const ranTests = parsed.tests.filter(t => ran.has(t.file));
+        const ranBroken = parsed.brokenFiles.filter(b => ran.has(b.file));
+        // de5e5a03: a related run that found no test at all traced nothing - it cannot stand for the suite.
+        if (lazy.related && !ran.size) return null;
+        if (lazy.related) record.ranFiles = [...ran].sort();
+        // Every file it ran must be in its report, under that very path.
+        const reported = new Set<string>([...ranTests.map(t => t.file), ...ranBroken.map(b => b.file)]);
+        if (lazy.ran.some(f => !reported.has(f))) return null;
+        // A non-zero exit no test it ran explains (no files found, an unhandled error, a coverage gate): not mergeable.
+        const ranFailed = ranTests.some(t => t.status === 'failed') || ranBroken.length > 0;
+        if (record.exitCode !== 0 && !ranFailed) return null;
+        // The entry's results for every file that did not change, this run's for the files it ran.
+        const tests = [...(lazy.entry.tests ?? []).filter((t: any) => !changed.has(t.file)), ...ranTests];
+        const counts = new Map<string, number>();
+        for (const t of tests) counts.set(t.name, (counts.get(t.name) ?? 0) + 1);
+        parsed = {
+          tests,
+          brokenFiles: [...(lazy.entry.brokenFiles ?? []).filter((b: any) => !changed.has(b.file)), ...ranBroken],
+          duplicateNames: [...new Set([...parsed.duplicateNames, ...(lazy.entry.duplicateNames ?? []), ...[...counts].filter(([, n]) => n > 1).map(([name]) => name)])],
+        };
+        const failing = parsed.tests.some(t => t.status === 'failed') || parsed.brokenFiles.length > 0;
+        record.exitCode = failing ? (record.exitCode || 1) : record.exitCode;
+      }
       // A name two tests share cannot be compared by name, so it is left out and
       // listed; a check that needs it finds it missing, never passed. The rest
       // of the report stays usable - real suites do carry the odd duplicate.
@@ -3293,7 +4454,7 @@ async function captureStepRecord(item: any): Promise<CaptureOutcome> {
       // The project's declared test paths are the surface (9afdba7d); the tree is listed only to suggest some
       // when a name is no file and none are declared. The report this run wrote is never hashed.
       const listTree = () => execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, maxBuffer: 256 * 1024 * 1024 }).split('\0').filter(Boolean);
-      const surface = surfaceOf(root, [...new Set([...parsed.tests.map(t => t.file), ...parsed.brokenFiles.map(b => b.file)])], setting.surface ?? [], { listTree, exclude: reportRel ? [reportRel] : [] });
+      const surface = surfaceOf(root, [...new Set([...parsed.tests.map(t => t.file), ...parsed.brokenFiles.map(b => b.file)])], setting.surface ?? [], { listTree, exclude: owned });
       record.available = true;
       record.tests = parsed.tests.filter(t => !ambiguous.has(t.name));
       if (ambiguous.size) record.duplicateNames = [...ambiguous];
@@ -3307,17 +4468,147 @@ async function captureStepRecord(item: any): Promise<CaptureOutcome> {
       if (surface.suggested) record.surfaceSuggested = surface.suggested;
       if (surface.missing.length) record.surfaceMissing = surface.missing;
     } catch (e: any) {
-      record.parseError = `could not use the ${setting.format} report at ${setting.reportPath}: ${e?.message ?? e}`;
+      record.parseError = `could not use the ${setting.format} report at ${reportPathsOf(setting).join(', ')}: ${e?.message ?? e}`;
     }
   }
-  // The card may have moved while the command ran: a record for a step it
-  // no longer occupies (or was rolled back over) must not be written.
-  const fresh: any = await storage.getItem(item.id);
-  if (!fresh || fresh.status !== item.status) {
-    return { status: 409, error: 'CARD_MOVED', message: `The card moved (${item.status} -> ${fresh?.status ?? 'deleted'}) while the capture ran; nothing was recorded.` };
+  return record;
+}
+
+/**
+ * 961f301d — greens on record, by project, tree and commit: the cards that may
+ * hold one. Built from ONE scan per project per server process, then kept at
+ * the two places a green is written (a clean per-test capture that exited 0,
+ * and the commit a close stamps on its test record), so a capture never reads the whole
+ * project on the request path. Only a hint: every candidate is re-checked in
+ * full before it is used, so a stale entry costs a lookup, never a wrong green.
+ * After a restart it is rebuilt on first use.
+ */
+const greensAt = new Map<string, Set<string>>();
+/** The one scan per project: awaited by every lookup, dropped if it fails so the next one retries. */
+const greensIndexed = new Map<string, Promise<void>>();
+const greenKey = (projectId: string, root: string, sha: string) => `${projectId}\0${root}\0${sha}`;
+function noteGreen(projectId: string, root: string | null, sha: string | null | undefined, itemId: string): void {
+  if (!root || !sha) return;
+  const key = greenKey(projectId, root, sha);
+  const cards = greensAt.get(key) ?? new Set<string>();
+  cards.add(itemId);
+  greensAt.set(key, cards);
+}
+function indexProjectGreens(projectId: string): Promise<void> {
+  let scan = greensIndexed.get(projectId);
+  if (!scan) {
+    scan = (async () => {
+      // The tree each green RAN in is on its record: a card's current tree may be another by now.
+      for (const card of (await storage.listItems({ projectId } as any)) as any[]) {
+        // A superseded green (a rollback set it aside) is still a green of the content it ran on (d26832d6 #0).
+        for (const r of [...(card.stepRecords ?? []), ...(card.supersededRecords ?? [])]) if (r?.kind === 'capture' && r.available === true && capturedGreen(r) && !r.reusedFrom && !r.lazy) {
+          if (r.clean === true) noteGreen(projectId, r.root, r.head, card.id);
+          noteGreen(projectId, r.root, stateOfRecord(r), card.id);
+          noteGreen(projectId, r.root, suiteStateOfRecord(r), card.id);
+        }
+        for (const x of testRecords(card.tests)) if (x.status === 'PASSED' && x.commit) noteGreen(projectId, x.commitRoot, x.commit, card.id);
+      }
+    })();
+    scan.catch(() => greensIndexed.delete(projectId));
+    greensIndexed.set(projectId, scan);
   }
-  await storage.updateItem(item.id, { stepRecords: [...(fresh.stepRecords ?? []), record] } as any);
-  return { record };
+  return scan.catch(() => undefined);
+}
+
+/**
+ * A capture that RAN (not one reused from another card) green, per test, in
+ * `root`, with the report setting as it is now: command, format and declared
+ * surface. Where and at which commit it counts is the caller's to add.
+ */
+function isOwnGreenRun(r: any, setting: TestReportSetting, root: string): boolean {
+  return isOwnRun(r, setting, root) && capturedGreen(r);
+}
+
+/**
+ * d26832d6 #0 — a green of exactly this content, by the same command and
+ * format, taken under OTHER declared test paths. The tests it found are the
+ * tests the suite would find again; only which files count as the test
+ * surface depends on the declared paths, and that is read from the tree -
+ * the same content the green ran on. So the report is re-read, not re-run
+ * (the field card ran its whole suite again for a surface declaration).
+ */
+function resurfacedGreen(candidates: any[], setting: TestReportSetting, root: string, sha: string | null, state: string | null, base: any, suite: string | null = null): any | null {
+  const sameRun = (r: any) => r?.kind === 'capture' && r.root === root && r.available === true && !r.reusedFrom && !r.lazy && capturedGreen(r)
+    && r.command === setting.command && r.format === setting.format && r.surfaceScope === 'declared' && Array.isArray(r.tests)
+    && JSON.stringify(r.reportPaths ?? null) === JSON.stringify(reportPathsOf(setting))
+    && ((sha !== null && r.clean === true && r.head === sha) || (state !== null && stateOfRecord(r) === state) || (suite !== null && suiteStateOfRecord(r) === suite));
+  let best: { card: any; r: any } | null = null;
+  for (const card of candidates) for (const r of [...(card.stepRecords ?? []), ...(card.supersededRecords ?? [])]) if (sameRun(r) && (!best || String(r.at) > String(best.r.at))) best = { card, r };
+  if (!best) return null;
+  const { supersededAt: _s, rolledBackTo: _t, surfaceMissing: _m, surfaceSuggested: _g, ...green } = best.r;
+  const listTree = () => execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, maxBuffer: 256 * 1024 * 1024 }).split('\0').filter(Boolean);
+  const files = [...new Set([...(green.tests ?? []).map((t: any) => t.file), ...(green.brokenFiles ?? []).map((b: any) => b.file)])];
+  const surface = surfaceOf(root, files, setting.surface ?? [], { listTree, exclude: reportsOwned(root, setting) });
+  return {
+    ...green, ...base,
+    surface: { files: surface.files }, surfaceComplete: surface.missing.length === 0, surfaceScope: 'declared', surfaceDeclared: [...(setting.surface ?? [])],
+    ...(surface.suggested ? { surfaceSuggested: surface.suggested } : {}), ...(surface.missing.length ? { surfaceMissing: surface.missing } : {}),
+    surfaceRereadFrom: { itemId: best.card.id, step: best.r.step, at: best.r.at },
+    reusedFrom: { itemId: best.card.id, step: best.r.step, at: best.r.at },
+  };
+}
+
+/** isOwnGreenRun, green or not. */
+function isOwnRun(r: any, setting: TestReportSetting, root: string): boolean {
+  return r?.kind === 'capture' && r.root === root && r.available === true && !r.reusedFrom && !r.lazy && ranAsSetNow(r, setting);
+}
+
+/** A capture taken with the report setting as it is now: command, format and declared surface. */
+function ranAsSetNow(r: any, setting: TestReportSetting): boolean {
+  return r.command === setting.command && r.format === setting.format && r.surfaceScope === 'declared'
+    && JSON.stringify(r.reportPaths ?? null) === JSON.stringify(reportPathsOf(setting))
+    && JSON.stringify(r.surfaceDeclared ?? []) === JSON.stringify(setting.surface ?? []);
+}
+
+/**
+ * 961f301d — a green already on record for exactly this tree, as a capture.
+ * The tree must be CLEAN at a commit a run of the same command was recorded
+ * against, by a card of this project working in THIS tree (CGLAB-366: another
+ * checkout at the same commit can differ in what git ignores - node_modules, a
+ * build, an .env). With a test report it is an earlier capture with per-test
+ * results (same format and declared surface); without one, a PASSED test
+ * record stamped with that commit (what a close stamps) - the exit code is all
+ * a capture would have known. Null: capture it.
+ *
+ * 3ffc9651: a per-test green also transfers at the same `state` - every
+ * file's content - so a DIRTY tree reuses a green taken on exactly its
+ * content, the card's own included. Only a run that fenced its tree carries a
+ * state (its filesState), so a run that saw the tree change never matches.
+ */
+async function reusableCapture(item: any, project: any, root: string, sha: string | null, state: string | null = null, suite: string | null = null): Promise<any | null> {
+  if (!sha && !state && !suite) return null;
+  const setting: TestReportSetting | undefined = project?.testReport;
+  // As the capture resolves it (captureStepRecord), the repository's file included.
+  const command = effectiveVerifyCommand(project).command;
+  if (!command) return null;
+  await indexProjectGreens(item.projectId);
+  const candidates: any[] = [];
+  const ids = new Set<string>([...(sha ? greensAt.get(greenKey(item.projectId, root, sha)) ?? [] : []), ...(state ? greensAt.get(greenKey(item.projectId, root, state)) ?? [] : []), ...(suite ? greensAt.get(greenKey(item.projectId, root, suite)) ?? [] : [])]);
+  for (const id of ids) {
+    const card: any = await storage.getItem(id);
+    if (card && card.projectId === item.projectId) candidates.push(card);
+  }
+  const base = { step: item.status, kind: 'capture', at: new Date().toISOString(), head: sha ?? readHead(root, gitRun), clean: sha !== null, command, root };
+  if (setting) {
+    const same = (r: any) => isOwnGreenRun(r, setting, root) && ((sha !== null && r.clean === true && r.head === sha) || (state !== null && stateOfRecord(r) === state) || (suite !== null && suiteStateOfRecord(r) === suite));
+    let best: { card: any; r: any } | null = null;
+    for (const card of candidates) for (const r of [...(card.stepRecords ?? []), ...(card.supersededRecords ?? [])]) if (same(r) && (!best || String(r.at) > String(best.r.at))) best = { card, r };
+    if (!best) return resurfacedGreen(candidates, setting, root, sha, state, base, suite);
+    const { supersededAt: _s, rolledBackTo: _t, ...green } = best.r;
+    return { ...green, ...base, reusedFrom: { itemId: best.card.id, step: best.r.step, at: best.r.at } };
+  }
+  if (!sha) return null;
+  let found: { card: any; t: any } | null = null;
+  for (const card of candidates) for (const x of testRecords(card.tests)) {
+    if (x.status === 'PASSED' && x.commit === sha && x.commitRoot === root && x.command === command && (!found || String(x.executedAt) > String(found.t.executedAt))) found = { card, t: x };
+  }
+  if (!found) return null;
+  return { ...base, format: 'exit-code', available: false, exitCode: 0, reusedFrom: { itemId: found.card.id, testId: found.t.id } };
 }
 
 app.post("/items/:id/step-records/capture", asyncHandler(async (req: any, res: any) => {
@@ -4168,7 +5459,8 @@ app.post("/items/:id/worktree", limitExpensive, asyncHandler(async (req: any, re
     return res.status(400).json({ error: e.message });
   }
 
-  await storage.updateItem(item.id, { worktreePath: result.path, branchName } as any);
+  // A tree of its own supersedes a tree the card chose (686fdbf6).
+  await storage.updateItem(item.id, { worktreePath: result.path, branchName, worktreeChoice: undefined } as any);
   /*
    * Execution, not creation, is token-gated. Running an arbitrary project shell
    * string is at least as privileged as `verifyCommand`, and this route has no
@@ -4195,6 +5487,8 @@ app.get("/items/:id/worktree", limitExpensive, asyncHandler(async (req: any, res
     path: worktreePath,
     branchName: item.branchName ?? null,
     exists: worktreePath ? fs.existsSync(worktreePath) : false,
+    // 686fdbf6: where the card chose to run, which wins over `path`.
+    chosen: item.worktreeChoice ?? null,
   });
 }));
 
@@ -4208,26 +5502,13 @@ app.delete("/items/:id/worktree", limitExpensive, asyncHandler(async (req: any, 
   const item: any = await storage.getItem(req.params.id);
   if (!item) return res.status(404).json({ error: "Item not found" });
   if (!item.worktreePath) return res.json({ removed: false });
-
-  /*
-   * Removing the worktree drops the card back into the PROJECT tree. If its
-   * claims collide with a card already working there, the scope change would
-   * create exactly the silent overwrite claims exist to prevent — so refuse,
-   * and let the person narrow or release the claim first (N4).
-   */
-  const siblings = await storage.listItems({ projectId: item.projectId, limit: 1_000_000 });
-  const afterRemoval = siblings.map((i: any) =>
-    (i.id === item.id ? { ...i, worktreePath: undefined } : i));
-  const scopesAfter = claimScopes(afterRemoval as any[]);
-  const claimGate = gateOnClaims(
-    { id: item.id, claims: item.claims, scope: scopesAfter.get(item.id) },
-    siblings
-      .filter((i: any) => i.id !== item.id)
-      .map((i: any) => ({ id: i.id, status: i.status, claims: i.claims, scope: scopesAfter.get(i.id) })),
-  );
-  if (!claimGate.authorized) {
+  // 686fdbf6: removal is --force; a card that chose this checkout would lose its work.
+  const choosers = ((await storage.listItems({ projectId: item.projectId, limit: 1_000_000 } as any)) as any[])
+    .filter(o => o.id !== item.id && o.worktreeChoice === item.worktreePath);
+  if (choosers.length) {
     return res.status(409).json({
-      error: `Cannot remove this card's worktree: in the project tree its claims collide.\n\n${claimGate.message}`,
+      error: `Refusing to remove ${item.worktreePath}: ${choosers.map(o => `card ${o.id}`).join(', ')} chose to run there. `
+        + 'Move those cards first (`agenfk update <id> --worktree inherit|none|<path>`).',
     });
   }
 
@@ -4279,6 +5560,9 @@ function flowStepsError(steps: any): string | null {
     if (typeof s.name !== 'string' || !s.name.trim()) return "each step requires a name";
     if (typeof s.order !== 'number' || Number.isNaN(s.order)) return "each step requires a numeric order";
   }
+  // CGLAB-428: only the org's hub may switch a check off; a flow authored here cannot.
+  const disabling = steps.find((s: any) => Array.isArray(s.disabledChecks) ? s.disabledChecks.length > 0 : s.disabledChecks !== undefined && s.disabledChecks !== null);
+  if (disabling) return `Step ${disabling.name}: disabledChecks can only be set by your org's hub; a flow made or edited here runs every check its steps list.`;
   // CGLAB-380: roles and checks, including that every record a check needs is
   // produced by an earlier step.
   const contractErrors = flowChecksErrors(steps);
@@ -4306,12 +5590,46 @@ app.post("/flows/contract", (req: any, res: any) => {
   res.json(describeFlowContract(req.body?.steps));
 });
 
-app.post("/flows", asyncHandler(async (req: any, res: any) => {
-  const { name, description, version, steps } = req.body;
+/**
+ * Flow writes (CodeQL js/missing-rate-limiting). A ceiling well above what the
+ * editor and the test suites do in a minute - they create flows quickly - that
+ * still stops a runaway loop; the same threat model as limitExpensive.
+ */
+const limitFlowWrites = rateLimit({
+  windowMs: 60_000,
+  limit: 600,
+  keyGenerator: (req: any) => `${ipKeyGenerator(req.ip ?? '127.0.0.1')}\u0000${req.route?.path ?? req.path}`,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  handler: (req: any, res: any) => {
+    res.status(429).json({ error: `Too many requests to ${req.path}. Flow writes are capped at 600 a minute; this is almost always a loop.` });
+  },
+});
+
+/**
+ * d929cb53 - the board's own item routes and the running-verifies list (CodeQL js/missing-rate-limiting on PR #194).
+ * The board edits, moves and deletes cards and reads the list all day, several panes at once: a ceiling far above
+ * that, which still stops a runaway loop. Per route, as limitFlowWrites.
+ */
+const limitBoardRoutes = rateLimit({
+  windowMs: 60_000,
+  limit: 1200,
+  keyGenerator: (req: any) => `${ipKeyGenerator(req.ip ?? '127.0.0.1')}\u0000${req.route?.path ?? req.path}`,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  handler: (req: any, res: any) => {
+    res.status(429).json({ error: `Too many requests to ${req.path}. This route is capped at 1200 a minute; this is almost always a loop.` });
+  },
+});
+
+app.post("/flows", limitFlowWrites, asyncHandler(async (req: any, res: any) => {
+  const { name, description, version, steps, verifyAt } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
 
   const stepsError = flowStepsError(steps);
   if (stepsError) return res.status(400).json({ error: stepsError });
+  const verifyAtProblem = verifyAtError(verifyAt);
+  if (verifyAtProblem) return res.status(400).json({ error: verifyAtProblem });
 
   // Always force `source = 'local'` on REST-driven creation. The reconciler
   // writes hub-managed rows directly via storage.createFlow(); this route is
@@ -4325,6 +5643,7 @@ app.post("/flows", asyncHandler(async (req: any, res: any) => {
     createdAt: new Date(),
     updatedAt: new Date(),
     source: 'local',
+    ...(verifyAt ? { verifyAt } : {}),
   };
 
   const created = await storage.createFlow(flow);
@@ -4338,14 +5657,16 @@ app.get("/flows/:id", asyncHandler(async (req: any, res: any) => {
   res.json(flow);
 }));
 
-app.put("/flows/:id", asyncHandler(async (req: any, res: any) => {
+app.put("/flows/:id", limitFlowWrites, asyncHandler(async (req: any, res: any) => {
   const existing = await storage.getFlow(req.params.id);
   if (!existing) return res.status(404).json({ error: "Flow not found" });
   if (existing.source === 'hub') {
     return res.status(409).json({ error: HUB_MANAGED_FLOW_MSG });
   }
   try {
-    const { name, description, version, steps } = req.body;
+    const { name, description, version, steps, verifyAt } = req.body;
+    const verifyAtProblem = verifyAtError(verifyAt);
+    if (verifyAtProblem) return res.status(400).json({ error: verifyAtProblem });
     // Only validate steps when the caller is actually replacing them — a
     // rename-only PUT must keep working.
     // A step that omits role/checks keeps the stored ones (CGLAB-380): an
@@ -4361,6 +5682,7 @@ app.put("/flows/:id", asyncHandler(async (req: any, res: any) => {
     if (description !== undefined) updates.description = description;
     if (version !== undefined) updates.version = version;
     if (steps !== undefined) updates.steps = normalizeSteps(merged);
+    if (verifyAt !== undefined && verifyAt !== null) updates.verifyAt = verifyAt;
 
     const updated = await storage.updateFlow(req.params.id, updates);
     io.emit('flow:updated', { flowId: updated.id });
@@ -4483,7 +5805,7 @@ app.get("/registry/flows", asyncHandler(async (_req: any, res: any) => {
   }
 }));
 
-app.post("/registry/flows/install", asyncHandler(async (req: any, res: any) => {
+app.post("/registry/flows/install", limitExpensive, asyncHandler(async (req: any, res: any) => {
   const { filename } = req.body;
   if (!filename) return res.status(400).json({ error: 'filename is required' });
 
@@ -4510,10 +5832,13 @@ app.post("/registry/flows/install", asyncHandler(async (req: any, res: any) => {
       const hubStepsError = flowStepsError(hubSteps);
       if (hubStepsError) return res.status(422).json({ error: `The registry flow cannot be installed: ${hubStepsError}` });
       const created = await storage.createFlow({
+        // efcacdeb: someone else's text - its command checks never run.
+        origin: 'registry',
         id: uuidv4(),
         name: body.flow?.name ?? filename,
         description: body.flow?.description,
         steps: hubSteps,
+        ...(flowVerifyAt(body.flow) === 'parent' ? { verifyAt: 'parent' as const } : {}),
         createdAt: new Date(),
         updatedAt: new Date(),
       });
@@ -4548,10 +5873,13 @@ app.post("/registry/flows/install", asyncHandler(async (req: any, res: any) => {
 
     // Create flow in local storage (no projectId — registry flows are global)
     const newFlow = await storage.createFlow({
+        // efcacdeb: someone else's text - its command checks never run.
+        origin: 'registry',
       id: uuidv4(),
       name: flowData.name ?? filename.replace('.json', ''),
       description: flowData.description,
       steps,
+      ...(flowVerifyAt(flowData) === 'parent' ? { verifyAt: 'parent' as const } : {}),
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -4636,6 +5964,7 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
             name: flow.name,
             description: flow.description ?? '',
             version: (flow as any).version || '1.0.0',
+            ...(flowVerifyAt(flow) === 'parent' ? { verifyAt: 'parent' } : {}),
             // The registry's fields only: local step ids and cosmetics stay here.
             steps: [...flow.steps].sort((a: any, b: any) => a.order - b.order).map((st: any) => ({
               name: st.name,
@@ -4795,6 +6124,7 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
         description: flow.description ?? '',
         author: ghUser,
         version,
+        ...(flowVerifyAt(flow) === 'parent' ? { verifyAt: 'parent' } : {}),
         steps: flow.steps
           .sort((a: any, b: any) => a.order - b.order)
           .map((s: any) => ({
@@ -4957,7 +6287,8 @@ app.get("/items", asyncHandler(async (req: any, res: any) => {
   if (parentId) query.parentId = parentId;
   if (projectId) query.projectId = projectId;
 
-  let items = await storage.listItems(query);
+  // e248239d: the list leaves step records out (listShape), so their per-test results are never read back.
+  let items = await storage.listItems({ ...query, hydrate: false });
 
   if (includeArchived !== 'true' && !status) {
     items = items.filter(i => i.status !== Status.ARCHIVED && i.status !== Status.TRASHED);
@@ -4993,8 +6324,21 @@ app.get("/items", asyncHandler(async (req: any, res: any) => {
     items = kept;
   }
 
-  res.json(items);
+  res.json(items.map(item => withActiveRun(listShape(item))));
 }));
+
+/**
+ * cb4ef070: an item as the LIST carries it - without its step records. A
+ * capture record holds a whole run's per-test results (one card was 1.8 MB,
+ * one project's list 88 MB), and every verify makes every open board refetch
+ * the list: serialising that blocked every request for seconds. Nothing reads
+ * step records from the list; GET /items/:id and the gates, check-history and
+ * warnings endpoints serve them.
+ */
+function listShape<T extends Record<string, any>>(item: T): T {
+  const { stepRecords: _records, supersededRecords: _superseded, ...rest } = item;
+  return rest as T;
+}
 
 app.post("/items/trash-archived", asyncHandler(async (req: any, res: any) => {
   const { projectId } = req.body;
@@ -5014,7 +6358,28 @@ app.get("/items/:id", asyncHandler(async (req: any, res: any) => {
   if (!item) {
     return res.status(404).json({ error: "Item not found" });
   }
-  res.json(item);
+  res.json(withActiveRun(item));
+}));
+
+/**
+ * 9569b4d7: the verify running on a card and the tail of what it printed, for
+ * the board. No agent token: it is the project's own test output, which the
+ * card's comments already carry a preview of. 404 when nothing runs.
+ */
+/**
+ * cf6941e0 (CGLAB-430): every verify running now, across all projects, and
+ * every one waiting on a person - the board's header chip. No agent token, like
+ * active-run: card titles and each run's last line, no records or bodies.
+ */
+app.get("/verify-runs", limitBoardRoutes, asyncHandler(async (_req: any, res: any) => {
+  res.json(await verifyRunsList());
+}));
+
+app.get("/items/:id/active-run", asyncHandler(async (req: any, res: any) => {
+  const active = activeRunOf(req.params.id);
+  if (!active) return res.status(404).json({ error: 'NO_ACTIVE_RUN' });
+  const run = validateRuns.get(active.runId)!;
+  res.json({ ...active, output: run.tail ?? run.output.slice(-RUN_TAIL_BYTES) });
 }));
 
 /**
@@ -5228,43 +6593,36 @@ export const resolveJiraReference = async (
     };
   }
 
-  const tokenData = loadJiraToken();
-  if (!tokenData) {
+  // Hub-joined: this user's connection on the hub, never a local token.
+  let session: JiraSession | null;
+  try {
+    session = await openJiraSession();
+  } catch (err: any) {
+    return {
+      kind: 'link',
+      externalId: key,
+      externalUrl: keptBrowseUrl(key, current),
+      warning: `Linked '${key}' without verifying it — the hub could not be reached (${err?.code || err?.message || 'unknown error'}).`,
+    };
+  }
+  if (!session) {
     // Disconnected: the key is all we can honestly assert. But re-linking the
     // SAME key while offline must not destroy the URL already on the card —
-    // that would silently strip the badge's href.
-    //
-    // Compared case-insensitively because `key` is normalised to upper case
-    // while a raw externalId is stored verbatim, so 'cglab-163' on the card
-    // would otherwise not match 'CGLAB-163' and the URL would be dropped.
-    //
-    // NOTE on provenance: the item carries no record of whether its stored URL
-    // was derived from a JIRA token or supplied raw by a caller, so this cannot
-    // claim the URL was ever "verified" — only that it is the URL already on
-    // the card and that it is shaped like a browse link for this exact key.
-    // That shape check is why a leftover URL for a DIFFERENT issue is dropped.
-    const sameKey = (current?.externalId ?? '').trim().toUpperCase() === key;
-    const keepUrl =
-      sameKey && current?.externalUrl && isJiraBrowseUrlFor(current.externalUrl, key)
-        ? current.externalUrl
-        : null;
-    return { kind: 'link', externalId: key, externalUrl: keepUrl };
+    // that would silently strip the badge's href (see keptBrowseUrl).
+    const bare: JiraResolution = { kind: 'link', externalId: key, externalUrl: keptBrowseUrl(key, current) };
+    // Joined but not connected: same bare link, but say why and what fixes it.
+    const hub = joinedHub();
+    return hub ? { ...bare, warning: `Linked '${key}' without verifying it — ${await hubNotConnectedMessage(hub)}` } : bare;
   }
 
-  const rawBrowseUrl = `${tokenData.cloudUrl}/browse/${key}`;
+  const rawBrowseUrl = `${session.cloudUrl}/browse/${key}`;
   // The derived URL is stored and rendered as an href like any other, so it
   // goes through the same guard. cloudUrl comes from the OAuth resource list
   // unchecked, so a resource without a url yields the literal
   // 'undefined/browse/KEY' — which is not a URL at all, and must not be stored.
   const browseUrl = isSafeExternalUrl(rawBrowseUrl) ? rawBrowseUrl : null;
   try {
-    await jiraApiRequest(
-      tokenData,
-      'get',
-      `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/issue/${encodeURIComponent(key)}?fields=summary`,
-      undefined,
-      JIRA_HTTP_TIMEOUT_MS,
-    );
+    await session.get(`issue/${encodeURIComponent(key)}?fields=summary`, JIRA_HTTP_TIMEOUT_MS);
     return { kind: 'link', externalId: key, externalUrl: browseUrl };
   } catch (err: any) {
     const status = err?.response?.status;
@@ -5284,6 +6642,24 @@ export const resolveJiraReference = async (
     };
   }
 };
+
+/**
+ * The browse URL already on a card, kept when re-linking the SAME key without
+ * a connection. Compared case-insensitively because `key` is normalised to
+ * upper case while a raw externalId is stored verbatim. The card carries no
+ * record of where its URL came from, so this cannot claim it was verified -
+ * only that it is shaped like a browse link for this exact key, which is why a
+ * leftover URL for a DIFFERENT issue is dropped.
+ */
+function keptBrowseUrl(
+  key: string,
+  current?: { externalId?: string | null; externalUrl?: string | null },
+): string | null {
+  const sameKey = (current?.externalId ?? '').trim().toUpperCase() === key;
+  return sameKey && current?.externalUrl && isJiraBrowseUrlFor(current.externalUrl, key)
+    ? current.externalUrl
+    : null;
+}
 
 /** Attach an unverified-link warning to a response body, when there is one.
  *  Both item write paths need this, and the shape must stay identical between
@@ -5462,6 +6838,7 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
     let bulkPreviousAfter: string | undefined;
     let bulkMoveComment: ReturnType<typeof statusMoveComment> | undefined;
     let bulkRolledBack: any[] | undefined;
+    let bulkSuperseded: any[] | undefined;
     const bulkFlow = status !== undefined && status !== currentItem.status
       ? getActiveFlow((await storage.getProject(currentItem.projectId) as any)?.flowId, await storage.listFlows())
       : undefined;
@@ -5483,7 +6860,10 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
       }
       bulkMoveComment = move.comment;
       if (isMoveBack(currentItem.status, currentItem.previousStatus, status, bulkFlow)) {
+        const frozen = await frozenTestsRollbackRefusal(currentItem, status, bulkFlow);
+        if (frozen) { skipped.push({ id, error: frozen }); continue; }
         bulkRolledBack = recordsAfterRollback((currentItem as any).stepRecords, status, bulkFlow);
+        bulkSuperseded = supersededByRollback(currentItem, status, bulkFlow);
       } else if (fromBoard && isForwardMove(currentItem.status, status, bulkFlow, currentItem.previousStatus)) {
         bulkRolledBack = [...((currentItem as any).stepRecords ?? []), manualAdvanceRecord(currentItem.status, status)];
       }
@@ -5525,6 +6905,7 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
         status: status as Status, ...bulkRefUpdates,
         ...(bulkMoveComment ? { comments: [...(currentItem.comments ?? []), bulkMoveComment] } : {}),
         ...(bulkRolledBack ? { stepRecords: bulkRolledBack } : {}),
+        ...(bulkSuperseded ? { supersededRecords: bulkSuperseded } : {}),
       } as any);
       noteUnverifiedLink();
       continue;
@@ -5550,6 +6931,7 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
     if (bulkMoveComment) updates.comments = [...(comments ?? currentItem.comments ?? []), bulkMoveComment];
     if (bulkFlow) updates.previousStatus = bulkPreviousAfter;
     if (bulkRolledBack) updates.stepRecords = bulkRolledBack;
+    if (bulkSuperseded) updates.supersededRecords = bulkSuperseded;
     if (bulkFlow) updates.lastChecks = null;
     if (sortOrder !== undefined) updates.sortOrder = sortOrder;
 
@@ -5599,9 +6981,9 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
   });
 }));
 
-app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
+app.put("/items/:id", limitBoardRoutes, asyncHandler(async (req: any, res: any) => {
   console.log(`[API_DEBUG] PUT /items/${req.params.id} body keys: ${Object.keys(req.body).join(', ')}`);
-  const { title, description, status, type, parentId, context, implementationPlan, reviews, tests, comments, sortOrder, branchName, prUrl, prNumber, prStatus, claims, externalId, externalUrl } = req.body;
+  const { title, description, status, type, parentId, context, implementationPlan, reviews, tests, comments, sortOrder, branchName, prUrl, prNumber, prStatus, claims, externalId, externalUrl, worktree } = req.body;
   // BUG 93d9fbd0: a card's tests are a list of records; anything else is refused
   // before it is stored, where the verify path would trip over it.
   if (tests !== undefined && !Array.isArray(tests)) return res.status(400).json({ error: 'tests must be an array of test records' });
@@ -5609,6 +6991,14 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   const currentItem = await storage.getItem(req.params.id);
   if (!currentItem) {
     return res.status(404).json({ error: "Item not found" });
+  }
+
+  // 686fdbf6: where the card runs, chosen on the card - never by re-parenting it.
+  let worktreeUpdates: Record<string, unknown> = {};
+  if (worktree !== undefined) {
+    const choice = await resolveWorktreeChoice(worktree, currentItem);
+    if ('error' in choice) return res.status(400).json({ error: choice.error });
+    worktreeUpdates = choice.updates;
   }
 
   /*
@@ -5638,15 +7028,38 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
           + `safety it has not established.`,
       });
     }
-    const siblings = await storage.listItems({ projectId: currentItem.projectId, limit: 1_000_000 });
-    // One pass: a per-holder recomputation would walk every parent chain N times.
-    const scopes = claimScopes([...siblings, currentItem] as any[]);
-    const gate = gateOnClaims(
-      { id: currentItem.id, claims, scope: scopes.get(currentItem.id) },
-      siblings.map((i: any) => ({ id: i.id, status: i.status, claims: i.claims, scope: scopes.get(i.id) })),
-    );
+    // Per worktree (aaa01834): only cards in this card's tree can collide with it.
+    const claimProject = await storage.getProject(currentItem.projectId);
+    const { holders, treeOf } = await claimHoldersIn(currentItem.projectId, (claimProject as any)?.projectRoot);
+    // A PUT that also re-parents, or chooses a tree, is judged in the tree the card is moving TO.
+    const gate = gateOnClaims({ id: currentItem.id, claims, tree: treeOf(movingTo(currentItem, parentId, worktreeUpdates)) }, holders);
     if (!gate.authorized) {
       return res.status(409).json({ error: gate.message });
+    }
+  }
+  // 686fdbf6: moving to another tree must not land a card - or a descendant
+  // that follows it there - on files a card in that tree already holds.
+  if (worktree !== undefined) {
+    const claimProject = await storage.getProject(currentItem.projectId);
+    const { holders, treeOf } = await claimHoldersIn(currentItem.projectId, (claimProject as any)?.projectRoot);
+    const target = treeOf(movingTo(currentItem, parentId, worktreeUpdates));
+    const all: any[] = (await storage.listItems({ projectId: currentItem.projectId, limit: 1_000_000 } as any)) as any[];
+    // The card itself (unless this PUT sets its claims: judged above), then every
+    // descendant with no tree of its own, which follows it.
+    const movers: Array<{ id: string; claims: unknown }> = claims === undefined ? [{ id: currentItem.id, claims: (currentItem as any).claims }] : [];
+    const queue = [currentItem.id];
+    const seen = new Set(queue);
+    while (queue.length) {
+      const pid = queue.shift()!;
+      for (const c of all) {
+        if (c.parentId !== pid || seen.has(c.id) || c.worktreeChoice || c.worktreePath) continue;
+        seen.add(c.id); queue.push(c.id); movers.push({ id: c.id, claims: c.claims });
+      }
+    }
+    for (const m of movers) {
+      if (!Array.isArray(m.claims) || !m.claims.length) continue;
+      const gate = gateOnClaims({ id: m.id, claims: m.claims as string[], tree: target }, holders.filter(h => !seen.has(h.id) || h.id === m.id));
+      if (!gate.authorized) return res.status(409).json({ error: m.id === currentItem.id ? gate.message : `Card ${m.id}, which follows this one to the new tree: ${gate.message}` });
     }
   }
 
@@ -5666,6 +7079,7 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   let previousAfter: string | undefined;
   let statusChanged = false;
   let rolledBackRecords: any[] | undefined;
+  let supersededRecords: any[] | undefined;
   if (status !== undefined && status !== currentItem.status) {
     const project = await storage.getProject(currentItem.projectId);
     const projectFlows = await storage.listFlows();
@@ -5688,7 +7102,10 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
     moveComment = move.comment;
     previousAfter = previousStatusAfter(currentItem.status, status, activeFlow, currentItem.previousStatus);
     if (isMoveBack(currentItem.status, currentItem.previousStatus, status, activeFlow)) {
+      const frozen = await frozenTestsRollbackRefusal(currentItem, status, activeFlow);
+      if (frozen) return res.status(409).json({ error: frozen });
       rolledBackRecords = recordsAfterRollback((currentItem as any).stepRecords, status, activeFlow);
+      supersededRecords = supersededByRollback(currentItem, status, activeFlow);
     } else if (fromBoard && isForwardMove(currentItem.status, status, activeFlow, currentItem.previousStatus)) {
       rolledBackRecords = [...((currentItem as any).stepRecords ?? []), manualAdvanceRecord(currentItem.status, status)];
     }
@@ -5741,7 +7158,7 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
 
   if (status === Status.ARCHIVED && currentItem.status !== Status.ARCHIVED) {
     await archiveRecursively(req.params.id);
-    if (hasExternalRefUpdate) await storage.updateItem(req.params.id, externalRef.updates as any);
+    if (hasExternalRefUpdate || Object.keys(worktreeUpdates).length) await storage.updateItem(req.params.id, { ...(externalRef.updates as any), ...worktreeUpdates } as any);
     io.emit('items_updated');
     if (currentItem.parentId) await syncParentStatus(currentItem.parentId);
     return respondWithStoredItem();
@@ -5750,15 +7167,16 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   if (status !== undefined && status !== Status.ARCHIVED && currentItem.status === Status.ARCHIVED) {
     await unarchiveRecursively(req.params.id);
     await storage.updateItem(req.params.id, {
-      status: status as Status, ...(externalRef.updates as any),
+      status: status as Status, ...(externalRef.updates as any), ...worktreeUpdates,
       ...(moveComment ? { comments: [...(currentItem.comments ?? []), moveComment] } : {}),
       ...(rolledBackRecords ? { stepRecords: rolledBackRecords } : {}),
+      ...(supersededRecords ? { supersededRecords } : {}),
     } as any);
     io.emit('items_updated');
     return respondWithStoredItem();
   }
 
-  const updates: any = {};
+  const updates: any = { ...worktreeUpdates };
   if (title !== undefined) updates.title = title;
   if (description !== undefined) updates.description = description;
   if (status !== undefined) updates.status = status;
@@ -5785,6 +7203,7 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   if (moveComment) updates.comments = [...(comments ?? currentItem.comments ?? []), moveComment];
   if (statusChanged) updates.previousStatus = previousAfter;
   if (rolledBackRecords) updates.stepRecords = rolledBackRecords;
+  if (supersededRecords) updates.supersededRecords = supersededRecords;
   // The last verify's checks belong to the step the card just left (CGLAB-382 review).
   if (statusChanged) updates.lastChecks = null;
   if (sortOrder !== undefined) updates.sortOrder = sortOrder;
@@ -5809,6 +7228,9 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
 
   try {
     const updated = await storage.updateItem(req.params.id, updates);
+    // beae41a0/2ec08b41: a card that really moved is no longer held where it waited on a person - a save that
+    // leaves the status alone, or a move refused above, keeps the wait.
+    if (statusChanged && awaitingPerson.delete(req.params.id)) notifyVerifyRuns();
 
     /*
      * A status change through this route is a route INTO WORK, and it had no
@@ -5885,11 +7307,12 @@ app.put("/items/:id", asyncHandler(async (req: any, res: any) => {
   }
 }));
 
-app.delete("/items/:id", asyncHandler(async (req: any, res: any) => {
+app.delete("/items/:id", limitBoardRoutes, asyncHandler(async (req: any, res: any) => {
   const itemToDelete = await storage.getItem(req.params.id);
   if (!itemToDelete) {
     return res.status(404).json({ error: "Item not found" });
   }
+  if (awaitingPerson.delete(req.params.id)) notifyVerifyRuns();
 
   const success = await trashRecursively(req.params.id);
   if (success) {
@@ -5935,19 +7358,6 @@ app.post("/items/:id/move", asyncHandler(async (req: any, res: any) => {
     return res.status(404).json({ error: "Target project not found" });
   }
 
-  /*
-   * A child moves WITH its parent, never alone. It shares the parent's project,
-   * branch and worktree; moving the child by itself left `parentId` pointing at
-   * another project, and then the tree resolver (`effectiveWorktreePath`) and
-   * the claim-scope resolver disagreed about where the card works (N5). Refuse
-   * rather than create that split.
-   */
-  if ((item as any).parentId) {
-    return res.status(400).json({
-      error: "A child item cannot be moved on its own — it shares its parent's project, branch and worktree. Move the parent, or detach the child first.",
-    });
-  }
-
   const sourceProjectId = item.projectId;
   const movedCount = await moveToProjectRecursively(req.params.id, targetProjectId);
 
@@ -5990,8 +7400,119 @@ export interface ValidateRun {
   checks?: CheckResult[];
   startedAt: Date;
   finishedAt?: Date;
+  /** Answered 202 and running in the background; a sync fast path never sets it. */
+  started?: boolean;
+  /** The step the card was leaving when the run started (9569b4d7). */
+  step?: string;
+  /** The last few KiB of what the run printed, for the board (9569b4d7); `output` is the bounded head followers stream. */
+  tail?: string;
+  /** cf6941e0: the card's project and title, for the list of running verifies across projects. */
+  projectId?: string;
+  title?: string;
+  /** cf6941e0: what the run is doing now. */
+  phase?: VerifyPhase;
 }
+/** cf6941e0 — what a running verify is doing: its checks, waiting for a suite-run slot, or running a suite. */
+export type VerifyPhase =
+  | { state: 'checking' }
+  | { state: 'queued'; ahead: number }
+  | { state: 'running'; kind: 'whole' | 'affected' | 'tests-only' | 'reused'; files?: number }
+  /** beae41a0: waiting on another run of this tree - the report it writes, an identical capture, or a sibling's final verify. */
+  | { state: 'waiting'; on: 'report' | 'identical-run' | 'sibling' };
 const validateRuns = new Map<string, ValidateRun>();
+/** 9569b4d7: how much of a run's latest output the board is shown. */
+const RUN_TAIL_BYTES = 8192;
+/** Append to a run's output: the bounded head for followers, and the rolling tail for the board. */
+function appendRunOutput(run: ValidateRun, chunk: string, headCap = 256 * 1024): void {
+  if (run.output.length < headCap) run.output += chunk.slice(0, headCap - run.output.length);
+  run.tail = ((run.tail ?? '') + chunk).slice(-RUN_TAIL_BYTES);
+  notifyVerifyRuns();
+}
+/** 9569b4d7: a run has started in the background - the board shows it on the card. */
+function markRunStarted(run: ValidateRun, step: string, item?: { projectId?: string; title?: string }): void {
+  run.started = true;
+  run.step = step;
+  run.projectId = item?.projectId;
+  run.title = item?.title;
+  run.phase ??= { state: 'checking' };
+  io.emit('items_updated');
+  notifyVerifyRuns();
+}
+/** cf6941e0: what a run is doing now, for the list of running verifies. */
+function setRunPhase(run: ValidateRun | undefined, phase: VerifyPhase): void {
+  if (!run) return;
+  run.phase = phase;
+  notifyVerifyRuns();
+}
+
+/**
+ * cf6941e0 — verifies held only by a person (the step's approval, or a command
+ * waiting for its approval), by card. The CLI waits for the approval up to 9
+ * minutes and then gives up, so an entry is shown for 10 at most; a new verify
+ * of the card replaces it.
+ */
+const awaitingPerson = new Map<string, { step: string; since: Date; projectId?: string; title?: string }>();
+const AWAITING_PERSON_TTL_MS = 10 * 60 * 1000;
+
+/** The last line a run printed, colour codes stripped, for the list (cf6941e0). */
+function lastLineOf(text: string | undefined): string | undefined {
+  // eslint-disable-next-line no-control-regex
+  const lines = (text ?? '').replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').split(/\r?\n|\r/).map(l => l.trim()).filter(Boolean);
+  const last = lines[lines.length - 1];
+  return last === undefined ? undefined : last.slice(0, 200);
+}
+
+/**
+ * cf6941e0 — every verify running now, in any project, and every one held by a
+ * person: what the board's header lists. Deliberately small - no step records,
+ * no output bodies - since it is pushed on every change.
+ */
+async function verifyRunsList(): Promise<any[]> {
+  const names = new Map<string, string | undefined>();
+  const nameOf = async (projectId?: string) => {
+    if (!projectId) return undefined;
+    if (!names.has(projectId)) names.set(projectId, ((await storage.getProject(projectId).catch(() => null)) as any)?.name);
+    return names.get(projectId);
+  };
+  const out: any[] = [];
+  const running = new Set<string>();
+  for (const run of validateRuns.values()) {
+    if (run.status !== 'running' || !run.started) continue;
+    running.add(run.itemId);
+    const lastLine = lastLineOf(run.tail);
+    out.push({ runId: run.runId, itemId: run.itemId, title: run.title, projectId: run.projectId, projectName: await nameOf(run.projectId),
+      step: run.step ?? '', startedAt: new Date(run.startedAt).toISOString(), phase: run.phase ?? { state: 'checking' }, ...(lastLine ? { lastLine } : {}) });
+  }
+  const now = Date.now();
+  for (const [itemId, w] of awaitingPerson) {
+    if (now - w.since.getTime() > AWAITING_PERSON_TTL_MS) { awaitingPerson.delete(itemId); continue; }
+    if (running.has(itemId)) continue;
+    out.push({ itemId, title: w.title, projectId: w.projectId, projectName: await nameOf(w.projectId), step: w.step, startedAt: w.since.toISOString(), phase: { state: 'awaiting-person' } });
+  }
+  return out.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+}
+
+/** cf6941e0: push the list, coalescing a burst (output chunks, phase changes) into one event. */
+let verifyRunsPush: NodeJS.Timeout | null = null;
+function notifyVerifyRuns(): void {
+  if (verifyRunsPush) return;
+  verifyRunsPush = setTimeout(() => {
+    verifyRunsPush = null;
+    verifyRunsList().then(list => io.emit('verify_runs', list)).catch(() => { /* the next change pushes again */ });
+  }, 250);
+  if (typeof verifyRunsPush.unref === 'function') verifyRunsPush.unref();
+}
+/** The verify running on a card now, as item responses carry it; undefined when none runs. */
+function activeRunOf(itemId: string): { runId: string; step: string; startedAt: string } | undefined {
+  const runId = activeValidateRunByItem.get(itemId);
+  const run = runId ? validateRuns.get(runId) : undefined;
+  if (!run || run.status !== 'running' || !run.started) return undefined;
+  return { runId: run.runId, step: run.step ?? '', startedAt: new Date(run.startedAt).toISOString() };
+}
+const withActiveRun = <T extends { id: string }>(item: T): T => {
+  const activeRun = activeRunOf(item.id);
+  return activeRun ? { ...item, activeRun } : item;
+};
 const activeValidateRunByItem = new Map<string, string>();
 const VALIDATE_RUN_TTL_MS = 60 * 60 * 1000;
 // Prune on creation instead of timers — keeps tests deterministic and the map bounded.
@@ -6031,7 +7552,8 @@ function sanitizeCallerTests(incoming: unknown, stored: any[] | undefined): any 
   // A record is an object; null, numbers and strings are dropped (BUG 93d9fbd0).
   return incoming.filter((t: any) => !!t && typeof t === 'object' && !Array.isArray(t)).map((t: any) => {
     if (byId.has(t.id)) return byId.get(t.id);
-    const { commit: _dropped, ...rest } = t;
+    // treeState (3ffc9651) spends a green exactly like a commit does.
+    const { commit: _dropped, commitRoot: _droppedRoot, treeState: _droppedState, ...rest } = t;
     return rest;
   });
 }
@@ -6047,13 +7569,17 @@ function ignoredCommandNote(ignored: string, projectCommand?: string): string {
  * older CLIs print. One wrapper rather than an edit at each of validate's
  * many reply sites, so a new reply cannot forget it.
  */
-export function withNote<T extends { status: (code: number) => any; json: (body: any) => any }>(res: T, note: string): T {
+export function withNote<T extends { status: (code: number) => any; json: (body: any) => any }>(res: T, note: string, opts: { warning?: boolean; message?: boolean } = {}): T {
   // Clients print `message || error`, so a reply that only had an error gets a
   // message too, or the note would travel in a field nobody shows.
+  // `warning: false` adds to the message only: an account of what was judged
+  // is not a warning, and must not replace one (d26832d6 #9).
   const add = (body: any) => (body && typeof body === 'object')
     ? {
-        ...body, warning: note,
-        message: typeof body.message === 'string' ? `${note}\n\n${body.message}`
+        ...body, ...(opts.warning === false ? {} : { warning: note }),
+        // `message: false`: the note is already in the message another way (the full check list).
+        message: opts.message === false ? body.message
+          : typeof body.message === 'string' ? `${note}\n\n${body.message}`
           : typeof body.error === 'string' ? `${note}\n\n${body.error}` : note,
       }
     : body;
@@ -6077,6 +7603,16 @@ export function withNote<T extends { status: (code: number) => any; json: (body:
 const criteriaBanner = (step: string, criteria: string) =>
   `\n\n⚠️ MANDATORY EXIT CRITERIA for ${step} — the step this item is now on. You MUST satisfy ALL of the following before calling validate_progress again:\n\n${criteria}`;
 const nowOn = (status: string) => `\n\nItem is now on ${status}.`;
+
+/**
+ * 37a292a7: after an advance, what leaving the step the card landed on will run
+ * - the text for the reply and the plan as a field. Nothing when it landed on
+ * the exit step, or the plan cannot be read (it is advice, never a failure).
+ */
+async function nextLeaveNote(itemId: string): Promise<{ text: string; field: { leavePlan?: LeavePlan } }> {
+  const plan = await leavePlanOf(itemId).catch(() => null);
+  return plan ? { text: `\n\n${plan.advice}`, field: { leavePlan: plan } } : { text: '', field: {} };
+}
 const staysOn = (status: string) => `\n\nThe advance was refused. Item stays on ${status}.`;
 
 // Advances item to the next flow step. On failure the advance is refused and the item stays put (CGLAB-275).
@@ -6095,6 +7631,18 @@ interface StepGate {
    * the CLI already renders, rather than a generic failed-check reply.
    */
   approval?: { message: string; fingerprint?: string; command?: string };
+  /** CGLAB-428: the checks leaving this step would run, switched off by the org's hub. */
+  disabled: Array<{ id: string; source: string }>;
+  /** The capture this verify ran or reused, for saying which (d26832d6 #15). */
+  capture?: any;
+  /**
+   * 3ffc9651 review: the step it judged. A gate is handed to a later call (a
+   * slow gate's background re-entry, a sibling that waited on another's final
+   * verify); if the card moved meanwhile, its verdict is about another step.
+   */
+  step: string;
+  /** 281adef0: the parent this gate judged the card's suite as deferred to; the close follows it. */
+  deferredTo?: string;
 }
 
 /** The branch a card works on: its own, else its nearest ancestor's (branches live on top-level items). */
@@ -6112,13 +7660,117 @@ async function branchOfCard(item: any): Promise<string | null> {
  * tree, its review records, every author identity on it and its descendants,
  * where its work began, and its descendants' close commits.
  */
-async function reviewEvidence(item: any, root: string | null, depth = 0): Promise<any> {
-  const descendants: any[] = [];
+/** CGLAB-420: the warnings a card cannot leave the step that writes tests with unanswered. */
+const ANSWER_REQUIRED = new Set(['new-tests-born-green']);
+/**
+ * e2ab4ced: tests removed (or renamed) while changing behaviour. Blocking, but
+ * the agent may answer why they go - an agent refused a legitimate deletion
+ * kept the tests' names and repointed them, hiding the change. Never on a
+ * refactoring step, where behaviour must not change.
+ */
+// 6dd15e6e: not red-set-passes-by-name - the red set is the card's own specification, and deleting it is no change of behaviour.
+const ANSWERABLE_REMOVALS = new Set(['test-count-not-lower']);
+
+/** A card's descendants, breadth first (at most 5000). */
+async function descendantsOf(item: any): Promise<any[]> {
+  const out: any[] = [];
   const queue = [item.id];
-  while (queue.length && descendants.length < 5000) {
+  while (queue.length && out.length < 5000) {
     const kids: any[] = (await storage.listItems({ parentId: queue.shift() } as any)) as any;
-    for (const k of kids) { descendants.push(k); queue.push(k.id); }
+    for (const k of kids) { out.push(k); queue.push(k.id); }
   }
+  return out;
+}
+
+/**
+ * CGLAB-420: the failing warnings a card and its descendants left their steps
+ * with, from their exit records - the last exit per step and check, so a step
+ * left again after a rollback supersedes the earlier one.
+ */
+async function treeWarningsOf(item: any): Promise<TreeWarning[]> {
+  const out: TreeWarning[] = [];
+  for (const card of [item, ...(await descendantsOf(item))]) {
+    const latest = new Map<string, TreeWarning | null>();
+    for (const r of card.stepRecords ?? []) {
+      if (r?.kind !== 'exit' || !Array.isArray(r.checks)) continue;
+      for (const c of r.checks) {
+        const key = `${r.step}\u0000${c?.id}`;
+        // Its own list is not a warning of the tree: at an epic it would repeat every story's.
+        // An unanswered red on an error is the normal path of TDD, not news for a reviewer.
+        const noise = c?.id === 'red-is-assertion' && typeof c?.answer !== 'string';
+        // e2ab4ced: an answered removal is the reviewer's to judge, as a warning is.
+        latest.set(key, (c?.severity === 'warn' || c?.answeredRemoval === true) && c?.outcome === 'fail' && c?.id !== 'tree-warnings' && !noise
+          ? { itemId: card.id, title: String(card.title ?? ''), step: String(r.step), check: String(c.id), detail: String(c.detail ?? '').slice(0, 300),
+            ...(typeof c.answer === 'string' ? { answer: c.answer } : c?.overridden?.reason ? { answer: `passed by ${c.overridden.by ?? 'a person'} on the board: ${c.overridden.reason}` } : {}) }
+          : null);
+      }
+    }
+    for (const w of latest.values()) if (w) out.push(w);
+  }
+  return out;
+}
+
+/** CGLAB-420: the tests a card's descendants froze (their testSurface records), oldest first. */
+async function descendantSurfacesOf(item: any): Promise<Array<{ itemId: string; files: Record<string, string>; head: string | null; complete: boolean; at: string }>> {
+  const out: Array<{ itemId: string; files: Record<string, string>; head: string | null; complete: boolean; at: string }> = [];
+  for (const d of await descendantsOf(item)) {
+    const rec = [...(d.stepRecords ?? [])].reverse().find((r: any) => r?.kind === 'record' && r.name === 'testSurface');
+    const v = rec?.value;
+    if (!v || typeof v !== 'object' || !v.files || typeof v.files !== 'object') continue;
+    out.push({ itemId: d.id, files: v.files, head: typeof v.head === 'string' ? v.head : null, complete: v.complete !== false, at: String(rec.at ?? '') });
+  }
+  return out.sort((a, b) => a.at.localeCompare(b.at));
+}
+
+/**
+ * CGLAB-420: a reply that brought a card (the one verified, or an ancestor it
+ * pushed along) onto a review step hands over its tree's warnings, so they
+ * reach the reviewer's brief. On a parent the child's verify is the only reply
+ * anyone reads at that moment. The statuses are read when this wraps the reply.
+ */
+async function withReviewBrief<T extends { status: (code: number) => any; json: (body: any) => any }>(res: T, itemId: string, opts: { done?: () => boolean } = {}): Promise<T> {
+  const before = new Map<string, string>();
+  let cur: any = await storage.getItem(itemId);
+  for (let depth = 0; cur && depth < 16; depth++) { before.set(cur.id, cur.status); cur = cur.parentId ? await storage.getItem(cur.parentId) : null; }
+  const brief = async (): Promise<string> => {
+    const notes: string[] = [];
+    for (const [id, was] of before) {
+      const card: any = await storage.getItem(id);
+      if (!card || card.status === was) continue;
+      const project: any = await storage.getProject(card.projectId);
+      const flow = getActiveFlow(project?.flowId, await storage.listFlows());
+      const review = resolveStepChecks(flow.steps, card.status).find(c => c.id === 'review-record' && c.applicable);
+      if (!review) continue;
+      // Reviewed at its parent: its own review step reviews nothing.
+      if (review.params?.appliesTo !== 'every-card' && card.parentId && !(await storage.listItems({ parentId: card.id } as any)).length) continue;
+      const ws = await treeWarningsOf(card);
+      if (ws.length) notes.push(`🔎 [${id.slice(0, 8)}] "${card.title}" is now on ${card.status}, its review step. Its tree raised these warnings: give them to the reviewer along with the diff.\n${describeTreeWarnings(ws)}`);
+    }
+    return notes.join('\n\n');
+  };
+  const proxy: T = new Proxy(res, {
+    get(target, key) {
+      if (key === 'json') return (body: any) => {
+        void brief()
+          .then(note => (note && body && typeof body === 'object' && typeof body.message === 'string' ? { ...body, message: `${body.message}\n\n${note}` } : body), () => body)
+          .then(b => {
+            // A reply already settled another way (an internal error, a sent response) is not overwritten.
+            if (opts.done?.() || (target as any).headersSent) return;
+            target.json(b);
+          })
+          .catch((e: any) => console.error(`[VALIDATE] could not send a reply: ${e?.message ?? e}`));
+        return proxy;
+      };
+      if (key === 'status') return (code: number) => { target.status(code); return proxy; };
+      const value = Reflect.get(target, key);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  return proxy;
+}
+
+async function reviewEvidence(item: any, root: string | null, depth = 0): Promise<any> {
+  const descendants = await descendantsOf(item);
   const children = descendants.filter(d => d.parentId === item.id);
   const authors: Array<{ client: string; sessionId: string; agentId: string | null }> = [];
   for (const c of [item, ...descendants]) {
@@ -6147,7 +7799,7 @@ async function reviewEvidence(item: any, root: string | null, depth = 0): Promis
     authors,
     startHead: firstExit?.head ?? null,
     descendantCommits,
-    currentTree: root && depth === 0 ? treeContentState(root, null) : null,
+    currentTree: root && depth === 0 ? treeContentState(root, reportOwnedOf(root, await storage.getProject(item.projectId))) : null,
   };
   // A child counts only when its OWN latest review passes the same test, over
   // its own authors and commits - having a record is not enough (CGLAB-381
@@ -6191,7 +7843,10 @@ async function keysOfCard(item: any): Promise<string[]> {
  * that ends the flow the command runs anyway, so with no per-test report a
  * `suite-green` capture would only run the same suite twice.
  */
-function deferredToCommand(flow: { steps: any[] }, status: string, project: any): string[] {
+function deferredToCommand(flow: { steps: any[] }, status: string, project: any, toParent?: unknown): string[] {
+  // 281adef0: deferred to the parent, the suite runs nowhere on this card - not
+  // as a capture, not as the command - so whatever it would settle is deferred.
+  if (toParent) return ['suite-green'];
   const sorted = sortedFlowSteps(flow as any);
   const next = sorted[sorted.findIndex(st => st.name === status) + 1];
   const final = !next || next.name === Status.DONE || isBoundaryStep(next);
@@ -6201,27 +7856,490 @@ function deferredToCommand(flow: { steps: any[] }, status: string, project: any)
   return final && !project?.testReport && command ? ['suite-green'] : [];
 }
 
-async function runStepGate(item: any, flow: { steps: any[] }, root: string | null, actor?: { client: string; sessionId: string; agentId: string | null } | null): Promise<StepGate> {
+/**
+ * The parent a card's close defers the project's suite to (281adef0), or null
+ * when the card must run it itself. One answer for the step gate and the close:
+ *  - the flow says verifyAt 'parent', and this move ENDS the flow (a mid-flow
+ *    boundary still runs the command it requires);
+ *  - the parent is in the SAME project (a moved card keeps a parentId into its
+ *    old project, whose verify runs a different command in a different tree);
+ *  - the parent is still open: not released, not on its flow's exit step;
+ *  - and no verify of the parent is running now: that run may not see this
+ *    card's close commit, so the card runs its own.
+ * The roll-up never walks such a parent onto its exit step (syncParentStatus),
+ * so its own final verify - the one run - always happens.
+ */
+async function parentToDeferTo(item: any, flow: { steps: any[]; verifyAt?: unknown }): Promise<any | null> {
+  if (flowVerifyAt(flow) !== 'parent' || !item?.parentId) return null;
+  const sorted = sortedFlowSteps(flow as any);
+  const index = sorted.findIndex(st => st.name === item.status);
+  if (index < 0 || !leavingEndsFlow(sorted as any, index)) return null;
+  const parent: any = await storage.getItem(item.parentId);
+  if (!parent || parent.projectId !== item.projectId) return null;
+  // Open AND being worked: a paused or blocked parent may never come back to run it.
+  if (!stillHolds(String(parent.status)) || INACTIVE_STATUSES.has(String(parent.status).toUpperCase()) || parent.status === sorted[sorted.length - 1]?.name) return null;
+  if (activeValidateRunByItem.has(parent.id)) return null;
+  // The parent's verify tests the PARENT's tree: a child whose work lives in another one runs its own.
+  const project: any = await storage.getProject(item.projectId);
+  const childRoot = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
+  const parentRoot = resolveCommitRoot(await withEffectiveWorktree(parent), project?.projectRoot).root;
+  if (!childRoot || childRoot !== parentRoot) return null;
+  return parent;
+}
+
+/**
+ * 961f301d — approval first. While the step still waits for a person (its own
+ * approval, or a command waiting for theirs), nothing a capture or a command
+ * run could find lets the card go, and the person is not shown the card until
+ * the refusal comes back. So the gate then skips the slow work - reported as
+ * deferred to the verify after the approval - and answers inline. The cheap
+ * checks still run, so a person approving can see (and override) them at once.
+ */
+async function waitsOnPerson(item: any, flow: { steps: any[] }, project: any): Promise<boolean> {
+  const resolved = resolveStepChecks(flow.steps, item.status).filter(c => c.severity === 'block');
+  const records: any[] = ((await storage.getItem(item.id)) as any)?.stepRecords ?? [];
+  const here = records.filter(r => r?.step === item.status);
+  // Only an override the gate would honour lifts a check: on a passkey step, a signed one.
+  const signedOnly = stepWantsPasskey(flow as Flow, item.status);
+  const overridden = new Set(here.filter(r => r.kind === 'override' && typeof r.check === 'string' && (!signedOnly || r.authority === 'passkey')).map(r => r.check));
+  if (awaitingPersonCommands(resolved, flow, project).some(c => !overridden.has(c.id))) return true;
+  const approval = resolved.find(c => c.applicable && c.id === 'human-approval');
+  if (!approval || overridden.has('human-approval')) return false;
+  const inherited = approval.params.appliesTo === 'every-card' ? [] : await ancestorApprovals(item, item.status);
+  const { own, up } = countedApproval(approval.params, approvalsAt({ stepRecords: here }, item.status), inherited);
+  return !own && !up;
+}
+
+/** The step's command checks that wait for a person to approve their command: never run. */
+function awaitingPersonCommands(resolved: ReturnType<typeof resolveStepChecks>, flow: any, project: any): ReturnType<typeof resolveStepChecks> {
+  if (flow?.origin === 'registry') return [];
+  const approvals: CommandApproval[] = Array.isArray(project?.commandApprovals) ? project.commandApprovals : [];
+  return resolved.filter(c => c.applicable && c.id.startsWith('command-check:') && awaitsPersonApproval(c, approvals));
+}
+
+/**
+ * 1049ce52 - the tree's upstream, fetched now: how far HEAD is ahead of and
+ * behind it. Asynchronous and bounded - a fetch is network work and must never
+ * hold the event loop or hang a verify - and never interactive: no terminal,
+ * SSH in batch mode, no credential dialogs; a timeout kills the whole process
+ * group (ssh or a credential helper would otherwise keep the pipes open). No
+ * auto-gc or maintenance in a checkout other agents share.
+ *
+ * A branch with NO upstream (a fresh card branch) is compared with its remote's
+ * default branch instead (review): sitting strictly behind it - none of its own
+ * commits - is a stale base, the case this check exists for. A branch with its
+ * own commits and no upstream is not judged.
+ */
+type UpstreamState = { none: true } | { name: string; fetchError: string } | { name: string; ahead: number; behind: number; noUpstream?: true };
+async function readUpstream(root: string): Promise<UpstreamState> {
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', GIT_ASKPASS: '', SSH_ASKPASS: '', GIT_SSH_COMMAND: 'ssh -o BatchMode=yes -o ConnectTimeout=10' };
+  const git = (args: string[], timeoutMs = 5000) => new Promise<{ ok: boolean; out: string; err: string }>(resolve => {
+    const child = spawn('git', ['-C', root, '-c', 'credential.interactive=never', ...args], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    let out = '';
+    let err = '';
+    let done = false;
+    const finish = (ok: boolean) => { if (done) return; done = true; clearTimeout(timer); resolve({ ok, out: out.trim(), err: err.trim() }); };
+    const timer = setTimeout(() => { try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ } err ||= `timed out after ${timeoutMs / 1000} s`; finish(false); }, timeoutMs);
+    child.stdout?.on('data', d => { out += d; });
+    child.stderr?.on('data', d => { err += d; });
+    child.on('error', e => { err ||= e.message; finish(false); });
+    child.on('close', code => finish(code === 0));
+  });
+  const fetch = (remote: string) => git(['-c', 'gc.auto=0', '-c', 'maintenance.auto=false', 'fetch', '--quiet', '--no-tags', '--no-write-fetch-head', remote], 20_000);
+  const firstLine = (s: string) => (s.split('\n').find(Boolean) ?? 'git fetch failed').slice(0, 300);
+  const count = async (range: string) => {
+    const c = await git(['rev-list', '--left-right', '--count', range]);
+    const [ahead, behind] = c.out.split(/\s+/).map(Number);
+    return c.ok && Number.isFinite(ahead) && Number.isFinite(behind) ? { ahead, behind } : null;
+  };
+  const branch = (await git(['symbolic-ref', '--quiet', '--short', 'HEAD'])).out;
+  const up = await git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}']);
+  const configured = branch ? (await git(['config', `branch.${branch}.remote`])).out : '';
+  if (up.ok && up.out) {
+    if (!configured || configured === '.') return { none: true };
+    const fetched = await fetch(configured);
+    if (!fetched.ok) return { name: up.out, fetchError: firstLine(fetched.err) };
+    const c = await count('HEAD...@{upstream}');
+    return c ? { name: up.out, ...c } : { name: up.out, fetchError: 'could not compare HEAD with its upstream' };
+  }
+  // No upstream: the remote's default branch, when there is exactly one obvious remote.
+  const remotes = (await git(['remote'])).out.split('\n').map(r => r.trim()).filter(Boolean);
+  const remote = remotes.includes('origin') ? 'origin' : remotes.length === 1 ? remotes[0] : '';
+  if (!remote) return { none: true };
+  const fetched = await fetch(remote);
+  let base = (await git(['symbolic-ref', '--quiet', '--short', `refs/remotes/${remote}/HEAD`])).out;
+  for (const b of [`${remote}/main`, `${remote}/master`]) if (!base && (await git(['rev-parse', '--verify', '--quiet', `refs/remotes/${b}`])).ok) base = b;
+  if (!base) return fetched.ok ? { none: true } : { name: remote, fetchError: firstLine(fetched.err) };
+  if (!fetched.ok) return { name: base, fetchError: firstLine(fetched.err) };
+  const c = await count(`HEAD...${base}`);
+  return c ? { name: base, ...c, noUpstream: true } : { none: true };
+}
+
+/** 5a8d22e6: the server's own hold for a per-test entry baseline the project cannot record. */
+const ENTRY_BASELINE = 'entry-baseline';
+
+/**
+ * 37a292a7: whether leaving `status` runs a test-report capture, and why. The
+ * ONE predicate the step gate runs on and the leave plan reports, so an agent
+ * told "leaving runs the suite" (or "runs nothing") is told what will happen.
+ *  - checks: this step's applicable checks that need per-test results, less
+ *    those the verify command settles on this move (deferredToCommand);
+ *  - entryBaseline: the next step reads the results recorded as a card enters
+ *    it, so this capture doubles as that entry (no suite runs just to snapshot);
+ *  - entryHeld: that next step's BLOCKING checks need a per-test baseline the
+ *    project records none of - the card is held, and the capture is not run.
+ */
+/**
+ * acceaa54: the capture this step entered with, for a partial run to go over -
+ * or null. de5e5a03: a testing step's whole job is the suite, it never runs a
+ * part of it; 83c1cbca: nor does refactoring, which changes code and not tests,
+ * where an import graph misses most. 2ebacb23: shared by the step gate and the
+ * dry run, so the mode predicted is the mode run.
+ */
+/**
+ * b29a8b3a / 3ffc9651: a finished sibling's green of the command, tied to THIS
+ * tree - its commit, or its exact state - in the same checkout; or why not.
+ * Every candidate is asked: a stale older sibling must not shadow a younger one
+ * still green here. 2ebacb23: shared by the final gate and the dry run.
+ */
+async function siblingGreenOf(item: any, siblings: any[], flow: TransitionFlow, project: any, gateRoot: string | null | undefined, command: string) {
+  const sharesRoot = !!gateRoot;
+  const treeSha = sharesRoot ? readCleanTreeSha(gateRoot!, gitRun) : null;
+  // 3ffc9651: or at this very STATE, dirty or not - every file's content, as the green recorded it.
+  const treeState = sharesRoot ? treeStateOf(gateRoot!, project) : null;
+  let pass: { sibling: any; test: any } | null = null;
+  let refusal = treeSha
+    ? 'no sibling green is tied to this commit'
+    : treeState ? 'no sibling green is tied to this tree state' : 'the state of this tree cannot be read, so no sibling green can be tied to it';
+  for (const s of siblings) {
+    // 6b34e5cc: finished is where the move that ends the flow lands (DONE, or a boundary last step), not the literal word.
+    if (pass || s.id === item.id || !isCompletionStep(s.status, flow)) continue;
+    // Same checkout as the one the command runs in, or nothing transfers.
+    if (!sharesRoot || resolveCommitRoot(await withEffectiveWorktree(s), project?.projectRoot).root !== gateRoot) continue;
+    // EVERY matching test, not the first: a sibling re-verified after a
+    // rollback has an older record that must not shadow the current one.
+    for (const test of testRecords(s.tests)) {
+      if (pass || test.status !== 'PASSED' || test.command !== command) continue;
+      if (treeState && currentTreeState(test) === treeState && test.commitRoot === gateRoot) { pass = { sibling: s, test }; continue; }
+      const gate = mayPropagate(treeSha, test);
+      if (gate.allowed) pass = { sibling: s, test };
+      else if (treeSha || !currentTreeState(test)) refusal = gate.reason ?? refusal;
+      else refusal = 'the tree changed since the sibling verified: its content is not the state the green was recorded at';
+    }
+  }
+  return { pass, refusal, treeSha, treeState };
+}
+
+/** A step whose applicable checks include a command check (efcacdeb) - it runs after the step's capture. */
+const stepHasCommandChecks = (flow: { steps: any[] }, status: string): boolean =>
+  resolveStepChecks(flow.steps, status).some(c => c.applicable && c.id.startsWith('command-check:'));
+
+/**
+ * 36c5ca25: the green this move's own capture already gave the verify command,
+ * or null. With a test report the step gate captures the suite on the move that
+ * ends the flow, and when the report's command IS the verify command, spawning
+ * it again runs the same suite twice. It stands for the command only as a whole
+ * green that RAN on this move (never a partial run merged over the entry, nor
+ * a green reused from an earlier run), in the root the command runs in, on the
+ * state the tree is still in.
+ */
+export function ownCaptureGreenOf(capture: any, command: string, root: string | null | undefined, project: any): any | null {
+  // A reused green ran nothing on this move (reusedFrom; a re-read surface sets it too): the command is then the one run.
+  if (!capture || capture.kind !== 'capture' || !root || capture.lazy || capture.reusedFrom || capture.surfaceRereadFrom || !capturedGreen(capture)) return null;
+  if (capture.command !== command || capture.root !== root) return null;
+  const state = stateOfRecord(capture);
+  return state !== null && treeStateOf(root, project) === state ? capture : null;
+}
+
+async function entryCaptureOf(item: any, sorted: any[], index: number): Promise<any | null> {
+  const prevStep = sorted[index - 1];
+  if (!prevStep || ['testing', 'refactoring'].includes((sorted[index] as any)?.role)) return null;
+  const before: any[] = ((await storage.getItem(item.id)) as any)?.stepRecords ?? [];
+  let entry = [...before].reverse().find((r: any) => r?.kind === 'capture' && r.step === prevStep.name) ?? null;
+  // 80920048: reads leave a capture's file map as a reference; the entry is the one record that needs it.
+  if (entry && typeof entry.fileShasBlob === 'string' && entry.fileShas === undefined) {
+    const fileShas = await storage.readBlob?.(entry.fileShasBlob).catch(() => null);
+    if (fileShas) entry = { ...entry, fileShas };
+  }
+  return entry;
+}
+
+/** A person's override of the entry-baseline hold on this step, as the gate honours it (passkey on a passkey step; the same hold). */
+function entryHoldOverride(item: any, flow: { steps: any[] }, detail: string, status: string): any | undefined {
+  return [...((item as any)?.stepRecords ?? [])].reverse().find((r: any) =>
+    r?.step === status && r.kind === 'override' && r.check === ENTRY_BASELINE && (!stepWantsPasskey(flow as Flow, status) || r.authority === 'passkey')
+    && (r.detail === undefined || r.detail === detail));
+}
+
+/** The hold's detail - the text a person's override of it names. */
+const entryHoldDetailOf = (next: any) => next ? `${next.name} judges its tests against the per-test results recorded as the card enters it, and this project records none` : '';
+
+function captureOnLeave(flow: { steps: any[] }, status: string, project: any, deferToCommand: string[], opts: { personFirst?: boolean; holdOverridden?: boolean } = {}) {
+  const sorted = sortedFlowSteps(flow as any);
+  const next = sorted[sorted.findIndex(st => st.name === status) + 1];
+  const resolved = resolveStepChecks(flow.steps, status);
+  const nextChecks = next ? resolveStepChecks(flow.steps, next.name) : [];
+  const nextNeedsPerTestEntry = !!next && needsEntryRecord(nextChecks.filter(c => c.severity === 'block'));
+  const entryHeld = !opts.personFirst && nextNeedsPerTestEntry && !project?.testReport && !opts.holdOverridden;
+  const checks = resolved.filter(c => !deferToCommand.includes(c.id) && needsCapture([c])).map(c => c.id);
+  const entryBaseline = next && !entryHeld && needsEntryRecord(nextChecks) ? next.name as string : null;
+  return { runs: !opts.personFirst && (checks.length > 0 || !!entryBaseline), checks, entryBaseline, entryHeld, nextNeedsPerTestEntry, next };
+}
+
+/** 37a292a7: what `agenfk verify` will run on leaving a step - told before it runs. */
+export interface LeavePlan {
+  step: string;
+  next: string | null;
+  /** suite: a test-report capture (the project's verify command, read per test); verify-command: the final gate; nothing. */
+  runs: 'suite' | 'verify-command' | 'nothing';
+  /** The step's checks that need the suite's results. */
+  checks: string[];
+  /** The next step whose entry baseline this capture records, if any. */
+  entryBaseline: string | null;
+  /** The command that runs (the project's verify command, or the test report's). */
+  command?: string;
+  /** On the final move with a capture: the verify command that runs AFTER it and gates the close. */
+  thenCommand?: string;
+  /** 36c5ca25: on the move that ends the flow, the capture IS the verify command: its whole, fenced green closes the card (a partial run or a reuse is followed by the command). */
+  closesOnCapture?: boolean;
+  /** The parent the card's suite is deferred to (verifyAt 'parent'). */
+  deferredTo?: { id: string; title: string };
+  /** The step waits for a person's approval first; the suite runs on the verify after it. */
+  waitsOnPerson: boolean;
+  /** Why the card will be held instead of advancing, when it will be. */
+  held?: string;
+  /** Why verify will refuse before running anything: no verify command on the final step, or no tree to run in. */
+  refuses?: 'NO_VERIFY_COMMAND' | 'NO_TREE';
+  /** How a run may be smaller than the whole suite: 'affected-tests' (a related-tests command), 'reuse' (an unchanged tree's green). */
+  narrowing: string[];
+  /** One line for the agent. */
+  advice: string;
+}
+
+async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown }, project: any): Promise<LeavePlan> {
+  const sorted = sortedFlowSteps(flow as any);
+  const index = sorted.findIndex(st => st.name === item.status);
+  const next = sorted[index + 1];
+  const step = item.status as string;
+  const base = { step, next: next?.name ?? null, checks: [] as string[], entryBaseline: null, waitsOnPerson: false, narrowing: [] as string[] };
+  // The gate skips a mid-flow anchor's checks (handleValidateProgress): no capture leaving one - the final gate still applies.
+  const midAnchor = !!(sorted[index] as any)?.isAnchor && index !== 0;
+  const final = !next || next.name === Status.DONE || isBoundaryStep(next);
+  const toParent = await parentToDeferTo(item, flow);
+  const deferToCommand = deferredToCommand(flow, item.status, project, toParent);
+  const judged = captureOnLeave(flow, item.status, project, deferToCommand, { holdOverridden: !!entryHoldOverride(item, flow, entryHoldDetailOf(next), item.status) });
+  const cap = midAnchor ? { ...judged, runs: false, checks: [] as string[], entryBaseline: null, entryHeld: false } : judged;
+  // A mid-flow anchor skips the whole gate block - the person-first wait included.
+  const waiting = midAnchor ? false : await waitsOnPerson(item, flow, project);
+  const verifyCommand: string | undefined = finalVerifyCommandOf(project);
+  // As the capture resolves it (captureStepRecord): the report's command, else the verify command.
+  const captureCommand: string | undefined = project?.testReport?.command ?? verifyCommand;
+  // On the move a verify command gates (the final step, a boundary), it runs unless the suite is deferred to the parent.
+  const gateCommand = final && !toParent ? verifyCommand : undefined;
+  const runs: LeavePlan['runs'] = cap.runs ? 'suite' : gateCommand ? 'verify-command' : 'nothing';
+  // 36c5ca25: when the capture runs the verify command itself, its whole green closes the card - no second run.
+  // Only on the move that ENDS the flow (a mid-flow boundary runs the command after), with a report the capture
+  // is fenced by (no report, no state to hold the green to), and no command check running after the capture.
+  const closesOnCapture = cap.runs && !!gateCommand && gateCommand === captureCommand && leavingEndsFlow(sorted as any, index)
+    && !!project?.testReport && reportPathsOf(project.testReport).length > 0 && !stepHasCommandChecks(flow, step);
+  const thenCommand = cap.runs && gateCommand && !closesOnCapture ? gateCommand : undefined;
+  const root = item.id ? resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root : project?.projectRoot ?? null;
+  // NO_TREE refuses when something needs the capture: a check of THIS step, or the next step's BLOCKING
+  // checks reading its entry baseline (the gate's entry-baseline hold). An entry only non-blocking checks
+  // read lets the card move without one, and a verify command alone runs wherever it is spawned.
+  const refuses: LeavePlan['refuses'] = final && !toParent && !verifyCommand ? 'NO_VERIFY_COMMAND'
+    : !root && (cap.checks.length > 0 || (!!cap.entryBaseline && cap.nextNeedsPerTestEntry)) ? 'NO_TREE' : undefined;
+  const role = (sorted[index] as any)?.role;
+  const narrowing = runs === 'nothing' ? [] : [
+    ...(runs === 'suite' && project?.testReport?.relatedCommand && !['testing', 'refactoring'].includes(role) ? ['affected-tests'] : []),
+    'reuse',
+  ];
+  const held = cap.entryHeld ? `${next?.name} judges its tests against per-test results recorded as the card enters it, and this project records none (set a test report)` : undefined;
+  const q = (c?: string) => (c ? ` (\`${c}\`)` : '');
+  const why = cap.checks.length ? ` for ${cap.checks.join(', ')}` : '';
+  const entry = cap.entryBaseline ? `${why ? ' and' : ' for'} ${cap.entryBaseline}'s entry baseline` : '';
+  const smaller = narrowing.includes('affected-tests') ? ' The suite part may run only the tests the change affects, or reuse the last green run of an unchanged tree.'
+    : runs === 'suite' ? ' The suite part may reuse the last green run of an unchanged tree.' : '';
+  const dontPreRun = ` Don't run the full suite yourself first - run only the tests you are iterating on, then verify.`;
+  const parts: string[] = [];
+  if (refuses === 'NO_VERIFY_COMMAND') parts.push(`Leaving ${step} needs the project's verify command, and none is set: verify will refuse until one is (\`agenfk update-project <id> --verify-command "<cmd>"\`).`);
+  else if (refuses === 'NO_TREE') parts.push(`Leaving ${step} runs the suite, but this card has no tree to run it in: verify will refuse until the project root is set or the card has a worktree.`);
+  else if (runs === 'suite') {
+    parts.push(`Leaving ${step} runs the project's suite${q(captureCommand)} for you${why}${entry}${thenCommand ? `, then the project's verify command${q(thenCommand)}, which gates the close` : ''}${closesOnCapture ? '; it is the verify command, so its green closes the card (after a partial run, a reused green, or a tree that moved, the whole command runs too)' : ''}.${dontPreRun}${smaller}`);
+    if (toParent) parts.push(`The suite's green itself is deferred to the parent [${String(toParent.id).slice(0, 8)}] "${toParent.title}", whose final verify runs it.`);
+  } else if (runs === 'verify-command') parts.push(`Leaving ${step} runs the project's verify command${q(gateCommand)} for you, and the card moves only if it passes.${dontPreRun}`);
+  else if (toParent) parts.push(`Leaving ${step} runs no tests on this card: the project's suite is deferred to the parent [${String(toParent.id).slice(0, 8)}] "${toParent.title}", whose final verify runs it.`);
+  else parts.push(`Leaving ${step} runs no tests. If its exit criteria ask for passing tests, running them is yours${verifyCommand ? ` (\`${verifyCommand}\`, or only the tests your change affects)` : ''}.`);
+  if (held) parts.push(`${runs === 'suite' ? 'After that, verify' : 'Verify'} will hold the card: ${held}.`);
+  if (waiting && runs !== 'nothing') parts.push('It first waits for a person\'s approval on the board; the suite runs on the verify after it.');
+  return {
+    ...base, runs, checks: cap.checks, entryBaseline: cap.entryBaseline,
+    ...(runs !== 'nothing' && (runs === 'suite' ? captureCommand : gateCommand) ? { command: runs === 'suite' ? captureCommand : gateCommand } : {}),
+    ...(thenCommand ? { thenCommand } : {}),
+    ...(closesOnCapture ? { closesOnCapture: true } : {}),
+    ...(toParent ? { deferredTo: { id: toParent.id, title: toParent.title } } : {}),
+    waitsOnPerson: waiting, ...(held ? { held } : {}), ...(refuses ? { refuses } : {}), narrowing,
+    advice: parts.join(' '),
+  };
+}
+
+/** 2ebacb23: the mode leaving would run in on this tree, predicted read-only. */
+export interface LeavePrediction {
+  mode: 'reuse' | 'test-files' | 'affected-tests' | 'full' | 'sibling-green' | 'none';
+  /** The test files a partial run would be given, or (affected-tests) the changed files the related-tests command picks tests from. */
+  files?: string[];
+  /** Whose green a reuse would take. */
+  reusedFrom?: { itemId: string; step: string };
+  /** The sibling whose green of this tree a final verify would propagate. */
+  sibling?: { id: string; title: string };
+  /** On a final move with a capture: the verify command that runs after it. */
+  command?: { mode: 'full' | 'sibling-green'; sibling?: { id: string; title: string } };
+  advice: string;
+}
+
+/**
+ * 2ebacb23 - the dry run. The same choices captureStepRecord and the final gate
+ * make, asked without running or writing anything: the step's entry capture
+ * and lazyPlan for a partial run, reusableCapture for a green of this tree,
+ * siblingGreenOf on the move that ends the flow (only there does a sibling's
+ * green carry over). A final move with a capture predicts both legs. Single-
+ * flight sharing and a partial run falling back to the whole suite are only
+ * known while running.
+ */
+async function predictLeave(item: any, plan: LeavePlan, flow: { steps: any[] }, project: any): Promise<LeavePrediction> {
+  // The step's checks run before the final gate's refusal: a capture is still spent on a verify that then refuses.
+  if (plan.refuses === 'NO_TREE' || (plan.refuses && plan.runs !== 'suite')) return { mode: 'none', advice: `On this tree it would run nothing: verify refuses (${plan.refuses}).` };
+  if (plan.runs === 'nothing') return { mode: 'none', advice: 'On this tree it would run nothing.' };
+  const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
+  const sorted = sortedFlowSteps(flow as any);
+  const index = sorted.findIndex(st => st.name === item.status);
+  const commandLeg = async (command: string): Promise<{ mode: 'full' | 'sibling-green'; sibling?: { id: string; title: string } }> => {
+    if (item.parentId && leavingEndsFlow(sorted as any, index)) {
+      const { pass } = await siblingGreenOf(item, await storage.listItems({ parentId: item.parentId }), flow as TransitionFlow, project, root, command);
+      if (pass) return { mode: 'sibling-green', sibling: { id: pass.sibling.id, title: pass.sibling.title } };
+    }
+    return { mode: 'full' };
+  };
+  const sayCommand = (c: { mode: string; sibling?: { id: string; title: string } }, command: string) => c.mode === 'sibling-green'
+    ? `would not run \`${command}\`: [${String(c.sibling!.id).slice(0, 8)}] "${c.sibling!.title}" already verified this very tree, and its green carries over`
+    : `would run \`${command}\` in full`;
+  if (plan.runs === 'verify-command') {
+    const c = await commandLeg(plan.command!);
+    return { mode: c.mode, ...(c.sibling ? { sibling: c.sibling } : {}), advice: `On this tree it ${sayCommand(c, plan.command!)}.` };
+  }
+  // The capture leg. With no tree there is nothing to diff or reuse against (and the tree readers need one).
+  let capture: Omit<LeavePrediction, 'advice' | 'command'> & { said: string };
+  const setting: TestReportSetting | undefined = project?.testReport;
+  if (!root) capture = { mode: 'full', said: 'would try to run the suite with no tree to run it in (its result cannot be used)' };
+  else {
+  const entry = setting ? await entryCaptureOf(item, sorted, index) : null;
+  const lazy = setting && entry ? lazyPlan(root, setting, entry) : null;
+  if (lazy?.related) capture = { mode: 'affected-tests', files: [...lazy.changed], said: `would run only the tests the related-tests command picks for the changed files ${lazy.changed.join(', ')}` };
+  else if (lazy) capture = { mode: 'test-files', files: [...lazy.ran], said: `would run only the changed test file(s) ${lazy.ran.join(', ')}` };
+  else {
+    const reused = await reusableCapture(item, project, root, readCleanTreeSha(root, gitRun), treeStateOf(root, project), suiteStateOf(root, setting));
+    if (reused) {
+      const from = reused.reusedFrom ?? { itemId: item.id, step: reused.step };
+      capture = { mode: 'reuse', reusedFrom: { itemId: String(from.itemId ?? item.id), step: String(from.step ?? '') }, said: 'would run nothing new for the suite: a green of this very tree is reused' };
+    } else capture = { mode: 'full', said: 'would run the whole suite' };
+  }
+  }
+  const { said, ...rest } = capture;
+  if (plan.refuses) return { ...rest, advice: `On this tree it ${said}, and then verify refuses (${plan.refuses}): set a verify command first, and the suite is not spent for nothing.` };
+  // 36c5ca25: a partial run, or a green reused rather than run, cannot stand for the verify command: the whole command follows it.
+  const then = plan.thenCommand ?? (plan.closesOnCapture && rest.mode !== 'full' ? plan.command : undefined);
+  if (!then) return { ...rest, advice: `On this tree it ${said}${plan.closesOnCapture ? ', and its green closes the card' : ''}.` };
+  const c = await commandLeg(then);
+  return { ...rest, command: c, advice: `On this tree it ${said}, then ${sayCommand(c, then)}.` };
+}
+
+/** The leave plan for a card as it stands now, or null when it has no flow step to leave. */
+async function leavePlanOf(itemId: string): Promise<LeavePlan | null> {
+  const item: any = await storage.getItem(itemId);
+  if (!item) return null;
+  const project: any = await storage.getProject(item.projectId);
+  const flow = getActiveFlow(project?.flowId, await storage.listFlows());
+  const sorted = sortedFlowSteps(flow);
+  const index = sorted.findIndex(st => st.name === item.status);
+  if (index < 0 || index === sorted.length - 1) return null;
+  return leavePlanFor(item, flow, project);
+}
+
+app.get("/items/:id/leave-plan", limitBoardRoutes, asyncHandler(async (req: any, res: any) => {
+  const item = await storage.getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: 'Item not found' });
+  const plan = await leavePlanOf(req.params.id);
+  if (!plan) return res.status(409).json({ error: `${(item as any).status} is not a step of the project's flow that a card leaves` });
+  // 2ebacb23: ?predict=1 - the mode on this tree, asked read-only.
+  if (req.query.predict === '1' || req.query.predict === 'true') {
+    const project: any = await storage.getProject((item as any).projectId);
+    const flow = getActiveFlow(project?.flowId, await storage.listFlows());
+    return res.json({ ...plan, prediction: await predictLeave(item, plan, flow, project) });
+  }
+  res.json(plan);
+}));
+
+/** Each working step's plan, as a card with no parent deferral or pending approval would get it (flow show). */
+app.get("/projects/:id/flow/leave-plans", limitBoardRoutes, asyncHandler(async (req: any, res: any) => {
+  const project: any = await storage.getProject(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  const flow = getActiveFlow(project.flowId, await storage.listFlows());
+  const sorted = sortedFlowSteps(flow);
+  const plans: LeavePlan[] = [];
+  for (let i = 0; i < sorted.length - 1; i++) {
+    if (sorted[i].isAnchor && i !== 0) continue;
+    plans.push(await leavePlanFor({ id: '', projectId: project.id, status: sorted[i].name, stepRecords: [] }, flow, project));
+  }
+  res.json(plans);
+}));
+
+async function runStepGate(item: any, flow: { steps: any[] }, root: string | null, actor?: { client: string; sessionId: string; agentId: string | null } | null, agentReports?: Record<string, AgentReport>, opts?: { personFirst?: boolean; run?: ValidateRun; answers?: Record<string, string> }): Promise<StepGate> {
   const sorted = sortedFlowSteps(flow as any);
   const index = sorted.findIndex(st => st.name === item.status);
   const next = sorted[index + 1];
   const project: any = await storage.getProject(item.projectId);
-  const deferToCommand = deferredToCommand(flow, item.status, project);
+  const toParent = await parentToDeferTo(item, flow);
+  const deferToCommand = deferredToCommand(flow, item.status, project, toParent);
   const resolved = resolveStepChecks(flow.steps, item.status);
+  const disabled = disabledChecksOf(flow.steps, item.status);
   let capture: any = null;
   let captureError: string | undefined;
   let approval: { message: string; fingerprint?: string; command?: string } | undefined;
-  if (needsCapture(resolved.filter(c => !deferToCommand.includes(c.id))) || (next && needsEntryRecord(resolveStepChecks(flow.steps, next.name)))) {
-    const out = await captureStepRecord(item);
+  // 961f301d: waiting on a person, the slow checks wait too (see waitsOnPerson).
+  const waitingOn = opts?.personFirst ? awaitingPersonCommands(resolved, flow, project) : [];
+  const deferToApproval = opts?.personFirst
+    ? resolved.filter(c => c.applicable && (needsCapture([c]) || needsNetwork(c) || (c.id.startsWith('command-check:') && !waitingOn.includes(c)))).map(c => c.id)
+    : [];
+  const entryHoldDetail = entryHoldDetailOf(next);
+  // One read decides both the capture and the hold (review): a person's override of it, as the hold will honour it.
+  // 37a292a7: the same predicate the leave plan reads.
+  const holdOverride = entryHoldOverride(await storage.getItem(item.id), flow, entryHoldDetail, item.status);
+  const holdOverridden = !!holdOverride;
+  // 5a8d22e6: the next step's BLOCKING checks read a per-test entry baseline this project cannot record.
+  // 8876747c: held anyway, the next step's entry capture could only be an exit code - so it is not run.
+  // 37a292a7: one predicate with the leave plan (captureOnLeave), so what the agent was told is what runs.
+  const planned = captureOnLeave(flow, item.status, project, deferToCommand, { personFirst: opts?.personFirst, holdOverridden });
+  const { nextNeedsPerTestEntry, entryHeld } = planned;
+  if (planned.runs) {
+    const run = opts?.run;
+    const lazyOver = await entryCaptureOf(item, sorted, index);
+    const out = await captureStepRecord(item, { ...(run ? { onOutput: (chunk: string) => appendRunOutput(run, chunk), onPhase: (phase: VerifyPhase) => setRunPhase(run, phase) } : {}), lazyOver });
     if ('error' in out) {
       if (out.error === 'COMMAND_NEEDS_APPROVAL') {
         approval = { message: out.message, fingerprint: out.fingerprint, command: out.command };
       } else captureError = out.message;
     } else capture = out.record;
+    // beae41a0: the suite is done; what follows (command checks, fetches) is the step's checks again.
+    setRunPhase(run, { state: 'checking' });
+    // a36047ea: a whole run that only code changes caused, in a project that could have run fewer.
+    if (capture && !capture.lazy && !capture.reusedFrom && lazyOver && project?.testReport && project.projectRoot) {
+      const hint = relatedHint(capture.root ?? project.projectRoot, project.testReport, lazyOver);
+      if (hint) capture = { ...capture, relatedHint: hint };
+    }
   }
   // Refused before anything else runs: an unapproved repository command is not
   // a failed check, it is a question for the person.
-  if (approval) return { results: [], blocked: true, approval };
+  if (approval) return { results: [], blocked: true, approval, disabled, step: item.status };
   const records: any[] = ((await storage.getItem(item.id)) as any)?.stepRecords ?? [];
   const lastOf = (pred: (r: any) => boolean) => [...records].reverse().find(pred) ?? null;
   const prev = sorted[index - 1];
@@ -6231,33 +8349,44 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
 
   // In a shared worktree the tree holds other cards' work too (MULTI_AGENT.md):
   // what another active card has claimed is theirs, not this card's change.
-  const others: any[] = (await storage.listItems({ projectId: item.projectId, limit: 1_000_000 } as any)) as any;
-  /*
-   * Only claims from the SAME tree. A card in its own worktree cannot have
-   * touched a file in this one, so its claims are not "foreign work" here —
-   * subtracting them would hide changes this card actually made.
-   */
-  const scopeOf = claimScopes([...others, item]);
-  const mineScope = scopeOf.get(item.id);
-  const foreignClaims = others
-    .filter(o => o.id !== item.id && Array.isArray(o.claims) && stillHolds(String(o.status)))
-    .filter(o => scopeOf.get(o.id) === mineScope)
-    .flatMap(o => o.claims as string[]);
-  const reportPath = typeof project?.testReport?.reportPath === 'string' ? project.testReport.reportPath : null;
+  // Only cards in THIS tree (aaa01834): a claim in another worktree says nothing about files here.
+  const { holders: claimHolders, treeOf: claimTree } = await claimHoldersIn(item.projectId, (project as any)?.projectRoot);
+  const hereTree = claimTree(item);
+  // 5b48b96b review: not the card's ancestors, and not a card that never left a step (foreignClaimsFor).
+  const ancestorIds = new Set<string>();
+  for (let p = item.parentId, hops = 0; p && hops < 64 && !ancestorIds.has(p); hops++) {
+    ancestorIds.add(p);
+    p = ((await storage.getItem(p)) as any)?.parentId ?? null;
+  }
+  const foreignClaims = foreignClaimsFor(item, claimHolders, { itemTree: hereTree, ancestorIds });
+  const reportPath = reportPathsOf(project?.testReport)[0] ?? null;
   // People's approvals and overrides of THIS step (CGLAB-382); a rollback over it dropped older ones.
   const here = records.filter(r => r?.step === item.status);
   const approvals = approvalsAt({ stepRecords: here }, item.status);
   const inheritedApprovals = resolved.some(c => c.id === 'human-approval' && c.applicable) ? await ancestorApprovals(item, item.status) : [];
-  const overrides: Record<string, { id: string; by: string; at: string; reason: string }> = {};
+  const overrides: Record<string, { id: string; by: string; at: string; reason: string; detail?: string }> = {};
   // On a step that asks for a passkey, only signed overrides lift a check.
   const signedOnly = stepWantsPasskey(flow as Flow, item.status);
   for (const r of here) if (r.kind === 'override' && typeof r.check === 'string' && (!signedOnly || r.authority === 'passkey')) overrides[r.check] = { id: String(r.id), by: String(r.by ?? 'board'), at: String(r.at), reason: String(r.reason ?? ''), ...(typeof r.detail === 'string' ? { detail: r.detail } : {}) };
-  const review = resolved.some(c => c.id === 'review-record' && c.applicable) ? { ...(await reviewEvidence(item, root)), agenfkVersion: getCurrentVersion() } : undefined;
+  const review = resolved.some(c => (c.id === 'review-record' || c.id === 'fixes-reviewed') && c.applicable) ? { ...(await reviewEvidence(item, root)), agenfkVersion: getCurrentVersion() } : undefined;
   // Whoever is advancing the card now is an author too, though no step record carries them yet.
   if (review && actor && !review.authors.some((a: any) => a.sessionId === actor.sessionId && a.agentId === (actor.agentId ?? null))) {
     review.authors.push({ client: actor.client, sessionId: actor.sessionId, agentId: actor.agentId ?? null });
   }
+  // 1049ce52: the upstream is fetched only when a check reads it, and not while a person is waited on.
+  const upstream = root && resolved.some(c => c.applicable && needsNetwork(c) && !deferToApproval.includes(c.id)) ? await readUpstream(root) : undefined;
+  // efcacdeb: command checks run here, before the engine, in the card's tree.
+  const commandChecks = resolved.filter(c => c.applicable && c.id.startsWith('command-check:') && !deferToApproval.includes(c.id));
+  const commandResults = commandChecks.length
+    ? await judgeCommandChecks(commandChecks, {
+      root, origin: (flow as any).origin, approvals: Array.isArray(project?.commandApprovals) ? project.commandApprovals : [], timeoutMs: verifyMaxMs(),
+      // 3ffc9651: a pass is shared by this project's cards at the same state of this tree.
+      ...(root ? { share: { scope: `${item.projectId}\0${root}`, itemId: item.id, state: () => commandStateOf(root, project) } } : {}),
+    })
+    : undefined;
   const outcome = evaluateChecks(resolved, {
+    ...(commandResults ? { commandResults } : {}),
+    ...(agentReports ? { agentReports } : {}),
     review,
     root,
     git: args => gitRun.run(args),
@@ -6265,10 +8394,15 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     cardBranch: await branchOfCard(item),
     cardKeys: await keysOfCard(item),
     testPaths: Array.isArray(project?.testReport?.surface) ? project.testReport.surface : [],
-    ignoredPaths: reportPath && root ? [insideRoot(root, path.resolve(root, reportPath)) ?? reportPath] : [],
+    ignoredPaths: reportPath && root ? reportsOwned(root, project?.testReport) : [],
     foreignClaims,
     deferToCommand,
+    ...(deferToApproval.length ? { deferToApproval } : {}),
+    ...(upstream ? { upstream } : {}),
+    ...(toParent ? { deferredToParent: { id: toParent.id, title: toParent.title } } : {}),
     children: (await storage.listItems({ parentId: item.id } as any)) as any,
+    ...(resolved.some(c => c.applicable && c.id === 'tree-warnings') ? { treeWarnings: await treeWarningsOf(item) } : {}),
+    ...(resolved.some(c => c.applicable && c.id === 'tests-added-late') ? { descendantSurfaces: await descendantSurfacesOf(item) } : {}),
     capture,
     captureError,
     entry: prev ? lastOf(r => r?.kind === 'capture' && r.step === prev.name) : null,
@@ -6280,19 +8414,140 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     inheritedApprovals,
     overrides,
   });
+  /*
+   * CGLAB-420: a warning on the step that writes tests went unanswered - a test
+   * that could not fail went on to be implemented, and nobody said why. Here a
+   * failing warning holds the card until the agent answers it (or a person
+   * passes it on the board); the answer goes on the record for the reviewer.
+   */
+  // Every answer given to a failing check is kept, on any step, for the reviewer and the PR.
+  for (const r of outcome.results) {
+    const answer = opts?.answers?.[r.id];
+    if (answer && (r.outcome === 'fail' || r.outcome === 'unavailable')) r.answer = answer;
+  }
+  if ((sorted[index] as any)?.role !== 'refactoring') {
+    let lifted = false;
+    for (const r of outcome.results) {
+      const missing: unknown = (r as any).meta?.missing;
+      if (r.id === 'red-set-passes-by-name' && r.outcome === 'fail' && r.blocking && !r.overridden && Array.isArray(missing) && missing.length) {
+        r.detail = `${r.detail}. The red tests are this card's own specification: renaming or removing them is not answered by the agent. Put them back, or a person can override this check on the board.`;
+      }
+      if (!ANSWERABLE_REMOVALS.has(r.id) || r.outcome !== 'fail' || !r.blocking || r.overridden) continue;
+      if (r.answer) { r.blocking = false; (r as any).answeredRemoval = true; lifted = true; }
+      else r.detail = `${r.detail}. If these tests pinned behaviour this card changes, say why they go: agenfk verify ${item.id} --check-note ${r.id}="<why they go>" --evidence "..." (MCP: validate_progress with checkAnswers); the reviewer and the PR will see it.`;
+    }
+    if (lifted && !outcome.results.some(r => r.blocking)) outcome.blocked = false;
+  }
+  if ((sorted[index] as any)?.role === 'test-authoring') {
+    for (const r of outcome.results) {
+      // Only the warning that marks a test which cannot fail must be answered: red on a missing
+      // symbol is the normal path of TDD, and asking every time trains rubber stamps.
+      if (!ANSWER_REQUIRED.has(r.id) || r.severity !== 'warn' || r.outcome !== 'fail' || r.overridden || r.answer) continue;
+      const held = `${r.detail} Answer it before the card leaves this step - say why it is fine, or what you changed: agenfk verify ${item.id} --check-note ${r.id}="<your answer>" --evidence "..." (MCP: validate_progress with checkAnswers).`;
+      // A person's pass counts for the failure they saw, not a later, different one.
+      const person = overrides[r.id];
+      if (person && person.detail === held) r.overridden = person;
+      else { r.blocking = true; r.detail = held; outcome.blocked = true; }
+    }
+  }
+  /*
+   * 5a8d22e6 review: the step being ENTERED judges its tests against the
+   * per-test results recorded now. With no test report there are none, and
+   * setting one later cannot bring them back - those checks would only ever
+   * warn on this card. So the card is held HERE, where setting the report and
+   * verifying again records a baseline its next step can use.
+   */
+  // Only for checks that would BLOCK there: a warn-only one never held a card (review).
+  if (!opts?.personFirst && next && nextNeedsPerTestEntry && !project?.testReport
+    && (capture ? capture.available === false && !capture.parseError : !captureError)) {
+    const detail = entryHoldDetail;
+    // A person can still pass it with a reason (a runner that cannot write a report): no card is stranded.
+    const overridden = holdOverride ? overrides[ENTRY_BASELINE] ?? { id: String(holdOverride.id), by: String(holdOverride.by ?? 'board'), at: String(holdOverride.at), reason: String(holdOverride.reason ?? '') } : undefined;
+    outcome.results.push({
+      id: ENTRY_BASELINE, step: item.status, source: 'universal', severity: 'block', params: {}, outcome: 'unavailable', blocking: !overridden, detail,
+      ...(overridden ? { overridden } : { meta: { code: 'NO_TEST_REPORT' } }),
+    } as any);
+    if (!overridden) outcome.blocked = true;
+  }
+  /*
+   * d26832d6 #2: the project DOES record per-test results, but the run taken
+   * now as the next step's baseline could not be used (it dirtied its own
+   * tree, the report is missing or unreadable). Letting the card go left the
+   * next step's red/green checks with nothing to compare against. Held here,
+   * where fixing the cause and verifying again records one.
+   */
+  const unusableEntry = capture ? capture.available === false && !!capture.parseError : !!captureError;
+  if (!opts?.personFirst && next && nextNeedsPerTestEntry && project?.testReport && unusableEntry) {
+    const why = capture?.parseError ?? captureError;
+    const detail = `${next.name} judges its tests against the per-test results recorded as the card enters it, and this run's could not be used: ${why}. Fix that and verify again.`;
+    // Only an override given against THIS verdict lifts it (d26832d6 review): one
+    // for "this runner writes no report", or for another cause, does not.
+    const given = overrides[ENTRY_BASELINE];
+    const overridden = given && given.detail === detail ? given : undefined;
+    outcome.results.push({
+      id: ENTRY_BASELINE, step: item.status, source: 'universal', severity: 'block', params: {}, outcome: 'unavailable', blocking: !overridden, detail,
+      ...(overridden ? { overridden } : { meta: { code: 'CAPTURE_UNUSABLE' } }),
+    } as any);
+    if (!overridden) outcome.blocked = true;
+  }
   const at = new Date().toISOString();
   const latest: any = await storage.getItem(item.id);
   const made = outcome.blocked ? [] : Object.entries(outcome.produced).map(([name, value]) => ({ step: item.status, kind: 'record', name, value, at, head: null, clean: false }));
   await storage.updateItem(item.id, {
-    lastChecks: { step: item.status, at, blocked: outcome.blocked, results: outcome.results },
+    lastChecks: { step: item.status, at, blocked: outcome.blocked, results: outcome.results, ...(disabled.length ? { disabled } : {}) },
+    checkHistory: withHistory(latest, {
+      kind: 'verify', step: item.status, at, blocked: outcome.blocked, ...(disabled.length ? { disabled } : {}),
+      results: outcome.results.map(r => ({ id: r.id, outcome: r.outcome, blocking: r.blocking, severity: r.severity, detail: String(r.detail ?? '').slice(0, 500), ...(r.overridden ? { overridden: true } : {}), ...(r.agentReported ? { agentReported: true } : {}) })),
+    }),
     ...(made.length ? { stepRecords: [...(latest?.stepRecords ?? []), ...made] } : {}),
   } as any);
-  return { results: outcome.results, blocked: outcome.blocked };
+  return { results: outcome.results, blocked: outcome.blocked, disabled, step: item.status, ...(capture ? { capture } : {}), ...(toParent ? { deferredTo: toParent.id } : {}) };
 }
 
 /** Refuse a transition on the step's checks, in verify's failure shape plus `checks[]`. */
+/**
+ * 5a8d22e6 — checks held up only because the project records no per-test
+ * results: the agent's to fix, not a person's to override. One line, with the
+ * command that fixes it where the project's runner makes it certain.
+ */
+async function noTestReportFix(item: any, gate: StepGate): Promise<{ line: string; fix: string | null } | null> {
+  if (!gate.results.some(r => r.blocking && (r as any).meta?.code === 'NO_TEST_REPORT')) return null;
+  const project: any = await storage.getProject(item.projectId);
+  const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
+  let scripts: Record<string, string> = {};
+  try { if (root) scripts = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).scripts ?? {}; } catch { /* not a node project */ }
+  const s = suggestTestReport(String(finalVerifyCommandOf(project) ?? ''), scripts);
+  const fix = s ? `agenfk update-project ${item.projectId} --test-report-format ${s.format} --test-report-command "${s.command.replace(/(["\\$`])/g, '\\$1')}" --test-report-path ${s.reportPath}` : null;
+  // check-ignore exits 1 for "not ignored"; anything else (not a repository, git failed) says nothing.
+  const ignored = !(s && root) || spawnSync('git', ['-C', root, 'check-ignore', '-q', s.reportPath], { stdio: 'ignore', timeout: 5000 }).status !== 1;
+  const line = fix
+    ? `🔧 NO_TEST_REPORT: per-test results are needed (by these checks, or by the step the card is entering) and this project records none. Set a test report, then run the same agenfk verify again:\n   ${fix}${ignored ? '' : `\n   ⚠️ ${s!.reportPath} is not ignored by git: add it to .gitignore, or every report leaves the tree dirty.`}`
+    : `🔧 NO_TEST_REPORT: per-test results are needed (by these checks, or by the step the card is entering) and this project records none. Set a test report for its runner - agenfk update-project ${item.projectId} --test-report-format vitest-json|junit-xml --test-report-command "<a command that writes the report>" --test-report-path <where it is written> - then run the same agenfk verify again.`;
+  return { line, fix };
+}
+
+/** CGLAB-428: the line a verify reply carries for the checks the hub switched off, or ''. */
+function disabledLine(gate: StepGate): string {
+  if (!gate.disabled?.length) return '';
+  return `🔕 Switched off by your org's hub on this step (not run): ${gate.disabled.map(d => `${d.id} [${d.source}]`).join(', ')}`;
+}
+
+/** cf6941e0: a check that holds the card for a PERSON - the step's approval, or a command awaiting its approval. */
+const waitsForPerson = (r: any): boolean => r?.id === 'human-approval' || (String(r?.id ?? '').startsWith('command-check:') && r?.meta?.waiting?.kind === 'command-approval');
 async function refuseOnChecks(res: any, item: any, gate: StepGate) {
-  const text = formatCheckResults(gate.results);
+  // cf6941e0: held by a person alone, the verify waits on them (the CLI waits for the approval): list it so.
+  const blocking = gate.results.filter((r: any) => r.blocking);
+  if (blocking.length && blocking.every(waitsForPerson)) {
+    awaitingPerson.set(item.id, { step: item.status, since: new Date(), projectId: item.projectId, title: item.title });
+    // beae41a0: its expiry is pushed too, or every board keeps showing it.
+    const expiry = setTimeout(notifyVerifyRuns, AWAITING_PERSON_TTL_MS + 50);
+    if (typeof expiry.unref === 'function') expiry.unref();
+  } else awaitingPerson.delete(item.id);
+  notifyVerifyRuns();
+  const ran = describeCapture(gate.capture);
+  const off = disabledLine(gate);
+  const text = `${ran ? `${ran}\n` : ''}${formatCheckResults(gate.results)}${off ? `\n${off}` : ''}`;
+  const noReport = await noTestReportFix(item, gate);
   const fresh: any = await storage.getItem(item.id);
   await storage.updateItem(item.id, { comments: [...(fresh?.comments ?? []), { id: uuidv4(), author: 'ValidateTool', content: `### Checks FAILED\n\n**Step**: ${item.status} (advance refused — the card stays here)\n\n${text}`, timestamp: new Date() }] });
   io.emit('items_updated');
@@ -6304,8 +8559,9 @@ async function refuseOnChecks(res: any, item: any, gate: StepGate) {
   });
   return res.status(422).json({
     status: item.status,
-    message: `❌ Checks failed: the card cannot leave ${item.status} yet.\n\n${text}${staysOn(item.status)}`,
+    message: `❌ Checks failed: the card cannot leave ${item.status} yet.\n\n${noReport ? `${noReport.line}\n\n` : ''}${text}${staysOn(item.status)}`,
     checks: gate.results,
+    ...(noReport ? { error: 'NO_TEST_REPORT', fix: noReport.fix } : {}),
   });
 }
 
@@ -6319,15 +8575,19 @@ function runRecorder(run: ValidateRun) {
       run.itemStatus = payload?.status;
       run.message = payload?.message;
       if (Array.isArray(payload?.checks)) run.checks = payload.checks;
+      // 5a8d22e6: a named cause and its fix reach whoever follows the run, not only a sync caller.
+      if (typeof payload?.error === 'string') (run as any).error = payload.error;
+      if (payload && 'fix' in payload) (run as any).fix = payload.fix;
       // Keep the live full output when we have it; fall back to the preview.
       if (!run.output && payload?.output) run.output = payload.output;
       run.finishedAt = new Date();
+      notifyVerifyRuns();
       return this;
     },
   };
 }
 
-async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string, asyncRun?: ValidateRun, opts?: { gate?: StepGate; run?: ValidateRun; actor?: ReturnType<typeof parseActor> }) {
+async function handleValidateProgress(itemId: string, command: string | undefined, res: any, evidence?: string, asyncRun?: ValidateRun, opts?: { gate?: StepGate; run?: ValidateRun; actor?: ReturnType<typeof parseActor>; agentReports?: Record<string, AgentReport>; answers?: Record<string, string>; joined?: boolean }) {
   const item = await storage.getItem(itemId);
   if (!item) return res.status(404).json({ error: "Item not found" });
 
@@ -6378,31 +8638,93 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     return res.status(400).json({ error: `validate_progress requires item to be in a flow step. Current status '${item.status}' is not part of the active flow '${activeFlow.name}'.` });
   }
 
+  // CGLAB-420: an answer must name one of THIS step's checks.
+  const answered = Object.keys(opts?.answers ?? {});
+  if (answered.length && !opts?.gate) {
+    const ids = resolveStepChecks(activeFlow.steps, item.status).map(c => c.id);
+    const unknown = answered.filter(a => !ids.includes(a));
+    if (unknown.length) return res.status(400).json({ error: `Step ${item.status} has no check ${unknown.map(n => `'${n}'`).join(', ')} to answer. Its checks: ${ids.join(', ') || 'none'}.` });
+  }
+  // efcacdeb: a report must name one of THIS step's agent checks.
+  const reported = Object.keys(opts?.agentReports ?? {});
+  if (reported.length && !opts?.gate) {
+    const here = resolveStepChecks(activeFlow.steps, item.status).filter(c => c.id.startsWith('agent-check:')).map(c => c.params.name);
+    const unknown = reported.filter(n => !here.includes(n));
+    if (unknown.length) {
+      return res.status(400).json({ error: `Step ${item.status} has no agent check named ${unknown.map(n => `'${n}'`).join(', ')}. Its agent checks: ${here.length ? here.join(', ') : 'none'}.` });
+    }
+  }
+
   /*
    * CGLAB-380: the step's checks, before anything moves. A capture runs a
    * whole suite, so an async verify answers 202 first and runs the checks -
    * and then the transition - in the background run, exactly as it does the
    * command; a check that needs no capture only reads git and runs inline.
    */
+  /*
+   * aaa01834: the move that ENDS the flow is refused while staged files lie
+   * outside the card's claims and no other card in this tree claims them. The
+   * close commit takes only claimed files, so they would stay staged after
+   * DONE with nobody owning them. Refused with the card where it is.
+   *
+   * Unless a WORKING card in the same tree claims nothing (review): it is
+   * authorized everywhere, so the file may be its work, and both remedies the
+   * refusal offers would take that work from it. Then it is a note.
+   *
+   * Checked first - before the step's checks, which may run a whole suite -
+   * and again just before the move, because the index can change meanwhile.
+   */
+  const anchorNames = new Set(sorted.filter((st: any) => st.isAnchor).map((st: any) => String(st.name)));
+  const isWorkingStatus = (st: string) => !anchorNames.has(st);
+  const endsFlowHere = leavingEndsFlow(sorted as any, currentFlowStep.index);
+  const checkStrays = async (r0: any): Promise<{ refused: true } | { refused: false; res: any }> => {
+    if (!endsFlowHere) return { refused: false, res: r0 };
+    const { strays, claimless } = await strayStagedFor(item, (project as any)?.projectRoot, isWorkingStatus);
+    if (!strays.length) return { refused: false, res: r0 };
+    if (claimless.length) return { refused: false, res: withNote(r0, `⚠️ ${describeUnowned(strays, claimless)}`) };
+    r0.status(422).json({ status: item.status, message: `❌ The card cannot close yet. ${describeStrays(item, strays)}${staysOn(item.status)}` });
+    return { refused: true };
+  };
+  // A gate judged on another step answers nothing here: the card moved (a rollback onto a step a person approves, say).
+  if (opts?.gate && opts.gate.step !== item.status) {
+    return res.status(409).json({ status: item.status, error: 'CARD_MOVED', message: `⚠️ The card moved (${opts.gate.step} → ${item.status}) while its verify waited; nothing was applied. Run verify again from ${item.status}.${nowOn(item.status)}` });
+  }
+  if (!opts?.gate) {
+    const early = await checkStrays(res);
+    if (early.refused) return;
+    res = early.res;
+  }
+
   let gate = opts?.gate;
+  /** What a pass judged, for its card comment (d26832d6 #15). */
+  let passedChecks = '';
   if (!gate && !(currentFlowStep.step.isAnchor && currentFlowStep.index !== 0)) {
+    // 961f301d: a person's missing approval is answered first, inline, before anything slow.
+    if (await waitsOnPerson(item, activeFlow, project)) {
+      const waiting = await runStepGate(item, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { personFirst: true, answers: opts?.answers });
+      if (waiting.blocked) return refuseOnChecks(res, item, waiting);
+    }
     const nextName = sorted[currentFlowStep.index + 1]?.name;
     const deferred = deferredToCommand(activeFlow, item.status, project);
     const slow = needsCapture(resolveStepChecks(activeFlow.steps, item.status).filter(c => !deferred.includes(c.id)))
-      || (!!nextName && needsEntryRecord(resolveStepChecks(activeFlow.steps, nextName)));
+      || (!!nextName && needsEntryRecord(resolveStepChecks(activeFlow.steps, nextName)))
+      // A fetch may take seconds: never inside the request either (1049ce52 review).
+      || resolveStepChecks(activeFlow.steps, item.status).some(c => c.applicable && needsNetwork(c))
+      // A command check may run for minutes: never inside the request (efcacdeb).
+      || resolveStepChecks(activeFlow.steps, item.status).some(c => c.applicable && c.id.startsWith('command-check:'));
     if (slow && asyncRun) {
       const run = asyncRun;
-      (run as any).started = true;
       res.status(202).json({
         runId: run.runId,
         command: null,
         message: `⏳ Step checks and validation running in background (run ${run.runId.slice(0, 8)}…). Follow with GET /items/validate-runs/${run.runId}.`,
       });
-      const recorder = runRecorder(run);
+      markRunStarted(run, item.status, item);
+      const recorder = await withReviewBrief(runRecorder(run), itemId, { done: () => !!run.finishedAt });
       void (async () => {
         const fresh: any = await storage.getItem(itemId);
         if (!fresh) return recorder.status(404).json({ status: item.status, message: '❌ Item was deleted while the checks ran.' });
-        const g = await runStepGate(fresh, activeFlow, effectiveRoot ?? null, opts?.actor);
+        const g = await runStepGate(fresh, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { run, answers: opts?.answers });
         if (g.approval) {
           return recorder.status(400).json({
             error: 'COMMAND_NEEDS_APPROVAL', message: g.approval.message,
@@ -6410,7 +8732,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
           });
         }
         if (g.blocked) return refuseOnChecks(recorder, fresh, g);
-        return handleValidateProgress(itemId, command, recorder, undefined, undefined, { gate: g, run, actor: opts?.actor });
+        return handleValidateProgress(itemId, command, recorder, undefined, undefined, { gate: g, run, actor: opts?.actor, agentReports: opts?.agentReports, answers: opts?.answers });
       })()
         .catch((err: any) => {
           run.status = 'failed';
@@ -6419,10 +8741,12 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         })
         .finally(() => {
           if (activeValidateRunByItem.get(itemId) === run.runId) activeValidateRunByItem.delete(itemId);
+          io.emit('items_updated');
+          notifyVerifyRuns();
         });
       return;
     }
-    gate = await runStepGate(item, activeFlow, effectiveRoot ?? null, opts?.actor);
+    gate = await runStepGate(item, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { answers: opts?.answers });
     if (gate.approval) {
       return res.status(400).json({
         error: 'COMMAND_NEEDS_APPROVAL', message: gate.approval.message,
@@ -6437,8 +8761,16 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   }
   if (gate) {
     (exitRecord as any).checks = gate.results;
+    if (gate.disabled.length) (exitRecord as any).disabled = gate.disabled;
+    // d26832d6 #9/#15: a pass says what it judged - every check, soft and warn
+    // included, and whether the suite ran - on the reply AND on the card.
+    const ran = describeCapture(gate.capture);
     const warned = gate.results.filter(r => !r.blocking && (r.outcome === 'fail' || r.outcome === 'unavailable'));
-    if (warned.length) res = withNote(res, `⚠️ Check warnings (not blocking):\n${formatCheckResults(warned)}`);
+    const off = disabledLine(gate);
+    passedChecks = `${ran ? `${ran}\n` : ''}${formatCheckResults(gate.results)}${off ? `\n${off}` : ''}`;
+    if (gate.results.length || ran || off) res = withNote(res, `Checks:\n${passedChecks}`, { warning: false });
+    // The warnings are in the check list already: in `warning` too, never printed twice.
+    if (warned.length) res = withNote(res, `⚠️ Check warnings (not blocking):\n${formatCheckResults(warned)}`, { message: false });
   }
 
   /*
@@ -6455,6 +8787,13 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const mode = stepCommitsOnLeave(sorted as any, item.status);
     if (!mode) return { res: r0 };
     const stepMessage = `step(${item.status}): ${item.title} [${item.id}]`;
+    // Read before the commit: afterwards the claimed files are gone from the index.
+    const { strays, claimless } = await strayStagedFor(item, (project as any)?.projectRoot, isWorkingStatus);
+    if (strays.length && !claimless.length && mode === 'required') {
+      r0.status(422).json({ status: item.status, message: `❌ This step requires a commit of the card's work when it leaves. ${describeStrays(item, strays)}${staysOn(item.status)}` });
+      return { refused: true };
+    }
+    const strayNote = strays.length ? `\n⚠️ ${claimless.length ? describeUnowned(strays, claimless) : describeStrays(item, strays)}` : '';
     const r = await autoGitCommit(item as any, (project as any)?.projectRoot, { message: stepMessage });
     const SHOWN = 20;
     const loose = r.unstaged.length
@@ -6462,7 +8801,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       : '';
     if (r.committed) {
       (exitRecord as any).commit = r.sha ?? null;
-      return { res: withNote(r0, `📌 Step commit ${r.sha ? r.sha.slice(0, 12) : ''}: "${stepMessage}".${loose}`) };
+      return { res: withNote(r0, `📌 Step commit ${r.sha ? r.sha.slice(0, 12) : ''}: "${stepMessage}".${loose}${strayNote}`) };
     }
     // Worded like the close commit's outcomes, about the step.
     const why = r.outcome === 'nothing-staged'
@@ -6473,7 +8812,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       r0.status(422).json({ status: item.status, message: `❌ This step requires a commit of the card's work when it leaves, and none was made: ${why}${loose}${staysOn(item.status)}` });
       return { refused: true };
     }
-    return { res: withNote(r0, `${r.outcome === 'failed' ? '❌' : '⚠️'} No step commit: ${why}${loose}`) };
+    return { res: withNote(r0, `${r.outcome === 'failed' ? '❌' : '⚠️'} No step commit: ${why}${loose}${strayNote}`) };
   };
 
   if (currentFlowStep.step.isAnchor) {
@@ -6486,7 +8825,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     }
     const exitCriteria = (currentFlowStep.step as any).exitCriteria as string | undefined;
     const exitNote = exitCriteria ? `\n**Exit criteria acknowledged**: ${exitCriteria}` : '';
-    const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED\n\n**Step**: ${item.status} → ${codingStep.name}${exitNote}`, timestamp: new Date() };
+    const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED\n\n**Step**: ${item.status} → ${codingStep.name}${exitNote}${passedChecks ? `\n\n${passedChecks}` : ''}`, timestamp: new Date() };
     const leftTodo = await commitOnLeave(res);
     if (leftTodo.refused) return;
     res = leftTodo.res;
@@ -6498,7 +8837,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const codingStepCriteria = (codingStep as any).exitCriteria as string | undefined;
     const codingCommitNote = commitOnLeaveNote(codingStep.name, stepCommitsOnLeave(sorted as any, codingStep.name));
     const mandatoryNote = (codingStepCriteria ? criteriaBanner(codingStep.name, codingStepCriteria) : '') + (codingCommitNote ? `\n\n${codingCommitNote}` : '');
-    return res.json({ status: codingStep.name, message: `✅ Validation Passed!\n\nItem moved to ${codingStep.name}.${mandatoryNote}${nowOn(codingStep.name)}` });
+    const leave = await nextLeaveNote(itemId);
+    return res.json({ status: codingStep.name, message: `✅ Validation Passed!\n\nItem moved to ${codingStep.name}.${mandatoryNote}${leave.text}${nowOn(codingStep.name)}`, ...leave.field });
   }
 
   const nextStep = sorted[currentFlowStep.index + 1];
@@ -6515,7 +8855,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // Exit criteria of the step the item is moving INTO — returned as mandatory agent instructions
   const nextStepCriteria = (nextStep as any)?.exitCriteria as string | undefined;
   const nextCommitNote = commitOnLeaveNote(nextStatus, stepCommitsOnLeave(sorted as any, nextStatus));
-  const mandatoryInstructions = ((nextStatus !== Status.DONE && nextStepCriteria)
+  // 9e26970a: a close has no next step to work, whatever its exit step is named (endsFlowHere is endsFlow, read before it is declared).
+  const mandatoryInstructions = ((!endsFlowHere && nextStepCriteria)
     ? criteriaBanner(nextStatus, nextStepCriteria)
     : '') + (nextCommitNote ? `\n\n${nextCommitNote}` : '');
   const branchRef = (item as any).branchName || 'HEAD';
@@ -6533,8 +8874,12 @@ async function handleValidateProgress(itemId: string, command: string | undefine
    */
   const UNSTAGED_SHOWN = 20;
   const describePush = (result?: AutoGitCommitResult): string => {
-    if (nextStatus !== Status.DONE) return '';
-    const paths = result?.unstaged ?? [];
+    // 9e26970a: the close commit is made on every move that ends the flow, whatever its exit step is named.
+    if (!endsFlow) return '';
+    // The configured report (and a directory holding only it) is agenfk's own,
+    // never the card's work to stage (d26832d6 #3).
+    const owned = effectiveRoot ? reportOwnedOf(effectiveRoot, project) : [];
+    const paths = (result?.unstaged ?? []).filter(f => { const c = f.replace(/\/$/, ''); return !owned.some(o => c === o || c.startsWith(`${o}/`)); });
     const shown = paths.slice(0, UNSTAGED_SHOWN);
     const left = paths.length
       ? `\n\n⚠️ **Not committed** — these were not staged, so the close commit did not carry them:\n`
@@ -6638,6 +8983,37 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // note, and the CLI prints both.
   const bareRes = res;
   if (commandNote) res = withNote(res, commandNote);
+  /*
+   * 281adef0: a flow with verifyAt 'parent' runs the project's suite once, at
+   * the top-level card. A card whose parent is still OPEN closes here without
+   * it - the parent's own final verify runs the suite over everything its
+   * children did. A card whose parent has already finished runs its own:
+   * nobody else would, and nothing may land unverified. No PASSED test is
+   * recorded for a run that did not happen.
+   */
+  // The gate's decision stands: if it judged the suite as the card's own, the close runs it.
+  // Asked again even when it deferred - the parent may have started its own verify since.
+  const deferTo = isFinalStep && (!gate || gate.deferredTo) ? await parentToDeferTo(item, activeFlow) : null;
+  if (deferTo) {
+    // The re-entry from a background gate skipped the early stray check: ask here too.
+    const strays = await checkStrays(res);
+    if (strays.refused) return;
+    res = strays.res;
+    const note = `The project's suite was not run for this card: the flow runs it once, at the top-level card, and [${deferTo.id.substring(0, 8)}] "${deferTo.title}" is still open. Its verify runs the suite over everything its children did, or defers it again to its own parent.`;
+    const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (suite deferred to the parent)\n\n**Step**: ${item.status} → ${nextStatus}\n\n${note}`, timestamp: new Date() };
+    const left = await commitOnLeave(res);
+    if (left.refused) return;
+    res = left.res;
+    // The marker the roll-up reads: this parent owes a suite run, whatever its flow says later.
+    const updated = await storage.updateItem(itemId, { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment], suiteDeferredTo: deferTo.id, ...(isExitStep ? { failureCount: 0 } : {}) } as any);
+    recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
+    io.emit('items_updated');
+    if (updated.parentId) await syncParentStatus(updated.parentId);
+    const gitResult = process.env.NODE_ENV !== 'test' && !process.env.VITEST
+      ? await autoGitCommit(updated, (project as any)?.projectRoot)
+      : undefined;
+    return res.json({ status: nextStatus, message: `✅ Validation Passed (suite deferred to the parent)!\n\n${note}\nItem moved to ${nextStatus}.${describePush(gitResult)}${nowOn(nextStatus)}` });
+  }
 
   if (isFinalStep && !resolvedCommand) {
     return res.status(400).json({
@@ -6647,10 +9023,73 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   }
   const exitCriteria = (currentFlowStep.step as any).exitCriteria as string | undefined;
 
+  /*
+   * A close on a green already in hand - a sibling's of this tree, or this
+   * move's own capture of the same command (36c5ca25) - without spawning the
+   * command again. The same move a passing run makes: strays asked again (a
+   * re-entry skipped the early check, and a close may have happened since),
+   * the green recorded against the tree it belongs to, the close commit.
+   */
+  const closeOnGreen = async (r0: any, how: { how: string; output: string; recordOutput: string; note: string; green: Record<string, unknown>; stampAt?: string | null }) => {
+    const strays = await checkStrays(r0);
+    if (strays.refused) return;
+    const r1 = strays.res;
+    const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (${how.how})\n\n${how.note}`, timestamp: new Date() };
+    const testId = uuidv4();
+    const updates: any = { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment], tests: [...testRecords(item.tests), { id: testId, command: resolvedCommand, output: how.recordOutput, status: 'PASSED', executedAt: new Date(), ...how.green }], ...(isExitStep ? { failureCount: 0 } : {}) };
+    const updated = await storage.updateItem(itemId, updates);
+    io.emit('items_updated');
+    recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
+    if (updated.parentId) await syncParentStatus(updated.parentId);
+    // Awaited, unlike before: the response describes what the commit did,
+    // so it cannot be written before the commit has been attempted. No
+    // `|| findProjectRoot(process.cwd())`: that made a long-lived daemon
+    // commit into whatever repository it was launched from.
+    const gitResult = (process.env.NODE_ENV !== 'test' && !process.env.VITEST)
+      ? await autoGitCommit(updated, (project as any)?.projectRoot)
+      : undefined;
+    /*
+     * As a passing run does (b29a8b3a / e99b5015): once the close commit moved
+     * HEAD, a clean tree whose content is still the state the green ran on is
+     * that commit - recorded, so the next card inherits it by commit too.
+     */
+    if (how.stampAt && effectiveRoot) {
+      const verifiedSha = readCleanTreeSha(effectiveRoot, gitRun);
+      if (verifiedSha && treeStateOf(effectiveRoot, project) === how.stampAt) {
+        const current = await storage.getItem(itemId);
+        await storage.updateItem(itemId, { tests: testRecords(current?.tests).map((t: any) => (t.id === testId ? { ...t, commit: verifiedSha } : t)) });
+        noteGreen(item.projectId, effectiveRoot, verifiedSha, itemId);
+        try { await stampCloseGreen(itemId, effectiveRoot, verifiedSha); }
+        catch (e: any) { console.error(`[validate] stampCloseGreen failed after the close: ${e?.message || e}`); }
+        io.emit('items_updated');
+      }
+    }
+    // The hub counts passes: a close on a green in hand is one (the green's source is in the payload).
+    recordHubEvent({ type: 'validate.passed', projectId: item.projectId, itemId, payload: { fromStatus: item.status, toStatus: nextStatus, command: resolvedCommand, via: how.output } });
+    recordHubEvent({ type: 'test.logged', projectId: item.projectId, itemId, payload: { command: resolvedCommand, status: 'PASSED', testId, via: how.output } });
+    return r1.json({ status: nextStatus, message: `✅ Validation Passed (${how.how})!\n\nItem moved to ${nextStatus}.${describePush(gitResult)}${nowOn(nextStatus)}`, output: how.output });
+  };
+
+  // ── This move's own capture (36c5ca25) ───────────────────────────────────
+  // The gate just ran the verify command as its capture, green, on this very tree: running it again proves nothing new.
+  // A command check on this step runs after the capture (a build, say, into ignored files the tree state cannot see): the command then runs after it, as before.
+  if (endsFlow && resolvedCommand && gate?.capture && !stepHasCommandChecks(activeFlow, item.status)) {
+    const own = ownCaptureGreenOf(gate.capture, resolvedCommand, effectiveRoot, project);
+    if (own) {
+      const green = { ...(own.clean === true && typeof own.head === 'string' ? { commit: own.head } : {}), treeState: stateOfRecord(own), treeStateVersion: STATE_VERSION, commitRoot: effectiveRoot };
+      return closeOnGreen(res, {
+        how: "this step's suite run", output: 'Step capture', recordOutput: `Step capture: the ${item.status} capture ran this command green on this tree`, green, stampAt: stateOfRecord(own),
+        note: `The step's capture ran \`${resolvedCommand}\` green on this very tree, so it was not run a second time.${passedChecks ? `\n\n${passedChecks}` : ''}`,
+      });
+    }
+  }
+
   // ── Sibling propagation ───────────────────────────────────────────────────
+  // 3ffc9651: what an identical sibling run in flight is keyed on, when propagation found nothing yet.
+  let siblingFlightKey: string | null = null;
   if (item.parentId) {
     const siblings = await storage.listItems({ parentId: item.parentId });
-    // For final step (→ DONE), check siblings already DONE with same verifyCommand
+    // On the move that ends the flow, check siblings that finished it with the same verifyCommand
     if (endsFlow) {
       /*
        * THE GREEN MUST BELONG TO THIS TREE (b29a8b3a). A sibling's suite ran
@@ -6675,47 +9114,23 @@ async function handleValidateProgress(itemId: string, command: string | undefine
        * (CGLAB-366).
        */
       const gateRoot = effectiveRoot;
-      const sharesRoot = !!gateRoot;
-      const treeSha = sharesRoot ? readCleanTreeSha(gateRoot, gitRun) : null;
-      let pass: { sibling: any; test: any } | null = null;
-      let refusal = treeSha
-        ? 'no sibling green is tied to this commit'
-        : 'this tree is not clean at a commit, so no sibling green can be tied to it';
-      for (const s of siblings) {
-        if (pass || s.id === item.id || s.status !== Status.DONE) continue;
-        // Same checkout as the one the command runs in, or nothing transfers.
-        if (!sharesRoot || resolveCommitRoot(await withEffectiveWorktree(s), (project as any)?.projectRoot).root !== gateRoot) continue;
-        // EVERY matching test, not the first: a sibling re-verified after a
-        // rollback has an older record that must not shadow the current one.
-        for (const test of testRecords(s.tests)) {
-          if (pass || test.status !== 'PASSED' || test.command !== resolvedCommand) continue;
-          const gate = mayPropagate(treeSha, test);
-          if (gate.allowed) pass = { sibling: s, test };
-          else refusal = gate.reason ?? refusal;
-        }
-      }
+      const { pass, refusal, treeState } = await siblingGreenOf(item, siblings, activeFlow as TransitionFlow, project, gateRoot, resolvedCommand!);
       if (pass) {
         const { sibling: passedSibling, test: siblingTest } = pass;
-        const sibComment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).\n**Command**: \`${resolvedCommand}\` at \`${String(siblingTest.commit).slice(0, 12)}\``, timestamp: new Date() };
-        const updates: any = { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), sibComment], tests: [...testRecords(item.tests), { id: uuidv4(), command: resolvedCommand, output: `Sibling propagation: verified by ${passedSibling.id}`, status: 'PASSED', executedAt: new Date(), commit: siblingTest.commit }], ...(isExitStep ? { failureCount: 0 } : {}) };
-        const updated = await storage.updateItem(itemId, updates);
-        io.emit('items_updated');
-        recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
-        if (updated.parentId) await syncParentStatus(updated.parentId);
-        // Awaited, unlike before: the response describes what the commit did,
-        // so it cannot be written before the commit has been attempted. No
-        // `|| findProjectRoot(process.cwd())`: that made a long-lived daemon
-        // commit into whatever repository it was launched from.
-        const gitResult = (process.env.NODE_ENV !== 'test' && !process.env.VITEST)
-          ? await autoGitCommit(updated, (project as any)?.projectRoot)
-          : undefined;
-        return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.${describePush(gitResult)}${nowOn(nextStatus)}`, output: 'Sibling propagation' });
+        const where = siblingTest.commit ? `\`${String(siblingTest.commit).slice(0, 12)}\`` : `\`${String(siblingTest.treeState).slice(0, 12)}\` with the same uncommitted content`;
+        const inherited = { ...(siblingTest.commit ? { commit: siblingTest.commit } : {}), ...(currentTreeState(siblingTest) ? { treeState: siblingTest.treeState, treeStateVersion: STATE_VERSION } : {}), commitRoot: gateRoot };
+        return closeOnGreen(res, {
+          how: 'sibling propagation', output: 'Sibling propagation', recordOutput: `Sibling propagation: verified by ${passedSibling.id}`, green: inherited,
+          note: `Skipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).\n**Command**: \`${resolvedCommand}\` at ${where}`,
+        });
       }
       console.warn(`[VALIDATE] Sibling propagation refused for ${itemId}: ${refusal}`);
-    } else if (!isFinalStep) {
+      if (treeState && gateRoot) siblingFlightKey = [item.projectId, item.parentId, gateRoot, resolvedCommand, treeState].join('\0');
+    } else if (!isFinalStep && !resolvedCommand) {
       // "A sibling is further along" runs nothing, so it may only carry a step
       // that needs no command. On a boundary step mid-flow the project's
-      // command is required, and it runs (CGLAB-378 review).
+      // command is required, and it runs (CGLAB-378 review). A command the
+      // caller handed can only add a check, so it runs too (CGLAB-418).
       const passedSibling = siblings.find(s => {
         if (s.id === item.id) return false;
         if (s.status === Status.DONE) return true;
@@ -6723,7 +9138,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         return sibStep !== undefined && sibStep.index > currentFlowStep.index;
       });
       if (passedSibling) {
-        const sibComment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).`, timestamp: new Date() };
+        // CGLAB-418: the step's own checks ran and passed; nothing is skipped.
+        const ahead = `A sibling, \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}), is already further along.`;
+        const sibComment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (sibling propagation)\n\n**Step**: ${item.status} → ${nextStatus}\n${ahead}${passedChecks ? `\n\n${passedChecks}` : ''}`, timestamp: new Date() };
         const left = await commitOnLeave(res);
         if (left.refused) return;
         res = left.res;
@@ -6734,7 +9151,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         await ensureWorktreeForItem(updated, true);
         io.emit('items_updated');
         if (updated.parentId) await syncParentStatus(updated.parentId);
-        return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}${nowOn(nextStatus)}`, output: 'Sibling propagation' });
+        const leave = await nextLeaveNote(itemId);
+        return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}. ${ahead}${mandatoryInstructions}${leave.text}${nowOn(nextStatus)}`, output: 'Sibling propagation', ...leave.field });
       }
     }
   }
@@ -6742,7 +9160,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // No command on an intermediate step — advance directly without running anything.
   if (!resolvedCommand) {
     const exitNote = exitCriteria ? `\n**Exit criteria acknowledged**: ${exitCriteria}` : '';
-    const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED\n\n**Step**: ${item.status} → ${nextStatus}${exitNote}`, timestamp: new Date() };
+    const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED\n\n**Step**: ${item.status} → ${nextStatus}${exitNote}${passedChecks ? `\n\n${passedChecks}` : ''}`, timestamp: new Date() };
     const left = await commitOnLeave(res);
     if (left.refused) return;
     res = left.res;
@@ -6751,7 +9169,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     await ensureWorktreeForItem(updated, true);
     io.emit('items_updated');
     if (updated.parentId) await syncParentStatus(updated.parentId);
-    return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}${nowOn(nextStatus)}` });
+    const leave = await nextLeaveNote(itemId);
+    return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}${leave.text}${nowOn(nextStatus)}`, ...leave.field });
   }
 
   // See above: declining beats committing somewhere plausible.
@@ -6788,6 +9207,14 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   const storedItem = await storage.getItem(itemId);
   const logHandle = storedItem ? openValidationLog(storedItem.id, testId) : null;
   const capture = createOutputCapture({ fd: logHandle?.fd ?? null });
+  // f8d0a752: a suite-run slot before the tree is read, so the state recorded is the one the command runs on.
+  const releaseSlot = await suiteSlots.acquire(w => {
+    const line = waitingLine(w);
+    capture.note(line);
+    if (run) appendRunOutput(run, line);
+    setRunPhase(run, { state: 'queued', ahead: w.ahead });
+  });
+  setRunPhase(run, { state: 'running', kind: 'whole' });
 
   // The commit and the working-tree state the command actually ran against,
   // captured BEFORE the spawn. A long run during which another agent commits
@@ -6797,6 +9224,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   const gateRoot = runRoot ?? null;
   const headBeforeRun = gateRoot ? readHead(gateRoot, gitRun) : null;
   const statusBeforeRun = gateRoot ? readTreeStatus(gateRoot, gitRun) : null;
+  // 3ffc9651: and every file's content, so a green on a DIRTY tree can be tied to a state too.
+  const filesBeforeRun = gateRoot && endsFlow ? treeFiles(gateRoot, reportOwnedOf(gateRoot, project)) : null;
 
   // try/finally around the spawn, not just the awaited result: spawn() throws
   // SYNCHRONOUSLY on a bad argument (a NUL byte in the command, a non-string
@@ -6846,7 +9275,10 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     // Live output for run followers is the capture's bounded head, so a verbose
     // command can't pin hundreds of MB in the run map — and now cannot pin them
     // anywhere else either. The full output is on disk, not in this process.
-    const onData = (d: Buffer) => { capture.write(d); if (run) run.output = capture.live(); };
+    // What the run already streamed (a capture's output, 9569b4d7) stays in front: followers read by offset.
+    const runBase = run?.output ?? '';
+    // 08f40965: and pushed, like appendRunOutput does - the header's list shows each run's last line.
+    const onData = (d: Buffer) => { capture.write(d); if (run) { run.output = runBase + capture.live(); run.tail = ((run.tail ?? '') + d.toString()).slice(-RUN_TAIL_BYTES); notifyVerifyRuns(); } };
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
     child.on('exit', (c, sig) => { if (killed) finish(124, sig); });
@@ -6857,6 +9289,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     });
    } finally {
      if (!settledCapture) capture.end();
+     releaseSlot();
    }
   })();
 
@@ -6885,11 +9318,13 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   const comments = [...(item.comments || []), {
     id: uuidv4(),
     author: 'ValidateTool',
-    content: `### Validation ${passed ? 'PASSED' : 'FAILED'}\n\n**Step**: ${passed ? `${item.status} → ${nextStatus}` : `${item.status} (advance refused — the card stays here)`}${exitNote}\n**Command**: \`${resolvedCommand}\`\n\n**Output**:\n\`\`\`\n${preview}\n\`\`\``,
+    content: `### Validation ${passed ? 'PASSED' : 'FAILED'}\n\n**Step**: ${passed ? `${item.status} → ${nextStatus}` : `${item.status} (advance refused — the card stays here)`}${exitNote}${passedChecks ? `\n\n${passedChecks}` : ''}\n**Command**: \`${resolvedCommand}\`\n\n**Output**:\n\`\`\`\n${preview}\n\`\`\``,
     timestamp: new Date(),
   }];
 
     if (passed) {
+      // The index may have changed while the command ran: ask again.
+      if ((await checkStrays(res2)).refused) return;
       const left = await commitOnLeave(res2);
       if (left.refused) return;
       res2 = left.res;
@@ -6949,12 +9384,27 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         preCommitStatus === statusBeforeRun
       ) {
         const verifiedSha = readCleanTreeSha(gateRoot, gitRun);
-        if (verifiedSha) {
+        /*
+         * 3ffc9651: the STATE this green speaks for, dirty tree or not - every
+         * file's content, which must be what the run
+         * started on (the close commits files, it does not change them). A
+         * sibling reading the same state propagates it.
+         */
+        const filesNow = filesBeforeRun ? treeFiles(gateRoot, reportOwnedOf(gateRoot, project)) : null;
+        const treeState = filesNow && filesBeforeRun && filesNow.shareable && filesNow.hash === filesBeforeRun.hash ? filesNow.hash : null;
+        if (verifiedSha || treeState) {
           const current = await storage.getItem(itemId);
           const tests = testRecords(current?.tests).map((t: any) =>
-            t.id === testId ? { ...t, commit: verifiedSha } : t,
+            t.id === testId ? { ...t, ...(verifiedSha ? { commit: verifiedSha } : {}), ...(treeState ? { treeState, treeStateVersion: STATE_VERSION } : {}), commitRoot: gateRoot } : t,
           );
           await storage.updateItem(itemId, { tests });
+          io.emit('items_updated');
+        }
+        if (verifiedSha) {
+          noteGreen(item.projectId, gateRoot, verifiedSha, itemId);
+          // e99b5015: and its per-test capture, so the next card's baseline runs nothing.
+          try { await stampCloseGreen(itemId, gateRoot, verifiedSha); }
+          catch (e: any) { console.error(`[validate] stampCloseGreen failed after DONE: ${e?.message || e}`); }
           io.emit('items_updated');
         }
       }
@@ -6970,7 +9420,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       itemId,
       payload: { command: resolvedCommand, status: 'PASSED', testId },
     });
-    return res2.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${describePush(gitResult)}${nowOn(nextStatus)}`, output: preview });
+    const leave = await nextLeaveNote(itemId);
+    return res2.json({ status: nextStatus, message: `✅ Validation Passed!\n\nCommand: \`${resolvedCommand}\`\nItem moved to ${nextStatus}.${mandatoryInstructions}${describePush(gitResult)}${leave.text}${nowOn(nextStatus)}`, output: preview, ...leave.field });
   } else {
     const updates: any = { status: failureStatus, comments };
     // Same positional predicate as the PASSED record above: a red final gate on
@@ -7004,10 +9455,37 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   }
   }; // end runCommandAndFinalize
 
+  /*
+   * 3ffc9651: SINGLE-FLIGHT for the final verify among siblings. Siblings
+   * closing at once, in one tree at one state, each ran the command: nothing
+   * was DONE yet for propagation to find. The first to get here runs it; a
+   * sibling arriving meanwhile waits for that run to finish (its close commit
+   * and stamp included), then decides again from the top with the step's
+   * checks already judged - it propagates the green if the state still
+   * matches, and runs its own otherwise, never waiting a second time.
+   */
+  const runOrJoin = async (res2: any, run: ValidateRun | undefined, bare: any): Promise<unknown> => {
+    const key = siblingFlightKey;
+    if (!key) return runCommandAndFinalize(res2, run);
+    const theirs = finalVerifiesInFlight.get(key);
+    if (theirs && !opts?.joined) {
+      // beae41a0: through appendRunOutput, so the line reaches the board's list, and said as a phase.
+      if (run) appendRunOutput(run, '[agenfk] a sibling is running the same command on this same tree state: waiting for its result\n');
+      setRunPhase(run, { state: 'waiting', on: 'sibling' });
+      await theirs;
+      // Its evidence is already on the card: the first pass recorded it.
+      return handleValidateProgress(itemId, command, bare, undefined, undefined, { ...opts, gate, run, joined: true });
+    }
+    const mine = runCommandAndFinalize(res2, run);
+    const settled = mine.then(() => undefined, () => undefined);
+    finalVerifiesInFlight.set(key, settled);
+    try { return await mine; }
+    finally { if (finalVerifiesInFlight.get(key) === settled) finalVerifiesInFlight.delete(key); }
+  };
+
   if (asyncRun) {
     const run = asyncRun;
     const runId = run.runId;
-    (run as any).started = true;
     // Answer immediately — the client follows the run instead of holding this
     // request open for the command's whole lifetime.
     bareRes.status(202).json({
@@ -7015,8 +9493,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       command: resolvedCommand,
       message: `⏳ Validation running in background (run ${runId.slice(0, 8)}…). Follow with GET /items/validate-runs/${runId}.`,
     });
-    const recorder = runRecorder(run);
-    void runCommandAndFinalize(commandNote ? withNote(recorder, commandNote) : recorder, run)
+    markRunStarted(run, item.status, item);
+    const recorder = await withReviewBrief(runRecorder(run), itemId, { done: () => !!run.finishedAt });
+    void runOrJoin(commandNote ? withNote(recorder, commandNote) : recorder, run, recorder)
       .catch((err: any) => {
         run.status = 'failed';
         run.message = `Internal error during background validation: ${err?.message || err}`;
@@ -7024,14 +9503,19 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       })
       .finally(() => {
         if (activeValidateRunByItem.get(itemId) === runId) activeValidateRunByItem.delete(itemId);
+        io.emit('items_updated');
+        notifyVerifyRuns();
       });
     return;
   }
 
   // `opts.run`: the background run a slow gate already answered 202 for, so
   // the command's output still streams to whoever follows it.
-  return runCommandAndFinalize(res, opts?.run);
+  return runOrJoin(res, opts?.run, bareRes);
 }
+
+/** Final verifies running now, by project, parent, tree, command and state: see runOrJoin. */
+const finalVerifiesInFlight = new Map<string, Promise<void>>();
 
 // Live status/output of a background validate run. Registered before use in
 // the CLI follow loop; unknown ids 404 (a restarted server forgets runs — the
@@ -7066,7 +9550,7 @@ app.get("/items/validate-runs/:runId", asyncHandler(async (req: any, res: any) =
  * parent's branch by design, which is exactly why the CLI refuses it.
  */
 export function shouldAutoWorktree(item: any): boolean {
-  if (!item?.projectId || item.worktreePath) return false;
+  if (!item?.projectId || item.worktreePath || item.worktreeChoice) return false;
   if (item.type === 'EPIC') return false;
   if (item.parentId) return false;
   return true;
@@ -7263,6 +9747,13 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
     const item = cwdItem;
     const projRoot = (await storage.getProject(item.projectId) as any)?.projectRoot as string | undefined;
     const worktree = await effectiveWorktreePath(item);
+    // 686fdbf6: a tree the card (or an ancestor) chose that has since gone.
+    if (worktree && !fs.existsSync(worktree) && await chosenBy(item, worktree)) {
+      return res.status(409).json({
+        error: `Refusing to verify: card ${item.id} runs in ${worktree}, a tree chosen with --worktree, and that directory no longer exists. `
+          + 'Choose another: `agenfk update <id> --worktree inherit` (follow its parent), `--worktree none` (the project root) or `--worktree <path>`.',
+      });
+    }
     /*
      * Whether the RECORDED root can be trusted, judged from the stored value
      * alone. One that is missing, is $HOME or ~/.agenfk, or is a linked
@@ -7308,6 +9799,7 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
             + `${what}. That is a different checkout of the same repository, so the run would test `
             + 'code you are not editing and the close commit would read an index that is not yours. '
             + `Run agenfk verify from ${place.testedTop}, with your changes there.`
+            + ' To run the card somewhere else, choose its tree: `agenfk update <id> --worktree <path>` (a checkout of this repository), `--worktree none` (the project root) or `--worktree inherit`.'
             + (worktree ? '' : ' To give the card a tree of its own, run `agenfk worktree create <top-level item id>` and work in the directory it prints.'),
           callerRoot: place.checkout,
           testedRoot: place.testedTop,
@@ -7373,7 +9865,17 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
   // an old client can't race a background run on the same item.
   const activeGuard = rejectIfRunActive(req.params.id, res);
   if (activeGuard) return;
+  // efcacdeb: the coding agent's reports of the step's agent checks.
+  const parsedReports = parseAgentReports(req.body.agentChecks);
+  if ('error' in parsedReports) return res.status(400).json({ error: parsedReports.error });
+  const agentReports = parsedReports.reports;
+  // CGLAB-420: the agent's answers to the step's failing warnings.
+  const parsedAnswers = parseCheckAnswers(req.body.checkAnswers);
+  if ('error' in parsedAnswers) return res.status(400).json({ error: parsedAnswers.error });
+  const answers = parsedAnswers.answers;
   const asyncMode = req.body.async === true || req.body.async === 'true';
+  // cf6941e0: a new verify of the card ends its wait on a person; a refusal held by one sets it again.
+  if (awaitingPerson.delete(req.params.id)) notifyVerifyRuns();
   if (asyncMode) {
     // Reserve the run in the SAME tick as the guard — a check-then-set gap
     // spanning the handler's awaits would let a double-submit spawn twice.
@@ -7382,17 +9884,20 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
     validateRuns.set(run.runId, run);
     activeValidateRunByItem.set(req.params.id, run.runId);
     try {
-      return await handleValidateProgress(req.params.id, req.body.command || undefined, res, req.body.evidence || undefined, run, { actor: parseActor(req.body.actor) });
+      // After the reservation (same tick as the guard, above): the wrap reads the card first.
+      res = await withReviewBrief(res, req.params.id);
+      return await handleValidateProgress(req.params.id, req.body.command || undefined, res, req.body.evidence || undefined, run, { actor: parseActor(req.body.actor), agentReports, answers });
     } finally {
       // A sync fast-path (anchor, sibling propagation, no-command, error)
       // responded without ever starting the command — discard the reservation.
-      if (!(run as any).started) {
+      if (!run.started) {
         validateRuns.delete(run.runId);
         if (activeValidateRunByItem.get(req.params.id) === run.runId) activeValidateRunByItem.delete(req.params.id);
       }
     }
   }
-  return handleValidateProgress(req.params.id, req.body.command || undefined, res, req.body.evidence || undefined, undefined, { actor: parseActor(req.body.actor) });
+  res = await withReviewBrief(res, req.params.id);
+  return handleValidateProgress(req.params.id, req.body.command || undefined, res, req.body.evidence || undefined, undefined, { actor: parseActor(req.body.actor), agentReports, answers });
 }));
 
 /** 409 if the item already has a live background validate run. Returns true when it responded. */
@@ -7456,6 +9961,8 @@ app.post('/internal/hub/reload', asyncHandler(async (req: any, res: any) => {
   }
   const changed = hubClient.reloadConfig();
   if (changed) startHubSubsystems();
+  // A rejoin or repoint may change which org's JIRA this installation sees.
+  clearHubJiraStatusCache();
   res.json({
     ok: true,
     changed,
@@ -7775,6 +10282,122 @@ const refreshJiraToken = async (tokenData: JiraTokenData): Promise<JiraTokenData
   return refreshPromise;
 };
 
+/** The hub this installation is joined to, or null. Joined means JIRA is the hub's. */
+function joinedHub(): HubTarget | null {
+  const cfg = hubClient.isEnabled ? hubClient.hubConfig : null;
+  return cfg ? { url: cfg.url, token: cfg.token } : null;
+}
+
+/** A local `agenfk jira setup` connection as a JiraSession, or null. */
+function localJiraSession(): JiraSession | null {
+  const tokenData = loadJiraToken();
+  if (!tokenData) return null;
+  return {
+    source: 'local',
+    cloudId: tokenData.cloudId,
+    cloudUrl: tokenData.cloudUrl,
+    email: tokenData.email,
+    async get(apiPath: string, timeoutMs?: number) {
+      const { data } = await jiraApiRequest(
+        tokenData,
+        'get',
+        `https://api.atlassian.com/ex/jira/${encodeURIComponent(tokenData.cloudId)}/rest/api/3/${apiPath}`,
+        undefined,
+        timeoutMs,
+      );
+      return { data };
+    },
+  };
+}
+
+/**
+ * The JIRA connection to use (CGLAB-412): when joined, this user's own
+ * connection held by the hub - with NO fallback to a local token or config,
+ * so no JIRA credential is ever used from the laptop - else the local one.
+ * Null when there is none; throws when the hub cannot say.
+ */
+async function openJiraSession(): Promise<JiraSession | null> {
+  const hub = joinedHub();
+  return hub ? openHubJiraSession(hub) : localJiraSession();
+}
+
+/**
+ * Why a joined user has no connection, in terms of what fixes it: no app on
+ * the hub is an admin's job; an app without this user's grant is theirs.
+ */
+async function hubNotConnectedMessage(hub: HubTarget): Promise<string> {
+  try {
+    return notConnectedMessageFor(await fetchHubJiraStatus(hub));
+  } catch {
+    return CONNECT_FROM_BOARD;
+  }
+}
+
+function notConnectedMessageFor(status: { configured: boolean; lastError?: string | null }): string {
+  if (!status.configured) return ASK_HUB_ADMIN;
+  return status.lastError === 'refresh_rejected' ? JIRA_CONNECTION_EXPIRED : CONNECT_FROM_BOARD;
+}
+
+const JIRA_CONNECTION_EXPIRED = 'Your JIRA connection expired or was revoked. Use Connect JIRA on the board to reconnect.';
+
+/**
+ * When this server last sent a browser off to connect JIRA through the hub.
+ * The callback accepts a completion code only while such a connect is
+ * pending: a code minted for someone ELSE's flow, loaded into this user's
+ * browser by a hostile page, must not bind the other person's JIRA account to
+ * this installation.
+ */
+let hubJiraConnectStartedAt = 0;
+const HUB_JIRA_CONNECT_WINDOW_MS = 15 * 60 * 1000;
+const LOOPBACK_PEERS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+
+/** For routes that need a connection: the session, or a response saying why there is none. */
+async function requireJiraSession(res: any): Promise<JiraSession | null> {
+  let session: JiraSession | null;
+  try {
+    session = await openJiraSession();
+  } catch (err: any) {
+    res.status(502).json({ error: 'The hub could not be reached for JIRA.', detail: err?.message });
+    return null;
+  }
+  if (session) return session;
+  const hub = joinedHub();
+  if (hub) res.status(409).json({ error: await hubNotConnectedMessage(hub) });
+  else res.status(401).json({ error: 'Not connected to JIRA' });
+  return null;
+}
+
+/** A card's browse link, or null when the site URL would not make a safe href. */
+function safeBrowseUrl(cloudUrl: string, key: string): string | null {
+  const url = `${cloudUrl}/browse/${key}`;
+  return isSafeExternalUrl(url) ? url : null;
+}
+
+/**
+ * Where the browser lands after a JIRA connect. When we serve the UI
+ * ourselves there is nothing on 5173, so redirecting there would dump the user
+ * on a connection-refused page after the connect succeeded; same origin means
+ * a relative redirect works.
+ */
+function jiraUiBase(): string {
+  return process.env.JIRA_UI_URL || (servedUiDir ? '/' : 'http://localhost:5173');
+}
+
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/**
+ * This server's own OAuth callback, as the browser reaches it - the hub sends
+ * the browser back here with the completion code. Only a loopback origin
+ * qualifies (the hub refuses anything else too): a code must never be handed
+ * to a host that is not this machine.
+ */
+function loopbackCallbackUrl(req: any): string | null {
+  const host = String(req.get?.('host') ?? '');
+  let u: URL;
+  try { u = new URL(`http://${host}`); } catch { return null; }
+  return LOOPBACK_HOSTS.has(u.hostname) ? `http://${u.host}/jira/oauth/callback` : null;
+}
+
 const jiraApiRequest = async (
   tokenData: JiraTokenData,
   method: string,
@@ -7828,7 +10451,21 @@ const adfToText = (node: any): string => {
 // Both OAuth legs are bounded by the same per-route budget as the other routes
 // that do real work per call: authorize reads the stored client config and
 // mints state, callback exchanges a code with Atlassian (CodeQL #135).
-app.get("/jira/oauth/authorize", limitExpensive, (req: any, res: any) => {
+app.get("/jira/oauth/authorize", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const hub = joinedHub();
+  if (hub) {
+    // Joined: the user connects their own JIRA through the hub's app.
+    const back = (reason: string) => res.redirect(`${jiraUiBase()}?jira=error&reason=${encodeURIComponent(reason)}`);
+    const returnTo = loopbackCallbackUrl(req);
+    if (!returnTo) return back('not_loopback');
+    try {
+      const authorizeUrl = await startHubJiraOAuth(hub, returnTo);
+      hubJiraConnectStartedAt = Date.now();
+      return res.redirect(authorizeUrl);
+    } catch (err: any) {
+      return back(err?.code || 'hub_unreachable');
+    }
+  }
   const jiraConfig = loadJiraConfig();
   if (!jiraConfig.clientId || !jiraConfig.clientSecret) {
     return res.status(503).json({
@@ -7851,14 +10488,34 @@ app.get("/jira/oauth/authorize", limitExpensive, (req: any, res: any) => {
     prompt: 'consent',
   });
   res.redirect(`https://auth.atlassian.com/authorize?${params}`);
-});
+}));
 
 app.get("/jira/oauth/callback", limitExpensive, asyncHandler(async (req: any, res: any) => {
-  const { code, state, error } = req.query;
-  // When we serve the UI ourselves there is nothing on 5173, so redirecting
-  // there would dump the user on a connection-refused page *after* the token
-  // exchange already succeeded. Same origin means a relative redirect works.
-  const uiBase = process.env.JIRA_UI_URL || (servedUiDir ? '/' : 'http://localhost:5173');
+  const { code, state, error, completion } = req.query;
+  const uiBase = jiraUiBase();
+
+  const hub = joinedHub();
+  if (hub) {
+    // Joined: the hub already exchanged the code and holds the token pending.
+    // Redeeming the completion with THIS installation's key is what binds it.
+    const back = (reason: string) => res.redirect(`${uiBase}?jira=error&reason=${encodeURIComponent(reason)}`);
+    // The Host check on authorize is about the header; this is about who is
+    // actually connected, which a proxied or 0.0.0.0-bound setup can differ on.
+    // Checked BEFORE the pending connect is consumed, so a stray remote hit
+    // cannot cancel the user's own connect.
+    if (!LOOPBACK_PEERS.has(String(req.socket?.remoteAddress ?? ''))) return back('not_loopback');
+    const pendingConnect = Date.now() - hubJiraConnectStartedAt < HUB_JIRA_CONNECT_WINDOW_MS;
+    hubJiraConnectStartedAt = 0;
+    if (error) return back(String(error));
+    if (typeof completion !== 'string' || !completion) return back('missing_params');
+    if (!pendingConnect) return back('no_pending_connect');
+    try {
+      await completeHubJiraOAuth(hub, completion);
+    } catch (err: any) {
+      return back(err?.code || 'hub_unreachable');
+    }
+    return res.redirect(`${uiBase}?jira=connected`);
+  }
 
   if (error) {
     return res.redirect(`${uiBase}?jira=error&reason=${encodeURIComponent(String(error))}`);
@@ -7923,11 +10580,24 @@ app.get("/jira/oauth/callback", limitExpensive, asyncHandler(async (req: any, re
 }));
 
 app.get("/jira/status", asyncHandler(async (req: any, res: any) => {
+  const hub = joinedHub();
+  if (hub) {
+    try {
+      const status = await fetchHubJiraStatus(hub);
+      return res.json({ ...status, ...(status.connected ? {} : { message: notConnectedMessageFor(status) }) });
+    } catch (err: any) {
+      return res.json({
+        source: 'hub', configured: false, connected: false,
+        reason: err?.code || 'hub_unreachable', message: err?.message,
+      });
+    }
+  }
   const jiraConfig = loadJiraConfig();
   const configured = !!(jiraConfig.clientId && jiraConfig.clientSecret);
   const tokenData = loadJiraToken();
   if (!tokenData) {
     return res.json({
+      source: 'local',
       configured,
       connected: false,
       ...(configured ? {} : { message: "Run 'agenfk jira setup' to configure JIRA integration." }),
@@ -7937,22 +10607,18 @@ app.get("/jira/status", asyncHandler(async (req: any, res: any) => {
   if (configured) {
     const valid = await validateJiraToken(tokenData);
     if (!valid) {
-      return res.json({ configured, connected: false, reason: 'token_expired' });
+      return res.json({ source: 'local', configured, connected: false, reason: 'token_expired' });
     }
   }
-  res.json({ configured, connected: true, cloudId: tokenData.cloudId, email: tokenData.email });
+  res.json({ source: 'local', configured, connected: true, cloudId: tokenData.cloudId, cloudUrl: tokenData.cloudUrl, email: tokenData.email });
 }));
 
 app.get("/jira/projects", asyncHandler(async (req: any, res: any) => {
-  const tokenData = loadJiraToken();
-  if (!tokenData) return res.status(401).json({ error: "Not connected to JIRA" });
+  const jira = await requireJiraSession(res);
+  if (!jira) return;
 
   try {
-    const { data } = await jiraApiRequest(
-      tokenData,
-      'get',
-      `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/project/search?maxResults=50`
-    );
+    const { data } = await jira.get('project/search?maxResults=50');
     const projects = (data.values || []).map((p: any) => ({
       id: p.id,
       key: p.key,
@@ -7966,8 +10632,8 @@ app.get("/jira/projects", asyncHandler(async (req: any, res: any) => {
 }));
 
 app.get("/jira/projects/:key/issues", asyncHandler(async (req: any, res: any) => {
-  const tokenData = loadJiraToken();
-  if (!tokenData) return res.status(401).json({ error: "Not connected to JIRA" });
+  const jira = await requireJiraSession(res);
+  if (!jira) return;
 
   const { key } = req.params;
   const { summary, statusCategory } = req.query;
@@ -8003,15 +10669,11 @@ app.get("/jira/projects/:key/issues", asyncHandler(async (req: any, res: any) =>
     
     const jql = encodeURIComponent(jqlParts.join(' AND ') + ' ORDER BY created DESC');
     const fields = 'summary,issuetype,status,priority';
-    const apiUrl = `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/search/jql?jql=${jql}&maxResults=50&fields=${fields}`;
-    
-    console.log(`[JIRA] Requesting: ${apiUrl}`);
-    
-    const { data } = await jiraApiRequest(
-      tokenData,
-      'get',
-      apiUrl
-    );
+    const apiPath = `search/jql?jql=${jql}&maxResults=50&fields=${fields}`;
+
+    console.log(`[JIRA] Requesting (${jira.source}): ${apiPath}`);
+
+    const { data } = await jira.get(apiPath);
     const issues = (data.issues || []).map((issue: any) => ({
       id: issue.id,
       key: issue.key,
@@ -8031,8 +10693,8 @@ app.get("/jira/projects/:key/issues", asyncHandler(async (req: any, res: any) =>
 }));
 
 app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
-  const tokenData = loadJiraToken();
-  if (!tokenData) return res.status(401).json({ error: "Not connected to JIRA" });
+  const jira = await requireJiraSession(res);
+  if (!jira) return;
 
   const { projectId, items } = req.body;
   if (!projectId || !Array.isArray(items) || items.length === 0) {
@@ -8054,14 +10716,13 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
       continue;
     }
     try {
-      const { data: issue } = await jiraApiRequest(
-        tokenData,
-        'get',
-        `https://api.atlassian.com/ex/jira/${encodeURIComponent(tokenData.cloudId)}/rest/api/3/issue/${encodeURIComponent(issueKey)}?fields=summary,description,issuetype`
-      );
+      // JIRA keys are case-insensitive, but the hub relay only accepts the
+      // canonical upper-case form - normalise so a joined import of 'acme-7'
+      // behaves like an unjoined one.
+      const { data: issue } = await jira.get(`issue/${encodeURIComponent(issueKey.toUpperCase())}?fields=summary,description,issuetype`);
       const type = requestedType || mapJiraTypeToAgEnFK(issue.fields.issuetype?.name || 'Task');
       const description = adfToText(issue.fields.description);
-      const externalUrl = `${tokenData.cloudUrl}/browse/${issueKey}`;
+      const externalUrl = safeBrowseUrl(jira.cloudUrl, issueKey);
 
       const newItem: any = {
         id: uuidv4(),
@@ -8084,14 +10745,14 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
       // If this is an Epic, also import its child stories
       if (issue.fields.issuetype?.name?.toLowerCase() === 'epic') {
         try {
-          const searchBase = `https://api.atlassian.com/ex/jira/${tokenData.cloudId}/rest/api/3/search/jql`;
+          const searchBase = 'search/jql';
           const childFields = 'summary,description,issuetype';
 
           // Try next-gen (team-managed) projects first: parent = KEY
           let childIssues: any[] = [];
           const jqlNextGen = encodeURIComponent(`parent = ${issueKey} ORDER BY created ASC`);
           console.log(`[JIRA] Fetching children of Epic ${issueKey} with JQL: parent = ${issueKey}`);
-          const { data: nextGenData } = await jiraApiRequest(tokenData, 'get', `${searchBase}?jql=${jqlNextGen}&maxResults=100&fields=${childFields}`);
+          const { data: nextGenData } = await jira.get(`${searchBase}?jql=${jqlNextGen}&maxResults=100&fields=${childFields}`);
           childIssues = nextGenData.issues || [];
           console.log(`[JIRA] next-gen child query returned ${childIssues.length} issues`);
 
@@ -8099,7 +10760,7 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
           if (childIssues.length === 0) {
             const jqlClassic = encodeURIComponent(`"Epic Link" = ${issueKey} ORDER BY created ASC`);
             console.log(`[JIRA] Trying classic Epic Link fallback for ${issueKey}`);
-            const { data: classicData } = await jiraApiRequest(tokenData, 'get', `${searchBase}?jql=${jqlClassic}&maxResults=100&fields=${childFields}`);
+            const { data: classicData } = await jira.get(`${searchBase}?jql=${jqlClassic}&maxResults=100&fields=${childFields}`);
             childIssues = classicData.issues || [];
             console.log(`[JIRA] classic Epic Link query returned ${childIssues.length} issues`);
           }
@@ -8119,7 +10780,7 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
               status: 'TODO',
               implementationPlan: '',
               externalId: childKey,
-              externalUrl: `${tokenData.cloudUrl}/browse/${childKey}`,
+              externalUrl: safeBrowseUrl(jira.cloudUrl, childKey),
               createdAt: new Date(),
               updatedAt: new Date(),
             };
@@ -8142,10 +10803,20 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
   res.json({ imported, errors });
 }));
 
-app.post("/jira/disconnect", (req: any, res: any) => {
+app.post("/jira/disconnect", asyncHandler(async (req: any, res: any) => {
+  const hub = joinedHub();
+  if (hub) {
+    // Joined: drop this user's connection on the hub; there is no local token to delete.
+    try {
+      await disconnectHubJira(hub);
+    } catch (err: any) {
+      return res.status(502).json({ error: 'The hub could not disconnect JIRA.', detail: err?.message });
+    }
+    return res.json({ disconnected: true });
+  }
   deleteJiraToken();
   res.json({ disconnected: true });
-});
+}));
 
 // ── GitHub Import Routes (read-only) ──────────────────────────────────────────
 
@@ -8546,8 +11217,13 @@ app.post("/projects/:id/tasks-from-pr", limitExpensive, asyncHandler(async (req:
 // ── Release Check ─────────────────────────────────────────────────────────────
 
 let releaseCache: { data: any; fetchedAt: number } | null = null;
+// The installed version's own release (What's New, 4aac7076), keyed by that version.
+let currentReleaseCache: { version: string; data: any; fetchedAt: number; ttl: number } | null = null;
+// An unpublished version, or a failed read, is kept only briefly: the release may appear any minute, and a
+// failure must not send every open of What's New back to GitHub (and `gh auth token`) while it is rate-limited.
+const CURRENT_RELEASE_SHORT_TTL = 60 * 1000;
 const RELEASE_CACHE_TTL = 15 * 60 * 1000; // 15 minutes
-export const clearReleaseCache = (): void => { releaseCache = null; };
+export const clearReleaseCache = (): void => { releaseCache = null; currentReleaseCache = null; };
 
 const getCurrentVersion = (): string => {
   try {
@@ -8666,6 +11342,46 @@ app.get("/releases/update/:jobId", (req: any, res: any) => {
   if (!job) return res.status(404).json({ error: 'Job not found' });
   res.json({ status: job.status, output: job.output.join(''), exitCode: job.exitCode });
 });
+
+/*
+ * 4aac7076: the notes of the release that is INSTALLED - what What's New shows.
+ * /releases/latest is GitHub's latest stable (the CLI's tier gate and the
+ * update reminder rely on it), so on a beta What's New showed an older
+ * stable's notes. A version with no published release (a local build) answers
+ * published:false with the releases page, never another version's notes.
+ */
+app.get("/releases/current", limitBoardRoutes, asyncHandler(async (_req: any, res: any) => {
+  const currentVersion = getCurrentVersion();
+  if (currentReleaseCache && currentReleaseCache.version === currentVersion
+      && (Date.now() - currentReleaseCache.fetchedAt) < currentReleaseCache.ttl) {
+    const { data } = currentReleaseCache;
+    return data.error ? res.status(502).json(data) : res.json({ ...data, currentVersion });
+  }
+
+  const repo = getGitHubRepo();
+  const token = getGitHubToken();
+  const headers: Record<string, string> = { Accept: 'application/vnd.github+json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const tag = `v${currentVersion.replace(/^v/, '')}`;
+
+  let data: any;
+  try {
+    data = (await axios.get(`https://api.github.com/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`, { headers, timeout: 10_000 })).data;
+  } catch (e: any) {
+    if (e?.response?.status !== 404) {
+      const failure = { error: `Could not read the release notes for ${tag}: ${e?.message ?? e}`, url: `https://github.com/${repo}/releases` };
+      currentReleaseCache = { version: currentVersion, data: failure, fetchedAt: Date.now(), ttl: CURRENT_RELEASE_SHORT_TTL };
+      return res.status(502).json(failure);
+    }
+    data = null;
+  }
+
+  const releaseData = data
+    ? { version: currentVersion, published: true, tagName: data.tag_name ?? tag, name: data.name || tag, body: data.body || '', publishedAt: data.published_at ?? null, url: data.html_url ?? `https://github.com/${repo}/releases/tag/${tag}` }
+    : { version: currentVersion, published: false, tagName: tag, name: '', body: '', publishedAt: null, url: `https://github.com/${repo}/releases` };
+  currentReleaseCache = { version: currentVersion, data: releaseData, fetchedAt: Date.now(), ttl: data ? RELEASE_CACHE_TTL : CURRENT_RELEASE_SHORT_TTL };
+  res.json({ ...releaseData, currentVersion });
+}));
 
 app.get("/releases/latest", asyncHandler(async (_req: any, res: any) => {
   const currentVersion = getCurrentVersion();
@@ -8814,7 +11530,7 @@ export const API_PATH_PREFIXES = [
   '/herdr',
   '/api', '/version', '/db', '/backup', '/projects', '/flows', '/prs',
   '/token-events', '/registry', '/items', '/internal', '/jira', '/github',
-  '/releases', '/agent-runs', '/settings', '/terminal-sessions', '/socket.io', '/webauthn',
+  '/releases', '/agent-runs', '/settings', '/terminal-sessions', '/socket.io', '/webauthn', '/verify-runs',
   // `/decompositions` reviews a proposed tree and writes nothing. Same trap as
   // `/herdr`: without the prefix the desktop answers it with index.html and a
   // 200, so the caller's `r.ok` is true and the JSON parse is what fails.

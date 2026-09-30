@@ -29,6 +29,12 @@ vi.mock('../webauthn', () => ({
 }));
 import * as webauthn from '../webauthn';
 vi.mock('../SocketContext', () => ({ useSocketEvent: vi.fn() }));
+vi.mock('../commandApprovals', () => ({
+  argvHash: vi.fn(async () => 'hash-1'),
+  approveCommand: vi.fn(() => Promise.resolve({})),
+  listCommandApprovals: vi.fn(() => Promise.resolve([])),
+}));
+import * as commandApprovals from '../commandApprovals';
 
 const result = (id: string, extra: Record<string, unknown> = {}) => ({
   id, step: 'WORK', source: 'flow', severity: 'block', params: {}, outcome: 'pass', detail: 'ok', blocking: false, ...extra,
@@ -37,12 +43,12 @@ const gates = (extra: Record<string, unknown> = {}) => ({
   step: 'WORK', approvalRequired: false, passkeyRequired: false, approvals: [], overrides: {}, lastChecks: null, ...extra,
 });
 
-function show(g: ReturnType<typeof gates>) {
+function show(g: ReturnType<typeof gates>, projectId?: string) {
   vi.mocked(api.getGates).mockResolvedValue(g as never);
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <StepChecksPanel itemId="c1" />
+      <StepChecksPanel itemId="c1" projectId={projectId} />
     </QueryClientProvider>,
   );
 }
@@ -177,5 +183,46 @@ describe('StepChecksPanel: a step that asks for a passkey (CGLAB-383)', () => {
   it('marks a signed approval as signed', async () => {
     show(gates({ step: 'PLAN', approvalRequired: true, passkeyRequired: true, approvals: [{ by: 'board', at: '2026-09-24T10:00:00Z', authority: 'passkey' }] }));
     expect(await screen.findByText(/signed with a passkey/i)).toBeTruthy();
+  });
+
+  // efcacdeb (C4): custom checks on the board.
+  it('labels an agent check as agent-reported', async () => {
+    show(gates({ lastChecks: { step: 'WORK', at: 'x', blocked: false, results: [result('agent-check:docs', { agentReported: true, detail: 'agent-reported: README updated' })] } }));
+    const li = (await screen.findByText('agent-check:docs')).closest('li')!;
+    expect(li.textContent).toMatch(/agent-reported/);
+  });
+
+  it('shows a command waiting for approval and approves it, signed with a passkey', async () => {
+    const argv = ['npm', 'run', 'lint'];
+    show(gates({ lastChecks: { step: 'WORK', at: 'x', blocked: true, results: [result('command-check:lint', {
+      outcome: 'fail', blocking: true, params: { name: 'lint', argv: JSON.stringify(argv), approval: 'person' },
+      detail: `waiting for a person to approve the command ${JSON.stringify(argv)} on the board (signed with a passkey).`,
+    })] } }), 'p1');
+    const button = await screen.findByRole('button', { name: /approve this command/i });
+    expect(screen.getByText('npm run lint')).toBeTruthy();
+    fireEvent.click(button);
+    await waitFor(() => expect(commandApprovals.approveCommand).toHaveBeenCalledWith('p1', argv, { credentialId: 'cred-1', signature: 's' }));
+    expect(api.passkeyChallenge).toHaveBeenCalledWith({ purpose: 'command', itemId: 'p1', checkId: 'hash-1' });
+  });
+
+  it('offers no command approval for a command check that is simply failing', async () => {
+    show(gates({ lastChecks: { step: 'WORK', at: 'x', blocked: true, results: [result('command-check:lint', {
+      outcome: 'fail', blocking: true, params: { name: 'lint', argv: '["npm","run","lint"]', approval: 'none' }, detail: '["npm","run","lint"] exited 1: 2 problems',
+    })] } }), 'p1');
+    await screen.findByText('command-check:lint');
+    expect(screen.queryByRole('button', { name: /approve this command/i })).toBeNull();
+  });
+
+  // 83e4e956: once a person approved the command, say so until the next verify runs it.
+  it('shows a command approved since the last verify as approved, with no button', async () => {
+    const argv = ['npm', 'run', 'lint'];
+    vi.mocked(commandApprovals.listCommandApprovals).mockResolvedValue([{ argv, at: '2026-09-25T00:17:38Z', authority: 'passkey' }] as never);
+    show(gates({ lastChecks: { step: 'WORK', at: 'x', blocked: true, results: [result('command-check:lint', {
+      outcome: 'fail', blocking: true, params: { name: 'lint', argv: JSON.stringify(argv), approval: 'person' },
+      detail: 'waiting for a person to approve the command npm run lint on the board (signed with a passkey).',
+    })] } }), 'p1');
+    expect(await screen.findByText(/Approved with a passkey.*runs on the next verify/i)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /approve this command/i })).toBeNull();
+    expect(commandApprovals.listCommandApprovals).toHaveBeenCalledWith('p1');
   });
 });

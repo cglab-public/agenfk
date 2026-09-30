@@ -96,8 +96,8 @@ export const card = async id => (await api('GET', `/items/${id}`)).body;
  * `actor` identifies the harness session (the review check tells authors from
  * reviewers by it).
  */
-export async function verify(id, { evidence = 'harness', command, actor } = {}) {
-  return api('POST', `/items/${id}/validate`, { evidence, ...(command ? { command } : {}), ...(actor ? { actor } : {}) }, { headers: internal() });
+export async function verify(id, { evidence = 'harness', command, actor, checkAnswers } = {}) {
+  return api('POST', `/items/${id}/validate`, { evidence, ...(command ? { command } : {}), ...(actor ? { actor } : {}), ...(checkAnswers ? { checkAnswers } : {}) }, { headers: internal() });
 }
 
 export const update = (id, patch) => api('PUT', `/items/${id}`, patch);
@@ -135,7 +135,10 @@ export async function checkOnWork(checkId, { params, project: projectOpts = {}, 
   const o = outcomeOf(c, checkId, 'WORK');
   // A blocking verdict must hold the card; one that reports fail and lets it
   // move is its own outcome, and never an expected one.
-  const actual = o.outcome === 'fail' && o.blocking && c.status !== 'WORK' ? 'fail-but-moved' : o.outcome;
+  // A non-blocking unavailable judged nothing and held nothing: `unavailable-soft`,
+  // as walk() reports it - so a scenario can expect a warning-only unavailable at all.
+  const actual = o.outcome === 'fail' && o.blocking && c.status !== 'WORK' ? 'fail-but-moved'
+    : o.outcome === 'unavailable' && !o.blocking ? 'unavailable-soft' : o.outcome;
   return { actual, detail: `${o.detail ?? ''} [verify ${r.status}, card on ${c.status}]`, card: c };
 }
 
@@ -149,8 +152,12 @@ export async function checkOnWork(checkId, { params, project: projectOpts = {}, 
  * checks at all and only then gives the steps theirs, so the card is on `at`
  * with no entry record and no records from earlier steps: a card that
  * predates checks.
+ *
+ * `passEntryHold: true` plays the person who, on a project with no test
+ * report, passes the server's `entry-baseline` hold (5a8d22e6) on the way in,
+ * so the scenario can see the step's own verdict without one.
  */
-export async function walk(checkId, { steps, at, runner = 'node', project: projectOpts = {}, card: cardOpts = {}, before, work = {}, predates = false, command } = {}) {
+export async function walk(checkId, { steps, at, runner = 'node', project: projectOpts = {}, card: cardOpts = {}, before, work = {}, predates = false, command, passEntryHold = false } = {}) {
   const project = await newProject({ steps: predates ? steps.map(({ checks, role, ...s }) => s) : steps, runner, ...projectOpts });
   const k = kit(runner);
   const id = await newCard(project, cardOpts);
@@ -159,7 +166,13 @@ export async function walk(checkId, { steps, at, runner = 'node', project: proje
   const order = [...steps].sort((x, y) => x.order - y.order).map(s => s.name);
   for (const step of order.slice(0, order.indexOf(at))) {
     if (work[step]) await work[step](ctx);
-    const r = await verify(id);
+    let r = await verify(id);
+    const held = r.status === 422 && (r.body?.checks ?? []).filter(x => x.blocking).every(x => x.id === 'entry-baseline');
+    if (held && passEntryHold) {
+      const o = await api('POST', `/items/${id}/overrides`, { checkId: 'entry-baseline', reason: 'harness: no test report on purpose' }, { board: true });
+      if (o.status !== 201) throw new Error(`entry-baseline override refused (${o.status}): ${JSON.stringify(o.body)}`);
+      r = await verify(id);
+    }
     const c = await card(id);
     if (r.status !== 200 || c.status === step) throw new Error(`${step} -> next refused (${r.status}): ${JSON.stringify(r.body).slice(0, 400)}`);
   }

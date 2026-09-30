@@ -129,7 +129,45 @@ export interface RegistryFlow {
   steps?: { name: string; label: string }[];
 }
 
+/**
+ * A verify running on the card right now (9569b4d7). Derived by the server from
+ * its live runs at response time, never stored: after a restart there is none.
+ */
+export interface ActiveRun {
+  runId: string;
+  step: string;
+  startedAt: string;
+}
+
+/** 3aea49f1: what a running verify is doing (server: VerifyPhase, plus a wait on a person). */
+export type VerifyRunPhase =
+  | { state: 'checking' }
+  | { state: 'queued'; ahead: number }
+  | { state: 'running'; kind: 'whole' | 'affected' | 'tests-only' | 'reused'; files?: number }
+  | { state: 'waiting'; on: 'report' | 'identical-run' | 'sibling' }
+  | { state: 'awaiting-person' };
+
+/** 3aea49f1: one verify running now, in any project (GET /verify-runs, the 'verify_runs' event). */
+export interface VerifyRunEntry {
+  runId?: string;
+  itemId: string;
+  title?: string;
+  projectId?: string;
+  projectName?: string;
+  step: string;
+  startedAt: string;
+  phase: VerifyRunPhase;
+  lastLine?: string;
+}
+
+/** The run's latest output, as the board reads it while the run lasts. */
+export interface ActiveRunOutput extends ActiveRun {
+  output: string;
+}
+
 export interface AgEnFKItem {
+  /** A verify running on this card right now (9569b4d7). */
+  activeRun?: ActiveRun;
   /** Which agent works this card. Lives on the item, not in localStorage. */
   agentId?: string;
   id: string;

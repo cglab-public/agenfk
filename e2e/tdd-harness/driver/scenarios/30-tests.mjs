@@ -45,7 +45,7 @@ const code = (check, name, expected, { params, work = {}, ...opts } = {}) => ({
   check, name, expected,
   opts: { steps: steps({ specs: RED_SPECS, code: [{ id: check, ...(params ? { params } : {}) }] }), at: 'CODE', work: { SPECS: addRed, ...work }, ...opts },
 });
-const noReport = { project: { testReport: false } };
+const noReport = { project: { testReport: false }, passEntryHold: true };
 
 // dotnet: a test file that does not compile fails the whole build, so there is
 // no report to read at all - the capture is unusable, and a blocking check
@@ -66,6 +66,12 @@ const cases = [
   specs('no-broken-test-files', 'passes when every test file loads', 'pass', { work: { SPECS: addRed } }),
   specs('no-broken-test-files', 'blocks a test file that fails to load', { default: 'fail', ...BROKEN_DOTNET }, { work: { SPECS: addBroken } }),
   specs('no-broken-test-files', 'blocks when there is no test report', 'unavailable', { ...noReport, work: { SPECS: addRed } }),
+
+  // entry-baseline (5a8d22e6): the server's hold on the way INTO a step whose blocking checks need a per-test baseline
+  { check: 'entry-baseline', name: 'holds the card on the way into a step whose blocking checks need per-test results the project cannot record', expected: 'unavailable',
+    opts: { steps: steps({ specs: [{ id: 'new-tests-exist' }] }), at: 'TODO', project: { testReport: false } } },
+  { check: 'entry-baseline', name: 'does not hold it when those checks would only warn there', expected: 'absent',
+    opts: { steps: steps({ specs: [{ id: 'new-tests-born-green' }] }), at: 'TODO', project: { testReport: false } } },
 
   // new-tests-exist
   specs('new-tests-exist', 'passes when a test was added', 'pass', { work: { SPECS: addRed } }),
@@ -116,7 +122,7 @@ const cases = [
   code('red-set-passes-by-name', 'warns for a card that predates checks (no red set)', 'unavailable-soft', { predates: true, work: { SPECS: addRed, CODE: implement } }),
   code('red-set-passes-by-name', 'blocks when the report cannot be used', 'unavailable', { work: { CODE: all(implement, breakReport) } }),
 
-  // test-surface-frozen (append, since test-authoring: the coding role's)
+  // test-surface-frozen (append, since test-authoring) - added to the code step explicitly: no role brings it there since 1049ce52
   code('test-surface-frozen', 'passes when only code changed', 'pass', { work: { CODE: implement } }),
   code('test-surface-frozen', 'passes a new test file in append mode', 'pass', { work: { CODE: all(implement, ({ write, kit }) => write(kit.tests('more', [['addsMore', 'green']]))) } }),
   code('test-surface-frozen', 'blocks an edit to a test file written earlier', 'fail', { work: { CODE: all(implement, ({ write, kit }) => write(kit.touchMath())) } }),

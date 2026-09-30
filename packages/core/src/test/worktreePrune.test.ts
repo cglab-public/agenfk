@@ -72,4 +72,12 @@ describe('what must never be offered', () => {
     const out = prunableWorktrees([item({ status: 'SHIPPED' })], { isDirty: () => false, finalSteps: ['SHIPPED'] });
     expect(out.map(w => w.itemId)).toEqual(['i1']);
   });
+
+  // 686fdbf6: a checkout another card chose to run in is not this card's to prune.
+  it('refuses a worktree another card chose to run in', () => {
+    const done = item();
+    const chooser = { id: 'i2', title: 'Runs there', status: 'IN_PROGRESS', worktreeChoice: done.worktreePath };
+    expect(prunableWorktrees([done, chooser], { isDirty: () => false, finalSteps: ['DONE'] })).toEqual([]);
+    expect(prunableWorktrees([done, { ...chooser, worktreeChoice: '/elsewhere' }], { isDirty: () => false, finalSteps: ['DONE'] }).map(w => w.itemId)).toEqual(['i1']);
+  });
 });

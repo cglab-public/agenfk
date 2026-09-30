@@ -86,7 +86,7 @@ describe('CGLAB-382: human approval', () => {
     const res = await validate(id);
     expect(res.status).toBe(422);
     expect(byId(res.body.checks, 'human-approval')).toMatchObject({ outcome: 'fail', blocking: true });
-    expect(res.body.message).toMatch(new RegExp(`agenfk ui --open ${id}`));
+    expect(res.body.message).toMatch(new RegExp(`agenfk ui --open ${id} --details`));
     expect((await item(id)).status).toBe('PLAN');
   });
 

@@ -315,6 +315,8 @@ export function serializeRegistryFlow(flow: any, author: string): string {
     description: flow?.description ?? '',
     author,
     version: flow?.version ?? '1.0.0',
+    // 281adef0: only the non-default value is written, so an unchanged flow compares equal.
+    ...(flow?.verifyAt === 'parent' ? { verifyAt: 'parent' } : {}),
     steps,
   }, null, 2) + '\n';
 }
