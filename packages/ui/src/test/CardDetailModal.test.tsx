@@ -117,6 +117,14 @@ describe('CardDetailModal', () => {
     );
   };
 
+  it('shows when the card was created and when it was last updated', async () => {
+    const created = '2026-09-12T14:03:00Z';
+    const updated = '2026-09-29T09:30:00Z';
+    renderModal({ ...mockItem, status: Status.DONE, createdAt: created, updatedAt: updated });
+    expect(await screen.findByText(`Created: ${new Date(created).toLocaleString()}`)).toBeTruthy();
+    expect(screen.getByText(`Updated: ${new Date(updated).toLocaleString()}`)).toBeTruthy();
+  });
+
   it('shows a JIRA reference that has no browse URL', async () => {
     renderModal({ ...mockItem, externalId: 'CGLAB-163' });
     expect(screen.getByText('CGLAB-163')).toBeDefined();

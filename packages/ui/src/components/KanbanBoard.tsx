@@ -41,6 +41,7 @@ import { Logo } from './Logo';
 import { capture } from '../posthog';
 import { calculateCost, formatCost, calculateCycleTimeMs, formatDuration } from '../utils';
 import { itemTypeClass, itemTypeDot } from '../itemTypeStyle';
+import { cardShortDate, cardAgo, cardFullTimestamp } from '../cardDates';
 
 // Fallback column list used when the flow fetch fails or is loading
 const FALLBACK_STATUSES = [
@@ -465,6 +466,15 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
           </div>
         )}
         */}
+      </div>
+      {/* When the card was made and last touched, on open and closed cards alike;
+          the full local times are on hover. */}
+      <div
+        data-testid={`card-dates-${item.id}`}
+        className="mt-1 truncate font-mono text-[9px] text-ink-tertiary"
+        title={`Created ${cardFullTimestamp(item.createdAt)}\nUpdated ${cardFullTimestamp(item.updatedAt)}`}
+      >
+        Created {cardShortDate(item.createdAt)} · Updated {cardAgo(item.updatedAt)}
       </div>
     </motion.div>
   );

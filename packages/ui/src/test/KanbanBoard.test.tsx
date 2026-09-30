@@ -12,6 +12,7 @@ import { ItemType, Status } from '../types';
 import { io } from 'socket.io-client';
 import { SocketProvider } from '../SocketContext';
 import { expectOnTokens, guardTokens } from './helpers/tokenGuard';
+import { cardShortDate, cardAgo } from '../cardDates';
 
 // Mock socket.io-client. Handlers are recorded rather than dropped so a test
 // can fire a server event — `project_switched` in particular, since the pin
@@ -1438,3 +1439,40 @@ describe('board colours are on tokens (CGLAB-434)', () => {
     }
   });
 });
+
+describe('card dates on the card face', () => {
+  const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+  const created = '2024-03-12T14:03:00Z';
+  const updated = new Date(Date.now() - 2 * 3600_000).toISOString();
+  const at = { createdAt: created, updatedAt: updated, history: [] };
+  const items = [
+    { id: 'open1', projectId: 'p1', type: ItemType.TASK, title: 'Open card', status: Status.IN_PROGRESS, ...at },
+    { id: 'done1', projectId: 'p1', type: ItemType.TASK, title: 'Closed card', status: Status.DONE, ...at },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    queryClient.clear();
+    vi.mocked(api.getProjectFlow).mockResolvedValue(DEFAULT_FLOW_MOCK as any);
+    vi.mocked(api.listProjects).mockResolvedValue([project as any]);
+    vi.mocked(api.listItems).mockResolvedValue(items as any);
+    localStorage.setItem('agenfk_project_id', 'p1');
+  });
+  afterEach(() => cleanup());
+  guardTokens();
+
+  for (const [id, title] of [['open1', 'Open card'], ['done1', 'Closed card']] as const) {
+    it(`shows when "${title}" was created and last updated, with the full times on hover`, async () => {
+      render(<KanbanBoard />, { wrapper });
+      await screen.findByText(title);
+      const dates = await screen.findByTestId(`card-dates-${id}`);
+      // Exact face text, so the two dates cannot swap labels unnoticed.
+      expect(dates.textContent).toBe(`Created ${cardShortDate(created)} · Updated ${cardAgo(updated)}`);
+      const hover = dates.getAttribute('title') ?? '';
+      expect(hover).toContain(`Created ${new Date(created).toLocaleString()}`);
+      expect(hover).toContain(`Updated ${new Date(updated).toLocaleString()}`);
+    });
+  }
+});
+

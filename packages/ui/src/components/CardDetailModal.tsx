@@ -1,4 +1,5 @@
 import React from 'react';
+import { cardFullTimestamp } from '../cardDates';
 import { AgEnFKItem, ItemType, Status } from '../types';
 import {
   X, Layout, Tag, AlignLeft, AlertCircle, Zap,
@@ -420,7 +421,11 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                   <div className="flex flex-wrap gap-4 text-sm text-slate-500 dark:text-slate-400">
                     <div className="flex items-center gap-1.5">
                       <Calendar size={14} />
-                      <span>Created: {new Date(item.createdAt).toLocaleString()}</span>
+                      <span>Created: {cardFullTimestamp(item.createdAt)}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <Clock size={14} />
+                      <span>Updated: {cardFullTimestamp(item.updatedAt)}</span>
                     </div>
                   </div>
                 )}
