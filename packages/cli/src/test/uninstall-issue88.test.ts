@@ -45,6 +45,8 @@ describe('issue #88 — uninstall-helpers', () => {
     ]);
     expect(hookBinFilenames('win32')).toEqual([
       'agenfk.cmd', 'agenfk-gatekeeper.cmd', 'agenfk-mcp-enforcer.cmd', 'agenfk-pr-hook.cmd',
+      // #192: the extensionless sh wrappers Claude Code's Git Bash hooks run
+      'agenfk-gatekeeper', 'agenfk-mcp-enforcer', 'agenfk-pr-hook',
     ]);
   });
 
