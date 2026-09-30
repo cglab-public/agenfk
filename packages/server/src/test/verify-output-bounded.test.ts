@@ -89,6 +89,26 @@ describe('bounded output capture', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it('says it truncated when a chunk ends EXACTLY on the ceiling', () => {
+    // Linux delivers pipe output in 64KB chunks, so a 64KB ceiling is hit
+    // exactly at a chunk boundary. The next chunk then found no room and was
+    // dropped without marking the log truncated — a silently short log, and a
+    // flaky "bounds the log FILE too" in verify-failure-diagnostics on CI.
+    const dir = tmp();
+    const file = path.join(dir, 'out.log');
+    const fd = fs.openSync(file, 'w');
+    const cap = createOutputCapture({ fd, maxLogBytes: 4096 });
+    cap.write(Buffer.alloc(4096, 0x63));
+    cap.write(Buffer.alloc(4096, 0x63));
+    const out = cap.end();
+
+    expect(out.logTruncated).toBe(true);
+    expect(out.totalBytes).toBe(8192);
+    expect(fs.statSync(file).size).toBeLessThan(8192);
+    expect(fs.readFileSync(file, 'utf8')).toMatch(/log truncated at/i);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it('does not split a multi-byte character across chunk boundaries', () => {
     // toString() per chunk mangles any character whose bytes straddle the
     // boundary, and a test suite printing a check mark or an em dash is

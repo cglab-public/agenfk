@@ -123,13 +123,15 @@ export function createOutputCapture(opts: { fd: number | null; maxLogBytes?: num
   const toFile = (buf: Buffer) => {
     if (fd === null || logTruncated || logWriteError) return;
     const room = maxLogBytes - writtenBytes;
-    if (room <= 0) return;
     try {
       if (buf.length <= room) {
         writtenBytes += writeAll(buf);
         return;
       }
-      writtenBytes += writeAll(buf.subarray(0, room));
+      // No early return on room === 0: a chunk that ends exactly on the
+      // ceiling leaves no room for the NEXT one, and that chunk must still
+      // mark the log truncated rather than vanish silently.
+      if (room > 0) writtenBytes += writeAll(buf.subarray(0, room));
       logTruncated = true;
       // The file admits to its own ceiling. A silently short log is worse than
       // a short one, because it reads as "the command stopped there".
