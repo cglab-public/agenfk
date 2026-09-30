@@ -41,7 +41,7 @@
 
   --text-primary: #000f3b;
   --text-secondary: #3d4a6b;
-  --text-tertiary: #7c88a6;
+  --text-tertiary: #5f6b89;  /* ~5:1 on #f8fafc (was #7c88a6, 3.4:1) */
 
   --border-brand: rgba(4, 204, 152, .22);   /* brand hairline border */
   --border-soft: rgba(0, 15, 59, .08);      /* soft neutral border */
@@ -50,6 +50,35 @@
   --chip-bg: rgba(219, 247, 240, .55);
 
   --glow: 0 0 20px rgba(4, 204, 152, .12);  /* the one glow shadow, light value */
+
+  /* ---- Visual system (CGLAB-434): colour lives in marks, chips and selection;
+   * canvas and cards stay neutral. Teal (--brand) is the brand mark; indigo is
+   * the working accent. Chart hues are a fixed order - colour follows the
+   * entity, never its position. Palettes validated for CVD separation. ---- */
+  --accent: #5b5bd6;                        /* active nav, selected chips, links */
+  --accent-ink: #4644c2;                    /* indigo as text; --accent-text stays teal until call sites move */
+  --focus-ring: #056f71;                    /* teal-dark: --brand is only ~2:1 on light */
+  --accent-fill: rgba(91, 91, 214, .12);
+  --series-1: #5b5bd6;  /* indigo */
+  --series-2: #0f9f8f;  /* teal */
+  --series-3: #b03fc4;  /* fuchsia */
+  --series-4: #c96d10;  /* amber */
+  --series-5: #2b8fd9;  /* sky */
+  --series-6: #d6457a;  /* rose */
+  --size-1: #a9abf6;    /* XS - faint to strong, one hue */
+  --size-2: #8587f0;
+  --size-3: #6364e2;
+  --size-4: #4644c2;
+  --size-5: #2d2a8c;    /* XL */
+  /* Status is reserved for state and always ships with an icon or a word. */
+  --status-ok-text: #16703f;      --status-ok-bg: rgba(26, 127, 75, .10);
+  --status-warn-text: #8a5d00;    --status-warn-bg: rgba(191, 135, 0, .12);
+  --status-danger-text: #b8324a;  --status-danger-bg: rgba(194, 58, 82, .10);
+  --status-info-text: #1a62ad;    --status-info-bg: rgba(31, 111, 192, .10);
+  --type-epic: #b03fc4;
+  --type-story: #2b8fd9;
+  --type-task: #0f9f8f;
+  --type-bug: #d6457a;
 
   /* Gradients (theme-independent). Not a recognized Tailwind @theme
    * namespace, so kept as plain custom properties and consumed via
@@ -87,6 +116,31 @@
     --danger-text: #f26d7e;     /* ~6.64:1 on #0d0f13; danger-muted is legible on dark, unlike on light */
 
     --glow: 0 0 30px rgba(4, 204, 152, .12);
+
+    /* Visual system (CGLAB-434), dark steps of the same hues. */
+    --accent: #7778ec;
+    --accent-ink: #aaacf6;
+    --focus-ring: #04cc98;
+    --accent-fill: rgba(119, 120, 236, .15);
+    --series-1: #7778ec;
+    --series-2: #1ba592;
+    --series-3: #cc5fe0;
+    --series-4: #cc8124;
+    --series-5: #4a9be0;
+    --series-6: #e05a8c;
+    --size-1: #3f3cbf;    /* XS - on dark the ramp runs dark to bright */
+    --size-2: #5d5de0;
+    --size-3: #8081ee;
+    --size-4: #aaacf6;
+    --size-5: #d4d5fb;    /* XL */
+    --status-ok-text: #5fd39a;      --status-ok-bg: rgba(95, 211, 154, .12);
+    --status-warn-text: #f5c451;    --status-warn-bg: rgba(245, 196, 81, .13);
+    --status-danger-text: #f26d7e;  --status-danger-bg: rgba(242, 109, 126, .14);
+    --status-info-text: #6cb4f5;    --status-info-bg: rgba(108, 180, 245, .13);
+    --type-epic: #cc5fe0;
+    --type-story: #4a9be0;
+    --type-task: #1ba592;
+    --type-bug: #e05a8c;
     /* Tailwind's slate, made neutral gray (user request 2026-09-24). The Kanban UI
      * and the flow editor are written in slate, which is blue-tinted; every v4
      * utility reads these variables. 900/950 are the brand surface/canvas, so the
@@ -131,6 +185,31 @@
   --danger-text: #f26d7e;       /* ~6.64:1 on #0d0f13; danger-muted is legible on dark, unlike on light */
 
   --glow: 0 0 30px rgba(4, 204, 152, .12);
+
+  /* Visual system (CGLAB-434), dark steps of the same hues. */
+  --accent: #7778ec;
+  --accent-ink: #aaacf6;
+  --focus-ring: #04cc98;
+  --accent-fill: rgba(119, 120, 236, .15);
+  --series-1: #7778ec;
+  --series-2: #1ba592;
+  --series-3: #cc5fe0;
+  --series-4: #cc8124;
+  --series-5: #4a9be0;
+  --series-6: #e05a8c;
+  --size-1: #3f3cbf;    /* XS - on dark the ramp runs dark to bright */
+  --size-2: #5d5de0;
+  --size-3: #8081ee;
+  --size-4: #aaacf6;
+  --size-5: #d4d5fb;    /* XL */
+  --status-ok-text: #5fd39a;      --status-ok-bg: rgba(95, 211, 154, .12);
+  --status-warn-text: #f5c451;    --status-warn-bg: rgba(245, 196, 81, .13);
+  --status-danger-text: #f26d7e;  --status-danger-bg: rgba(242, 109, 126, .14);
+  --status-info-text: #6cb4f5;    --status-info-bg: rgba(108, 180, 245, .13);
+  --type-epic: #cc5fe0;
+  --type-story: #4a9be0;
+  --type-task: #1ba592;
+  --type-bug: #e05a8c;
   /* Tailwind's slate, made neutral gray (user request 2026-09-24). The Kanban UI
    * and the flow editor are written in slate, which is blue-tinted; every v4
    * utility reads these variables. 900/950 are the brand surface/canvas, so the
@@ -170,7 +249,7 @@
 
   --text-primary: #000f3b;
   --text-secondary: #3d4a6b;
-  --text-tertiary: #7c88a6;
+  --text-tertiary: #5f6b89;  /* ~5:1 on #f8fafc (was #7c88a6, 3.4:1) */
 
   --border-brand: rgba(4, 204, 152, .22);
   --border-soft: rgba(0, 15, 59, .08);
@@ -180,6 +259,35 @@
   --danger-text: #c23a52;       /* AA-compliant error copy (~4.99:1 on #f8fafc); danger-muted stays for decorative chip/badge/icon tints */
 
   --glow: 0 0 20px rgba(4, 204, 152, .12);
+
+  /* ---- Visual system (CGLAB-434): colour lives in marks, chips and selection;
+   * canvas and cards stay neutral. Teal (--brand) is the brand mark; indigo is
+   * the working accent. Chart hues are a fixed order - colour follows the
+   * entity, never its position. Palettes validated for CVD separation. ---- */
+  --accent: #5b5bd6;                        /* active nav, selected chips, links */
+  --accent-ink: #4644c2;                    /* indigo as text; --accent-text stays teal until call sites move */
+  --focus-ring: #056f71;                    /* teal-dark: --brand is only ~2:1 on light */
+  --accent-fill: rgba(91, 91, 214, .12);
+  --series-1: #5b5bd6;  /* indigo */
+  --series-2: #0f9f8f;  /* teal */
+  --series-3: #b03fc4;  /* fuchsia */
+  --series-4: #c96d10;  /* amber */
+  --series-5: #2b8fd9;  /* sky */
+  --series-6: #d6457a;  /* rose */
+  --size-1: #a9abf6;    /* XS - faint to strong, one hue */
+  --size-2: #8587f0;
+  --size-3: #6364e2;
+  --size-4: #4644c2;
+  --size-5: #2d2a8c;    /* XL */
+  /* Status is reserved for state and always ships with an icon or a word. */
+  --status-ok-text: #16703f;      --status-ok-bg: rgba(26, 127, 75, .10);
+  --status-warn-text: #8a5d00;    --status-warn-bg: rgba(191, 135, 0, .12);
+  --status-danger-text: #b8324a;  --status-danger-bg: rgba(194, 58, 82, .10);
+  --status-info-text: #1a62ad;    --status-info-bg: rgba(31, 111, 192, .10);
+  --type-epic: #b03fc4;
+  --type-story: #2b8fd9;
+  --type-task: #0f9f8f;
+  --type-bug: #d6457a;
   /* Tailwind's own slate again: a forced light theme on a dark OS must not keep
    * the dark-mode neutral ramp above. */
   --color-slate-50: oklch(98.4% 0.003 247.858);
@@ -237,4 +345,45 @@
 
   /* Effects: exactly one glow shadow -> shadow-glow. */
   --shadow-glow: var(--glow);
+
+  /* Visual system (CGLAB-434) -> bg-accent, text-accent-ink, bg-accent-fill,
+   * fill-series-3, bg-size-5, text-status-ok-text, bg-status-ok-bg,
+   * text-type-bug, ... */
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-fill: var(--accent-fill);
+  --color-focus-ring: var(--focus-ring);
+  --color-series-1: var(--series-1);
+  --color-series-2: var(--series-2);
+  --color-series-3: var(--series-3);
+  --color-series-4: var(--series-4);
+  --color-series-5: var(--series-5);
+  --color-series-6: var(--series-6);
+  --color-size-1: var(--size-1);
+  --color-size-2: var(--size-2);
+  --color-size-3: var(--size-3);
+  --color-size-4: var(--size-4);
+  --color-size-5: var(--size-5);
+  --color-status-ok-text: var(--status-ok-text);
+  --color-status-ok-bg: var(--status-ok-bg);
+  --color-status-warn-text: var(--status-warn-text);
+  --color-status-warn-bg: var(--status-warn-bg);
+  --color-status-danger-text: var(--status-danger-text);
+  --color-status-danger-bg: var(--status-danger-bg);
+  --color-status-info-text: var(--status-info-text);
+  --color-status-info-bg: var(--status-info-bg);
+  --color-type-epic: var(--type-epic);
+  --color-type-story: var(--type-story);
+  --color-type-task: var(--type-task);
+  --color-type-bug: var(--type-bug);
+}
+
+/* Keyboard focus is visible everywhere (CGLAB-434). In the base layer, so a
+ * component's own focus utilities (focus:outline-none + ring) still win and the
+ * ring only lands where nothing else draws one. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+  }
 }
