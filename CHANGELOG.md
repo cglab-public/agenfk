@@ -2,6 +2,17 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.16] — 2026-09-30
+
+Beta, cumulative over `2.0.0-beta.15`: everything in beta.15, plus the fix below (CGLAB-164).
+
+- **A close onto an exit step not named DONE now tells the agent what the close commit did.** The close commit
+  was made, but the verify reply only reported it, with the push instructions, when the card landed on the
+  literal `DONE`. On a flow ending in `SHIPPED`, say, the agent was not told the commit had FAILED or what was
+  left unstaged, and could push a branch without its work. The reply now follows the move that ends the flow,
+  whatever the exit step is named. The same close also stops handing the agent the exit step's criteria as work
+  still to do.
+
 ## [2.0.0-beta.15] — 2026-09-30
 
 Beta, cumulative over `2.0.0-beta.14`: everything in beta.14, plus the fixes below (CGLAB-164).
