@@ -370,8 +370,8 @@ export function AdminUpgrades() {
             )}
           </div>
           {error && (
-            <div className="text-[12px] text-status-danger-text inline-flex items-center gap-1">
-              <AlertTriangle className="w-3.5 h-3.5" /> {error}
+            <div className="text-[12px] text-status-danger-text inline-flex items-start gap-1 whitespace-pre-line">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" /> {error}
             </div>
           )}
           <div className="flex justify-end gap-2 pt-2">

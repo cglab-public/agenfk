@@ -7,6 +7,7 @@
  * say "safe" until every one of them has confirmed ON the new hostname.
  */
 import { useState } from 'react';
+import { addressChangeError } from './adminValidation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowRightLeft, AlertTriangle, CheckCircle2, Clock, Ban } from 'lucide-react';
 import { api } from '../api';
@@ -78,6 +79,10 @@ export function AdminRepoint() {
   });
 
   const campaign = board.data?.campaign ?? null;
+  const [urlTouched, setUrlTouched] = useState(false);
+  const urlProblem = addressChangeError(targetUrl);
+  // Shown once the admin leaves the field; the button is disabled either way.
+  const urlError = urlTouched ? urlProblem : null;
   const targets = board.data?.targets ?? [];
   const openedAt = campaign?.createdAt ?? '';
   const summary = drainSummary(targets, openedAt);
@@ -103,17 +108,23 @@ export function AdminRepoint() {
             <input
               value={targetUrl}
               onChange={e => setTargetUrl(e.target.value)}
+              onBlur={() => setUrlTouched(true)}
               placeholder="https://hub.new-domain.com"
+              aria-invalid={!!urlError}
+              aria-describedby={urlError ? 'address-change-url-error' : undefined}
               className="flex-1 rounded-lg border border-border-soft bg-surface px-3 py-2 text-sm text-ink"
             />
             <button
               onClick={() => open.mutate()}
-              disabled={!targetUrl.trim() || open.isPending}
+              disabled={!targetUrl.trim() || !!urlProblem || open.isPending}
               className="rounded-lg border border-accent bg-accent-fill px-3 py-2 text-xs font-semibold text-accent-ink disabled:opacity-50"
             >
               Start the address change
             </button>
           </div>
+        )}
+        {!campaign && urlError && (
+          <p id="address-change-url-error" className="mt-2 text-xs text-status-danger-text">{urlError}</p>
         )}
         {openError && (
           <p className="mt-2 text-xs text-status-danger-text">{String(openError)}</p>

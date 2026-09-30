@@ -17,6 +17,7 @@ import { Plus, Pencil, Trash2, X, ChevronDown, ChevronRight, Send } from 'lucide
 import { ChildHubPicker, toggledSet } from './childHubPicker';
 import { FlowEditorModal, type FlowClient, type RegistryClient, type Flow } from '@agenfk/flow-editor';
 import { api } from '../api';
+import { QueryError } from '../components/ui';
 import { RegistryPullsPanel } from './RegistryPullsPanel';
 import { flattenAdminFlow } from './adminFlowShape';
 import { repoOverrideOptions } from './repoOverrideOptions';
@@ -171,10 +172,11 @@ export function AdminFlows() {
   const sourceRef = useRef<RegistrySource>('org');
   sourceRef.current = registrySource;
 
-  const { data: flows = [] } = useQuery<Flow[]>({
+  const flowsQ = useQuery<Flow[]>({
     queryKey: ['admin-flows'],
     queryFn: () => flowClient.listFlows(),
   });
+  const flows = flowsQ.data ?? [];
   const { data: assignments = [] } = useQuery<Assignment[]>({
     queryKey: ['admin-flow-assignments'],
     queryFn: async () => (await api.get('/v1/admin/flow-assignments')).data,
@@ -263,7 +265,13 @@ export function AdminFlows() {
       {tab === 'flows' && (
       <div role="tabpanel" id="flows-panel-flows" aria-labelledby="flows-tab-flows" className="space-y-4">
       <div className="bg-surface border border-border-soft rounded-2xl divide-y divide-border-soft">
-        {flows.length === 0 && (
+        {flowsQ.isError && (
+          <div className="p-4"><QueryError error={flowsQ.error} onRetry={() => flowsQ.refetch()} /></div>
+        )}
+        {flowsQ.isPending && (
+          <div className="p-6 text-sm text-ink-tertiary" role="status">Loading…</div>
+        )}
+        {flowsQ.isSuccess && flows.length === 0 && (
           <div className="p-6 text-sm text-ink-tertiary">
             No flows yet. Click <span className="font-semibold">New flow</span> to create one or import one from the community registry.
           </div>

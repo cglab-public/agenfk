@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
 import { apiErrorText } from '../apiError';
-import { buttonClass, cardClass, controlClass, CopyButton } from '../components/ui';
+import { buttonClass, cardClass, controlClass, CopyButton, QueryError } from '../components/ui';
 
 /**
  * Admin → JIRA (CGLAB-412). The admin registers the org's Atlassian OAuth app
@@ -47,12 +47,15 @@ export function AdminJira() {
     onSuccess: onSaved,
   });
 
-  if (!cfg.data) return <div className="text-sm text-ink-tertiary">Loading…</div>;
+  // Only a failed first load replaces the page; a failed refresh keeps it.
+  if (cfg.isError && !cfg.data) return <QueryError error={cfg.error} onRetry={() => cfg.refetch()} />;
+  if (!cfg.data) return <p role="status" className="text-sm text-ink-tertiary">Loading…</p>;
   const c = cfg.data;
   const idValue = clientId ?? c.clientId;
 
   return (
     <div className="space-y-4 max-w-2xl">
+      {cfg.isError && <QueryError error={cfg.error} onRetry={() => cfg.refetch()} />}
       <section className={cardCls}>
         <h3 className="text-sm font-semibold text-ink">Connections</h3>
         <p className="mt-1 text-sm text-ink-tertiary">

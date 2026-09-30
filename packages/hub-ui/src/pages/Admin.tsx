@@ -9,7 +9,8 @@ import { canDeleteUserRow } from './canDeleteUserRow';
 import { hideTargetKey, partitionHiddenRows, canHideRow } from './hiddenPeople';
 import { canRetireRow, canUnretireRow, countRetired, retireConfirmMessage } from './retiredInstallations';
 import { isAttributedByUsername, attributionWarning, countAttributedByUsername } from './attributionWarning';
-import { Toggle, RowMenu, CopyButton, Badge, buttonClass, cardClass, controlClass } from '../components/ui';
+import { Toggle, RowMenu, CopyButton, Badge, QueryError, buttonClass, cardClass, controlClass } from '../components/ui';
+import { inviteErrors } from './adminValidation';
 import { providerStatus, ProviderRequirement } from './signInProviderStatus';
 import { silentDays } from './installationStaleness';
 
@@ -101,11 +102,15 @@ export function AdminAuth() {
   const [draft, setDraftState] = useState<any>({});
   // An edit after a save makes "✓ Saved" untrue.
   const setDraft = (d: any) => { save.reset(); setDraftState(d); };
-  if (!cfg.data) return <div className="text-sm text-ink-tertiary">Loading…</div>;
+  // Only a first load that failed replaces the form; a failed background
+  // refresh keeps the loaded form (and the admin's edits) on screen.
+  if (cfg.isError && !cfg.data) return <QueryError error={cfg.error} onRetry={() => cfg.refetch()} />;
+  if (!cfg.data) return <p role="status" className="text-sm text-ink-tertiary">Loading…</p>;
   const c = { ...cfg.data, ...draft };
 
   return (
     <form className="space-y-4 max-w-2xl" onSubmit={(e) => { e.preventDefault(); save.mutate(draft); }}>
+      {cfg.isError && <QueryError error={cfg.error} onRetry={() => cfg.refetch()} />}
       <section className={cardCls}>
         <header className="flex items-center justify-between">
           <h3 className="text-sm font-semibold text-ink">Email + password</h3>
@@ -191,11 +196,13 @@ export function AdminAuth() {
   );
 }
 
-function Field({ label, children, className }: { label: string; children: React.ReactNode; className?: string }) {
+function Field({ label, error, errorId, children, className }: { label: string; error?: string; errorId?: string; children: React.ReactNode; className?: string }) {
   return (
     <label className={`block ${className ?? ''}`}>
       <span className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{label}</span>
       <div className="mt-1.5">{children}</div>
+      {/* Tied to its input by aria-describedby, not announced as an alert on every keystroke. */}
+      {error && <span id={errorId} className="mt-1 block text-xs text-status-danger-text">{error}</span>}
     </label>
   );
 }
@@ -374,6 +381,12 @@ export function AdminKeys() {
                 </tr>
                 );
               })}
+              {keys.isError && (
+                <tr><td colSpan={6} className="px-5 py-4"><QueryError error={keys.error} onRetry={() => keys.refetch()} /></td></tr>
+              )}
+              {keys.isPending && (
+                <tr><td colSpan={6} className="px-5 py-6 text-center text-sm text-ink-tertiary" role="status">Loading…</td></tr>
+              )}
               {keys.data?.length === 0 && (
                 <tr><td colSpan={6} className="px-5 py-6 text-center text-sm text-ink-tertiary">No keys yet.</td></tr>
               )}
@@ -410,6 +423,11 @@ export function AdminUsers() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-users'] }),
   });
   const [draft, setDraft] = useState<{ email: string; password: string; role: string; authMethod: 'password' | 'sso' }>({ email: '', password: '', role: 'viewer', authMethod: 'password' });
+  const draftErrors = inviteErrors(draft);
+  const inviteReady = !!draft.email && (draft.authMethod === 'sso' || !!draft.password) && !draftErrors.email && !draftErrors.password;
+  // Say what is wrong once the admin leaves a field, not from the first keystroke.
+  const [touched, setTouched] = useState<{ email?: boolean; password?: boolean }>({});
+  const shownErrors = { email: touched.email ? draftErrors.email : undefined, password: touched.password ? draftErrors.password : undefined };
 
   return (
     <div className="space-y-6">
@@ -422,10 +440,11 @@ export function AdminUsers() {
           className="mt-4 grid sm:grid-cols-12 gap-3"
           onSubmit={(e) => {
             e.preventDefault();
-            const body: any = { email: draft.email, role: draft.role };
+            const body: any = { email: draft.email.trim(), role: draft.role };
             if (draft.authMethod === 'password') body.password = draft.password;
             invite.mutate(body);
             setDraft({ email: '', password: '', role: 'viewer', authMethod: draft.authMethod });
+            setTouched({});
           }}
         >
           <Field label="Auth method" className="sm:col-span-12">
@@ -442,12 +461,18 @@ export function AdminUsers() {
               ))}
             </div>
           </Field>
-          <Field label="Email" className={draft.authMethod === 'password' ? 'sm:col-span-5' : 'sm:col-span-9'}>
-            <input className={inputCls} placeholder="alice@acme.com" value={draft.email} onChange={(e) => setDraft({ ...draft, email: e.target.value })} />
+          <Field label="Email" error={shownErrors.email} errorId="invite-email-error" className={draft.authMethod === 'password' ? 'sm:col-span-5' : 'sm:col-span-9'}>
+            <input className={inputCls} placeholder="alice@acme.com" value={draft.email}
+              aria-invalid={!!shownErrors.email} aria-describedby={shownErrors.email ? 'invite-email-error' : undefined}
+              onBlur={() => setTouched(t => ({ ...t, email: true }))}
+              onChange={(e) => setDraft({ ...draft, email: e.target.value })} />
           </Field>
           {draft.authMethod === 'password' && (
-            <Field label="Password" className="sm:col-span-4">
-              <input className={inputCls} type="password" placeholder="≥ 8 characters" value={draft.password} onChange={(e) => setDraft({ ...draft, password: e.target.value })} />
+            <Field label="Password" error={shownErrors.password} errorId="invite-password-error" className="sm:col-span-4">
+              <input className={inputCls} type="password" placeholder="≥ 8 characters" value={draft.password}
+                aria-invalid={!!shownErrors.password} aria-describedby={shownErrors.password ? 'invite-password-error' : undefined}
+                onBlur={() => setTouched(t => ({ ...t, password: true }))}
+                onChange={(e) => setDraft({ ...draft, password: e.target.value })} />
             </Field>
           )}
           <Field label="Role" className="sm:col-span-3">
@@ -457,7 +482,7 @@ export function AdminUsers() {
             </select>
           </Field>
           <div className="sm:col-span-12">
-            <button type="submit" disabled={invite.isPending} className={primaryBtnCls}>
+            <button type="submit" disabled={invite.isPending || !inviteReady} className={primaryBtnCls}>
               {invite.isPending ? 'Inviting…' : 'Invite user'}
             </button>
           </div>
@@ -527,6 +552,12 @@ export function AdminUsers() {
                   </td>
                 </tr>
               ))}
+              {users.isError && (
+                <tr><td colSpan={6} className="px-5 py-4"><QueryError error={users.error} onRetry={() => users.refetch()} /></td></tr>
+              )}
+              {users.isPending && (
+                <tr><td colSpan={6} className="px-5 py-6 text-center text-sm text-ink-tertiary" role="status">Loading…</td></tr>
+              )}
               {users.data?.length === 0 && (
                 <tr><td colSpan={6} className="px-5 py-6 text-center text-sm text-ink-tertiary">No users yet.</td></tr>
               )}
