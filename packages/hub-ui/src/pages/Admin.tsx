@@ -9,7 +9,8 @@ import { canDeleteUserRow } from './canDeleteUserRow';
 import { hideTargetKey, partitionHiddenRows, canHideRow } from './hiddenPeople';
 import { canRetireRow, canUnretireRow, countRetired, retireConfirmMessage } from './retiredInstallations';
 import { isAttributedByUsername, attributionWarning, countAttributedByUsername } from './attributionWarning';
-import { Toggle, RowMenu, CopyButton, buttonClass, cardClass, controlClass } from '../components/ui';
+import { Toggle, RowMenu, CopyButton, Badge, buttonClass, cardClass, controlClass } from '../components/ui';
+import { providerStatus, ProviderRequirement } from './signInProviderStatus';
 import { silentDays } from './installationStaleness';
 
 export function AdminLayout() {
@@ -84,6 +85,12 @@ const inputCls = controlClass;
 const cardCls = cardClass;
 const primaryBtnCls = buttonClass('primary');
 
+/** A sign-in provider's state, next to its name. */
+function ProviderBadge(p: { enabled: boolean; requires: ProviderRequirement[] }) {
+  const s = providerStatus(p);
+  return <Badge tone={s.tone}>{s.label}</Badge>;
+}
+
 export function AdminAuth() {
   const qc = useQueryClient();
   const cfg = useQuery<AuthConfig>({ queryKey: ['auth-config'], queryFn: async () => (await api.get('/v1/admin/auth-config')).data });
@@ -110,29 +117,46 @@ export function AdminAuth() {
       <section className={cardCls}>
         <header className="flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-semibold text-ink">Google</h3>
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-semibold text-ink">Google</h3>
+              <ProviderBadge enabled={c.googleEnabled} requires={[
+                { label: 'a client ID', present: !!c.google.clientId?.trim() },
+                { label: 'a client secret', present: c.google.clientSecretSet || !!c.google.clientSecret },
+              ]} />
+            </div>
             <p className="mt-0.5 text-xs text-ink-tertiary">OAuth 2.0 sign-in with Google Workspace or consumer accounts.</p>
           </div>
           <Toggle label="Google sign-in" checked={c.googleEnabled} onChange={(v) => setDraft({ ...draft, googleEnabled: v })} />
         </header>
+        {c.googleEnabled && (
         <div className="mt-4 grid sm:grid-cols-2 gap-3">
           <Field label="Client ID">
             <input className={inputCls} placeholder="123…apps.googleusercontent.com" value={c.google.clientId} onChange={(e) => setDraft({ ...draft, google: { ...c.google, clientId: e.target.value } })} />
           </Field>
           <Field label="Client secret">
-            <input className={inputCls} type="password" placeholder={c.google.clientSecretSet ? '•••••• (leave blank to keep)' : 'GOCSPX-…'} onChange={(e) => setDraft({ ...draft, google: { ...c.google, clientSecret: e.target.value } })} />
+            <input className={inputCls} type="password" placeholder={c.google.clientSecretSet ? '•••••• (leave blank to keep)' : 'GOCSPX-…'} value={c.google.clientSecret ?? ''} onChange={(e) => setDraft({ ...draft, google: { ...c.google, clientSecret: e.target.value } })} />
           </Field>
         </div>
+        )}
       </section>
 
       <section className={cardCls}>
         <header className="flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-semibold text-ink">Microsoft Entra</h3>
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-semibold text-ink">Microsoft Entra</h3>
+              <ProviderBadge enabled={c.entraEnabled} requires={[
+                // The server refuses Entra sign-in without a tenant (hub/src/auth/entra.ts).
+                { label: 'a tenant ID', present: !!c.entra.tenantId?.trim() },
+                { label: 'a client ID', present: !!c.entra.clientId?.trim() },
+                { label: 'a client secret', present: c.entra.clientSecretSet || !!c.entra.clientSecret },
+              ]} />
+            </div>
             <p className="mt-0.5 text-xs text-ink-tertiary">OAuth 2.0 sign-in via Azure AD / Entra ID tenants.</p>
           </div>
           <Toggle label="Microsoft Entra sign-in" checked={c.entraEnabled} onChange={(v) => setDraft({ ...draft, entraEnabled: v })} />
         </header>
+        {c.entraEnabled && (
         <div className="mt-4 grid sm:grid-cols-2 gap-3">
           <Field label="Tenant ID">
             <input className={inputCls} placeholder="common, organizations, or tenant GUID" value={c.entra.tenantId} onChange={(e) => setDraft({ ...draft, entra: { ...c.entra, tenantId: e.target.value } })} />
@@ -141,9 +165,10 @@ export function AdminAuth() {
             <input className={inputCls} placeholder="application (client) ID" value={c.entra.clientId} onChange={(e) => setDraft({ ...draft, entra: { ...c.entra, clientId: e.target.value } })} />
           </Field>
           <Field label="Client secret" className="sm:col-span-2">
-            <input className={inputCls} type="password" placeholder={c.entra.clientSecretSet ? '•••••• (leave blank to keep)' : 'client secret value'} onChange={(e) => setDraft({ ...draft, entra: { ...c.entra, clientSecret: e.target.value } })} />
+            <input className={inputCls} type="password" placeholder={c.entra.clientSecretSet ? '•••••• (leave blank to keep)' : 'client secret value'} value={c.entra.clientSecret ?? ''} onChange={(e) => setDraft({ ...draft, entra: { ...c.entra, clientSecret: e.target.value } })} />
           </Field>
         </div>
+        )}
       </section>
 
       <section className={cardCls}>

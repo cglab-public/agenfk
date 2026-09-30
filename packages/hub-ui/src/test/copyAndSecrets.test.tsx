@@ -160,7 +160,8 @@ describe('"Saved" does not outlive the next edit', () => {
     await screen.findByText(/Microsoft Entra/i);
     fireEvent.click(screen.getByRole('button', { name: /^save/i }));
     await waitFor(() => expect(screen.getByText('✓ Saved')).toBeInTheDocument());
-    fireEvent.change(screen.getByPlaceholderText('common, organizations, or tenant GUID'), { target: { value: 'acme' } });
+    // Any edit counts; switching a provider on is one (its fields are hidden while off).
+    fireEvent.click(screen.getByRole('switch', { name: 'Microsoft Entra sign-in' }));
     expect(screen.queryByText('✓ Saved')).toBeNull();
   });
 });
