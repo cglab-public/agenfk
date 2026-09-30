@@ -179,39 +179,8 @@ describe('GET /releases/latest — upgradeTier in response', () => {
   });
 });
 
-// ── Story 4: ReleaseReminder.tsx — source analysis ───────────────────────────
-
-const RELEASE_REMINDER_PATH = path.resolve(__dirname, '../../../ui/src/components/ReleaseReminder.tsx');
-const readReleaseReminder = () =>
-  fs.existsSync(RELEASE_REMINDER_PATH) ? fs.readFileSync(RELEASE_REMINDER_PATH, 'utf8') : '';
-
-describe('ReleaseReminder.tsx — ReleaseInfo interface', () => {
-  it('should include upgradeTier in the ReleaseInfo interface', () => {
-    expect(readReleaseReminder()).toMatch(/upgradeTier/);
-  });
-
-  it('should type upgradeTier as "mandatory" | "recommended"', () => {
-    const src = readReleaseReminder();
-    expect(src).toMatch(/mandatory/);
-    expect(src).toMatch(/recommended/);
-  });
-});
-
-describe('ReleaseReminder.tsx — mandatory tier styling (source)', () => {
-  it('should apply red styling for mandatory tier', () => {
-    expect(readReleaseReminder()).toMatch(/mandatory.*red|red.*mandatory/i);
-  });
-
-  it('should hide or disable the Dismiss button for mandatory tier', () => {
-    expect(readReleaseReminder()).toMatch(/isMandatory.*[Dd]ismiss|[Dd]ismiss.*isMandatory|!isMandatory/i);
-  });
-});
-
-describe('ReleaseReminder.tsx — recommended tier styling (source)', () => {
-  it('should apply yellow/amber styling for recommended tier', () => {
-    expect(readReleaseReminder()).toMatch(/recommended.*yellow|yellow.*recommended|amber.*recommended|recommended.*amber/i);
-  });
-});
+// ── Story 4: ReleaseReminder tiers are pinned by rendered tests in
+// packages/ui/src/test/components.test.tsx (CGLAB-434), not by source greps.
 
 // ── Story 3: MCP response augmentation ───────────────────────────────────────
 
