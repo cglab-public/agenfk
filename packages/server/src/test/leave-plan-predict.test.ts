@@ -207,6 +207,23 @@ describe('GET /items/:id/leave-plan?predict=1', () => {
     expect(p.prediction.advice).toMatch(/then/i);
   });
 
+  it('on the final step whose report command IS the verify command, predicts one run that closes the card - and verify runs the suite once (36c5ca25)', async () => {
+    const f = await agent().post('/flows').send({ name: `pr-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('PLAN', 1), s('TEST', 2, { role: 'testing' }), s('END', 3, { isAnchor: true })] });
+    const t = await setup();
+    const project: any = await storage.getProject(((await storage.getItem(t.id)) as any).projectId);
+    await storage.updateProject(project.id, { flowId: f.body.id, verifyCommand: project.testReport.command } as never);
+    await validate(t.id); // PLAN -> TEST
+    const before = t.runs().length;
+    const p = await predict(t.id);
+    expect(p.closesOnCapture).toBe(true);
+    expect(p.thenCommand).toBeUndefined();
+    expect(p.prediction.command, 'predicted a second run of the same command').toBeUndefined();
+    expect(p.prediction.advice).toMatch(/closes the card/i);
+    const res = await validate(t.id);
+    expect(res.body.status, JSON.stringify(res.body)).toBe('END');
+    expect(t.runs().length - before).toBe(1);
+  });
+
   it('on a mid-flow boundary, never predicts a sibling green: only the move that ends the flow propagates one', async () => {
     const f = await agent().post('/flows').send({ name: `pr-${++seq}`, steps: [s('START', 0, { isAnchor: true }), s('A', 1), s('HOLD', 2, { isSpecial: true }), s('B', 3), s('DONE', 4, { isAnchor: true })] });
     const repo = tmp('agenfk-pr-bound-');

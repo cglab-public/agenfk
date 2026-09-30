@@ -7692,6 +7692,27 @@ async function siblingGreenOf(item: any, siblings: any[], flow: TransitionFlow, 
   return { pass, refusal, treeSha, treeState };
 }
 
+/** A step whose applicable checks include a command check (efcacdeb) - it runs after the step's capture. */
+const stepHasCommandChecks = (flow: { steps: any[] }, status: string): boolean =>
+  resolveStepChecks(flow.steps, status).some(c => c.applicable && c.id.startsWith('command-check:'));
+
+/**
+ * 36c5ca25: the green this move's own capture already gave the verify command,
+ * or null. With a test report the step gate captures the suite on the move that
+ * ends the flow, and when the report's command IS the verify command, spawning
+ * it again runs the same suite twice. It stands for the command only as a whole
+ * green that RAN on this move (never a partial run merged over the entry, nor
+ * a green reused from an earlier run), in the root the command runs in, on the
+ * state the tree is still in.
+ */
+export function ownCaptureGreenOf(capture: any, command: string, root: string | null | undefined, project: any): any | null {
+  // A reused green ran nothing on this move (reusedFrom; a re-read surface sets it too): the command is then the one run.
+  if (!capture || capture.kind !== 'capture' || !root || capture.lazy || capture.reusedFrom || capture.surfaceRereadFrom || !capturedGreen(capture)) return null;
+  if (capture.command !== command || capture.root !== root) return null;
+  const state = stateOfRecord(capture);
+  return state !== null && treeStateOf(root, project) === state ? capture : null;
+}
+
 async function entryCaptureOf(item: any, sorted: any[], index: number): Promise<any | null> {
   const prevStep = sorted[index - 1];
   if (!prevStep || ['testing', 'refactoring'].includes((sorted[index] as any)?.role)) return null;
@@ -7741,6 +7762,8 @@ export interface LeavePlan {
   command?: string;
   /** On the final move with a capture: the verify command that runs AFTER it and gates the close. */
   thenCommand?: string;
+  /** 36c5ca25: on the move that ends the flow, the capture IS the verify command: its whole, fenced green closes the card (a partial run or a reuse is followed by the command). */
+  closesOnCapture?: boolean;
   /** The parent the card's suite is deferred to (verifyAt 'parent'). */
   deferredTo?: { id: string; title: string };
   /** The step waits for a person's approval first; the suite runs on the verify after it. */
@@ -7771,11 +7794,17 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown 
   // A mid-flow anchor skips the whole gate block - the person-first wait included.
   const waiting = midAnchor ? false : await waitsOnPerson(item, flow, project);
   const verifyCommand: string | undefined = project?.verifyCommand || undefined;
-  const captureCommand: string | undefined = project?.testReport?.command || verifyCommand;
+  // As the capture resolves it (captureStepRecord): the report's command, else the verify command.
+  const captureCommand: string | undefined = project?.testReport?.command ?? verifyCommand;
   // On the move a verify command gates (the final step, a boundary), it runs unless the suite is deferred to the parent.
   const gateCommand = final && !toParent ? verifyCommand : undefined;
   const runs: LeavePlan['runs'] = cap.runs ? 'suite' : gateCommand ? 'verify-command' : 'nothing';
-  const thenCommand = cap.runs && gateCommand ? gateCommand : undefined;
+  // 36c5ca25: when the capture runs the verify command itself, its whole green closes the card - no second run.
+  // Only on the move that ENDS the flow (a mid-flow boundary runs the command after), with a report the capture
+  // is fenced by (no report, no state to hold the green to), and no command check running after the capture.
+  const closesOnCapture = cap.runs && !!gateCommand && gateCommand === captureCommand && leavingEndsFlow(sorted as any, index)
+    && !!project?.testReport && reportPathsOf(project.testReport).length > 0 && !stepHasCommandChecks(flow, step);
+  const thenCommand = cap.runs && gateCommand && !closesOnCapture ? gateCommand : undefined;
   const root = item.id ? resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root : project?.projectRoot ?? null;
   // NO_TREE refuses when something needs the capture: a check of THIS step, or the next step's BLOCKING
   // checks reading its entry baseline (the gate's entry-baseline hold). An entry only non-blocking checks
@@ -7798,7 +7827,7 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown 
   if (refuses === 'NO_VERIFY_COMMAND') parts.push(`Leaving ${step} needs the project's verify command, and none is set: verify will refuse until one is (\`agenfk update-project <id> --verify-command "<cmd>"\`).`);
   else if (refuses === 'NO_TREE') parts.push(`Leaving ${step} runs the suite, but this card has no tree to run it in: verify will refuse until the project root is set or the card has a worktree.`);
   else if (runs === 'suite') {
-    parts.push(`Leaving ${step} runs the project's suite${q(captureCommand)} for you${why}${entry}${thenCommand ? `, then the project's verify command${q(thenCommand)}, which gates the close` : ''}.${dontPreRun}${smaller}`);
+    parts.push(`Leaving ${step} runs the project's suite${q(captureCommand)} for you${why}${entry}${thenCommand ? `, then the project's verify command${q(thenCommand)}, which gates the close` : ''}${closesOnCapture ? '; it is the verify command, so its green closes the card (after a partial run, a reused green, or a tree that moved, the whole command runs too)' : ''}.${dontPreRun}${smaller}`);
     if (toParent) parts.push(`The suite's green itself is deferred to the parent [${String(toParent.id).slice(0, 8)}] "${toParent.title}", whose final verify runs it.`);
   } else if (runs === 'verify-command') parts.push(`Leaving ${step} runs the project's verify command${q(gateCommand)} for you, and the card moves only if it passes.${dontPreRun}`);
   else if (toParent) parts.push(`Leaving ${step} runs no tests on this card: the project's suite is deferred to the parent [${String(toParent.id).slice(0, 8)}] "${toParent.title}", whose final verify runs it.`);
@@ -7809,6 +7838,7 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown 
     ...base, runs, checks: cap.checks, entryBaseline: cap.entryBaseline,
     ...(runs !== 'nothing' && (runs === 'suite' ? captureCommand : gateCommand) ? { command: runs === 'suite' ? captureCommand : gateCommand } : {}),
     ...(thenCommand ? { thenCommand } : {}),
+    ...(closesOnCapture ? { closesOnCapture: true } : {}),
     ...(toParent ? { deferredTo: { id: toParent.id, title: toParent.title } } : {}),
     waitsOnPerson: waiting, ...(held ? { held } : {}), ...(refuses ? { refuses } : {}), narrowing,
     advice: parts.join(' '),
@@ -7878,9 +7908,11 @@ async function predictLeave(item: any, plan: LeavePlan, flow: { steps: any[] }, 
   }
   const { said, ...rest } = capture;
   if (plan.refuses) return { ...rest, advice: `On this tree it ${said}, and then verify refuses (${plan.refuses}): set a verify command first, and the suite is not spent for nothing.` };
-  if (!plan.thenCommand) return { ...rest, advice: `On this tree it ${said}.` };
-  const c = await commandLeg(plan.thenCommand);
-  return { ...rest, command: c, advice: `On this tree it ${said}, then ${sayCommand(c, plan.thenCommand)}.` };
+  // 36c5ca25: a partial run, or a green reused rather than run, cannot stand for the verify command: the whole command follows it.
+  const then = plan.thenCommand ?? (plan.closesOnCapture && rest.mode !== 'full' ? plan.command : undefined);
+  if (!then) return { ...rest, advice: `On this tree it ${said}${plan.closesOnCapture ? ', and its green closes the card' : ''}.` };
+  const c = await commandLeg(then);
+  return { ...rest, command: c, advice: `On this tree it ${said}, then ${sayCommand(c, then)}.` };
 }
 
 /** The leave plan for a card as it stands now, or null when it has no flow step to leave. */
@@ -8594,6 +8626,67 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   }
   const exitCriteria = (currentFlowStep.step as any).exitCriteria as string | undefined;
 
+  /*
+   * A close on a green already in hand - a sibling's of this tree, or this
+   * move's own capture of the same command (36c5ca25) - without spawning the
+   * command again. The same move a passing run makes: strays asked again (a
+   * re-entry skipped the early check, and a close may have happened since),
+   * the green recorded against the tree it belongs to, the close commit.
+   */
+  const closeOnGreen = async (r0: any, how: { how: string; output: string; recordOutput: string; note: string; green: Record<string, unknown>; stampAt?: string | null }) => {
+    const strays = await checkStrays(r0);
+    if (strays.refused) return;
+    const r1 = strays.res;
+    const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (${how.how})\n\n${how.note}`, timestamp: new Date() };
+    const testId = uuidv4();
+    const updates: any = { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment], tests: [...testRecords(item.tests), { id: testId, command: resolvedCommand, output: how.recordOutput, status: 'PASSED', executedAt: new Date(), ...how.green }], ...(isExitStep ? { failureCount: 0 } : {}) };
+    const updated = await storage.updateItem(itemId, updates);
+    io.emit('items_updated');
+    recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
+    if (updated.parentId) await syncParentStatus(updated.parentId);
+    // Awaited, unlike before: the response describes what the commit did,
+    // so it cannot be written before the commit has been attempted. No
+    // `|| findProjectRoot(process.cwd())`: that made a long-lived daemon
+    // commit into whatever repository it was launched from.
+    const gitResult = (process.env.NODE_ENV !== 'test' && !process.env.VITEST)
+      ? await autoGitCommit(updated, (project as any)?.projectRoot)
+      : undefined;
+    /*
+     * As a passing run does (b29a8b3a / e99b5015): once the close commit moved
+     * HEAD, a clean tree whose content is still the state the green ran on is
+     * that commit - recorded, so the next card inherits it by commit too.
+     */
+    if (how.stampAt && effectiveRoot) {
+      const verifiedSha = readCleanTreeSha(effectiveRoot, gitRun);
+      if (verifiedSha && treeStateOf(effectiveRoot, project) === how.stampAt) {
+        const current = await storage.getItem(itemId);
+        await storage.updateItem(itemId, { tests: testRecords(current?.tests).map((t: any) => (t.id === testId ? { ...t, commit: verifiedSha } : t)) });
+        noteGreen(item.projectId, effectiveRoot, verifiedSha, itemId);
+        try { await stampCloseGreen(itemId, effectiveRoot, verifiedSha); }
+        catch (e: any) { console.error(`[validate] stampCloseGreen failed after the close: ${e?.message || e}`); }
+        io.emit('items_updated');
+      }
+    }
+    // The hub counts passes: a close on a green in hand is one (the green's source is in the payload).
+    recordHubEvent({ type: 'validate.passed', projectId: item.projectId, itemId, payload: { fromStatus: item.status, toStatus: nextStatus, command: resolvedCommand, via: how.output } });
+    recordHubEvent({ type: 'test.logged', projectId: item.projectId, itemId, payload: { command: resolvedCommand, status: 'PASSED', testId, via: how.output } });
+    return r1.json({ status: nextStatus, message: `✅ Validation Passed (${how.how})!\n\nItem moved to ${nextStatus}.${describePush(gitResult)}${nowOn(nextStatus)}`, output: how.output });
+  };
+
+  // ── This move's own capture (36c5ca25) ───────────────────────────────────
+  // The gate just ran the verify command as its capture, green, on this very tree: running it again proves nothing new.
+  // A command check on this step runs after the capture (a build, say, into ignored files the tree state cannot see): the command then runs after it, as before.
+  if (endsFlow && resolvedCommand && gate?.capture && !stepHasCommandChecks(activeFlow, item.status)) {
+    const own = ownCaptureGreenOf(gate.capture, resolvedCommand, effectiveRoot, project);
+    if (own) {
+      const green = { ...(own.clean === true && typeof own.head === 'string' ? { commit: own.head } : {}), treeState: stateOfRecord(own), treeStateVersion: STATE_VERSION, commitRoot: effectiveRoot };
+      return closeOnGreen(res, {
+        how: "this step's suite run", output: 'Step capture', recordOutput: `Step capture: the ${item.status} capture ran this command green on this tree`, green, stampAt: stateOfRecord(own),
+        note: `The step's capture ran \`${resolvedCommand}\` green on this very tree, so it was not run a second time.${passedChecks ? `\n\n${passedChecks}` : ''}`,
+      });
+    }
+  }
+
   // ── Sibling propagation ───────────────────────────────────────────────────
   // 3ffc9651: what an identical sibling run in flight is keyed on, when propagation found nothing yet.
   let siblingFlightKey: string | null = null;
@@ -8626,27 +8719,13 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       const gateRoot = effectiveRoot;
       const { pass, refusal, treeState } = await siblingGreenOf(item, siblings, activeFlow as TransitionFlow, project, gateRoot, resolvedCommand!);
       if (pass) {
-        // Asked again: a re-entry (a slow gate, a sibling that waited) skipped the early check, and a close happened since.
-        const strays = await checkStrays(res);
-        if (strays.refused) return;
-        res = strays.res;
         const { sibling: passedSibling, test: siblingTest } = pass;
         const where = siblingTest.commit ? `\`${String(siblingTest.commit).slice(0, 12)}\`` : `\`${String(siblingTest.treeState).slice(0, 12)}\` with the same uncommitted content`;
-        const sibComment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (sibling propagation)\n\nSkipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).\n**Command**: \`${resolvedCommand}\` at ${where}`, timestamp: new Date() };
         const inherited = { ...(siblingTest.commit ? { commit: siblingTest.commit } : {}), ...(currentTreeState(siblingTest) ? { treeState: siblingTest.treeState, treeStateVersion: STATE_VERSION } : {}), commitRoot: gateRoot };
-        const updates: any = { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), sibComment], tests: [...testRecords(item.tests), { id: uuidv4(), command: resolvedCommand, output: `Sibling propagation: verified by ${passedSibling.id}`, status: 'PASSED', executedAt: new Date(), ...inherited }], ...(isExitStep ? { failureCount: 0 } : {}) };
-        const updated = await storage.updateItem(itemId, updates);
-        io.emit('items_updated');
-        recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
-        if (updated.parentId) await syncParentStatus(updated.parentId);
-        // Awaited, unlike before: the response describes what the commit did,
-        // so it cannot be written before the commit has been attempted. No
-        // `|| findProjectRoot(process.cwd())`: that made a long-lived daemon
-        // commit into whatever repository it was launched from.
-        const gitResult = (process.env.NODE_ENV !== 'test' && !process.env.VITEST)
-          ? await autoGitCommit(updated, (project as any)?.projectRoot)
-          : undefined;
-        return res.json({ status: nextStatus, message: `✅ Validation Passed (sibling propagation)!\n\nItem moved to ${nextStatus}.${describePush(gitResult)}${nowOn(nextStatus)}`, output: 'Sibling propagation' });
+        return closeOnGreen(res, {
+          how: 'sibling propagation', output: 'Sibling propagation', recordOutput: `Sibling propagation: verified by ${passedSibling.id}`, green: inherited,
+          note: `Skipped — already verified by sibling \`${passedSibling.id.slice(0, 8)}\` (${passedSibling.title}).\n**Command**: \`${resolvedCommand}\` at ${where}`,
+        });
       }
       console.warn(`[VALIDATE] Sibling propagation refused for ${itemId}: ${refusal}`);
       if (treeState && gateRoot) siblingFlightKey = [item.projectId, item.parentId, gateRoot, resolvedCommand, treeState].join('\0');
