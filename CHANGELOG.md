@@ -2,6 +2,27 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.19] — 2026-09-30
+
+Beta, cumulative over `2.0.0-beta.18`: everything in beta.18, plus the dashboard changes below.
+
+- **Dashboards open on data, not on filters.** Org rollup, PR overview and the user page start with their filters
+  collapsed behind one summary line ("30 days · item.closed · all projects") and an Edit filters button; the period,
+  and PR overview's PR search, stay in view. Opening the filters is kept in the link (`filters=1`); an old `filters=0`
+  link still opens collapsed.
+- **Filters live in the link on every dashboard.** Org and the user page now keep their facets and period in the URL,
+  like PR overview, so a reload or a shared link shows the same view. A bare visit opens the way this browser last
+  left it; a custom date range is never carried from one person to the next.
+- **Loading and errors no longer look like an empty fleet.** Tiles, the Users list, the event list and the activity
+  timeline show a skeleton while loading instead of zeros ("0 reporting", "0 shown", "0 events"), and a failed query
+  shows the hub's reason with a Retry.
+- **People are shown by name.** The Users list, PR overview's developer table, heatmap and developer filter, and the
+  user page heading show the name from the person's installation, with the email under it; someone with no known name
+  still shows their key. New hub endpoint: `GET /v1/people/names`.
+- **Org's Users panel follows the Event type filter.** Its counts match the chart next to it and say so ("with
+  matching events"); the tiles above, which apply every filter except event type, now say that.
+- **Hub pages sit against the sidebar on wide screens** instead of floating in the middle of a large monitor.
+
 ## [2.0.0-beta.18] — 2026-09-30
 
 Beta, cumulative over `2.0.0-beta.17`: everything in beta.17, plus the admin reorganisation, the card dates and the
