@@ -6,7 +6,7 @@ import { api } from '../api';
 import { TimelineBar } from '../components/TimelineBar';
 import { FacetMultiselect } from '../components/FacetMultiselect';
 import { MetricsTilesRow, MetricsTotals } from '../components/MetricsTilesRow';
-import { ChipRow, Page } from '../components/ui';
+import { ChipRow, Page, QueryState } from '../components/ui';
 import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
 import { fmtRelative } from '../dates';
@@ -135,7 +135,7 @@ export function OrgPage() {
         <p className="mt-1 text-sm text-ink-tertiary">Fleet-wide AgEnFK activity across every connected installation.</p>
       </header>
 
-      <MetricsTilesRow totals={totals} />
+      <QueryState query={metrics} label="activity totals">{() => <MetricsTilesRow totals={totals} />}</QueryState>
 
       <section className="space-y-4 p-5 bg-card-glass backdrop-blur border border-border-soft rounded-2xl">
         <div className="flex items-center gap-2">
@@ -210,34 +210,40 @@ export function OrgPage() {
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-ink-secondary">Users</h2>
-          <span className="text-[11px] text-ink-tertiary">{users.data?.length ?? 0} reporting</span>
+          {users.data && <span className="text-[11px] text-ink-tertiary">{users.data.length} reporting</span>}
         </div>
-        <div className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl divide-y divide-border-soft overflow-hidden">
-          {(users.data ?? []).map(u => (
-            <Link
-              key={u.user_key}
-              // Carry the hub scope through the click-through: landing on a
-              // person aggregated across every hub would contradict the board
-              // just left, with nothing saying the scope had been dropped.
-              to={`/users/${encodeURIComponent(u.user_key)}${hubQs}`}
-              className="group flex items-center justify-between gap-3 px-5 py-3 hover:bg-accent-fill/50 transition-colors"
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="w-8 h-8 rounded-full bg-accent-fill text-accent-ink text-[11px] font-bold flex items-center justify-center shrink-0">
-                  {u.user_key.slice(0, 2).toUpperCase()}
-                </div>
-                <div className="min-w-0">
-                  <div className="font-mono text-[13px] text-ink truncate group-hover:text-accent-ink transition-colors">{u.user_key}</div>
-                  <div className="text-[11px] text-ink-tertiary">{u.events_count.toLocaleString()} events · last {formatLastSeen(u.last_seen)}</div>
-                </div>
-              </div>
-              <ChevronRight className="w-4 h-4 text-ink-tertiary group-hover:text-accent-ink transition-colors shrink-0" />
-            </Link>
-          ))}
-          {users.data?.length === 0 && (
-            <div className="px-5 py-8 text-center text-sm text-ink-tertiary">No users match the current filters.</div>
+        <QueryState
+          query={users}
+          label="users"
+          isEmpty={list => list.length === 0}
+          empty={<div className="bg-card-glass border border-border-soft rounded-2xl px-5 py-8 text-center text-sm text-ink-tertiary">No users match the current filters.</div>}
+        >
+          {list => (
+            <div className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl divide-y divide-border-soft overflow-hidden">
+              {list.map(u => (
+                <Link
+                  key={u.user_key}
+                  // Carry the hub scope through the click-through: landing on a
+                  // person aggregated across every hub would contradict the board
+                  // just left, with nothing saying the scope had been dropped.
+                  to={`/users/${encodeURIComponent(u.user_key)}${hubQs}`}
+                  className="group flex items-center justify-between gap-3 px-5 py-3 hover:bg-accent-fill/50 transition-colors"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-8 h-8 rounded-full bg-accent-fill text-accent-ink text-[11px] font-bold flex items-center justify-center shrink-0">
+                      {u.user_key.slice(0, 2).toUpperCase()}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="font-mono text-[13px] text-ink truncate group-hover:text-accent-ink transition-colors">{u.user_key}</div>
+                      <div className="text-[11px] text-ink-tertiary">{u.events_count.toLocaleString()} events · last {formatLastSeen(u.last_seen)}</div>
+                    </div>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-ink-tertiary group-hover:text-accent-ink transition-colors shrink-0" />
+                </Link>
+              ))}
+            </div>
           )}
-        </div>
+        </QueryState>
       </section>
     </Page>
   );

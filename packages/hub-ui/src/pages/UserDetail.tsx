@@ -7,7 +7,7 @@ import { TimelineBar } from '../components/TimelineBar';
 import { csvParam } from '../urlParams';
 import { FacetMultiselect } from '../components/FacetMultiselect';
 import { MetricsTilesRow, MetricsTotals } from '../components/MetricsTilesRow';
-import { Badge, ChipRow, Page } from '../components/ui';
+import { Badge, ChipRow, Page, QueryState } from '../components/ui';
 import { eventTone, itemTypeClass } from '../eventTone';
 import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
@@ -199,7 +199,7 @@ export function UserDetailPage() {
         </div>
       </header>
 
-      <MetricsTilesRow totals={totals} />
+      <QueryState query={metrics} label="activity totals">{() => <MetricsTilesRow totals={totals} />}</QueryState>
 
       <section className="space-y-4 p-5 bg-card-glass backdrop-blur border border-border-soft rounded-2xl">
         <div className="flex items-center gap-2">
@@ -288,47 +288,53 @@ export function UserDetailPage() {
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-ink-secondary">Recent events</h2>
-          <span className="text-[11px] text-ink-tertiary" title={`All times in ${browserTimezone()}`}>{tl.data?.events.length ?? 0} shown · times in {browserTimezone()}</span>
+          <span className="text-[11px] text-ink-tertiary" title={`All times in ${browserTimezone()}`}>{tl.data && `${tl.data.events.length} shown · `}times in {browserTimezone()}</span>
         </div>
-        <div className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl divide-y divide-border-soft overflow-hidden">
-          {(tl.data?.events ?? []).map(e => {
-            return (
-              <details key={e.event_id} className="group">
-                <summary className="flex items-center gap-3 px-5 py-2.5 cursor-pointer list-none hover:bg-canvas transition-colors">
-                  <ChevronDown className="w-3.5 h-3.5 text-ink-tertiary group-open:rotate-180 transition-transform shrink-0" />
-                  <Badge tone={eventTone(e.type)} className="font-mono text-[10px] font-medium">{e.type}</Badge>
-                  {e.item_type && <span className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-semibold border ${itemTypeClass(e.item_type)}`}>{e.item_type}</span>}
-                  {e.external_id && (
-                    <span title={`External tracker: ${e.external_id}`} className="px-2 py-0.5 rounded-md text-[10px] font-mono border border-transparent bg-accent-fill text-accent-ink">
-                      {e.external_id}
-                    </span>
-                  )}
-                  {e.remote_url && (
-                    <span title={e.remote_url} className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono bg-canvas text-ink-tertiary border border-border-soft max-w-[180px] truncate">
-                      <GitBranch className="w-2.5 h-2.5 shrink-0" /> {shortRemote(e.remote_url)}
-                    </span>
-                  )}
-                  <span className="text-[12px] text-ink truncate flex-1" title={e.item_id ?? undefined}>
-                    {e.item_title ?? <span className="text-ink-tertiary font-mono">{e.item_id ?? e.project_id ?? '—'}</span>}
-                  </span>
-                  {e.reporting_version && (
-                    <span
-                      title={`Emitted by AgenFK ${e.reporting_version} (X-Agenfk-Version header)`}
-                      className="hidden md:inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-mono bg-canvas text-ink-tertiary border border-border-soft shrink-0"
-                    >
-                      v{e.reporting_version}
-                    </span>
-                  )}
-                  <span className="text-[11px] text-ink-tertiary tabular-nums shrink-0">{formatTime(e.occurred_at)}</span>
-                </summary>
-                <pre className="px-5 pb-3 text-[11px] font-mono text-ink-secondary whitespace-pre-wrap break-words bg-canvas/60 border-t border-border-soft -mt-0.5">{JSON.stringify(e.payload, null, 2)}</pre>
-              </details>
-            );
-          })}
-          {tl.data?.events.length === 0 && (
-            <div className="px-5 py-8 text-center text-sm text-ink-tertiary">No events match the current filters.</div>
+        <QueryState
+          query={tl}
+          label="events"
+          isEmpty={data => data.events.length === 0}
+          empty={<div className="bg-card-glass border border-border-soft rounded-2xl px-5 py-8 text-center text-sm text-ink-tertiary">No events match the current filters.</div>}
+        >
+          {data => (
+            <div className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl divide-y divide-border-soft overflow-hidden">
+              {data.events.map(e => {
+                return (
+                  <details key={e.event_id} className="group">
+                    <summary className="flex items-center gap-3 px-5 py-2.5 cursor-pointer list-none hover:bg-canvas transition-colors">
+                      <ChevronDown className="w-3.5 h-3.5 text-ink-tertiary group-open:rotate-180 transition-transform shrink-0" />
+                      <Badge tone={eventTone(e.type)} className="font-mono text-[10px] font-medium">{e.type}</Badge>
+                      {e.item_type && <span className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-semibold border ${itemTypeClass(e.item_type)}`}>{e.item_type}</span>}
+                      {e.external_id && (
+                        <span title={`External tracker: ${e.external_id}`} className="px-2 py-0.5 rounded-md text-[10px] font-mono border border-transparent bg-accent-fill text-accent-ink">
+                          {e.external_id}
+                        </span>
+                      )}
+                      {e.remote_url && (
+                        <span title={e.remote_url} className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono bg-canvas text-ink-tertiary border border-border-soft max-w-[180px] truncate">
+                          <GitBranch className="w-2.5 h-2.5 shrink-0" /> {shortRemote(e.remote_url)}
+                        </span>
+                      )}
+                      <span className="text-[12px] text-ink truncate flex-1" title={e.item_id ?? undefined}>
+                        {e.item_title ?? <span className="text-ink-tertiary font-mono">{e.item_id ?? e.project_id ?? '—'}</span>}
+                      </span>
+                      {e.reporting_version && (
+                        <span
+                          title={`Emitted by AgenFK ${e.reporting_version} (X-Agenfk-Version header)`}
+                          className="hidden md:inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-mono bg-canvas text-ink-tertiary border border-border-soft shrink-0"
+                        >
+                          v{e.reporting_version}
+                        </span>
+                      )}
+                      <span className="text-[11px] text-ink-tertiary tabular-nums shrink-0">{formatTime(e.occurred_at)}</span>
+                    </summary>
+                    <pre className="px-5 pb-3 text-[11px] font-mono text-ink-secondary whitespace-pre-wrap break-words bg-canvas/60 border-t border-border-soft -mt-0.5">{JSON.stringify(e.payload, null, 2)}</pre>
+                  </details>
+                );
+              })}
+            </div>
           )}
-        </div>
+        </QueryState>
       </section>
     </Page>
   );

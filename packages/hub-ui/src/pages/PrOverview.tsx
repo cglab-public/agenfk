@@ -18,7 +18,7 @@ import { heatColor, SPARK_STROKE } from '../chartColours';
 import { parsePrQuery } from '../prSearch';
 import { buildMonthBands, dayHeaderInfo, contributionPcts, cellTooltip, placeTooltip } from '../prPerDay';
 import { buildVolumeSeries, type Granularity } from '../prVolumeGranularity';
-import { Page } from '../components/ui';
+import { Page, QueryError, Skeleton } from '../components/ui';
 
 const GRANULARITIES: Array<{ key: Granularity; label: string; unit: string }> = [
   { key: 'daily', label: 'daily', unit: 'day' },
@@ -854,7 +854,7 @@ export function PrOverviewPage() {
       />
       </FilterAccordion>
 
-      {overview.isLoading && <div className="text-sm text-ink-tertiary py-8 text-center">Loading…</div>}
+      {overview.isLoading && <Skeleton label="PR overview" rows={4} className="py-4" />}
       {/* keepPreviousData turned a failed request from a blank section into a
           confident lie: the previous answer stays on screen indefinitely, under
           the NEW labels, with no signal that anything went wrong. Say so. */}
@@ -866,9 +866,7 @@ export function PrOverviewPage() {
           so the stale answer is already gone; the banner explains the gap rather
           than dressing it up.) */}
       {overview.isError && (
-        <div role="alert" className="rounded-2xl border border-border-soft bg-surface px-4 py-2.5 text-xs font-medium text-status-danger-text">
-          Could not load this overview.
-        </div>
+        <QueryError error={overview.error} onRetry={() => { void overview.refetch(); }} live="assertive" retrying={overview.isFetching} />
       )}
       {d && d.totals.prs === 0 && (
         <div className="rounded-2xl border border-border-soft bg-surface px-5 py-10 text-center text-sm text-ink-tertiary">

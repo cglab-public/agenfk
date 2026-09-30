@@ -765,7 +765,8 @@ describe('Copy tracks the data, not the request', () => {
 
     fireEvent.change(searchBox(), { target: { value: '57' } });
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument(), { timeout: 2500 });
-    expect(screen.getByRole('alert')).toHaveTextContent(/Could not load this overview/);
+    // The hub's own reason, not a generic line (QueryState).
+    expect(screen.getByRole('alert')).toHaveTextContent(/scan timed out/);
     // …and the failed search does not leave the PREVIOUS answer sitting there
     // looking like the answer to the new one. Verified, not assumed: v5 drops the
     // placeholder across an error, so the stale KPI strip is gone.

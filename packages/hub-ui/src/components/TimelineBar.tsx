@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api';
+import { QueryState } from './ui';
 import { seriesColours, ALL_EVENTS_COLOR } from '../chartColours';
 import {
   buildAxis,
@@ -163,7 +164,7 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
         <div className="min-w-0">
           <h3 className="text-sm font-semibold text-ink truncate">{title ?? 'Activity'}</h3>
           <p className="mt-0.5 text-[11px] text-ink-tertiary">
-            {totalEvents.toLocaleString()} event{totalEvents === 1 ? '' : 's'} · {rangeBlurb}{users?.length ? ` · ${users.length} user${users.length === 1 ? '' : 's'}` : ''}{stackedTypes ? ` · ${stackedTypes.length} type${stackedTypes.length === 1 ? '' : 's'}` : ''}
+            {q.data && `${totalEvents.toLocaleString()} event${totalEvents === 1 ? '' : 's'} · `}{rangeBlurb}{users?.length ? ` · ${users.length} user${users.length === 1 ? '' : 's'}` : ''}{stackedTypes ? ` · ${stackedTypes.length} type${stackedTypes.length === 1 ? '' : 's'}` : ''}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -211,7 +212,14 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
         </div>
       </header>
 
-      <div className="px-3 pt-3 pb-3 relative">
+      {/* No "0 events" over an empty chart while the answer is on its way, or
+          when it never came: that reads as an idle fleet. */}
+      {q.data === undefined && (
+        <div className="px-5 py-4">
+          <QueryState query={q} label="activity timeline">{() => null}</QueryState>
+        </div>
+      )}
+      <div className={`px-3 pt-3 pb-3 relative ${q.data === undefined ? 'hidden' : ''}`}>
         <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="w-full h-[220px] block" role="img" aria-label="Event timeline histogram">
           {/* Y gridlines + labels */}
           {ticks.map((t) => {
