@@ -62,7 +62,7 @@ export function AdminJira() {
         </p>
         <p className="mt-3 text-sm text-ink">
           <span data-testid="jira-connected-count" className="font-mono font-semibold">{c.connectedCount}</span>
-          {' '}installation{c.connectedCount === 1 ? '' : 's'} connected
+          {' '}agenfk board{c.connectedCount === 1 ? '' : 's'} connected
         </p>
         {c.configured && (
           <div className="mt-4 flex items-center gap-3">
@@ -94,7 +94,7 @@ export function AdminJira() {
       >
         <h3 className="text-sm font-semibold text-ink">Atlassian OAuth app</h3>
         <p className="mt-1 text-xs text-ink-tertiary">
-          Create an OAuth 2.0 (3LO) app at developer.atlassian.com with the Jira API scopes
+          Create an OAuth 2.0 integration at developer.atlassian.com with the Jira API scopes
           <span className="font-mono"> read:jira-user</span> and <span className="font-mono">read:jira-work</span>, and register this callback URL:
         </p>
         <p className="mt-2 font-mono text-xs break-all text-ink">{c.redirectUri}</p>

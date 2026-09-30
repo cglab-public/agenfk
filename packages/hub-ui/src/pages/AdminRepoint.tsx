@@ -111,7 +111,7 @@ export function AdminRepoint() {
               disabled={!targetUrl.trim() || open.isPending}
               className="rounded-lg border border-accent bg-accent-fill px-3 py-2 text-xs font-semibold text-accent-ink disabled:opacity-50"
             >
-              Start campaign
+              Start the address change
             </button>
           </div>
         )}
@@ -131,7 +131,7 @@ export function AdminRepoint() {
                 disabled={close.isPending}
                 className="text-[11px] font-semibold text-ink-tertiary hover:text-ink"
               >
-                Close campaign
+                End the address change
               </button>
             </div>
 
@@ -146,7 +146,7 @@ export function AdminRepoint() {
             <p className={`mt-3 text-xs ${safe ? 'text-status-ok-text' : 'text-ink-tertiary'}`}>
               {safe
                 ? 'Every installation has confirmed on the new address. Delete the old DNS record — do not point it at a proxy that answers 404.'
-                : 'Keep serving the old address. Installations that stopped checking in will never move on their own: retire them under Installations to finish the campaign.'}
+                : 'Keep serving the old address. Installations that stopped checking in will never move on their own: retire them under Installations to finish the address change.'}
             </p>
           </div>
         )}

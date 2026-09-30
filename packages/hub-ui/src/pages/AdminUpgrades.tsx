@@ -48,6 +48,7 @@ interface ApiKeyRow { tokenHashPreview: string; label: string | null; installati
 interface AvailableVersionsResponse { versions: string[]; fleetFloor: string | null }
 
 import { canIssueDirective } from './adminUpgradesGate';
+import { upgradeStateLabel, upgradeStateCount } from './adminLabels';
 import { installationDisplayName } from './installationDisplayName';
 import { buildInstallationOptions, type InstallationRow } from './installationOptions';
 import { filterInstallationOptions } from './filterInstallationOptions';
@@ -124,14 +125,14 @@ export function AdminUpgrades() {
     },
     onError: (e: any) => {
       const data = e?.response?.data;
-      setError(data?.error ?? e?.message ?? 'Failed to cancel directive');
+      setError(data?.error ?? e?.message ?? "Couldn't cancel the upgrade");
     },
   });
 
   const onCancel = (d: Directive) => {
     const { pending, in_progress } = d.progress;
     if (pending > 0) {
-      if (!confirm(`Cancel ${pending} pending upgrade${pending === 1 ? '' : 's'} for v${d.targetVersion}? Installations already running or finished will not be affected.`)) return;
+      if (!confirm(`Cancel ${pending} waiting upgrade${pending === 1 ? '' : 's'} for v${d.targetVersion}? Installations already running or finished will not be affected.`)) return;
     }
     let force = false;
     if (in_progress > 0) {
@@ -139,10 +140,10 @@ export function AdminUpgrades() {
       // flight — but it may also be a dead agent wedging the installation
       // (new directives are refused while it stays in_progress).
       force = confirm(
-        `⚠️ ${in_progress} target${in_progress === 1 ? ' is' : 's are'} in_progress. ` +
-        `Force-cancel ${in_progress === 1 ? 'it' : 'them'} too?\n\n` +
+        `⚠️ ${in_progress} installation${in_progress === 1 ? ' is' : 's are'} still running this upgrade. ` +
+        `Mark ${in_progress === 1 ? 'it' : 'them'} as cancelled${pending > 0 ? ' too' : ''}?\n\n` +
         `Only do this when the upgrade is stuck (agent died or never reported back). ` +
-        `A genuinely running upgrade cannot be recalled — force-cancelling just clears its status here.`
+        `A genuinely running upgrade cannot be recalled — cancelling it just clears its status here.`
       );
       if (pending === 0 && !force) return; // nothing else to do
     }
@@ -185,12 +186,12 @@ export function AdminUpgrades() {
       if (status === 409 && Array.isArray(data?.conflicts) && data.conflicts.length > 0) {
         const keys = apiKeysQ.data ?? [];
         const lines = data.conflicts.map((c: any) =>
-          `  • ${installationDisplayName(keys, c.installationId)} (directive ${c.conflictingDirectiveId})`
+          `  • ${installationDisplayName(keys, c.installationId)} (upgrade ${c.conflictingDirectiveId})`
         ).join('\n');
-        setError(`Cannot issue: an upgrade is already pending or running on:\n${lines}`);
+        setError(`Cannot send: an upgrade is already waiting or running on:\n${lines}`);
         return;
       }
-      setError(data?.error ?? e?.message ?? 'Failed to issue directive');
+      setError(data?.error ?? e?.message ?? "Couldn't send the upgrade");
     },
   });
 
@@ -296,7 +297,7 @@ export function AdminUpgrades() {
             </select>
             {fleetFloor && (
               <p className="mt-1 text-[10px] text-ink-tertiary">
-                Fleet floor: <span className="font-mono">v{fleetFloor}</span> — older releases hidden.
+                Oldest version reported: <span className="font-mono">v{fleetFloor}</span> — older releases hidden.
               </p>
             )}
           </div>
@@ -385,7 +386,7 @@ export function AdminUpgrades() {
 
       <div className="space-y-2">
         {directives.length === 0 && (
-          <p className="text-[12px] text-ink-tertiary">No directives issued yet.</p>
+          <p className="text-[12px] text-ink-tertiary">No upgrades sent yet.</p>
         )}
         {directives.map(d => {
           const isOpen = expanded.has(d.directiveId);
@@ -409,18 +410,20 @@ export function AdminUpgrades() {
                   </span>
                 </button>
                 <span className="flex items-center gap-1.5 text-[11px] shrink-0">
-                  {d.progress.pending > 0 && <span className="px-1.5 py-0.5 rounded bg-canvas text-ink-secondary">{d.progress.pending} pending</span>}
-                  {d.progress.in_progress > 0 && <span className="px-1.5 py-0.5 rounded bg-status-warn-bg text-status-warn-text">{d.progress.in_progress} running</span>}
-                  {d.progress.succeeded > 0 && <span className="px-1.5 py-0.5 rounded bg-status-ok-bg text-status-ok-text">{d.progress.succeeded} ok</span>}
-                  {d.progress.failed > 0 && <span className="px-1.5 py-0.5 rounded bg-status-danger-bg text-status-danger-text">{d.progress.failed} failed</span>}
-                  {d.progress.cancelled > 0 && <span className="px-1.5 py-0.5 rounded bg-canvas text-ink-secondary">{d.progress.cancelled} cancelled</span>}
+                  {d.progress.pending > 0 && <span className="px-1.5 py-0.5 rounded bg-canvas text-ink-secondary">{upgradeStateCount('pending', d.progress.pending)}</span>}
+                  {d.progress.in_progress > 0 && <span className="px-1.5 py-0.5 rounded bg-status-warn-bg text-status-warn-text">{upgradeStateCount('in_progress', d.progress.in_progress)}</span>}
+                  {d.progress.succeeded > 0 && <span className="px-1.5 py-0.5 rounded bg-status-ok-bg text-status-ok-text">{upgradeStateCount('succeeded', d.progress.succeeded)}</span>}
+                  {d.progress.failed > 0 && <span className="px-1.5 py-0.5 rounded bg-status-danger-bg text-status-danger-text">{upgradeStateCount('failed', d.progress.failed)}</span>}
+                  {d.progress.cancelled > 0 && <span className="px-1.5 py-0.5 rounded bg-canvas text-ink-secondary">{upgradeStateCount('cancelled', d.progress.cancelled)}</span>}
                   {(d.progress.pending > 0 || d.progress.in_progress > 0) && (
                     <button
                       onClick={(e) => { e.stopPropagation(); onCancel(d); }}
                       disabled={cancelMut.isPending}
                       className="ml-1 px-1.5 py-0.5 rounded border border-status-danger-text/40 text-status-danger-text hover:bg-status-danger-bg disabled:opacity-50"
-                      title="Cancel pending targets on this directive; offers to force-cancel stuck in_progress ones"
-                    >{d.progress.pending > 0 ? 'Cancel pending' : 'Force-cancel'}</button>
+                      title={d.progress.pending > 0
+                        ? "Cancel this upgrade where it hasn't started; offers to clear stuck running ones too"
+                        : 'Mark stuck running upgrades as cancelled. A live upgrade keeps running; this only stops it blocking the installation'}
+                    >{d.progress.pending > 0 ? 'Cancel waiting' : 'Clear stuck'}</button>
                   )}
                 </span>
               </div>
@@ -777,5 +780,5 @@ function StatePill({ state }: { state: UpgradeTarget['state'] }) {
     : state === 'in_progress' ? 'bg-status-warn-bg text-status-warn-text'
     : state === 'cancelled' ? 'bg-canvas text-ink-tertiary line-through'
     : 'bg-canvas text-ink-secondary';
-  return <span className={`px-1.5 py-0.5 rounded ${cls}`}>{state}</span>;
+  return <span className={`px-1.5 py-0.5 rounded ${cls}`}>{upgradeStateLabel(state)}</span>;
 }

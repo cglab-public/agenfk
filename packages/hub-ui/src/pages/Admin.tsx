@@ -624,7 +624,7 @@ export function AdminInstallations() {
             <button
               onClick={() => setShowRetired(v => !v)}
               className="inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-ink"
-              title="Retired installations are dead endpoints, excluded from upgrade and repoint campaigns"
+              title="Retired installations are dead endpoints, excluded from upgrades and address changes"
             >
               {showRetired ? <ArchiveRestore className="w-3.5 h-3.5" /> : <Archive className="w-3.5 h-3.5" />}
               {showRetired ? `Hide retired (${retiredCount})` : 'Show retired'}

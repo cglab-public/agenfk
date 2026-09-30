@@ -521,8 +521,8 @@ function AssignmentsPanel({
           default, but the default is always available and locked on here. */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-accent-fill text-accent-ink">
-            Picker
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold bg-accent-fill text-accent-ink">
+            Shown in flow picker
           </span>
           <span className="text-xs text-ink-secondary">{availability.hint}</span>
         </div>

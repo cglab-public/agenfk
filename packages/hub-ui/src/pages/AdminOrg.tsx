@@ -82,7 +82,7 @@ function OrgIdentity() {
             <h2 className="text-sm font-semibold text-ink">Organization</h2>
           </div>
           <p className="mt-1 text-xs text-ink-tertiary">
-            Rename the org id this hub serves. The id is referenced from spoke installations and embedded in queued events; renaming repoints them all in a single transaction.
+            Rename the org id this hub serves. The id is referenced from connected installations and embedded in queued events; renaming repoints them all in a single transaction.
           </p>
         </header>
 
@@ -95,9 +95,9 @@ function OrgIdentity() {
           <summary className="cursor-pointer select-none font-semibold text-ink-secondary">What this does</summary>
           <ul className="mt-2 list-disc pl-5 space-y-1">
             <li>Logical rename only — no event/installation/api-key/user data is lost.</li>
-            <li>Repoints rows across <code className="font-mono">events</code>, <code className="font-mono">installations</code>, <code className="font-mono">users</code>, <code className="font-mono">api_keys</code>, <code className="font-mono">flows</code>, and 6 other <code className="font-mono">org_id</code>-bearing tables in one transaction.</li>
+            <li>Moves everything the org owns (events, installations, users, API keys, flows and the rest) to the new id in one transaction.</li>
             <li>Re-issues your admin session so the next request doesn't 401 against a deleted org.</li>
-            <li>Spoke installations need to be repointed afterward — copy the command we generate below into your fleet runner or share it with each developer. It includes <code className="font-mono">--carry-over</code> so queued events move with the org; on a non-interactive runner append <code className="font-mono">--yes</code>, since the carry-over rewrite asks for a typed confirmation interactively.</li>
+            <li>Connected installations need to be repointed afterward — copy the command we generate below into your fleet runner or share it with each developer. It includes <code className="font-mono">--carry-over</code> so queued events move with the org; on a non-interactive runner append <code className="font-mono">--yes</code>, since the carry-over rewrite asks for a typed confirmation interactively.</li>
             <li>You will need to update <code className="font-mono">AGENFK_HUB_ORG_ID</code> in your hub deployment manifest before the next restart, otherwise the hub will start in maintenance mode on the wrong env.</li>
           </ul>
         </details>
@@ -138,7 +138,7 @@ function OrgIdentity() {
         <section className={cn(cardCls, 'border-status-ok-text/40 bg-status-ok-bg')}>
           <header>
             <div className="text-[11px] uppercase tracking-[0.14em] text-status-ok-text font-semibold">Rename complete</div>
-            <h3 className="mt-1 text-sm font-semibold text-ink">Now repoint your spoke installations</h3>
+            <h3 className="mt-1 text-sm font-semibold text-ink">Now repoint your connected installations</h3>
             <p className="mt-1 text-xs text-ink-secondary">
               Send this command to anyone running an <code className="font-mono">agenfk</code> installation against this hub (or run it on every machine via your fleet tool):
             </p>
@@ -183,7 +183,7 @@ function ConfirmRenameModal(props: {
           <li>Events, installations, users, api keys, flows, flow assignments are all repointed.</li>
           <li>Your admin session is re-issued — no logout required.</li>
           <li>You must update <code className="font-mono">AGENFK_HUB_ORG_ID</code> in your hub deployment to <code className="font-mono">{props.to}</code> before the next restart.</li>
-          <li>Spoke installations must run <code className="font-mono">agenfk hub repoint</code> afterward (we'll show you the command).</li>
+          <li>Connected installations must run <code className="font-mono">agenfk hub repoint</code> afterward (we'll show you the command).</li>
         </ul>
         {props.error && (
           <p className="text-xs text-status-danger-text px-3 py-2 rounded-lg bg-status-danger-bg">{props.error}</p>
