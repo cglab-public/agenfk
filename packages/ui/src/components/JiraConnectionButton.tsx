@@ -91,17 +91,19 @@ export const JiraConnectionButton: React.FC = () => {
     <>
       {/* Toast notification */}
       {toast && (
-        <div
-          data-testid="jira-toast"
-          className={clsx(
-            'fixed top-4 right-4 z-50 px-4 py-3 rounded-lg shadow-lg text-sm font-medium flex items-center gap-2',
-            toast.type === 'success' ? 'bg-emerald-500 text-white' : 'bg-red-500 text-white'
-          )}
-          role="alert"
-        >
-          {toast.type === 'success' ? <CheckCircle size={16} /> : <AlertCircle size={16} />}
-          <span>{toast.message}</span>
-          <button onClick={() => setToast(null)} className="ml-2 hover:opacity-75" aria-label="Dismiss">×</button>
+        // The status tints are translucent; an opaque surface underneath keeps
+        // the board from showing through a toast that floats over it.
+        <div data-testid="jira-toast" role="alert" className="fixed top-4 right-4 z-50 rounded-lg bg-surface shadow-lg">
+          <div
+            className={clsx(
+              'px-4 py-3 rounded-lg text-sm font-medium flex items-center gap-2',
+              toast.type === 'success' ? 'bg-status-ok-bg text-status-ok-text border border-status-ok-text/40' : 'bg-status-danger-bg text-status-danger-text border border-status-danger-text/40'
+            )}
+          >
+            {toast.type === 'success' ? <CheckCircle size={16} /> : <AlertCircle size={16} />}
+            <span>{toast.message}</span>
+            <button onClick={() => setToast(null)} className="ml-2 hover:opacity-75" aria-label="Dismiss">×</button>
+          </div>
         </div>
       )}
 
@@ -116,7 +118,7 @@ export const JiraConnectionButton: React.FC = () => {
           data-testid="jira-connected"
           title={isHub ? `JIRA via your hub${jiraStatus.email ? ` as ${jiraStatus.email}` : ''}` : undefined}
         >
-          <div className="flex items-center gap-1.5 px-2 py-1 bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-700 rounded-md text-xs font-medium text-emerald-700 dark:text-emerald-400">
+          <div className="flex items-center gap-1.5 px-2 py-1 bg-status-ok-bg border border-status-ok-text/40 rounded-md text-xs font-medium text-status-ok-text">
             <CheckCircle size={12} />
             <span>JIRA</span>
           </div>
@@ -125,7 +127,7 @@ export const JiraConnectionButton: React.FC = () => {
             disabled={disconnectMutation.isPending}
             title="Disconnect JIRA"
             aria-label="Disconnect JIRA"
-            className="p-1 text-slate-400 hover:text-red-500 transition-colors disabled:opacity-50"
+            className="p-1 text-slate-400 hover:text-status-danger-text transition-colors disabled:opacity-50"
           >
             <Unlink size={14} />
           </button>
@@ -164,7 +166,7 @@ export const JiraConnectionButton: React.FC = () => {
           data-testid="jira-connect"
           title="Connect JIRA"
           aria-label="Connect JIRA"
-          className="flex items-center gap-1.5 px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-chip border border-slate-200 dark:border-slate-700 hover:border-border-brand rounded-md text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-accent-text transition-colors"
+          className="flex items-center gap-1.5 px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-accent-fill border border-slate-200 dark:border-slate-700 hover:border-accent rounded-md text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-accent-ink transition-colors"
         >
           <Link size={12} />
           <span>Connect JIRA</span>

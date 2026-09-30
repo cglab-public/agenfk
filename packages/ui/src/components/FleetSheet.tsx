@@ -52,7 +52,7 @@ export interface FleetSheetProps {
 }
 
 /** Amber for waiting, never red: a held child is the mechanism working. */
-const HOLD_TONE = 'bg-amber-500/10 text-amber-700 dark:text-amber-300';
+const HOLD_TONE = 'bg-status-warn-bg text-status-warn-text';
 
 function HoldRow({ child }: { readonly child: FleetChild }): React.ReactElement {
   return (
@@ -88,7 +88,7 @@ function LaunchRow({ child }: { readonly child: FleetChild }): React.ReactElemen
   return (
     <li data-testid="fleet-row" data-launch="true" className="border-b border-border-soft last:border-b-0">
       <div className="flex items-start gap-3 px-4 py-3">
-        <span className="mt-0.5 shrink-0 rounded bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+        <span className="mt-0.5 shrink-0 rounded bg-status-ok-bg px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide text-status-ok-text">
           ready
         </span>
         <span className="min-w-0 flex-1">
@@ -171,8 +171,8 @@ export function FleetSheet({ parent, all, depth, running, terminalStatuses, onLa
           className={clsx(
             'flex shrink-0 items-center gap-1.5 rounded px-3 py-1.5 text-xs font-medium transition-colors',
             plan.launchCount === 0
-              ? 'cursor-not-allowed bg-surface-2 text-ink-tertiary opacity-60'
-              : 'bg-brand text-canvas hover:opacity-90',
+              ? 'cursor-not-allowed bg-canvas text-ink-tertiary opacity-60'
+              : 'bg-brand text-navy hover:opacity-90',
           )}
         >
           <Zap size={12} />

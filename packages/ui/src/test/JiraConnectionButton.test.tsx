@@ -6,6 +6,8 @@ import { JiraConnectionButton } from '../components/JiraConnectionButton';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api } from '../api';
+import { guardTokens } from './helpers/tokenGuard';
+
 
 vi.mock('../api', () => ({
   api: {
@@ -33,6 +35,8 @@ describe('JiraConnectionButton', () => {
   afterEach(() => {
     cleanup();
   });
+  // CGLAB-434: after this suite's cleanup is registered, so the sweep runs first.
+  guardTokens();
 
   it('renders "Connect JIRA" button when configured but not connected', async () => {
     vi.mocked(api.getJiraStatus).mockResolvedValue({ configured: true, connected: false });
@@ -144,6 +148,8 @@ describe('JiraConnectionButton on a hub-joined installation', () => {
     window.history.replaceState({}, '', '/');
   });
   afterEach(() => cleanup());
+  // CGLAB-434: after this suite's cleanup is registered, so the sweep runs first.
+  guardTokens();
 
   it('shows the user\'s connection through the hub, with a Disconnect control', async () => {
     vi.mocked(api.getJiraStatus).mockResolvedValue({

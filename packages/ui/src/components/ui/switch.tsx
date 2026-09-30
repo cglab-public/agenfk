@@ -37,15 +37,14 @@ export const Switch = React.forwardRef<
       // No ring-offset: Tailwind's offset colour is white everywhere in this
       // bundle, which draws a white band between the track and the ring on the
       // dark theme.
-      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand',
+      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring',
       // Not merely dimmed: a switch that looks pressable and does nothing is
       // worse than one that reads as unavailable.
       'disabled:cursor-not-allowed disabled:opacity-60',
-      // bg-brand, not a palette literal. Both switches this replaced used the
-      // brand teal; emerald-500 put the one control that says "on" out of step
-      // with every other affordance in the app — while the docblock above
-      // claimed the colours came from tokens.
-      'data-[state=checked]:bg-brand',
+      // bg-accent, not a palette literal: "on" is a working state, and the
+      // indigo accent is what every other selected control wears. Teal is kept
+      // for the brand mark and the one primary button (CGLAB-434).
+      'data-[state=checked]:bg-accent',
       // The off state has to be VISIBLE. bg-canvas equals the card it sits on
       // in both themes, and border-soft against it is about 1.1:1 — an off
       // switch read as blank space, so the user could not see there was a
@@ -57,7 +56,9 @@ export const Switch = React.forwardRef<
   >
     <SwitchPrimitive.Thumb
       className={clsx(
-        'pointer-events-none block h-4 w-4 rounded-full bg-white shadow-sm ring-0',
+        'pointer-events-none block h-4 w-4 rounded-full bg-slate-50 shadow-sm ring-0',
+        // A light thumb in both themes: a surface-coloured one vanished into the
+        // dark off track, leaving no way to tell which way the switch pointed.
         // The escape is on the thumb because the thumb is the part that moves.
         // Without it the toggle still works; it just stops sliding.
         'transition-transform motion-reduce:transition-none',

@@ -50,9 +50,9 @@ const IS_MACHINE_OUTPUT: Record<RunEvent['kind'], boolean> = {
 };
 
 const LANE = {
-  orchestrator: { label: 'orchestrator', ini: 'C', avatar: 'bg-story-blue/60', tag: 'text-story-blue' },
-  worker: { label: 'worker', ini: 'W', avatar: 'bg-amber-500/60', tag: 'text-amber-600 dark:text-amber-300' },
-  reviewer: { label: 'reviewer', ini: 'R', avatar: 'bg-teal-500/60', tag: 'text-teal-600 dark:text-teal-300' },
+  orchestrator: { label: 'orchestrator', ini: 'C', avatar: 'bg-series-5/15 border border-series-5 text-ink', tag: 'text-ink-secondary' },
+  worker: { label: 'worker', ini: 'W', avatar: 'bg-series-4/15 border border-series-4 text-ink', tag: 'text-ink-secondary' },
+  reviewer: { label: 'reviewer', ini: 'R', avatar: 'bg-series-3/15 border border-series-3 text-ink', tag: 'text-ink-secondary' },
 } as const;
 
 /**
@@ -191,7 +191,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
     // bottom padding so the rail ends at the event rather than trailing past it.
     <div className="flex gap-3">
       <div className="flex flex-col items-start shrink-0 w-24 pr-3 border-r border-slate-200/70 dark:border-slate-700/50">
-        <span className={'w-6 h-6 rounded-md grid place-items-center font-mono text-xs font-bold text-white ' + lane.avatar}>{lane.ini}</span>
+        <span className={'w-6 h-6 rounded-md grid place-items-center font-mono text-xs font-bold ' + lane.avatar}>{lane.ini}</span>
         <span className={'mt-1 font-mono text-[10px] leading-tight break-words ' + lane.tag}>{who}</span>
         {(() => {
           const { date, time } = fmtTimestamp(ev.ts);
@@ -313,14 +313,14 @@ export const RunsPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
               className={
                 'w-full text-left rounded-lg border p-2.5 transition-colors ' +
                 (isSel
-                  ? 'border-border-brand bg-chip'
-                  : 'border-slate-200 dark:border-slate-700 hover:border-brand-light')
+                  ? 'border-accent bg-accent-fill'
+                  : 'border-slate-200 dark:border-slate-700 hover:border-accent')
               }
             >
               <div className="flex items-center gap-2">
                 <span className={
                   'w-2 h-2 rounded-full shrink-0 ' +
-                  (run.status === 'running' ? 'bg-brand animate-pulse' : run.status === 'failed' ? 'bg-danger-muted' : 'bg-brand-dark')
+                  (run.status === 'running' ? 'bg-status-info-text animate-pulse motion-reduce:animate-none' : run.status === 'failed' ? 'bg-status-danger-text' : 'bg-ink-tertiary')
                 } />
                 <span className="font-mono text-xs font-bold text-slate-700 dark:text-slate-200 truncate">{run.step}</span>
               </div>
@@ -341,8 +341,10 @@ export const RunsPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
             <span className={
               'font-mono text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ' +
               (selected.status === 'running'
-                ? 'text-accent-text bg-chip animate-pulse'
-                : 'text-accent-text bg-chip')
+                ? 'text-accent-ink bg-accent-fill animate-pulse'
+                : selected.status === 'failed'
+                  ? 'text-status-danger-text bg-status-danger-bg'
+                  : 'text-ink-secondary bg-canvas')
             }>
               {selected.status === 'running' ? '● LIVE' : ('● ' + (selected.verdict || selected.status.toUpperCase()))}
             </span>

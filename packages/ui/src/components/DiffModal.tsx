@@ -18,10 +18,10 @@ import { api } from '../api';
 
 /** Colour by line kind. The glyph is the same information for a greyscale read. */
 function lineClass(line: string): string {
-  if (line.startsWith('@@')) return 'text-sky-600 dark:text-sky-400';
+  if (line.startsWith('@@')) return 'text-ink-tertiary';
   if (line.startsWith('+++') || line.startsWith('---')) return 'text-ink-tertiary';
-  if (line.startsWith('+')) return 'text-emerald-600 dark:text-emerald-400';
-  if (line.startsWith('-')) return 'text-rose-600 dark:text-rose-400';
+  if (line.startsWith('+')) return 'text-status-ok-text';
+  if (line.startsWith('-')) return 'text-status-danger-text';
   if (line.startsWith('diff --git') || line.startsWith('index ')) return 'text-ink-tertiary';
   return 'text-ink-secondary';
 }
@@ -85,7 +85,7 @@ export function DiffModal({ itemId, filePath, staged, onClose }: {
           <p className="px-3 py-4 text-[11px] text-ink-tertiary">Reading the diff…</p>
         )}
         {isError && (
-          <p role="alert" className="m-3 rounded-lg border border-amber-600/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300">
+          <p role="alert" className="m-3 rounded-lg border border-status-warn-text/40 bg-status-warn-bg px-3 py-2 text-[11px] text-status-warn-text">
             Could not read the diff: {(error as Error)?.message ?? 'failed'}
           </p>
         )}

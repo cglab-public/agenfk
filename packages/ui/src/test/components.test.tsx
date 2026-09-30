@@ -49,6 +49,9 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+// CGLAB-434: every test here also proves the panel renders on tokens.
+guardTokens();
+
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 describe('App', () => {
@@ -288,6 +291,7 @@ describe('ReadmeModal', () => {
 // ─── ReleaseReminder ──────────────────────────────────────────────────────────
 
 import { ReleaseReminder } from '../components/ReleaseReminder';
+import { guardTokens } from './helpers/tokenGuard';
 
 describe('ReleaseReminder', () => {
   beforeEach(() => {
@@ -337,6 +341,21 @@ describe('ReleaseReminder', () => {
       expect(screen.getByTitle(/New release available/i)).toBeDefined();
     });
   });
+
+  // CGLAB-434: the upgrade tiers each colour the badge and the modal header; the guard sweeps both.
+  for (const tier of ['mandatory', 'recommended'] as const) {
+    it(`renders the ${tier} tier's badge and modal`, async () => {
+      (api.getLatestRelease as any).mockResolvedValue({
+        version: '2.0.0', tagName: 'v2.0.0', name: 'Big Release', body: 'Changes!',
+        publishedAt: '2024-01-01T00:00:00Z', url: 'https://github.com/release',
+        currentVersion: '1.0.0', upgradeTier: tier,
+      });
+      render(<ReleaseReminder />, { wrapper: wrapper(makeQueryClient()) });
+      const badge = await screen.findByTitle(tier === 'mandatory' ? /Mandatory upgrade required/i : /New release available/i);
+      fireEvent.click(badge);
+      expect(await screen.findByRole('button', { name: tier === 'mandatory' ? /Upgrade Now \(Required\)/ : /Update Now/ })).toBeDefined();
+    });
+  }
 
   it('should open modal when rocket button is clicked', async () => {
     (api.getLatestRelease as any).mockResolvedValue({

@@ -557,8 +557,8 @@ export function TerminalTab({
               className={clsx(
                 'flex shrink-0 items-center gap-1.5 rounded border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide transition-colors',
                 panelOpen
-                  ? 'border-brand bg-canvas font-semibold text-ink'
-                  : 'border-border-soft text-ink-tertiary hover:border-brand hover:text-ink',
+                  ? 'border-accent bg-canvas font-semibold text-ink'
+                  : 'border-border-soft text-ink-tertiary hover:border-accent hover:text-ink',
               )}
             >
               <FileDiff size={11} />
@@ -580,8 +580,8 @@ export function TerminalTab({
                 className={clsx(
                   'flex shrink-0 items-center gap-1.5 rounded border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide transition-colors',
                   runsOpen
-                    ? 'border-brand bg-canvas font-semibold text-ink'
-                    : 'border-border-soft text-ink-tertiary hover:border-brand hover:text-ink',
+                    ? 'border-accent bg-canvas font-semibold text-ink'
+                    : 'border-border-soft text-ink-tertiary hover:border-accent hover:text-ink',
                 )}
               >
                 <Activity size={11} />
@@ -598,7 +598,7 @@ export function TerminalTab({
             key={editor.id}
             type="button"
             onClick={() => onOpenInEditor?.(current.itemId, editor.id)}
-            className="flex shrink-0 items-center gap-1.5 rounded border border-border-soft px-2 py-0.5 font-mono text-[10px] text-ink-secondary transition-colors hover:border-brand hover:text-ink"
+            className="flex shrink-0 items-center gap-1.5 rounded border border-border-soft px-2 py-0.5 font-mono text-[10px] text-ink-secondary transition-colors hover:border-accent hover:text-ink"
           >
             <EditorIcon editorId={editor.id} />
             Open in {editor.label}
@@ -659,7 +659,7 @@ export function TerminalTab({
                   data-testid="tab-reorder-hint"
                   data-side={reorderHint.side}
                   className={clsx(
-                    'pointer-events-none absolute inset-y-0 z-10 w-0.5 bg-brand',
+                    'pointer-events-none absolute inset-y-0 z-10 w-0.5 bg-accent',
                     reorderHint.side === 'before' ? 'left-0' : 'right-0',
                   )}
                 />
@@ -723,7 +723,7 @@ export function TerminalTab({
                   // several terminals open, which one is running without the
                   // agent's own prompts has to be visible without switching to
                   // it.
-                  <span title="Permissions skipped" className="shrink-0 text-[10px] text-red-400">●</span>
+                  <span title="Permissions skipped" className="shrink-0 text-[10px] text-status-danger-text">●</span>
                 )}
               </button>
               {onToggleSplit && (() => {
@@ -755,7 +755,7 @@ export function TerminalTab({
                       blocked
                         ? 'cursor-not-allowed text-ink-tertiary opacity-40'
                         : isSplit
-                          ? 'text-brand opacity-100'
+                          ? 'text-accent-ink opacity-100'
                           : 'text-ink-tertiary opacity-0 hover:text-ink focus:opacity-100 group-hover:opacity-100',
                     )}
                   >
@@ -785,7 +785,7 @@ export function TerminalTab({
         {anyNarrow && (
           <span
             data-testid="split-narrow-reason"
-            className="ml-auto flex shrink-0 items-center px-2 text-[11px] text-amber-600 dark:text-amber-400"
+            className="ml-auto flex shrink-0 items-center px-2 text-[11px] text-status-warn-text"
             title="A pane this narrow wraps every line of a terminal. It is a warning, not a limit."
           >
             Narrow pane
@@ -915,7 +915,7 @@ export function TerminalTab({
             <div
               data-testid="drop-zone-hint"
               data-zone={`${dropHint.zone.direction}-${dropHint.zone.placement}`}
-              className="pointer-events-none absolute z-20 rounded-sm border-2 border-brand bg-brand/20"
+              className="pointer-events-none absolute z-20 rounded-sm border-2 border-accent bg-accent/20"
               style={dropHintStyle(dropHint.zone)}
             />
           )}
@@ -955,7 +955,7 @@ export function TerminalTab({
           tabIndex={0}
           data-testid="terminal-split-divider"
           className={clsx(
-            'absolute z-10 touch-none bg-transparent transition-colors hover:bg-brand/40 focus-visible:bg-brand/40 focus-visible:outline-none',
+            'absolute z-10 touch-none bg-transparent transition-colors hover:bg-accent/40 focus-visible:bg-accent/40 focus-visible:outline-none',
             vertical ? 'cursor-row-resize' : 'cursor-col-resize',
           )}
           style={vertical

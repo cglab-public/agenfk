@@ -18,6 +18,7 @@ import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-li
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
 import { NewTerminalDialog } from '../components/NewTerminalDialog';
+import { guardTokens } from './helpers/tokenGuard';
 
 const AGENTS = [
   { id: 'claude-code', label: 'Claude Code', installed: true, supportsAutoApprove: true },
@@ -51,6 +52,8 @@ beforeEach(() => {
   localStorage.clear();
 });
 afterEach(() => cleanup());
+// CGLAB-434: every test here also proves the panel renders on tokens.
+guardTokens();
 
 describe('what it opens with', () => {
   it('names the card, so you know which worktree you are about to work in', async () => {

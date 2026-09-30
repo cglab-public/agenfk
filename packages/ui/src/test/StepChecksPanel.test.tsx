@@ -35,6 +35,7 @@ vi.mock('../commandApprovals', () => ({
   listCommandApprovals: vi.fn(() => Promise.resolve([])),
 }));
 import * as commandApprovals from '../commandApprovals';
+import { guardTokens } from './helpers/tokenGuard';
 
 const result = (id: string, extra: Record<string, unknown> = {}) => ({
   id, step: 'WORK', source: 'flow', severity: 'block', params: {}, outcome: 'pass', detail: 'ok', blocking: false, ...extra,
@@ -55,6 +56,8 @@ function show(g: ReturnType<typeof gates>, projectId?: string) {
 
 beforeEach(() => { vi.clearAllMocks(); vi.mocked(webauthn.canSignHere).mockReturnValue(true); });
 afterEach(() => cleanup());
+// CGLAB-434: every test here also proves the panel renders on tokens.
+guardTokens();
 
 describe('StepChecksPanel', () => {
   it('shows nothing for a step with no checks run and no go-ahead to give', async () => {

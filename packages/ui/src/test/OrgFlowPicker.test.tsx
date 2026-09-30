@@ -6,6 +6,7 @@ import { OrgFlowPicker } from '../components/OrgFlowPicker';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api } from '../api';
+import { guardTokens } from './helpers/tokenGuard';
 
 vi.mock('../api', () => ({
   api: {
@@ -38,6 +39,9 @@ describe('OrgFlowPicker', () => {
   afterEach(() => {
     cleanup();
   });
+
+  // CGLAB-434: every test here also proves the panel renders on tokens.
+  guardTokens();
 
   it('renders nothing when open=false', () => {
     vi.mocked(api.getOrgAvailableFlows).mockResolvedValue({ flows: FLOWS, defaultFlowId: 'flow-default', hubEnabled: true });

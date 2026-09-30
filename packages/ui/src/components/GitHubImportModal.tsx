@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
 import { Loader2, AlertCircle, Search, X, Download } from 'lucide-react';
 import { clsx } from 'clsx';
+import { itemTypeClass } from '../itemTypeStyle';
 
 interface Props {
   open: boolean;
@@ -14,12 +15,6 @@ type Step = 'issues' | 'confirm';
 
 const TYPE_OPTIONS = ['EPIC', 'STORY', 'TASK', 'BUG'] as const;
 
-const TYPE_COLORS: Record<string, string> = {
-  EPIC: 'bg-chip text-accent-text',
-  STORY: 'bg-story-blue/10 text-story-blue',
-  TASK: 'bg-brand/10 text-brand',
-  BUG: 'bg-danger-muted/10 text-danger-muted',
-};
 
 export const GitHubImportModal: React.FC<Props> = ({ open, onClose, projectId }) => {
   const queryClient = useQueryClient();
@@ -108,7 +103,7 @@ export const GitHubImportModal: React.FC<Props> = ({ open, onClose, projectId })
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" data-testid="github-import-modal">
-      <div className="bg-white dark:bg-slate-900 rounded-xl shadow-2xl w-full max-w-lg mx-4 flex flex-col max-h-[85vh]">
+      <div className="bg-surface rounded-xl shadow-2xl w-full max-w-lg mx-4 flex flex-col max-h-[85vh]">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 dark:border-slate-700">
           <div className="flex items-center gap-2">
@@ -137,7 +132,7 @@ export const GitHubImportModal: React.FC<Props> = ({ open, onClose, projectId })
                     placeholder="Search issues..."
                     value={issueSearch}
                     onChange={e => setIssueSearch(e.target.value)}
-                    className="w-full pl-8 pr-3 py-2 text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand dark:text-slate-200"
+                    className="w-full pl-8 pr-3 py-2 text-sm bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-focus-ring dark:text-slate-200"
                   />
                 </div>
                 <div className="flex items-center justify-between">
@@ -149,7 +144,7 @@ export const GitHubImportModal: React.FC<Props> = ({ open, onClose, projectId })
                         className={clsx(
                           'text-[10px] uppercase tracking-wider font-bold px-2 py-1 rounded-full border transition-all',
                           stateFilter === s
-                            ? 'bg-chip text-accent-text border-border-brand'
+                            ? 'bg-accent-fill text-accent-ink border-accent'
                             : 'bg-slate-50 text-slate-400 border-slate-200 dark:bg-slate-800 dark:text-slate-500 dark:border-slate-700'
                         )}
                       >
@@ -157,7 +152,7 @@ export const GitHubImportModal: React.FC<Props> = ({ open, onClose, projectId })
                       </button>
                     ))}
                   </div>
-                  {isFetching && <Loader2 className="animate-spin text-accent-text" size={14} />}
+                  {isFetching && <Loader2 className="animate-spin text-accent-ink" size={14} />}
                 </div>
               </div>
 
@@ -168,9 +163,9 @@ export const GitHubImportModal: React.FC<Props> = ({ open, onClose, projectId })
               )}
               {error && (
                 <div className="flex flex-col items-center gap-3 py-6 text-center">
-                  <AlertCircle className="text-red-400" size={24} />
+                  <AlertCircle className="text-status-danger-text" size={24} />
                   <p className="text-sm text-slate-500 dark:text-slate-400">Failed to load GitHub issues.</p>
-                  <button onClick={() => refetch()} className="text-xs text-accent-text hover:underline">Retry</button>
+                  <button onClick={() => refetch()} className="text-xs text-accent-ink hover:underline">Retry</button>
                 </div>
               )}
               {issues && (
@@ -186,7 +181,7 @@ export const GitHubImportModal: React.FC<Props> = ({ open, onClose, projectId })
                       Select all ({issues.length})
                     </label>
                     {selectedIssues.size > 0 && (
-                      <span className="text-xs font-medium text-accent-text">
+                      <span className="text-xs font-medium text-accent-ink">
                         {selectedIssues.size} selected
                       </span>
                     )}
@@ -215,12 +210,12 @@ export const GitHubImportModal: React.FC<Props> = ({ open, onClose, projectId })
                                 value={currentType}
                                 onChange={(e) => updateIssueType(issue.number, e.target.value)}
                                 className={clsx(
-                                  'text-[10px] font-bold px-1.5 py-0.5 rounded border border-transparent focus:border-brand focus:ring-0 bg-transparent cursor-pointer appearance-none text-center min-w-[60px]',
-                                  TYPE_COLORS[currentType]
+                                  'text-[10px] font-bold px-1.5 py-0.5 rounded border focus:border-accent focus:ring-0 cursor-pointer appearance-none text-center min-w-[60px]',
+                                  itemTypeClass(currentType)
                                 )}
                               >
                                 {TYPE_OPTIONS.map(t => (
-                                  <option key={t} value={t} className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-sans text-xs">
+                                  <option key={t} value={t} className="bg-surface text-slate-800 dark:text-slate-100 font-sans text-xs">
                                     {t}
                                   </option>
                                 ))}
@@ -248,7 +243,7 @@ export const GitHubImportModal: React.FC<Props> = ({ open, onClose, projectId })
                   return (
                     <li key={num} className="flex items-center justify-between font-mono bg-slate-50 dark:bg-slate-800/50 px-2 py-1 rounded">
                       <span>#{num} {issue?.title ? `— ${issue.title}` : ''}</span>
-                      <span className={clsx('text-[10px] font-bold px-1.5 py-0.5 rounded', TYPE_COLORS[type])}>
+                      <span className={clsx('text-[10px] font-bold px-1.5 py-0.5 rounded', itemTypeClass(type))}>
                         {type}
                       </span>
                     </li>
@@ -256,13 +251,13 @@ export const GitHubImportModal: React.FC<Props> = ({ open, onClose, projectId })
                 })}
               </ul>
               {importError && (
-                <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-lg px-3 py-2">
+                <div className="flex items-center gap-2 text-sm text-status-danger-text bg-status-danger-bg rounded-lg px-3 py-2">
                   <AlertCircle size={14} />
                   <span>{importError}</span>
                 </div>
               )}
               {importSuccess && (
-                <div className="text-sm text-emerald-600 dark:text-emerald-400 text-center font-medium py-2">
+                <div className="text-sm text-status-ok-text text-center font-medium py-2">
                   Import complete!
                 </div>
               )}
@@ -279,7 +274,7 @@ export const GitHubImportModal: React.FC<Props> = ({ open, onClose, projectId })
             <button
               onClick={() => setStep('confirm')}
               disabled={selectedIssues.size === 0}
-              className="bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 rounded-md font-medium text-sm flex items-center gap-2 transition-colors"
+              className="bg-brand text-navy hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 rounded-md font-medium text-sm flex items-center gap-2 transition-colors"
             >
               Next ({selectedIssues.size} selected)
             </button>
@@ -288,7 +283,7 @@ export const GitHubImportModal: React.FC<Props> = ({ open, onClose, projectId })
             <button
               onClick={() => importMutation.mutate()}
               disabled={importMutation.isPending || importSuccess}
-              className="bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 rounded-md font-medium text-sm flex items-center gap-2 transition-colors"
+              className="bg-brand text-navy hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 rounded-md font-medium text-sm flex items-center gap-2 transition-colors"
             >
               {importMutation.isPending ? (
                 <><Loader2 size={14} className="animate-spin" /> Importing...</>

@@ -9,6 +9,7 @@ import { TerminalTab } from '../components/TerminalTab';
 import { clampSplitRatio } from '../splitRatio';
 import { splitLeaf, type PaneTree } from '../splitTree';
 import { api } from '../api';
+import { guardTokens } from './helpers/tokenGuard';
 
 vi.mock('../api', () => ({ api: { getGitStatus: vi.fn() } }));
 
@@ -22,6 +23,8 @@ beforeEach(() => {
   vi.mocked(api.getGitStatus).mockResolvedValue({ changed: 0, staged: 0, files: [] } as never);
 });
 afterEach(cleanup);
+// CGLAB-434: every test here also proves the panel renders on tokens.
+guardTokens();
 
 /**
  * A provider, because the top bar asks git for the counts.

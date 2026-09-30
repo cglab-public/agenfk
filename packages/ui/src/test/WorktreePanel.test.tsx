@@ -15,6 +15,7 @@ import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { WorktreePanel } from '../components/WorktreePanel';
 import { api } from '../api';
+import { guardTokens } from './helpers/tokenGuard';
 
 vi.mock('../api', () => ({ api: { getGitStatus: vi.fn(), getFileDiff: vi.fn() } }));
 
@@ -22,6 +23,8 @@ vi.mock('../api', () => ({ api: { getGitStatus: vi.fn(), getFileDiff: vi.fn() } 
 // api was NOT called — which passes or fails on whatever ran before it.
 beforeEach(() => { vi.clearAllMocks(); });
 afterEach(cleanup);
+// CGLAB-434: every test here also proves the panel renders on tokens.
+guardTokens();
 
 /*
  * The view is CHOSEN INSIDE the panel now, not handed to it. The bar carries

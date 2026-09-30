@@ -78,7 +78,7 @@ export const OrgFlowPicker: React.FC<Props> = ({ open, onClose, projectId, activ
         role="dialog"
         aria-modal="true"
         aria-label="Org-available flows"
-        className="w-full max-w-lg rounded-2xl bg-white dark:bg-slate-900 shadow-2xl border border-slate-200 dark:border-slate-700 max-h-[80vh] flex flex-col"
+        className="w-full max-w-lg rounded-2xl bg-surface shadow-2xl border border-slate-200 dark:border-slate-700 max-h-[80vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 dark:border-slate-700">
@@ -103,7 +103,7 @@ export const OrgFlowPicker: React.FC<Props> = ({ open, onClose, projectId, activ
           {loadError && (
             <div
               data-testid="org-flow-load-error"
-              className="flex items-center gap-2 text-red-600 text-sm"
+              className="flex items-center gap-2 text-status-danger-text text-sm"
             >
               <AlertCircle size={16} />
               {(() => {
@@ -128,7 +128,7 @@ export const OrgFlowPicker: React.FC<Props> = ({ open, onClose, projectId, activ
               {selectMutation.error && (
                 <div
                   data-testid="org-flow-select-error"
-                  className="flex items-center gap-2 text-red-600 text-sm mb-3 bg-red-50 dark:bg-red-900/20 rounded-lg px-3 py-2"
+                  className="flex items-center gap-2 text-status-danger-text text-sm mb-3 bg-status-danger-bg rounded-lg px-3 py-2"
                 >
                   <AlertCircle size={16} />
                   {getErrorMessage(selectMutation.error)}
@@ -150,7 +150,7 @@ export const OrgFlowPicker: React.FC<Props> = ({ open, onClose, projectId, activ
                         {isDefault && (
                           <span
                             data-testid={`org-flow-default-${flow.id}`}
-                            className="inline-flex items-center gap-1 text-[10px] font-bold uppercase text-amber-600 bg-amber-100 dark:bg-amber-900/30 dark:text-amber-300 rounded-full px-1.5 py-0.5"
+                            className="inline-flex items-center gap-1 text-[10px] font-bold uppercase text-ink-secondary border border-border-soft bg-canvas rounded-full px-1.5 py-0.5"
                           >
                             <Star size={10} /> Default
                           </span>
@@ -158,7 +158,7 @@ export const OrgFlowPicker: React.FC<Props> = ({ open, onClose, projectId, activ
                         {isSelected && (
                           <span
                             data-testid={`org-flow-selected-${flow.id}`}
-                            className="inline-flex items-center gap-1 text-[10px] font-bold uppercase text-accent-text bg-chip border border-border-brand rounded-full px-1.5 py-0.5"
+                            className="inline-flex items-center gap-1 text-[10px] font-bold uppercase text-accent-ink bg-accent-fill border border-accent rounded-full px-1.5 py-0.5"
                           >
                             <Check size={10} /> Selected
                           </span>
@@ -168,7 +168,7 @@ export const OrgFlowPicker: React.FC<Props> = ({ open, onClose, projectId, activ
                         data-testid={`select-org-flow-${flow.id}`}
                         disabled={isSelected || selectMutation.isPending}
                         onClick={() => selectMutation.mutate(flow.id)}
-                        className="shrink-0 rounded-lg bg-[image:var(--gradient-accent)] text-navy hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-bold px-3 py-1.5 transition-all shadow-glow"
+                        className="shrink-0 rounded-lg border border-border-soft bg-surface text-ink hover:border-accent disabled:opacity-40 disabled:cursor-not-allowed text-xs font-bold px-3 py-1.5 transition-all"
                       >
                         {isSelected ? 'Current' : 'Select'}
                       </button>

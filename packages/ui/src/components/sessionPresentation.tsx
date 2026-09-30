@@ -34,17 +34,17 @@ import type { SessionState } from '../sessionRow';
 export const ORDER: Record<SessionState, number> = { failed: 0, blocked: 1, unverifiable: 2, running: 3, idle: 4 };
 
 export const DOT: Record<SessionState, string> = {
-  running: 'bg-emerald-400',
+  running: 'bg-status-ok-text',
   // A hollow ring rather than a filled dot: waiting is not a kind of running,
   // and the shape says so without relying on hue - these are drawn at 6px,
   // where colour is the weakest channel and fails outright for the ~8% of men
   // with a colour vision deficiency.
-  blocked: 'border-2 border-amber-400',
-  failed: 'bg-rose-400',
+  blocked: 'border-2 border-status-warn-text',
+  failed: 'bg-status-danger-text',
   // Hollow amber, like blocked, because both are waiting - but a DASHED ring,
   // because this one is waiting on knowledge rather than on a person. The
   // shape carries it at 6px, where hue is the weakest channel.
-  unverifiable: 'border-2 border-dashed border-amber-400',
+  unverifiable: 'border-2 border-dashed border-status-warn-text',
   idle: 'border border-ink-tertiary',
 };
 
@@ -90,7 +90,7 @@ export function Spinner(): React.ReactElement {
     <span
       data-testid="session-spinner"
       aria-hidden="true"
-      className="mt-0.5 w-2 shrink-0 text-center font-mono text-[11px] leading-none text-emerald-400 motion-reduce:animate-none"
+      className="mt-0.5 w-2 shrink-0 text-center font-mono text-[11px] leading-none text-status-ok-text motion-reduce:animate-none"
     >
       {/* Reduced motion gets a still frame rather than nothing: the row must
           not shift, and the state is carried by data-state and the label
