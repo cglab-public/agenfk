@@ -8161,6 +8161,11 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown 
   const smaller = narrowing.includes('affected-tests') ? ' The suite part may run only the tests the change affects, or reuse the last green run of an unchanged tree.'
     : runs === 'suite' ? ' The suite part may reuse the last green run of an unchanged tree.' : '';
   const dontPreRun = ` Don't run the full suite yourself first - run only the tests you are iterating on, then verify.`;
+  // Offered to run BY HAND only when running it needs nobody's say-so: the stored command, or the
+  // repository's once approved. Named here unapproved, it would walk past the approval gate.
+  const handRunnable = verifyCommand && (verifyCommand === project?.verifyCommand
+    || approvalFor({ key: 'verifyCommand', command: verifyCommand }, (project?.approvedFileCommands ?? []) as string[]).allowed)
+    ? verifyCommand : undefined;
   const parts: string[] = [];
   if (refuses === 'NO_VERIFY_COMMAND') parts.push(`Leaving ${step} needs the project's verify command, and none is set: verify will refuse until one is (\`agenfk update-project <id> --verify-command "<cmd>"\`).`);
   else if (refuses === 'NO_TREE') parts.push(`Leaving ${step} runs the suite, but this card has no tree to run it in: verify will refuse until the project root is set or the card has a worktree.`);
@@ -8169,7 +8174,7 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown 
     if (toParent) parts.push(`The suite's green itself is deferred to the parent [${String(toParent.id).slice(0, 8)}] "${toParent.title}", whose final verify runs it.`);
   } else if (runs === 'verify-command') parts.push(`Leaving ${step} runs the project's verify command${q(gateCommand)} for you, and the card moves only if it passes.${dontPreRun}`);
   else if (toParent) parts.push(`Leaving ${step} runs no tests on this card: the project's suite is deferred to the parent [${String(toParent.id).slice(0, 8)}] "${toParent.title}", whose final verify runs it.`);
-  else parts.push(`Leaving ${step} runs no tests. If its exit criteria ask for passing tests, running them is yours${verifyCommand ? ` (\`${verifyCommand}\`, or only the tests your change affects)` : ''}.`);
+  else parts.push(`Leaving ${step} runs no tests. If its exit criteria ask for passing tests, running them is yours${handRunnable ? ` (\`${handRunnable}\`, or only the tests your change affects)` : ''}.`);
   if (held) parts.push(`${runs === 'suite' ? 'After that, verify' : 'Verify'} will hold the card: ${held}.`);
   if (waiting && runs !== 'nothing') parts.push('It first waits for a person\'s approval on the board; the suite runs on the verify after it.');
   return {
@@ -8516,7 +8521,10 @@ async function noTestReportFix(item: any, gate: StepGate): Promise<{ line: strin
   const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
   let scripts: Record<string, string> = {};
   try { if (root) scripts = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).scripts ?? {}; } catch { /* not a node project */ }
-  const s = suggestTestReport(String(finalVerifyCommandOf(project) ?? ''), scripts);
+  // The STORED command only, never the repository's file: the fix is for the agent to run by
+  // itself, and a stored test report runs as trusted - built from the file, it would carry a
+  // command nobody approved past the approval gate.
+  const s = suggestTestReport(String(project?.verifyCommand ?? ''), scripts);
   const fix = s ? `agenfk update-project ${item.projectId} --test-report-format ${s.format} --test-report-command "${s.command.replace(/(["\\$`])/g, '\\$1')}" --test-report-path ${s.reportPath}` : null;
   // check-ignore exits 1 for "not ignored"; anything else (not a repository, git failed) says nothing.
   const ignored = !(s && root) || spawnSync('git', ['-C', root, 'check-ignore', '-q', s.reportPath], { stdio: 'ignore', timeout: 5000 }).status !== 1;

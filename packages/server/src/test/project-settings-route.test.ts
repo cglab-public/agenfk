@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
-import { app, initStorage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -212,5 +212,77 @@ describe('approving a command declared by the repository', () => {
       .post(`/projects/${created.body.id}/approve-file-command`)
       .send({ command: 'echo anything' });
     expect(res.status).toBe(401);
+  });
+
+  it('never hands an unapproved command to the agent as a test-report fix', async () => {
+    /*
+     * The NO_TEST_REPORT refusal offers an `agenfk update-project
+     * --test-report-command "..."` for the agent to run by itself. Built from
+     * the repository's file, it would copy a command nobody approved into the
+     * stored test report, which runs as trusted from then on - no capture has
+     * run on this move, so the approval refusal never gets there first.
+     */
+    const flow = await request(server).post('/flows').set('x-agenfk-internal', VERIFY_TOKEN).send({
+      name: 'entry-baseline',
+      steps: [
+        { id: 'start', name: 'START', label: 'START', order: 0, isAnchor: true },
+        { id: 'plan', name: 'PLAN', label: 'PLAN', order: 1 },
+        // Blocking checks that read a per-test entry baseline: leaving PLAN holds on it.
+        { id: 'tests', name: 'TESTS', label: 'TESTS', order: 2, checks: [{ id: 'new-tests-exist' }, { id: 'some-new-test-red' }] },
+        { id: 'work', name: 'WORK', label: 'WORK', order: 3 },
+        { id: 'end', name: 'END', label: 'END', order: 4, isAnchor: true },
+      ],
+    });
+    expect(flow.status, JSON.stringify(flow.body)).toBe(201);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-fix-'));
+    execSync('git init -q', { cwd: root });
+    // `vitest run` so the hint recognises the runner and would build a fix from it.
+    write(root, { projectId: 'x', verifyCommand: 'echo unapproved-marker && vitest run' });
+    execSync('git add -A && git -c user.email=t@t -c user.name=t commit -qm seed', { cwd: root });
+    const created = await request(server).post('/projects').send({ name: 'no-laundering' });
+    await storage.updateProject(created.body.id, { flowId: flow.body.id, projectRoot: root } as never);
+    const itemId = await cardOn(created.body.id);
+    await storage.updateItem(itemId, { status: 'PLAN' } as never);
+
+    const res = await request(server)
+      .post(`/items/${itemId}/validate`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ evidence: 'leaving PLAN' });
+    expect(res.body.error, JSON.stringify(res.body)).toBe('NO_TEST_REPORT');
+    expect(String(res.body.fix ?? '')).not.toContain('unapproved-marker');
+  });
+
+  it('offers the repository command to run by hand only once it is approved', async () => {
+    // Leaving a step that runs nothing tells the agent that running the tests is
+    // its own job, naming the command. An unapproved one named there walks past
+    // the approval exactly as a stored test report would.
+    const flow = await request(server).post('/flows').set('x-agenfk-internal', VERIFY_TOKEN).send({
+      name: 'runs-nothing',
+      steps: [
+        { id: 'start', name: 'START', label: 'START', order: 0, isAnchor: true },
+        { id: 'plan', name: 'PLAN', label: 'PLAN', order: 1 },
+        { id: 'work', name: 'WORK', label: 'WORK', order: 2 },
+        { id: 'end', name: 'END', label: 'END', order: 3, isAnchor: true },
+      ],
+    });
+    expect(flow.status, JSON.stringify(flow.body)).toBe(201);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-by-hand-'));
+    write(root, { projectId: 'x', verifyCommand: 'echo by-hand-marker' });
+    const created = await request(server).post('/projects').send({ name: 'by-hand' });
+    await storage.updateProject(created.body.id, { flowId: flow.body.id, projectRoot: root } as never);
+    const itemId = await cardOn(created.body.id);
+    await storage.updateItem(itemId, { status: 'PLAN' } as never);
+
+    const before = await request(server).get(`/items/${itemId}/leave-plan`);
+    expect(before.status, JSON.stringify(before.body)).toBe(200);
+    expect(before.body.advice).toMatch(/running them is yours/);
+    expect(before.body.advice).not.toContain('by-hand-marker');
+
+    await request(server)
+      .post(`/projects/${created.body.id}/approve-file-command`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .send({ command: 'echo by-hand-marker' });
+    const after = await request(server).get(`/items/${itemId}/leave-plan`);
+    expect(after.body.advice).toContain('by-hand-marker');
   });
 });
