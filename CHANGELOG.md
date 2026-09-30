@@ -2,6 +2,27 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.18] — 2026-09-30
+
+Beta, cumulative over `2.0.0-beta.17`: everything in beta.17, plus the admin reorganisation, the card dates and the
+hook fixes below.
+
+- **The hook guards now run on Windows, and the MCP enforcer runs at all under Claude Code** (#192, #198, thanks
+  @Caldas). Claude Code runs hook commands through Git Bash; the installer registered unquoted backslash `.cmd` paths,
+  which bash cannot run, so every hook was skipped without a word. The gatekeeper and PR hook also never recognised
+  themselves as the entry script on Windows. And on every OS the enforcer read `tool` where Claude Code sends
+  `tool_name`, so its Bash/Read rules (direct database reads, `curl` to the local server) never fired: they do now.
+  The run hook, added after the fix was written, gets the same treatment, and every Claude Code hook command now comes
+  from one rule, so a new hook cannot miss it.
+- **Hub admin is grouped, with a landing page.** The rail groups the admin pages into People, Access, Fleet and Hub,
+  and `/admin` opens on an overview instead of the sign-in settings. Installations lead with the person, Flows and the
+  flow registry are separate tabs, enum values read as plain words, secrets and tokens get a copy button and a token
+  shown once warns before you leave the page, disabled sign-in providers collapse, and admin pages load and validate
+  fields the same way.
+- **A refused upgrade cancel says so on its row.** A hub error on Cancel waiting / Clear stuck used to go into the
+  issue form's banner, which is only shown while that form is open, so nothing appeared.
+- **Cards show when they were created and last updated**, on the card face and in the detail modal.
+
 ## [2.0.0-beta.17] — 2026-09-30
 
 Beta, cumulative over `2.0.0-beta.16`: everything in beta.16, plus the visual system below (CGLAB-434).
