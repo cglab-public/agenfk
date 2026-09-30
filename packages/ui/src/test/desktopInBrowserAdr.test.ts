@@ -27,6 +27,8 @@ function initScript(): string {
 function preloadBridges(): string[] {
   const m = /const api: AgenfkDesktopApi = \{([\s\S]*?)\n\};/.exec(preload);
   if (!m) throw new Error('could not find the preload api object');
+  // A spread or a quoted key would add a bridge this parser cannot name - and the test would pass blind.
+  if (/^\s{2}(\.\.\.|['"])/m.test(m[1])) throw new Error('the preload api object has a spread or quoted key: name its bridges plainly');
   const identity = new Set(['isDesktop', 'platform', 'versions']);
   return [...m[1].matchAll(/^\s{2}(\w+)[,:]/gm)].map(k => k[1]).filter(k => !identity.has(k));
 }
@@ -36,11 +38,14 @@ afterEach(() => {
 });
 
 describe('the desktop-shell-in-a-browser ADR', () => {
-  it('its init script switches the desktop shell on', () => {
+  it('its init script switches the desktop shell on, with the stub identity the ADR describes', () => {
     expect(isDesktop()).toBe(false);
     new Function(initScript())();
     expect(isDesktop()).toBe(true);
-    expect(desktopInfo()?.platform).toBeTruthy();
+    // Read from the script, not defaulted: desktopInfo() fills a missing platform with 'unknown',
+    // and 'Electron 0' in the footer is how the ADR tells a simulated shell from the real one.
+    expect(desktopInfo()?.platform).toBe('darwin');
+    expect(desktopInfo()?.versions.electron).toBe('0');
   });
 
   it('names every preload bridge a browser run cannot exercise', () => {
