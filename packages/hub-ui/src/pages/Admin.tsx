@@ -9,7 +9,8 @@ import { canDeleteUserRow } from './canDeleteUserRow';
 import { hideTargetKey, partitionHiddenRows, canHideRow } from './hiddenPeople';
 import { canRetireRow, canUnretireRow, countRetired, retireConfirmMessage } from './retiredInstallations';
 import { isAttributedByUsername, attributionWarning, countAttributedByUsername } from './attributionWarning';
-import { Toggle, buttonClass, cardClass, controlClass } from '../components/ui';
+import { Toggle, RowMenu, buttonClass, cardClass, controlClass } from '../components/ui';
+import { silentDays } from './installationStaleness';
 
 export function AdminLayout() {
   const navigate = useNavigate();
@@ -541,6 +542,9 @@ interface HiddenPersonRow {
   createdAt: string;
 }
 
+/** Who an installation belongs to: the Person cell's headline, and what its row actions name. */
+const personLabel = (r: InstallationRow): string => r.gitName ?? r.osUser ?? r.gitEmail ?? r.id.slice(0, 8);
+
 export function AdminInstallations() {
   const qc = useQueryClient();
   // CGLAB-31: hidden people are excluded server-side by default; the toggle
@@ -640,8 +644,8 @@ export function AdminInstallations() {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-[10px] uppercase tracking-[0.14em] text-ink-tertiary font-semibold">
-                <th className="text-left px-5 py-2">Installation</th>
-                <th className="text-left px-2 py-2">User</th>
+                <th className="text-left px-5 py-2">Person</th>
+                <th className="text-left px-2 py-2">Installation</th>
                 <th className="text-left px-2 py-2">Version</th>
                 <th className="text-left px-2 py-2">Version updated</th>
                 <th className="text-right px-5 py-2">Last seen</th>
@@ -652,21 +656,7 @@ export function AdminInstallations() {
               {rows.map(r => (
                 <tr key={r.id} className={`hover:bg-accent-fill transition-colors ${r.hidden || r.retired ? 'opacity-50' : ''}`}>
                   <td className="px-5 py-2.5">
-                    <span className="font-mono text-[11px] text-ink-secondary">{r.id}</span>
-                    {r.hidden && (
-                      <span className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-status-warn-text">hidden</span>
-                    )}
-                    {r.retired && (
-                      <span
-                        className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-ink-tertiary"
-                        title={r.retiredByEmail ? `Retired by ${r.retiredByEmail}` : 'Retired'}
-                      >
-                        retired
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-2 py-2.5">
-                    <div className="text-xs text-ink-secondary">{r.gitName ?? r.osUser ?? <span className="text-ink-tertiary">—</span>}</div>
+                    <div className="text-sm font-medium text-ink">{personLabel(r)}</div>
                     {r.gitEmail
                       ? <div className="text-[11px] text-ink-tertiary font-mono">{r.gitEmail}</div>
                       : (
@@ -681,6 +671,20 @@ export function AdminInstallations() {
                       )}
                   </td>
                   <td className="px-2 py-2.5">
+                    <span className="font-mono text-[11px] text-ink-secondary" title={r.id}>{r.id.slice(0, 8)}</span>
+                    {r.hidden && (
+                      <span className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-status-warn-text">hidden</span>
+                    )}
+                    {r.retired && (
+                      <span
+                        className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-ink-tertiary"
+                        title={r.retiredByEmail ? `Retired by ${r.retiredByEmail}` : 'Retired'}
+                      >
+                        retired
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-2 py-2.5">
                     {r.agenfkVersion
                       ? <span className="font-mono text-[11px] px-2 py-0.5 rounded-md border border-accent bg-accent-fill text-accent-ink">{r.agenfkVersion}</span>
                       : <span className="text-[11px] text-ink-tertiary italic">unknown</span>}
@@ -690,44 +694,40 @@ export function AdminInstallations() {
                   </td>
                   <td className="px-5 py-2.5 text-right text-xs text-ink-tertiary tabular-nums">
                     {r.lastSeen ? fmtDate(r.lastSeen) : <span className="text-ink-tertiary">—</span>}
+                    {silentDays(r.lastSeen) !== null && (
+                      <span className="ml-2 rounded-md border border-status-warn-text/40 bg-status-warn-bg px-1.5 py-0.5 text-[10px] font-semibold text-status-warn-text">
+                        silent {silentDays(r.lastSeen)}d
+                      </span>
+                    )}
                   </td>
                   <td className="px-5 py-2.5 text-right">
-                    {canHideRow(r) && (
-                      <button
-                        onClick={() => {
-                          const key = hideTargetKey(r);
-                          if (!key) return;
-                          if (confirm(`Hide ${key}? Their installations disappear from pickers, their API keys are revoked, and new events are dropped. Historical data stays visible. This is reversible.`)) {
-                            hide.mutate(key);
-                          }
-                        }}
-                        disabled={hide.isPending}
-                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-status-warn-text"
-                        title="Hide this person from selection surfaces"
-                      >
-                        <EyeOff className="w-3.5 h-3.5" /> Hide
-                      </button>
-                    )}
-                    {canRetireRow(r) && (
-                      <button
-                        onClick={() => { if (confirm(retireConfirmMessage(r.id))) retire.mutate(r.id); }}
-                        disabled={retire.isPending}
-                        className="ml-3 inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-status-danger-text"
-                        title="Retire this dead installation so campaigns stop waiting on it"
-                      >
-                        <Archive className="w-3.5 h-3.5" /> Retire
-                      </button>
-                    )}
-                    {canUnretireRow(r) && (
-                      <button
-                        onClick={() => unretire.mutate(r.id)}
-                        disabled={unretire.isPending}
-                        className="ml-3 inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-accent-ink"
-                        title="Restore this installation to the fleet (revoked keys are not restored)"
-                      >
-                        <ArchiveRestore className="w-3.5 h-3.5" /> Restore
-                      </button>
-                    )}
+                    <RowMenu
+                      label={`Actions for ${personLabel(r)}`}
+                      items={[
+                        ...(canHideRow(r) ? [{
+                          label: `Hide ${personLabel(r)}`,
+                          disabled: hide.isPending,
+                          onSelect: () => {
+                            const key = hideTargetKey(r);
+                            if (!key) return;
+                            if (confirm(`Hide ${key}? Their installations disappear from pickers, their API keys are revoked, and new events are dropped. Historical data stays visible. This is reversible.`)) {
+                              hide.mutate(key);
+                            }
+                          },
+                        }] : []),
+                        ...(canRetireRow(r) ? [{
+                          label: `Retire ${personLabel(r)}'s installation`,
+                          tone: 'danger' as const,
+                          disabled: retire.isPending,
+                          onSelect: () => { if (confirm(retireConfirmMessage(r.id))) retire.mutate(r.id); },
+                        }] : []),
+                        ...(canUnretireRow(r) ? [{
+                          label: `Restore ${personLabel(r)}'s installation`,
+                          disabled: unretire.isPending,
+                          onSelect: () => unretire.mutate(r.id),
+                        }] : []),
+                      ]}
+                    />
                   </td>
                 </tr>
               ))}

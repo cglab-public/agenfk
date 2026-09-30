@@ -6,8 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api } from '../api';
 import { Card, CardHeader } from '../components/ui';
 import { ADMIN_GROUPS, AdminGroup } from './adminSections';
-
-const SILENT_DAYS = 14;
+import { SILENT_DAYS, silentDays } from './installationStaleness';
 
 interface UserRow { role: string; active: number }
 interface InstallationRow { lastSeen: string | null }
@@ -36,8 +35,7 @@ export function AdminOverview() {
         return `${plural(active.length, 'active user')} · ${plural(active.filter(u => u.role === 'admin').length, 'admin')}`;
       }),
       count(installs, 'Installations', rows => {
-        const cutoff = Date.now() - SILENT_DAYS * 86_400_000;
-        const silent = rows.filter(r => !r.lastSeen || Date.parse(r.lastSeen) < cutoff).length;
+        const silent = rows.filter(r => silentDays(r.lastSeen) !== null).length;
         return `${plural(rows.length, 'installation')} · ${silent} silent for ${SILENT_DAYS}+ days`;
       }),
     ],
