@@ -68,6 +68,9 @@ export function renderStepIcon(iconKey: string | undefined, fallback: React.Reac
 }
 import { clsx } from 'clsx';
 
+/** Colour-input default for a step without its own colour: the light accent (indigo). */
+const DEFAULT_STEP_HEX = '#5b5bd6';
+
 /**
  * Names that are reserved and cannot be used as custom step names.
  * TODO and DONE are anchor steps (always first/last in every flow).
@@ -673,7 +676,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
           href={publishResult.url}
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center gap-1 text-xs text-emerald-700 dark:text-emerald-400 font-semibold hover:underline"
+          className="flex items-center gap-1 text-xs text-accent-ink font-semibold hover:underline"
         >
           <ExternalLink size={12} />
           {publishResult.kind === 'pr'
@@ -684,7 +687,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
         </a>
       )}
       {publishError && (
-        <p data-testid="publish-error" className="text-xs text-red-600 dark:text-red-400 flex items-center gap-1">
+        <p data-testid="publish-error" className="text-xs text-status-danger-text flex items-center gap-1">
           <AlertCircle size={11} />
           {publishError}
         </p>
@@ -701,7 +704,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             <span
               data-testid="hub-managed-badge"
               title="This flow is managed by your organization's Hub. Edit it in the Hub admin, or clone it to author a local copy."
-              className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300"
+              className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-canvas text-ink-secondary border border-border-soft"
             >
               Managed by Hub
             </span>
@@ -714,7 +717,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               {isActive && (
                 <span
                   data-testid="active-badge"
-                  className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300"
+                  className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-status-ok-bg text-status-ok-text"
                 >
                   Active
                 </span>
@@ -735,7 +738,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             value={name}
             onChange={e => { setName(e.target.value); setSaved(false); }}
             placeholder="Flow name…"
-            className="w-full text-xl font-bold text-slate-800 dark:text-slate-100 bg-transparent border-b-2 border-transparent hover:border-slate-300 dark:hover:border-slate-600 focus:border-brand focus:outline-none placeholder-slate-400 dark:placeholder-slate-500 transition-colors pb-0.5"
+            className="w-full text-xl font-bold text-slate-800 dark:text-slate-100 bg-transparent border-b-2 border-transparent hover:border-slate-300 dark:hover:border-slate-600 focus:border-accent focus:outline-none placeholder-slate-400 dark:placeholder-slate-500 transition-colors pb-0.5"
           />
         )}
       </div>
@@ -755,7 +758,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             rows={2}
             placeholder="Optional description of this flow"
             disabled={isReadOnly}
-            className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-brand resize-none disabled:opacity-60 disabled:cursor-not-allowed"
+            className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-canvas text-slate-800 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-focus-ring resize-none disabled:opacity-60 disabled:cursor-not-allowed"
           />
         </div>
 
@@ -803,7 +806,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                 data-testid="add-step-btn"
                 type="button"
                 onClick={addStep}
-                className="flex items-center gap-1 text-xs font-semibold text-accent-text hover:opacity-80 transition-colors"
+                className="flex items-center gap-1 text-xs font-semibold text-accent-ink hover:opacity-80 transition-colors"
               >
                 <Plus size={14} />
                 Add Step
@@ -824,8 +827,11 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
               // A reserved name has its own dedicated message below, so only
               // show the shape issue when that isn't already being reported.
               const shapeIssue = stepShowsOwnIssue(index) ? stepIssue(definitionIssues, index) : undefined;
-              const stepColor = step.color ?? '#04cc98';
-              const anchorColor = isDoneAnchor ? '#10b981' : '#94a3b8';
+              // The native colour input only accepts #rrggbb, so it gets a real hex;
+              // the column border can use the theme token.
+              const stepColor = step.color ?? 'var(--accent)';
+              const stepColorHex = step.color ?? DEFAULT_STEP_HEX;
+              const anchorColor = isDoneAnchor ? 'var(--status-ok-text)' : 'var(--text-tertiary)';
 
               return (
                 <div
@@ -842,7 +848,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                     isAnchor
                       ? 'bg-slate-100 dark:bg-slate-700/60 border-slate-300 dark:border-slate-600 opacity-80'
                       : dragOverIndex === index
-                      ? 'bg-slate-50 dark:bg-slate-800/50 border-border-brand shadow-md'
+                      ? 'bg-slate-50 dark:bg-slate-800/50 border-accent shadow-md'
                       : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700'
                   )}
                 >
@@ -859,7 +865,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                         </div>
                         <div
                           data-testid={`step-color-swatch-${index}`}
-                          className="w-4 h-4 rounded shrink-0 border border-white/30"
+                          className="w-4 h-4 rounded shrink-0 border border-border-soft"
                           style={{ backgroundColor: anchorColor }}
                           title="Step color (fixed for anchor steps)"
                         />
@@ -876,7 +882,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                         <input
                           data-testid={`step-color-${index}`}
                           type="color"
-                          value={stepColor}
+                          value={stepColorHex}
                           onChange={e => updateStep(index, { color: e.target.value })}
                           disabled={isReadOnly}
                           title="Pick step color"
@@ -895,7 +901,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                             {renderStepIcon(step.icon, <Zap size={12} />)}
                           </button>
                           {openIconPickerIndex === index && !isReadOnly && (
-                            <div className="absolute top-7 left-0 z-50 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg p-2 grid grid-cols-6 gap-1 w-44">
+                            <div className="absolute top-7 left-0 z-50 bg-surface border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg p-2 grid grid-cols-6 gap-1 w-44">
                               {STEP_ICON_OPTIONS.map(opt => (
                                 <button
                                   key={opt.key}
@@ -905,7 +911,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                                   className={clsx(
                                     'w-6 h-6 flex items-center justify-center rounded transition-colors text-slate-600 dark:text-slate-300',
                                     step.icon === opt.key
-                                      ? 'bg-chip text-accent-text'
+                                      ? 'bg-accent-fill text-accent-ink'
                                       : 'hover:bg-slate-100 dark:hover:bg-slate-700'
                                   )}
                                 >
@@ -934,7 +940,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                             type="button"
                             onClick={() => removeStep(index)}
                             title="Remove step"
-                            className="ml-auto p-1 rounded-lg transition-colors shrink-0 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20"
+                            className="ml-auto p-1 rounded-lg transition-colors shrink-0 text-slate-400 hover:text-status-danger-text hover:bg-status-danger-bg"
                           >
                             <Trash2 size={14} />
                           </button>
@@ -975,17 +981,17 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                             className={clsx(
                               'w-full px-2 py-1 rounded-md border text-xs focus:outline-none focus:ring-1 disabled:opacity-60',
                               hasReservedName
-                                ? 'border-red-400 focus:ring-red-400 bg-red-50 dark:bg-red-900/20 text-slate-800 dark:text-slate-100'
-                                : 'border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 focus:ring-brand'
+                                ? 'border-status-danger-text/40 focus:ring-2 focus:ring-status-danger-text bg-status-danger-bg text-slate-800 dark:text-slate-100'
+                                : 'border-slate-200 dark:border-slate-600 bg-surface dark:bg-canvas text-slate-800 dark:text-slate-100 focus:ring-focus-ring'
                             )}
                           />
                           {shapeIssue && (
-                            <p data-testid={`step-name-error-${index}`} className="text-xs text-red-600 dark:text-red-400 mt-0.5">
+                            <p data-testid={`step-name-error-${index}`} className="text-xs text-status-danger-text mt-0.5">
                               {shapeIssue.message}
                             </p>
                           )}
                           {hasReservedName && (
-                            <p data-testid={`step-reserved-error-${index}`} className="text-xs text-red-600 dark:text-red-400 mt-0.5">
+                            <p data-testid={`step-reserved-error-${index}`} className="text-xs text-status-danger-text mt-0.5">
                               Reserved name
                             </p>
                           )}
@@ -1002,7 +1008,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                             onChange={e => updateStep(index, { label: e.target.value })}
                             placeholder="e.g. In Progress"
                             disabled={isStepLocked}
-                            className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-brand disabled:opacity-60"
+                            className="w-full px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 bg-surface dark:bg-canvas text-slate-800 dark:text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-focus-ring disabled:opacity-60"
                           />
                         </div>
                         {/* Exit criteria (CGLAB-109): compact summary — the
@@ -1048,7 +1054,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
           )}
           {/* Reserved name global error */}
           {silentIssues.length > 0 && (
-            <ul data-testid="flow-definition-issues" className="text-sm text-red-600 dark:text-red-400 mt-1 list-disc pl-5">
+            <ul data-testid="flow-definition-issues" className="text-sm text-status-danger-text mt-1 list-disc pl-5">
               {silentIssues.map((issue, i) => (
                 <li key={i}>
                   {issue.stepIndex === undefined
@@ -1059,7 +1065,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
             </ul>
           )}
           {reservedNameError && (
-            <p data-testid="reserved-name-error" className="text-sm text-red-600 dark:text-red-400 mt-1">
+            <p data-testid="reserved-name-error" className="text-sm text-status-danger-text mt-1">
               One or more step names use a reserved name (TODO, DONE, BLOCKED, PAUSED, IDEAS, ARCHIVED, TRASHED).
             </p>
           )}
@@ -1067,7 +1073,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
 
         {/* Error */}
         {errorMsg && (
-          <p data-testid="flow-editor-error" className="text-sm text-red-600 dark:text-red-400">
+          <p data-testid="flow-editor-error" className="text-sm text-status-danger-text">
             {errorMsg}
           </p>
         )}
@@ -1091,7 +1097,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                 type="button"
                 disabled={isSaveDisabled}
                 onClick={() => saveMutation.mutate()}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-brand text-navy hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 {saved ? <Check size={15} /> : <Save size={15} />}
                 {isBusy ? 'Saving…' : saved && !isDirty ? labels.saved : labels.save}
@@ -1102,7 +1108,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                 data-testid="clone-to-edit-btn"
                 type="button"
                 onClick={onClone}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 transition-colors"
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-brand text-navy hover:opacity-90 transition-colors"
               >
                 <CopyPlus size={15} />
                 Clone to Edit
@@ -1118,7 +1124,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                 disabled={publishMutation.isPending || isSaveDisabled}
                 title={isSaveDisabled ? saveBlockedReason : 'Publish this flow to the registry'}
                 onClick={() => { setPublishResult(null); setPublishError(null); publishMutation.mutate(); }}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-border-soft text-ink-secondary hover:text-accent-text hover:border-border-brand disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-border-soft text-ink-secondary hover:text-accent-ink hover:border-accent disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 {publishMutation.isPending ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
                 {publishMutation.isPending ? 'Publishing…' : 'Publish'}
@@ -1129,7 +1135,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                 data-testid="use-default-flow-btn"
                 type="button"
                 onClick={onUseDefault}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 text-white transition-colors shadow-sm"
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-brand text-navy hover:opacity-90 transition-colors shadow-sm"
               >
                 <GitBranch size={15} />
                 {labels.useFlow}
@@ -1141,7 +1147,8 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
                 type="button"
                 disabled={isSaveDisabled}
                 onClick={() => useFlowMutation.mutate()}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
+                // Secondary: Save is the one primary in this footer.
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border border-accent text-accent-ink hover:bg-accent-fill disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 <GitBranch size={15} />
                 {labels.useFlow}
@@ -1193,14 +1200,14 @@ const DeleteConfirm: React.FC<DeleteConfirmProps> = ({ onConfirm, onCancel }) =>
     <button
       data-testid="delete-confirm-yes"
       onClick={e => { e.stopPropagation(); onConfirm(); }}
-      className="px-1.5 py-0.5 rounded bg-red-600 text-white hover:bg-red-700 font-semibold"
+      className="px-1.5 py-0.5 rounded bg-status-danger-bg text-status-danger-text border border-status-danger-text/40 font-semibold"
     >
       Yes
     </button>
     <button
       data-testid="delete-confirm-no"
       onClick={e => { e.stopPropagation(); onCancel(); }}
-      className="px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-300 dark:hover:bg-slate-600 font-semibold"
+      className="px-1.5 py-0.5 rounded text-ink-secondary hover:bg-canvas"
     >
       No
     </button>
@@ -1276,7 +1283,7 @@ const CommunityPreviewPanel: React.FC<CommunityPreviewPanelProps> = ({
     <div className="flex flex-col h-full" data-testid="community-preview-panel">
       <div className="px-6 pt-6 pb-4 shrink-0">
         <div className="flex items-center gap-2 mb-1">
-          <span className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-chip text-accent-text">
+          <span className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-accent-fill text-accent-ink">
             Community
           </span>
         </div>
@@ -1324,7 +1331,7 @@ const CommunityPreviewPanel: React.FC<CommunityPreviewPanelProps> = ({
         )}
 
         {installMutation.isError && (
-          <p data-testid="community-install-error" className="text-sm text-red-600 dark:text-red-400">
+          <p data-testid="community-install-error" className="text-sm text-status-danger-text">
             {(installMutation.error as Error)?.message ?? 'Installation failed'}
           </p>
         )}
@@ -1336,7 +1343,7 @@ const CommunityPreviewPanel: React.FC<CommunityPreviewPanelProps> = ({
           type="button"
           disabled={installMutation.isPending}
           onClick={() => { actionRef.current = 'install'; installMutation.mutate(flow.filename); }}
-          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-brand text-navy hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {installMutation.isPending ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
           Install
@@ -1568,7 +1575,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-[calc(100vw-2rem)] h-[90vh] flex flex-row overflow-hidden">
+      <div className="bg-surface rounded-2xl shadow-2xl w-[calc(100vw-2rem)] h-[90vh] flex flex-row overflow-hidden">
 
         {/* ── LEFT SIDEBAR ──────────────────────────────────────────────────── */}
         <div
@@ -1578,7 +1585,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
           {/* Sidebar header */}
           <div className="px-4 pt-5 pb-3 flex items-center justify-between shrink-0">
             <div className="flex items-center gap-2">
-              <GitBranch size={16} className="text-accent-text" />
+              <GitBranch size={16} className="text-accent-ink" />
               <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">
                 Flows
               </span>
@@ -1600,7 +1607,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               className={clsx(
                 'flex-1 py-2 text-xs font-semibold transition-colors border-b-2 -mb-px',
                 activeTab === 'my-flows'
-                  ? 'border-brand text-accent-text'
+                  ? 'border-accent text-accent-ink'
                   : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
               )}
             >
@@ -1612,7 +1619,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               className={clsx(
                 'flex-1 py-2 text-xs font-semibold transition-colors border-b-2 -mb-px',
                 activeTab === 'community'
-                  ? 'border-brand text-accent-text'
+                  ? 'border-accent text-accent-ink'
                   : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
               )}
             >
@@ -1637,7 +1644,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                     placeholder="Search by name or author…"
                     value={communitySearch}
                     onChange={e => setCommunitySearch(e.target.value)}
-                    className="w-full pl-7 pr-2 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-brand"
+                    className="w-full pl-7 pr-2 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-600 bg-surface text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-focus-ring"
                   />
                 </div>
               </div>
@@ -1649,8 +1656,8 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                   </div>
                 ) : isRegistryError ? (
                   <div className="flex flex-col items-center justify-center py-8 gap-2 px-3 text-center">
-                    <AlertCircle size={20} className="text-red-500" />
-                    <p className="text-xs text-red-600 dark:text-red-400">Failed to load registry.</p>
+                    <AlertCircle size={20} className="text-status-danger-text" />
+                    <p className="text-xs text-status-danger-text">Failed to load registry.</p>
                   </div>
                 ) : filteredRegistryFlows.length === 0 ? (
                   <p className="text-xs text-slate-500 text-center py-8">
@@ -1665,7 +1672,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                       className={clsx(
                         'w-full text-left px-3 py-2 rounded-lg mb-1 transition-colors cursor-pointer',
                         selectedRegistryFlow?.filename === rf.filename
-                          ? 'bg-chip text-accent-text'
+                          ? 'bg-accent-fill text-accent-ink'
                           : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
                       )}
                     >
@@ -1692,7 +1699,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               className={clsx(
                 'w-full text-left px-3 py-2 rounded-lg mb-1 transition-colors group cursor-pointer',
                 selectedFlowId === BUILTIN_ID && !isNewFlow && !isEditingClone
-                  ? 'bg-chip text-accent-text'
+                  ? 'bg-accent-fill text-accent-ink'
                   : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
               )}
             >
@@ -1709,7 +1716,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                       }
                     }}
                     title="Clone flow"
-                    className="p-1 rounded transition-colors text-slate-300 hover:text-accent-text dark:text-slate-500 hover:bg-chip"
+                    className="p-1 rounded transition-colors text-slate-300 hover:text-accent-ink dark:text-slate-500 hover:bg-accent-fill"
                   >
                     <CopyPlus size={13} />
                   </button>
@@ -1721,7 +1728,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
             </div>
 
             {deleteError && (
-              <p data-testid="flow-delete-error" className="text-xs text-red-600 dark:text-red-400 px-3 py-2">
+              <p data-testid="flow-delete-error" className="text-xs text-status-danger-text px-3 py-2">
                 {deleteError}
               </p>
             )}
@@ -1741,7 +1748,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                   className={clsx(
                     'w-full text-left px-3 py-2 rounded-lg mb-1 transition-colors cursor-pointer',
                     isSelected
-                      ? 'bg-chip text-accent-text'
+                      ? 'bg-accent-fill text-accent-ink'
                       : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
                   )}
                   onClick={() => {
@@ -1760,7 +1767,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                         {isActive && (
                           <span
                             data-testid={`flow-active-badge-${flow.id}`}
-                            className="text-xs font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 shrink-0"
+                            className="text-xs font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-status-ok-bg text-status-ok-text shrink-0"
                           >
                             Active
                           </span>
@@ -1787,7 +1794,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                           handleClone(flow, flow.name);
                         }}
                         title="Clone flow"
-                        className="p-1 rounded transition-colors text-slate-300 hover:text-accent-text dark:text-slate-500 hover:bg-chip"
+                        className="p-1 rounded transition-colors text-slate-300 hover:text-accent-ink dark:text-slate-500 hover:bg-accent-fill"
                       >
                         <CopyPlus size={13} />
                       </button>
@@ -1808,7 +1815,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
                           'shrink-0 p-1 rounded transition-colors',
                           isActive || isRowHubManaged
                             ? 'text-slate-300 dark:text-slate-500 cursor-not-allowed'
-                            : 'text-slate-300 hover:text-red-500 dark:text-slate-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20'
+                            : 'text-slate-300 hover:text-status-danger-text dark:text-slate-500 hover:bg-status-danger-bg'
                         )}
                       >
                         <Trash2 size={13} />
@@ -1832,8 +1839,8 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               className={clsx(
                 'w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold transition-colors',
                 isNewFlow
-                  ? 'bg-chip text-accent-text'
-                  : 'text-accent-text hover:bg-chip'
+                  ? 'bg-accent-fill text-accent-ink'
+                  : 'text-accent-ink hover:bg-accent-fill'
               )}
             >
               <Plus size={15} />
@@ -1893,7 +1900,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
               <p className="text-sm">Select a flow from the sidebar or create a new one.</p>
               <button
                 onClick={() => { setIsNewFlow(true); setClonedFlow(null); setCreatedFlow(null); }}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 transition-colors"
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold bg-brand text-navy hover:opacity-90 transition-colors"
               >
                 <Plus size={14} />
                 New Flow

@@ -69,10 +69,10 @@ export const ExitCriteriaEditorModal: React.FC<ExitCriteriaEditorModalProps> = (
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-2xl shadow-2xl w-[calc(100vw-2rem)] max-w-4xl h-[85vh] flex flex-col overflow-hidden">
+      <div className="bg-surface border border-slate-200 dark:border-slate-700 rounded-2xl shadow-2xl w-[calc(100vw-2rem)] max-w-4xl h-[85vh] flex flex-col overflow-hidden">
         {/* Header */}
         <div className="px-5 py-3.5 border-b border-slate-200 dark:border-slate-700 flex items-center gap-2.5 shrink-0">
-          <ScrollText size={16} className="text-accent-text shrink-0" />
+          <ScrollText size={16} className="text-accent-ink shrink-0" />
           <div className="min-w-0">
             <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 truncate">
               Exit Criteria
@@ -102,7 +102,7 @@ export const ExitCriteriaEditorModal: React.FC<ExitCriteriaEditorModalProps> = (
               onChange={e => setValue(e.target.value)}
               rows={14}
               placeholder={'What must be true before leaving this step?\n\nMarkdown is supported:\n- lists, **bold**, `code`, [links](…)'}
-              className="flex-1 min-h-0 mx-4 my-2 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-brand resize-none leading-relaxed"
+              className="flex-1 min-h-0 mx-4 my-2 px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-canvas text-slate-800 dark:text-slate-100 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-focus-ring resize-none leading-relaxed"
             />
             {/* Token estimate — under the editor, as specified */}
             <div
@@ -146,7 +146,7 @@ export const ExitCriteriaEditorModal: React.FC<ExitCriteriaEditorModalProps> = (
             data-testid="exit-criteria-save"
             type="button"
             onClick={() => onSave(value)}
-            className="px-3.5 py-1.5 rounded-lg text-sm font-semibold text-white bg-brand hover:opacity-90 transition-opacity"
+            className="px-3.5 py-1.5 rounded-lg text-sm font-semibold text-navy bg-brand hover:opacity-90 transition-opacity"
           >
             Save
           </button>

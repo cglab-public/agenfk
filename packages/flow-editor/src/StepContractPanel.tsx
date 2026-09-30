@@ -144,7 +144,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
       <div data-testid="contract-role" className="space-y-1">
         <div className={section}>Role</div>
         <div className="flex items-start gap-2">
-          <span className="mt-1 w-3 h-3 rounded shrink-0" style={{ background: roleText?.color ?? 'transparent', border: roleText ? 'none' : '1px dashed #94a3b8' }} />
+          <span className="mt-1 w-3 h-3 rounded shrink-0" style={{ background: roleText?.color ?? 'transparent', border: roleText ? 'none' : '1px dashed var(--text-tertiary)' }} />
           <div className="flex-1">
             <div className="font-semibold">{roleText?.name ?? 'No role'}</div>
             <div className="text-xs text-slate-500 dark:text-slate-400">
@@ -164,7 +164,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
               const t = ROLE_TEXTS[r.id];
               return (
                 <button key={r.id} type="button" onClick={() => { onChange({ role: r.id }); setPickingRole(false); }}
-                  className={clsx('text-left', chip, role === r.id ? 'border-emerald-600 bg-emerald-50 dark:bg-emerald-950/40' : 'hover:bg-slate-50 dark:hover:bg-slate-700')}>
+                  className={clsx('text-left', chip, role === r.id ? 'border-accent dark:border-accent bg-accent-fill' : 'hover:bg-slate-50 dark:hover:bg-slate-700')}>
                   <span className="font-semibold">{t?.name ?? r.id}</span>
                   <span className="block text-xs text-slate-500 dark:text-slate-400">{t?.desc}</span>
                   <span className="block text-xs text-slate-400 mt-1">Brings: {r.builtins.map(b => titleOf(b.id)).join(', ') || 'no checks'}</span>
@@ -189,7 +189,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
             const isOff = off.has(c.id);
             return (
               <div key={`${c.id}-${JSON.stringify(c.params)}`} className={clsx('flex items-start gap-2', chip, (!c.applicable || isOff) && 'opacity-60')}>
-                {isOff ? <BellOff size={13} className="mt-0.5 shrink-0 text-amber-600" aria-hidden /> : !canSwitch && <Lock size={13} className="mt-0.5 shrink-0 text-slate-400" aria-hidden />}
+                {isOff ? <BellOff size={13} className="mt-0.5 shrink-0 text-status-warn-text" aria-hidden /> : !canSwitch && <Lock size={13} className="mt-0.5 shrink-0 text-slate-400" aria-hidden />}
                 <div className="flex-1">
                   <div className={clsx('font-medium', isOff && 'line-through')}>{t.title}</div>
                   <div className="text-xs text-slate-500 dark:text-slate-400">
@@ -232,7 +232,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
             const isOff = off.has(c.id);
             return (
               <div key={c.id} className={clsx('flex items-start gap-2', chip, isOff && 'opacity-60')}>
-                {isOff && <BellOff size={13} className="mt-0.5 shrink-0 text-amber-600" aria-hidden />}
+                {isOff && <BellOff size={13} className="mt-0.5 shrink-0 text-status-warn-text" aria-hidden />}
                 <div className="flex-1">
                   <div className={clsx('font-medium', isOff && 'line-through')}>{t.title}</div>
                   <div className="text-xs text-slate-500 dark:text-slate-400">{isOff ? offNote : `Stops: ${t.stops}`}</div>
@@ -264,7 +264,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
           return (
             <div key={keyOf(ref)} className={clsx('space-y-2', chip)}>
               <div className="flex items-start gap-2">
-                {isOff && <BellOff size={13} className="mt-0.5 shrink-0 text-amber-600" aria-hidden />}
+                {isOff && <BellOff size={13} className="mt-0.5 shrink-0 text-status-warn-text" aria-hidden />}
                 <div className="flex-1">
                   <div className={clsx('font-medium', isOff && 'line-through')}>{t.title}</div>
                   <div className="text-xs text-slate-500 dark:text-slate-400">{isOff ? offNote : `Stops: ${t.stops}`}</div>
@@ -272,13 +272,13 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
                 {switchFor(keyOf(ref), isCustom(ref.id) ? `${t.title} (${name})` : t.title)}
                 {!disabled && (
                   <button type="button" aria-label={`Remove ${t.title}`} onClick={() => replace(keyOf(ref), null)}
-                    className="p-1 rounded text-slate-400 hover:text-red-500">
+                    className="p-1 rounded text-slate-400 hover:text-status-danger-text">
                     <Trash2 size={14} />
                   </button>
                 )}
               </div>
               {Object.entries(d?.params ?? {}).map(([k, p]) => {
-                const field = 'mt-1 block w-full rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1';
+                const field = 'mt-1 block w-full rounded-md border border-slate-200 dark:border-slate-600 bg-canvas px-2 py-1';
                 const value = (ref.params as any)?.[k];
                 const set = (v: string | string[]) => replace(keyOf(ref), withParam(ref, k, v));
                 // Controls by what the param holds (efcacdeb): a name, a command as a list, a text.
@@ -315,12 +315,12 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
               <div className="flex gap-1 text-xs" role="group" aria-label={`If ${t.title} fails`}>
                 <button type="button" disabled={disabled} aria-pressed={!warn} aria-label={`Block the step: ${t.title}`}
                   onClick={() => setSeverity('block')}
-                  className={clsx('px-2 py-1 rounded-md border', !warn ? 'bg-slate-800 text-white dark:bg-slate-200 dark:text-slate-900' : 'border-slate-200 dark:border-slate-600')}>
+                  className={clsx('px-2 py-1 rounded-md border', !warn ? 'bg-accent-fill text-accent-ink border-accent' : 'border-slate-200 dark:border-slate-600')}>
                   Block the step
                 </button>
                 <button type="button" disabled={disabled} aria-pressed={warn} aria-label={`Only warn: ${t.title}`}
                   onClick={() => setSeverity('warn')}
-                  className={clsx('px-2 py-1 rounded-md border', warn ? 'bg-slate-800 text-white dark:bg-slate-200 dark:text-slate-900' : 'border-slate-200 dark:border-slate-600')}>
+                  className={clsx('px-2 py-1 rounded-md border', warn ? 'bg-accent-fill text-accent-ink border-accent' : 'border-slate-200 dark:border-slate-600')}>
                   Only warn
                 </button>
               </div>
@@ -342,7 +342,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
                   placeholder='e.g. "deleted test" or "JIRA"' className="flex-1 bg-transparent py-1 text-xs outline-none" />
               </label>
               <select aria-label="Group" value={group} onChange={e => setGroup(e.target.value)}
-                className="text-xs rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1">
+                className="text-xs rounded-md border border-slate-200 dark:border-slate-600 bg-canvas px-2 py-1">
                 <option value="all">All</option>
                 {Object.entries(GROUP_TEXTS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
               </select>
@@ -384,7 +384,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
               <span className="text-slate-500 dark:text-slate-400">Who needs a go-ahead</span>
               <select aria-label="Who needs a go-ahead" disabled={disabled} value={approval.params?.appliesTo ?? 'parent'}
                 onChange={e => replace('human-approval', withParam(approval, 'appliesTo', e.target.value))}
-                className="mt-1 block w-full rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 px-2 py-1">
+                className="mt-1 block w-full rounded-md border border-slate-200 dark:border-slate-600 bg-canvas px-2 py-1">
                 <option value="parent">This card, or its parent: approving a breakdown approves its children</option>
                 <option value="every-card">Every card, each on its own</option>
               </select>
@@ -436,7 +436,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
           {warns.map((w, i) => <li key={`w${i}`} className="text-slate-500">Warning only: {w}</li>)}
         </ul>
         {notRun.length > 0 && (
-          <div className="text-xs text-amber-700 dark:text-amber-400">Not run, switched off by your org's hub: {notRun.join(', ')}</div>
+          <div className="text-xs text-status-warn-text">Not run, switched off by your org's hub: {notRun.join(', ')}</div>
         )}
       </div>
     </div>

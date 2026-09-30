@@ -49,15 +49,17 @@ export function checkText(id: string, description?: string): CheckText {
 
 export interface RoleText { name: string; desc: string; color: string }
 
+// Role swatch colours are theme tokens (brand/tokens.css), fixed per role, so a
+// role keeps its colour in both themes (CGLAB-434).
 export const ROLE_TEXTS: Record<string, RoleText> = {
-  backlog: { name: 'Backlog', desc: 'Work waiting to start. A card leaves it only from a tree in sync with its remote, so nothing is built on stale code.', color: '#94a3b8' },
-  planning: { name: 'Planning', desc: 'Decide what to build. Cards are broken down, and a person can give the go-ahead.', color: '#a3c46b' },
-  'test-authoring': { name: 'Writing tests', desc: 'Tests come first and must fail; they become the red set that must pass later. Add test-surface-frozen to a later step to forbid changing them there.', color: '#498373' },
-  coding: { name: 'Implementing', desc: 'Make the failing tests pass. Existing tests may change where the behaviour they pin is what the card changes. Its test checks need a Writing-tests step before it.', color: '#3b82f6' },
-  refactoring: { name: 'Refactoring', desc: 'Tidy the code. The list of tests must stay exactly the same.', color: '#8b5cf6' },
-  review: { name: 'Review', desc: 'Someone other than the author reviews the work, and every finding is fixed or rejected with a reason.', color: '#d97706' },
-  testing: { name: 'Testing', desc: 'The whole test suite must pass.', color: '#0ea5e9' },
-  closing: { name: 'Closing', desc: 'The server runs the project\'s own verify command. Only the last step can have this role.', color: '#10b981' },
+  backlog: { name: 'Backlog', desc: 'Work waiting to start. A card leaves it only from a tree in sync with its remote, so nothing is built on stale code.', color: 'var(--text-tertiary)' },
+  planning: { name: 'Planning', desc: 'Decide what to build. Cards are broken down, and a person can give the go-ahead.', color: 'var(--series-2)' },
+  'test-authoring': { name: 'Writing tests', desc: 'Tests come first and must fail; they become the red set that must pass later. Add test-surface-frozen to a later step to forbid changing them there.', color: 'var(--series-6)' },
+  coding: { name: 'Implementing', desc: 'Make the failing tests pass. Existing tests may change where the behaviour they pin is what the card changes. Its test checks need a Writing-tests step before it.', color: 'var(--series-1)' },
+  refactoring: { name: 'Refactoring', desc: 'Tidy the code. The list of tests must stay exactly the same.', color: 'var(--series-3)' },
+  review: { name: 'Review', desc: 'Someone other than the author reviews the work, and every finding is fixed or rejected with a reason.', color: 'var(--series-4)' },
+  testing: { name: 'Testing', desc: 'The whole test suite must pass.', color: 'var(--series-5)' },
+  closing: { name: 'Closing', desc: 'The server runs the project\'s own verify command. Only the last step can have this role.', color: 'var(--status-ok-text)' },
 };
 
 /** What a step hands to later ones, in words. */
