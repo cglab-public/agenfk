@@ -187,10 +187,10 @@ describe('PrOverviewPage model multi-select', () => {
 
     // Popover trigger reports the selection count, and each selected model is
     // a removable chip.
-    await screen.findByRole('button', { name: '2 selected · 7 total' });
+    await screen.findByRole('button', { name: 'Model 2 selected · 7 total' });
     fireEvent.click(screen.getByRole('button', { name: 'Remove gpt-5.2' }));
 
-    await screen.findByRole('button', { name: '1 selected · 7 total' });
+    await screen.findByRole('button', { name: 'Model 1 selected · 7 total' });
     await waitFor(() => expect(urlNow()).toBe('model=gemini-3-flash'));
   });
 });

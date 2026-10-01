@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { FilterHeading } from './ui/ChipRow';
+import { Chip, FilterHeading } from './ui/ChipRow';
 import { Check, ChevronDown, Search, X } from 'lucide-react';
 import { filterFacetOptions } from './facetSearch';
 
@@ -39,9 +39,12 @@ export function FacetMultiselect({
 }: Props) {
   const [open, setOpen] = useState(false);
   const headingId = useId();
+  const triggerId = useId();
+  const panelId = useId();
   const [query, setQuery] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -50,7 +53,11 @@ export function FacetMultiselect({
       if (!rootRef.current.contains(e.target as Node)) setOpen(false);
     }
     function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key !== 'Escape') return;
+      setOpen(false);
+      // Escape is a keyboard user leaving the panel: put them back where they
+      // opened it. An outside click already moved focus where it wanted.
+      triggerRef.current?.focus();
     }
     document.addEventListener('mousedown', onDoc);
     document.addEventListener('keydown', onKey);
@@ -96,23 +103,12 @@ export function FacetMultiselect({
     return (
       <div>
         <FilterHeading id={headingId} label={label} count={selected.size} onClear={onClear} disabled={disabled} />
-        <div className="mt-1.5 flex flex-wrap gap-1.5">
-          {visible.map((t) => {
-            const on = selected.has(t);
-            return (
-              <button
-                key={t}
-                onClick={() => onToggle(t)}
-                disabled={disabled}
-                title={t}
-                className={`px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors max-w-[260px] truncate disabled:opacity-50 disabled:cursor-not-allowed ${on
-                  ? 'text-accent-ink border-accent bg-accent-fill'
-                  : 'text-ink-secondary border-border-soft hover:text-accent-ink hover:border-accent'}`}
-              >
-                {optionLabel ? optionLabel(t) : t}
-              </button>
-            );
-          })}
+        <div role="group" aria-labelledby={headingId} className="mt-1.5 flex flex-wrap gap-1.5">
+          {visible.map((t) => (
+            <Chip key={t} on={selected.has(t)} onClick={() => onToggle(t)} title={t} mono disabled={disabled}>
+              {optionLabel ? optionLabel(t) : t}
+            </Chip>
+          ))}
         </div>
       </div>
     );
@@ -126,10 +122,16 @@ export function FacetMultiselect({
 
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
         <button
+          ref={triggerRef}
+          id={triggerId}
+          type="button"
           onClick={() => setOpen((v) => !v)}
           disabled={disabled}
+          // Named "<facet> <summary>": the summary alone ("All 12") said nothing
+          // about which filter this is.
+          aria-labelledby={`${headingId} ${triggerId}`}
+          aria-controls={open ? panelId : undefined}
           className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-mono text-[11px] border text-ink-secondary border-border-soft hover:border-accent hover:text-accent-ink transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-border-soft disabled:hover:text-ink-secondary"
-          aria-haspopup="listbox"
           aria-expanded={open}
         >
           {selected.size === 0
@@ -152,7 +154,7 @@ export function FacetMultiselect({
             <button
               onClick={() => onToggle(v)}
               disabled={disabled}
-              aria-label={`Remove ${v}`}
+              aria-label={`Remove ${optionLabel ? optionLabel(v) : v}`}
               className="rounded-full hover:bg-accent-fill p-0.5 -mr-0.5 disabled:cursor-not-allowed"
             >
               <X className="w-3 h-3" />
@@ -162,7 +164,7 @@ export function FacetMultiselect({
       </div>
 
       {open && (
-        <div className="absolute z-20 mt-2 w-[min(420px,calc(100vw-2rem))] bg-card-glass backdrop-blur border border-border-soft rounded-xl shadow-xl overflow-hidden">
+        <div id={panelId} className="absolute z-20 mt-2 w-[min(420px,calc(100vw-2rem))] bg-card-glass backdrop-blur border border-border-soft rounded-xl shadow-xl overflow-hidden">
           <div className="flex items-center gap-2 px-3 py-2 border-b border-border-soft">
             <Search className="w-3.5 h-3.5 text-ink-tertiary" />
             <input
@@ -170,6 +172,7 @@ export function FacetMultiselect({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder={placeholder}
+              aria-label={`Search ${label}`}
               className="flex-1 bg-transparent outline-none text-[12px] text-ink placeholder:text-ink-tertiary"
             />
             {query && (
@@ -182,34 +185,34 @@ export function FacetMultiselect({
               </button>
             )}
           </div>
-          <ul role="listbox" aria-multiselectable="true" className="max-h-64 overflow-y-auto py-1">
+          {/* A group of checkboxes, named by the facet heading: each choice
+              announces its own checked state. */}
+          <div role="group" aria-labelledby={headingId} className="max-h-64 overflow-y-auto py-1">
             {filtered.length === 0 ? (
-              <li className="px-3 py-4 text-center text-[12px] text-ink-tertiary">No matches.</li>
+              <p className="px-3 py-4 text-center text-[12px] text-ink-tertiary">No matches.</p>
             ) : (
               filtered.map((v) => {
                 const on = selected.has(v);
                 return (
-                  <li key={v} role="option" aria-selected={on}>
-                    <button
-                      onClick={() => onToggle(v)}
-                      disabled={disabled}
-                      className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-[12px] font-mono transition-colors disabled:cursor-not-allowed ${on
-                        ? 'bg-accent-fill text-accent-ink'
-                        : 'text-ink hover:bg-accent-fill/50'}`}
-                      title={v}
-                    >
-                      <span className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${on
-                        ? 'bg-accent border-accent text-surface'
-                        : 'border-border-soft'}`}>
-                        {on && <Check className="w-2.5 h-2.5" />}
-                      </span>
-                      <span className="truncate">{optionLabel ? optionLabel(v) : v}</span>
-                    </button>
-                  </li>
+                  <label
+                    key={v}
+                    title={v}
+                    className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-[12px] font-mono transition-colors cursor-pointer has-[:disabled]:cursor-not-allowed has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:-outline-offset-2 has-[:focus-visible]:outline-accent ${on
+                      ? 'bg-accent-fill text-accent-ink'
+                      : 'text-ink hover:bg-accent-fill/50'}`}
+                  >
+                    <input type="checkbox" className="sr-only" checked={on} disabled={disabled} onChange={() => onToggle(v)} />
+                    <span aria-hidden="true" className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${on
+                      ? 'bg-accent border-accent text-surface'
+                      : 'border-border-soft'}`}>
+                      {on && <Check className="w-2.5 h-2.5" />}
+                    </span>
+                    <span className="truncate">{optionLabel ? optionLabel(v) : v}</span>
+                  </label>
                 );
               })
             )}
-          </ul>
+          </div>
           {selected.size > 0 && (
             <div className="flex items-center justify-between px-3 py-2 border-t border-border-soft text-[11px]">
               <span className="text-ink-tertiary">{selected.size} selected</span>

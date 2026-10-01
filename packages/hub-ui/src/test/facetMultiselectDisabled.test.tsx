@@ -58,10 +58,10 @@ describe('FacetMultiselect disabled', () => {
   it('closes a popover that is open when the facet becomes disabled', () => {
     const { rerender } = render(tree(false));
     fireEvent.click(screen.getByRole('button', { name: /1 selected/ }));
-    expect(screen.getByRole('listbox')).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Model' })).toBeInTheDocument();
 
     rerender(tree(true));
-    expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Model' })).not.toBeInTheDocument();
   });
 
   it('disables the flat-layout Clear button as well as the popover footer one', () => {

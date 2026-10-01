@@ -23,11 +23,12 @@ export function FilterHeading({ id, label, count, onClear, disabled }: {
 }
 
 /** One toggle chip. `title` is the hover text (the raw value by default). */
-export function Chip({ on, onClick, title, mono = false, children }: {
+export function Chip({ on, onClick, title, mono = false, disabled, children }: {
   on: boolean;
   onClick: () => void;
   title?: string;
   mono?: boolean;
+  disabled?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -36,8 +37,9 @@ export function Chip({ on, onClick, title, mono = false, children }: {
       aria-pressed={on}
       onClick={onClick}
       title={title}
+      disabled={disabled}
       className={cn(
-        'px-2.5 py-1 rounded-full text-[11px] border transition-colors max-w-[260px] truncate',
+        'px-2.5 py-1 rounded-full text-[11px] border transition-colors max-w-[260px] truncate disabled:opacity-50 disabled:cursor-not-allowed',
         mono && 'font-mono',
         on ? 'text-accent-ink border-accent bg-accent-fill'
           : 'bg-surface border-border-soft text-ink-secondary hover:border-accent hover:text-accent-ink',
