@@ -128,6 +128,31 @@ describe('GET /projects/:id/settings with a project file', () => {
     expect(rootRow.value).toBe(root);
   });
 
+  it('will not hang on a project file that never ends or never opens: a regular file only', async () => {
+    // The file arrives with a clone, and settings and every verify read it on the request path.
+    const zero = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-declared-'));
+    fs.mkdirSync(path.join(zero, '.agenfk'));
+    fs.symlinkSync('/dev/zero', path.join(zero, '.agenfk', 'project.json'));
+    const fifo = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-declared-'));
+    fs.mkdirSync(path.join(fifo, '.agenfk'));
+    execSync(`mkfifo ${JSON.stringify(path.join(fifo, '.agenfk', 'project.json'))}`);
+    for (const [root, name] of [[zero, 'dev-zero'], [fifo, 'fifo']] as const) {
+      const id = await projectRootedAt(root, name);
+      const res = await request(server).get(`/projects/${id}/settings`);
+      expect(res.status).toBe(200);
+      expect(res.body.fileProblems.join(' ')).toMatch(/not a regular file/);
+    }
+  });
+
+  it('ignores a project file far larger than one could be', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-declared-'));
+    write(root, { projectId: 'x', verifyCommand: 'npm test', padding: 'x'.repeat(70 * 1024) });
+    const id = await projectRootedAt(root, 'huge');
+    const res = await request(server).get(`/projects/${id}/settings`);
+    expect(res.body.fileProblems.join(' ')).toMatch(/larger than 64 KB/);
+    expect(res.body.rows.some((r: { origin: string }) => r.origin === 'from-file')).toBe(false);
+  });
+
   it('is unchanged for a project with no file at all', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-declared-'));
     const id = await projectRootedAt(root, 'plain');

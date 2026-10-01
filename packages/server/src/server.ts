@@ -2413,6 +2413,34 @@ app.get("/decompositions/contract", asyncHandler(async (req: any, res: any) => {
  * machines, and renaming somebody's row from a file they pulled is a surprise
  * this has no reason to spring.
  */
+/** A project file is a few hundred bytes of JSON; anything near this is not one. */
+const PROJECT_FILE_MAX_BYTES = 64 * 1024;
+
+/**
+ * A file the REPOSITORY controls, read on a request path: bounded, and only
+ * if it is a regular file (Codex review of 2a181a8d). A symlink to /dev/zero
+ * never ends and a FIFO blocks open() itself - either one hangs the event
+ * loop. Opened without blocking, judged by the descriptor that was opened (no
+ * stat-then-read window). Null when there is no such file; a problem when it
+ * exists but is not one to read.
+ */
+function readSmallRegularFile(full: string, maxBytes: number): string | { problem: string } | null {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(full, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) return { problem: 'is not a regular file' };
+    if (st.size > maxBytes) return { problem: `is larger than ${Math.round(maxBytes / 1024)} KB` };
+    const buf = Buffer.alloc(st.size);
+    const read = fs.readSync(fd, buf, 0, st.size, 0);
+    return buf.subarray(0, read).toString('utf8');
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* already closed */ } }
+  }
+}
+
 function readDeclaredSettings(projectRoot?: string | null): {
   settings: Record<string, unknown>;
   keys: string[];
@@ -2422,13 +2450,21 @@ function readDeclaredSettings(projectRoot?: string | null): {
   if (!projectRoot) return { settings: {}, keys: [], problems: [] };
   const rel = path.join('.agenfk', 'project.json');
   const full = path.join(projectRoot, rel);
-  let raw: string;
-  try {
-    raw = fs.readFileSync(full, 'utf8');
-  } catch {
-    // No file is the ordinary case, not a fault.
-    return { settings: {}, keys: [], problems: [] };
+  /*
+   * Bounded, and a REGULAR file only (Codex review of 2a181a8d). The file
+   * arrives with a clone, and this read sits on the request path of settings
+   * and of every verify: a symlink to /dev/zero never ends, and a FIFO blocks
+   * open() itself - either one hangs the server's event loop. So: open without
+   * blocking, judge the descriptor that was opened (no stat-then-read window),
+   * and read at most PROJECT_FILE_MAX_BYTES.
+   */
+  const file = readSmallRegularFile(full, PROJECT_FILE_MAX_BYTES);
+  // No file is the ordinary case, not a fault.
+  if (file === null) return { settings: {}, keys: [], problems: [] };
+  if (typeof file !== 'string') {
+    return { settings: {}, keys: [], problems: [`${rel} ${file.problem}, so it was ignored.`] };
   }
+  const raw = file;
   const { value, problems } = readProjectFile(raw);
   const { flow, name, description, ...applies } = value.settings;
   void name; void description;
@@ -8619,7 +8655,9 @@ async function noTestReportFix(item: any, gate: StepGate): Promise<{ line: strin
   const project: any = await storage.getProject(item.projectId);
   const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
   let scripts: Record<string, string> = {};
-  try { if (root) scripts = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).scripts ?? {}; } catch { /* not a node project */ }
+  // The repository's package.json, bounded like the project file: it arrives with the clone.
+  const pkg = root ? readSmallRegularFile(path.join(root, 'package.json'), 1024 * 1024) : null;
+  try { if (typeof pkg === 'string') scripts = JSON.parse(pkg).scripts ?? {}; } catch { /* not a node project */ }
   // The STORED command only, never the repository's file: the fix is for the agent to run by
   // itself, and a stored test report runs as trusted - built from the file, it would carry a
   // command nobody approved past the approval gate.
