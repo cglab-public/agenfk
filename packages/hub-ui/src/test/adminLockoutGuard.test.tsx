@@ -184,6 +184,18 @@ describe('Sign-in form', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(/no way to sign in/i);
   });
 
+  it('does not block a partial fix when the stored config already has no working method', async () => {
+    // The hub refuses only a save that makes things worse; the form must not
+    // be stricter and trap an org that is already broken.
+    get.mockResolvedValue({ data: {
+      passwordEnabled: false, googleEnabled: true, entraEnabled: false,
+      google: { clientId: '', clientSecretSet: false }, entra: { tenantId: '', clientId: '', clientSecretSet: false }, emailAllowlist: [],
+    } });
+    mount(<AdminAuth />);
+    fireEvent.change(await screen.findByLabelText(/client id/i), { target: { value: 'id.apps.googleusercontent.com' } });
+    expect(screen.getByRole('button', { name: /save changes/i })).toBeEnabled();
+  });
+
   it('allows Save again once a working method is back on', async () => {
     mount(<AdminAuth />);
     const pw = await screen.findByRole('switch', { name: 'Email + password sign-in' });

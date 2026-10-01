@@ -101,7 +101,7 @@ function publicAuthConfig(row: AuthConfigRow) {
   };
 }
 
-interface SignInAdmin { email: string; password_hash: string | null; provider: string }
+interface SignInAdmin { id?: string; email: string; password_hash: string | null; provider: string }
 
 /**
  * Whether at least one of `admins` (the org's active admins) could still sign
@@ -124,6 +124,22 @@ export function adminCanStillSignIn(cfg: AuthConfigRow, admins: SignInAdmin[]): 
   return (google || entra) && admins.some(a => checkEmailAllowlist(a.email, cfg.email_allowlist).allowed);
 }
 
+/** The org's active admins, as the sign-in checks need them. Exported for tests that hold this read. */
+export const ACTIVE_ADMINS_SQL = "SELECT id, email, password_hash, provider FROM users WHERE org_id = ? AND role = 'admin' AND active = 1";
+
+/** Why no admin could sign in under this config, for the refusal; null when one can. */
+export function signInLockoutReason(cfg: AuthConfigRow, admins: SignInAdmin[]): string | null {
+  if (adminCanStillSignIn(cfg, admins)) return null;
+  if (cfg.password_enabled && !admins.some(a => a.provider === 'password' && !!a.password_hash)) {
+    return 'This would leave no admin able to sign in: no admin has an email + password account any more '
+      + '(signing in with Google or Entra once moves an account to it), and no single sign-on provider is set up '
+      + 'with an allowlist that lets an admin in.';
+  }
+  return 'This would leave no admin able to sign in: keep email + password on, or finish setting up '
+    + 'Google or Microsoft Entra (client ID, secret and, for Entra, the tenant) with an allowlist '
+    + 'that still lets an admin in.';
+}
+
 /**
  * A WHERE fragment that holds unless the row is the org's last active admin.
  * Binds two parameters: the org id, then the row's id.
@@ -143,6 +159,24 @@ export function adminRouter(ctx: HubServerContext): Router {
   // shared corporate egress, and an IP bucket would be an office-wide cap.
   router.use(rateLimit({ windowMs: 60 * 1000, max: 300, keyFn: sessionUserKey(ctx.config.sessionSecret), message: 'Too many requests, slow down.' }));
   const guard = requireAdmin(ctx.config.sessionSecret, ctx.db);
+
+  const activeAdmins = (orgId: string) => ctx.db.all<SignInAdmin>(ACTIVE_ADMINS_SQL, [orgId]);
+  /**
+   * Whether taking `userId`'s admin access away leaves no admin who can sign
+   * in. Counting active admins is not enough: an admin outside the allowlist,
+   * or without a password account once password is off, still counts but can
+   * never sign in again once their session ends. Judged as "makes it worse",
+   * like the sign-in config guard: an org already in that state is not blocked.
+   */
+  const removalStrandsSignIn = async (orgId: string, userId: string): Promise<boolean> => {
+    const cfg = await ctx.db.get<AuthConfigRow>('SELECT * FROM auth_config WHERE org_id = ?', [orgId]);
+    if (!cfg) return false;
+    const admins = await activeAdmins(orgId);
+    if (!admins.some(a => a.id === userId)) return false;
+    return adminCanStillSignIn(cfg, admins) && !adminCanStillSignIn(cfg, admins.filter(a => a.id !== userId));
+  };
+  const STRANDS_SIGN_IN = 'This would leave no admin able to sign in: the admins left are outside the allowlist or '
+    + 'have no way to sign in that is switched on. Fix the sign-in settings first.';
 
   // ── Auth config ──────────────────────────────────────────────────────────
   router.get('/auth-config', guard, asyncRoute(async (req: Request, res: Response) => {
@@ -178,19 +212,13 @@ export function adminRouter(ctx: HubServerContext): Router {
     if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
     // Saving a config nobody can sign in with locks the whole org out, the
     // admin making the change included.
-    const admins = await ctx.db.all<SignInAdmin>(
-      "SELECT email, password_hash, provider FROM users WHERE org_id = ? AND role = 'admin' AND active = 1",
-      [orgId],
-    );
+    const admins = await activeAdmins(orgId);
     // Refuse only a save that makes things worse: a config already stored in a
     // state no admin can sign in under (saved before this guard existed) must
     // still accept a step towards fixing it.
-    if (adminCanStillSignIn(current, admins) && !adminCanStillSignIn(next, admins)) {
-      return res.status(400).json({
-        error: 'This would leave no admin able to sign in: keep email + password on, or finish setting up '
-          + 'Google or Microsoft Entra (client ID, secret and, for Entra, the tenant) with an allowlist '
-          + 'that still lets an admin in.',
-      });
+    if (adminCanStillSignIn(current, admins)) {
+      const reason = signInLockoutReason(next, admins);
+      if (reason) return res.status(400).json({ error: reason });
     }
     params.push(orgId);
     await ctx.db.run(`UPDATE auth_config SET ${updates.join(', ')} WHERE org_id = ?`, params);
@@ -1406,6 +1434,9 @@ export function adminRouter(ctx: HubServerContext): Router {
     if (removesAdminAccess && req.session!.userId === req.params.id) {
       return res.status(400).json({ error: 'You cannot demote or deactivate your own account; ask another admin.' });
     }
+    if (removesAdminAccess && await removalStrandsSignIn(orgId, req.params.id)) {
+      return res.status(409).json({ error: STRANDS_SIGN_IN });
+    }
     params.push(req.params.id, orgId);
     // The session guard has checked the actor is an active admin, but another
     // admin's change can land between that read and this write (two admins
@@ -1430,6 +1461,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   router.delete('/users/:id', guard, asyncRoute(async (req: Request, res: Response) => {
     if (req.session!.userId === req.params.id) return res.status(400).json({ error: 'Cannot delete the signed-in user' });
     const orgId = req.session!.orgId;
+    if (await removalStrandsSignIn(orgId, req.params.id)) return res.status(409).json({ error: STRANDS_SIGN_IN });
     const result = await ctx.db.run(
       `DELETE FROM users WHERE id = ? AND org_id = ? AND ${NOT_LAST_ACTIVE_ADMIN}`,
       [req.params.id, orgId, orgId, req.params.id],

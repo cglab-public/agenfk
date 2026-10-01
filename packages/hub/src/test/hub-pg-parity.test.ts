@@ -11,6 +11,7 @@ import { issueApiKey } from '../auth/apiKey';
 import { createPasswordUser } from '../auth/password';
 import { recomputeRollups } from '../rollup';
 import { raceBehindGuard } from './helpers/raceBehindGuard';
+import { ACTIVE_ADMINS_SQL } from '../routes/admin';
 import type { HubDb } from '../db/types';
 
 /**
@@ -178,7 +179,7 @@ describe('PG parity: admin endpoints', () => {
     // condition must keep admin@x.
     const demote1 = await raceBehindGuard(fx.db, await idOf('admin2@x'),
       async () => supertest(fx.app).put(`/v1/admin/users/${await idOf('admin@x')}`).set('Cookie', cookie2).send({ role: 'viewer' }),
-      async () => expect((await supertest(fx.app).put(`/v1/admin/users/${await idOf('admin2@x')}`).set('Cookie', fx.cookie).send({ role: 'viewer' })).status).toBe(200));
+      async () => expect((await supertest(fx.app).put(`/v1/admin/users/${await idOf('admin2@x')}`).set('Cookie', fx.cookie).send({ role: 'viewer' })).status).toBe(200), { method: 'all', sql: ACTIVE_ADMINS_SQL });
     expect(demote1.status).toBe(409);
     expect((await fx.db.get<any>('SELECT role FROM users WHERE email = ?', ['admin@x'])).role).toBe('admin');
   });
@@ -190,7 +191,7 @@ describe('PG parity: admin endpoints', () => {
     const idOf = async (email: string) => (await fx.db.get<any>('SELECT id FROM users WHERE email = ?', [email])).id;
     const r = await raceBehindGuard(fx.db, await idOf('admin2@x'),
       async () => supertest(fx.app).delete(`/v1/admin/users/${await idOf('admin@x')}`).set('Cookie', cookie2),
-      async () => expect((await supertest(fx.app).put(`/v1/admin/users/${await idOf('admin2@x')}`).set('Cookie', fx.cookie).send({ active: false })).status).toBe(200));
+      async () => expect((await supertest(fx.app).put(`/v1/admin/users/${await idOf('admin2@x')}`).set('Cookie', fx.cookie).send({ active: false })).status).toBe(200), { method: 'all', sql: ACTIVE_ADMINS_SQL });
     expect(r.status).toBe(409);
     expect(await fx.db.get<any>('SELECT id FROM users WHERE email = ?', ['admin@x'])).toBeTruthy();
   });

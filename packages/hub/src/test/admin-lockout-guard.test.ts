@@ -15,6 +15,7 @@ import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { drainApp } from './helpers/drainApp';
 import { raceBehindGuard } from './helpers/raceBehindGuard';
+import { ACTIVE_ADMINS_SQL } from '../routes/admin';
 import { adminCanStillSignIn } from '../routes/admin';
 
 let server: any;
@@ -90,7 +91,7 @@ describe('PUT /users/:id refuses changes that lock admins out', () => {
     const b = await loginAs(app, 'admin2@x', 'longenough1');
     const r = await raceBehindGuard(ctx.db, await userId('admin2@x'),
       async () => supertest(server).put(`/v1/admin/users/${await userId('admin@x')}`).set('Cookie', b).send({ role: 'viewer' }),
-      async () => expect((await supertest(server).put(`/v1/admin/users/${await userId('admin2@x')}`).set('Cookie', a).send({ role: 'viewer' })).status).toBe(200));
+      async () => expect((await supertest(server).put(`/v1/admin/users/${await userId('admin2@x')}`).set('Cookie', a).send({ role: 'viewer' })).status).toBe(200), { method: 'all', sql: ACTIVE_ADMINS_SQL });
     expect(r.status).toBe(409);
     expect(r.body.error).toMatch(/last active admin/i);
     expect((await userRow('admin@x')).role).toBe('admin');
@@ -101,7 +102,7 @@ describe('PUT /users/:id refuses changes that lock admins out', () => {
     const b = await loginAs(app, 'admin2@x', 'longenough1');
     const r = await raceBehindGuard(ctx.db, await userId('admin2@x'),
       async () => supertest(server).put(`/v1/admin/users/${await userId('admin@x')}`).set('Cookie', b).send({ active: false }),
-      async () => expect((await supertest(server).put(`/v1/admin/users/${await userId('admin2@x')}`).set('Cookie', a).send({ active: false })).status).toBe(200));
+      async () => expect((await supertest(server).put(`/v1/admin/users/${await userId('admin2@x')}`).set('Cookie', a).send({ active: false })).status).toBe(200), { method: 'all', sql: ACTIVE_ADMINS_SQL });
     expect(r.status).toBe(409);
     expect(Number((await userRow('admin@x')).active)).toBe(1);
   });
@@ -113,7 +114,7 @@ describe('PUT /users/:id refuses changes that lock admins out', () => {
     // write): it cannot sign in, so it does not count as an admin left.
     const r = await raceBehindGuard(ctx.db, await userId('admin2@x'),
       async () => supertest(server).put(`/v1/admin/users/${await userId('admin@x')}`).set('Cookie', b).send({ role: 'viewer' }),
-      async () => expect((await supertest(server).put(`/v1/admin/users/${await userId('admin2@x')}`).set('Cookie', a).send({ active: false })).status).toBe(200));
+      async () => expect((await supertest(server).put(`/v1/admin/users/${await userId('admin2@x')}`).set('Cookie', a).send({ active: false })).status).toBe(200), { method: 'all', sql: ACTIVE_ADMINS_SQL });
     expect(r.status).toBe(409);
   });
 
@@ -144,7 +145,7 @@ describe('DELETE /users/:id refuses removing the last active admin', () => {
     const b = await loginAs(app, 'admin2@x', 'longenough1');
     const r = await raceBehindGuard(ctx.db, await userId('admin2@x'),
       async () => supertest(server).delete(`/v1/admin/users/${await userId('admin@x')}`).set('Cookie', b),
-      async () => expect((await supertest(server).put(`/v1/admin/users/${await userId('admin2@x')}`).set('Cookie', a).send({ active: false })).status).toBe(200));
+      async () => expect((await supertest(server).put(`/v1/admin/users/${await userId('admin2@x')}`).set('Cookie', a).send({ active: false })).status).toBe(200), { method: 'all', sql: ACTIVE_ADMINS_SQL });
     expect(r.status).toBe(409);
     expect(r.body.error).toMatch(/last active admin/i);
     expect(await userRow('admin@x')).toBeTruthy();

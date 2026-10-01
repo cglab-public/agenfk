@@ -107,7 +107,9 @@ export function AdminAuth() {
   if (cfg.isError && !cfg.data) return <QueryError error={cfg.error} onRetry={() => cfg.refetch()} />;
   if (!cfg.data) return <p role="status" className="text-sm text-ink-tertiary">Loading…</p>;
   const c = { ...cfg.data, ...draft };
-  const lockedOut = noWorkingSignInMethod(c);
+  // Blocks only a save that makes things worse, like the hub: an org whose
+  // stored config already works for nobody must be able to save a partial fix.
+  const lockedOut = noWorkingSignInMethod(c) && !noWorkingSignInMethod(cfg.data);
 
   return (
     <form className="space-y-4 max-w-2xl" onSubmit={(e) => { e.preventDefault(); save.mutate(draft); }}>

@@ -100,7 +100,11 @@ export function authRouter(ctx: HubServerContext): Router {
       loginFailures.recordFailure(email);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
-    if (user.provider !== 'password') {
+    // One SSO sign-in moves a password account to google/entra (oauth.ts
+    // findInvitedSsoUser) while keeping its hash. Under the break-glass an
+    // ADMIN's hash is accepted: the operator needs back in precisely when SSO
+    // broke. Everyone else keeps to the provider they moved to.
+    if (user.provider !== 'password' && !(ctx.config.forcePasswordLogin && user.role === 'admin')) {
       return res.status(401).json({ error: `This account signs in with ${user.provider}` });
     }
     if (!verifyPassword(password, user.password_hash)) {
