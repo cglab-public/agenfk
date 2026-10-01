@@ -101,12 +101,21 @@ describe('self-extract on a developer working tree', () => {
     expect(existsSync(path.join(root, 'commands', 'agenfk-dropped.md'))).toBe(true);
   });
 
-  it('STILL installs dependencies — skipping the prune must not skip the install', () => {
-    // The regression: an early return here skipped npm ci and reported success.
-    expect(existsSync(path.join(root, '.npm-was-called'))).toBe(true);
+  /*
+   * 658ef023 changed this deliberately: a forced recovery over a developer's
+   * checkout overwrote its tracked files and dist with the published build,
+   * and `npm ci --omit=dev` stripped its devDependencies. It is refused now.
+   * These two used to pin the opposite - that it installed and reported
+   * success - so they are renamed to what they now hold, not repointed.
+   * The concern behind the old ones (BUG bbe794bc: an early return that
+   * skipped npm ci yet said ok) still holds: the refusal does not say ok.
+   */
+  it('does not install dependencies either: npm ci --omit=dev would strip its devDependencies', () => {
+    expect(existsSync(path.join(root, '.npm-was-called'))).toBe(false);
   });
 
-  it('still reports success', () => {
-    expect(result).toEqual({ ok: true });
+  it('reports the refusal, never a success', () => {
+    expect(result.ok).toBe(false);
+    expect((result as { error: string }).error).toMatch(/development checkout/);
   });
 });

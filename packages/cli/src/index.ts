@@ -222,6 +222,16 @@ async function fetchReleaseTagByVersion(repo: string, version: string): Promise<
   }
 }
 
+/**
+ * A developer's working tree, not an installed copy (658ef023): it holds .git.
+ * Except ~/.agenfk-system, which IS a clone in real installs (packages/create's
+ * rebuild and download-failure fallbacks) - the same carve-out install.mjs
+ * step 1a and the hub's defaultSelfExtract make.
+ */
+function isDevCheckout(root: string): boolean {
+  return fs.existsSync(path.join(root, '.git')) && path.resolve(root) !== path.resolve(os.homedir(), '.agenfk-system');
+}
+
 async function resolveReleaseTag(repo: string, opts: { version?: string; beta?: boolean }): Promise<string> {
   if (opts.version) return fetchReleaseTagByVersion(repo, opts.version);
   return fetchLatestReleaseTag(repo, !!opts.beta);
@@ -693,6 +703,24 @@ program
       if (result.status === 'failed') process.exit(1);
     };
 
+    /*
+     * Never over a development checkout (658ef023). The published build is
+     * extracted into the directory this CLI runs from, and when `agenfk` is a
+     * symlink into a checkout that directory IS the checkout: an upgrade to
+     * 2.0.0-beta.10 once rewrote 28 tracked files and every dist, and the
+     * server came back as a different version from the branch being worked
+     * on. Refused before any network, `down` or extract; --json says
+     * 'failed', which the fleet reconciler records and never self-extracts
+     * over.
+     */
+    const installRoot = path.resolve(__dirname, '../../..');
+    if (isDevCheckout(installRoot)) {
+      const msg = `This agenfk runs from a development checkout (${installRoot}): it is a git repository, and upgrading would write the published build over its tracked files and dist. `
+        + 'Update it as a checkout instead - git pull, npm run build, agenfk restart - or install a separate copy (npx agenfk@latest installs one under ~/.agenfk-system).';
+      errLog(chalk.red(msg));
+      emitResult({ status: 'failed', fromVersion: CURRENT_VERSION, toVersion: options.version ?? '', error: msg });
+      return;
+    }
 
     let resolvedTag = '';
     let targetVersion = '';

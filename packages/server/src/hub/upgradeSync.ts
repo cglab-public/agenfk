@@ -67,7 +67,28 @@ const DIST_REPO = 'cglab-public/agenfk';
 const DIST_ASSET = 'agenfk-dist.tar.gz';
 
 /** Exported for the test; nothing else outside this module should call it. */
+/**
+ * A developer's working tree, not an installed copy (658ef023): it holds .git.
+ * Except ~/.agenfk-system, which IS a clone in real installs - the carve-out
+ * install.mjs step 1a and the CLI's `agenfk upgrade` make too.
+ */
+function isDevCheckout(root: string): boolean {
+  return fs.existsSync(path.join(root, '.git')) && path.resolve(root) !== path.resolve(os.homedir(), '.agenfk-system');
+}
+
 export async function defaultSelfExtract(input: { installRoot: string; targetVersion: string }): Promise<{ ok: true } | { ok: false; error: string }> {
+  /*
+   * Never over a development checkout (658ef023): the overlay would rewrite
+   * its tracked files and dist with the published build, and `npm ci
+   * --omit=dev` would remove its devDependencies. It used to skip only the
+   * prune there and go on writing. Refused before anything runs.
+   */
+  if (isDevCheckout(input.installRoot)) {
+    return {
+      ok: false,
+      error: `${input.installRoot} is a development checkout (a git repository): a forced recovery would overwrite its tracked files and dist with the published build. Update it as a checkout (git pull, npm run build, agenfk restart).`,
+    };
+  }
   const tag = `v${stripV(input.targetVersion)}`;
   const url = `https://github.com/${DIST_REPO}/releases/download/${tag}/${DIST_ASSET}`;
   const tmpFile = path.join(os.tmpdir(), `agenfk-self-heal-${Date.now()}.tar.gz`);
@@ -87,29 +108,12 @@ export async function defaultSelfExtract(input: { installRoot: string; targetVer
         pruneInstallDirAgainstManifest: (dir: string, paths: string[]) =>
           { removed: string[]; failed: { path: string; reason: string }[] };
       };
-      // A distributed tarball never contains .git, so its presence means a
-      // developer's working tree — pruning that against a release archive would
-      // delete in-flight work. Mirrors install.mjs step 1a, including its
-      // carve-out: ~/.agenfk-system is ITSELF a clone whenever packages/create
-      // took its --rebuild or download-failure fallback, and those are real
-      // user installs that must still be pruned.
-      //
-      // This only skips the PRUNE. It must never return: `npm ci` below is what
-      // makes a forced recovery a complete install (BUG bbe794bc), and
-      // returning here skipped it while reporting ok:true — a false success on
-      // a server that can then boot with a missing module.
-      const installDir = path.join(os.homedir(), '.agenfk-system');
-      const isDevTree = fs.existsSync(path.join(input.installRoot, '.git'))
-        && path.resolve(input.installRoot) !== path.resolve(installDir);
-      if (isDevTree) {
-        console.log('[self-extract] prune skipped (dev checkout detected: .git present)');
-      } else {
-        const listing = execSync(`tar -tzf "${tmpFile}"`, { encoding: 'utf8' })
-          .split('\n').map((l) => l.trim()).filter(Boolean);
-        const { removed, failed } = pruneInstallDirAgainstManifest(input.installRoot, listing);
-        for (const rel of removed) console.log(`[self-extract] pruned (no longer shipped): ${rel}`);
-        for (const f of failed) console.warn(`[self-extract] could not prune ${f.path}: ${f.reason}`);
-      }
+      // A development checkout never gets here (refused above), so the prune always runs.
+      const listing = execSync(`tar -tzf "${tmpFile}"`, { encoding: 'utf8' })
+        .split('\n').map((l) => l.trim()).filter(Boolean);
+      const { removed, failed } = pruneInstallDirAgainstManifest(input.installRoot, listing);
+      for (const rel of removed) console.log(`[self-extract] pruned (no longer shipped): ${rel}`);
+      for (const f of failed) console.warn(`[self-extract] could not prune ${f.path}: ${f.reason}`);
     } catch (e: any) {
       // Best-effort — a failed prune must not fail a recovery — but NOT silent.
       // A missing module, a corrupt archive or an EPERM all used to look like a
