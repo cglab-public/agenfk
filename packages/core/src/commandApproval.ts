@@ -15,25 +15,22 @@
  * run it here", which is not a statement anybody can make on somebody else's
  * behalf, so it is stored beside the project rather than in the file.
  */
+import { createHash } from 'node:crypto';
 
 /**
- * A short, stable name for one exact command.
+ * A stable name for one exact command: SHA-256 of its trimmed text.
  *
- * Deliberately not a cryptographic hash: this is not defending against a
- * collision attack — an attacker who can edit the file can simply write a
- * different command and ask for approval again. It exists so that "the command
- * changed" is detectable, and so the stored list is readable by a person.
+ * CRYPTOGRAPHIC, because the approval depends on it. It used to be a 64-bit
+ * FNV-style mix, documented as "not defending against a collision attack" on
+ * the theory that an attacker who can edit the file must ask again. That
+ * missed the chosen pair: an author writes two commands with one fingerprint,
+ * gets the harmless one approved, then swaps in the other with a pull - and
+ * it runs without anybody being asked. A pair was found in 0.04 s (review of
+ * 34ee6b8a). Fingerprints stored under the old scheme no longer match, so
+ * every repository command is asked about once more - the safe direction.
  */
 export function commandFingerprint(command: string): string {
-  const text = command.trim();
-  let h1 = 0x811c9dc5;
-  let h2 = 0x01000193;
-  for (let i = 0; i < text.length; i += 1) {
-    const c = text.charCodeAt(i);
-    h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
-    h2 = Math.imul(h2 + c, 0x85ebca6b) >>> 0;
-  }
-  return `${h1.toString(16).padStart(8, '0')}${h2.toString(16).padStart(8, '0')}`;
+  return createHash('sha256').update(command.trim(), 'utf8').digest('hex');
 }
 
 export interface CommandFromFile {

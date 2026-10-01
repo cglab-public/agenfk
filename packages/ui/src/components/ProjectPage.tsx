@@ -255,6 +255,7 @@ export function ProjectPage({
   const [changingFlow, setChangingFlow] = React.useState(false);
   const [togglingWorktree, setTogglingWorktree] = React.useState(false);
   const [approvingCommand, setApprovingCommand] = React.useState(false);
+  const [approveError, setApproveError] = React.useState<string | null>(null);
   const [typeFilter, setTypeFilter] = React.useState<string>('');
   const [statusFilter, setStatusFilter] = React.useState<string>('');
   const filtering = Boolean(typeFilter || statusFilter);
@@ -288,6 +289,9 @@ export function ProjectPage({
     queryFn: () => api.projectSettings(project.id),
     enabled: tab === 'settings',
   });
+  /** The repository's command on this row, when a person here has not approved it yet. */
+  const pendingApproval = (row: { key: string; origin: string }) =>
+    row.origin === 'from-file' ? settings?.fileCommands?.find(c => c.key === row.key && !c.approved) : undefined;
 
   /*
    * How many of how many, once a filter is on. "135 cards" over a list of
@@ -414,12 +418,12 @@ export function ProjectPage({
                   {/*
                     * A command the repository asks this machine to run, not yet
                     * approved: the approval is a person's, so it lives here and
-                    * nowhere an agent can reach (34ee6b8a). The command itself is
-                    * the value shown under it - what is approved is what was read.
+                    * nowhere an agent can reach (34ee6b8a). What is approved is
+                    * exactly the text shown in full under it.
                     */}
                   {(() => {
-                    const pending = settings?.fileCommands?.find(c => c.key === row.key && !c.approved);
-                    if (!pending || row.origin !== 'from-file') return null;
+                    const pending = pendingApproval(row);
+                    if (!pending) return null;
                     return (
                       <button
                         type="button"
@@ -428,9 +432,14 @@ export function ProjectPage({
                         title="Let this machine run the command the repository declares"
                         onClick={async () => {
                           setApprovingCommand(true);
+                          setApproveError(null);
                           try {
                             await api.approveFileCommand(project.id, pending.command);
                             await refetchSettings();
+                          } catch (e) {
+                            // Said on screen: a refusal (another origin, a rate limit) must not look like nothing happened.
+                            const detail = (e as { response?: { data?: { error?: string } } })?.response?.data?.error;
+                            setApproveError(detail ?? (e instanceof Error ? e.message : 'The approval failed.'));
                           } finally {
                             setApprovingCommand(false);
                           }
@@ -444,13 +453,28 @@ export function ProjectPage({
                 </div>
                 <p className="mt-1 text-xs text-ink-tertiary">{row.description}</p>
                 {/* The switch IS the value where there is one; the text repeated under it read as the control. */}
-                {!hasSwitch(row) && (
-                  <p data-testid={`setting-value-${row.key}`} className={`mt-2 truncate rounded-lg border px-3 py-2 font-mono text-[11px] ${
-                    row.value
-                      ? 'border-border-soft bg-canvas text-ink-secondary'
-                      : 'border-dashed border-border-soft text-ink-tertiary'
-                  }`}>
-                    {row.value ?? 'not set'}
+                {!hasSwitch(row) && (() => {
+                  /*
+                   * In FULL while it waits for approval: truncated, a harmless
+                   * prefix could hide the rest of the line, or a second line,
+                   * from the person approving it (review of 34ee6b8a).
+                   */
+                  const pending = pendingApproval(row);
+                  return (
+                    <p data-testid={`setting-value-${row.key}`} className={`mt-2 rounded-lg border px-3 py-2 font-mono text-[11px] ${
+                      pending ? 'whitespace-pre-wrap break-all' : 'truncate'
+                    } ${
+                      row.value
+                        ? 'border-border-soft bg-canvas text-ink-secondary'
+                        : 'border-dashed border-border-soft text-ink-tertiary'
+                    }`}>
+                      {pending ? pending.command : row.value ?? 'not set'}
+                    </p>
+                  );
+                })()}
+                {approveError && pendingApproval(row) && (
+                  <p data-testid={`setting-approve-error-${row.key}`} className="mt-1.5 text-[11px] text-danger-text">
+                    {approveError}
                   </p>
                 )}
                 {row.warning && (

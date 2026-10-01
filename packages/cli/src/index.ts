@@ -1983,10 +1983,16 @@ program
       console.log(chalk.bold(`\n${filePath} declares:`));
       for (const { key, command } of commands) console.log(`  ${chalk.cyan(key)}: ${command}`);
       if (options.yes) console.log(chalk.yellow('\n--yes no longer approves anything.'));
-      console.log(chalk.yellow(
-        '\nA person approves these on the board: open the project\'s Settings in `agenfk ui`, read each command, and press Approve. '
-        + 'An agent cannot approve them.',
-      ));
+      if (commands.some(c => c.key === 'verifyCommand')) {
+        console.log(chalk.yellow(
+          '\nA person approves the verifyCommand on the board: open the project\'s Settings in `agenfk ui`, read it, and press Approve. '
+          + 'An agent cannot approve it.',
+        ));
+      }
+      // Said, so nobody goes looking for an approval that would change nothing.
+      if (commands.some(c => c.key === 'setupCommand')) {
+        console.log(chalk.gray('The file\'s setupCommand is not run on this machine: worktree setup uses the project\'s stored setupCommand.'));
+      }
     } catch (error) {
       console.error(chalk.red('Error reading the project\'s commands:'), (error as Error).message);
       process.exit(1);

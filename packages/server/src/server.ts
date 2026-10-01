@@ -2453,8 +2453,34 @@ function readDeclaredSettings(projectRoot?: string | null): {
  * Stored per exact command. A pull that edits it asks again, because what was
  * read and approved is the string, not the field.
  */
+/**
+ * Did a page this server served send the request? (review of 34ee6b8a)
+ *
+ * CORS lets any loopback origin talk to this server, so the board header
+ * alone would let a page on ANOTHER local port - any dev server, any local
+ * web app - approve a repository command for this machine; the internal
+ * token this route used to need kept browsers out. A browser stamps Origin
+ * on every POST and a page cannot forge it, so require the server's own
+ * origin (where the board and the desktop shell load from) or a configured
+ * board origin.
+ */
+function fromOwnBoardPage(req: any): boolean {
+  const origin = typeof req.headers.origin === 'string' ? req.headers.origin : '';
+  if (!origin) return false;
+  if (boardOrigins().includes(origin)) return true;
+  let page: URL;
+  try { page = new URL(origin); } catch { return false; }
+  // This server's own page: loopback, on the port the request arrived on. Compared by port, not
+  // by Host text - one listener answers as localhost, 127.0.0.1 and [::1] alike.
+  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(page.hostname);
+  return loopback && page.protocol === 'http:' && Number(page.port || 80) === req.socket?.localPort;
+}
+
 app.post("/projects/:id/approve-file-command", limitExpensive, asyncHandler(async (req: any, res: any) => {
   if (refuseUnlessBoard(req, res)) return;
+  if (!fromOwnBoardPage(req)) {
+    return res.status(403).json({ error: "Approve it from the board this server serves: a page from another origin cannot approve a command for this machine." });
+  }
   const project: any = await storage.getProject(req.params.id);
   if (!project) return res.status(404).json({ error: "Project not found" });
   const command = typeof req.body?.command === 'string' ? req.body.command : '';
@@ -2510,7 +2536,9 @@ app.get("/projects/:id/settings", asyncHandler(async (req: any, res: any) => {
      * (34ee6b8a). Judged by the same approvalFor the verify uses, so the
      * screen and the refusal can never disagree about one command.
      */
-    fileCommands: (['verifyCommand', 'setupCommand'] as const)
+    // verifyCommand only: it is the one this machine runs from the file. A file's setupCommand is
+    // never run (worktree setup reads the stored row), so approving it would approve nothing.
+    fileCommands: (['verifyCommand'] as const)
       .filter(key => typeof declared.settings[key] === 'string' && String(declared.settings[key]).trim())
       .map(key => {
         const command = String(declared.settings[key]);

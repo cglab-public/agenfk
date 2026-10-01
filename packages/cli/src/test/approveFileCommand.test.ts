@@ -67,6 +67,9 @@ afterEach(() => {
 });
 
 async function run(...args: string[]) {
+  // Commander keeps a command's option values between parses of one program: reset --yes, or a
+  // later run without it inherits the earlier `yes: true` and tests nothing.
+  program.commands.find(c => c.name() === 'approve-file-command')?.setOptionValue('yes', undefined);
   try { await program.parseAsync(['node', 'agenfk', 'approve-file-command', ...args]); } catch (e: any) { if (e?.message !== 'exit') throw e; }
   return out.join('\n');
 }
@@ -83,5 +86,13 @@ describe('agenfk approve-file-command', () => {
     const text = await run('p1');
     expect(mockedAxios.post).not.toHaveBeenCalled();
     expect(text).toMatch(/on the board/i);
+    expect(text).not.toMatch(/--yes no longer approves/);
+  });
+
+  it("says a file's setupCommand is not run here, instead of offering to approve it", async () => {
+    fs.writeFileSync(path.join(root, '.agenfk', 'project.json'), JSON.stringify({ projectId: 'p1', setupCommand: 'make deps' }));
+    const text = await run('p1');
+    expect(text).toMatch(/setupCommand is not run on this machine/);
+    expect(text).not.toMatch(/approves the verifyCommand/);
   });
 });
