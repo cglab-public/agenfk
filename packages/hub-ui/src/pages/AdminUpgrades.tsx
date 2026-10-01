@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
 import { api } from '../api';
+import { LocalTime } from '../components/ui';
 import { groupUpgradeBody, groupUpgradeRow, groupUpgradesLive, type GroupUpgradeRequest } from './groupUpgradeState';
 import { ChildHubPicker, toggledSet } from './childHubPicker';
 import { NO_CHILD_HUBS_REASON, dispatchRefusalMessage, liveChildHubs, type ChildHubRow, type DispatchScopeMode } from './flowDispatch';
@@ -410,7 +411,7 @@ export function AdminUpgrades() {
                       : d.scope.type === 'installation'
                         ? `installation ${installationDisplayName(apiKeysQ.data ?? [], d.scope.installationId ?? '')}`
                         : `${d.targets.length} installations`}
-                    {' · '}{new Date(d.createdAt).toLocaleString()}
+                    {' · '}<LocalTime value={d.createdAt} />
                     {d.createdByEmail && ` · by ${d.createdByEmail}`}
                   </span>
                 </button>

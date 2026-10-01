@@ -9,11 +9,11 @@ import { FacetMultiselect } from '../components/FacetMultiselect';
 import { FilterAccordion, FILTERS_OPEN, parseFiltersOpen } from '../components/FilterAccordion';
 import { describeFilters } from '../filterSummary';
 import { MetricsTilesRow, MetricsTotals } from '../components/MetricsTilesRow';
-import { Badge, ChipRow, Page, QueryState } from '../components/ui';
+import { Badge, ChipRow, DateRange, LocalTime, Page, PeriodControl, QueryState } from '../components/ui';
 import { eventTone, itemTypeClass } from '../eventTone';
 import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
-import { fmtDateTime, browserTimezone } from '../dates';
+import { browserTimezone, endOfLocalDay, startOfLocalDay } from '../dates';
 import { useToggleSet } from '../hooks/useToggleSet';
 import { useUrlFilters } from '../hooks/useUrlFilters';
 import { usePeopleNames } from '../hooks/usePeopleNames';
@@ -51,15 +51,6 @@ interface ItemTypesResponse { itemTypes: string[]; counts?: Record<string, numbe
 
 const KNOWN_ITEM_TYPES = ['EPIC', 'STORY', 'TASK', 'BUG'] as const;
 
-const formatTime = fmtDateTime;
-
-function startOfDateInput(value: string): string {
-  return new Date(`${value}T00:00:00`).toISOString();
-}
-
-function endOfDateInput(value: string): string {
-  return new Date(`${value}T23:59:59.999`).toISOString();
-}
 
 
 export function UserDetailPage() {
@@ -108,8 +99,8 @@ export function UserDetailPage() {
   const customStart = fp.get('from') ?? '';
   const customEnd = fp.get('to') ?? '';
 
-  const customFromIso = useMemo(() => customStart ? startOfDateInput(customStart) : '', [customStart]);
-  const customToIso = useMemo(() => customEnd ? endOfDateInput(customEnd) : '', [customEnd]);
+  const customFromIso = useMemo(() => customStart ? startOfLocalDay(customStart) : '', [customStart]);
+  const customToIso = useMemo(() => customEnd ? endOfLocalDay(customEnd) : '', [customEnd]);
 
   // Partitioned by hub, exactly as Org does it: offering a repo or an event
   // type that belongs to a hub this page is not showing is a dead end.
@@ -239,42 +230,17 @@ export function UserDetailPage() {
       <QueryState query={metrics} label="activity totals">{() => <MetricsTilesRow totals={totals} />}</QueryState>
 
       {/* The period is always in view; the facets fold behind one summary line. */}
-      <div role="group" aria-label="Period" className="flex flex-wrap items-center gap-2">
-        <span className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">Period</span>
-        <div className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium">
-          {RANGES.map(r => (
-            <button
-              key={r.key}
-              type="button"
-              aria-pressed={range === r.key && !customFromIso && !customToIso}
-              onClick={() => filters.write({ range: r.key, from: null, to: null })}
-              className={`px-2.5 py-1 rounded-md transition-colors ${range === r.key && !customFromIso && !customToIso
-                ? 'bg-surface text-accent-ink shadow-sm'
-                : 'text-ink-tertiary hover:text-ink'}`}
-            >
-              {r.label}
-            </button>
-          ))}
-        </div>
-        <label className="flex items-center gap-1.5 text-[11px] font-medium text-ink-tertiary">
-          Start
-          <input
-            type="date"
-            value={customStart}
-            onChange={e => filters.write({ from: e.target.value || null })}
-            className="h-7 rounded-md border border-border-soft bg-surface px-2 text-[11px] text-ink-secondary"
-          />
-        </label>
-        <label className="flex items-center gap-1.5 text-[11px] font-medium text-ink-tertiary">
-          End
-          <input
-            type="date"
-            value={customEnd}
-            onChange={e => filters.write({ to: e.target.value || null })}
-            className="h-7 rounded-md border border-border-soft bg-surface px-2 text-[11px] text-ink-secondary"
-          />
-        </label>
-      </div>
+      <PeriodControl
+        ranges={RANGES}
+        active={!customFromIso && !customToIso ? range : null}
+        onPick={key => filters.write({ range: key, from: null, to: null })}
+      >
+        <DateRange
+          from={customStart}
+          to={customEnd}
+          onChange={(from, to) => filters.write({ from: from || null, to: to || null })}
+        />
+      </PeriodControl>
 
       <FilterAccordion
         activeCount={[projectSel.set, itemTypeSel.set].filter(x => x.size > 0).length}
@@ -367,7 +333,7 @@ export function UserDetailPage() {
                           v{e.reporting_version}
                         </span>
                       )}
-                      <span className="text-[11px] text-ink-tertiary tabular-nums shrink-0">{formatTime(e.occurred_at)}</span>
+                      <LocalTime value={e.occurred_at} className="text-[11px] text-ink-tertiary tabular-nums shrink-0" />
                     </summary>
                     <pre className="px-5 pb-3 text-[11px] font-mono text-ink-secondary whitespace-pre-wrap break-words bg-canvas/60 border-t border-border-soft -mt-0.5">{JSON.stringify(e.payload, null, 2)}</pre>
                   </details>

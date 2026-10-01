@@ -4,7 +4,7 @@ import { requireSession } from '../auth/session.js';
 import { recomputeRollups } from '../rollup.js';
 import { aggregateHistogramRows } from '../queries/histogram-aggregate.js';
 import { coerceMetricsRow } from '../queries/metrics-coerce.js';
-import { aggregatePrOverview, parsePrNumberFilter, PrEventRow } from '../queries/pr-overview-aggregate.js';
+import { aggregatePrOverview, clampTzOffsetMin, parsePrNumberFilter, PrEventRow } from '../queries/pr-overview-aggregate.js';
 import { sanitizeRemoteUrl } from './events.js';
 import { rateLimit, sessionUserKey } from '../util/rateLimit.js';
 import { loadModelMappings } from '../util/modelMapping.js';
@@ -22,6 +22,13 @@ import { loadAliasMap, resolveAliasKey } from '../util/userKeyAlias.js';
  * the router's error handler below.
  */
 class BadQuery extends Error {}
+
+/** `?tzOffsetMin=` — the viewer's minutes EAST of UTC, clamped to a real
+ *  zone; missing or unparseable means UTC. */
+function readTzOffsetMin(req: Request): number {
+  const raw = singleValue(req, 'tzOffsetMin');
+  return clampTzOffsetMin(raw == null ? NaN : Number.parseInt(raw, 10));
+}
 
 /** A parameter that must be ONE value: absent, or a single string. */
 function singleValue(req: Request, name: string): string | null {
@@ -400,11 +407,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
       res.status(400).json({ error: "bucket must be 'day' or 'hour'" });
       return;
     }
-    const tzRaw = req.query.tzOffsetMin;
-    const tzOffsetMin = typeof tzRaw === 'string' ? Number.parseInt(tzRaw, 10) : NaN;
-    const tzShift = Number.isFinite(tzOffsetMin)
-      ? Math.max(-14 * 60, Math.min(14 * 60, tzOffsetMin))
-      : 0;
+    const tzShift = readTzOffsetMin(req);
     const f = readEventFilters(req);
     const { where, params } = applyEventFilters(orgId, f);
 
@@ -442,6 +445,12 @@ export function queriesRouter(ctx: HubServerContext): Router {
     // Passed through uncast: a repeated ?pr= arrives as an array and the parser
     // handles that shape rather than throwing.
     const prNumber = parsePrNumberFilter(req.query.pr);
+    // The viewer's zone, so byDay and each PR's day are local days (the
+    // histogram reads the same parameter the same way).
+    const tzOffsetMin = readTzOffsetMin(req);
+    // Preferred over the offset: an IANA zone follows DST per date. Validated
+    // where it is used (an unknown zone falls back), so it needs no check here.
+    const timeZone = singleValue(req, 'tz');
     // Admin alias -> canonical. Resolved inside the aggregator for the rows, and
     // the filter values go through the same mapping so a saved link to
     // `?model=qwen38-27b` still finds the group now filed under `qwen3.8:27b`.
@@ -512,6 +521,8 @@ export function queriesRouter(ctx: HubServerContext): Router {
         [...new Set(rawModels.map(m => resolveModelId(m, modelMapping) ?? m))], modelMetaRows,
       ),
       modelMetaRaw: modelMeta,
+      tzOffsetMin,
+      timeZone,
     });
 
     // What period these numbers relate to. Normally the requested window. Under

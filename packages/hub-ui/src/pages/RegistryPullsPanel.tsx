@@ -1,4 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
+import { parseAsUtc } from '../dates';
+import { LocalTime } from '../components/ui';
 import { ExternalLink, GitPullRequest } from 'lucide-react';
 import { api } from '../api';
 
@@ -37,8 +39,7 @@ const errorText = (e: unknown): string => {
 
 const openedOn = (iso: string | null): string | null => {
   if (!iso) return null;
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString();
+  return Number.isNaN(parseAsUtc(iso).getTime()) ? null : iso;
 };
 
 /**
@@ -149,7 +150,7 @@ export function RegistryPullsPanel() {
                   <div className="text-ink-tertiary">
                     #{p.number}
                     {p.author ? ` · ${p.author}` : ''}
-                    {opened ? ` · opened ${opened}` : ''}
+                    {opened && <>{' · opened '}<LocalTime value={opened} format="date" /></>}
                     {p.draft ? ' · draft' : ''}
                   </div>
                 </div>

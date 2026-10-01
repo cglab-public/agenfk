@@ -17,6 +17,7 @@ import { OrgPage } from '../pages/Org';
 import { UserDetailPage } from '../pages/UserDetail';
 import { PrOverviewPage } from '../pages/PrOverview';
 import { describeFilters } from '../filterSummary';
+import { fmtDate } from '../dates';
 import { api } from '../api';
 
 vi.mock('../api', () => ({ api: { get: vi.fn() } }));
@@ -91,9 +92,26 @@ describe('describeFilters', () => {
     expect(describeFilters({ range: 'today', types: [], projects: ['a', 'b'] })).toBe('today · all event types · 2 projects');
   });
 
-  it('prefers a custom date range over the preset', () => {
+  it('prefers a custom date range over the preset, in the one date format', () => {
+    // Local days, written the way every other date in the hub is (story 12753604).
+    const day = (v: string) => fmtDate(new Date(`${v}T00:00:00`));
     expect(describeFilters({ range: '30d', from: '2026-09-01', to: '2026-09-10', types: ['item.closed'], projects: [] }))
-      .toBe('2026-09-01 → 2026-09-10 · item.closed · all projects');
+      .toBe(`${day('2026-09-01')} → ${day('2026-09-10')} · item.closed · all projects`);
+    expect(describeFilters({ range: '30d', from: '2026-09-01', types: [] }))
+      .toBe(`${day('2026-09-01')} → … · all event types`);
+    // Not something a link can break: an invalid date is echoed, not "Invalid Date".
+    expect(describeFilters({ range: '30d', from: 'garbage', types: [] })).toBe('garbage → … · all event types');
+  });
+
+  it('reads a custom date as a LOCAL day even west of UTC', () => {
+    const saved = process.env.TZ;
+    process.env.TZ = 'America/Los_Angeles';
+    try {
+      // A UTC parse would make this Aug 31 in Los Angeles.
+      expect(describeFilters({ range: '30d', from: '2026-09-01', types: [] })).toMatch(/^1\D/);
+    } finally {
+      if (saved === undefined) delete process.env.TZ; else process.env.TZ = saved;
+    }
   });
 });
 
@@ -145,7 +163,9 @@ describe('user page opens on data', () => {
 
   it('summarises a custom date range', async () => {
     renderAt('/users/alice%40acme.com?from=2026-09-01&to=2026-09-10');
-    expect(await screen.findByText('2026-09-01 → 2026-09-10 · item.closed · all projects')).toBeInTheDocument();
+    // In the hub's one date format (story 12753604).
+    const day = (v: string) => fmtDate(new Date(`${v}T00:00:00`));
+    expect(await screen.findByText(`${day('2026-09-01')} → ${day('2026-09-10')} · item.closed · all projects`)).toBeInTheDocument();
   });
 
   it('starts collapsed, with the summary and the period in view', async () => {

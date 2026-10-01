@@ -18,7 +18,8 @@ import { heatColor, SPARK_STROKE } from '../chartColours';
 import { parsePrQuery } from '../prSearch';
 import { buildMonthBands, dayHeaderInfo, contributionPcts, cellTooltip, placeTooltip } from '../prPerDay';
 import { buildVolumeSeries, type Granularity } from '../prVolumeGranularity';
-import { Page, PageHeader, PeriodControl, QueryError, Skeleton, StatTile } from '../components/ui';
+import { DateRange, LocalTime, Page, PageHeader, PeriodControl, QueryError, Skeleton, StatTile } from '../components/ui';
+import { browserTimezone, endOfLocalDay, startOfLocalDay } from '../dates';
 import { describeFilters } from '../filterSummary';
 import { usePeopleNames } from '../hooks/usePeopleNames';
 import { PersonName, initialsOf } from '../components/PersonName';
@@ -236,7 +237,7 @@ function PrDrilldownModal({ dev, day, prs, onClose }: {
                     </span>
                   )}
                   <div className="mt-0.5 font-mono text-[10px] text-ink-tertiary tabular-nums">
-                    {Number.isNaN(openedAt.getTime()) ? '' : openedAt.toISOString().slice(11, 19)} UTC
+                    {!Number.isNaN(openedAt.getTime()) && <LocalTime value={openedAt} />}
                   </div>
                 </div>
               </>
@@ -399,12 +400,17 @@ export function PrOverviewPage() {
     navigate({ search: p.toString() ? `?${p}` : '', hash: location.hash }, { replace: true });
   }, [projectSel.set, devSel.set, modelSel.set, childHubSel.set, range, gran, customFrom, customTo, filtersOpen, queryPrNumber, navigate, location.hash]);
 
+  // A custom range is the viewer's LOCAL days, like the presets and the user page.
+  // A malformed date in a shared link is no bound, not a crash.
   const from = useMemo(
-    () => (customFrom ? `${customFrom}T00:00:00.000Z` : fromIsoForRange(new Date(), range)),
+    () => startOfLocalDay(customFrom) || fromIsoForRange(new Date(), range),
     [customFrom, range],
   );
   // Inclusive end-of-day so a PR opened any time on `customTo` is counted.
-  const toParam = customTo ? `${customTo}T23:59:59.999Z` : '';
+  const toParam = endOfLocalDay(customTo);
+  // The viewer's IANA zone, so the server files each PR under the local day it
+  // was opened and the axis below matches it, by each date's own offset.
+  const timeZone = browserTimezone();
 
   // Shared filters (project + date window). Model and developer are NOT here —
   // they're applied only to the data query, so the options query can list the
@@ -419,8 +425,12 @@ export function PrOverviewPage() {
     if (childHubSel.set.size) p.set('childHubId', [...childHubSel.set].join(','));
     p.set('from', from);
     if (toParam) p.set('to', toParam);
+    p.set('tz', timeZone);
+    // The offset too: a server whose ICU lacks the zone falls back to it
+    // rather than to UTC days under local-day columns.
+    p.set('tzOffsetMin', String(-new Date().getTimezoneOffset()));
     return p;
-  }, [projectSel.set, childHubSel.set, from, toParam]);
+  }, [projectSel.set, childHubSel.set, from, toParam, timeZone]);
 
   const dataQs = useMemo(() => {
     // Search mode: projects + the number, and nothing else. The superseded
@@ -579,16 +589,16 @@ export function PrOverviewPage() {
     [searchActive, d],
   );
   const axis = useMemo(
-    () => (d ? (searchActive ? searchDays : buildDayAxis(from, to)) : []),
-    [d, searchActive, searchDays, from, to],
+    () => (d ? (searchActive ? searchDays : buildDayAxis(from, to, timeZone)) : []),
+    [d, searchActive, searchDays, from, to, timeZone],
   );
   // Re-bucketed PR volume for the "PR volume by size" chart (daily/weekly/monthly).
   const volume = useMemo(() => (d ? buildVolumeSeries(d.byDay, axis, gran) : null), [d, axis, gran]);
   const prsDelta = d?.previous ? pctDelta(d.totals.prs, d.previous.prs) : null;
   const volumeBuckets = volume?.buckets ?? [];
   const maxBucketTotal = Math.max(1, ...volumeBuckets.map(b => b.total));
-  // Reference date for the heatmap's "today" column highlight (UTC, like the axis).
-  const todayIso = new Date().toISOString().slice(0, 10);
+  // Reference date for the heatmap's "today" column highlight (local, like the axis).
+  const todayIso = buildDayAxis(new Date().toISOString(), new Date().toISOString(), timeZone)[0];
   // Per-column header info, computed once per axis instead of per cell.
   const dayInfos = useMemo(() => axis.map(day => dayHeaderInfo(day, todayIso)), [axis, todayIso]);
   // One shared, fixed-position tooltip for the whole heatmap: per-cell hidden
@@ -676,7 +686,9 @@ export function PrOverviewPage() {
         toolbar={(
           <PeriodControl
             ranges={RANGES}
-            active={!customFrom && !customTo ? range : null}
+            // From the validated bounds: a malformed date in a link applies the
+            // preset, so the preset is what shows as pressed.
+            active={!startOfLocalDay(customFrom) && !toParam ? range : null}
             onPick={pickRange}
             // Superseded by a PR search: disabled, not hidden, and the
             // selection survives so clearing the search restores it.
@@ -685,37 +697,12 @@ export function PrOverviewPage() {
               ? 'A PR search supersedes the date range — this selection is kept but does not apply until the search is cleared'
               : undefined}
           >
-            <div className="inline-flex items-center gap-1 text-[11px] text-ink-tertiary">
-              <input
-                type="date"
-                value={customFrom}
-                max={customTo || undefined}
-                onChange={e => setCustomFrom(e.target.value)}
-                aria-label="From date"
-                disabled={searchActive}
-                className="rounded-lg border border-border-soft bg-surface text-ink-secondary px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50"
-              />
-              <span>→</span>
-              <input
-                type="date"
-                value={customTo}
-                min={customFrom || undefined}
-                onChange={e => setCustomTo(e.target.value)}
-                aria-label="To date"
-                disabled={searchActive}
-                className="rounded-lg border border-border-soft bg-surface text-ink-secondary px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50"
-              />
-              {(customFrom || customTo) && (
-                <button
-                  onClick={() => { setCustomFrom(''); setCustomTo(''); }}
-                  disabled={searchActive}
-                  className="ml-0.5 px-1.5 py-1 rounded-md text-ink-tertiary hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
-                  title="Clear date range"
-                >
-                  ✕
-                </button>
-              )}
-            </div>
+            <DateRange
+              from={customFrom}
+              to={customTo}
+              onChange={(f, t) => { setCustomFrom(f); setCustomTo(t); }}
+              disabled={searchActive}
+            />
           </PeriodControl>
         )}
       />

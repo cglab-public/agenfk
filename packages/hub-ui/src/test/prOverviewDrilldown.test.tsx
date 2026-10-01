@@ -167,6 +167,14 @@ describe('PrOverviewPage drill-down modal (CGLAB-131)', () => {
     })).toBeNull();
   });
 
+  it('shows each PR’s open time in local time, with UTC on hover (story 12753604)', async () => {
+    const dialog = await openModal();
+    const t = [...dialog.querySelectorAll('time')].find(x => x.getAttribute('dateTime') === '2026-08-13T16:50:18.000Z');
+    expect(t).toBeDefined();
+    expect(t).toHaveAttribute('title', '2026-08-13 16:50:18 UTC');
+    expect(t!.textContent).not.toMatch(/UTC/);
+  });
+
   it('opens from a non-zero cell and lists that developer’s PRs for that day', async () => {
     const dialog = await openModal();
     const scope = within(dialog);

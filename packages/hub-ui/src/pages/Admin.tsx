@@ -4,12 +4,11 @@ import { ADMIN_GROUPS } from './adminSections';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { KeyRound, Users, Trash2, X, EyeOff, Eye, Archive, ArchiveRestore } from 'lucide-react';
 import { api } from '../api';
-import { fmtDate } from '../dates';
 import { canDeleteUserRow } from './canDeleteUserRow';
 import { hideTargetKey, partitionHiddenRows, canHideRow } from './hiddenPeople';
 import { canRetireRow, canUnretireRow, countRetired, retireConfirmMessage } from './retiredInstallations';
 import { isAttributedByUsername, attributionWarning, countAttributedByUsername } from './attributionWarning';
-import { Page, Toggle, RowMenu, CopyButton, Badge, QueryError, buttonClass, cardClass, controlClass } from '../components/ui';
+import { Page, Toggle, RowMenu, CopyButton, Badge, LocalTime, QueryError, buttonClass, cardClass, controlClass } from '../components/ui';
 import { inviteErrors } from './adminValidation';
 import { providerStatus, ProviderRequirement } from './signInProviderStatus';
 import { silentDays } from './installationStaleness';
@@ -282,7 +281,7 @@ export function AdminKeys() {
                     Share this command{invites.length > 1 ? ` · #${idx + 1}` : ''}
                   </span>
                   <div className="flex items-center gap-3">
-                    <span className="text-[11px] text-ink-tertiary">expires {fmtDate(inv.expiresAt)}</span>
+                    <span className="text-[11px] text-ink-tertiary">expires {<LocalTime value={inv.expiresAt} format="date" />}</span>
                     <button
                       onClick={() => setInvites(prev => prev.filter(p => p.id !== inv.id))}
                       title="Dismiss"
@@ -364,7 +363,7 @@ export function AdminKeys() {
                       <span className="text-ink-tertiary">—</span>
                     )}
                   </td>
-                  <td className="px-2 py-2.5 text-xs text-ink-tertiary tabular-nums">{fmtDate(k.createdAt)}</td>
+                  <td className="px-2 py-2.5 text-xs text-ink-tertiary tabular-nums">{<LocalTime value={k.createdAt} format="date" />}</td>
                   <td className="px-2 py-2.5">
                     {k.revokedAt
                       ? <span className="px-2 py-0.5 rounded-md text-[10px] font-mono bg-status-danger-bg text-status-danger-text border border-status-danger-text/40">revoked</span>
@@ -530,7 +529,7 @@ export function AdminUsers() {
                       <option value="admin">admin</option>
                     </select>
                   </td>
-                  <td className="px-2 py-2.5 text-xs text-ink-tertiary tabular-nums">{u.last_login_at ? fmtDate(u.last_login_at) : <span className="text-ink-tertiary">never</span>}</td>
+                  <td className="px-2 py-2.5 text-xs text-ink-tertiary tabular-nums">{u.last_login_at ? <LocalTime value={u.last_login_at} format="date" /> : <span className="text-ink-tertiary">never</span>}</td>
                   <td className="px-2 py-2.5 text-right">
                     <Toggle label={`Active: ${u.email}`} checked={!!u.active} onChange={(v) => update.mutate({ id: u.id, active: v })} />
                   </td>
@@ -739,10 +738,10 @@ export function AdminInstallations() {
                       : <span className="text-[11px] text-ink-tertiary italic">unknown</span>}
                   </td>
                   <td className="px-2 py-2.5 text-xs text-ink-tertiary tabular-nums">
-                    {r.agenfkVersionUpdatedAt ? fmtDate(r.agenfkVersionUpdatedAt) : <span className="text-ink-tertiary">—</span>}
+                    {r.agenfkVersionUpdatedAt ? <LocalTime value={r.agenfkVersionUpdatedAt} format="date" /> : <span className="text-ink-tertiary">—</span>}
                   </td>
                   <td className="px-5 py-2.5 text-right text-xs text-ink-tertiary tabular-nums">
-                    {r.lastSeen ? fmtDate(r.lastSeen) : <span className="text-ink-tertiary">—</span>}
+                    {r.lastSeen ? <LocalTime value={r.lastSeen} format="date" /> : <span className="text-ink-tertiary">—</span>}
                     {silentDays(r.lastSeen) !== null && (
                       <span className="ml-2 rounded-md border border-status-warn-text/40 bg-status-warn-bg px-1.5 py-0.5 text-[10px] font-semibold text-status-warn-text">
                         silent {silentDays(r.lastSeen)}d
@@ -802,7 +801,7 @@ export function AdminInstallations() {
                 <div>
                   <div className="font-mono text-xs text-ink-secondary">{p.userKey}</div>
                   <div className="text-[11px] text-ink-tertiary">
-                    hidden {fmtDate(p.createdAt)}{p.hiddenByEmail ? ` by ${p.hiddenByEmail}` : ''}
+                    hidden {<LocalTime value={p.createdAt} format="date" />}{p.hiddenByEmail ? ` by ${p.hiddenByEmail}` : ''}
                   </div>
                 </div>
                 <button

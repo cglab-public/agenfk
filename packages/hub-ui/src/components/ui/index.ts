@@ -16,3 +16,5 @@ export { QueryError, QueryState, Skeleton } from './QueryState';
 export { Page } from './Page';
 export { PageHeader } from './PageHeader';
 export { PeriodControl } from './PeriodControl';
+export { LocalTime } from './LocalTime';
+export { DateRange } from './DateRange';

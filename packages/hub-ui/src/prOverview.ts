@@ -15,11 +15,17 @@ export const SIZE_META = [
 
 export type SizeKey = typeof SIZE_META[number]['key'];
 
-/** Every calendar day in [from, to] inclusive, as YYYY-MM-DD (UTC). Capped so a
+/** Every calendar day in [from, to] inclusive, as YYYY-MM-DD in `timeZone`
+ *  (default UTC). Each end is read by the zone's rules for ITS date, so a
+ *  window across a DST change gets one column per day. Capped so a
  *  pathological range can't build an unbounded array. */
-export function buildDayAxis(from: string, to: string): string[] {
-  const start = new Date(from.slice(0, 10) + 'T00:00:00Z');
-  const end = new Date(to.slice(0, 10) + 'T00:00:00Z');
+export function buildDayAxis(from: string, to: string, timeZone = 'UTC'): string[] {
+  const a = Date.parse(from), b = Date.parse(to);
+  if (Number.isNaN(a) || Number.isNaN(b)) return [];
+  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
+  // Once both ends are calendar dates, walking them needs no zone at all.
+  const start = new Date(fmt.format(a) + 'T00:00:00Z');
+  const end = new Date(fmt.format(b) + 'T00:00:00Z');
   const out: string[] = [];
   const cur = new Date(start);
   while (cur <= end && out.length < 366) {
