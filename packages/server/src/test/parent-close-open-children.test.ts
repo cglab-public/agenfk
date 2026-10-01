@@ -113,14 +113,31 @@ describe("a card's final move while it has open children", () => {
     expect((await storage.getItem(id))?.status).toBe('END');
   });
 
-  it('sees a child that appears while the close is running, and refuses at the write', async () => {
-    const pid = await setupWith([s('START', 0, { isAnchor: true }), s('WORK', 1), s('END', 2, { isAnchor: true })], { verifyCommand: 'sleep 1' });
+  /*
+   * A BARRIER, not a delay: the command says when it started and waits to be
+   * released, so the children are created after the entry guard has passed and
+   * before the suite ends - on every machine, however loaded.
+   */
+  it('sees work that appears while the close is running, and refuses at the write with every card named', async () => {
+    const gate = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-parentclose-gate-'));
+    repos.push(gate);
+    const started = path.join(gate, 'started');
+    const release = path.join(gate, 'release');
+    const pid = await setupWith(
+      [s('START', 0, { isAnchor: true }), s('WORK', 1), s('END', 2, { isAnchor: true })],
+      { verifyCommand: `touch '${started}'; while [ ! -f '${release}' ]; do sleep 0.05; done` },
+    );
     const parent = await card(pid, 'WORK');
     const run = follow(parent);
-    await new Promise(r => setTimeout(r, 300));
-    await card(pid, 'START', { parentId: parent });
+    for (let i = 0; i < 400 && !fs.existsSync(started); i++) await new Promise(r => setTimeout(r, 25));
+    expect(fs.existsSync(started), 'the verify command never started').toBe(true);
+    // Eleven: more than the message lists, so the structured list is what names them all.
+    const late: string[] = [];
+    for (let i = 0; i < 11; i++) late.push(await card(pid, 'START', { parentId: parent }));
+    fs.writeFileSync(release, '');
     const res = await run;
     expect(res.body.error, JSON.stringify(res.body)).toBe('CHILDREN_OPEN');
+    expect(res.body.children.map((c: { id: string }) => c.id).sort()).toEqual([...late].sort());
     expect((await storage.getItem(parent))?.status).toBe('WORK');
   });
 
@@ -129,7 +146,9 @@ describe("a card's final move while it has open children", () => {
     // WORK -> CHECK ends nothing: an open child does not hold it.
     const walking = await card(pid, 'WORK');
     await card(pid, 'START', { parentId: walking });
-    expect((await validate(walking)).body.error).toBeUndefined();
+    const walked = await validate(walking);
+    expect(walked.status, JSON.stringify(walked.body)).toBe(200);
+    expect((await storage.getItem(walking))?.status).toBe('CHECK');
     // CHECK -> DONE closes: a child still working on CHECK holds it.
     const closing = await card(pid, 'CHECK');
     await card(pid, 'CHECK', { parentId: closing });
@@ -142,7 +161,9 @@ describe("a card's final move while it has open children", () => {
     const parent = await card(pid, 'WORK');
     // Finished where it now lives: SHIPPED ends its flow, whatever the parent's flow calls its end.
     await card(other, 'SHIPPED', { parentId: parent });
-    expect((await validate(parent)).body.error).toBeUndefined();
+    const res = await validate(parent);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect((await storage.getItem(parent))?.status).toBe('END');
   });
 
   it('does not let the parent roll-up close the parent over a paused child', async () => {
@@ -163,5 +184,43 @@ describe("a card's final move while it has open children", () => {
     const res = await validate(parent);
     expect(res.body.error, JSON.stringify(res.body)).toBe('CHILDREN_OPEN');
     expect(res.body.children.map((c: { id: string }) => c.id)).toEqual([grandchild]);
+  });
+
+  it('holds the close for open work under a child parked as an idea', async () => {
+    // Parking a card does not park what is under it.
+    const pid = await setup();
+    const parent = await card(pid, 'WORK');
+    const parked = await card(pid, 'IDEAS', { parentId: parent });
+    const working = await card(pid, 'WORK', { parentId: parked });
+    const res = await validate(parent);
+    expect(res.body.error, JSON.stringify(res.body)).toBe('CHILDREN_OPEN');
+    expect(res.body.children.map((c: { id: string }) => c.id)).toEqual([working]);
+  });
+
+  it('refuses rather than closes when the tree is deeper than it can check', async () => {
+    // An unfinished card past the depth bound is not "nothing open": an
+    // incomplete scan cannot authorize a close.
+    const pid = await setup();
+    const parent = await card(pid, 'WORK');
+    let under = parent;
+    for (let i = 0; i < 33; i++) under = await card(pid, 'END', { parentId: under });
+    await card(pid, 'START', { parentId: under });
+    const res = await validate(parent);
+    expect(res.body.error, JSON.stringify(res.body)).toBe('CHILDREN_OPEN');
+    expect(res.body.message).toMatch(/could not be checked/i);
+    expect((await storage.getItem(parent))?.status).toBe('WORK');
+  });
+
+  it('lets the roll-up close the parent once the last open grandchild finishes', async () => {
+    // The close was held for the grandchild; finishing it changes nothing on
+    // the (already finished) child, and the roll-up used to stop there.
+    const pid = await setup();
+    const root = await card(pid, 'WORK');
+    const child = await card(pid, 'END', { parentId: root });
+    const grandchild = await card(pid, 'START', { parentId: child });
+    expect((await validate(root)).body.error).toBe('CHILDREN_OPEN');
+    await storage.updateItem(grandchild, { status: 'END' } as any);
+    await agent().put(`/items/${grandchild}`).send({ title: 'finished' });
+    expect((await storage.getItem(root))?.status).toBe('END');
   });
 });

@@ -771,17 +771,30 @@ function finishedStatusesOf(flow: { steps: any[] }): Set<string> {
   return finished;
 }
 
-/** Out of play: their subtrees are abandoned with them, so nothing under them holds a close. */
-const OUT_OF_PLAY = new Set<string>([Status.TRASHED, Status.ARCHIVED, Status.IDEAS].map(String));
+/** How far openDescendants looks before it stops and says it could not see. */
+const OPEN_SCAN_DEPTH = 32;
+const OPEN_SCAN_CARDS = 5000;
+
+/** What openDescendants found: the open cards, and whether it saw the whole tree. */
+interface OpenScan {
+  open: Array<{ id: string; title: string; status: string }>;
+  /** False when a bound stopped the walk with cards left unexamined. */
+  complete: boolean;
+}
 
 /**
  * Every unfinished card under this one (8024f6c4) - the whole subtree, not
  * only direct children: a child closed before this rule existed, or one a new
  * card was attached to, can hold open work. Each card is judged by ITS OWN
- * project's flow, since a moved child keeps its parent. Bounded and
- * cycle-safe; a trashed, archived or parked subtree is not walked.
+ * project's flow, since a moved child keeps its parent.
+ *
+ * Every subtree is walked, a trashed, archived or parked one included: none of
+ * those statuses cascades, so a card parked as an idea can still have work
+ * running under it. Bounded and cycle-safe - and a bound that stops the walk
+ * says so (`complete: false`), because an unexamined card is not a finished
+ * one.
  */
-async function openDescendants(rootId: string): Promise<Array<{ id: string; title: string; status: string }>> {
+async function openDescendants(rootId: string): Promise<OpenScan> {
   const flows = await storage.listFlows();
   const finishedByProject = new Map<string, Set<string>>();
   const finishedFor = async (projectId: string): Promise<Set<string>> => {
@@ -793,37 +806,48 @@ async function openDescendants(rootId: string): Promise<Array<{ id: string; titl
     }
     return f;
   };
-  const open: Array<{ id: string; title: string; status: string }> = [];
+  const open: OpenScan['open'] = [];
   const seen = new Set<string>([rootId]);
   let frontier = [rootId];
-  for (let depth = 0; frontier.length && depth < 32 && seen.size < 5000; depth++) {
+  for (let depth = 0; frontier.length; depth++) {
+    if (depth >= OPEN_SCAN_DEPTH) return { open, complete: false };
     const next: string[] = [];
     for (const id of frontier) {
       const kids = (await storage.listItems({ parentId: id, hydrate: false } as any)) as any[];
       for (const k of kids) {
         if (seen.has(k.id)) continue;
+        if (seen.size >= OPEN_SCAN_CARDS) return { open, complete: false };
         seen.add(k.id);
         const status = String(k.status);
-        if (OUT_OF_PLAY.has(status)) continue;
         if (!(await finishedFor(k.projectId)).has(status)) open.push({ id: k.id, title: k.title, status });
         next.push(k.id);
       }
     }
     frontier = next;
   }
-  return open;
+  return { open, complete: true };
 }
 
+/** Whether anything under the card holds its close: open work, or a tree too big to see. */
+const holdsClose = (scan: OpenScan): boolean => scan.open.length > 0 || !scan.complete;
+
 /** The refusal a close owes while work under the card is open (8024f6c4). */
-function childrenOpenRefusal(item: any, open: Array<{ id: string; title: string; status: string }>) {
+function childrenOpenRefusal(item: any, scan: OpenScan) {
+  const { open } = scan;
   const SHOWN = 10;
   const list = open.slice(0, SHOWN).map(c => `  [${c.id.slice(0, 8)}] ${c.title} (${c.status})`).join('\n')
     + (open.length > SHOWN ? `\n  and ${open.length - SHOWN} more` : '');
+  const unseen = scan.complete ? ''
+    : `The tree under it is deeper than ${OPEN_SCAN_DEPTH} levels or larger than ${OPEN_SCAN_CARDS} cards, so the rest of it could not be checked.`;
+  const what = open.length
+    ? `${open.length === 1 ? 'a card under it is' : `${open.length} cards under it are`} not finished.\n\n${list}\n\nFinish, trash or archive ${open.length === 1 ? 'it' : 'them'} first.${unseen ? ` ${unseen}` : ''}`
+    : `${unseen} Close the cards under it first, from the bottom up.`;
   return {
     status: item.status,
     error: 'CHILDREN_OPEN',
-    message: `❌ ${item.title} cannot close: ${open.length === 1 ? 'a card under it is' : `${open.length} cards under it are`} not finished.\n\n${list}\n\nFinish, trash or archive ${open.length === 1 ? 'it' : 'them'} first.${staysOn(item.status)}`,
+    message: `❌ ${item.title} cannot close: ${what}${staysOn(item.status)}`,
     children: open.map(c => ({ id: c.id, title: c.title, status: c.status })),
+    ...(scan.complete ? {} : { incomplete: true }),
   };
 }
 
@@ -902,7 +926,8 @@ const syncParentStatus = async (parentId: string) => {
    * the laggard above skips them - and a parent already past its review rolled
    * straight to DONE over a paused child.
    */
-  if (newStatus && finishedStatusesOf(parentFlow).has(String(newStatus)) && (await openDescendants(parent.id)).length) {
+  const parentFinished = finishedStatusesOf(parentFlow);
+  if (newStatus && parentFinished.has(String(newStatus)) && holdsClose(await openDescendants(parent.id))) {
     newStatus = null;
   }
 
@@ -912,10 +937,15 @@ const syncParentStatus = async (parentId: string) => {
     await storage.updateItem(parent.id, { status: newStatus });
     io.emit('items_updated');
     recordMoveEvents(parent, parent.status, newStatus, parentFlow);
-
-    if (parent.parentId) {
-      await syncParentStatus(parent.parentId);
-    }
+  }
+  /*
+   * Up the tree when this parent moved - and also when it is already finished
+   * (8024f6c4): an ancestor's close can be held only by open work deep below,
+   * and the grandchild that finishes it changes nothing on its finished parent,
+   * so the walk used to stop one level short and leave the ancestor held.
+   */
+  if (parent.parentId && (newStatus || parentFinished.has(String(parent.status)))) {
+    await syncParentStatus(parent.parentId);
   }
 };
 
@@ -8823,6 +8853,9 @@ function runRecorder(run: ValidateRun) {
       // 2a181a8d: a COMMAND_NEEDS_APPROVAL refusal names what to approve - the background caller needs it too.
       if (typeof payload?.fingerprint === 'string') (run as any).fingerprint = payload.fingerprint;
       if (typeof payload?.command === 'string') (run as any).command = payload.command;
+      // 8024f6c4: a CHILDREN_OPEN refusal lists every open card, not only the ten its message shows.
+      if (Array.isArray(payload?.children)) (run as any).children = payload.children;
+      if (payload?.incomplete === true) (run as any).incomplete = true;
       // Keep the live full output when we have it; fall back to the preview.
       if (!run.output && payload?.output) run.output = payload.output;
       run.finishedAt = new Date();
@@ -8930,15 +8963,17 @@ async function handleValidateProgress(itemId: string, command: string | undefine
      * while its work did not exist. Asked here because every route that ends
      * the flow asks this, at its last step before writing: the entry (before
      * any check or suite), a close on a green, a close deferred to the parent,
-     * and after the command ran - so work that appears or reopens DURING the
-     * verify is seen too.
+     * the first anchor's advance, and after the command ran - so work that
+     * appears or reopens DURING the verify is seen too.
      */
-    const open = await openDescendants(item.id);
-    if (open.length) {
-      r0.status(400).json(childrenOpenRefusal(item, open));
+    const { strays, claimless } = await strayStagedFor(item, (project as any)?.projectRoot, isWorkingStatus);
+    // After the git read, not before it: a child created while that awaited
+    // would otherwise go unseen by the very check meant to catch it.
+    const scan = await openDescendants(item.id);
+    if (holdsClose(scan)) {
+      r0.status(400).json(childrenOpenRefusal(item, scan));
       return { refused: true };
     }
-    const { strays, claimless } = await strayStagedFor(item, (project as any)?.projectRoot, isWorkingStatus);
     if (!strays.length) return { refused: false, res: r0 };
     if (claimless.length) return { refused: false, res: withNote(r0, `⚠️ ${describeUnowned(strays, claimless)}`) };
     r0.status(422).json({ status: item.status, message: `❌ The card cannot close yet. ${describeStrays(item, strays)}${staysOn(item.status)}` });
@@ -9102,6 +9137,11 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const exitCriteria = (currentFlowStep.step as any).exitCriteria as string | undefined;
     const exitNote = exitCriteria ? `\n**Exit criteria acknowledged**: ${exitCriteria}` : '';
     const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED\n\n**Step**: ${item.status} → ${codingStep.name}${exitNote}${passedChecks ? `\n\n${passedChecks}` : ''}`, timestamp: new Date() };
+    // A flow whose coding step is its end closes here, and a re-entry from a
+    // background gate skipped the entry check: ask again before the write.
+    const closing = await checkStrays(res);
+    if (closing.refused) return;
+    res = closing.res;
     const leftTodo = await commitOnLeave(res);
     if (leftTodo.refused) return;
     res = leftTodo.res;
