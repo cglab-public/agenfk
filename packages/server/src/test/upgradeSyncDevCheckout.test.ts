@@ -11,6 +11,16 @@ import * as os from 'os';
 import * as path from 'path';
 
 const execSync = vi.fn(() => '');
+/** When set, every BigInt stat reports this inode: a filesystem that gives no identity. */
+const forcedIno: { value: bigint | null } = { value: null };
+vi.mock('fs', async (orig) => {
+  const real = await orig<typeof import('fs')>();
+  const statSync = ((p: any, o?: any) => {
+    const st: any = real.statSync(p, o);
+    return o?.bigint && forcedIno.value !== null ? { dev: st.dev, ino: forcedIno.value } : st;
+  }) as typeof real.statSync;
+  return { ...real, statSync, default: { ...real, statSync } };
+});
 vi.mock('child_process', async (orig) => ({
   ...(await orig<typeof import('child_process')>()),
   execSync: (...a: unknown[]) => execSync(...(a as [])),
@@ -60,6 +70,21 @@ describe('defaultSelfExtract on a development checkout', () => {
       await defaultSelfExtract({ installRoot: link, targetVersion: '9.9.9' });
       expect(String((execSync.mock.calls[0] as unknown[] | undefined)?.[0] ?? '')).toMatch(/curl/);
     } finally {
+      fs.rmSync(real, { recursive: true, force: true });
+    }
+  });
+
+  it('treats an inode of 0 as no identity: ~/.agenfk-system is then not proven, and the tree is left alone', async () => {
+    expect(os.homedir()).not.toBe(os.userInfo().homedir);
+    const real = path.join(os.homedir(), '.agenfk-system');
+    fs.mkdirSync(path.join(real, '.git'), { recursive: true });
+    forcedIno.value = 0n;
+    try {
+      const result = await defaultSelfExtract({ installRoot: real, targetVersion: '9.9.9' });
+      expect(result.ok).toBe(false);
+      expect(execSync).not.toHaveBeenCalled();
+    } finally {
+      forcedIno.value = null;
       fs.rmSync(real, { recursive: true, force: true });
     }
   });

@@ -39,6 +39,22 @@ describe('isDevCheckout', () => {
   });
 });
 
+describe('sameDirectory, when identities are not to be trusted', () => {
+  it('keeps 64-bit inodes apart that plain numbers would round together', () => {
+    const ids: Record<string, { dev: bigint; ino: bigint }> = {
+      a: { dev: 1n, ino: 9007199254740992n },
+      b: { dev: 1n, ino: 9007199254740993n },
+    };
+    expect(Number(ids.a.ino) === Number(ids.b.ino)).toBe(true); // the trap
+    expect(sameDirectory('a', 'b', (p: string) => ids[p])).toBe(false);
+  });
+
+  it('never calls two paths the same on an inode of 0, which is no identity', () => {
+    const zero = (_p: string) => ({ dev: 1n, ino: 0n });
+    expect(sameDirectory('a', 'b', zero)).toBe(false);
+  });
+});
+
 describe('install.mjs', () => {
   const src = fs.readFileSync(path.resolve(__dirname, '../../../../scripts/install.mjs'), 'utf8');
 

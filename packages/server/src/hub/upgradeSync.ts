@@ -76,9 +76,12 @@ function isDevCheckout(root: string): boolean {
   if (!fs.existsSync(path.join(root, '.git'))) return false;
   // Same directory by (dev, inode), not by spelling: a symlinked ~/.agenfk-system, or a path cased
   // differently on APFS, is still that install (Codex review of 658ef023).
+  // BigInt, so distinct 64-bit inodes cannot round to one value; an inode of 0 is no identity, and
+  // never proves the two the same - in doubt, it is a checkout (Codex review of 658ef023).
   try {
-    const here = fs.statSync(root);
-    const install = fs.statSync(path.join(os.homedir(), '.agenfk-system'));
+    const here = fs.statSync(root, { bigint: true });
+    const install = fs.statSync(path.join(os.homedir(), '.agenfk-system'), { bigint: true });
+    if (!here.ino || !install.ino) return true;
     return !(here.dev === install.dev && here.ino === install.ino);
   } catch {
     return true;
