@@ -355,6 +355,19 @@ describe('PG parity: queries + rollup', () => {
     expect(typeof u['alice@acme.com'].items_closed).toBe('number');
   });
 
+  it('GET /v1/histogram files by an IANA zone on PG (BUG 27ede354)', async () => {
+    // alice's events are 08:00–10:00 UTC on 2026-05-03: 13:30–15:30 in Kolkata.
+    const r = await supertest(fx.app)
+      .get('/v1/histogram?bucket=hour&tz=Asia%2FKolkata&tzOffsetMin=330&users=alice@acme.com')
+      .set('Cookie', fx.cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.buckets.map((b: any) => b.time)).toEqual(['2026-05-03T13:00', '2026-05-03T14:00', '2026-05-03T15:00']);
+    // The single-offset fallback shifts by a modifier too, on PG as well.
+    const o = await supertest(fx.app).get('/v1/histogram?bucket=hour&tzOffsetMin=120&users=alice@acme.com').set('Cookie', fx.cookie);
+    expect(o.status).toBe(200);
+    expect(o.body.buckets.map((b: any) => b.time)).toEqual(['2026-05-03T10:00', '2026-05-03T11:00', '2026-05-03T12:00']);
+  });
+
   it('GET /v1/timeline filters by user + type', async () => {
     const r = await supertest(fx.app)
       .get('/v1/timeline?users=alice@acme.com&types=item.created')

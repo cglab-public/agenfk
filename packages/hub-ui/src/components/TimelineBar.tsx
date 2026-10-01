@@ -72,6 +72,11 @@ function buildAxisForBounds(fromIso: string, toIso: string | undefined, bucket: 
   return out;
 }
 
+/** The browser's IANA zone, or null when it cannot say. */
+function namedTimeZone(): string | null {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch { return null; }
+}
+
 export function TimelineBar({ users, types, projects, itemTypes, childHubs, className, title, range: rangeProp, onRangeChange, fromIsoOverride, toIsoOverride }: Props) {
   const [rangeInternal, setRangeInternal] = useState<RangeKey>('30d');
   const range = rangeProp ?? rangeInternal;
@@ -102,9 +107,14 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
   if (toIsoOverride) params.set('to', toIsoOverride);
   params.set('bucket', bucket);
   params.set('tzOffsetMin', String(tzOffsetMin));
+  // The zone itself, so the hub files each date by its own offset (DST); the
+  // offset above stays as the fallback for a zone the hub does not know. A
+  // browser that cannot name its zone sends none rather than a made-up UTC.
+  const timeZone = namedTimeZone();
+  if (timeZone) params.set('tz', timeZone);
 
   const q = useQuery<HistogramResponse>({
-    queryKey: ['histogram', users?.join(',') ?? '', types?.join(',') ?? '', projects?.join(',') ?? '', itemTypes?.join(',') ?? '', childHubs?.join(',') ?? '', range, fromIsoOverride ?? '', toIsoOverride ?? '', bucket, tzOffsetMin],
+    queryKey: ['histogram', users?.join(',') ?? '', types?.join(',') ?? '', projects?.join(',') ?? '', itemTypes?.join(',') ?? '', childHubs?.join(',') ?? '', range, fromIsoOverride ?? '', toIsoOverride ?? '', bucket, tzOffsetMin, timeZone ?? ''],
     queryFn: async () => (await api.get(`/v1/histogram?${params}`)).data,
   });
 

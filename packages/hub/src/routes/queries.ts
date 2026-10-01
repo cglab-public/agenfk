@@ -3,6 +3,7 @@ import { HubServerContext } from '../server.js';
 import { requireSession } from '../auth/session.js';
 import { recomputeRollups } from '../rollup.js';
 import { aggregateHistogramRows } from '../queries/histogram-aggregate.js';
+import { isKnownTimeZone, rebucketToZone, subHourShift, zoneOffsetMin } from '../queries/histogram-zone.js';
 import { coerceMetricsRow } from '../queries/metrics-coerce.js';
 import { aggregatePrOverview, clampTzOffsetMin, parsePrNumberFilter, PrEventRow } from '../queries/pr-overview-aggregate.js';
 import { sanitizeRemoteUrl } from './events.js';
@@ -516,10 +517,24 @@ export function queriesRouter(ctx: HubServerContext): Router {
     const f = readEventFilters(req);
     const { where, params } = applyEventFilters(orgId, f);
 
-    const fmt = bucket === 'day' ? '%Y-%m-%d' : '%Y-%m-%dT%H:00';
-    const tzModifier = tzShift !== 0 ? `, ?` : '';
+    // With a zone the hub knows, group by hour in SQL and re-file the hours by
+    // the zone's own rules for each date (DST included); otherwise shift every
+    // event by the one offset given, as before.
+    const tzRaw = singleValue(req, 'tz');
+    const timeZone = tzRaw && isKnownTimeZone(tzRaw) ? tzRaw : null;
+    // A known zone sets its own alignment; the client's offset only matters
+    // for a zone the hub cannot read. Read at the window's end (or now).
+    const atRaw = f.to ? Date.parse(f.to) : NaN;
+    const shift = timeZone
+      ? subHourShift(zoneOffsetMin(timeZone, Number.isNaN(atRaw) ? Date.now() : atRaw))
+      : tzShift;
+
+    const fmt = bucket === 'day' && !timeZone ? '%Y-%m-%d' : '%Y-%m-%dT%H:00';
+    const tzModifier = shift !== 0 ? `, ?` : '';
     const sqlParams: any[] = [];
-    if (tzShift !== 0) sqlParams.push(`${tzShift >= 0 ? '+' : ''}${tzShift} minutes`);
+    // No leading '+': SQLite and Postgres take '30 minutes' as positive, and
+    // pg-mem (the parity tests' Postgres) cannot parse '+30 minutes'.
+    if (shift !== 0) sqlParams.push(`${shift} minutes`);
     sqlParams.push(...params);
     const rows = await ctx.db.all<{ time: string; type: string; n: number | string }>(
       `SELECT strftime('${fmt}', occurred_at${tzModifier}) AS time, type, COUNT(*) AS n
@@ -529,7 +544,8 @@ export function queriesRouter(ctx: HubServerContext): Router {
       sqlParams,
     );
 
-    res.json({ bucket, buckets: aggregateHistogramRows(rows) });
+    const filed = timeZone ? rebucketToZone(rows, timeZone, shift, bucket) : rows;
+    res.json({ bucket, buckets: aggregateHistogramRows(filed) });
   }));
 
   // PR Overview: total PRs per developer per size (XS–XL, derived from leaf
