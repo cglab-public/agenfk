@@ -30,7 +30,8 @@ const TEST_DB = path.resolve('./file-command-approval-paths-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, storage, VERIFY_TOKEN, unapprovedFileVerify } from '../server';
+import { commandFingerprint } from '@agenfk/core';
 
 let __server: import('http').Server;
 const agent = () => request(__server);
@@ -164,5 +165,26 @@ describe('a repository command on every verify path', () => {
     expect(plan.body.advice).not.toContain('plan-marker');
     const predicted = await agent().get(`/items/${id}/leave-plan?predict=1`);
     expect(predicted.body.prediction.mode).toBe('none');
+  });
+
+  it('on a step that captures, the plan says the capture is refused for approval too', async () => {
+    const dir = repoDeclaring('echo capture-marker');
+    // No stored report command: the capture's suite IS the file's command.
+    const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('WORK', 1, { checks: [{ id: 'suite-green' }] }), s('CHECK', 2), s('END', 3, { isAnchor: true })]), { projectRoot: dir, testReport: report });
+    const id = await card(pid, 'WORK');
+    const plan = await agent().get(`/items/${id}/leave-plan`);
+    expect(plan.body.refuses, JSON.stringify(plan.body)).toBe('COMMAND_NEEDS_APPROVAL');
+    expect(plan.body.advice).not.toContain('capture-marker');
+    const predicted = await agent().get(`/items/${id}/leave-plan?predict=1`);
+    expect(predicted.body.prediction.mode).toBe('none');
+  });
+
+  it('judges the exact command selected to run, not the file as it reads by then', () => {
+    // The close selects the file's command, awaits, then checks: a file edited meanwhile
+    // to an approved command must not let the selected, unapproved one through.
+    const dir = repoDeclaring('echo approved-now');
+    const project = { projectRoot: dir, approvedFileCommands: [commandFingerprint('echo approved-now')] };
+    expect(unapprovedFileVerify(project)).toBeNull();
+    expect(unapprovedFileVerify(project, 'echo never-approved')).toMatchObject({ error: 'COMMAND_NEEDS_APPROVAL', command: 'echo never-approved' });
   });
 });

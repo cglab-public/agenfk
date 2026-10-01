@@ -8239,9 +8239,12 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown 
   // NO_TREE refuses when something needs the capture: a check of THIS step, or the next step's BLOCKING
   // checks reading its entry baseline (the gate's entry-baseline hold). An entry only non-blocking checks
   // read lets the card move without one, and a verify command alone runs wherever it is spawned.
-  // 2a181a8d: an unapproved repository command is refused before the gate, so ahead of NO_TREE - and runs nothing.
+  // 2a181a8d: an unapproved repository command is refused before it runs - at the close (before the gate),
+  // and in a capture whose suite IS the file's command - so ahead of NO_TREE, and nothing runs.
+  const effective = effectiveVerifyCommand(project);
+  const captureNeedsApproval = cap.runs && effective.fromFile && !!effective.command && !!unapprovedFileVerify(project, effective.command);
   const refuses: LeavePlan['refuses'] = final && !toParent && !verifyCommand ? 'NO_VERIFY_COMMAND'
-    : final && !toParent && unapprovedFileVerify(project) ? 'COMMAND_NEEDS_APPROVAL'
+    : (final && !toParent && unapprovedFileVerify(project)) || captureNeedsApproval ? 'COMMAND_NEEDS_APPROVAL'
     : !root && (cap.checks.length > 0 || (!!cap.entryBaseline && cap.nextNeedsPerTestEntry)) ? 'NO_TREE' : undefined;
   const role = (sorted[index] as any)?.role;
   const narrowing = runs === 'nothing' ? [] : [
@@ -8675,8 +8678,12 @@ async function refuseOnChecks(res: any, item: any, gate: StepGate) {
  * definition for the check before the gate and the one at the close, so the
  * two cannot disagree about one command.
  */
-function unapprovedFileVerify(project: any): { error: 'COMMAND_NEEDS_APPROVAL'; message: string; fingerprint?: string; command: string } | null {
-  const declared = readDeclaredSettings(project?.projectRoot).settings.verifyCommand;
+export function unapprovedFileVerify(
+  project: any,
+  // The exact string the caller selected to run, when it has one: judged as it will run, never re-read -
+  // a file edited between selecting and checking must not pass one command and run another (Codex review).
+  declared: unknown = readDeclaredSettings(project?.projectRoot).settings.verifyCommand,
+): { error: 'COMMAND_NEEDS_APPROVAL'; message: string; fingerprint?: string; command: string } | null {
   if (typeof declared !== 'string') return null;
   const verdict = approvalFor({ key: 'verifyCommand', command: declared }, ((project?.approvedFileCommands ?? []) as string[]));
   return verdict.allowed ? null : { error: 'COMMAND_NEEDS_APPROVAL', message: verdict.reason ?? '', fingerprint: verdict.fingerprint, command: declared };
@@ -9111,8 +9118,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
    * exactly the command that needs approval. Not on a close deferred to its
    * parent: that close runs no command (2a181a8d).
    */
-  if (isFinalStep && !deferTo) {
-    const refusal = unapprovedFileVerify(project);
+  if (isFinalStep && !deferTo && fileVerify !== null) {
+    // The string selected above - the one that runs - not the file as it reads now.
+    const refusal = unapprovedFileVerify(project, fileVerify);
     if (refusal) return res.status(400).json(refusal);
   }
   const resolvedCommand = isFinalStep ? projectVerify : command;
