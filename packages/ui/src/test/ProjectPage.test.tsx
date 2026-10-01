@@ -647,6 +647,20 @@ describe('paging through many cards', () => {
     expect(screen.getByTestId('project-page-range').textContent).toBe('1–25 of 60');
   });
 
+  it('starts another project on its first page even when it has fewer cards', () => {
+    // The clamp ran on the old project's page and won over the reset: page 3
+    // of 60 opened a 30-card project on 26-30.
+    const { rerender } = open({ cards: lots(60) });
+    fireEvent.click(screen.getByTestId('project-page-next'));
+    fireEvent.click(screen.getByTestId('project-page-next'));
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <ProjectPage project={{ id: 'p2', name: 'other' } as never} cards={lots(30)} />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByTestId('project-page-range').textContent).toBe('1–25 of 30');
+  });
+
   it('stays where it was put when the list grows back', () => {
     // Clamped to the last page that existed, and kept there: cards arriving
     // later must not move the reader back to a page they never chose.

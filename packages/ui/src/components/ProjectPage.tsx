@@ -338,6 +338,9 @@ export function ProjectPage({
    * this one's filters first.
    */
   const [filtersFor, setFiltersFor] = React.useState(project.id);
+  // The page this render works with: 0 on the render that resets, so the
+  // clamp below cannot queue the OLD project's page after the reset's 0.
+  let pageNow = page;
   if (filtersFor !== project.id) {
     setFiltersFor(project.id);
     setSelection({ preset: 'open' });
@@ -345,6 +348,7 @@ export function ProjectPage({
     setQueryRaw('');
     setPage(0);
     setMenu(null);
+    pageNow = 0;
   }
 
   const finished = React.useMemo(() => finishedStates(flow), [flow]);
@@ -396,10 +400,10 @@ export function ProjectPage({
    * page you are on, and the answer is its new last page, not an empty one.
    */
   const lastPage = Math.max(0, Math.ceil(shown.length / PAGE_SIZE) - 1);
-  const currentPage = Math.min(page, lastPage);
+  const currentPage = Math.min(pageNow, lastPage);
   // And KEPT clamped: left at the old number, the page jumped back the moment
   // cards arrived again - a move nobody made.
-  if (page > lastPage) setPage(lastPage);
+  if (pageNow > lastPage) setPage(lastPage);
   const pageCards = shown.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
   const pageIds = React.useMemo(() => new Set(pageCards.map(c => c.id)), [pageCards]);
 
