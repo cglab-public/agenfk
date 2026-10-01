@@ -14,8 +14,9 @@ export const sidebarButtonClass =
  *
  * Labelling convention: the icon and the accessible name both describe the
  * DESTINATION mode ("Switch to dark mode" while currently light), which is
- * what users expect from a one-shot toggle. `aria-pressed` carries the actual
- * current state for assistive tech.
+ * what users expect from a one-shot toggle, and the name contains the visible
+ * "Dark"/"Light". No aria-pressed: "Switch to light mode, pressed" would give
+ * two answers to one question.
  */
 export function ThemeToggle() {
   const { theme, toggleTheme } = useTheme();
@@ -29,7 +30,6 @@ export function ThemeToggle() {
       onClick={toggleTheme}
       title={label}
       aria-label={label}
-      aria-pressed={isDark}
       className={`${sidebarButtonClass} hover:bg-accent-fill hover:border-accent hover:text-accent-ink`}
     >
       {isDark ? <Sun className="w-3 h-3" /> : <Moon className="w-3 h-3" />}

@@ -472,12 +472,16 @@ export function AdminUsers() {
             invite.mutate(body);
           }}
         >
-          <Field label="Auth method" className="sm:col-span-12">
-            <div className="inline-flex p-1 rounded-lg border border-border-soft bg-canvas">
+          {/* Not a Field: a <label> around buttons names the first one and
+              presses it when the caption is clicked. */}
+          <div className="block sm:col-span-12">
+            <span id="invite-auth-method" className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">Auth method</span>
+            <div role="group" aria-labelledby="invite-auth-method" className="mt-1.5 inline-flex p-1 rounded-lg border border-border-soft bg-canvas">
               {(['password', 'sso'] as const).map(m => (
                 <button
                   key={m}
                   type="button"
+                  aria-pressed={draft.authMethod === m}
                   onClick={() => setDraft({ ...draft, authMethod: m, password: m === 'sso' ? '' : draft.password })}
                   className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${draft.authMethod === m ? 'bg-surface text-accent-ink shadow-sm' : 'text-ink-tertiary hover:text-ink'}`}
                 >
@@ -485,7 +489,7 @@ export function AdminUsers() {
                 </button>
               ))}
             </div>
-          </Field>
+          </div>
           <Field label="Email" error={shownErrors.email} errorId="invite-email-error" className={draft.authMethod === 'password' ? 'sm:col-span-5' : 'sm:col-span-9'}>
             <input className={inputCls} placeholder="alice@acme.com" value={draft.email}
               aria-invalid={!!shownErrors.email} aria-describedby={shownErrors.email ? 'invite-email-error' : undefined}

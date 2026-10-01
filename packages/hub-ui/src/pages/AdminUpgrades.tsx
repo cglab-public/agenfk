@@ -321,8 +321,8 @@ export function AdminUpgrades() {
             )}
           </div>
           <div>
-            <label className="block text-[11px] font-medium text-ink-secondary mb-1">Scope</label>
-            <div className="flex gap-2">
+            <span id="upgrade-scope-label" className="block text-[11px] font-medium text-ink-secondary mb-1">Scope</span>
+            <div role="group" aria-labelledby="upgrade-scope-label" className="flex gap-2">
               <button
                 type="button"
                 aria-pressed={scopeMode === 'all'}
@@ -788,6 +788,7 @@ function GroupUpgradeIssue({
         onToggle={toggle}
         onClose={reset}
         testIdPrefix="group-upgrade"
+        groupLabel="Upgrade child hubs"
       />
       <label className="flex items-center gap-2 text-xs text-ink-secondary">
         <input

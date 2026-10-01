@@ -381,31 +381,17 @@ export function AdminFlows() {
             : tabLabels.registry,
         }}
         registryToolbar={showSourcePicker ? (
-          <div className="flex items-center gap-1.5" data-testid="registry-source-picker">
-            {registrySourceOptions({
+          <RegistrySourcePicker
+            options={registrySourceOptions({
               isPublic: registryCfg?.isPublic ?? null,
               repo: registryCfg?.repo ?? null,
-            }).map((opt) => (
-              <button
-                key={opt.value}
-                type="button"
-                data-testid={`registry-source-${opt.value}`}
-                onClick={() => {
-                  setRegistrySource(opt.value);
-                  sourceRef.current = opt.value;
-                }}
-                aria-pressed={registrySource === opt.value}
-                className={clsx(
-                  'px-2 py-0.5 rounded-full text-[11px] border transition-colors',
-                  registrySource === opt.value
-                    ? 'border-accent text-accent-ink bg-accent-fill font-semibold'
-                    : 'border-border-soft text-ink-tertiary hover:text-ink',
-                )}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
+            })}
+            value={registrySource}
+            onChange={(v) => {
+              setRegistrySource(v);
+              sourceRef.current = v;
+            }}
+          />
         ) : undefined}
         theme={theme}
       />
@@ -707,6 +693,7 @@ function DispatchPicker({
         onToggle={toggle}
         onClose={onDone}
         testIdPrefix="flow-dispatch"
+        groupLabel="Dispatch to"
       />
       {error && (
         <p className="text-xs text-status-danger-text" data-testid="flow-dispatch-error">{error}</p>
@@ -1167,5 +1154,34 @@ function RegistryRepoPanel() {
       <InlineError error={save.error} />
       <InlineError error={sync.error} />
     </section>
+  );
+}
+
+/** Which registry the flow editor browses: the org's own repo or the community one. */
+export function RegistrySourcePicker({ options, value, onChange }: {
+  options: Array<{ value: RegistrySource; label: string }>;
+  value: RegistrySource;
+  onChange: (v: RegistrySource) => void;
+}) {
+  return (
+    <div role="group" aria-label="Registry source" className="flex items-center gap-1.5" data-testid="registry-source-picker">
+      {options.map((opt) => (
+        <button
+          key={opt.value}
+          type="button"
+          data-testid={`registry-source-${opt.value}`}
+          onClick={() => onChange(opt.value)}
+          aria-pressed={value === opt.value}
+          className={clsx(
+            'px-2 py-0.5 rounded-full text-[11px] border transition-colors',
+            value === opt.value
+              ? 'border-accent text-accent-ink bg-accent-fill font-semibold'
+              : 'border-border-soft text-ink-tertiary hover:text-ink',
+          )}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
   );
 }

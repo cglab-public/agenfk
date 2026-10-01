@@ -77,7 +77,8 @@ export function MetricsTilesRow({ totals, selectedTypes, onFilterTypes }: {
   const checks = totals.passes + totals.fails;
   const rate = pct === null ? '—' : `${pct}%`;
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+    // Only a row of filters is a group; plain numbers are just numbers.
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-3" {...(onFilterTypes && selectedTypes ? { role: 'group', 'aria-label': 'Filter by event type' } : {})}>
       <StatTile label="Events" value={totals.events} {...filter('events')} />
       <StatTile label="Items closed" value={totals.closed} series={1} {...filter('closed')} />
       <StatTile

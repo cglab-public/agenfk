@@ -182,7 +182,7 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
         <div className="flex items-center gap-2">
           {/* Range picker only shown when not controlled externally (standalone usage) */}
           {rangeProp == null && (
-            <div className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium">
+            <div role="group" aria-label="Period" className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium">
               {RANGES.map(r => (
                 <button
                   key={r.key}
@@ -198,7 +198,7 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
               ))}
             </div>
           )}
-          <div className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium">
+          <div role="group" aria-label="Bucket size" className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium">
             {(['day', 'hour'] as const).map(b => {
               const active = bucket === b;
               const disabled = isToday && b === 'day';
