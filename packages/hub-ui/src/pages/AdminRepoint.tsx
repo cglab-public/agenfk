@@ -11,7 +11,7 @@ import { addressChangeError } from './adminValidation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowRightLeft, AlertTriangle, CheckCircle2, Clock, Ban } from 'lucide-react';
 import { api } from '../api';
-import { cardClass } from '../components/ui';
+import { cardClass, useConfirm } from '../components/ui';
 import {
   classifyTarget,
   sortTargets,
@@ -54,6 +54,7 @@ function ClassIcon({ cls }: { cls: TargetClass }) {
 }
 
 export function AdminRepoint() {
+  const { confirm, dialog } = useConfirm();
   const qc = useQueryClient();
   const [targetUrl, setTargetUrl] = useState('');
 
@@ -91,6 +92,7 @@ export function AdminRepoint() {
 
   return (
     <div className="space-y-6">
+      {dialog}
       <section className={cardCls}>
         <header>
           <h3 className="text-sm font-semibold text-ink inline-flex items-center gap-1.5">
@@ -115,7 +117,15 @@ export function AdminRepoint() {
               className="flex-1 rounded-lg border border-border-soft bg-surface px-3 py-2 text-sm text-ink"
             />
             <button
-              onClick={() => open.mutate()}
+              onClick={async () => {
+                if (await confirm({
+                  title: `Move this hub to ${targetUrl.trim()}?`,
+                  body: 'Every installation will be told to switch to the new address once it can reach it there. '
+                    + 'Keep serving both addresses until the board says every installation has moved.',
+                  confirmLabel: 'Start the address change',
+                  tone: 'default',
+                })) open.mutate();
+              }}
               disabled={!targetUrl.trim() || !!urlProblem || open.isPending}
               className="rounded-lg border border-accent bg-accent-fill px-3 py-2 text-xs font-semibold text-accent-ink disabled:opacity-50"
             >
@@ -138,7 +148,14 @@ export function AdminRepoint() {
                 <div className="font-mono text-sm text-ink">{campaign.targetUrl}</div>
               </div>
               <button
-                onClick={() => close.mutate(campaign.id)}
+                onClick={async () => {
+                  if (await confirm({
+                    title: 'End the address change?',
+                    body: `Installations that have not moved to ${campaign.targetUrl} yet stay on the old address `
+                      + 'and stop being asked to move. Only end it once every installation has moved, or the rest are retired.',
+                    confirmLabel: 'End the address change',
+                  })) close.mutate(campaign.id);
+                }}
                 disabled={close.isPending}
                 className="text-[11px] font-semibold text-ink-tertiary hover:text-ink"
               >

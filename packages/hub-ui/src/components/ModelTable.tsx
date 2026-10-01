@@ -24,7 +24,7 @@ import {
   type UnifiedRow,
 } from '../pages/adminModelsUnified';
 import type { ModelGroup } from '../pages/modelMappings';
-import { cardClass, cn, controlClass } from './ui';
+import { cardClass, cn, controlClass, useConfirm } from './ui';
 
 const cardCls = cardClass;
 const inputCls = cn(controlClass, 'px-2 py-1 rounded-md text-[12px]');
@@ -56,6 +56,7 @@ interface Draft {
 }
 
 export function ModelTable({ groups, metaRows, loading, onError, invalidate, onUnmap, unmapping, unmappedCount, unusedCount }: Props) {
+  const { confirm, dialog } = useConfirm();
   const [query, setQuery] = useState('');
   const [scope, setScope] = useState<'observed' | 'all'>('observed');
   const [editing, setEditing] = useState<string | null>(null);
@@ -139,6 +140,7 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
 
   return (
     <section className={cardCls}>
+      {dialog}
       <header className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h3 className="text-sm font-semibold text-ink">
@@ -245,10 +247,12 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
                   onSave={() => commit(row)}
                   onUnmap={onUnmap}
                   unmapping={unmapping}
-                  onDelete={() => {
-                    if (window.confirm(`Delete the classification for "${row.canonicalModel}"? It will show as unknown until re-added.`)) {
-                      remove.mutate(row.meta?.matchedKey ?? row.canonicalModel);
-                    }
+                  onDelete={async () => {
+                    if (await confirm({
+                      title: `Delete the classification for "${row.canonicalModel}"?`,
+                      body: 'It will show as an unknown model until it is classified again.',
+                      confirmLabel: 'Delete classification',
+                    })) remove.mutate(row.meta?.matchedKey ?? row.canonicalModel);
                   }}
                 />
               ))}

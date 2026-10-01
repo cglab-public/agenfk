@@ -802,6 +802,21 @@ describe('PG parity: hub endpoint lifecycle (CGLAB-62)', () => {
     expect(rows[0].canonical_key).toBe('new@acme.com');
   });
 
+  it('refuses an out-of-order revert and leaves the merge unreverted', async () => {
+    await fx.db.run(
+      `INSERT INTO events (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, payload)
+       VALUES ('lifo1', 'org', 'inst-pg', 'a', '2026-02-01T09:00:00Z', '2026-02-01T09:00:00Z', 'item.created', '{}')`,
+    );
+    const post = (path: string, body?: unknown) => supertest(fx.app).post(path).set('Cookie', fx.cookie).send(body ?? {});
+    const first = await post('/v1/admin/user-keys/merge', { from: 'a', to: 'b@acme.com' });
+    const second = await post('/v1/admin/user-keys/merge', { from: 'b@acme.com', to: 'c@acme.com' });
+    expect((await post(`/v1/admin/user-keys/merges/${first.body.mergeId}/revert`)).status).toBe(409);
+    const row = await fx.db.get<any>('SELECT reverted_at FROM user_key_merges WHERE id = ?', [first.body.mergeId]);
+    expect(row.reverted_at).toBeNull();
+    // The successful revert itself is SQLite-tested only (admin-merge-revert):
+    // its UPDATE uses a correlated subquery that pg-mem cannot execute.
+  });
+
   it('merge moves events, sums same-day rollups and repairs history', async () => {
     const ev = (id: string, key: string, day: string) => fx.db.run(
       `INSERT INTO events (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, payload)

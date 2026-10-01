@@ -8,7 +8,7 @@ import {
 } from './modelMappings';
 import { ModelMetaRow } from './adminModelMeta';
 import { ModelTable } from '../components/ModelTable';
-import { buttonClass, cardClass, controlClass } from '../components/ui';
+import { buttonClass, cardClass, controlClass, useConfirm } from '../components/ui';
 
 const inputCls = controlClass;
 const cardCls = cardClass;
@@ -30,6 +30,7 @@ interface ModelsResponse {
  * mapping puts the dashboard back the way it was.
  */
 export function AdminModels() {
+  const { confirm, dialog } = useConfirm();
   const qc = useQueryClient();
   const [alias, setAlias] = useState('');
   const [canonical, setCanonical] = useState('');
@@ -82,6 +83,7 @@ export function AdminModels() {
 
   return (
     <div className="space-y-6">
+      {dialog}
       <section className={cardCls}>
         <header>
           <h3 className="text-sm font-semibold text-ink">Add a mapping</h3>
@@ -152,10 +154,12 @@ export function AdminModels() {
         loading={data.isLoading}
         onError={setError}
         invalidate={invalidate}
-        onUnmap={(alias) => {
-          if (window.confirm(`Stop mapping "${alias}"? Dashboards will show it as its own model again.`)) {
-            remove.mutate(alias);
-          }
+        onUnmap={async (alias) => {
+          if (await confirm({
+            title: `Stop mapping "${alias}"?`,
+            body: 'Dashboards will show it as its own model again.',
+            confirmLabel: 'Stop mapping',
+          })) remove.mutate(alias);
         }}
         unmapping={remove.isPending}
         unmappedCount={unmappedCount}

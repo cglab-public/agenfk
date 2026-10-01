@@ -8,7 +8,7 @@ import { canDeleteUserRow } from './canDeleteUserRow';
 import { hideTargetKey, partitionHiddenRows, canHideRow } from './hiddenPeople';
 import { canRetireRow, canUnretireRow, countRetired, retireConfirmMessage } from './retiredInstallations';
 import { isAttributedByUsername, attributionWarning, countAttributedByUsername } from './attributionWarning';
-import { Page, Toggle, RowMenu, CopyButton, Badge, LocalTime, QueryError, buttonClass, cardClass, controlClass } from '../components/ui';
+import { Page, Toggle, RowMenu, CopyButton, Badge, LocalTime, QueryError, buttonClass, cardClass, controlClass, useConfirm } from '../components/ui';
 import { inviteErrors } from './adminValidation';
 import { providerStatus, ProviderRequirement, noWorkingSignInMethod, googleRequires, entraRequires } from './signInProviderStatus';
 import { userAccessLock, isLastActiveAdmin } from './userAccessLock';
@@ -219,6 +219,7 @@ interface KeyRow {
 
 export function AdminKeys() {
   const qc = useQueryClient();
+  const { confirm, dialog } = useConfirm();
   const keys = useQuery<KeyRow[]>({ queryKey: ['api-keys'], queryFn: async () => (await api.get('/v1/admin/api-keys')).data });
   const create = useMutation({
     mutationFn: (label: string) => api.post('/v1/admin/api-keys', { label }),
@@ -247,6 +248,7 @@ export function AdminKeys() {
 
   return (
     <div className="space-y-6">
+      {dialog}
       <section className={`${cardCls} max-w-2xl`}>
         <header className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-xl bg-accent-fill text-accent-ink flex items-center justify-center">
@@ -370,7 +372,13 @@ export function AdminKeys() {
                   </td>
                   <td className="px-5 py-2.5 text-right">
                     {!k.revokedAt && (
-                      <button onClick={() => revoke.mutate(k.tokenHashPreview)}
+                      <button onClick={async () => {
+                                if (await confirm({
+                                  title: `Revoke the key ${k.label ?? k.tokenHashPreview}?`,
+                                  body: 'Any machine using it stops reporting to the hub at once, and the key cannot be restored: the machine has to join again for a new one.',
+                                  confirmLabel: 'Revoke key',
+                                })) revoke.mutate(k.tokenHashPreview);
+                              }}
                               className="inline-flex items-center gap-1 text-xs font-semibold text-ink-tertiary hover:text-status-danger-text">
                         <Trash2 className="w-3 h-3" /> Revoke
                       </button>
@@ -406,6 +414,7 @@ const PROVIDER_BADGE: Record<string, string> = {
 
 export function AdminUsers() {
   const qc = useQueryClient();
+  const { confirm, dialog } = useConfirm();
   const users = useQuery<UserRow[]>({ queryKey: ['admin-users'], queryFn: async () => (await api.get('/v1/admin/users')).data });
   const me = useQuery<{ userId: string }>({ queryKey: ['auth-me'], queryFn: async () => (await api.get('/auth/me')).data });
   const invite = useMutation({
@@ -429,6 +438,7 @@ export function AdminUsers() {
 
   return (
     <div className="space-y-6">
+      {dialog}
       <section className={`${cardCls} max-w-2xl`}>
         <header>
           <h3 className="text-sm font-semibold text-ink">Invite user</h3>
@@ -546,10 +556,12 @@ export function AdminUsers() {
                   <td className="px-5 py-2.5 text-right">
                     {canDeleteUserRow(u.id, me.data?.userId) && !isLastActiveAdmin(u, users.data ?? []) && (
                       <button
-                        onClick={() => {
-                          if (window.confirm(`Permanently delete ${u.email}? This cannot be undone.`)) {
-                            remove.mutate(u.id);
-                          }
+                        onClick={async () => {
+                          if (await confirm({
+                            title: `Delete ${u.email}?`,
+                            body: 'They can no longer sign in, and the account cannot be undone or restored. Their history on the dashboards stays.',
+                            confirmLabel: 'Delete user',
+                          })) remove.mutate(u.id);
                         }}
                         disabled={remove.isPending}
                         title="Delete user"
@@ -608,6 +620,7 @@ interface HiddenPersonRow {
 const personLabel = (r: InstallationRow): string => r.gitName ?? r.osUser ?? r.gitEmail ?? r.id.slice(0, 8);
 
 export function AdminInstallations() {
+  const { confirm, dialog } = useConfirm();
   const qc = useQueryClient();
   // CGLAB-31: hidden people are excluded server-side by default; the toggle
   // re-fetches with ?includeHidden=1 and flags them inline.
@@ -662,6 +675,7 @@ export function AdminInstallations() {
 
   return (
     <div className="space-y-6">
+      {dialog}
       <section className={cardCls}>
         <header className="flex items-center justify-between">
           <div>
@@ -770,19 +784,23 @@ export function AdminInstallations() {
                         ...(canHideRow(r) ? [{
                           label: `Hide ${personLabel(r)}`,
                           disabled: hide.isPending,
-                          onSelect: () => {
+                          onSelect: async () => {
                             const key = hideTargetKey(r);
                             if (!key) return;
-                            if (confirm(`Hide ${key}? Their installations disappear from pickers, their API keys are revoked, and new events are dropped. Historical data stays visible. This is reversible.`)) {
-                              hide.mutate(key);
-                            }
+                            if (await confirm({
+                              title: `Hide ${key}?`,
+                              body: 'Their installations disappear from pickers, their API keys are revoked, and new events are dropped. Historical data stays visible. You can unhide them later, but the keys stay revoked: their machines must join again.',
+                              confirmLabel: 'Hide',
+                            })) hide.mutate(key);
                           },
                         }] : []),
                         ...(canRetireRow(r) ? [{
                           label: `Retire ${personLabel(r)}'s installation`,
                           tone: 'danger' as const,
                           disabled: retire.isPending,
-                          onSelect: () => { if (confirm(retireConfirmMessage(r.id))) retire.mutate(r.id); },
+                          onSelect: async () => {
+                            if (await confirm({ title: `Retire ${personLabel(r)}'s installation?`, body: retireConfirmMessage(r.id), confirmLabel: 'Retire installation' })) retire.mutate(r.id);
+                          },
                         }] : []),
                         ...(canUnretireRow(r) ? [{
                           label: `Restore ${personLabel(r)}'s installation`,

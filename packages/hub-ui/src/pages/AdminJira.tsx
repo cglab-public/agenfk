@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
 import { apiErrorText } from '../apiError';
-import { buttonClass, cardClass, controlClass, CopyButton, QueryError } from '../components/ui';
+import { buttonClass, cardClass, controlClass, CopyButton, QueryError, useConfirm } from '../components/ui';
 
 /**
  * Admin → JIRA (CGLAB-412). The admin registers the org's Atlassian OAuth app
@@ -25,6 +25,7 @@ const primaryBtnCls = buttonClass('primary');
 const dangerBtnCls = buttonClass('danger');
 
 export function AdminJira() {
+  const { confirm, dialog } = useConfirm();
   const qc = useQueryClient();
   const cfg = useQuery<JiraAdminView>({
     queryKey: ['jira-config'],
@@ -32,6 +33,7 @@ export function AdminJira() {
   });
   const [clientId, setClientId] = useState<string | null>(null);
   const [clientSecret, setClientSecret] = useState('');
+  const [formError, setFormError] = useState<string | null>(null);
 
   const onSaved = (data: JiraAdminView) => {
     qc.setQueryData(['jira-config'], data);
@@ -55,6 +57,7 @@ export function AdminJira() {
 
   return (
     <div className="space-y-4 max-w-2xl">
+      {dialog}
       {cfg.isError && <QueryError error={cfg.error} onRetry={() => cfg.refetch()} />}
       <section className={cardCls}>
         <h3 className="text-sm font-semibold text-ink">Connections</h3>
@@ -73,10 +76,12 @@ export function AdminJira() {
               type="button"
               className={dangerBtnCls}
               disabled={disconnectAll.isPending || c.connectedCount === 0}
-              onClick={() => {
-                if (window.confirm('Disconnect JIRA for every installation in this organization? Each person will have to connect again.')) {
-                  disconnectAll.mutate();
-                }
+              onClick={async () => {
+                if (await confirm({
+                  title: 'Disconnect JIRA for everyone?',
+                  body: `All ${c.connectedCount} connected board${c.connectedCount === 1 ? '' : 's'} lose their JIRA access. Each person will have to connect again.`,
+                  confirmLabel: 'Disconnect everyone',
+                })) disconnectAll.mutate();
               }}
             >
               Disconnect everyone
@@ -88,10 +93,25 @@ export function AdminJira() {
 
       <form
         className={cardCls}
-        onSubmit={(e) => {
+        onSubmit={async (e) => {
           e.preventDefault();
           const body: { clientId: string; clientSecret?: string } = { clientId: idValue.trim() };
           if (clientSecret) body.clientSecret = clientSecret;
+          // A new client ID is a different Atlassian app: every existing JIRA
+          // token belongs to the old one, so everyone is disconnected.
+          const replacesApp = !!c.clientId && body.clientId !== c.clientId;
+          // The hub refuses a new app without its secret; say so before asking
+          // the admin to confirm a save that cannot succeed.
+          if (replacesApp && !clientSecret) {
+            setFormError('A new client ID needs its client secret: paste the new app\'s secret too.');
+            return;
+          }
+          setFormError(null);
+          if (replacesApp && !(await confirm({
+            title: 'Change the JIRA client ID?',
+            body: `This points the hub at a different Atlassian app. Everyone connected through the current one (${c.connectedCount}) is disconnected and has to connect again.`,
+            confirmLabel: 'Change client ID',
+          }))) return;
           save.mutate(body);
         }}
       >
@@ -125,6 +145,7 @@ export function AdminJira() {
           </label>
         </div>
         <p className="mt-3 text-xs text-ink-tertiary">Changing the client ID disconnects everyone: their tokens belong to the old app.</p>
+        {formError && <p role="alert" className="mt-2 text-xs text-status-danger-text">{formError}</p>}
         <div className="mt-4 flex items-center gap-3">
           <button type="submit" disabled={save.isPending} className={primaryBtnCls}>
             {save.isPending ? 'Saving…' : 'Save'}

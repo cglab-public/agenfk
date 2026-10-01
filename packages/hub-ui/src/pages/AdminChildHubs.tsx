@@ -9,13 +9,13 @@
  * credential is revoked, so a child hub comes back only by enrolling again
  * with a fresh invite.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Network, Clock, AlertTriangle } from 'lucide-react';
 import { api } from '../api';
 import { apiErrorText as errText } from '../apiError';
 import { fmtDateTime } from '../dates';
-import { cardClass, CopyButton } from '../components/ui';
+import { cardClass, CopyButton, ConfirmDialog } from '../components/ui';
 
 const cardCls = cardClass;
 
@@ -55,71 +55,6 @@ interface Invite {
 // UTC formatter here would have admins in other zones misjudging staleness.
 const fmt = (iso: string | null) => (iso ? fmtDateTime(iso) : '—');
 
-
-/**
- * Detach confirmation. A real dialog rather than a panel appended below the
- * table: this revokes a credential, and on a long roster a panel off the bottom
- * of the page reads as "nothing happened" — which invites a second click at the
- * one control where a double-fire is least welcome. Focus moves in, Escape and
- * the backdrop cancel, and focus returns to whatever opened it.
- */
-function DetachDialog(props: {
-  name: string; pending: boolean; error: string | null; releaseRequested?: boolean;
-  onConfirm: () => void; onCancel: () => void;
-}) {
-  const confirmRef = useRef<HTMLButtonElement>(null);
-  const openerRef = useRef<Element | null>(null);
-
-  useEffect(() => {
-    openerRef.current = document.activeElement;
-    confirmRef.current?.focus();
-    return () => { (openerRef.current as HTMLElement | null)?.focus?.(); };
-  }, []);
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-      onClick={e => { if (e.target === e.currentTarget) props.onCancel(); }}
-      onKeyDown={e => { if (e.key === 'Escape') props.onCancel(); }}
-    >
-      <div role="dialog" aria-modal="true" aria-label={`Detach ${props.name}`} className={`${cardCls} max-w-md`}>
-        <h3 className="text-sm font-semibold text-ink inline-flex items-center gap-1.5">
-          <AlertTriangle className="w-4 h-4 text-status-warn-text" /> Detach “{props.name}”?
-        </h3>
-        <p className="mt-2 text-xs text-ink-tertiary">
-          This revokes its credential immediately and stops all dispatch to it. Nothing it already
-          sent is deleted. It can only rejoin with a new join token.
-        </p>
-        {props.releaseRequested && (
-          <p className="mt-2 text-xs text-ink-tertiary">
-            This hub has asked to be released, so detaching it is how you agree.
-          </p>
-        )}
-        {props.error && (
-          <p role="alert" className="mt-2 text-xs text-status-danger-text">{props.error}</p>
-        )}
-        <div className="mt-3 flex items-center gap-2">
-          <button
-            ref={confirmRef}
-            type="button"
-            onClick={props.onConfirm}
-            disabled={props.pending}
-            className="rounded-lg border border-status-danger-text/40 px-3 py-1.5 text-xs font-medium text-status-danger-text hover:bg-status-danger-bg disabled:opacity-50"
-          >
-            Yes, detach
-          </button>
-          <button
-            type="button"
-            onClick={props.onCancel}
-            className="rounded-lg px-3 py-1.5 text-xs text-ink-tertiary hover:bg-accent-fill"
-          >
-            Cancel
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 export function AdminChildHubs() {
   const qc = useQueryClient();
@@ -330,11 +265,16 @@ export function AdminChildHubs() {
       )}
 
       {detaching && (
-        <DetachDialog
-          name={detaching.name}
+        <ConfirmDialog
+          title={`Detach “${detaching.name}”?`}
+          body={
+            'This revokes its credential immediately and stops all dispatch to it. Nothing it already '
+            + 'sent is deleted. It can only rejoin with a new join token.'
+            + (detaching.releaseRequested ? '\nThis hub has asked to be released, so detaching it is how you agree.' : '')
+          }
+          confirmLabel="Yes, detach"
           pending={detach.isPending}
           error={detach.isError ? errText(detach.error) : null}
-          releaseRequested={!!detaching.releaseRequested}
           onConfirm={() => detach.mutate(detaching.id)}
           onCancel={() => setDetaching(null)}
         />

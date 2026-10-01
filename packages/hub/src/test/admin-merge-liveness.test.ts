@@ -431,8 +431,9 @@ describe('merge liveness and identity aliases (CGLAB-72)', () => {
         .post(`/v1/admin/user-keys/merges/${m1.body.mergeId}/revert`)
         .set('Cookie', cookie).send({});
 
-      expect(rev.body.eventsRestored).toBe(0);
-      expect(rev.body.aliasesRemoved).toBe(0);
+      // Refused outright now (409), before anything is touched: the merge
+      // stays revertable and, as before, its alias stays.
+      expect(rev.status).toBe(409);
       const keys = (await aliases()).map((r: any) => r.alias_key);
       expect(keys).toContain('osuser:dev@aaaaaaaa');
     });

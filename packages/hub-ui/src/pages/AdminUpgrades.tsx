@@ -10,7 +10,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
 import { api } from '../api';
-import { LocalTime } from '../components/ui';
+import { LocalTime, useConfirm } from '../components/ui';
 import { groupUpgradeBody, groupUpgradeRow, groupUpgradesLive, type GroupUpgradeRequest } from './groupUpgradeState';
 import { ChildHubPicker, toggledSet } from './childHubPicker';
 import { NO_CHILD_HUBS_REASON, dispatchRefusalMessage, liveChildHubs, type ChildHubRow, type DispatchScopeMode } from './flowDispatch';
@@ -73,6 +73,7 @@ interface GroupDispatch {
 }
 
 export function AdminUpgrades() {
+  const { confirm, dialog } = useConfirm();
   const qc = useQueryClient();
   const [showForm, setShowForm] = useState(false);
   const [targetVersion, setTargetVersion] = useState('');
@@ -135,22 +136,27 @@ export function AdminUpgrades() {
     },
   });
 
-  const onCancel = (d: Directive) => {
+  const onCancel = async (d: Directive) => {
     const { pending, in_progress } = d.progress;
     if (pending > 0) {
-      if (!confirm(`Cancel ${pending} waiting upgrade${pending === 1 ? '' : 's'} for v${d.targetVersion}? Installations already running or finished will not be affected.`)) return;
+      if (!(await confirm({
+        title: `Cancel ${pending} waiting upgrade${pending === 1 ? '' : 's'} for v${d.targetVersion}?`,
+        body: 'Installations already running or finished will not be affected.',
+        confirmLabel: 'Cancel waiting',
+      }))) return;
     }
     let force = false;
     if (in_progress > 0) {
       // Distinct, explicit opt-in: a running target may be a genuinely live
       // flight — but it may also be a dead agent wedging the installation
       // (new directives are refused while it stays in_progress).
-      force = confirm(
-        `⚠️ ${in_progress} installation${in_progress === 1 ? ' is' : 's are'} still running this upgrade. ` +
-        `Mark ${in_progress === 1 ? 'it' : 'them'} as cancelled${pending > 0 ? ' too' : ''}?\n\n` +
-        `Only do this when the upgrade is stuck (agent died or never reported back). ` +
-        `A genuinely running upgrade cannot be recalled — cancelling it just clears its status here.`
-      );
+      force = await confirm({
+        title: `${in_progress} installation${in_progress === 1 ? ' is' : 's are'} still running this upgrade. `
+          + `Mark ${in_progress === 1 ? 'it' : 'them'} as cancelled${pending > 0 ? ' too' : ''}?`,
+        body: 'Only do this when the upgrade is stuck (agent died or never reported back). '
+          + 'A genuinely running upgrade cannot be recalled — cancelling it just clears its status here.',
+        confirmLabel: 'Mark as cancelled',
+      });
       if (pending === 0 && !force) return; // nothing else to do
     }
     cancelMut.mutate({ directiveId: d.directiveId, force });
@@ -170,23 +176,24 @@ export function AdminUpgrades() {
       setError(null);
       qc.invalidateQueries({ queryKey: ['admin-upgrade'] });
     },
-    onError: (e: any) => {
+    // `sent` is the body that failed, passed in by react-query: reading
+    // issueMut.variables here would read a closure from before the dialog.
+    onError: async (e: any, sent) => {
       const status = e?.response?.status;
       const data = e?.response?.data;
       if (status === 409 && Array.isArray(data?.downgrades) && data.downgrades.length > 0) {
         // Story 5: distinct red confirm for downgrades.
         const keys = apiKeysQ.data ?? [];
         const lines = data.downgrades.map((d: any) =>
-          `  • ${installationDisplayName(keys, d.installationId)}: v${d.currentVersion} → v${d.targetVersion}`
+          `• ${installationDisplayName(keys, d.installationId)}: v${d.currentVersion} → v${d.targetVersion}`
         ).join('\n');
-        const ok = confirm(
-          `⚠️ This is a DOWNGRADE for the following installations:\n\n${lines}\n\nProceed anyway?`
-        );
-        if (ok) {
-          // Re-submit with the confirmation flag.
-          const lastBody = (issueMut.variables as any) ?? null;
-          if (lastBody) issueMut.mutate({ ...lastBody, confirmDowngrade: true });
-        }
+        const ok = await confirm({
+          title: 'This is a DOWNGRADE. Proceed anyway?',
+          body: `These installations would go back to an older version:\n${lines}`,
+          confirmLabel: 'Downgrade',
+        });
+        // Re-submit with the confirmation flag.
+        if (ok) issueMut.mutate({ ...sent, confirmDowngrade: true });
         return;
       }
       if (status === 409 && Array.isArray(data?.conflicts) && data.conflicts.length > 0) {
@@ -206,7 +213,7 @@ export function AdminUpgrades() {
   const versionsLoading = availableVersionsQ.isPending;
   const canIssue = canIssueDirective({ targetVersion, versions: availableVersions, loading: versionsLoading });
 
-  const onSubmit = () => {
+  const onSubmit = async () => {
     setError(null);
     const ids = Array.from(selectedInstallationIds);
     let scope: { type: 'all' | 'installation' | 'installations'; installationId?: string; installationIds?: string[] };
@@ -224,7 +231,12 @@ export function AdminUpgrades() {
         : { type: 'installations', installationIds: ids };
     }
     const targetCount = scope.type === 'all' ? installationOptions.length : ids.length || 1;
-    if (!confirm(`This will upgrade ${targetCount} installation${targetCount === 1 ? '' : 's'} to v${targetVersion}. Continue?`)) return;
+    if (!(await confirm({
+      title: `Upgrade ${targetCount} installation${targetCount === 1 ? '' : 's'} to v${targetVersion}?`,
+      body: 'Each one installs the new version the next time it checks in.',
+      confirmLabel: 'Issue upgrade',
+      tone: 'default',
+    }))) return;
     issueMut.mutate({ targetVersion, scope });
   };
 
@@ -249,6 +261,7 @@ export function AdminUpgrades() {
 
   return (
     <div className="space-y-4">
+      {dialog}
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold text-ink">Fleet upgrades</h3>
         {!showForm && (
@@ -485,6 +498,7 @@ export function AdminUpgrades() {
  * is not shown a control it can never use.
  */
 export function GroupUpgrades() {
+  const { confirm, dialog } = useConfirm();
   const qc = useQueryClient();
   const [error, setError] = useState<string | null>(null);
 
@@ -555,6 +569,7 @@ export function GroupUpgrades() {
 
   return (
     <div className="mt-8" data-testid="group-upgrades">
+      {dialog}
       <div className="flex items-center justify-between mb-2">
         <h2 className="text-sm font-semibold text-ink">Group upgrades (child hubs)</h2>
         {!issuing && (
@@ -616,7 +631,13 @@ export function GroupUpgrades() {
               <span className="flex-1" />
               {!d.cancelledAt && (
                 <button
-                  onClick={() => cancelMut.mutate(d.id)}
+                  onClick={async () => {
+                    if (await confirm({
+                      title: `Cancel the group upgrade to v${d.targetVersion}?`,
+                      body: 'Child hubs that have not picked it up yet will not. Installations already upgraded stay on the new version.',
+                      confirmLabel: 'Cancel group upgrade',
+                    })) cancelMut.mutate(d.id);
+                  }}
                   // Scoped to THIS dispatch: one shared isPending greyed out
                   // every other Cancel button on the board.
                   disabled={cancelMut.isPending && cancelMut.variables === d.id}
@@ -692,6 +713,7 @@ function GroupUpgradeIssue({
   onClose: () => void;
   onIssued: () => void;
 }) {
+  const { confirm, dialog } = useConfirm();
   const [targetVersion, setTargetVersion] = useState('');
   const [mode, setMode] = useState<DispatchScopeMode>('all');
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -724,14 +746,24 @@ function GroupUpgradeIssue({
 
   const toggle = (id: string) => setSelected(prev => toggledSet(prev, id));
 
-  const submit = () => {
+  const submit = async () => {
     const r = groupUpgradeBody(targetVersion, mode, selected, confirmDowngrade);
     if (!r.ok) { setError(r.error); return; }
+    const n = r.body.childHubIds?.length ?? 0;
+    const who = r.body.scope === 'all' ? 'every child hub' : `${n} child hub${n === 1 ? '' : 's'}`;
+    if (!(await confirm({
+      title: `Upgrade ${who} to v${r.body.targetVersion}?`,
+      body: 'Each child hub passes the upgrade on to its own installations.'
+        + (r.body.confirmDowngrade ? ' Installations already ahead of this version are skipped and reported.' : ''),
+      confirmLabel: 'Send upgrade',
+      tone: 'default',
+    }))) return;
     issue.mutate(r.body);
   };
 
   return (
     <div className="w-full rounded-lg border border-border-soft bg-surface p-3 space-y-3" data-testid="group-upgrade-form">
+      {dialog}
       <div>
         <label className="block text-[11px] font-medium text-ink-secondary mb-1" htmlFor="group-upgrade-version">Target version</label>
         <select

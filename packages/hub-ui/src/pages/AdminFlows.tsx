@@ -17,7 +17,7 @@ import { Plus, Pencil, Trash2, X, ChevronDown, ChevronRight, Send } from 'lucide
 import { ChildHubPicker, toggledSet } from './childHubPicker';
 import { FlowEditorModal, type FlowClient, type RegistryClient, type Flow } from '@agenfk/flow-editor';
 import { api } from '../api';
-import { QueryError } from '../components/ui';
+import { QueryError, useConfirm } from '../components/ui';
 import { RegistryPullsPanel } from './RegistryPullsPanel';
 import { flattenAdminFlow } from './adminFlowShape';
 import { repoOverrideOptions } from './repoOverrideOptions';
@@ -423,6 +423,7 @@ function AssignmentsPanel({
   childHubs: ChildHubRow[];
   onEdit: () => void;
 }) {
+  const { confirm, dialog } = useConfirm();
   const qc = useQueryClient();
   const [adding, setAdding] = useState<'repo' | 'installation' | null>(null);
 
@@ -467,8 +468,19 @@ function AssignmentsPanel({
   // this deliberately gates Edit alone. See parentFlowLock.
   const lock = parentFlowLock(flow.source);
 
+  /** Take an override off after the admin has seen who it moves. */
+  const confirmRemove = async (scope: 'repo' | 'installation', row: Assignment | undefined, targetId: string) => {
+    const what = scope === 'repo' ? `the repo ${row?.remoteUrl ?? targetId}` : `the installation ${targetId}`;
+    if (await confirm({
+      title: `Remove the override for ${what}?`,
+      body: `It stops being assigned "${flow.name}" by this override. From its next sync it follows the next assignment in line (installation, repo, project), else the org default; with none at all, its installations keep the flow they already have.`,
+      confirmLabel: 'Remove override',
+    })) remove.mutate({ scope, targetId });
+  };
+
   return (
     <div className="px-4 pb-4 pt-1 bg-canvas border-t border-border-soft space-y-3">
+      {dialog}
       {lock.locked && (
         <p className="pt-2 text-xs text-ink-tertiary" data-testid="admin-flow-parent-lock">
           {lock.reason}
@@ -506,7 +518,13 @@ function AssignmentsPanel({
         </div>
         {orgRow ? (
           <button
-            onClick={() => remove.mutate({ scope: 'org', targetId: '' })}
+            onClick={async () => {
+              if (await confirm({
+                title: `Stop using "${flow.name}" as the org default?`,
+                body: 'Installations and repos without an override of their own stop being assigned a flow by the hub: they keep the flow they already have until another one is assigned.',
+                confirmLabel: 'Clear org default',
+              })) remove.mutate({ scope: 'org', targetId: '' });
+            }}
             disabled={remove.isPending}
             className="text-[11px] text-status-danger-text hover:underline"
           >
@@ -514,7 +532,14 @@ function AssignmentsPanel({
           </button>
         ) : (
           <button
-            onClick={() => setOrgDefault.mutate()}
+            onClick={async () => {
+              if (await confirm({
+                title: `Make "${flow.name}" the org default?`,
+                body: `Every installation without an assignment of its own (installation, repo or project) will use "${flow.name}" from its next sync, replacing the current org default.`,
+                confirmLabel: 'Set as org default',
+                tone: 'default',
+              })) setOrgDefault.mutate();
+            }}
             disabled={setOrgDefault.isPending}
             className="text-[11px] text-accent-ink font-semibold hover:underline"
             data-testid="admin-flow-set-org-default"
@@ -561,7 +586,7 @@ function AssignmentsPanel({
         label="Repo overrides"
         chipClass="text-ink-secondary"
         rows={assignments.filter(a => a.scope === 'repo')}
-        onRemove={(targetId) => remove.mutate({ scope: 'repo', targetId })}
+        onRemove={(targetId) => confirmRemove('repo', assignments.find(a => a.scope === 'repo' && a.targetId === targetId), targetId)}
         onAdd={() => setAdding('repo')}
       />
 
@@ -571,7 +596,7 @@ function AssignmentsPanel({
         label="Installation overrides"
         chipClass="text-ink-secondary"
         rows={assignments.filter(a => a.scope === 'installation')}
-        onRemove={(targetId) => remove.mutate({ scope: 'installation', targetId })}
+        onRemove={(targetId) => confirmRemove('installation', undefined, targetId)}
         onAdd={() => setAdding('installation')}
       />
 
@@ -705,6 +730,7 @@ function FlowDispatches({
   isParent: boolean;
   hasLiveChildren: boolean;
 }) {
+  const { confirm, dialog } = useConfirm();
   const qc = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const knownFlowIds = useMemo(() => new Set(flows.map(f => f.id)), [flows]);
@@ -765,6 +791,7 @@ function FlowDispatches({
 
   return (
     <section className="space-y-2" data-testid="flow-dispatches">
+      {dialog}
       <h2 className="text-sm font-semibold text-ink">Dispatched to child hubs</h2>
       {error && (
         <p className="text-xs text-status-danger-text" data-testid="flow-dispatches-action-error">{error}</p>
@@ -794,7 +821,13 @@ function FlowDispatches({
               <span className="flex-1" />
               {!d.cancelledAt && (
                 <button
-                  onClick={() => cancel.mutate(d.id)}
+                  onClick={async () => {
+                    if (await confirm({
+                      title: `Cancel the dispatch of ${nameOf(d.flowId)} v${d.flowVersion}?`,
+                      body: 'Child hubs that have not installed it yet will not. Child hubs that already installed it keep it.',
+                      confirmLabel: 'Cancel dispatch',
+                    })) cancel.mutate(d.id);
+                  }}
                   disabled={cancel.isPending && cancel.variables === d.id}
                   className="text-[11px] text-status-danger-text hover:underline"
                   data-testid={`flow-dispatch-cancel-${d.id}`}
@@ -966,6 +999,7 @@ interface RegistryConfig {
 }
 
 function RegistryRepoPanel() {
+  const { confirm, dialog } = useConfirm();
   const qc = useQueryClient();
   const { data: cfg } = useQuery<RegistryConfig>({
     queryKey: ['admin-registry-config'],
@@ -1019,6 +1053,7 @@ function RegistryRepoPanel() {
       className="bg-surface border border-border-soft rounded-2xl p-4 space-y-3"
       data-testid="admin-registry-panel"
     >
+      {dialog}
       <div>
         <h3 className="text-xs font-semibold text-ink uppercase tracking-wide">Flow registry</h3>
         <p className="mt-0.5 text-xs text-ink-tertiary">
@@ -1093,10 +1128,15 @@ function RegistryRepoPanel() {
         <button
           data-testid="admin-registry-save"
           disabled={!!error || save.isPending}
-          onClick={() => {
+          onClick={async () => {
             // Moving back to public is reversible but changes what every
             // installation reads, so it earns an explicit click.
-            if (movingToPublic && !window.confirm(MOVE_BACK_TO_PUBLIC_CONFIRM)) return;
+            if (movingToPublic && !(await confirm({
+              title: 'Move back to the public registry?',
+              body: MOVE_BACK_TO_PUBLIC_CONFIRM,
+              confirmLabel: 'Move to public',
+              tone: 'default',
+            }))) return;
             save.mutate();
           }}
           className="px-3 py-1.5 rounded-lg bg-brand text-navy text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed"

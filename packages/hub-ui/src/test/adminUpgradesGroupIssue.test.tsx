@@ -17,6 +17,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AdminUpgrades } from '../pages/AdminUpgrades';
 import { api } from '../api';
 import { ThemeProvider } from '../ThemeContext';
+import { answerConfirm, letMutationsLand } from './helpers/confirmDialog';
 
 vi.mock('../api', () => ({ api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() } }));
 const get = api.get as unknown as ReturnType<typeof vi.fn>;
@@ -146,6 +147,7 @@ describe('Admin → Upgrades: issuing a group upgrade', () => {
     fireEvent.click(screen.getByTestId('group-upgrade-child-ch-1'));
     fireEvent.click(screen.getByTestId('group-upgrade-scope-all'));
     fireEvent.click(screen.getByTestId('group-upgrade-send'));
+    await answerConfirm(true); // a group upgrade asks first
     await waitFor(() => expect(post).toHaveBeenCalledWith(
       '/v1/admin/upgrade-dispatches', { targetVersion: '1.1.21', scope: 'all' },
     ));
@@ -158,9 +160,20 @@ describe('Admin → Upgrades: issuing a group upgrade', () => {
     fireEvent.click(screen.getByTestId('group-upgrade-scope-selected'));
     fireEvent.click(screen.getByTestId('group-upgrade-child-ch-2'));
     fireEvent.click(screen.getByTestId('group-upgrade-send'));
+    await answerConfirm(true); // a group upgrade asks first
     await waitFor(() => expect(post).toHaveBeenCalledWith(
       '/v1/admin/upgrade-dispatches', { targetVersion: '1.1.20', scope: 'selected', childHubIds: ['ch-2'] },
     ));
+  });
+
+  it('declining the group upgrade sends nothing', async () => {
+    routes();
+    await openForm();
+    pickVersion('1.1.21');
+    fireEvent.click(screen.getByTestId('group-upgrade-send'));
+    expect(await answerConfirm(false)).toMatch(/every child hub/i);
+    await letMutationsLand();
+    expect(post).not.toHaveBeenCalled();
   });
 
   it("'selected' with nothing ticked sends nothing and says why", async () => {
@@ -192,6 +205,7 @@ describe('Admin → Upgrades: issuing a group upgrade', () => {
     expect(label).toHaveTextContent(/skips those machines/i);
     fireEvent.click(screen.getByTestId('group-upgrade-downgrade'));
     fireEvent.click(screen.getByTestId('group-upgrade-send'));
+    await answerConfirm(true); // a group upgrade asks first
     await waitFor(() => expect(post).toHaveBeenCalledWith(
       '/v1/admin/upgrade-dispatches', { targetVersion: '1.1.20', scope: 'all', confirmDowngrade: true },
     ));
@@ -203,6 +217,7 @@ describe('Admin → Upgrades: issuing a group upgrade', () => {
     await openForm();
     pickVersion('1.1.21');
     fireEvent.click(screen.getByTestId('group-upgrade-send'));
+    await answerConfirm(true); // a group upgrade asks first
     expect(await screen.findByTestId('group-upgrade-error')).toHaveTextContent(/not found/i);
   });
 
@@ -214,6 +229,7 @@ describe('Admin → Upgrades: issuing a group upgrade', () => {
     fireEvent.click(screen.getByTestId('group-upgrade-scope-selected'));
     fireEvent.click(screen.getByTestId('group-upgrade-child-ch-2'));
     fireEvent.click(screen.getByTestId('group-upgrade-send'));
+    await answerConfirm(true); // a group upgrade asks first
     const err = await screen.findByTestId('group-upgrade-error');
     expect(err).toHaveTextContent('acme-latam');
     expect(err).not.toHaveTextContent('ch-2');
@@ -228,6 +244,7 @@ describe('Admin → Upgrades: issuing a group upgrade', () => {
     fireEvent.click(screen.getByTestId('group-upgrade-child-ch-2'));
     fireEvent.click(screen.getByTestId('group-upgrade-child-ch-1'));
     fireEvent.click(screen.getByTestId('group-upgrade-send'));
+    await answerConfirm(true); // a group upgrade asks first
     await waitFor(() => expect(post).toHaveBeenCalledWith(
       '/v1/admin/upgrade-dispatches', { targetVersion: '1.1.21', scope: 'selected', childHubIds: ['ch-2'] },
     ));
@@ -249,6 +266,7 @@ describe('Admin → Upgrades: issuing a group upgrade', () => {
     expect(screen.getByTestId('group-upgrade-scope-all').getAttribute('aria-pressed')).toBe('true');
     pickVersion('1.1.21');
     fireEvent.click(screen.getByTestId('group-upgrade-send'));
+    await answerConfirm(true); // a group upgrade asks first
     await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/upgrade-dispatches', { targetVersion: '1.1.21', scope: 'all' }));
   });
 
@@ -280,6 +298,7 @@ describe('Admin → Upgrades: issuing a group upgrade', () => {
     const before = served;
     pickVersion('1.1.21');
     fireEvent.click(screen.getByTestId('group-upgrade-send'));
+    await answerConfirm(true); // a group upgrade asks first
     await waitFor(() => expect(screen.queryByTestId('group-upgrade-send')).toBeNull());
     await waitFor(() => expect(served).toBeGreaterThan(before));
   });

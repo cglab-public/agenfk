@@ -15,6 +15,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AdminInstallations } from '../pages/Admin';
 import { silentDays } from '../pages/installationStaleness';
 import { api } from '../api';
+import { answerConfirm, forbidWindowConfirm } from './helpers/confirmDialog';
 
 vi.mock('../api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn() } }));
 const get = api.get as unknown as ReturnType<typeof vi.fn>;
@@ -53,7 +54,7 @@ beforeEach(() => {
     return { data: [] };
   });
   post.mockResolvedValue({ data: {} });
-  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  forbidWindowConfirm();
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
@@ -113,7 +114,7 @@ describe('Installations table', () => {
     await screen.findByText('Bob Silva');
     fireEvent.click(screen.getByRole('button', { name: 'Actions for Bob Silva' }));
     fireEvent.click(screen.getByRole('menuitem', { name: "Retire Bob Silva's installation" }));
-    expect(window.confirm).toHaveBeenCalled();
+    await answerConfirm(true);
     await waitFor(() => expect(post).toHaveBeenCalledWith(`/v1/admin/installations/${BOB}/retire`));
     expect(screen.queryByRole('menu')).toBeNull();
   });
@@ -133,6 +134,7 @@ describe('Installations table', () => {
     await screen.findByText('Bob Silva');
     fireEvent.click(screen.getByRole('button', { name: 'Actions for Bob Silva' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Hide Bob Silva' }));
+    expect(await answerConfirm(true)).toMatch(/stay revoked.*join again/i);
     await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/hidden-users', { userKey: 'bob@acme.dev' }));
   });
 

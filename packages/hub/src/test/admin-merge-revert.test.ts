@@ -9,7 +9,7 @@
 // reverting an older merge after a newer one touched the same rows must report
 // that it moved nothing rather than silently claiming success.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -200,20 +200,56 @@ describe('reverting an identity merge', () => {
   });
 
   describe('LIFO semantics', () => {
-    it('reports that nothing moved when a newer merge has since claimed the events', async () => {
+    // It used to answer 200 with eventsRestored 0 AND mark the merge reverted,
+    // which used it up: once the newer merge was reverted the events landed
+    // back on this merge's target and could never be moved further.
+    it('refuses to revert out of order, and leaves the merge revertable', async () => {
       await event('e1', 'a');
       const first = await merge('a', 'b');
       const second = await merge('b', 'c');
       expect(await keyOf('e1')).toBe('c');
 
       const r = await revert(first.body.mergeId);
+      expect(r.status).toBe(409);
+      expect(String(r.body.error ?? '')).toMatch(/newer merge/i);
+      expect(await keyOf('e1')).toBe('c');
 
-      // Honest zero rather than a silent success: the rows now belong to the
-      // later merge, and reverting out of order would corrupt the chain.
+      // Newest first, then the refused one goes through.
+      expect((await revert(second.body.mergeId)).status).toBe(200);
+      const again = await revert(first.body.mergeId);
+      expect(again.status).toBe(200);
+      expect(again.body.eventsRestored).toBe(1);
+      expect(await keyOf('e1')).toBe('a');
+    });
+
+    // The check runs before the transaction. A merge landing in between used
+    // to leave this one marked reverted with nothing moved; the transaction
+    // now rolls back instead.
+    it('refuses, and stays revertable, when a newer merge lands between the check and the revert', async () => {
+      await event('e1', 'a');
+      const first = await merge('a', 'b');
+      await merge('b', 'c');
+      const realGet = ctx.db.get.bind(ctx.db);
+      const spy = vi.spyOn(ctx.db, 'get').mockImplementation(async (sql: any, params?: any) => {
+        // The pre-check sees the events still on target, as it would have a moment earlier.
+        if (typeof sql === 'string' && sql.includes('AS on_target')) return { journaled: 1, on_target: 1 };
+        return realGet(sql, params);
+      });
+      try {
+        const r = await revert(first.body.mergeId);
+        expect(r.status).toBe(409);
+      } finally {
+        spy.mockRestore();
+      }
+      const row = await ctx.db.get('SELECT reverted_at FROM user_key_merges WHERE id = ?', [first.body.mergeId]);
+      expect((row as any).reverted_at).toBeNull();
+    });
+
+    it('still reverts a merge that moved no events', async () => {
+      const m = await merge('ghost', 'real@acme.com');
+      const r = await revert(m.body.mergeId);
       expect(r.status).toBe(200);
       expect(r.body.eventsRestored).toBe(0);
-      expect(String(r.body.note ?? '')).toMatch(/newer|later|superseded/i);
-      expect(await keyOf('e1')).toBe('c');
     });
 
     it('unwinds a chain correctly in reverse order', async () => {

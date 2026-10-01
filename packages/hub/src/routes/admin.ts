@@ -766,6 +766,29 @@ export function adminRouter(ctx: HubServerContext): Router {
     if (!record) { res.status(404).json({ error: 'Unknown merge' }); return; }
     if (record.reverted_at) { res.status(409).json({ error: 'This merge has already been reverted' }); return; }
 
+    // Superseded: the merge moved events, and a newer merge has since taken
+    // every one of them onward. Reverting now would move nothing yet mark this
+    // merge reverted, using it up for good. Refuse, and keep it revertable for
+    // when the newer merge has been reverted first. (A merge that moved no
+    // events has nothing to supersede and reverts as before.)
+    const claim = await ctx.db.get<{ journaled: number; on_target: number }>(
+      `SELECT COUNT(*) AS journaled,
+              SUM(CASE WHEN lower(e.user_key) = lower(?) THEN 1 ELSE 0 END) AS on_target
+         FROM user_key_merge_events j
+         JOIN events e ON e.event_id = j.event_id AND e.org_id = ?
+        WHERE j.merge_id = ?`,
+      [record.to_user_key, orgId, id],
+    );
+    const journaled = Number(claim?.journaled ?? 0);
+    const SUPERSEDED = 'A newer merge has since taken these events. Revert the newer merge first; this one stays revertable.';
+    if (journaled > 0 && Number(claim?.on_target ?? 0) === 0) {
+      res.status(409).json({ error: SUPERSEDED });
+      return;
+    }
+    // Thrown inside the transaction when a merge landed after the check above:
+    // rolls the revert back instead of marking it reverted with nothing moved.
+    class Superseded extends Error {}
+
     // Oldest affected day BEFORE the restore, or the range is unrecoverable.
     const span = await ctx.db.get<{ first_day: string | null }>(
       `SELECT MIN(date(e.occurred_at)) AS first_day
@@ -778,6 +801,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     let eventsRestored = 0;
     let aliasesRemoved = 0;
     let aliasesRestored = 0;
+    try {
     await ctx.db.transaction(async () => {
       // Only rows still sitting on this merge's target are ours to move: if a
       // later merge took them onward, reverting here would corrupt the chain.
@@ -793,6 +817,7 @@ export function adminRouter(ctx: HubServerContext): Router {
         [id, orgId, record.to_user_key, id],
       );
       eventsRestored = restored.changes;
+      if (eventsRestored === 0 && journaled > 0) throw new Superseded(SUPERSEDED);
       if (eventsRestored > 0) {
         // Both identities change shape, so neither's stale rows may survive:
         // the recompute only rebuilds groups that still have events.
@@ -864,6 +889,10 @@ export function adminRouter(ctx: HubServerContext): Router {
         [id, orgId],
       );
     });
+    } catch (e) {
+      if (e instanceof Superseded) { res.status(409).json({ error: e.message }); return; }
+      throw e;
+    }
 
     let daysRecomputed = 0;
     if (eventsRestored > 0) {
@@ -882,10 +911,9 @@ export function adminRouter(ctx: HubServerContext): Router {
       aliasesRemoved,
       aliasesRestored,
       daysRecomputed,
-      note: eventsRestored === 0
-        ? 'Nothing to restore: a newer merge has since claimed these events, so this one is superseded. '
-          + 'Revert the newer merge first.'
-        : null,
+      // A superseded merge is refused above, so a zero here is a merge that
+      // never moved anything.
+      note: eventsRestored === 0 ? 'This merge moved no events, so there was nothing to move back.' : null,
     });
   }));
 

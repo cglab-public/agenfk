@@ -4,7 +4,8 @@
  * The hub attributes every event with `gitEmail || osUser`, so an install with
  * no git email files its work under an OS username. When that person later sets
  * their email they become a second identity, and the only way back is a merge —
- * which rewrites history and cannot be undone.
+ * which rewrites history. It can be reverted from Merge history, newest first,
+ * but a merge is still the kind of change to make deliberately.
  *
  * So this page does three things in order of preference: prevent (show the
  * installs still attributed by username), repair the unambiguous cases with one
@@ -23,7 +24,7 @@ import {
   type SuggestionLike,
 } from './identityPanel';
 import { isAttributedByUsername } from './attributionWarning';
-import { cardClass } from '../components/ui';
+import { cardClass, useConfirm } from '../components/ui';
 
 const cardCls = cardClass;
 
@@ -46,7 +47,11 @@ interface InstallationRow {
 
 const fmtDay = (iso: string | null) => (iso ? String(iso).slice(0, 10) : '—');
 
+/** The one true statement about undoing a merge; the page and the confirmation both say it. */
+const MERGE_UNDO = 'Reversible from Merge history, newest first: a later merge that claimed the same events has to be reverted before an earlier one can be.';
+
 export function AdminIdentities() {
+  const { confirm, dialog } = useConfirm();
   const qc = useQueryClient();
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
@@ -90,8 +95,20 @@ export function AdminIdentities() {
   const summary = suggestionSummary(suggestions);
   const misattributed = (installsQ.data ?? []).filter(isAttributedByUsername);
 
+  /** Merge after the admin has seen what it does and how to undo it. */
+  const confirmMerge = async (v: { from: string; to: string }, events?: number) => {
+    const moved = events === undefined ? 'Every event' : `${events} event${events === 1 ? '' : 's'}`;
+    if (await confirm({
+      title: `Merge ${v.from} into ${v.to}?`,
+      body: `${moved} recorded under ${v.from} will be attributed to ${v.to} on every dashboard.\n${MERGE_UNDO}`,
+      confirmLabel: 'Merge',
+      tone: 'default',
+    })) merge.mutate(v);
+  };
+
   return (
     <div className="space-y-6">
+      {dialog}
       <section className={cardCls}>
         <header className="flex items-start justify-between gap-3">
           <div>
@@ -100,8 +117,8 @@ export function AdminIdentities() {
             </h3>
             <p className="mt-0.5 text-xs text-ink-tertiary">
               An installation whose history was recorded under one identity but which now reports a
-              different one. Merging rewrites history and cannot be undone, so only unambiguous
-              cases are offered as a single action.
+              different one. Merging rewrites history, so only unambiguous cases are offered as a
+              single action. {MERGE_UNDO}
             </p>
           </div>
           {summary.total > 0 && (
@@ -136,7 +153,7 @@ export function AdminIdentities() {
                     </div>
                   </div>
                   <button
-                    onClick={() => merge.mutate({ from: sug.from, to: sug.to })}
+                    onClick={() => confirmMerge({ from: sug.from, to: sug.to }, sug.events)}
                     disabled={!canMergeInOneClick(sug) || merge.isPending}
                     title={blocked ?? 'Merge this identity'}
                     className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-accent bg-accent-fill px-2.5 py-1.5 text-[11px] font-semibold text-accent-ink disabled:opacity-40 disabled:cursor-not-allowed"
@@ -183,7 +200,7 @@ export function AdminIdentities() {
             className="flex-1 min-w-[12rem] rounded-lg border border-border-soft bg-surface px-3 py-2 text-sm text-ink font-mono"
           />
           <button
-            onClick={() => merge.mutate({ from: from.trim(), to: to.trim() })}
+            onClick={() => confirmMerge({ from: from.trim(), to: to.trim() })}
             disabled={!isValidManualMerge(from, to) || merge.isPending}
             className="rounded-lg border border-accent bg-accent-fill px-3 py-2 text-xs font-semibold text-accent-ink disabled:opacity-40 disabled:cursor-not-allowed"
           >
@@ -220,9 +237,7 @@ export function AdminIdentities() {
           <History className="w-4 h-4" /> Merge history
         </h3>
         <p className="mt-0.5 text-xs text-ink-tertiary">
-          Each merge can be reverted, which moves exactly the events it touched back. Revert the
-          newest first: a later merge that claimed the same events has to be undone before an
-          earlier one can be.
+          Reverting a merge moves exactly the events it touched back. {MERGE_UNDO}
         </p>
         {(mergesQ.data ?? []).length === 0 ? (
           <p className="mt-3 text-sm text-ink-tertiary">Nothing merged yet.</p>
@@ -252,7 +267,14 @@ export function AdminIdentities() {
                         <span className="text-[11px] text-ink-tertiary">reverted {fmtDay(m.revertedAt)}</span>
                       ) : (
                         <button
-                          onClick={() => revert.mutate(m.id)}
+                          onClick={async () => {
+                            if (await confirm({
+                              title: `Revert the merge of ${m.from} into ${m.to}?`,
+                              body: `The ${m.eventsMoved} event${m.eventsMoved === 1 ? '' : 's'} it moved go back to ${m.from}. If a newer merge has since taken them, the hub will refuse: revert that newer merge first, and this one stays revertable.`,
+                              confirmLabel: 'Revert merge',
+                              tone: 'default',
+                            })) revert.mutate(m.id);
+                          }}
                           disabled={revert.isPending}
                           title="Move these events back to their original identity"
                           className="inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-status-warn-text"

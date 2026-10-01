@@ -18,6 +18,7 @@ import { App } from '../App';
 import { AdminUpgrades } from '../pages/AdminUpgrades';
 import { api } from '../api';
 import { ThemeProvider } from '../ThemeContext';
+import { answerConfirm, forbidWindowConfirm } from './helpers/confirmDialog';
 
 // The route test mounts <App/>; the chrome is not what it is about.
 vi.mock('../components/Layout', () => ({ Layout: ({ children }: any) => <div>{children}</div> }));
@@ -71,11 +72,12 @@ const renderPage = () => {
 // asynchronously, so let it run before asserting its absence.
 const settle = () => new Promise(r => setTimeout(r, 50));
 
+// Confirmations are the in-page ConfirmDialog; the browser's must never open.
 let confirmSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   get.mockReset(); post.mockReset();
   post.mockResolvedValue({ data: { cancelledCount: 1 } });
-  confirmSpy = vi.spyOn(window, 'confirm');
+  confirmSpy = forbidWindowConfirm();
 });
 afterEach(() => { cleanup(); confirmSpy.mockRestore(); });
 
@@ -98,48 +100,47 @@ describe('AdminUpgrades — directive list', () => {
 describe('AdminUpgrades — cancelling a directive', () => {
   it('Cancel waiting POSTs a plain cancel once confirmed', async () => {
     routes([directive({ pending: 2 })]);
-    confirmSpy.mockReturnValue(true);
     renderPage();
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel waiting' }));
+    expect(await answerConfirm(true)).toMatch(/2 waiting upgrades/);
     await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/upgrade/dir-1/cancel', {}));
   });
 
   it('Cancel waiting does nothing when the admin declines', async () => {
     routes([directive({ pending: 2 })]);
-    confirmSpy.mockReturnValue(false);
     renderPage();
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel waiting' }));
-    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    await answerConfirm(false);
     await settle();
     expect(post).not.toHaveBeenCalled();
   });
 
   it('with only running targets the control reads Clear stuck and sends force once confirmed', async () => {
     routes([directive({ in_progress: 1 }, [target('inst-1', 'in_progress')])]);
-    confirmSpy.mockReturnValue(true);
     renderPage();
     const clear = await screen.findByRole('button', { name: 'Clear stuck' });
     expect(screen.queryByRole('button', { name: 'Cancel waiting' })).not.toBeInTheDocument();
     fireEvent.click(clear);
+    expect(await answerConfirm(true)).toMatch(/still running/);
     await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/upgrade/dir-1/cancel', { force: true }));
   });
 
   it('Clear stuck sends nothing when the force confirm is declined', async () => {
     routes([directive({ in_progress: 1 }, [target('inst-1', 'in_progress')])]);
-    confirmSpy.mockReturnValue(false);
     renderPage();
     fireEvent.click(await screen.findByRole('button', { name: 'Clear stuck' }));
+    await answerConfirm(false);
     await settle();
     expect(post).not.toHaveBeenCalled();
   });
 
   it('with waiting and running targets, declining the force confirm still cancels the waiting ones', async () => {
     routes([directive({ pending: 1, in_progress: 1 }, [target('inst-1', 'pending'), target('inst-2', 'in_progress')])]);
-    confirmSpy.mockReturnValueOnce(true).mockReturnValueOnce(false);
     renderPage();
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel waiting' }));
+    expect(await answerConfirm(true)).toMatch(/waiting upgrade/);
+    expect(await answerConfirm(false)).toMatch(/still running/);
     await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/upgrade/dir-1/cancel', {}));
-    expect(confirmSpy).toHaveBeenCalledTimes(2);
   });
 
   it('offers no cancel control once nothing is waiting or running', async () => {
@@ -165,7 +166,6 @@ describe('AdminUpgrades — issuing a fleet upgrade', () => {
 
   const openForm = async () => {
     routes([], { '/v1/admin/installations': INSTALLATIONS, '/v1/admin/api-keys': KEYS });
-    confirmSpy.mockReturnValue(true);
     renderPage();
     fireEvent.click(await screen.findByRole('button', { name: /Issue upgrade/ }));
     const select = await screen.findByRole('combobox');
@@ -182,6 +182,7 @@ describe('AdminUpgrades — issuing a fleet upgrade', () => {
     await openForm();
     await screen.findByRole('button', { name: 'All (2)' });
     fireEvent.click(screen.getByRole('button', { name: 'Issue' }));
+    expect(await answerConfirm(true)).toMatch(/upgrade \d+ installation/i);
     await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/upgrade', { targetVersion: '1.1.21', scope: { type: 'all' } }));
   });
 
@@ -190,6 +191,7 @@ describe('AdminUpgrades — issuing a fleet upgrade', () => {
     fireEvent.click(screen.getByRole('button', { name: /Selected/ }));
     fireEvent.click((await screen.findAllByRole('checkbox'))[0]);
     fireEvent.click(screen.getByRole('button', { name: 'Issue' }));
+    expect(await answerConfirm(true)).toMatch(/upgrade \d+ installation/i);
     await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/upgrade', { targetVersion: '1.1.21', scope: { type: 'installation', installationId: 'inst-a' } }));
   });
 
@@ -198,6 +200,7 @@ describe('AdminUpgrades — issuing a fleet upgrade', () => {
     fireEvent.click(screen.getByRole('button', { name: /Selected/ }));
     for (const box of await screen.findAllByRole('checkbox')) fireEvent.click(box);
     fireEvent.click(screen.getByRole('button', { name: 'Issue' }));
+    expect(await answerConfirm(true)).toMatch(/upgrade \d+ installation/i);
     await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/upgrade', { targetVersion: '1.1.21', scope: { type: 'installations', installationIds: ['inst-a', 'inst-b'] } }));
   });
 
@@ -206,7 +209,20 @@ describe('AdminUpgrades — issuing a fleet upgrade', () => {
     await screen.findByRole('button', { name: 'All (2)' });
     post.mockRejectedValueOnce({ response: { status: 409, data: { downgrades: [{ installationId: 'inst-a', currentVersion: '1.1.22', targetVersion: '1.1.21' }] } } });
     fireEvent.click(screen.getByRole('button', { name: 'Issue' }));
+    expect(await answerConfirm(true)).toMatch(/upgrade \d+ installation/i);
+    expect(await answerConfirm(true)).toMatch(/DOWNGRADE/i);
     await waitFor(() => expect(post).toHaveBeenLastCalledWith('/v1/admin/upgrade', { targetVersion: '1.1.21', scope: { type: 'all' }, confirmDowngrade: true }));
+  });
+
+  it('declining the downgrade sends nothing more', async () => {
+    await openForm();
+    await screen.findByRole('button', { name: 'All (2)' });
+    post.mockRejectedValueOnce({ response: { status: 409, data: { downgrades: [{ installationId: 'inst-a', currentVersion: '1.1.22', targetVersion: '1.1.21' }] } } });
+    fireEvent.click(screen.getByRole('button', { name: 'Issue' }));
+    await answerConfirm(true);
+    expect(await answerConfirm(false)).toMatch(/DOWNGRADE/i);
+    await settle();
+    expect(post).toHaveBeenCalledTimes(1);
   });
 
   it('names the conflicting upgrade when one is already in flight', async () => {
@@ -214,6 +230,7 @@ describe('AdminUpgrades — issuing a fleet upgrade', () => {
     await screen.findByRole('button', { name: 'All (2)' });
     post.mockRejectedValueOnce({ response: { status: 409, data: { conflicts: [{ installationId: 'inst-b', conflictingDirectiveId: 'dir-9' }] } } });
     fireEvent.click(screen.getByRole('button', { name: 'Issue' }));
+    expect(await answerConfirm(true)).toMatch(/upgrade \d+ installation/i);
     expect(await screen.findByText(/already waiting or running/)).toHaveTextContent('dir-9');
   });
 });
