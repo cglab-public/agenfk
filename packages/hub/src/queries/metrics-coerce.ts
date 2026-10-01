@@ -38,3 +38,22 @@ export function coerceMetricsRow(row: Record<string, unknown>): MetricsRowOut {
   }
   return out;
 }
+
+export interface MetricsTotalsOut {
+  events_count: number;
+  items_closed: number;
+  validate_passes: number;
+  validate_fails: number;
+  prs_opened: number;
+}
+
+/** The period's live totals (BUG 72c309df); SUM over no rows is NULL → 0. */
+export function coerceMetricsTotals(row: Record<string, unknown> | undefined): MetricsTotalsOut {
+  return {
+    events_count: toInt(row?.events_count),
+    items_closed: toInt(row?.items_closed),
+    validate_passes: toInt(row?.validate_passes),
+    validate_fails: toInt(row?.validate_fails),
+    prs_opened: toInt(row?.prs_opened),
+  };
+}

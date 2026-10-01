@@ -8,7 +8,7 @@ import { csvParam } from '../urlParams';
 import { FacetMultiselect } from '../components/FacetMultiselect';
 import { FilterAccordion, FILTERS_OPEN, parseFiltersOpen } from '../components/FilterAccordion';
 import { describeFilters } from '../filterSummary';
-import { MetricsTilesRow, MetricsTotals } from '../components/MetricsTilesRow';
+import { MetricsTilesRow, tileTotals } from '../components/MetricsTilesRow';
 import { Badge, Button, ChipRow, DateRange, LocalTime, Page, PeriodControl, QueryState } from '../components/ui';
 import { eventTone, itemTypeClass } from '../eventTone';
 import { shortRemote } from '../components/facetSearch';
@@ -42,7 +42,12 @@ const USER_LEGACY_KEYS = {
 };
 const readRange = (v: string | null): RangeKey => (RANGES.some(r => r.key === v) ? v : '30d') as RangeKey;
 
-interface MetricsResponse { bucket: string; series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; validate_passes: number; validate_fails: number; prs_opened: number }> }
+interface MetricsResponse {
+  bucket: string;
+  series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; validate_passes: number; validate_fails: number; prs_opened: number }>;
+  /** The period's totals from live events, on the per-person rows' rules. */
+  totals?: { events_count: number; items_closed: number; validate_passes: number; validate_fails: number; prs_opened: number };
+}
 
 interface TimelineRow {
   event_id: string; occurred_at: string; type: string; project_id: string | null; item_id: string | null; item_type: string | null; remote_url: string | null; item_title: string | null; external_id: string | null; user_key: string; reporting_version: string | null; payload: any;
@@ -213,16 +218,7 @@ export function UserDetailPage() {
     queryFn: async () => (await api.get(`/v1/metrics?${metricsQs}`)).data,
   });
 
-  const totals: MetricsTotals = (metrics.data?.series ?? []).reduce(
-    (a, r) => ({
-      events: a.events + r.events_count,
-      closed: a.closed + r.items_closed,
-      passes: a.passes + r.validate_passes,
-      fails: a.fails + r.validate_fails,
-      prsOpened: a.prsOpened + (r.prs_opened ?? 0),
-    }),
-    { events: 0, closed: 0, passes: 0, fails: 0, prsOpened: 0 },
-  );
+  const totals = tileTotals(metrics.data);
 
   // Pages of the newest events, newest first; Load more fetches the next page.
   // The server says how many match in all, so the list never stops silently.

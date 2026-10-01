@@ -7,7 +7,7 @@ import { TimelineBar } from '../components/TimelineBar';
 import { FacetMultiselect } from '../components/FacetMultiselect';
 import { FilterAccordion, FILTERS_OPEN, parseFiltersOpen } from '../components/FilterAccordion';
 import { describeFilters } from '../filterSummary';
-import { MetricsTilesRow, MetricsTotals } from '../components/MetricsTilesRow';
+import { MetricsTilesRow, tileTotals } from '../components/MetricsTilesRow';
 import { ChipRow, DataTable, Page, PageHeader, PeriodControl, QueryState } from '../components/ui';
 import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
@@ -31,7 +31,12 @@ const RANGES: Array<{ key: RangeKey; label: string }> = [
   { key: '90d', label: '90d' },
 ];
 
-interface MetricsResponse { bucket: string; series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; validate_passes: number; validate_fails: number; prs_opened: number }> }
+interface MetricsResponse {
+  bucket: string;
+  series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; validate_passes: number; validate_fails: number; prs_opened: number }>;
+  /** The period's totals from live events, on the per-person rows' rules. */
+  totals?: { events_count: number; items_closed: number; validate_passes: number; validate_fails: number; prs_opened: number };
+}
 interface UsersResponse {
   user_key: string;
   last_seen: string;
@@ -151,6 +156,19 @@ export function OrgPage() {
 
   // Both chip lists are partitioned by hub — offering a repo or an event type
   // from a hub the board is not showing is a dead end.
+  // A person link carries the view it was clicked in: the period, every
+  // filter and the hub scope. The person page reads the same keys, and a
+  // link that names any of them replaces what it remembered, so a link with
+  // only some would open the others unfiltered and the person's numbers would
+  // stop matching the row clicked (BUG 72c309df). `types=` (present, empty)
+  // is the explicit "none", as here.
+  const personQs = useMemo(() => {
+    const p = new URLSearchParams({ range, types: [...eventTypeSel.set].join(',') });
+    if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
+    if (itemTypeSel.set.size) p.set('itemTypes', [...itemTypeSel.set].join(','));
+    if (childHubSel.set.size) p.set('childHubId', [...childHubSel.set].join(','));
+    return `?${p}`;
+  }, [range, eventTypeSel.set, projectSel.set, itemTypeSel.set, childHubSel.set]);
   const hubQs = childHubSel.set.size
     ? `?${new URLSearchParams({ childHubId: [...childHubSel.set].join(',') })}`
     : '';
@@ -167,16 +185,7 @@ export function OrgPage() {
     queryFn: async () => (await api.get(`/v1/item-types${itemTypesQs ? `?${itemTypesQs}` : ''}`)).data,
   });
 
-  const totals: MetricsTotals = (metrics.data?.series ?? []).reduce(
-    (a, r) => ({
-      events: a.events + r.events_count,
-      closed: a.closed + r.items_closed,
-      passes: a.passes + r.validate_passes,
-      fails: a.fails + r.validate_fails,
-      prsOpened: a.prsOpened + (r.prs_opened ?? 0),
-    }),
-    { events: 0, closed: 0, passes: 0, fails: 0, prsOpened: 0 },
-  );
+  const totals = tileTotals(metrics.data);
 
   const types = mergeEventTypes(eventTypes.data?.types);
   const projectOptions = projects.data?.projects ?? [];
@@ -303,7 +312,7 @@ export function OrgPage() {
                         // Carry the hub scope through the click-through: landing on a
                         // person aggregated across every hub would contradict the board
                         // just left, with nothing saying the scope had been dropped.
-                        to={`/users/${encodeURIComponent(u.user_key)}${hubQs}`}
+                        to={`/users/${encodeURIComponent(u.user_key)}${personQs}`}
                         className="group flex items-center gap-3 min-w-0 max-w-[320px]"
                       >
                         <PersonAvatar name={nameOf(u.user_key)} userKey={u.user_key} />

@@ -139,7 +139,7 @@ describe('Org Users is a sortable, searchable table', () => {
     fireEvent.change(search, { target: { value: 'BOB@' } });
     expect(order()[0]).toMatch(/bob@acme\.com/);
     // The person still links to their page.
-    expect(within(table).getByRole('link', { name: /bob@acme\.com/ })).toHaveAttribute('href', '/users/bob%40acme.com');
+    expect(within(table).getByRole('link', { name: /bob@acme\.com/ })).toHaveAttribute('href', '/users/bob%40acme.com?range=30d&types=item.closed');
   });
 });
 

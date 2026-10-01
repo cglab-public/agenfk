@@ -4,7 +4,7 @@ import { requireSession } from '../auth/session.js';
 import { recomputeRollups } from '../rollup.js';
 import { aggregateHistogramRows } from '../queries/histogram-aggregate.js';
 import { isKnownTimeZone, rebucketToZone, subHourShift, zoneOffsetMin } from '../queries/histogram-zone.js';
-import { coerceMetricsRow } from '../queries/metrics-coerce.js';
+import { coerceMetricsRow, coerceMetricsTotals } from '../queries/metrics-coerce.js';
 import { aggregatePrOverview, clampTzOffsetMin, parsePrNumberFilter, PrEventRow } from '../queries/pr-overview-aggregate.js';
 import { sanitizeRemoteUrl } from './events.js';
 import { rateLimit, sessionUserKey } from '../util/rateLimit.js';
@@ -109,6 +109,14 @@ function applyEventFilters(orgId: string, f: EventFilters, timeCol: 'occurred_at
   return { where, params };
 }
 
+/** The item an event closed, or NULL: an item.closed, or the board's move to
+ *  DONE. Counted DISTINCT, so an item closed twice counts once. */
+const CLOSED_ITEM = `CASE
+          WHEN type = 'item.closed' THEN item_id
+          WHEN type = 'step.transitioned'
+               AND json_extract(payload, '$.payload.toStatus') = 'DONE' THEN item_id
+        END`;
+
 export function queriesRouter(ctx: HubServerContext): Router {
   const router = Router();
 
@@ -140,17 +148,12 @@ export function queriesRouter(ctx: HubServerContext): Router {
     // not rollups, so the row agrees with itself. "Closed" is defined exactly
     // as /metrics defines it.
     const done = applyEventFilters(orgId, { ...f, users: null, types: null });
-    const CLOSED = `CASE
-          WHEN type = 'item.closed' THEN item_id
-          WHEN type = 'step.transitioned'
-               AND json_extract(payload, '$.payload.toStatus') = 'DONE' THEN item_id
-        END`;
     // The type IN (...) changes no count (every CASE ignores other types) but
     // lets the planner use the type index instead of reading every event in
     // the window. No SQL comments inside the query: they break on Postgres.
     const totals = await ctx.db.all<Record<string, unknown>>(
       `SELECT user_key,
-              COUNT(DISTINCT ${CLOSED}) AS items_closed,
+              COUNT(DISTINCT ${CLOSED_ITEM}) AS items_closed,
               SUM(CASE WHEN type = 'validate.passed' THEN 1 ELSE 0 END) AS validate_passes,
               SUM(CASE WHEN type = 'validate.failed' THEN 1 ELSE 0 END) AS validate_fails,
               SUM(CASE WHEN type = 'pr.opened' THEN 1 ELSE 0 END) AS prs_opened
@@ -173,7 +176,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
       const hourly = await ctx.db.all<{ user_key: string; cid: string; hr: string }>(
         // Grouped over a derived table by name: positional GROUP BY trips pg-mem.
         `SELECT user_key, cid, hr FROM (
-           SELECT user_key, ${CLOSED} AS cid, strftime('%Y-%m-%dT%H:00', occurred_at${shift ? ', ?' : ''}) AS hr
+           SELECT user_key, ${CLOSED_ITEM} AS cid, strftime('%Y-%m-%dT%H:00', occurred_at${shift ? ', ?' : ''}) AS hr
            FROM events WHERE ${done.where.join(' AND ')}
              AND (type = 'item.closed' OR type = 'step.transitioned')
          ) closures
@@ -203,7 +206,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
       daily = [...perDay.values()];
     } else {
       daily = await ctx.db.all<{ user_key: string; day: string; n: number | string }>(
-        `SELECT user_key, date(occurred_at) AS day, COUNT(DISTINCT ${CLOSED}) AS n
+        `SELECT user_key, date(occurred_at) AS day, COUNT(DISTINCT ${CLOSED_ITEM}) AS n
          FROM events WHERE ${done.where.join(' AND ')}
            AND (type = 'item.closed' OR type = 'step.transitioned')
          GROUP BY user_key, day`,
@@ -351,6 +354,23 @@ export function queriesRouter(ctx: HubServerContext): Router {
     const f = readEventFilters(req);
     const orgId = req.session!.orgId;
 
+    // The period's totals, from the live events under the same rules as
+    // /v1/users: the exact `from` (rollups cut it to its UTC day) and each
+    // item closed once over the window (rollups count it once per day, so the
+    // summed series counts an item closed on two days twice). The Org and
+    // person tiles read these, so they agree with the rows beside them
+    // (BUG 72c309df). The series stays for anything charting by day.
+    const tf = applyEventFilters(orgId, f);
+    const totals = coerceMetricsTotals(await ctx.db.get<Record<string, unknown>>(
+      `SELECT COUNT(*) AS events_count,
+              COUNT(DISTINCT ${CLOSED_ITEM}) AS items_closed,
+              SUM(CASE WHEN type = 'validate.passed' THEN 1 ELSE 0 END) AS validate_passes,
+              SUM(CASE WHEN type = 'validate.failed' THEN 1 ELSE 0 END) AS validate_fails,
+              SUM(CASE WHEN type = 'pr.opened' THEN 1 ELSE 0 END) AS prs_opened
+       FROM events WHERE ${tf.where.join(' AND ')}`,
+      tf.params,
+    ));
+
     // The rollups branch below cannot answer these. rollups_daily is keyed by
     // (org, person, day, hub) and carries counters — it has no `type`,
     // `remote_url` or `item_type` column at all, so any filter on those has to
@@ -362,11 +382,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
       const rows = await ctx.db.all<Record<string, unknown>>(
         `SELECT user_key, date(occurred_at) AS day,
                 COUNT(*) AS events_count,
-                COUNT(DISTINCT CASE
-                  WHEN type = 'item.closed' THEN item_id
-                  WHEN type = 'step.transitioned'
-                       AND json_extract(payload, '$.payload.toStatus') = 'DONE' THEN item_id
-                END) AS items_closed,
+                COUNT(DISTINCT ${CLOSED_ITEM}) AS items_closed,
                 0 AS tokens_in,
                 0 AS tokens_out,
                 SUM(CASE WHEN type = 'validate.passed' THEN 1 ELSE 0 END) AS validate_passes,
@@ -377,7 +393,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
          ORDER BY day ASC, user_key ASC`,
         params,
       );
-      res.json({ bucket: 'day', series: rows.map(coerceMetricsRow) });
+      res.json({ bucket: 'day', series: rows.map(coerceMetricsRow), totals });
       return;
     }
 
@@ -400,7 +416,7 @@ export function queriesRouter(ctx: HubServerContext): Router {
        ORDER BY day ASC, user_key ASC`,
       params,
     );
-    res.json({ bucket: 'day', series: rows.map(coerceMetricsRow) });
+    res.json({ bucket: 'day', series: rows.map(coerceMetricsRow), totals });
   }));
 
   router.get('/event-types', guard, asyncRoute(async (req: Request, res: Response) => {

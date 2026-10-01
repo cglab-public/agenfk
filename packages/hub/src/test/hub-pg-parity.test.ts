@@ -480,6 +480,18 @@ describe('PG parity: queries + rollup', () => {
     expect(m.body.series.length).toBeGreaterThan(0);
   });
 
+  it('GET /v1/metrics totals are numbers on PG and agree with the live events', async () => {
+    const m = await supertest(fx.app).get('/v1/metrics').set('Cookie', fx.cookie);
+    expect(m.status).toBe(200);
+    const t = m.body.totals;
+    // Postgres answers COUNT/SUM as strings: the tiles would concatenate them.
+    for (const k of ['events_count', 'items_closed', 'validate_passes', 'validate_fails', 'prs_opened']) {
+      expect(typeof t[k]).toBe('number');
+    }
+    const live = await fx.db.get<{ n: number | string }>('SELECT COUNT(*) AS n FROM events');
+    expect(t.events_count).toBe(Number(live?.n));
+  });
+
   it('rollups_daily computes items_closed and leaves token consumption at zero on PG', async () => {
     await recomputeRollups(fx.db);
     const rows = await fx.db.all<any>('SELECT * FROM rollups_daily ORDER BY day, user_key');

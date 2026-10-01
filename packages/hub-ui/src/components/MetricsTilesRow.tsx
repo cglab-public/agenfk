@@ -9,6 +9,30 @@ export interface MetricsTotals {
   prsOpened: number;
 }
 
+interface MetricsCounts { events_count: number; items_closed: number; validate_passes: number; validate_fails: number; prs_opened?: number }
+
+/**
+ * The tiles' numbers from a /v1/metrics answer: its live `totals`, counted on
+ * the per-person rows' rules (exact period start, each item closed once), so
+ * the tiles agree with the rows (BUG 72c309df). Adding up the rollup series
+ * would not: it counts UTC days, and an item once per day it closed. A hub
+ * that predates `totals` (a rolling deploy) still gets the series' sum
+ * rather than zeros.
+ */
+export function tileTotals(data: { series?: MetricsCounts[]; totals?: MetricsCounts } | undefined): MetricsTotals {
+  const rows = data?.totals ? [data.totals] : (data?.series ?? []);
+  return rows.reduce(
+    (a, r) => ({
+      events: a.events + r.events_count,
+      closed: a.closed + r.items_closed,
+      passes: a.passes + r.validate_passes,
+      fails: a.fails + r.validate_fails,
+      prsOpened: a.prsOpened + (r.prs_opened ?? 0),
+    }),
+    { events: 0, closed: 0, passes: 0, fails: 0, prsOpened: 0 },
+  );
+}
+
 /** The event types each tile counts; an empty list means every type. */
 const TILE_TYPES = {
   events: [] as string[],
