@@ -70,3 +70,27 @@ export function approvalFor(
       + 'An agent cannot approve it: approving is the decision to run it, and that decision is a person\'s.',
   };
 }
+
+/**
+ * Characters in a command that a screen cannot show a person faithfully.
+ *
+ * Format controls (bidi overrides and isolates, zero-width marks, the BOM),
+ * other control characters, and line/paragraph separators. A right-to-left
+ * override can make `echo 'safe<U+202E>'; payload; #` READ as one quoted echo
+ * while the shell runs a second command; a zero-width space makes `./verify`
+ * name a different file (review of 34ee6b8a). A verify command never needs
+ * one, so a command holding any is not offered for approval at all. Tab and
+ * newline stay legal: they are shown as what they are.
+ *
+ * Returns each offending character as `U+XXXX`, in order, without repeats.
+ */
+export function hiddenCharacters(command: string): string[] {
+  const found = new Set<string>();
+  for (const ch of command) {
+    if (ch === '\t' || ch === '\n' || ch === '\r') continue;
+    if (/[\p{Cf}\p{Cc}\p{Zl}\p{Zp}]/u.test(ch)) {
+      found.add(`U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}`);
+    }
+  }
+  return [...found];
+}

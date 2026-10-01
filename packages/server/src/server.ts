@@ -14,7 +14,7 @@ import { SuiteSlots, suiteRunLimit, waitingLine } from './suiteSlots';
 import { DEFAULT_REUSE_IGNORE, namedByTests, reuseIgnoreMatcher } from './reuseIgnore';
 import { capturedGreen, countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, describeCapture, TEST_FILE_PATTERN, ANY_TEST_FILE_PATTERN, needsCapture, needsEntryRecord, parseAgentReports, parseCheckAnswers, describeTreeWarnings, MAX_UNREVIEWED_LINES, type AgentReport, type CheckResult, type TreeWarning } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { readProjectFile, approvalFor, commandFingerprint, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, foreignClaimsFor, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
+import { readProjectFile, approvalFor, commandFingerprint, hiddenCharacters, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, foreignClaimsFor, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -2454,37 +2454,51 @@ function readDeclaredSettings(projectRoot?: string | null): {
  * read and approved is the string, not the field.
  */
 /**
- * Did a page this server served send the request? (review of 34ee6b8a)
+ * Did a page this server served send the request? (reviews of 34ee6b8a)
  *
  * CORS lets any loopback origin talk to this server, so the board header
  * alone would let a page on ANOTHER local port - any dev server, any local
  * web app - approve a repository command for this machine; the internal
  * token this route used to need kept browsers out. A browser stamps Origin
- * on every POST and a page cannot forge it, so require the server's own
- * origin (where the board and the desktop shell load from) or a configured
- * board origin.
+ * on every POST and a page cannot forge it. So the page must be:
+ *
+ * - the very address the request was sent to (Origin host = Host): a page
+ *   squatting `[::1]:<this port>` - this server binds 127.0.0.1 - names
+ *   itself, not the address it is calling;
+ * - a loopback NAME, which a DNS-rebinding page cannot claim;
+ * - on the port the request arrived on.
+ *
+ * Or an origin configured explicitly in AGENFK_BOARD_ORIGINS (the vite dev
+ * board). Not the implicit localhost:5173 boardOrigins() falls back to with no
+ * UI served: whatever happens to listen there would be trusted unasked.
  */
 function fromOwnBoardPage(req: any): boolean {
   const origin = typeof req.headers.origin === 'string' ? req.headers.origin : '';
   if (!origin) return false;
-  if (boardOrigins().includes(origin)) return true;
+  const configured = (process.env.AGENFK_BOARD_ORIGINS ?? '').split(',').map(o => o.trim()).filter(Boolean);
+  if (configured.includes(origin)) return true;
   let page: URL;
   try { page = new URL(origin); } catch { return false; }
-  // This server's own page: loopback, on the port the request arrived on. Compared by port, not
-  // by Host text - one listener answers as localhost, 127.0.0.1 and [::1] alike.
   const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(page.hostname);
-  return loopback && page.protocol === 'http:' && Number(page.port || 80) === req.socket?.localPort;
+  return loopback && page.protocol === 'http:' && page.host === String(req.headers.host ?? '')
+    && Number(page.port || 80) === req.socket?.localPort;
 }
 
 app.post("/projects/:id/approve-file-command", limitExpensive, asyncHandler(async (req: any, res: any) => {
   if (refuseUnlessBoard(req, res)) return;
   if (!fromOwnBoardPage(req)) {
-    return res.status(403).json({ error: "Approve it from the board this server serves: a page from another origin cannot approve a command for this machine." });
+    return res.status(403).json({ error: "Approve it from the board this server serves: a page from another origin cannot approve a command for this machine (a dev board needs its origin in AGENFK_BOARD_ORIGINS)." });
   }
   const project: any = await storage.getProject(req.params.id);
   if (!project) return res.status(404).json({ error: "Project not found" });
   const command = typeof req.body?.command === 'string' ? req.body.command : '';
   if (!command.trim()) return res.status(400).json({ error: "command is required" });
+  // Not approvable at all while it holds characters a screen cannot show: what a person read
+  // would not be what runs (review of 34ee6b8a). The fix is in the file, not here.
+  const hidden = hiddenCharacters(command);
+  if (hidden.length) {
+    return res.status(400).json({ error: `This command holds characters that cannot be shown faithfully (${hidden.join(', ')}), so it cannot be approved as read. Remove them from .agenfk/project.json.` });
+  }
 
   const fingerprint = commandFingerprint(command);
   const authority = gateAuthority(req, res, { purpose: 'file-command', itemId: project.id, checkId: fingerprint }, false);
@@ -2543,7 +2557,7 @@ app.get("/projects/:id/settings", asyncHandler(async (req: any, res: any) => {
       .map(key => {
         const command = String(declared.settings[key]);
         const verdict = approvalFor({ key, command }, ((project as any).approvedFileCommands ?? []) as string[]);
-        return { key, command, fingerprint: verdict.fingerprint ?? commandFingerprint(command), approved: verdict.allowed };
+        return { key, command, fingerprint: verdict.fingerprint ?? commandFingerprint(command), approved: verdict.allowed, hidden: hiddenCharacters(command) };
       }),
   });
 }));

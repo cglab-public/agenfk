@@ -152,8 +152,8 @@ describe('approving a command declared by the repository', () => {
     fs.writeFileSync(path.join(root, '.agenfk', 'project.json'), JSON.stringify(body));
   };
 
-  /** A request from a page the board served: the board header, and the server's own origin. */
-  const ownOrigin = () => `http://127.0.0.1:${(server.address() as import('net').AddressInfo).port}`;
+  /** Where the board's own page lives: the address the request is sent to. */
+  const ownHost = () => `127.0.0.1:${(server.address() as import('net').AddressInfo).port}`;
 
   const cardOn = async (projectId: string): Promise<string> => {
     const created = await request(server).post('/items').send({
@@ -207,7 +207,8 @@ describe('approving a command declared by the repository', () => {
     const res = await request(server)
       .post(`/projects/${created.body.id}/approve-file-command`)
       .set('x-agenfk-ui', '1')
-      .set('Origin', ownOrigin())
+      .set('Host', ownHost())
+      .set('Origin', `http://${ownHost()}`)
       .send({ command: 'echo from-the-repo' });
     expect(res.status).toBe(200);
     expect(res.body.approved).toBe(true);
@@ -227,7 +228,8 @@ describe('approving a command declared by the repository', () => {
       .post(`/projects/${created.body.id}/approve-file-command`)
       .set('x-agenfk-internal', VERIFY_TOKEN)
       .set('x-agenfk-ui', '1')
-      .set('Origin', ownOrigin())
+      .set('Host', ownHost())
+      .set('Origin', `http://${ownHost()}`)
       .send({ command: 'echo from-the-repo' });
     expect(res.status).toBe(403);
     const project = await request(server).get(`/projects/${created.body.id}`);
@@ -241,9 +243,61 @@ describe('approving a command declared by the repository', () => {
     const res = await request(server)
       .post(`/projects/${created.body.id}/approve-file-command`)
       .set('x-agenfk-ui', '1')
+      .set('Host', ownHost())
       .set('Origin', 'http://localhost:5555')
       .send({ command: 'echo from-the-repo' });
     expect(res.status).toBe(403);
+    const project = await request(server).get(`/projects/${created.body.id}`);
+    expect(project.body.approvedFileCommands ?? []).toEqual([]);
+  });
+
+  it('refuses a page squatting the IPv6 loopback on this port, which this server does not bind', async () => {
+    const created = await request(server).post('/projects').send({ name: 'ipv6-squatter' });
+    const port = (server.address() as import('net').AddressInfo).port;
+    const res = await request(server)
+      .post(`/projects/${created.body.id}/approve-file-command`)
+      .set('x-agenfk-ui', '1')
+      .set('Host', ownHost())
+      .set('Origin', `http://[::1]:${port}`)
+      .send({ command: 'echo from-the-repo' });
+    expect(res.status).toBe(403);
+  });
+
+  it('does not trust whatever listens on the vite port unless that origin is configured', async () => {
+    const created = await request(server).post('/projects').send({ name: 'vite-port' });
+    const post = () => request(server)
+      .post(`/projects/${created.body.id}/approve-file-command`)
+      .set('x-agenfk-ui', '1')
+      .set('Host', ownHost())
+      .set('Origin', 'http://localhost:5173')
+      .send({ command: 'echo from-the-repo' });
+    expect((await post()).status).toBe(403);
+    const before = process.env.AGENFK_BOARD_ORIGINS;
+    process.env.AGENFK_BOARD_ORIGINS = 'http://localhost:5173';
+    try {
+      expect((await post()).status).toBe(200);
+    } finally {
+      if (before === undefined) delete process.env.AGENFK_BOARD_ORIGINS; else process.env.AGENFK_BOARD_ORIGINS = before;
+    }
+  });
+
+  it('will not approve a command holding characters a screen cannot show faithfully', async () => {
+    // A right-to-left override makes this READ as one quoted echo; the shell runs printf too.
+    const command = "echo 'safe\u202E'; printf REVIEW_MARKER; #";
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-bidi-'));
+    write(root, { projectId: 'x', verifyCommand: command });
+    const created = await request(server).post('/projects').send({ name: 'bidi' });
+    await storage.updateProject(created.body.id, { projectRoot: root } as never);
+    const settings = await request(server).get(`/projects/${created.body.id}/settings`);
+    expect(settings.body.fileCommands[0].hidden).toEqual(['U+202E']);
+    const res = await request(server)
+      .post(`/projects/${created.body.id}/approve-file-command`)
+      .set('x-agenfk-ui', '1')
+      .set('Host', ownHost())
+      .set('Origin', `http://${ownHost()}`)
+      .send({ command });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/U\+202E/);
     const project = await request(server).get(`/projects/${created.body.id}`);
     expect(project.body.approvedFileCommands ?? []).toEqual([]);
   });
@@ -269,7 +323,8 @@ describe('approving a command declared by the repository', () => {
     await request(server)
       .post(`/projects/${created.body.id}/approve-file-command`)
       .set('x-agenfk-ui', '1')
-      .set('Origin', ownOrigin())
+      .set('Host', ownHost())
+      .set('Origin', `http://${ownHost()}`)
       .send({ command: 'echo listed' });
     const after = await request(server).get(`/projects/${created.body.id}/settings`);
     expect(after.body.fileCommands[0].approved).toBe(true);
@@ -343,7 +398,8 @@ describe('approving a command declared by the repository', () => {
     await request(server)
       .post(`/projects/${created.body.id}/approve-file-command`)
       .set('x-agenfk-ui', '1')
-      .set('Origin', ownOrigin())
+      .set('Host', ownHost())
+      .set('Origin', `http://${ownHost()}`)
       .send({ command: 'echo by-hand-marker' });
     const after = await request(server).get(`/items/${itemId}/leave-plan`);
     expect(after.body.advice).toContain('by-hand-marker');

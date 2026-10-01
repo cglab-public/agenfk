@@ -253,7 +253,7 @@ export const api = {
       from: string; how?: string; warning?: string;
     }>;
       /* What the repository asks this machine to run, and whether a person here approved it (34ee6b8a). */
-      fileCommands?: Array<{ key: string; command: string; fingerprint: string; approved: boolean }>;
+      fileCommands?: Array<{ key: string; command: string; fingerprint: string; approved: boolean; hidden?: string[] }>;
     };
   },
   /**

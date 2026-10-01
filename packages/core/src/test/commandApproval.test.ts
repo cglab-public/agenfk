@@ -9,7 +9,7 @@
  * command arrives from the file, the person reads it and says yes.
  */
 import { describe, it, expect } from 'vitest';
-import { approvalFor, commandFingerprint } from '../commandApproval';
+import { approvalFor, commandFingerprint, hiddenCharacters } from '../commandApproval';
 
 describe('approving a command from the file', () => {
   const from = { key: 'verifyCommand' as const, command: 'npm test' };
@@ -74,5 +74,14 @@ describe('approving a command from the file', () => {
     expect(approvalFor({ key: 'verifyCommand', command: b }, [commandFingerprint(a)]).allowed).toBe(false);
     // SHA-256: the width a collision search has to beat.
     expect(commandFingerprint(a)).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('names the characters a screen cannot show faithfully, and leaves ordinary text alone', () => {
+    expect(hiddenCharacters('npm test && npm run lint')).toEqual([]);
+    expect(hiddenCharacters('make\tcheck\nnpm test')).toEqual([]);
+    // A right-to-left override turns `echo 'safe<RLO>'; payload; #` into what reads as one echo.
+    expect(hiddenCharacters("echo 'safe\u202E'; printf X; #")).toEqual(['U+202E']);
+    expect(hiddenCharacters('./verify\u200B && ./verify\u200B')).toEqual(['U+200B']);
+    expect(hiddenCharacters('a\u2066b\uFEFFc\u0007d\u2028e')).toEqual(['U+2066', 'U+FEFF', 'U+0007', 'U+2028']);
   });
 });

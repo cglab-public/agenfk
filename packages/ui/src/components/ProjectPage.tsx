@@ -139,6 +139,16 @@ const ORIGIN_TEXT: Record<string, string> = {
  */
 const isOn = (value: string | null): boolean => value?.toLowerCase() === 'on';
 
+/**
+ * A command with every character a screen cannot show faithfully written out
+ * as `⟨U+XXXX⟩` - the same set core's hiddenCharacters names, so a bidi
+ * override or a zero-width space is SEEN rather than obeyed (review of
+ * 34ee6b8a). Tab and newline are left as they are.
+ */
+const revealHidden = (text: string): string =>
+  text.replace(/[\p{Cf}\p{Cc}\p{Zl}\p{Zp}]/gu, ch =>
+    (ch === '\t' || ch === '\n' || ch === '\r') ? ch : `⟨U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}⟩`);
+
 /** The one row this page writes, unless the repository's file decided it. */
 const hasSwitch = (row: { key: string; origin: string }): boolean =>
   row.key === 'autoWorktree' && row.origin !== 'from-file';
@@ -424,6 +434,14 @@ export function ProjectPage({
                   {(() => {
                     const pending = pendingApproval(row);
                     if (!pending) return null;
+                    // The server refuses these anyway: say why here, instead of offering a button that fails.
+                    if (pending.hidden?.length) {
+                      return (
+                        <span data-testid={`setting-hidden-${row.key}`} className="shrink-0 text-[11px] font-semibold text-danger-text">
+                          Holds hidden characters ({pending.hidden.join(', ')}): fix the file to approve it
+                        </span>
+                      );
+                    }
                     return (
                       <button
                         type="button"
@@ -468,7 +486,7 @@ export function ProjectPage({
                         ? 'border-border-soft bg-canvas text-ink-secondary'
                         : 'border-dashed border-border-soft text-ink-tertiary'
                     }`}>
-                      {pending ? pending.command : row.value ?? 'not set'}
+                      {pending ? revealHidden(pending.command) : row.value ?? 'not set'}
                     </p>
                   );
                 })()}
