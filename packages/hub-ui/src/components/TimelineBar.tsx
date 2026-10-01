@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { eventTypeLabel } from '../eventTypes';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api';
+import { useElementWidth } from '../hooks/useElementWidth';
 import { QueryState } from './ui';
 import { seriesColours, ALL_EVENTS_COLOR } from '../chartColours';
 import {
@@ -83,6 +84,7 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
   const setRange = (r: RangeKey) => { setRangeInternal(r); onRangeChange?.(r); };
   const [bucketSel, setBucketSel] = useState<Bucket>('day');
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const [boxRef, boxWidth] = useElementWidth<HTMLDivElement>(920);
 
   const bucket = effectiveBucket(range, bucketSel);
   const isToday = range === 'today';
@@ -146,8 +148,11 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
   const ticks = useMemo(() => niceTicks(maxTotal), [maxTotal]);
   const yTop = ticks[ticks.length - 1] || 1;
 
-  // SVG geometry — a real chart with margins so axes don't get clipped.
-  const width = 920;
+  // SVG geometry — a real chart with margins so axes don't get clipped. The
+  // viewBox is as wide as the box it sits in, so one unit is one pixel both
+  // ways: stretching a fixed 920-wide drawing over the box squashed its text
+  // and turned rounded corners into ellipses (story f6fce254).
+  const width = boxWidth;
   const height = 220;
   const m = { top: 12, right: 16, bottom: 32, left: 40 };
   const innerW = width - m.left - m.right;
@@ -230,8 +235,9 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
           <QueryState query={q} label="activity timeline">{() => null}</QueryState>
         </div>
       )}
-      <div className={`px-3 pt-3 pb-3 relative ${q.data === undefined ? 'hidden' : ''}`}>
-        <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="w-full h-[220px] block" role="img" aria-label="Event timeline histogram">
+      {/* Measured here: its content box is exactly the svg's width. */}
+      <div ref={boxRef} className={`px-3 pt-3 pb-3 relative ${q.data === undefined ? 'hidden' : ''}`}>
+        <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-[220px] block" role="img" aria-label="Event timeline histogram">
           {/* Y gridlines + labels */}
           {ticks.map((t) => {
             const y = m.top + innerH - (t / yTop) * innerH;
