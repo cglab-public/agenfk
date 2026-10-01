@@ -757,6 +757,76 @@ async function applyMigrationPlan(
   return refused;
 }
 
+/**
+ * Where a card of this flow is finished (8024f6c4): the status its
+ * flow-ending move lands on - DONE, or a last step that is a boundary - or out
+ * of play (trashed, archived, parked as an idea). A last step that is an
+ * ordinary working step is NOT finished: leaving it is what closes the card.
+ */
+function finishedStatusesOf(flow: { steps: any[] }): Set<string> {
+  const sorted = sortedFlowSteps(flow as any);
+  const last = sorted[sorted.length - 1];
+  const finished = new Set<string>([Status.DONE, Status.TRASHED, Status.ARCHIVED, Status.IDEAS].map(String));
+  if (last && isBoundaryStep(last as any)) finished.add(String(last.name));
+  return finished;
+}
+
+/** Out of play: their subtrees are abandoned with them, so nothing under them holds a close. */
+const OUT_OF_PLAY = new Set<string>([Status.TRASHED, Status.ARCHIVED, Status.IDEAS].map(String));
+
+/**
+ * Every unfinished card under this one (8024f6c4) - the whole subtree, not
+ * only direct children: a child closed before this rule existed, or one a new
+ * card was attached to, can hold open work. Each card is judged by ITS OWN
+ * project's flow, since a moved child keeps its parent. Bounded and
+ * cycle-safe; a trashed, archived or parked subtree is not walked.
+ */
+async function openDescendants(rootId: string): Promise<Array<{ id: string; title: string; status: string }>> {
+  const flows = await storage.listFlows();
+  const finishedByProject = new Map<string, Set<string>>();
+  const finishedFor = async (projectId: string): Promise<Set<string>> => {
+    let f = finishedByProject.get(projectId);
+    if (!f) {
+      const project: any = await storage.getProject(projectId);
+      f = finishedStatusesOf(getActiveFlow(project?.flowId, flows));
+      finishedByProject.set(projectId, f);
+    }
+    return f;
+  };
+  const open: Array<{ id: string; title: string; status: string }> = [];
+  const seen = new Set<string>([rootId]);
+  let frontier = [rootId];
+  for (let depth = 0; frontier.length && depth < 32 && seen.size < 5000; depth++) {
+    const next: string[] = [];
+    for (const id of frontier) {
+      const kids = (await storage.listItems({ parentId: id, hydrate: false } as any)) as any[];
+      for (const k of kids) {
+        if (seen.has(k.id)) continue;
+        seen.add(k.id);
+        const status = String(k.status);
+        if (OUT_OF_PLAY.has(status)) continue;
+        if (!(await finishedFor(k.projectId)).has(status)) open.push({ id: k.id, title: k.title, status });
+        next.push(k.id);
+      }
+    }
+    frontier = next;
+  }
+  return open;
+}
+
+/** The refusal a close owes while work under the card is open (8024f6c4). */
+function childrenOpenRefusal(item: any, open: Array<{ id: string; title: string; status: string }>) {
+  const SHOWN = 10;
+  const list = open.slice(0, SHOWN).map(c => `  [${c.id.slice(0, 8)}] ${c.title} (${c.status})`).join('\n')
+    + (open.length > SHOWN ? `\n  and ${open.length - SHOWN} more` : '');
+  return {
+    status: item.status,
+    error: 'CHILDREN_OPEN',
+    message: `❌ ${item.title} cannot close: ${open.length === 1 ? 'a card under it is' : `${open.length} cards under it are`} not finished.\n\n${list}\n\nFinish, trash or archive ${open.length === 1 ? 'it' : 'them'} first.${staysOn(item.status)}`,
+    children: open.map(c => ({ id: c.id, title: c.title, status: c.status })),
+  };
+}
+
 const syncParentStatus = async (parentId: string) => {
   const parent = await storage.getItem(parentId);
   if (!parent) return;
@@ -824,6 +894,16 @@ const syncParentStatus = async (parentId: string) => {
     if (parentIdx !== null && laggard > parentIdx) {
       newStatus = ordered[laggard].name as Status;
     }
+  }
+
+  /*
+   * 8024f6c4: never onto a finished status while anything under the parent is
+   * open. Children on a platform status (PAUSED, BLOCKED) have no position, so
+   * the laggard above skips them - and a parent already past its review rolled
+   * straight to DONE over a paused child.
+   */
+  if (newStatus && finishedStatusesOf(parentFlow).has(String(newStatus)) && (await openDescendants(parent.id)).length) {
+    newStatus = null;
   }
 
   if (newStatus) {
@@ -8844,6 +8924,20 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   const endsFlowHere = leavingEndsFlow(sorted as any, currentFlowStep.index);
   const checkStrays = async (r0: any): Promise<{ refused: true } | { refused: false; res: any }> => {
     if (!endsFlowHere) return { refused: false, res: r0 };
+    /*
+     * 8024f6c4: a card does not close while anything under it is unfinished.
+     * BUG 759b606c reached DONE with two children in TODO - accepted as done
+     * while its work did not exist. Asked here because every route that ends
+     * the flow asks this, at its last step before writing: the entry (before
+     * any check or suite), a close on a green, a close deferred to the parent,
+     * and after the command ran - so work that appears or reopens DURING the
+     * verify is seen too.
+     */
+    const open = await openDescendants(item.id);
+    if (open.length) {
+      r0.status(400).json(childrenOpenRefusal(item, open));
+      return { refused: true };
+    }
     const { strays, claimless } = await strayStagedFor(item, (project as any)?.projectRoot, isWorkingStatus);
     if (!strays.length) return { refused: false, res: r0 };
     if (claimless.length) return { refused: false, res: withNote(r0, `⚠️ ${describeUnowned(strays, claimless)}`) };
@@ -8858,35 +8952,6 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const early = await checkStrays(res);
     if (early.refused) return;
     res = early.res;
-  }
-
-  /*
-   * 8024f6c4: a card does not close while a direct child is unfinished. BUG
-   * 759b606c reached DONE with two children in TODO - accepted as done while
-   * its work did not exist. The parent roll-up was never the cause (it
-   * mirrors the LEAST advanced child); a verify on the parent itself was, and
-   * nothing here asked. Finished: on the flow's last step (or DONE), trashed,
-   * archived, or parked as an idea. Refused before any check or suite runs,
-   * on both entries - a gate handed in from the background included. Only
-   * direct children: each of them is held to the same rule on its own close.
-   */
-  {
-    const upcoming = sorted[currentFlowStep.index + 1];
-    const lastName = sorted[sorted.length - 1]?.name;
-    const closes = !upcoming || upcoming.name === Status.DONE || upcoming.name === lastName;
-    if (closes) {
-      const finished = new Set<string>([String(Status.DONE), String(lastName), String(Status.TRASHED), String(Status.ARCHIVED), String(Status.IDEAS)]);
-      const open = ((await storage.listItems({ parentId: item.id } as any)) as any[]).filter(c => !finished.has(String(c.status)));
-      if (open.length) {
-        const list = open.map(c => `  [${String(c.id).slice(0, 8)}] ${c.title} (${c.status})`).join('\n');
-        return res.status(400).json({
-          status: item.status,
-          error: 'CHILDREN_OPEN',
-          message: `❌ ${item.title} cannot close: ${open.length === 1 ? 'a child is' : `${open.length} children are`} not finished.\n\n${list}\n\nFinish, trash or archive ${open.length === 1 ? 'it' : 'them'} first.${staysOn(item.status)}`,
-          children: open.map(c => ({ id: c.id, title: c.title, status: c.status })),
-        });
-      }
-    }
   }
 
   /*
