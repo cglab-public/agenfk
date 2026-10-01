@@ -55,7 +55,7 @@ export function authRouter(ctx: HubServerContext): Router {
       [ctx.config.defaultOrgId],
     );
     res.json({
-      password: !!cfg?.password_enabled,
+      password: !!cfg?.password_enabled || !!ctx.config.forcePasswordLogin,
       google: !!cfg?.google_enabled,
       entra: !!cfg?.entra_enabled,
       requiresSetup: (await countUsers(ctx.db)) === 0,
@@ -66,6 +66,26 @@ export function authRouter(ctx: HubServerContext): Router {
     const { email, password } = req.body ?? {};
     if (typeof email !== 'string' || typeof password !== 'string') {
       return res.status(400).json({ error: 'email and password required' });
+    }
+
+    // "Email + password" switched off in Admin → Sign-in must actually stop
+    // password sign-in, not just hide the form. Checked before the account is
+    // looked up, so the answer is the same for every email and cannot be used
+    // to find accounts, and a refused attempt does not count towards lockout.
+    // A missing row fails closed, as /auth/providers and the SSO routes do:
+    // boot seeds the default org's row with password on, so it goes missing
+    // only when this process's defaultOrgId is stale (an org rename on another
+    // replica), and then nothing should be accepted against the wrong org.
+    // The hub is single-tenant (v1): the default org's setting governs every
+    // password sign-in, like the other sign-in routes.
+    const cfg = await ctx.db.get<Pick<AuthConfigRow, 'password_enabled'>>(
+      'SELECT password_enabled FROM auth_config WHERE org_id = ?',
+      [ctx.config.defaultOrgId],
+    );
+    // AGENFK_HUB_FORCE_PASSWORD_LOGIN is the operator's way back in when SSO
+    // has broken with password switched off (see HubServerConfig).
+    if (!ctx.config.forcePasswordLogin && (!cfg || !Number(cfg.password_enabled))) {
+      return res.status(403).json({ error: 'Password sign-in is not enabled' });
     }
 
     // Account lockout: too many recent failures for this email → refuse without

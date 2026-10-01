@@ -195,6 +195,13 @@ describe('PG parity: admin endpoints', () => {
     expect(await fx.db.get<any>('SELECT id FROM users WHERE email = ?', ['admin@x'])).toBeTruthy();
   });
 
+  it('refuses password sign-in while it is switched off (BUG cdb1b47f)', async () => {
+    await fx.db.run('UPDATE auth_config SET password_enabled = 0 WHERE org_id = ?', ['org']);
+    const r = await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
+    expect(r.status).toBe(403);
+    expect(r.headers['set-cookie']).toBeUndefined();
+  });
+
   it('refuses an auth-config save that leaves no way to sign in', async () => {
     const r = await supertest(fx.app).put('/v1/admin/auth-config').set('Cookie', fx.cookie).send({ passwordEnabled: false });
     expect(r.status).toBe(400);
