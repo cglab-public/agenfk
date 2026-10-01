@@ -40,6 +40,8 @@ import { useTheme } from '../ThemeContext';
 import { Logo } from './Logo';
 import { capture } from '../posthog';
 import { calculateCost, formatCost, calculateCycleTimeMs, formatDuration } from '../utils';
+import { BoardDateFilter } from './BoardDateFilter';
+import { type DateFilter, emptyColumnMessage, isDateFilterActive, loadDateFilter, matchesDateFilter, saveDateFilter } from '../boardDateFilter';
 
 // Fallback column list used when the flow fetch fails or is loading
 const FALLBACK_STATUSES = [
@@ -722,6 +724,34 @@ export const KanbanBoard: React.FC = () => {
     if (selectedProjectId && previous) capture('project_switched');
   }, [selectedProjectId]);
 
+  // Date filter (CGLAB-444), remembered per project. Keyed by the project it
+  // was loaded for, so switching project swaps in that project's own filter
+  // during the same render instead of applying the old one for a frame.
+  const [dateFilterState, setDateFilterState] = useState(() => ({
+    projectId: selectedProjectId,
+    filter: loadDateFilter(selectedProjectId),
+  }));
+  if (dateFilterState.projectId !== selectedProjectId) {
+    setDateFilterState({ projectId: selectedProjectId, filter: loadDateFilter(selectedProjectId) });
+  }
+  const dateFilter = dateFilterState.filter;
+  const dateFilterActive = isDateFilterActive(dateFilter);
+  const setDateFilter = (filter: DateFilter) => {
+    setDateFilterState({ projectId: selectedProjectId, filter });
+    if (selectedProjectId) saveDateFilter(selectedProjectId, filter);
+  };
+  const passesDateFilter = (i: AgEnFKItem) => matchesDateFilter(i, dateFilter);
+  // Side-column badges count every card of the status, as before, minus the
+  // ones the date filter hides.
+  const sideCount = (status: Status) =>
+    items?.filter((i: AgEnFKItem) => i.status === status && passesDateFilter(i)).length || 0;
+  // ARCHIVED lists every archived card (no drill-down filter), as before.
+  const archivedShown = items?.filter((i: AgEnFKItem) => i.status === Status.ARCHIVED && passesDateFilter(i)) ?? [];
+  const dateFilterEmptyState = (shown: AgEnFKItem[]) =>
+    dateFilterActive && shown.length === 0 ? (
+      <p className="text-center text-xs text-slate-400 dark:text-slate-500 py-4">{emptyColumnMessage(dateFilter)}</p>
+    ) : null;
+
   const [searchQuery, setSearchTerm] = useState('');
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [searchMatches, setSearchMatches] = useState<AgEnFKItem[]>([]);
@@ -1061,7 +1091,10 @@ export const KanbanBoard: React.FC = () => {
     searchInputRef.current?.focus();
   }, [selectedProjectId, isPickerOpen, isCreatingProject, pickerHasProjects]);
 
-  const getItemsByStatus = (status: Status) => {
+  // `includeHidden` returns the cards the date filter hides as well. Anything
+  // that renumbers sortOrder needs it: computed from the visible subset, a
+  // hidden card would be left sharing a slot with a moved one.
+  const getItemsByStatus = (status: Status, { includeHidden = false } = {}) => {
     if (!items) return [];
 
     let filtered = items.filter((i: AgEnFKItem) => i.status === status);
@@ -1073,6 +1106,8 @@ export const KanbanBoard: React.FC = () => {
       const currentParent = navPath[navPath.length - 1];
       filtered = filtered.filter((i: AgEnFKItem) => i.parentId === currentParent.id);
     }
+
+    if (!includeHidden) filtered = filtered.filter(passesDateFilter);
 
     // Sort by sortOrder, then by createdAt for stable ordering
     filtered.sort((a: AgEnFKItem, b: AgEnFKItem) => {
@@ -1171,7 +1206,7 @@ export const KanbanBoard: React.FC = () => {
 
     // Reorder within same column or move to specific position in another column
     if (currentDropTargetId && currentDropTargetId !== id) {
-      const columnItemsBefore = getItemsByStatus(status);
+      const columnItemsBefore = getItemsByStatus(status, { includeHidden: true });
       const columnItems = columnItemsBefore.filter((i: AgEnFKItem) => i.id !== id);
       const targetIndex = columnItems.findIndex((i: AgEnFKItem) => i.id === currentDropTargetId);
       
@@ -1212,7 +1247,7 @@ export const KanbanBoard: React.FC = () => {
 
     // Cross-column or drop on empty space: update status (append to end of target column)
     if (draggedItem.status !== status) {
-      const targetColumnItems = getItemsByStatus(status);
+      const targetColumnItems = getItemsByStatus(status, { includeHidden: true });
       const newSortOrder = targetColumnItems.length;
 
       // Optimistic local UI update
@@ -1269,7 +1304,10 @@ export const KanbanBoard: React.FC = () => {
         i.id.toLowerCase().includes(lower) ||
         i.title.toLowerCase().includes(lower)
       )
+      // Matches the date filter shows come first, so a search only lifts the
+      // filter (navigateToMatch) when every match is one it hides.
       .sort((a: AgEnFKItem, b: AgEnFKItem) =>
+        (Number(!passesDateFilter(a)) - Number(!passesDateFilter(b))) ||
         (statusPriority[a.status] ?? 99) - (statusPriority[b.status] ?? 99)
       );
 
@@ -1286,6 +1324,9 @@ export const KanbanBoard: React.FC = () => {
   };
 
   const navigateToMatch = (item: AgEnFKItem) => {
+    // A match the date filter hides could never be shown or highlighted, so
+    // reaching it lifts the range (the chosen field is kept).
+    if (!passesDateFilter(item)) setDateFilter({ ...dateFilter, range: { kind: 'any' } });
     if (item.status === Status.IDEAS) setIsIdeasCollapsed(false);
     if (item.status === Status.ARCHIVED) setIsArchiveCollapsed(false);
     if (item.status === Status.BLOCKED) setIsBlockedCollapsed(false);
@@ -1898,6 +1939,8 @@ export const KanbanBoard: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-4 shrink-0 pl-4 border-l border-slate-100 dark:border-slate-800/50 ml-2">
+            <BoardDateFilter value={dateFilter} onChange={setDateFilter} />
+
             {/* Tokens/Cost section hidden temporarily for algorithm enhancements
             <div className="flex flex-col items-end">
               <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5 leading-none mb-1">
@@ -1948,7 +1991,7 @@ export const KanbanBoard: React.FC = () => {
                 <button data-testid="ideas-collapsed-button" onClick={() => setIsIdeasCollapsed(false)} className="h-full w-full bg-chip/50 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-chip transition-colors group border border-dashed border-border-brand">
                   <Lightbulb size={16} className="text-accent-text/70 group-hover:text-accent-text shrink-0" />
                   <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-accent-text shrink-0 mt-2">Ideas</span>
-                  <span className="bg-white dark:bg-slate-800 text-accent-text text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-border-brand mt-auto">{items?.filter((i: AgEnFKItem) => i.status === Status.IDEAS).length || 0}</span>
+                  <span className="bg-white dark:bg-slate-800 text-accent-text text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-border-brand mt-auto" data-testid="side-count-IDEAS">{sideCount(Status.IDEAS)}</span>
                 </button>
               ) : (
                 /* v8 ignore start */
@@ -1962,7 +2005,7 @@ export const KanbanBoard: React.FC = () => {
                       <Lightbulb size={14} className="text-accent-text" />
                       <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider text-xs">Ideas</h2>
                     </div>
-                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgEnFKItem) => i.status === Status.IDEAS).length || 0}</span>
+                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700" data-testid="side-count-IDEAS">{sideCount(Status.IDEAS)}</span>
                   </div>
                   <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                     <AnimatePresence mode="popLayout" initial={false}>
@@ -1992,6 +2035,7 @@ export const KanbanBoard: React.FC = () => {
                           />
                         ))}
                       </AnimatePresence>
+                    {dateFilterEmptyState(getItemsByStatus(Status.IDEAS))}
                     {/* v8 ignore start */}
                     <button onClick={() => setSelectedItem(blankDraft(selectedProjectId!, Status.IDEAS))} className="w-full py-1.5 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-lg text-slate-400 dark:text-slate-500 text-xs font-medium hover:border-border-brand hover:text-accent-text transition-all flex items-center justify-center gap-1.5">
                       <Plus size={14} /> Add idea
@@ -2028,7 +2072,7 @@ export const KanbanBoard: React.FC = () => {
                   <button onClick={() => handleArchiveColumn(status as Status)} className="p-1 shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 dark:text-slate-500 transition-opacity" title="Archive Column">
                     <Archive size={12} />
                   </button>
-                  <span className="shrink-0 bg-chip text-accent-text text-xs font-mono font-bold px-2 py-1 rounded-full shadow-sm border border-border-soft">
+                  <span data-testid={`column-count-${status}`} className="shrink-0 bg-chip text-accent-text text-xs font-mono font-bold px-2 py-1 rounded-full shadow-sm border border-border-soft">
                     {getItemsByStatus(status as Status).length}
                   </span>
                 </div>
@@ -2072,6 +2116,7 @@ export const KanbanBoard: React.FC = () => {
                       </CardAnimationWrapper>
                     ))}
                   </AnimatePresence>
+                {dateFilterEmptyState(getItemsByStatus(status as Status))}
                 <button onClick={() => setSelectedItem(blankDraft(selectedProjectId!, status as Status))} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-sm font-medium hover:border-border-brand hover:text-accent-text hover:bg-chip transition-all flex items-center justify-center gap-2">
                   <Plus size={16} /> Add {columnLabel.toLowerCase()}
                 </button>
@@ -2092,7 +2137,7 @@ export const KanbanBoard: React.FC = () => {
                       <Pause size={14} className="text-orange-500" />
                       <h2 className="font-bold text-slate-700 dark:text-slate-300 text-xs uppercase tracking-wider">Paused</h2>
                     </div>
-                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgEnFKItem) => i.status === Status.PAUSED).length || 0}</span>
+                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700" data-testid="side-count-PAUSED">{sideCount(Status.PAUSED)}</span>
                   </div>
                   <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                     <AnimatePresence mode="popLayout" initial={false}>
@@ -2123,6 +2168,7 @@ export const KanbanBoard: React.FC = () => {
                           />
                         ))}
                       </AnimatePresence>
+                    {dateFilterEmptyState(getItemsByStatus(Status.PAUSED))}
                   </div>
                 </div>
               )}
@@ -2135,7 +2181,7 @@ export const KanbanBoard: React.FC = () => {
                       <AlertCircle size={14} className="text-red-500" />
                       <h2 className="font-bold text-slate-700 dark:text-slate-300 text-xs uppercase tracking-wider">Blocked</h2>
                     </div>
-                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgEnFKItem) => i.status === Status.BLOCKED).length || 0}</span>
+                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700" data-testid="side-count-BLOCKED">{sideCount(Status.BLOCKED)}</span>
                   </div>
                   <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                     <AnimatePresence mode="popLayout" initial={false}>
@@ -2166,6 +2212,7 @@ export const KanbanBoard: React.FC = () => {
                           />
                         ))}
                       </AnimatePresence>
+                    {dateFilterEmptyState(getItemsByStatus(Status.BLOCKED))}
                     <button onClick={() => setSelectedItem(blankDraft(selectedProjectId!, Status.BLOCKED))} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-xs font-medium hover:border-red-300 dark:hover:border-red-700 hover:text-red-500 dark:hover:text-red-400 transition-all flex items-center justify-center gap-2 mt-2">
                       <Plus size={16} /> Add blocked
                     </button>
@@ -2183,7 +2230,13 @@ export const KanbanBoard: React.FC = () => {
                       {items?.some((i: AgEnFKItem) => i.status === Status.ARCHIVED) && (
                         <button
                           onClick={() => {
-                            if (window.confirm('Move all archived items to trash?')) {
+                            const all = items?.filter((i: AgEnFKItem) => i.status === Status.ARCHIVED).length ?? 0;
+                            const hidden = all - archivedShown.length;
+                            // The column may show only part of what this trashes.
+                            const message = hidden > 0
+                              ? `Move all ${all} archived ${all === 1 ? 'item' : 'items'} to trash? ${hidden} of them ${hidden === 1 ? 'is' : 'are'} hidden by the date filter.`
+                              : 'Move all archived items to trash?';
+                            if (window.confirm(message)) {
                               trashArchivedMutation.mutate(selectedProjectId!);
                             }
                           }}
@@ -2194,11 +2247,11 @@ export const KanbanBoard: React.FC = () => {
                         </button>
                       )}
                     </div>
-                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgEnFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
+                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700" data-testid="side-count-ARCHIVED">{sideCount(Status.ARCHIVED)}</span>
                   </div>
                   <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                     <AnimatePresence mode="popLayout" initial={false}>
-                      {items?.filter((i: AgEnFKItem) => i.status === Status.ARCHIVED).map((item: AgEnFKItem) => (
+                      {archivedShown.map((item: AgEnFKItem) => (
                         <KanbanCard
                           key={item.id}
                           item={item}
@@ -2225,6 +2278,7 @@ export const KanbanBoard: React.FC = () => {
                         />
                       ))}
                     </AnimatePresence>
+                    {dateFilterEmptyState(archivedShown)}
                   </div>
                 </div>
               )}
@@ -2239,7 +2293,7 @@ export const KanbanBoard: React.FC = () => {
                     >
                       <Pause size={16} className="text-orange-400 group-hover:text-orange-500 shrink-0" />
                       <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-orange-400 shrink-0 mt-2">Paused</span>
-                      <span className="bg-white dark:bg-slate-800 text-orange-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-orange-100 dark:border-orange-900/30 mt-auto">{items?.filter((i: AgEnFKItem) => i.status === Status.PAUSED).length || 0}</span>
+                      <span className="bg-white dark:bg-slate-800 text-orange-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-orange-100 dark:border-orange-900/30 mt-auto" data-testid="side-count-PAUSED">{sideCount(Status.PAUSED)}</span>
                     </button>
                   )}
                   {isBlockedCollapsed && (
@@ -2249,14 +2303,14 @@ export const KanbanBoard: React.FC = () => {
                     >
                       <AlertCircle size={16} className="text-red-400 group-hover:text-red-500 shrink-0" />
                       <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-red-400 shrink-0 mt-2">Blocked</span>
-                      <span className="bg-white dark:bg-slate-800 text-red-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-red-100 dark:border-red-900/30 mt-auto">{items?.filter((i: AgEnFKItem) => i.status === Status.BLOCKED).length || 0}</span>
+                      <span className="bg-white dark:bg-slate-800 text-red-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-red-100 dark:border-red-900/30 mt-auto" data-testid="side-count-BLOCKED">{sideCount(Status.BLOCKED)}</span>
                     </button>
                   )}
                   {isArchiveCollapsed && (
                     <button onClick={() => setIsArchiveCollapsed(false)} className="flex-1 w-full bg-slate-200/50 dark:bg-slate-900/50 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-slate-300 dark:hover:bg-slate-800 transition-colors group border border-dashed border-slate-300 dark:border-slate-800">
                       <Archive size={16} className="text-slate-500 group-hover:text-accent-text shrink-0" />
                       <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-slate-500 shrink-0 mt-2">Archived</span>
-                      <span className="bg-white dark:bg-slate-800 text-slate-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-slate-100 dark:border-slate-700 mt-auto">{items?.filter((i: AgEnFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
+                      <span className="bg-white dark:bg-slate-800 text-slate-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-slate-100 dark:border-slate-700 mt-auto" data-testid="side-count-ARCHIVED">{sideCount(Status.ARCHIVED)}</span>
                     </button>
                   )}
                 </div>
