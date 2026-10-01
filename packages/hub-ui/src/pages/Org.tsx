@@ -8,7 +8,7 @@ import { FacetMultiselect } from '../components/FacetMultiselect';
 import { FilterAccordion, FILTERS_OPEN, parseFiltersOpen } from '../components/FilterAccordion';
 import { describeFilters } from '../filterSummary';
 import { MetricsTilesRow, MetricsTotals } from '../components/MetricsTilesRow';
-import { ChipRow, Page, QueryState } from '../components/ui';
+import { ChipRow, Page, PageHeader, PeriodControl, QueryState } from '../components/ui';
 import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
 import { fmtRelative } from '../dates';
@@ -158,35 +158,20 @@ export function OrgPage() {
 
   return (
     <Page>
-      <header>
-        <p className="text-[11px] uppercase tracking-[0.18em] text-accent-ink font-semibold">Dashboard</p>
-        <h1 className="mt-1 text-2xl font-bold tracking-tight text-ink">Organization rollup</h1>
-        <p className="mt-1 text-sm text-ink-tertiary">Fleet-wide AgEnFK activity across every connected installation.</p>
-      </header>
+      {/* The period is always in view, in the header toolbar as on PR overview;
+          the facets fold behind one summary line. */}
+      <PageHeader
+        eyebrow="Dashboard"
+        title="Organization rollup"
+        subtitle="Fleet-wide AgEnFK activity across every connected installation."
+        toolbar={(
+          <PeriodControl ranges={RANGES} active={range} onPick={setRange} />
+        )}
+      />
 
       <div className="space-y-1.5">
         <p className="text-[11px] text-ink-tertiary">Totals apply every filter except event type.</p>
         <QueryState query={metrics} label="activity totals">{() => <MetricsTilesRow totals={totals} />}</QueryState>
-      </div>
-
-      {/* The period is always in view; the facets fold behind one summary line. */}
-      <div role="group" aria-label="Period" className="flex items-center gap-2">
-        <span className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">Period</span>
-        <div className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium">
-          {RANGES.map(r => (
-            <button
-              key={r.key}
-              type="button"
-              aria-pressed={range === r.key}
-              onClick={() => setRange(r.key)}
-              className={`px-2.5 py-1 rounded-md transition-colors ${range === r.key
-                ? 'bg-surface text-accent-ink shadow-sm'
-                : 'text-ink-tertiary hover:text-ink'}`}
-            >
-              {r.label}
-            </button>
-          ))}
-        </div>
       </div>
 
       <FilterAccordion

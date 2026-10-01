@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { GitPullRequest, RefreshCw, Search, TrendingUp, TrendingDown, X } from 'lucide-react';
+import { GitPullRequest, RefreshCw, Search, X } from 'lucide-react';
 import { api } from '../api';
 import { FacetMultiselect } from '../components/FacetMultiselect';
 import { FilterAccordion, parseFiltersOpen } from '../components/FilterAccordion';
@@ -13,12 +13,12 @@ import { csvParam } from '../urlParams';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useSettledKey } from '../hooks/useSettledKey';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
-import { SIZE_META, type SizeKey, buildDayAxis, pctDelta } from '../prOverview';
+import { SIZE_META, type SizeKey, buildDayAxis, fmtAverage, pctDelta } from '../prOverview';
 import { heatColor, SPARK_STROKE } from '../chartColours';
 import { parsePrQuery } from '../prSearch';
 import { buildMonthBands, dayHeaderInfo, contributionPcts, cellTooltip, placeTooltip } from '../prPerDay';
 import { buildVolumeSeries, type Granularity } from '../prVolumeGranularity';
-import { Page, QueryError, Skeleton } from '../components/ui';
+import { Page, PageHeader, PeriodControl, QueryError, Skeleton, StatTile } from '../components/ui';
 import { describeFilters } from '../filterSummary';
 import { usePeopleNames } from '../hooks/usePeopleNames';
 import { PersonName, initialsOf } from '../components/PersonName';
@@ -28,21 +28,6 @@ const GRANULARITIES: Array<{ key: Granularity; label: string; unit: string }> = 
   { key: 'weekly', label: 'weekly', unit: 'week' },
   { key: 'monthly', label: 'monthly', unit: 'month' },
 ];
-
-/** Average PRs per bucket: integers stay bare, fractional rates show 1 decimal. */
-function fmtAverage(n: number): string {
-  return Number.isInteger(n) ? String(n) : n.toFixed(1);
-}
-
-/** One stat tile under the volume chart (Total / Average / Max). */
-function VolumeStat({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div className="rounded-lg border border-border-soft bg-canvas px-3 py-2">
-      <div className="text-[10px] uppercase tracking-[0.12em] font-mono text-ink-tertiary">{label}</div>
-      <div className="mt-0.5 font-mono text-[15px] font-bold tabular-nums text-ink">{value}</div>
-    </div>
-  );
-}
 
 const RANGES: Array<{ key: RangeKey; label: string }> = [
   { key: 'today', label: 'today' },
@@ -104,27 +89,6 @@ const prKey = (p: { repo: string; prNumber: number; childHubId?: string }) =>
 // XL→XS so the stacked bar renders largest at the bottom. Hoisted out of render.
 const SIZE_META_DESC = [...SIZE_META].reverse();
 const colorOf = (k: SizeKey) => SIZE_META.find(s => s.key === k)!.color;
-
-function DeltaBadge({ value }: { value: number | null }) {
-  if (value == null) return <span className="text-[11px] text-ink-tertiary">— no prior period</span>;
-  const up = value >= 0;
-  return (
-    <span className={`inline-flex items-center gap-1 text-[11px] font-semibold ${up ? 'text-status-ok-text' : 'text-status-danger-text'}`}>
-      {up ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-      {up ? '+' : ''}{value}%
-    </span>
-  );
-}
-
-function Tile({ label, value, children }: { label: string; value: React.ReactNode; children?: React.ReactNode }) {
-  return (
-    <div className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-4">
-      <div className="text-[10px] uppercase tracking-[0.14em] font-mono text-ink-tertiary">{label}</div>
-      <div className="mt-2 text-3xl font-bold tabular-nums text-ink">{value}</div>
-      <div className="mt-1.5">{children}</div>
-    </div>
-  );
-}
 
 /** Horizontal stacked size-mix bar for one row of size counts. */
 function MixBar({ sizes, total }: { sizes: SizeDist; total: number }) {
@@ -620,6 +584,7 @@ export function PrOverviewPage() {
   );
   // Re-bucketed PR volume for the "PR volume by size" chart (daily/weekly/monthly).
   const volume = useMemo(() => (d ? buildVolumeSeries(d.byDay, axis, gran) : null), [d, axis, gran]);
+  const prsDelta = d?.previous ? pctDelta(d.totals.prs, d.previous.prs) : null;
   const volumeBuckets = volume?.buckets ?? [];
   const maxBucketTotal = Math.max(1, ...volumeBuckets.map(b => b.total));
   // Reference date for the heatmap's "today" column highlight (UTC, like the axis).
@@ -700,77 +665,60 @@ export function PrOverviewPage() {
 
   return (
     <Page>
-      <header className="flex items-end justify-between gap-4 flex-wrap">
-        <div>
-          <p className="text-[11px] uppercase tracking-[0.18em] text-accent-ink font-semibold">Analytics</p>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight text-ink flex items-center gap-2">
-            <GitPullRequest className="w-6 h-6 text-accent-ink" /> PR Overview
-          </h1>
-          <p className="mt-1 text-sm text-ink-tertiary">Pull requests per developer, weighted by size — for the selected period, with a daily breakdown.</p>
-        </div>
-        {/* Hover explains the greyed presets on a shared link: the "do not
-            apply" note lives inside the accordion, so with `?filters=0` a
-            colleague landing on this page sees disabled controls and no reason. */}
-        <div
-          className="flex items-center gap-2"
-          title={searchActive
-            ? 'A PR search supersedes the date range — this selection is kept but does not apply until the search is cleared'
-            : undefined}
-        >
-          <div className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium">
-            {RANGES.map(r => {
-              const active = !customFrom && !customTo && range === r.key;
-              return (
-                <button
-                  key={r.key}
-                  type="button"
-                  aria-pressed={active}
-                  onClick={() => pickRange(r.key)}
-                  // Superseded by a PR search: disabled, not hidden, and the
-                  // selection survives so clearing the search restores it.
-                  disabled={searchActive}
-                  className={`px-2.5 py-1 rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${active
-                    ? 'bg-surface text-accent-ink shadow-sm'
-                    : 'text-ink-tertiary hover:text-ink'}`}
-                >
-                  {r.label}
-                </button>
-              );
-            })}
-          </div>
-          <div className="inline-flex items-center gap-1 text-[11px] text-ink-tertiary">
-            <input
-              type="date"
-              value={customFrom}
-              max={customTo || undefined}
-              onChange={e => setCustomFrom(e.target.value)}
-              aria-label="From date"
-              disabled={searchActive}
-              className="rounded-lg border border-border-soft bg-surface text-ink-secondary px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50"
-            />
-            <span>→</span>
-            <input
-              type="date"
-              value={customTo}
-              min={customFrom || undefined}
-              onChange={e => setCustomTo(e.target.value)}
-              aria-label="To date"
-              disabled={searchActive}
-              className="rounded-lg border border-border-soft bg-surface text-ink-secondary px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50"
-            />
-            {(customFrom || customTo) && (
-              <button
-                onClick={() => { setCustomFrom(''); setCustomTo(''); }}
+      {/* Hover on the period explains the greyed presets on a shared link: the
+          "do not apply" note lives inside the accordion, so with `?filters=0` a
+          colleague landing on this page sees disabled controls and no reason. */}
+      <PageHeader
+        eyebrow="Analytics"
+        icon={<GitPullRequest className="w-6 h-6 text-accent-ink" />}
+        title="PR Overview"
+        subtitle="Pull requests per developer, weighted by size — for the selected period, with a daily breakdown."
+        toolbar={(
+          <PeriodControl
+            ranges={RANGES}
+            active={!customFrom && !customTo ? range : null}
+            onPick={pickRange}
+            // Superseded by a PR search: disabled, not hidden, and the
+            // selection survives so clearing the search restores it.
+            disabled={searchActive}
+            title={searchActive
+              ? 'A PR search supersedes the date range — this selection is kept but does not apply until the search is cleared'
+              : undefined}
+          >
+            <div className="inline-flex items-center gap-1 text-[11px] text-ink-tertiary">
+              <input
+                type="date"
+                value={customFrom}
+                max={customTo || undefined}
+                onChange={e => setCustomFrom(e.target.value)}
+                aria-label="From date"
                 disabled={searchActive}
-                className="ml-0.5 px-1.5 py-1 rounded-md text-ink-tertiary hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
-                title="Clear date range"
-              >
-                ✕
-              </button>
-            )}
-          </div>
-        </div>
-      </header>
+                className="rounded-lg border border-border-soft bg-surface text-ink-secondary px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50"
+              />
+              <span>→</span>
+              <input
+                type="date"
+                value={customTo}
+                min={customFrom || undefined}
+                onChange={e => setCustomTo(e.target.value)}
+                aria-label="To date"
+                disabled={searchActive}
+                className="rounded-lg border border-border-soft bg-surface text-ink-secondary px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50"
+              />
+              {(customFrom || customTo) && (
+                <button
+                  onClick={() => { setCustomFrom(''); setCustomTo(''); }}
+                  disabled={searchActive}
+                  className="ml-0.5 px-1.5 py-1 rounded-md text-ink-tertiary hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                  title="Clear date range"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          </PeriodControl>
+        )}
+      />
 
       {/* PR search is a filter, but it outranks the facets: it stays in view
           above the collapsed bar rather than inside its fold. */}
@@ -928,18 +876,19 @@ export function PrOverviewPage() {
         <>
           {/* KPIs */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <Tile label="Total PRs" value={d.totals.prs}>
-              <DeltaBadge value={d.previous ? pctDelta(d.totals.prs, d.previous.prs) : null} />
-            </Tile>
-            <Tile label="Weighted size" value={<span>{d.totals.sizePoints}</span>}>
-              <span className="text-[11px] text-ink-tertiary">size points</span>
-            </Tile>
-            <Tile label="Active developers" value={d.totals.developers}>
-              <span className="text-[11px] text-ink-tertiary">{(d.totals.prs / Math.max(1, d.totals.developers)).toFixed(1)} PRs / dev</span>
-            </Tile>
-            <Tile label="Median size" value={<span className="uppercase">{d.totals.medianBucket ?? '—'}</span>}>
-              <span className="text-[11px] text-ink-tertiary">across {d.totals.prs} PRs</span>
-            </Tile>
+            <StatTile
+              label="Total PRs"
+              value={d.totals.prs}
+              delta={prsDelta}
+              hint={prsDelta == null ? '— no prior period' : undefined}
+            />
+            <StatTile label="Weighted size" value={d.totals.sizePoints} hint="size points" />
+            <StatTile
+              label="Active developers"
+              value={d.totals.developers}
+              hint={`${(d.totals.prs / Math.max(1, d.totals.developers)).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} PRs / dev`}
+            />
+            <StatTile label="Median size" value={(d.totals.medianBucket ?? '—').toUpperCase()} hint={`across ${d.totals.prs.toLocaleString()} PRs`} />
           </div>
 
           {/* Resize strip */}
@@ -1017,9 +966,9 @@ export function PrOverviewPage() {
                 is per bucket over the WHOLE range (empty buckets included). */}
             {volume && (
               <div className="mt-4 flex gap-3 flex-wrap">
-                <VolumeStat label="Total" value={volume.stats.total} />
-                <VolumeStat label={`Average / ${GRANULARITIES.find(g => g.key === gran)?.unit ?? gran}`} value={fmtAverage(volume.stats.average)} />
-                <VolumeStat label={`Max${volume.stats.maxLabel ? ` · ${volume.stats.maxLabel}` : ''}`} value={volume.stats.max} />
+                <StatTile size="sm" label="Total" value={volume.stats.total} />
+                <StatTile size="sm" label={`Average / ${GRANULARITIES.find(g => g.key === gran)?.unit ?? gran}`} value={fmtAverage(volume.stats.average)} />
+                <StatTile size="sm" label={`Max${volume.stats.maxLabel ? ` · ${volume.stats.maxLabel}` : ''}`} value={volume.stats.max} />
               </div>
             )}
           </section>

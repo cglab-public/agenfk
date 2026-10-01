@@ -1,3 +1,4 @@
+import { ReactNode } from 'react';
 import { cn } from './cn';
 
 const SWATCH = ['', 'bg-series-1', 'bg-series-2', 'bg-series-3', 'bg-series-4', 'bg-series-5', 'bg-series-6'] as const;
@@ -5,11 +6,15 @@ const SWATCH = ['', 'bg-series-1', 'bg-series-2', 'bg-series-3', 'bg-series-4', 
 /**
  * A headline number. `delta` is the % change vs the previous period; its tone
  * says whether that change is good, so `higherIsBetter={false}` for failures.
- * `series` keys the tile to the chart colour of the same measure.
+ * `series` keys the tile to the chart colour of the same measure. `hint` is a
+ * line of context under the value (a unit, a ratio); `size="sm"` is the
+ * compact tile used under a chart.
  */
-export function StatTile({ label, value, delta, higherIsBetter = true, series, className }: {
+export function StatTile({ label, value, delta, higherIsBetter = true, series, hint, size = 'md', className }: {
   label: string;
   value: number | string;
+  hint?: ReactNode;
+  size?: 'md' | 'sm';
   delta?: number | null;
   higherIsBetter?: boolean;
   series?: 1 | 2 | 3 | 4 | 5 | 6;
@@ -38,13 +43,22 @@ export function StatTile({ label, value, delta, higherIsBetter = true, series, c
     );
   }
   return (
-    <div className={cn('bg-surface border border-border-soft rounded-xl px-4 py-3 grid gap-1 min-w-0', className)}>
+    <div
+      data-stat-tile
+      data-size={size}
+      className={cn(
+        'bg-surface border border-border-soft grid gap-1 min-w-0',
+        size === 'sm' ? 'rounded-lg px-3 py-2' : 'rounded-xl px-4 py-3',
+        className,
+      )}
+    >
       <div className="flex items-center gap-1.5 text-xs font-semibold text-ink-tertiary">
         {series && <span data-testid="stat-swatch" aria-hidden="true" className={cn('w-2 h-2 rounded-sm', SWATCH[series])} />}
         {label}
       </div>
-      <div className="text-2xl font-extrabold tabular-nums text-ink truncate" title={shown}>{shown}</div>
+      <div className={cn('font-extrabold tabular-nums text-ink truncate', size === 'sm' ? 'text-[15px]' : 'text-2xl')} title={shown}>{shown}</div>
       {deltaEl}
+      {hint != null && hint !== '' && hint !== false && <div data-stat-hint className="text-[11px] text-ink-tertiary">{hint}</div>}
     </div>
   );
 }

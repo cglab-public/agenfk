@@ -14,3 +14,5 @@ export type { RowMenuItem } from './RowMenu';
 export { CopyButton } from './CopyButton';
 export { QueryError, QueryState, Skeleton } from './QueryState';
 export { Page } from './Page';
+export { PageHeader } from './PageHeader';
+export { PeriodControl } from './PeriodControl';
