@@ -19,6 +19,7 @@ import { federationRouter, federationInviteRouter } from './routes/federation.js
 import { startRollupTimer } from './rollup.js';
 import { startFederationSync } from './services/federation/federationSync.js';
 import { migrateOsUserKeys } from './services/migrateOsUserKeys.js';
+import { migrateChildPeopleNames } from './services/migrateChildPeopleNames.js';
 import { backfillUserKeyAliases } from './services/backfillUserKeyAliases.js';
 import * as fs from 'fs';
 import * as pathMod from 'path';
@@ -233,6 +234,11 @@ export async function createHubApp(
       );
     })
     .catch((e) => console.error('[MIGRATION] osUser key migration failed:', (e as Error).message));
+  // Names for child-hub developers forwarded before they were recorded at
+  // delivery (BUG 4159631f). Never fatal.
+  migrateChildPeopleNames(db)
+    .then((r) => { if (!r.skipped && r.named > 0) console.log(`[MIGRATION] Recorded names for ${r.named} forwarded event(s) from child hubs.`); })
+    .catch((e) => console.error('[MIGRATION] child-hub names backfill failed:', (e as Error).message));
 
   // Merges made before user_key_aliases existed carry no alias, so the guarantee
   // that a machine waking after the liveness window cannot resurrect a retired

@@ -328,6 +328,17 @@ describe('PG parity: queries + rollup', () => {
   });
   afterEach(async () => { try { await fx.db.close(); } catch { /* */ } });
 
+  it('GET /v1/people/names reads installations and recorded child-hub names on PG', async () => {
+    await fx.db.run(
+      'INSERT INTO child_people (org_id, child_hub_id, user_key, git_name, last_seen) VALUES (?, ?, ?, ?, ?)',
+      ['org', 'child-hub-1', 'hana@child.com', 'Hana Ito', '2026-05-05T10:00:00Z'],
+    );
+    const r = await supertest(fx.app).get('/v1/people/names').set('Cookie', fx.cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.names['bob@acme.com']).toBe('B');
+    expect(r.body.names['hana@child.com']).toBe('Hana Ito');
+  });
+
   it('GET /v1/users returns distinct user_keys', async () => {
     const r = await supertest(fx.app).get('/v1/users').set('Cookie', fx.cookie);
     expect(r.status).toBe(200);

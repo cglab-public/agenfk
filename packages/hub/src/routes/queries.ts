@@ -154,6 +154,18 @@ export function queriesRouter(ctx: HubServerContext): Router {
       if (hidden.has(key) || key in names) continue;
       names[key] = name;
     }
+    // A federation parent has no installation for a child hub's people; their
+    // names are recorded at delivery (child_people, keep-policy rows only).
+    // This hub's own installations win.
+    const children = await ctx.db.all<{ user_key: string; git_name: string }>(
+      'SELECT user_key, git_name FROM child_people WHERE org_id = ? ORDER BY last_seen DESC',
+      [orgId],
+    );
+    for (const row of children) {
+      const key = resolveAliasKey(row.user_key, aliases);
+      if (hidden.has(key) || key in names) continue;
+      names[key] = row.git_name;
+    }
     res.json({ names });
   }));
 
