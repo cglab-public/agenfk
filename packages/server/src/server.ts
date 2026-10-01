@@ -2465,7 +2465,8 @@ function readDeclaredSettings(projectRoot?: string | null): {
  * - the very address the request was sent to (Origin host = Host): a page
  *   squatting `[::1]:<this port>` - this server binds 127.0.0.1 - names
  *   itself, not the address it is calling;
- * - a loopback NAME, which a DNS-rebinding page cannot claim;
+ * - the literal address this server binds, which neither a DNS-rebinding
+ *   page nor an IPv6 squatter on `localhost` can claim;
  * - on the port the request arrived on.
  *
  * Or an origin configured explicitly in AGENFK_BOARD_ORIGINS (the vite dev
@@ -2479,15 +2480,22 @@ function fromOwnBoardPage(req: any): boolean {
   if (configured.includes(origin)) return true;
   let page: URL;
   try { page = new URL(origin); } catch { return false; }
-  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(page.hostname);
-  return loopback && page.protocol === 'http:' && page.host === String(req.headers.host ?? '')
+  /*
+   * The LITERAL address this server binds - 127.0.0.1 by default - never the
+   * name `localhost`: localhost resolves to [::1] too, so a page served from
+   * [::1]:<this port> by something else can drop its listener and have its
+   * next request fall back to this IPv4 one, same Origin, same Host. The
+   * desktop shell, the only place the approval is offered, loads 127.0.0.1.
+   */
+  const bound = BIND_HOST.includes(':') ? `[${BIND_HOST}]` : BIND_HOST;
+  return page.hostname === bound && page.protocol === 'http:' && page.host === String(req.headers.host ?? '')
     && Number(page.port || 80) === req.socket?.localPort;
 }
 
 app.post("/projects/:id/approve-file-command", limitExpensive, asyncHandler(async (req: any, res: any) => {
   if (refuseUnlessBoard(req, res)) return;
   if (!fromOwnBoardPage(req)) {
-    return res.status(403).json({ error: "Approve it from the board this server serves: a page from another origin cannot approve a command for this machine (a dev board needs its origin in AGENFK_BOARD_ORIGINS)." });
+    return res.status(403).json({ error: "Approve it from the board this server serves: open it at http://127.0.0.1:<port> (the desktop app does); a page from another origin cannot approve a command for this machine (a dev board needs its origin in AGENFK_BOARD_ORIGINS)." });
   }
   const project: any = await storage.getProject(req.params.id);
   if (!project) return res.status(404).json({ error: "Project not found" });

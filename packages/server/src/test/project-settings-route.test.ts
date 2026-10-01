@@ -263,6 +263,21 @@ describe('approving a command declared by the repository', () => {
     expect(res.status).toBe(403);
   });
 
+  it('takes the literal address it binds, not the name localhost, which [::1] answers too', async () => {
+    // A page served by something squatting [::1]:<port> as http://localhost:<port> can drop its
+    // listener and have its next request fall back to this server's 127.0.0.1 - same Origin, same Host.
+    const created = await request(server).post('/projects').send({ name: 'localhost-name' });
+    const port = (server.address() as import('net').AddressInfo).port;
+    const res = await request(server)
+      .post(`/projects/${created.body.id}/approve-file-command`)
+      .set('x-agenfk-ui', '1')
+      .set('Host', `localhost:${port}`)
+      .set('Origin', `http://localhost:${port}`)
+      .send({ command: 'echo from-the-repo' });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/127\.0\.0\.1/);
+  });
+
   it('does not trust whatever listens on the vite port unless that origin is configured', async () => {
     const created = await request(server).post('/projects').send({ name: 'vite-port' });
     const post = () => request(server)

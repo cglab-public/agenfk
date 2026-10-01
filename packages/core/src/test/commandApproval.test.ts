@@ -84,4 +84,18 @@ describe('approving a command from the file', () => {
     expect(hiddenCharacters('./verify\u200B && ./verify\u200B')).toEqual(['U+200B']);
     expect(hiddenCharacters('a\u2066b\uFEFFc\u0007d\u2028e')).toEqual(['U+2066', 'U+FEFF', 'U+0007', 'U+2028']);
   });
+
+  it('counts default-ignorable characters too: they render as nothing', () => {
+    // U+034F makes `npm run test` name another script while reading the same.
+    expect(hiddenCharacters('npm run test\u034F')).toEqual(['U+034F']);
+    expect(hiddenCharacters('make check\uFE0F')).toEqual(['U+FE0F']);
+  });
+
+  it('never allows a command holding hidden characters, even one already approved', () => {
+    // An approval recorded before the rule existed must not carry such a command past it.
+    const hidden = { key: 'verifyCommand' as const, command: "echo 'safe\u202E'; printf X; #" };
+    const verdict = approvalFor(hidden, [commandFingerprint(hidden.command)]);
+    expect(verdict.allowed).toBe(false);
+    expect(verdict.reason).toContain('U+202E');
+  });
 });

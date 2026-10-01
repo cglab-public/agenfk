@@ -146,7 +146,7 @@ const isOn = (value: string | null): boolean => value?.toLowerCase() === 'on';
  * 34ee6b8a). Tab and newline are left as they are.
  */
 const revealHidden = (text: string): string =>
-  text.replace(/[\p{Cf}\p{Cc}\p{Zl}\p{Zp}]/gu, ch =>
+  text.replace(/[\p{Cf}\p{Cc}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu, ch =>
     (ch === '\t' || ch === '\n' || ch === '\r') ? ch : `⟨U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}⟩`);
 
 /** The one row this page writes, unless the repository's file decided it. */

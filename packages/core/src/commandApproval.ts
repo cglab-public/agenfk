@@ -59,6 +59,22 @@ export function approvalFor(
 ): ApprovalVerdict {
   if (!from || !from.command.trim()) return { allowed: true };
   const fingerprint = commandFingerprint(from.command);
+  /*
+   * Never runnable while it holds characters a screen cannot show - approved
+   * or not. An approval only says "a person read this", and nobody could read
+   * this one; an approval recorded before the rule existed must not carry it
+   * past (review of 34ee6b8a).
+   */
+  const hidden = hiddenCharacters(from.command);
+  if (hidden.length) {
+    return {
+      allowed: false,
+      fingerprint,
+      reason:
+        `This project's ${from.key} comes from the repository's own file and holds characters that cannot be shown faithfully (${hidden.join(', ')}), `
+        + 'so nobody can approve it as read. Remove them from .agenfk/project.json.',
+    };
+  }
   if (approved.includes(fingerprint)) return { allowed: true, fingerprint };
   return {
     allowed: false,
@@ -75,7 +91,10 @@ export function approvalFor(
  * Characters in a command that a screen cannot show a person faithfully.
  *
  * Format controls (bidi overrides and isolates, zero-width marks, the BOM),
- * other control characters, and line/paragraph separators. A right-to-left
+ * other control characters, line/paragraph separators, and every
+ * Default_Ignorable_Code_Point - the combining grapheme joiner (U+034F) and the
+ * variation selectors render as nothing, so `npm run test\u034F` reads as
+ * `npm run test` and names another script. A right-to-left
  * override can make `echo 'safe<U+202E>'; payload; #` READ as one quoted echo
  * while the shell runs a second command; a zero-width space makes `./verify`
  * name a different file (review of 34ee6b8a). A verify command never needs
@@ -88,7 +107,7 @@ export function hiddenCharacters(command: string): string[] {
   const found = new Set<string>();
   for (const ch of command) {
     if (ch === '\t' || ch === '\n' || ch === '\r') continue;
-    if (/[\p{Cf}\p{Cc}\p{Zl}\p{Zp}]/u.test(ch)) {
+    if (/[\p{Cf}\p{Cc}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u.test(ch)) {
       found.add(`U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}`);
     }
   }
