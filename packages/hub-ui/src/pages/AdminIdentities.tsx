@@ -24,7 +24,7 @@ import {
   type SuggestionLike,
 } from './identityPanel';
 import { isAttributedByUsername } from './attributionWarning';
-import { cardClass, useConfirm } from '../components/ui';
+import { cardClass, InlineError, useConfirm } from '../components/ui';
 
 const cardCls = cardClass;
 
@@ -55,7 +55,9 @@ export function AdminIdentities() {
   const qc = useQueryClient();
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  // Each control says its own failure where it is: a failed revert used to
+  // show under "Merge manually", the only error slot on the page.
+  const [revertNote, setRevertNote] = useState<string | null>(null);
 
   const suggestionsQ = useQuery<SuggestionLike[]>({
     queryKey: ['admin-identity-suggestions'],
@@ -77,18 +79,24 @@ export function AdminIdentities() {
   };
   const revert = useMutation({
     mutationFn: (id: string) => api.post(`/v1/admin/user-keys/merges/${encodeURIComponent(id)}/revert`),
+    // A new attempt replaces the last one's note; a failure must not sit beside it.
+    onMutate: () => setRevertNote(null),
     onSuccess: (r: any) => {
-      // A zero-restore is a real outcome, not a failure: a newer merge has
-      // claimed those rows and must be reverted first.
-      setError(r?.data?.eventsRestored === 0 ? (r?.data?.note ?? null) : null);
+      // A zero-restore (a merge that moved nothing) is an outcome, not a failure.
+      setRevertNote(r?.data?.eventsRestored === 0 ? (r?.data?.note ?? null) : null);
       invalidate();
     },
-    onError: (e: any) => setError(e?.response?.data?.error ?? 'Revert failed'),
   });
+  // One mutation serves the suggestions and the manual form; `source` says
+  // which sent it, so its error shows there and only its own form is cleared.
   const merge = useMutation({
-    mutationFn: (v: { from: string; to: string }) => api.post('/v1/admin/user-keys/merge', v),
-    onSuccess: () => { setFrom(''); setTo(''); setError(null); invalidate(); },
-    onError: (e: any) => setError(e?.response?.data?.error ?? 'Merge failed'),
+    mutationFn: ({ from, to }: { from: string; to: string; source: 'suggested' | 'manual' }) =>
+      api.post('/v1/admin/user-keys/merge', { from, to }),
+    onSuccess: (_r, sent) => {
+      if (sent.source === 'manual') { setFrom(''); setTo(''); }
+      setRevertNote(null);
+      invalidate();
+    },
   });
 
   const suggestions = sortSuggestions(suggestionsQ.data ?? []);
@@ -103,7 +111,7 @@ export function AdminIdentities() {
       body: `${moved} recorded under ${v.from} will be attributed to ${v.to} on every dashboard.\n${MERGE_UNDO}`,
       confirmLabel: 'Merge',
       tone: 'default',
-    })) merge.mutate(v);
+    })) merge.mutate({ ...v, source: events === undefined ? 'manual' : 'suggested' });
   };
 
   return (
@@ -136,6 +144,7 @@ export function AdminIdentities() {
           </p>
         )}
 
+        <InlineError error={merge.variables?.source === 'suggested' ? merge.error : null} className="mt-3" />
         <div className="mt-4 space-y-3">
           {suggestions.map(sug => {
             const blocked = mergeBlockedReason(sug);
@@ -207,7 +216,7 @@ export function AdminIdentities() {
             Merge
           </button>
         </div>
-        {error && <p className="mt-2 text-xs text-status-danger-text">{error}</p>}
+        <InlineError error={merge.variables?.source === 'manual' ? merge.error : null} className="mt-2" />
       </section>
 
       {misattributed.length > 0 && (
@@ -239,6 +248,8 @@ export function AdminIdentities() {
         <p className="mt-0.5 text-xs text-ink-tertiary">
           Reverting a merge moves exactly the events it touched back. {MERGE_UNDO}
         </p>
+        <InlineError error={revert.error} className="mt-2" />
+        {revertNote && <p className="mt-2 text-xs text-ink-tertiary">{revertNote}</p>}
         {(mergesQ.data ?? []).length === 0 ? (
           <p className="mt-3 text-sm text-ink-tertiary">Nothing merged yet.</p>
         ) : (

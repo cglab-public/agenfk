@@ -8,7 +8,7 @@ import { canDeleteUserRow } from './canDeleteUserRow';
 import { hideTargetKey, partitionHiddenRows, canHideRow } from './hiddenPeople';
 import { canRetireRow, canUnretireRow, countRetired, retireConfirmMessage } from './retiredInstallations';
 import { isAttributedByUsername, attributionWarning, countAttributedByUsername } from './attributionWarning';
-import { Page, Toggle, RowMenu, CopyButton, Badge, LocalTime, QueryError, buttonClass, cardClass, controlClass, useConfirm } from '../components/ui';
+import { Page, Toggle, RowMenu, CopyButton, Badge, LocalTime, QueryError, InlineError, buttonClass, cardClass, controlClass, useConfirm } from '../components/ui';
 import { inviteErrors } from './adminValidation';
 import { providerStatus, ProviderRequirement, noWorkingSignInMethod, googleRequires, entraRequires } from './signInProviderStatus';
 import { userAccessLock, isLastActiveAdmin } from './userAccessLock';
@@ -188,7 +188,7 @@ export function AdminAuth() {
           </span>
         )}
         {save.isSuccess && <span className="text-xs text-status-ok-text font-medium">✓ Saved</span>}
-        {save.isError && <span className="text-xs text-status-danger-text font-medium">Error: {(save.error as any)?.message}</span>}
+        <InlineError error={save.error} className="font-medium" />
       </div>
     </form>
   );
@@ -261,7 +261,10 @@ export function AdminKeys() {
         </header>
         <button
           onClick={async () => {
-            const r = await createInvite.mutateAsync();
+            // A refusal is shown from createInvite.error below; caught here so
+            // it does not escape as an unhandled rejection.
+            const r = await createInvite.mutateAsync().catch(() => null);
+            if (!r) return;
             const data = r.data as { joinCommand: string; expiresAt: string };
             setInvites(prev => [
               ...prev,
@@ -273,6 +276,7 @@ export function AdminKeys() {
         >
           {createInvite.isPending ? 'Generating…' : invites.length === 0 ? 'Generate invite' : 'Generate another invite'}
         </button>
+        <InlineError error={createInvite.error} className="mt-2" />
         {invites.length > 0 && (
           <div className="mt-4 space-y-3">
             {invites.map((inv, idx) => (
@@ -307,13 +311,16 @@ export function AdminKeys() {
         </header>
         <form className="mt-3 flex flex-col sm:flex-row gap-2" onSubmit={async (e) => {
           e.preventDefault();
-          const r = await create.mutateAsync(label);
+          // A refusal is shown from create.error below; the label stays for a retry.
+          const r = await create.mutateAsync(label).catch(() => null);
+          if (!r) return;
           setIssued((r.data as any).token);
           setLabel('');
         }}>
           <input className={`${inputCls} flex-1`} placeholder="Label, e.g. laptop-alice" value={label} onChange={(e) => setLabel(e.target.value)} />
           <button type="submit" className={primaryBtnCls}>Issue key</button>
         </form>
+        <InlineError error={create.error} className="mt-2" />
         {issued && (
           <div className="mt-3 rounded-xl border border-status-warn-text/40 bg-status-warn-bg p-4">
             <div className="text-[11px] uppercase tracking-[0.14em] text-status-warn-text font-semibold">Save this token now — it won't be shown again</div>
@@ -331,6 +338,7 @@ export function AdminKeys() {
           <h3 className="text-sm font-semibold text-ink">Active keys</h3>
           <span className="text-[11px] text-ink-tertiary">{(keys.data ?? []).filter(k => !k.revokedAt).length} active · {(keys.data ?? []).length} total</span>
         </header>
+        <InlineError error={revoke.error} className="mt-2" />
         <div className="mt-3 -mx-5 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -419,15 +427,24 @@ export function AdminUsers() {
   const me = useQuery<{ userId: string }>({ queryKey: ['auth-me'], queryFn: async () => (await api.get('/auth/me')).data });
   const invite = useMutation({
     mutationFn: (body: any) => api.post('/v1/admin/users/invite', body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-users'] }),
+    onSuccess: () => {
+      // Cleared only once the hub accepted it: a refused invite keeps what was
+      // typed, next to the reason.
+      setDraft(d => ({ email: '', password: '', role: 'viewer', authMethod: d.authMethod }));
+      setTouched({});
+      qc.invalidateQueries({ queryKey: ['admin-users'] });
+    },
   });
+  // A success on the card clears the other action's leftover error: the
+  // errors are not tied to a row, so a stale one would read as current. Only
+  // an errored one: reset() on a running mutation would lose its outcome.
   const update = useMutation({
     mutationFn: ({ id, ...rest }: any) => api.put(`/v1/admin/users/${id}`, rest),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-users'] }),
+    onSuccess: () => { if (remove.isError) remove.reset(); qc.invalidateQueries({ queryKey: ['admin-users'] }); },
   });
   const remove = useMutation({
     mutationFn: (id: string) => api.delete(`/v1/admin/users/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-users'] }),
+    onSuccess: () => { if (update.isError) update.reset(); qc.invalidateQueries({ queryKey: ['admin-users'] }); },
   });
   const [draft, setDraft] = useState<{ email: string; password: string; role: string; authMethod: 'password' | 'sso' }>({ email: '', password: '', role: 'viewer', authMethod: 'password' });
   const draftErrors = inviteErrors(draft);
@@ -451,8 +468,6 @@ export function AdminUsers() {
             const body: any = { email: draft.email.trim(), role: draft.role };
             if (draft.authMethod === 'password') body.password = draft.password;
             invite.mutate(body);
-            setDraft({ email: '', password: '', role: 'viewer', authMethod: draft.authMethod });
-            setTouched({});
           }}
         >
           <Field label="Auth method" className="sm:col-span-12">
@@ -495,6 +510,7 @@ export function AdminUsers() {
             </button>
           </div>
         </form>
+        <InlineError error={invite.error} className="mt-2" />
       </section>
 
       <section className={cardCls}>
@@ -502,6 +518,8 @@ export function AdminUsers() {
           <h3 className="text-sm font-semibold text-ink">Users</h3>
           <span className="text-[11px] text-ink-tertiary">{users.data?.length ?? 0} total</span>
         </header>
+        <InlineError error={update.error} className="mt-2" />
+        <InlineError error={remove.error} className="mt-2" />
         <div className="mt-3 -mx-5 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -648,21 +666,23 @@ export function AdminInstallations() {
     qc.invalidateQueries({ queryKey: ['admin-hidden-users'] });
     qc.invalidateQueries({ queryKey: ['api-keys'] });
   };
+  // A success clears the other actions' leftover errors (see AdminUsers).
+  const succeeded = () => { for (const m of [hide, unhide, retire, unretire]) if (m.isError) m.reset(); invalidate(); };
   const hide = useMutation({
     mutationFn: (userKey: string) => api.post('/v1/admin/hidden-users', { userKey }),
-    onSuccess: invalidate,
+    onSuccess: () => succeeded(),
   });
   const unhide = useMutation({
     mutationFn: (userKey: string) => api.delete(`/v1/admin/hidden-users/${encodeURIComponent(userKey)}`),
-    onSuccess: invalidate,
+    onSuccess: () => succeeded(),
   });
   const retire = useMutation({
     mutationFn: (id: string) => api.post(`/v1/admin/installations/${encodeURIComponent(id)}/retire`),
-    onSuccess: invalidate,
+    onSuccess: () => succeeded(),
   });
   const unretire = useMutation({
     mutationFn: (id: string) => api.delete(`/v1/admin/installations/${encodeURIComponent(id)}/retire`),
-    onSuccess: invalidate,
+    onSuccess: () => succeeded(),
   });
 
   const rows = installations.data ?? [];
@@ -716,6 +736,9 @@ export function AdminInstallations() {
             <span className="text-[11px] text-ink-tertiary">{showHidden ? rows.length : visible.length} total</span>
           </div>
         </header>
+        <InlineError error={hide.error} className="mt-2" />
+        <InlineError error={retire.error} className="mt-2" />
+        <InlineError error={unretire.error} className="mt-2" />
         <div className="mt-3 -mx-5 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -828,6 +851,7 @@ export function AdminInstallations() {
               Hidden people no longer appear in installation pickers, their API keys are revoked, and new events from them are dropped. Historical dashboards are unaffected. Unhiding restores visibility but does not restore revoked keys.
             </p>
           </header>
+          <InlineError error={unhide.error} className="mt-2" />
           <ul className="mt-3 divide-y divide-border-soft">
             {hiddenPeople.data!.map(p => (
               <li key={p.userKey} className="flex items-center justify-between py-2">

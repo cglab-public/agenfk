@@ -17,7 +17,7 @@ import { Plus, Pencil, Trash2, X, ChevronDown, ChevronRight, Send } from 'lucide
 import { ChildHubPicker, toggledSet } from './childHubPicker';
 import { FlowEditorModal, type FlowClient, type RegistryClient, type Flow } from '@agenfk/flow-editor';
 import { api } from '../api';
-import { QueryError, useConfirm } from '../components/ui';
+import { QueryError, InlineError, useConfirm } from '../components/ui';
 import { RegistryPullsPanel } from './RegistryPullsPanel';
 import { flattenAdminFlow } from './adminFlowShape';
 import { repoOverrideOptions } from './repoOverrideOptions';
@@ -434,22 +434,26 @@ function AssignmentsPanel({
     qc.invalidateQueries({ queryKey: ['admin-flow-assignments'] });
     qc.invalidateQueries({ queryKey: ['admin-flows'] });
   };
+  // A success in the panel clears the other changes' leftover errors, which
+  // would otherwise read as current.
+  const clearPanelErrors = () => { for (const m of [setOrgDefault, remove, addOverride, setAvailability]) if (m.isError) m.reset(); };
 
   const setOrgDefault = useMutation({
     mutationFn: () => api.put('/v1/admin/flow-assignments', { scope: 'org', flowId: flow.id }),
-    onSuccess: invalidateFlowState,
+    onSuccess: () => { clearPanelErrors(); invalidateFlowState(); },
   });
 
   const remove = useMutation({
     mutationFn: ({ scope, targetId }: { scope: string; targetId: string }) =>
       api.put('/v1/admin/flow-assignments', { scope, targetId, flowId: null }),
-    onSuccess: invalidateFlowState,
+    onSuccess: () => { clearPanelErrors(); invalidateFlowState(); },
   });
 
   const addOverride = useMutation({
     mutationFn: ({ scope, targetId }: { scope: 'repo' | 'installation'; targetId: string }) =>
       api.put('/v1/admin/flow-assignments', { scope, targetId, flowId: flow.id }),
     onSuccess: () => {
+      clearPanelErrors();
       qc.invalidateQueries({ queryKey: ['admin-flow-assignments'] });
       setAdding(null);
     },
@@ -459,7 +463,7 @@ function AssignmentsPanel({
     mutationFn: (available: boolean) =>
       api.put(`/v1/admin/flows/${flow.id}/availability`, { available }),
     // The org-available flag lives on the flows list, not the assignments list.
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-flows'] }),
+    onSuccess: () => { clearPanelErrors(); qc.invalidateQueries({ queryKey: ['admin-flows'] }); },
   });
 
   const orgRow = assignments.find(a => a.scope === 'org');
@@ -481,6 +485,11 @@ function AssignmentsPanel({
   return (
     <div className="px-4 pb-4 pt-1 bg-canvas border-t border-border-soft space-y-3">
       {dialog}
+      {/* One slot per change; react-query clears each on its next attempt. */}
+      <InlineError error={setOrgDefault.error} />
+      <InlineError error={remove.error} />
+      <InlineError error={addOverride.error} />
+      <InlineError error={setAvailability.error} />
       {lock.locked && (
         <p className="pt-2 text-xs text-ink-tertiary" data-testid="admin-flow-parent-lock">
           {lock.reason}
@@ -1155,11 +1164,8 @@ function RegistryRepoPanel() {
         )}
       </div>
 
-      {save.error && (
-        <p className="text-xs text-status-danger-text" data-testid="admin-registry-save-error">
-          {(save.error as Error).message}
-        </p>
-      )}
+      <InlineError error={save.error} />
+      <InlineError error={sync.error} />
     </section>
   );
 }

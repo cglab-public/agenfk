@@ -11,7 +11,7 @@ import { addressChangeError } from './adminValidation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowRightLeft, AlertTriangle, CheckCircle2, Clock, Ban } from 'lucide-react';
 import { api } from '../api';
-import { cardClass, useConfirm } from '../components/ui';
+import { cardClass, InlineError, useConfirm } from '../components/ui';
 import {
   classifyTarget,
   sortTargets,
@@ -162,6 +162,7 @@ export function AdminRepoint() {
                 End the address change
               </button>
             </div>
+            <InlineError error={close.error} className="mt-2" />
 
             <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-ink-tertiary tabular-nums">
               <span>{summary.done}/{summary.total} moved</span>
