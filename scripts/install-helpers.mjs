@@ -1,3 +1,7 @@
+import { existsSync, statSync } from 'fs';
+import os from 'os';
+import path from 'path';
+
 // Pure, side-effect-free helpers extracted from install.mjs / bin/agenfk.js so the
 // install-flow decision logic can be unit-tested as real behavior (issue #86).
 
@@ -167,3 +171,33 @@ function shadowedName(name) {
 export function isAgenfkOwnedEntry(name) {
   return typeof name === 'string' && shadowedName(name).startsWith('agenfk');
 }
+
+/**
+ * Are these the same directory on disk? By (dev, inode), not by spelling: a
+ * symlinked ~/.agenfk-system, or a path cased differently on APFS, is still
+ * that directory (Codex review of 658ef023). False when either is missing.
+ */
+export function sameDirectory(a, b) {
+  try {
+    const x = statSync(a);
+    const y = statSync(b);
+    return x.dev === y.dev && x.ino === y.ino;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A developer's working tree, not an installed copy (658ef023): it holds .git
+ * (a directory, or the file a worktree or submodule has). Except
+ * ~/.agenfk-system, which IS a clone in real installs - packages/create's
+ * --rebuild and download-failure fallbacks clone into it.
+ *
+ * Mirrored in packages/cli/src/index.ts and packages/server/src/hub/upgradeSync.ts,
+ * which cannot import from scripts/.
+ */
+export function isDevCheckout(root, home = os.homedir()) {
+  if (!existsSync(path.join(root, '.git'))) return false;
+  return !sameDirectory(root, path.join(home, '.agenfk-system'));
+}
+

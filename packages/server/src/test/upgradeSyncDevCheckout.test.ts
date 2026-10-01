@@ -49,4 +49,18 @@ describe('defaultSelfExtract on a development checkout', () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('recognises ~/.agenfk-system through a symlink too: the same directory, not the same spelling', async () => {
+    expect(os.homedir()).not.toBe(os.userInfo().homedir);
+    const real = path.join(os.homedir(), '.agenfk-system');
+    fs.mkdirSync(path.join(real, '.git'), { recursive: true });
+    const link = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-link-')), 'agenfk-system');
+    fs.symlinkSync(real, link);
+    try {
+      await defaultSelfExtract({ installRoot: link, targetVersion: '9.9.9' });
+      expect(String((execSync.mock.calls[0] as unknown[] | undefined)?.[0] ?? '')).toMatch(/curl/);
+    } finally {
+      fs.rmSync(real, { recursive: true, force: true });
+    }
+  });
 });

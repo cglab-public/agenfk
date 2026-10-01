@@ -73,7 +73,16 @@ const DIST_ASSET = 'agenfk-dist.tar.gz';
  * install.mjs step 1a and the CLI's `agenfk upgrade` make too.
  */
 function isDevCheckout(root: string): boolean {
-  return fs.existsSync(path.join(root, '.git')) && path.resolve(root) !== path.resolve(os.homedir(), '.agenfk-system');
+  if (!fs.existsSync(path.join(root, '.git'))) return false;
+  // Same directory by (dev, inode), not by spelling: a symlinked ~/.agenfk-system, or a path cased
+  // differently on APFS, is still that install (Codex review of 658ef023).
+  try {
+    const here = fs.statSync(root);
+    const install = fs.statSync(path.join(os.homedir(), '.agenfk-system'));
+    return !(here.dev === install.dev && here.ino === install.ino);
+  } catch {
+    return true;
+  }
 }
 
 export async function defaultSelfExtract(input: { installRoot: string; targetVersion: string }): Promise<{ ok: true } | { ok: false; error: string }> {
