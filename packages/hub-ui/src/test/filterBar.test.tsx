@@ -107,8 +107,14 @@ describe('describeFilters', () => {
     const saved = process.env.TZ;
     process.env.TZ = 'America/Los_Angeles';
     try {
-      // A UTC parse would make this Aug 31 in Los Angeles.
-      expect(describeFilters({ range: '30d', from: '2026-09-01', types: [] })).toMatch(/^1\D/);
+      // A UTC parse would make this Aug 31 in Los Angeles. Compared in the
+      // runner's own locale, which writes the day first or the month first.
+      const opts: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short', year: 'numeric' };
+      const sep1 = new Date(2026, 8, 1).toLocaleDateString(undefined, opts);
+      const aug31 = new Date(2026, 7, 31).toLocaleDateString(undefined, opts);
+      const line = describeFilters({ range: '30d', from: '2026-09-01', types: [] });
+      expect(line).toBe(`${sep1} → … · all event types`);
+      expect(line).not.toContain(aug31);
     } finally {
       if (saved === undefined) delete process.env.TZ; else process.env.TZ = saved;
     }
