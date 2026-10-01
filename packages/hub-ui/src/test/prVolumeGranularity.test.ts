@@ -405,3 +405,20 @@ describe('buildVolumeSeries — partial edge days', () => {
     expect(buildVolumeSeries(d, week, 'daily', null).stats.busiestWeekday?.day).toBe('Wed');
   });
 });
+
+// Epic review round 3 (471d88f4): From set and To left open, early in the
+// day. Today's weekday has one occurrence, a few minutes long; dividing by
+// its sliver turned 1 PR into "144 PRs per Thu".
+describe('buildVolumeSeries — a sliver of a day', () => {
+  it('never counts a weekday as less than one occurrence', () => {
+    // Mon 09-28 .. Thu 10-01, the window ending ten minutes into Thursday.
+    const shortWindow = axis('2026-09-28', '2026-10-01');
+    const d = [
+      day('2026-09-28', { s: 3 }), day('2026-09-29', { s: 3 }), day('2026-09-30', { s: 3 }),
+      day('2026-10-01', { s: 1 }),
+    ];
+    const { stats } = buildVolumeSeries(d, shortWindow, 'daily', { first: 1, last: 10 / 1440 });
+    expect(stats.busiestWeekday?.day).toBe('Mon');
+    expect(stats.busiestWeekday?.perDay).toBe(3);
+  });
+});

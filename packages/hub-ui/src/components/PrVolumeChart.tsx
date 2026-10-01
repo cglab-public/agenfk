@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { SIZE_META, fmtAverage } from '../prOverview';
 import type { VolumeBucket, VolumeSeries } from '../prVolumeGranularity';
@@ -52,9 +52,21 @@ export function PrVolumeChart({ series, unit }: { series: VolumeSeries; unit: st
   const current = active != null && active <= last ? active : null;
   const at = (v: number) => `${(v / top) * 100}%`;
   const plotRef = useRef<HTMLDivElement>(null);
-  // Whether the chart's focus came from the keyboard: only then does a pointer
-  // leaving it keep the tooltip (a click focuses it too, and must not pin it).
+  // Whether the last input was the keyboard: only then does a pointer leaving
+  // the focused chart keep the tooltip (a click focuses it too, and must not
+  // pin it). Document-wide, so a Tab into the chart counts: its keydown lands
+  // on the element before.
   const byKeyboard = useRef(false);
+  useEffect(() => {
+    const key = () => { byKeyboard.current = true; };
+    const pointer = () => { byKeyboard.current = false; };
+    document.addEventListener('keydown', key, true);
+    document.addEventListener('pointerdown', pointer, true);
+    return () => {
+      document.removeEventListener('keydown', key, true);
+      document.removeEventListener('pointerdown', pointer, true);
+    };
+  }, []);
 
   const onKeyDown = (e: KeyboardEvent) => {
     // Modified keys belong to the browser (Alt+Left is Back).
@@ -74,7 +86,6 @@ export function PrVolumeChart({ series, unit }: { series: VolumeSeries; unit: st
     }
     if (!(e.key in next)) return;
     e.preventDefault();
-    byKeyboard.current = true;
     const to = next[e.key];
     setActive(to);
     // aria-activedescendant moves no scroll: bring the bar into the scroller's view.
@@ -140,7 +151,6 @@ export function PrVolumeChart({ series, unit }: { series: VolumeSeries; unit: st
                 onFocus={() => { setFocused(true); setActive(a => (a != null && a <= last ? a : last >= 0 ? last : null)); }}
                 onBlur={() => { setFocused(false); setActive(null); }}
                 onKeyDown={onKeyDown}
-                onPointerDown={() => { byKeyboard.current = false; }}
                 // A pointer leaving must not drop the keyboard's place.
                 onMouseLeave={() => { if (!focused || !byKeyboard.current) setActive(null); }}
                 // Inset: the scroller around the plot clips anything outside it.

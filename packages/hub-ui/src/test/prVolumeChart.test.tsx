@@ -261,3 +261,16 @@ describe('after the second review', () => {
     }
   });
 });
+
+// Epic review round 3 (471d88f4).
+describe('focus from Tab', () => {
+  it('counts as keyboard focus, so a pointer crossing the chart keeps the place', () => {
+    mount();
+    // Tab's keydown lands on the element before the chart, not on it.
+    fireEvent.keyDown(document.body, { key: 'Tab' });
+    fireEvent.focus(chart());
+    expect(tooltip()).not.toBeNull();
+    fireEvent.mouseLeave(chart());
+    expect(tooltip()).not.toBeNull();
+  });
+});

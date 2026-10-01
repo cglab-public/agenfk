@@ -105,11 +105,6 @@ const rangeLabelOf = (key: string, g: Granularity): string => {
   //  equivalent mutant — kept so the contract holds if the caller passes a raw day)
 };
 
-/** Re-bucket the per-day series into daily / weekly / monthly buckets spanning
- *  the axis (the selected range). Buckets are derived from the AXIS, so the
- *  chart always covers the full window (empty buckets included — that's what
- *  makes the average a true per-bucket rate); `byDay` entries outside the axis
- *  are ignored, matching the daily chart's behaviour. */
 /** How much of the axis's first and last day a window covers, 0..1. */
 export interface DayEdges { first: number; last: number }
 
@@ -139,11 +134,16 @@ export function edgeCoverage(fromIso: string, toIso: string, timeZone: string): 
   return { first: clamp(1 - secondsIntoDay(fromIso, timeZone) / 86400), last: clamp(secondsIntoDay(toIso, timeZone) / 86400) };
 }
 
-/**
- * `edges`: how much of the axis's first and last day the period covers (see
- * edgeCoverage), or null for whole days (a custom range, a PR search). It is
- * required, not defaulted, so a caller has to say which it has.
- */
+/** Re-bucket the per-day series into daily / weekly / monthly buckets spanning
+ *  the axis (the selected range). Buckets are derived from the AXIS, so the
+ *  chart always covers the full window (empty buckets included — that's what
+ *  makes the average a true per-bucket rate); `byDay` entries outside the axis
+ *  are ignored, matching the daily chart's behaviour.
+ *
+ *  `edges`: how much of the axis's first and last day the period covers (see
+ *  edgeCoverage; about 1 for a custom range of whole days), or null to count
+ *  every day whole (a PR search, whose axis is its matched days). Required,
+ *  not defaulted, so a caller has to say which it has. */
 export function buildVolumeSeries(
   byDay: ReadonlyArray<DayPoint>,
   axis: ReadonlyArray<string>,
@@ -220,7 +220,9 @@ export function buildVolumeSeries(
     perWeekday[weekdayOf(p.day)] += p.total;
     large += (p.sizes.l ?? 0) + (p.sizes.xl ?? 0);
   }
-  const rate = (i: number) => (occurrences[i] ? perWeekday[i] / occurrences[i] : 0);
+  // Never less than one occurrence: a weekday whose only day is a sliver (a
+  // window ending minutes into today) would otherwise multiply its PRs.
+  const rate = (i: number) => (occurrences[i] ? perWeekday[i] / Math.max(1, occurrences[i]) : 0);
   const top = perWeekday.reduce((best, _n, i) => (rate(i) > rate(best) ? i : best), 0);
   let max = 0;
   let maxLabel: string | null = null;
