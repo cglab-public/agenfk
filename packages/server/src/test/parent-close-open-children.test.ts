@@ -129,13 +129,20 @@ describe("a card's final move while it has open children", () => {
     );
     const parent = await card(pid, 'WORK');
     const run = follow(parent);
-    for (let i = 0; i < 400 && !fs.existsSync(started); i++) await new Promise(r => setTimeout(r, 25));
-    expect(fs.existsSync(started), 'the verify command never started').toBe(true);
-    // Eleven: more than the message lists, so the structured list is what names them all.
+    // Settled however the test ends: a failure before the release must not
+    // leave the command waiting on a barrier nobody will raise.
+    const settled = run.then(r => r, (e: unknown) => ({ status: 0, body: { error: String(e) } }));
     const late: string[] = [];
-    for (let i = 0; i < 11; i++) late.push(await card(pid, 'START', { parentId: parent }));
-    fs.writeFileSync(release, '');
-    const res = await run;
+    let res: { status: number; body: any };
+    try {
+      for (let i = 0; i < 400 && !fs.existsSync(started); i++) await new Promise(r => setTimeout(r, 25));
+      expect(fs.existsSync(started), 'the verify command never started').toBe(true);
+      // Eleven: more than the message lists, so the structured list is what names them all.
+      for (let i = 0; i < 11; i++) late.push(await card(pid, 'START', { parentId: parent }));
+    } finally {
+      fs.writeFileSync(release, '');
+      res = await settled;
+    }
     expect(res.body.error, JSON.stringify(res.body)).toBe('CHILDREN_OPEN');
     expect(res.body.children.map((c: { id: string }) => c.id).sort()).toEqual([...late].sort());
     expect((await storage.getItem(parent))?.status).toBe('WORK');
@@ -207,7 +214,7 @@ describe("a card's final move while it has open children", () => {
     await card(pid, 'START', { parentId: under });
     const res = await validate(parent);
     expect(res.body.error, JSON.stringify(res.body)).toBe('CHILDREN_OPEN');
-    expect(res.body.message).toMatch(/could not be checked/i);
+    expect(res.body.message).toMatch(/not all of it could be checked/i);
     expect((await storage.getItem(parent))?.status).toBe('WORK');
   });
 
@@ -219,8 +226,67 @@ describe("a card's final move while it has open children", () => {
     const child = await card(pid, 'END', { parentId: root });
     const grandchild = await card(pid, 'START', { parentId: child });
     expect((await validate(root)).body.error).toBe('CHILDREN_OPEN');
-    await storage.updateItem(grandchild, { status: 'END' } as any);
-    await agent().put(`/items/${grandchild}`).send({ title: 'finished' });
+    // Finished the way cards finish - through verify - not by a write and a
+    // rename: an edit that finishes nothing must not close anything (below).
+    expect((await validate(grandchild)).status).toBe(200);
+    expect((await validate(grandchild)).status).toBe(200);
+    expect((await storage.getItem(grandchild))?.status).toBe('END');
     expect((await storage.getItem(root))?.status).toBe('END');
   });
+
+  it('guards the close the first anchor makes, judged on the step it writes', async () => {
+    // START -> WAIT (special) -> DONE: the anchor's coding step is DONE, two
+    // steps on, so "does the NEXT step end the flow" said no.
+    const pid = await setupWith([s('START', 0, { isAnchor: true }), s('WAIT', 1, { isSpecial: true }), s('DONE', 2)]);
+    const parent = await card(pid, 'START');
+    await card(pid, 'START', { parentId: parent });
+    const res = await validate(parent);
+    expect(res.body.error, JSON.stringify(res.body)).toBe('CHILDREN_OPEN');
+    expect((await storage.getItem(parent))?.status).toBe('START');
+  });
+
+  it('closes a tree exactly as deep as it can check', async () => {
+    // At the bound with nothing further down, the scan saw everything.
+    const pid = await setup();
+    const parent = await card(pid, 'WORK');
+    let under = parent;
+    for (let i = 0; i < 32; i++) under = await card(pid, 'END', { parentId: under });
+    const res = await validate(parent);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect((await storage.getItem(parent))?.status).toBe('END');
+  });
+
+  it('lets the roll-up close the parent once the last open grandchild is trashed, or archived', async () => {
+    const pid = await setup();
+    for (const how of ['trash', 'archive'] as const) {
+      const root = await card(pid, 'WORK');
+      const child = await card(pid, 'END', { parentId: root });
+      const grandchild = await card(pid, 'START', { parentId: child });
+      expect((await validate(root)).body.error).toBe('CHILDREN_OPEN');
+      if (how === 'trash') await agent().delete(`/items/${grandchild}`);
+      else await agent().put(`/items/${grandchild}`).send({ status: 'ARCHIVED' });
+      expect((await storage.getItem(root))?.status, how).toBe('END');
+    }
+  });
+
+  it('does not re-close an ancestor somebody reopened, on an edit that finishes nothing', async () => {
+    const pid = await setup();
+    const root = await card(pid, 'END');
+    const child = await card(pid, 'END', { parentId: root });
+    const grandchild = await card(pid, 'END', { parentId: child });
+    await storage.updateItem(root, { status: 'WORK' } as any);
+    await agent().put(`/items/${grandchild}`).send({ title: 'renamed' });
+    expect((await storage.getItem(root))?.status).toBe('WORK');
+  });
+
+  it('ends the roll-up on a parent cycle left in old data', async () => {
+    const pid = await setup();
+    const a = await card(pid, 'END');
+    const b = await card(pid, 'END', { parentId: a });
+    await storage.updateItem(a, { parentId: b } as any);
+    const leaf = await card(pid, 'START', { parentId: a });
+    // A release under a finished parent walks up: around the cycle once, then stops.
+    const res = await agent().delete(`/items/${leaf}`);
+    expect(res.status).toBeLessThan(500);
+  }, 10_000);
 });

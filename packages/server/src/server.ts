@@ -788,11 +788,12 @@ interface OpenScan {
  * card was attached to, can hold open work. Each card is judged by ITS OWN
  * project's flow, since a moved child keeps its parent.
  *
- * Every subtree is walked, a trashed, archived or parked one included: none of
- * those statuses cascades, so a card parked as an idea can still have work
- * running under it. Bounded and cycle-safe - and a bound that stops the walk
- * says so (`complete: false`), because an unexamined card is not a finished
- * one.
+ * Every subtree is walked, a trashed, archived or parked one included. Trash
+ * and archive cascade on their own routes, but parking a card as an idea does
+ * not, and a card can be attached under a trashed or archived one afterwards -
+ * so what is under a finished card is judged on its own. Bounded and
+ * cycle-safe - and a bound that stops the walk with cards left unexamined says
+ * so (`complete: false`), because an unexamined card is not a finished one.
  */
 async function openDescendants(rootId: string): Promise<OpenScan> {
   const flows = await storage.listFlows();
@@ -810,7 +811,14 @@ async function openDescendants(rootId: string): Promise<OpenScan> {
   const seen = new Set<string>([rootId]);
   let frontier = [rootId];
   for (let depth = 0; frontier.length; depth++) {
-    if (depth >= OPEN_SCAN_DEPTH) return { open, complete: false };
+    if (depth >= OPEN_SCAN_DEPTH) {
+      // At the bound: incomplete only if there IS something further down.
+      for (const id of frontier) {
+        const kids = (await storage.listItems({ parentId: id, hydrate: false } as any)) as any[];
+        if (kids.some(k => !seen.has(k.id))) return { open, complete: false };
+      }
+      return { open, complete: true };
+    }
     const next: string[] = [];
     for (const id of frontier) {
       const kids = (await storage.listItems({ parentId: id, hydrate: false } as any)) as any[];
@@ -837,11 +845,16 @@ function childrenOpenRefusal(item: any, scan: OpenScan) {
   const SHOWN = 10;
   const list = open.slice(0, SHOWN).map(c => `  [${c.id.slice(0, 8)}] ${c.title} (${c.status})`).join('\n')
     + (open.length > SHOWN ? `\n  and ${open.length - SHOWN} more` : '');
+  /*
+   * Finishing cards does not shrink the tree - every subtree is walked - so the
+   * remedy for a scan that hit its bound is the only one that does: take part
+   * of the tree out from under this card.
+   */
   const unseen = scan.complete ? ''
-    : `The tree under it is deeper than ${OPEN_SCAN_DEPTH} levels or larger than ${OPEN_SCAN_CARDS} cards, so the rest of it could not be checked.`;
+    : `The tree under it goes more than ${OPEN_SCAN_DEPTH} levels deep or holds more than ${OPEN_SCAN_CARDS} cards, so not all of it could be checked - and an unchecked card is not a finished one. Move part of that tree out from under this card (\`agenfk update <id> --parent none\` on a subtree's top card), then close it.`;
   const what = open.length
-    ? `${open.length === 1 ? 'a card under it is' : `${open.length} cards under it are`} not finished.\n\n${list}\n\nFinish, trash or archive ${open.length === 1 ? 'it' : 'them'} first.${unseen ? ` ${unseen}` : ''}`
-    : `${unseen} Close the cards under it first, from the bottom up.`;
+    ? `${open.length === 1 ? 'a card under it is' : `${open.length} cards under it are`} not finished.\n\n${list}\n\nFinish, trash or archive ${open.length === 1 ? 'it' : 'them'} first.${unseen ? `\n\n${unseen}` : ''}`
+    : unseen;
   return {
     status: item.status,
     error: 'CHILDREN_OPEN',
@@ -851,13 +864,30 @@ function childrenOpenRefusal(item: any, scan: OpenScan) {
   };
 }
 
-const syncParentStatus = async (parentId: string) => {
+/**
+ * How a roll-up was set off. `released`: a card under this parent just finished,
+ * or left it (trashed, archived, parked, moved away) - the only kind of change
+ * that can free an ancestor whose close was held for open work below
+ * (8024f6c4). `seen`: the parents this walk has visited, so a parent cycle in
+ * old data ends it.
+ */
+interface RollUp { released?: boolean; seen?: Set<string> }
+
+/** Whether a card now sits on a finished status of its own project's flow. */
+async function landedFinished(item: any): Promise<boolean> {
+  const project: any = await storage.getProject(item.projectId);
+  return finishedStatusesOf(getActiveFlow(project?.flowId, await storage.listFlows())).has(String(item.status));
+}
+
+const syncParentStatus = async (parentId: string, how: RollUp = {}) => {
+  const seen = how.seen ?? new Set<string>();
+  if (seen.has(parentId) || seen.size >= OPEN_SCAN_DEPTH) return;
+  seen.add(parentId);
   const parent = await storage.getItem(parentId);
   if (!parent) return;
 
   const allChildren = await storage.listItems({ parentId });
   const children = allChildren.filter(c => c.status !== Status.TRASHED && c.status !== Status.ARCHIVED);
-  if (children.length === 0) return;
 
   // Compare children by their ORDER in the active flow, not by hardcoded step
   // names. The previous version tested Status.IN_PROGRESS/REVIEW/TEST/DONE
@@ -866,6 +896,7 @@ const syncParentStatus = async (parentId: string) => {
   // allDone -> DONE case worked, because DONE is an anchor every flow has.
   const parentProject = await storage.getProject(parent.projectId);
   const parentFlow = getActiveFlow((parentProject as any)?.flowId, await storage.listFlows());
+  const parentFinished = finishedStatusesOf(parentFlow);
   // Real workflow steps only. Nothing here may write a platform status onto a
   // parent: a flow is free to name a step BLOCKED, and driving a parent there
   // would archive or block it outside the routes that record previousStatus.
@@ -879,6 +910,8 @@ const syncParentStatus = async (parentId: string) => {
 
   // A child on a platform status has no position in the flow, so it neither
   // holds the parent back nor pushes it forward — it is simply skipped.
+  // No children left (the last one trashed or moved away): nothing to derive
+  // here, but the walk up below may still be owed.
   const positioned = children
     .map(c => orderOf(c.status))
     .filter((n): n is number => n !== null);
@@ -926,7 +959,6 @@ const syncParentStatus = async (parentId: string) => {
    * the laggard above skips them - and a parent already past its review rolled
    * straight to DONE over a paused child.
    */
-  const parentFinished = finishedStatusesOf(parentFlow);
   if (newStatus && parentFinished.has(String(newStatus)) && holdsClose(await openDescendants(parent.id))) {
     newStatus = null;
   }
@@ -939,13 +971,16 @@ const syncParentStatus = async (parentId: string) => {
     recordMoveEvents(parent, parent.status, newStatus, parentFlow);
   }
   /*
-   * Up the tree when this parent moved - and also when it is already finished
-   * (8024f6c4): an ancestor's close can be held only by open work deep below,
-   * and the grandchild that finishes it changes nothing on its finished parent,
-   * so the walk used to stop one level short and leave the ancestor held.
+   * Up the tree when this parent moved - and, when something under it was
+   * RELEASED, also when it is already finished (8024f6c4): an ancestor's close
+   * can be held only by open work deep below, and the grandchild that finishes
+   * it changes nothing on its finished parent, so the walk stopped one level
+   * short and left the ancestor held. Only on a release: a rename deep down
+   * must not re-close an ancestor somebody reopened on purpose.
    */
-  if (parent.parentId && (newStatus || parentFinished.has(String(parent.status)))) {
-    await syncParentStatus(parent.parentId);
+  const released = Boolean(newStatus && parentFinished.has(String(newStatus))) || (how.released === true && parentFinished.has(String(parent.status)));
+  if (parent.parentId && (newStatus || released)) {
+    await syncParentStatus(parent.parentId, { released, seen });
   }
 };
 
@@ -7060,7 +7095,9 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
   const skipped: Array<{ id: string; error: string }> = [];
   // Separate from `skipped`: these entries DID apply, with a caveat.
   const warnings: Array<{ id: string; warning: string }> = [];
-  const parentIdsToSync = new Set<string>();
+  // parent -> whether something under it was released (see RollUp)
+  const parentIdsToSync = new Map<string, boolean>();
+  const syncLater = (id: string, released: boolean) => parentIdsToSync.set(id, (parentIdsToSync.get(id) ?? false) || released);
   const projectIds = new Set<string>();
 
   for (const { id, updates: bodyUpdates } of items) {
@@ -7133,7 +7170,7 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
       await archiveRecursively(id);
       if (hasBulkRef) await storage.updateItem(id, bulkRefUpdates);
       noteUnverifiedLink();
-      if (currentItem.parentId) parentIdsToSync.add(currentItem.parentId);
+      if (currentItem.parentId) syncLater(currentItem.parentId, true);
       continue;
     }
 
@@ -7182,13 +7219,13 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
       projectIds.add(updated.projectId);
 
       if (updated.parentId) {
-        parentIdsToSync.add(updated.parentId);
+        syncLater(updated.parentId, updated.status !== currentItem.status && await landedFinished(updated));
       }
       // A re-parent changes the child set of the old parent too, so it needs
       // re-deriving as well — otherwise it keeps a status computed from a child
       // it no longer has.
       if (currentItem.parentId && currentItem.parentId !== updated.parentId) {
-        parentIdsToSync.add(currentItem.parentId);
+        syncLater(currentItem.parentId, true);
       }
     } catch (e) {
       // Previously swallowed entirely, so a failed write looked like a success
@@ -7205,8 +7242,8 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
   io.emit('items_updated');
   projectIds.forEach(projectId => io.emit('project_switched', { projectId }));
 
-  for (const parentId of parentIdsToSync) {
-    await syncParentStatus(parentId);
+  for (const [parentId, released] of parentIdsToSync) {
+    await syncParentStatus(parentId, { released });
   }
 
   // `skipped` and `warnings` are both additive — existing callers read `results`
@@ -7398,7 +7435,7 @@ app.put("/items/:id", limitBoardRoutes, asyncHandler(async (req: any, res: any) 
     await archiveRecursively(req.params.id);
     if (hasExternalRefUpdate || Object.keys(worktreeUpdates).length) await storage.updateItem(req.params.id, { ...(externalRef.updates as any), ...worktreeUpdates } as any);
     io.emit('items_updated');
-    if (currentItem.parentId) await syncParentStatus(currentItem.parentId);
+    if (currentItem.parentId) await syncParentStatus(currentItem.parentId, { released: true });
     return respondWithStoredItem();
   }
 
@@ -7495,14 +7532,14 @@ app.put("/items/:id", limitBoardRoutes, asyncHandler(async (req: any, res: any) 
     io.emit('project_switched', { projectId: updated.projectId });
 
     if (updated.parentId) {
-      await syncParentStatus(updated.parentId);
+      await syncParentStatus(updated.parentId, { released: statusChanged && await landedFinished(updated) });
     }
     // A re-parent changes the child set of BOTH parents. Without this the old
     // parent keeps a status derived from a child it no longer has — e.g. it sat
     // at IN_PROGRESS only because of the child that just moved away, and should
     // now roll up to DONE.
     if (currentItem.parentId && currentItem.parentId !== updated.parentId) {
-      await syncParentStatus(currentItem.parentId);
+      await syncParentStatus(currentItem.parentId, { released: true });
     }
 
     if (status !== undefined && status !== currentItem.status) {
@@ -7559,7 +7596,7 @@ app.delete("/items/:id", limitBoardRoutes, asyncHandler(async (req: any, res: an
     io.emit('items_updated');
 
     if (itemToDelete.parentId) {
-      await syncParentStatus(itemToDelete.parentId);
+      await syncParentStatus(itemToDelete.parentId, { released: true });
     }
 
     res.status(204).send();
@@ -8955,8 +8992,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   const anchorNames = new Set(sorted.filter((st: any) => st.isAnchor).map((st: any) => String(st.name)));
   const isWorkingStatus = (st: string) => !anchorNames.has(st);
   const endsFlowHere = leavingEndsFlow(sorted as any, currentFlowStep.index);
-  const checkStrays = async (r0: any): Promise<{ refused: true } | { refused: false; res: any }> => {
-    if (!endsFlowHere) return { refused: false, res: r0 };
+  const checkStrays = async (r0: any, ends: boolean = endsFlowHere): Promise<{ refused: true } | { refused: false; res: any }> => {
+    if (!ends) return { refused: false, res: r0 };
     /*
      * 8024f6c4: a card does not close while anything under it is unfinished.
      * BUG 759b606c reached DONE with two children in TODO - accepted as done
@@ -9137,9 +9174,13 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const exitCriteria = (currentFlowStep.step as any).exitCriteria as string | undefined;
     const exitNote = exitCriteria ? `\n**Exit criteria acknowledged**: ${exitCriteria}` : '';
     const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED\n\n**Step**: ${item.status} → ${codingStep.name}${exitNote}${passedChecks ? `\n\n${passedChecks}` : ''}`, timestamp: new Date() };
-    // A flow whose coding step is its end closes here, and a re-entry from a
-    // background gate skipped the entry check: ask again before the write.
-    const closing = await checkStrays(res);
+    /*
+     * A flow whose coding step is its end closes here - judged on the step
+     * this branch WRITES, which need not be the next one (START -> WAIT
+     * (special) -> DONE picks DONE) - and a re-entry from a background gate
+     * skipped the entry check. Ask before the write.
+     */
+    const closing = await checkStrays(res, finishedStatusesOf(activeFlow).has(String(codingStep.name)));
     if (closing.refused) return;
     res = closing.res;
     const leftTodo = await commitOnLeave(res);
@@ -9316,7 +9357,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const updated = await storage.updateItem(itemId, { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment], suiteDeferredTo: deferTo.id, ...(isExitStep ? { failureCount: 0 } : {}) } as any);
     recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
     io.emit('items_updated');
-    if (updated.parentId) await syncParentStatus(updated.parentId);
+    if (updated.parentId) await syncParentStatus(updated.parentId, { released: await landedFinished(updated) });
     const gitResult = process.env.NODE_ENV !== 'test' && !process.env.VITEST
       ? await autoGitCommit(updated, (project as any)?.projectRoot)
       : undefined;
@@ -9348,7 +9389,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const updated = await storage.updateItem(itemId, updates);
     io.emit('items_updated');
     recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
-    if (updated.parentId) await syncParentStatus(updated.parentId);
+    if (updated.parentId) await syncParentStatus(updated.parentId, { released: await landedFinished(updated) });
     // Awaited, unlike before: the response describes what the commit did,
     // so it cannot be written before the commit has been attempted. No
     // `|| findProjectRoot(process.cwd())`: that made a long-lived daemon
@@ -9458,7 +9499,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         // a verify does. It is the same transition; only the reason differs.
         await ensureWorktreeForItem(updated, true);
         io.emit('items_updated');
-        if (updated.parentId) await syncParentStatus(updated.parentId);
+        if (updated.parentId) await syncParentStatus(updated.parentId, { released: await landedFinished(updated) });
         const leave = await nextLeaveNote(itemId);
         return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}. ${ahead}${mandatoryInstructions}${leave.text}${nowOn(nextStatus)}`, output: 'Sibling propagation', ...leave.field });
       }
@@ -9476,7 +9517,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
     await ensureWorktreeForItem(updated, true);
     io.emit('items_updated');
-    if (updated.parentId) await syncParentStatus(updated.parentId);
+    if (updated.parentId) await syncParentStatus(updated.parentId, { released: await landedFinished(updated) });
     const leave = await nextLeaveNote(itemId);
     return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}${leave.text}${nowOn(nextStatus)}`, ...leave.field });
   }
@@ -9655,7 +9696,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       io.emit('items_updated');
       // Before the roll-up: the child's move is recorded ahead of the parent's.
       recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
-      if (updated.parentId) await syncParentStatus(updated.parentId);
+      if (updated.parentId) await syncParentStatus(updated.parentId, { released: await landedFinished(updated) });
       // HEAD just before our own close commit. If it moved during the run,
       // another agent landed work this green never covered, so no commit is
       // recorded and no card may inherit it.
