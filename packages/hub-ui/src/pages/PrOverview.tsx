@@ -15,7 +15,7 @@ import { useSettledKey } from '../hooks/useSettledKey';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
 import { SIZE_META, type SizeKey, buildDayAxis, pctDelta } from '../prOverview';
 import { heatColor } from '../chartColours';
-import { Sparkline } from '../components/Sparkline';
+import { Sparkline, sharedPeak } from '../components/Sparkline';
 import { parsePrQuery } from '../prSearch';
 import { buildMonthBands, dayHeaderInfo, contributionPcts, cellTooltip, placeTooltip } from '../prPerDay';
 import { buildVolumeSeries, type Granularity } from '../prVolumeGranularity';
@@ -594,6 +594,10 @@ export function PrOverviewPage() {
   // Re-bucketed PR volume for the "PR volume by size" chart (daily/weekly/monthly).
   const volume = useMemo(() => (d ? buildVolumeSeries(d.byDay, axis, gran) : null), [d, axis, gran]);
   const prsDelta = d?.previous ? pctDelta(d.totals.prs, d.previous.prs) : null;
+  // The API sends the previous period's size points too (story 4e45bf2f).
+  const sizeDelta = d?.previous ? pctDelta(d.totals.sizePoints, d.previous.sizePoints) : null;
+  // One scale for every developer's trend line, so rows compare (story 4e45bf2f).
+  const trendPeak = useMemo(() => sharedPeak(d?.byDeveloper ?? [], dev => dev.daily, axis), [d, axis]);
   // Reference date for the heatmap's "today" column highlight (local, like the axis).
   const todayIso = buildDayAxis(new Date().toISOString(), new Date().toISOString(), timeZone ?? 'UTC')[0];
   // Per-column header info, computed once per axis instead of per cell.
@@ -905,6 +909,7 @@ export function PrOverviewPage() {
             <StatTile
               label="Weighted size"
               value={d.totals.sizePoints}
+              delta={sizeDelta}
               hint={<>size points · <a href="#size-derivation" className="underline decoration-dotted hover:text-ink">how size is derived</a></>}
             />
             <StatTile
@@ -984,7 +989,7 @@ export function PrOverviewPage() {
                 { key: 'pts', header: 'Size points', align: 'right', firstDir: 'desc', sortValue: dev => dev.sizePoints, render: dev => <span className="font-mono tabular-nums text-ink-secondary">{dev.sizePoints.toLocaleString()}</span> },
                 { key: 'mix', header: 'Size mix', className: 'w-[180px]', render: dev => <MixBar sizes={dev.sizes} total={dev.prs} /> },
                 { key: 'counts', header: 'XS · S · M · L · XL', render: dev => <SizeCounts sizes={dev.sizes} /> },
-                { key: 'trend', header: 'Trend', align: 'right', render: dev => <div className="inline-block"><Sparkline daily={dev.daily} axis={axis} /></div> },
+                { key: 'trend', header: 'Trend', align: 'right', render: dev => <div className="inline-block"><Sparkline daily={dev.daily} axis={axis} max={trendPeak} /></div> },
               ]}
             />
           </section>

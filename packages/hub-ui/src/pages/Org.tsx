@@ -15,7 +15,7 @@ import { EventTypeChips } from '../components/EventTypeChips';
 import { browserTimezone, fmtRelative, utcTitle } from '../dates';
 import { checkPassRate } from '../checkPassRate';
 import { buildDayAxis } from '../prOverview';
-import { Sparkline } from '../components/Sparkline';
+import { Sparkline, sharedPeak } from '../components/Sparkline';
 import { useToggleSet } from '../hooks/useToggleSet';
 import { useUrlFilters } from '../hooks/useUrlFilters';
 import { usePeopleNames } from '../hooks/usePeopleNames';
@@ -153,6 +153,8 @@ export function OrgPage() {
     () => buildDayAxis(fromIsoForRange(new Date(), range), new Date().toISOString(), browserTimezone() ?? 'UTC'),
     [range],
   );
+  // One scale for every person's closures line, so rows compare (story 4e45bf2f).
+  const closuresPeak = useMemo(() => sharedPeak(users.data ?? [], u => u.closed_daily, activityAxis), [users.data, activityAxis]);
 
   // Both chip lists are partitioned by hub — offering a repo or an event type
   // from a hub the board is not showing is a dead end.
@@ -363,7 +365,7 @@ export function OrgPage() {
                   {
                     key: 'activity',
                     header: 'Closed per day',
-                    render: u => <Sparkline daily={u.closed_daily} axis={activityAxis} label="Closures" />,
+                    render: u => <Sparkline daily={u.closed_daily} axis={activityAxis} max={closuresPeak} label="Closures" />,
                   },
                   {
                     key: 'events',
