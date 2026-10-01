@@ -164,6 +164,38 @@ describe('PG parity: admin endpoints', () => {
     expect(dup.status).toBe(409);
   });
 
+  // The last-admin guard is a subquery inside the UPDATE, so it is dialect SQL
+  // that a SQLite-only suite would pass and Postgres could reject.
+  it('refuses demoting the last active admin, and allows it while another admin remains', async () => {
+    await createPasswordUser(fx.db, 'org', 'admin2@x', 'longenough1', 'admin');
+    const login2 = await supertest(__server).post('/auth/login').send({ email: 'admin2@x', password: 'longenough1' });
+    const cookie2 = login2.headers['set-cookie']?.[0] ?? '';
+    const idOf = async (email: string) => (await fx.db.get<any>('SELECT id FROM users WHERE email = ?', [email])).id;
+
+    const demote2 = await supertest(fx.app).put(`/v1/admin/users/${await idOf('admin2@x')}`).set('Cookie', fx.cookie).send({ role: 'viewer' });
+    expect(demote2.status).toBe(200);
+    // admin2's session still says admin; the guard must still keep admin@x.
+    const demote1 = await supertest(fx.app).put(`/v1/admin/users/${await idOf('admin@x')}`).set('Cookie', cookie2).send({ role: 'viewer' });
+    expect(demote1.status).toBe(409);
+    expect((await fx.db.get<any>('SELECT role FROM users WHERE email = ?', ['admin@x'])).role).toBe('admin');
+  });
+
+  it('refuses deleting the last active admin from a stale admin session', async () => {
+    await createPasswordUser(fx.db, 'org', 'admin2@x', 'longenough1', 'admin');
+    const login2 = await supertest(__server).post('/auth/login').send({ email: 'admin2@x', password: 'longenough1' });
+    const cookie2 = login2.headers['set-cookie']?.[0] ?? '';
+    const idOf = async (email: string) => (await fx.db.get<any>('SELECT id FROM users WHERE email = ?', [email])).id;
+    expect((await supertest(fx.app).put(`/v1/admin/users/${await idOf('admin2@x')}`).set('Cookie', fx.cookie).send({ active: false })).status).toBe(200);
+    const r = await supertest(fx.app).delete(`/v1/admin/users/${await idOf('admin@x')}`).set('Cookie', cookie2);
+    expect(r.status).toBe(409);
+    expect(await fx.db.get<any>('SELECT id FROM users WHERE email = ?', ['admin@x'])).toBeTruthy();
+  });
+
+  it('refuses an auth-config save that leaves no way to sign in', async () => {
+    const r = await supertest(fx.app).put('/v1/admin/auth-config').set('Cookie', fx.cookie).send({ passwordEnabled: false });
+    expect(r.status).toBe(400);
+  });
+
   it('hidden-users: hide lists, revokes installation api_keys, unhide reverses (CGLAB-31)', async () => {
     await fx.db.run(
       `INSERT INTO installations (id, org_id, first_seen, last_seen, os_user, git_email)

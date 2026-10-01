@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { HubServerContext, HUB_VERSION } from '../server.js';
 import { requireAdmin } from '../auth/session.js';
 import { issueApiKey } from '../auth/apiKey.js';
+import { checkEmailAllowlist } from '../auth/oauth.js';
 import { encryptSecret } from '../crypto.js';
 import { createPasswordUser, hashPassword } from '../auth/password.js';
 import { randomUUID } from 'crypto';
@@ -100,6 +101,39 @@ function publicAuthConfig(row: AuthConfigRow) {
   };
 }
 
+interface SignInAdmin { email: string; password_hash: string | null; provider: string }
+
+/**
+ * Whether at least one of `admins` (the org's active admins) could still sign
+ * in under this config, judged the way the sign-in routes judge it: password
+ * login needs a password account and ignores the allowlist (/auth/login), and
+ * Google/Entra need the provider on with everything its callback needs, plus
+ * an email the allowlist lets through (auth/google.ts, auth/entra.ts). A
+ * method being "on" is not enough; somebody has to be able to use it.
+ *
+ * An approximation in one respect: the callbacks check the allowlist against
+ * the email the identity provider returns, and this checks the stored
+ * users.email. They differ only for an admin who signs in under another
+ * address than the one they were invited with.
+ */
+export function adminCanStillSignIn(cfg: AuthConfigRow, admins: SignInAdmin[]): boolean {
+  const byPassword = !!cfg.password_enabled && admins.some(a => a.provider === 'password' && !!a.password_hash);
+  if (byPassword) return true;
+  const google = !!cfg.google_enabled && !!cfg.google_client_id?.trim() && !!cfg.google_client_secret_enc;
+  const entra = !!cfg.entra_enabled && !!cfg.entra_tenant_id?.trim() && !!cfg.entra_client_id?.trim() && !!cfg.entra_client_secret_enc;
+  return (google || entra) && admins.some(a => checkEmailAllowlist(a.email, cfg.email_allowlist).allowed);
+}
+
+/**
+ * A WHERE fragment that holds unless the row is the org's last active admin.
+ * Binds two parameters: the org id, then the row's id.
+ */
+const NOT_LAST_ACTIVE_ADMIN = `NOT (role = 'admin' AND active = 1 AND (
+  SELECT COUNT(*) FROM users others
+  WHERE others.org_id = ? AND others.role = 'admin' AND others.active = 1 AND others.id <> ?
+) = 0)`;
+const LAST_ADMIN_ERROR = 'This is the last active admin; make someone else an admin first.';
+
 export function adminRouter(ctx: HubServerContext): Router {
   const router = Router();
 
@@ -120,9 +154,12 @@ export function adminRouter(ctx: HubServerContext): Router {
   router.put('/auth-config', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const b = req.body ?? {};
+    const current = await ctx.db.get<AuthConfigRow>('SELECT * FROM auth_config WHERE org_id = ?', [orgId]);
+    if (!current) return res.status(404).json({ error: 'auth_config row missing for org' });
+    const next: AuthConfigRow = { ...current };
     const updates: string[] = [];
     const params: any[] = [];
-    const setField = (col: string, val: any) => { updates.push(`${col} = ?`); params.push(val); };
+    const setField = (col: keyof AuthConfigRow, val: any) => { updates.push(`${col} = ?`); params.push(val); (next as any)[col] = val; };
 
     if (b.passwordEnabled !== undefined) setField('password_enabled', b.passwordEnabled ? 1 : 0);
     if (b.googleEnabled !== undefined) setField('google_enabled', b.googleEnabled ? 1 : 0);
@@ -139,6 +176,22 @@ export function adminRouter(ctx: HubServerContext): Router {
     if (Array.isArray(b.emailAllowlist)) setField('email_allowlist', JSON.stringify(b.emailAllowlist));
 
     if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
+    // Saving a config nobody can sign in with locks the whole org out, the
+    // admin making the change included.
+    const admins = await ctx.db.all<SignInAdmin>(
+      "SELECT email, password_hash, provider FROM users WHERE org_id = ? AND role = 'admin' AND active = 1",
+      [orgId],
+    );
+    // Refuse only a save that makes things worse: a config already stored in a
+    // state no admin can sign in under (saved before this guard existed) must
+    // still accept a step towards fixing it.
+    if (adminCanStillSignIn(current, admins) && !adminCanStillSignIn(next, admins)) {
+      return res.status(400).json({
+        error: 'This would leave no admin able to sign in: keep email + password on, or finish setting up '
+          + 'Google or Microsoft Entra (client ID, secret and, for Entra, the tenant) with an allowlist '
+          + 'that still lets an admin in.',
+      });
+    }
     params.push(orgId);
     await ctx.db.run(`UPDATE auth_config SET ${updates.join(', ')} WHERE org_id = ?`, params);
     const row = await ctx.db.get<AuthConfigRow>('SELECT * FROM auth_config WHERE org_id = ?', [orgId]);
@@ -1320,16 +1373,45 @@ export function adminRouter(ctx: HubServerContext): Router {
     if (active === true || active === false) { sets.push('active = ?'); params.push(active ? 1 : 0); }
     if (typeof password === 'string' && password.length >= 8) { sets.push('password_hash = ?'); params.push(hashPassword(password)); }
     if (sets.length === 0) return res.status(400).json({ error: 'No fields to update' });
-    params.push(req.params.id, req.session!.orgId);
-    const result = await ctx.db.run(`UPDATE users SET ${sets.join(', ')} WHERE id = ? AND org_id = ?`, params);
-    if (result.changes === 0) return res.status(404).json({ error: 'User not found' });
+    const orgId = req.session!.orgId;
+    const removesAdminAccess = role === 'viewer' || active === false;
+    if (removesAdminAccess && req.session!.userId === req.params.id) {
+      return res.status(400).json({ error: 'You cannot demote or deactivate your own account; ask another admin.' });
+    }
+    params.push(req.params.id, orgId);
+    // The last-admin check sits in the UPDATE itself rather than in a read
+    // before it, so there is no gap between check and write within one
+    // statement (on SQLite, where writes are serialised, that closes the race
+    // outright; on Postgres two exactly simultaneous cross-demotions could
+    // still both pass under READ COMMITTED). It matters beyond self-edits: a
+    // session keeps the role it signed in with, so a just-demoted admin can
+    // still reach this route.
+    let where = 'id = ? AND org_id = ?';
+    if (removesAdminAccess) {
+      where += ` AND ${NOT_LAST_ACTIVE_ADMIN}`;
+      params.push(orgId, req.params.id);
+    }
+    const result = await ctx.db.run(`UPDATE users SET ${sets.join(', ')} WHERE ${where}`, params);
+    if (result.changes === 0) {
+      const exists = await ctx.db.get('SELECT id FROM users WHERE id = ? AND org_id = ?', [req.params.id, orgId]);
+      if (!exists) return res.status(404).json({ error: 'User not found' });
+      return res.status(409).json({ error: LAST_ADMIN_ERROR });
+    }
     res.json({ ok: true });
   }));
 
   router.delete('/users/:id', guard, asyncRoute(async (req: Request, res: Response) => {
     if (req.session!.userId === req.params.id) return res.status(400).json({ error: 'Cannot delete the signed-in user' });
-    const result = await ctx.db.run('DELETE FROM users WHERE id = ? AND org_id = ?', [req.params.id, req.session!.orgId]);
-    if (result.changes === 0) return res.status(404).json({ error: 'User not found' });
+    const orgId = req.session!.orgId;
+    const result = await ctx.db.run(
+      `DELETE FROM users WHERE id = ? AND org_id = ? AND ${NOT_LAST_ACTIVE_ADMIN}`,
+      [req.params.id, orgId, orgId, req.params.id],
+    );
+    if (result.changes === 0) {
+      const exists = await ctx.db.get('SELECT id FROM users WHERE id = ? AND org_id = ?', [req.params.id, orgId]);
+      if (!exists) return res.status(404).json({ error: 'User not found' });
+      return res.status(409).json({ error: LAST_ADMIN_ERROR });
+    }
     res.json({ ok: true });
   }));
 

@@ -10,7 +10,8 @@ import { canRetireRow, canUnretireRow, countRetired, retireConfirmMessage } from
 import { isAttributedByUsername, attributionWarning, countAttributedByUsername } from './attributionWarning';
 import { Page, Toggle, RowMenu, CopyButton, Badge, LocalTime, QueryError, buttonClass, cardClass, controlClass } from '../components/ui';
 import { inviteErrors } from './adminValidation';
-import { providerStatus, ProviderRequirement } from './signInProviderStatus';
+import { providerStatus, ProviderRequirement, noWorkingSignInMethod, googleRequires, entraRequires } from './signInProviderStatus';
+import { userAccessLock, isLastActiveAdmin } from './userAccessLock';
 import { silentDays } from './installationStaleness';
 
 export function AdminLayout() {
@@ -106,6 +107,7 @@ export function AdminAuth() {
   if (cfg.isError && !cfg.data) return <QueryError error={cfg.error} onRetry={() => cfg.refetch()} />;
   if (!cfg.data) return <p role="status" className="text-sm text-ink-tertiary">Loading…</p>;
   const c = { ...cfg.data, ...draft };
+  const lockedOut = noWorkingSignInMethod(c);
 
   return (
     <form className="space-y-4 max-w-2xl" onSubmit={(e) => { e.preventDefault(); save.mutate(draft); }}>
@@ -123,10 +125,7 @@ export function AdminAuth() {
           <div>
             <div className="flex items-center gap-2">
               <h3 className="text-sm font-semibold text-ink">Google</h3>
-              <ProviderBadge enabled={c.googleEnabled} requires={[
-                { label: 'a client ID', present: !!c.google.clientId?.trim() },
-                { label: 'a client secret', present: c.google.clientSecretSet || !!c.google.clientSecret },
-              ]} />
+              <ProviderBadge enabled={c.googleEnabled} requires={googleRequires(c.google)} />
             </div>
             <p className="mt-0.5 text-xs text-ink-tertiary">OAuth 2.0 sign-in with Google Workspace or consumer accounts.</p>
           </div>
@@ -149,12 +148,7 @@ export function AdminAuth() {
           <div>
             <div className="flex items-center gap-2">
               <h3 className="text-sm font-semibold text-ink">Microsoft Entra</h3>
-              <ProviderBadge enabled={c.entraEnabled} requires={[
-                // The server refuses Entra sign-in without a tenant (hub/src/auth/entra.ts).
-                { label: 'a tenant ID', present: !!c.entra.tenantId?.trim() },
-                { label: 'a client ID', present: !!c.entra.clientId?.trim() },
-                { label: 'a client secret', present: c.entra.clientSecretSet || !!c.entra.clientSecret },
-              ]} />
+              <ProviderBadge enabled={c.entraEnabled} requires={entraRequires(c.entra)} />
             </div>
             <p className="mt-0.5 text-xs text-ink-tertiary">OAuth 2.0 sign-in via Azure AD / Entra ID tenants.</p>
           </div>
@@ -185,9 +179,14 @@ export function AdminAuth() {
       </section>
 
       <div className="flex items-center gap-3">
-        <button type="submit" disabled={save.isPending} className={primaryBtnCls}>
+        <button type="submit" disabled={save.isPending || lockedOut} aria-describedby={lockedOut ? 'signin-lockout' : undefined} className={primaryBtnCls}>
           {save.isPending ? 'Saving…' : 'Save changes'}
         </button>
+        {lockedOut && (
+          <span id="signin-lockout" role="alert" className="text-xs text-status-danger-text font-medium">
+            This would leave no way to sign in. Keep email + password on, or finish setting up another provider first.
+          </span>
+        )}
         {save.isSuccess && <span className="text-xs text-status-ok-text font-medium">✓ Saved</span>}
         {save.isError && <span className="text-xs text-status-danger-text font-medium">Error: {(save.error as any)?.message}</span>}
       </div>
@@ -506,14 +505,22 @@ export function AdminUsers() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border-soft">
-              {(users.data ?? []).map(u => (
+              {(users.data ?? []).map(u => {
+                const lock = userAccessLock(u, me.data?.userId, users.data ?? []);
+                // Until /auth/me answers every row is locked, but there is nothing to explain yet.
+                const lockNote = me.data ? lock : null;
+                const lockId = `user-lock-${u.id}`;
+                return (
                 <tr key={u.id} className="hover:bg-accent-fill transition-colors">
                   <td className="px-5 py-2.5">
                     <div className="flex items-center gap-2.5">
                       <div className="w-7 h-7 rounded-full bg-accent-fill text-accent-ink text-[10px] font-bold flex items-center justify-center shrink-0">
                         {u.email.slice(0, 2).toUpperCase()}
                       </div>
-                      <span className="font-mono text-xs text-ink-secondary">{u.email}</span>
+                      <div className="min-w-0">
+                        <span className="font-mono text-xs text-ink-secondary">{u.email}</span>
+                        {lockNote && <p id={lockId} className="text-[11px] text-ink-tertiary">{lockNote}</p>}
+                      </div>
                     </div>
                   </td>
                   <td className="px-2 py-2.5">
@@ -522,8 +529,11 @@ export function AdminUsers() {
                   <td className="px-2 py-2.5">
                     <select
                       value={u.role}
+                      disabled={!!lock}
+                      aria-label={`Role: ${u.email}`}
+                      aria-describedby={lockNote ? lockId : undefined}
                       onChange={(e) => update.mutate({ id: u.id, role: e.target.value })}
-                      className="bg-transparent text-xs font-medium text-ink-secondary hover:bg-accent-fill rounded-md px-1.5 py-0.5"
+                      className="bg-transparent text-xs font-medium text-ink-secondary hover:bg-accent-fill rounded-md px-1.5 py-0.5 disabled:opacity-60 disabled:cursor-not-allowed"
                     >
                       <option value="viewer">viewer</option>
                       <option value="admin">admin</option>
@@ -531,10 +541,10 @@ export function AdminUsers() {
                   </td>
                   <td className="px-2 py-2.5 text-xs text-ink-tertiary tabular-nums">{u.last_login_at ? <LocalTime value={u.last_login_at} format="date" /> : <span className="text-ink-tertiary">never</span>}</td>
                   <td className="px-2 py-2.5 text-right">
-                    <Toggle label={`Active: ${u.email}`} checked={!!u.active} onChange={(v) => update.mutate({ id: u.id, active: v })} />
+                    <Toggle label={`Active: ${u.email}`} checked={!!u.active} disabled={!!lock} aria-describedby={lockNote ? lockId : undefined} onChange={(v) => update.mutate({ id: u.id, active: v })} />
                   </td>
                   <td className="px-5 py-2.5 text-right">
-                    {canDeleteUserRow(u.id, me.data?.userId) && (
+                    {canDeleteUserRow(u.id, me.data?.userId) && !isLastActiveAdmin(u, users.data ?? []) && (
                       <button
                         onClick={() => {
                           if (window.confirm(`Permanently delete ${u.email}? This cannot be undone.`)) {
@@ -550,7 +560,12 @@ export function AdminUsers() {
                     )}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
+              {/* Without the signed-in user every row stays locked; say why. If the list itself failed there are no rows, and its error says enough. */}
+              {me.isError && !users.isError && (
+                <tr><td colSpan={6} className="px-5 py-4"><QueryError error={me.error} onRetry={() => me.refetch()} /></td></tr>
+              )}
               {users.isError && (
                 <tr><td colSpan={6} className="px-5 py-4"><QueryError error={users.error} onRetry={() => users.refetch()} /></td></tr>
               )}
