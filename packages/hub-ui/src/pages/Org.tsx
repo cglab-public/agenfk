@@ -198,7 +198,7 @@ export function OrgPage() {
 
       <div className="space-y-1.5">
         <p className="text-[11px] text-ink-tertiary">Totals apply every filter except event type.</p>
-        <QueryState query={metrics} label="activity totals">{() => <MetricsTilesRow totals={totals} />}</QueryState>
+        <QueryState query={metrics} label="activity totals">{() => <MetricsTilesRow totals={totals} selectedTypes={eventTypeSel.set} onFilterTypes={eventTypeSel.replace} />}</QueryState>
       </div>
 
       <FilterAccordion

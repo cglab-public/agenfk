@@ -271,7 +271,7 @@ export function UserDetailPage() {
         </div>
       </header>
 
-      <QueryState query={metrics} label="activity totals">{() => <MetricsTilesRow totals={totals} />}</QueryState>
+      <QueryState query={metrics} label="activity totals">{() => <MetricsTilesRow totals={totals} selectedTypes={eventTypeSel.set} onFilterTypes={eventTypeSel.replace} />}</QueryState>
 
       {/* The period is always in view; the facets fold behind one summary line. */}
       <PeriodControl

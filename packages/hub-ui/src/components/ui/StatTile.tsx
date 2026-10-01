@@ -10,17 +10,25 @@ const SWATCH = ['', 'bg-series-1', 'bg-series-2', 'bg-series-3', 'bg-series-4', 
  * line of context under the value (a unit, a ratio); `size="sm"` is the
  * compact tile used under a chart.
  */
-export function StatTile({ label, value, delta, higherIsBetter = true, series, hint, size = 'md', className }: {
+export function StatTile({ label, value, delta, higherIsBetter = true, series, hint, size = 'md', onClick, pressed, description, locked, className }: {
   label: string;
   value: number | string;
   hint?: ReactNode;
   size?: 'md' | 'sm';
+  /** Makes the tile a toggle button (aria-pressed): only then does it look interactive. */
+  onClick?: () => void;
+  pressed?: boolean;
+  /** What a click does, as the button's description (and its tooltip). */
+  description?: string;
+  /** Pressed but unable to release (the "all" choice): stays a focusable button. */
+  locked?: boolean;
   delta?: number | null;
   higherIsBetter?: boolean;
   series?: 1 | 2 | 3 | 4 | 5 | 6;
   className?: string;
 }) {
   const shown = typeof value === 'number' ? value.toLocaleString() : value;
+  const Root = onClick ? 'button' : 'div';
   let deltaEl = null;
   // A previous period of 0 gives Infinity; nothing to compare gives NaN.
   if (typeof delta === 'number' && Number.isFinite(delta)) {
@@ -43,22 +51,35 @@ export function StatTile({ label, value, delta, higherIsBetter = true, series, h
     );
   }
   return (
-    <div
+    <Root
       data-stat-tile
       data-size={size}
+      {...(onClick ? {
+        type: 'button' as const,
+        // A locked tile ignores clicks but stays the same focused element, so
+        // a keyboard user's focus survives the selection change.
+        onClick: locked ? undefined : onClick,
+        'aria-pressed': !!pressed,
+        'aria-disabled': locked || undefined,
+        title: description,
+      } : {})}
       className={cn(
-        'bg-surface border border-border-soft grid gap-1 min-w-0',
+        'bg-surface border border-border-soft grid gap-1 min-w-0 text-left',
         size === 'sm' ? 'rounded-lg px-3 py-2' : 'rounded-xl px-4 py-3',
+        onClick && 'transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+        onClick && (locked ? 'cursor-default' : 'cursor-pointer hover:border-accent'),
+        onClick && pressed && 'border-accent bg-accent-fill',
         className,
       )}
     >
-      <div className="flex items-center gap-1.5 text-xs font-semibold text-ink-tertiary">
+      {/* Spans, not divs: as a button the tile may only hold phrasing content. */}
+      <span className="flex items-center gap-1.5 text-xs font-semibold text-ink-tertiary">
         {series && <span data-testid="stat-swatch" aria-hidden="true" className={cn('w-2 h-2 rounded-sm', SWATCH[series])} />}
         {label}
-      </div>
-      <div className={cn('font-extrabold tabular-nums text-ink truncate', size === 'sm' ? 'text-[15px]' : 'text-2xl')} title={shown}>{shown}</div>
+      </span>
+      <span className={cn('block font-extrabold tabular-nums text-ink truncate', size === 'sm' ? 'text-[15px]' : 'text-2xl')} title={onClick ? undefined : shown}>{shown}</span>
       {deltaEl}
-      {hint != null && hint !== '' && hint !== false && <div data-stat-hint className="text-[11px] text-ink-tertiary">{hint}</div>}
-    </div>
+      {hint != null && hint !== '' && hint !== false && <span data-stat-hint className="block text-[11px] text-ink-tertiary">{hint}</span>}
+    </Root>
   );
 }
