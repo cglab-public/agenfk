@@ -205,7 +205,7 @@ async function warmProjectRemote(projectId: string): Promise<void> {
     // mount, credential prompt) would block the whole Node event loop. execFile
     // keeps it off-thread; the 1.5s timeout + closed stdin bound the wait.
     const out = await new Promise<string>((resolve) => {
-      execFile('git', ['remote', 'get-url', 'origin'], { cwd: root, timeout: 1500 }, (err, stdout) => {
+      execFile('git', ['remote', 'get-url', 'origin'], { cwd: root, timeout: 1500, windowsHide: true }, (err, stdout) => {
         resolve(err ? '' : (stdout || '').toString().trim());
       });
     });
@@ -836,7 +836,7 @@ export interface AutoGitCommitResult {
 }
 
 const git = (cmd: string, cwd: string): Promise<{ ok: boolean; out: string; err: string }> =>
-  new Promise((resolve) => exec(cmd, { cwd }, (e, stdout, stderr) =>
+  new Promise((resolve) => exec(cmd, { cwd, windowsHide: true }, (e, stdout, stderr) =>
     resolve({ ok: !e, out: stdout ?? '', err: (stderr || (e as any)?.message || '').trim() })));
 
 /** A merge, rebase, cherry-pick or revert the author has not finished. */
@@ -1120,7 +1120,7 @@ if (hubDisabledForTests) {
     // down/up restart — leaving the upgrade landed on disk while the
     // in-memory process keeps executing the old code.
     spawnImpl: (cmd, args) => new Promise((resolve) => {
-      const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
       let stdout = '';
       child.stdout?.on('data', (d) => { stdout += d.toString(); });
       child.stderr?.on('data', () => { /* ignore — agenfk upgrade --json puts everything on stdout */ });
@@ -2178,20 +2178,20 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
   if (!flow) return res.status(404).json({ error: 'Flow not found' });
 
   // Require gh CLI
-  try { execSync('gh --version', { stdio: 'pipe' }); } catch {
+  try { execSync('gh --version', { stdio: 'pipe', windowsHide: true }); } catch {
     return res.status(503).json({ error: 'gh CLI is not installed on the server.' });
   }
 
   // gh must already be authenticated — get current user login (= author)
   let ghUser: string;
   try {
-    ghUser = execSync('gh api user --jq .login', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    ghUser = execSync('gh api user --jq .login', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim();
   } catch {
     return res.status(503).json({ error: 'gh CLI is not authenticated. Run `gh auth login` on the server.' });
   }
 
   // Get token from gh for git operations
-  const ghToken = execSync('gh auth token', { stdio: 'pipe' }).toString().trim();
+  const ghToken = execSync('gh auth token', { stdio: 'pipe', windowsHide: true }).toString().trim();
 
   const [registryOwner, registryRepo] = registry
     ? (registry as string).split('/')
@@ -2216,17 +2216,17 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
   // below use argv form (no shell) so flow.name, registry and the embedded gh
   // token can never be interpreted as shell. (Security: bugs 6d0a982f, 57b4d95b.)
   if (!isOwner) {
-    execFileSync('gh', ['repo', 'fork', `${registryOwner}/${registryRepo}`, '--clone=false'], { stdio: 'pipe' });
+    execFileSync('gh', ['repo', 'fork', `${registryOwner}/${registryRepo}`, '--clone=false'], { stdio: 'pipe', windowsHide: true });
   }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-registry-'));
   try {
     // Shallow-clone the upstream to check for name clashes
-    execFileSync('git', ['clone', '--depth', '1', '--quiet', `https://oauth2:${ghToken}@github.com/${registryOwner}/${registryRepo}.git`, tmpDir], { stdio: 'pipe' });
+    execFileSync('git', ['clone', '--depth', '1', '--quiet', `https://oauth2:${ghToken}@github.com/${registryOwner}/${registryRepo}.git`, tmpDir], { stdio: 'pipe', windowsHide: true });
 
     // Non-owners switch the push remote to their fork
     if (!isOwner) {
-      execFileSync('git', ['-C', tmpDir, 'remote', 'set-url', 'origin', `https://oauth2:${ghToken}@github.com/${ghUser}/${registryRepo}.git`], { stdio: 'pipe' });
+      execFileSync('git', ['-C', tmpDir, 'remote', 'set-url', 'origin', `https://oauth2:${ghToken}@github.com/${ghUser}/${registryRepo}.git`], { stdio: 'pipe', windowsHide: true });
     }
 
     const flowsDir = path.join(tmpDir, 'flows');
@@ -2272,19 +2272,19 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
       // Non-owners commit on a feature branch; owners commit directly on the cloned main
       const branchName = isOwner ? null : `flow/${slug}-${Date.now()}`;
       if (branchName) {
-        execFileSync('git', ['-C', tmpDir, 'checkout', '-b', branchName], { stdio: 'pipe' });
+        execFileSync('git', ['-C', tmpDir, 'checkout', '-b', branchName], { stdio: 'pipe', windowsHide: true });
       }
 
       fs.writeFileSync(targetPath, content + '\n');
-      execFileSync('git', ['-C', tmpDir, 'add', `flows/${filename}`], { stdio: 'pipe' });
-      execFileSync('git', ['-C', tmpDir, 'commit', '-m', commitMsg], { stdio: 'pipe' });
+      execFileSync('git', ['-C', tmpDir, 'add', `flows/${filename}`], { stdio: 'pipe', windowsHide: true });
+      execFileSync('git', ['-C', tmpDir, 'commit', '-m', commitMsg], { stdio: 'pipe', windowsHide: true });
 
       if (isOwner) {
-        execFileSync('git', ['-C', tmpDir, 'push', 'origin', 'main'], { stdio: 'pipe' });
+        execFileSync('git', ['-C', tmpDir, 'push', 'origin', 'main'], { stdio: 'pipe', windowsHide: true });
         const fileUrl = `https://github.com/${registryOwner}/${registryRepo}/blob/main/flows/${filename}`;
         return res.json({ url: fileUrl, kind: 'direct', version });
       } else {
-        execFileSync('git', ['-C', tmpDir, 'push', 'origin', branchName!], { stdio: 'pipe' });
+        execFileSync('git', ['-C', tmpDir, 'push', 'origin', branchName!], { stdio: 'pipe', windowsHide: true });
         const prBody = [`Published from AgEnFK Flow Editor.`, '', `**Flow**: ${flow.name}`, flow.description ? `**Description**: ${flow.description}` : ''].filter(Boolean).join('\n');
         const prUrl = execFileSync('gh', [
           'pr', 'create',
@@ -2293,7 +2293,7 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
           '--base', 'main',
           '--title', commitMsg,
           '--body', prBody,
-        ], { stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim();
+        ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }).toString().trim();
         return res.json({ url: prUrl, kind: 'pr', version });
       }
     }
@@ -3516,7 +3516,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     return await new Promise<{
       captured: CapturedOutput; code: number | null; timedOut?: boolean; signal?: NodeJS.Signals | null; spawnError?: string;
     }>((resolve) => {
-    const child = spawn(resolvedCommand, { shell: true, cwd: projectRoot, env: { ...process.env, FORCE_COLOR: '1' } });
+    const child = spawn(resolvedCommand, { shell: true, cwd: projectRoot, env: { ...process.env, FORCE_COLOR: '1' }, windowsHide: true });
     let killed = false;
     let settled = false;
     let grace: ReturnType<typeof setTimeout> | undefined;
@@ -4495,7 +4495,7 @@ function loadGitHubConfig(projectId: string): { owner: string; repo: string } | 
 
 function verifyGhCli(): boolean {
   try {
-    execSync('gh auth status', { stdio: 'pipe' });
+    execSync('gh auth status', { stdio: 'pipe', windowsHide: true });
     return true;
   } catch {
     return false;
@@ -4547,6 +4547,7 @@ app.get("/github/issues", async (req: any, res: any) => {
     const result = execFileSync('gh', ghArgs, {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     });
     const issues = JSON.parse(result);
     res.json(issues.map((i: any) => ({
@@ -4585,7 +4586,7 @@ app.post("/github/import", async (req: any, res: any) => {
         const result = execFileSync(
           'gh',
           ['issue', 'view', String(issueNum), '-R', `${config.owner}/${config.repo}`, '--json', 'number,title,body,state,url'],
-          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }
         );
         const issue = JSON.parse(result);
 
@@ -4660,7 +4661,7 @@ const getGitHubRepo = (): string => 'cglab-public/agenfk';
 const getGitHubToken = (): string | null => {
   if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN;
   try {
-    return execSync('gh auth token 2>/dev/null', { encoding: 'utf8' }).trim() || null;
+    return execSync('gh auth token 2>/dev/null', { encoding: 'utf8', windowsHide: true }).trim() || null;
   } catch { return null; }
 };
 
@@ -4707,7 +4708,7 @@ app.post("/releases/update", asyncHandler(async (req: any, res: any) => {
   const command = 'npx -y github:cglab-public/agenfk';
   const cwd = os.homedir();
 
-  const child = (releasesUpdateExecImpl ?? exec)(command, { cwd, env: { ...process.env, FORCE_COLOR: '0' } });
+  const child = (releasesUpdateExecImpl ?? exec)(command, { cwd, env: { ...process.env, FORCE_COLOR: '0' }, windowsHide: true });
   child.stdout?.on('data', (d) => job.output.push(d.toString()));
   child.stderr?.on('data', (d) => job.output.push(d.toString()));
   child.on('close', (code) => {
@@ -4725,6 +4726,7 @@ app.post("/releases/update", asyncHandler(async (req: any, res: any) => {
       const restarter = spawn('sh', ['-c', `sleep 2 && node ${JSON.stringify(serverBin)}`], {
         detached: true,
         stdio: 'ignore',
+        windowsHide: true,
       });
       restarter.unref();
       setTimeout(() => process.exit(0), 5000);

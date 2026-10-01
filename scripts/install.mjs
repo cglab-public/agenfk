@@ -124,7 +124,7 @@ async function run() {
             const persistedPort = fs.readFileSync(path.join(os.homedir(), '.agenfk', 'server-port'), 'utf8').trim();
             if (persistedPort) serverPort = persistedPort;
         } catch { /* ignore */ }
-        const serverCheck = spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '1', `http://localhost:${serverPort}/`], { encoding: 'utf8' });
+        const serverCheck = spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '1', `http://localhost:${serverPort}/`], { encoding: 'utf8', windowsHide: true });
         const serverReachable = serverCheck.status === 0 && serverCheck.stdout.trim() !== '000';
         debugLog(`server on localhost:${serverPort}:`, serverReachable ? `REACHABLE (HTTP ${serverCheck.stdout.trim()})` : 'NOT REACHABLE');
         wasReachableBeforeInstall = serverReachable;
@@ -141,7 +141,7 @@ async function run() {
             const persistedPort = readFileSync(path.join(os.homedir(), '.agenfk', 'server-port'), 'utf8').trim();
             if (persistedPort) probePort = persistedPort;
         } catch { /* ignore */ }
-        const probe = spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '1', `http://localhost:${probePort}/`], { encoding: 'utf8' });
+        const probe = spawnSync('curl', ['-s', '-o', '/dev/null', '-w', '%{http_code}', '--max-time', '1', `http://localhost:${probePort}/`], { encoding: 'utf8', windowsHide: true });
         if (probe.status === 0 && probe.stdout.trim() !== '000') {
             wasReachableBeforeInstall = true;
             preInstallServerPort = probePort;
@@ -189,10 +189,10 @@ async function run() {
             try {
                 if (process.platform === 'win32' && !(process.env.MSYSTEM || process.env.WSL_DISTRO_NAME)) {
                     const pat = SERVER_PATTERN.replace(/\//g, '\\\\');
-                    const out = spawnSync('wmic', ['process', 'where', `commandline like '%${pat}%'`, 'get', 'commandline'], { encoding: 'utf8' });
+                    const out = spawnSync('wmic', ['process', 'where', `commandline like '%${pat}%'`, 'get', 'commandline'], { encoding: 'utf8', windowsHide: true });
                     return (out.stdout || '').split('\n').some(looksLikeServerCmd);
                 }
-                const out = spawnSync('ps', ['-ax', '-o', 'command'], { encoding: 'utf8' });
+                const out = spawnSync('ps', ['-ax', '-o', 'command'], { encoding: 'utf8', windowsHide: true });
                 if (out.status === 0 && typeof out.stdout === 'string') {
                     return out.stdout.split('\n').some(looksLikeServerCmd);
                 }
@@ -200,7 +200,7 @@ async function run() {
                 // Escape every regex metacharacter, not just the dot — a partial escape is
                 // the kind that quietly stops matching when the pattern changes.
                 const pgPattern = SERVER_PATTERN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                const pg = spawnSync('pgrep', ['-f', `(node|bun).*${pgPattern}`], { encoding: 'utf8' });
+                const pg = spawnSync('pgrep', ['-f', `(node|bun).*${pgPattern}`], { encoding: 'utf8', windowsHide: true });
                 return pg.status === 0 && (pg.stdout || '').trim().length > 0;
             } catch {
                 return false;
@@ -318,12 +318,12 @@ async function run() {
         console.log(`${YELLOW}[1/14] Pre-built artifacts missing — auto-heal re-download for ${tag}...${NC}`);
         try {
             // Try curl first
-            const curlResult = spawnSync('curl', ['-fsSL', '-o', tmpFile, url], { stdio: 'pipe' });
+            const curlResult = spawnSync('curl', ['-fsSL', '-o', tmpFile, url], { stdio: 'pipe', windowsHide: true });
             if (curlResult.status !== 0) {
                 // gh CLI fallback
                 const tmpDir = path.dirname(tmpFile);
                 const ghResult = spawnSync('gh', ['release', 'download', tag, '--repo', REPO,
-                    '--pattern', 'agenfk-dist.tar.gz', '-D', tmpDir, '--clobber'], { stdio: 'pipe' });
+                    '--pattern', 'agenfk-dist.tar.gz', '-D', tmpDir, '--clobber'], { stdio: 'pipe', windowsHide: true });
                 if (ghResult.status !== 0) return false;
                 const ghFile = path.join(tmpDir, 'agenfk-dist.tar.gz');
                 if (existsSync(ghFile)) renameSync(ghFile, tmpFile);
@@ -335,7 +335,7 @@ async function run() {
             const tarArgs = os.platform() === 'win32'
                 ? ['--force-local', '-xzf', toPosixPath(tmpFile), '-C', toPosixPath(rootDir)]
                 : ['-xzf', tmpFile, '-C', rootDir];
-            const tarResult = spawnSync('tar', tarArgs, { stdio: 'inherit' });
+            const tarResult = spawnSync('tar', tarArgs, { stdio: 'inherit', windowsHide: true });
             if (tarResult.status !== 0) return false;
             // This extraction is an overlay like any other, and it holds the
             // only authoritative listing this run will ever see — the finally
@@ -473,7 +473,7 @@ async function run() {
                 // POSIX path. Without these the prune silently degrades to a
                 // "Skipped:" line on Windows and the leak stays open there.
                 const listFlags = process.platform === 'win32' ? '--force-local -tzf' : '-tzf';
-                const listing = execSync(`tar ${listFlags} "${toPosixPath(tarball)}"`, { encoding: 'utf8' })
+                const listing = execSync(`tar ${listFlags} "${toPosixPath(tarball)}"`, { encoding: 'utf8', windowsHide: true })
                     .split('\n').filter(Boolean);
                 const { removed, failed } = pruneInstallDirAgainstManifest(rootDir, listing);
                 for (const rel of removed) console.log(`  Pruned (no longer shipped): ${rel}`);
@@ -517,6 +517,7 @@ async function run() {
             cwd: rootDir,
             stdio: 'inherit',
             shell: os.platform() === 'win32', // .cmd scripts need shell on Windows (MinGW + native)
+            windowsHide: true,
         });
         if (npmCiResult.status !== 0) {
             console.log(`${YELLOW}  Warning: npm ci failed (exit ${npmCiResult.status}). Run 'npm ci --omit=dev' manually in ${rootDir} if agenfk commands fail to resolve modules.${NC}`);
@@ -703,7 +704,7 @@ async function run() {
         console.log(`${GREEN}[4/14] Initializing configuration...${NC}`);
         const localConfigDir = path.join(rootDir, '.agenfk');
         if (!existsSync(localConfigDir)) {
-            spawnSync(process.execPath, [path.join(rootDir, 'packages/cli/bin/agenfk.js'), 'init'], { stdio: 'inherit' });
+            spawnSync(process.execPath, [path.join(rootDir, 'packages/cli/bin/agenfk.js'), 'init'], { stdio: 'inherit', windowsHide: true });
         }
     }
 
@@ -755,7 +756,8 @@ const apiLog = fs.openSync(apiLogPath, 'w');
 const apiProcess = spawn('node', [path.join(rootDir, 'packages/server/dist/server.js')], {
     env: { ...process.env, AGENFK_DB_PATH: dbPath, AGENFK_PORT: REQUESTED_API_PORT, VITE_PORT: UI_PORT },
     detached: true,
-    stdio: ['ignore', apiLog, apiLog]
+    stdio: ['ignore', apiLog, apiLog],
+    windowsHide: true
 });
 apiProcess.unref();
 
@@ -784,6 +786,7 @@ const uiProcess = spawn(npmCmd, ['run', 'preview'], {
     detached: true,
     stdio: ['ignore', uiLog, uiLog],
     shell: os.platform() === 'win32', // .cmd scripts need shell on Windows (MinGW + native)
+    windowsHide: true,
 });
 uiProcess.unref();
 
@@ -816,10 +819,10 @@ if (process.env.AGENFK_NO_OPEN_BROWSER) {
 }
 
 if (process.platform === 'win32') {
-    spawn('cmd.exe', ['/c', 'start', '', uiUrl], { detached: true, stdio: 'ignore' }).unref();
+    spawn('cmd.exe', ['/c', 'start', '', uiUrl], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
 } else {
     const openCmd = process.platform === 'darwin' ? 'open' : 'xdg-open';
-    spawn(openCmd, [uiUrl], { detached: true, stdio: 'ignore' }).unref();
+    spawn(openCmd, [uiUrl], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
 }
 
 process.exit(0);
@@ -834,7 +837,7 @@ process.exit(0);
     if (withMcp && shouldRun('opencode')) {
         console.log(`${GREEN}[6/14] Configuring Opencode MCP...${NC}`);
         const opencodeConfigPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
-        const opencodeInstalled = spawnSync(getCliCommand('opencode'), ['--version'], { stdio: 'ignore' }).status === 0;
+        const opencodeInstalled = spawnSync(getCliCommand('opencode'), ['--version'], { stdio: 'ignore', windowsHide: true }).status === 0;
         if (existsSync(opencodeConfigPath) || opencodeInstalled) {
             try {
                 let config = {};
@@ -876,7 +879,7 @@ process.exit(0);
         const cursorConfigDir = path.dirname(cursorMcpPath);
         const cursorCmd = getCliCommand('cursor');
         const cursorInstalled = existsSync(cursorConfigDir) ||
-            spawnSync(cursorCmd, ['--version'], { stdio: 'ignore' }).status === 0;
+            spawnSync(cursorCmd, ['--version'], { stdio: 'ignore', windowsHide: true }).status === 0;
         if (cursorInstalled) {
             try {
                 let cursorMcp = {};
@@ -921,19 +924,19 @@ process.exit(0);
     if (codexMcp && shouldRun('codex')) {
         console.log(`${GREEN}[6c/14] Configuring Codex MCP (default for Codex)...${NC}`);
         const codexCmd = getCliCommand('codex');
-        const codexInstalled = spawnSync(codexCmd, ['--version'], { stdio: 'ignore' }).status === 0;
+        const codexInstalled = spawnSync(codexCmd, ['--version'], { stdio: 'ignore', windowsHide: true }).status === 0;
         if (codexInstalled) {
             try {
                 console.log("  Registering AgenFK MCP server with Codex...");
                 // Remove any existing registration first (ignore errors if not registered)
-                spawnSync(codexCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'ignore' });
+                spawnSync(codexCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'ignore', windowsHide: true });
                 const result = spawnSync(codexCmd, [
                     'mcp', 'add',
                     '--env', `AGENFK_DB_PATH=${dbPath}`,
                     '--',
                     'agenfk',
                     'node', serverPath
-                ], { stdio: 'inherit' });
+                ], { stdio: 'inherit', windowsHide: true });
                 if (result.status === 0) {
                     console.log(`  ${GREEN}Registered agenfk MCP server with Codex.${NC}`);
                 } else {
@@ -951,19 +954,19 @@ process.exit(0);
     if (withMcp && shouldRun('gemini')) {
         console.log(`${GREEN}[6d/14] Configuring Gemini CLI MCP...${NC}`);
         const geminiCmd = getCliCommand('gemini');
-        const geminiInstalled = spawnSync(geminiCmd, ['--version'], { stdio: 'ignore' }).status === 0;
+        const geminiInstalled = spawnSync(geminiCmd, ['--version'], { stdio: 'ignore', windowsHide: true }).status === 0;
         if (geminiInstalled) {
             try {
                 console.log("  Registering AgenFK MCP server with Gemini CLI...");
                 // Remove any existing registration first (ignore errors if not registered)
-                spawnSync(geminiCmd, ['mcp', 'remove', '-s', 'user', 'agenfk'], { stdio: 'ignore' });
+                spawnSync(geminiCmd, ['mcp', 'remove', '-s', 'user', 'agenfk'], { stdio: 'ignore', windowsHide: true });
                 const result = spawnSync(geminiCmd, [
                     'mcp', 'add',
                     '-s', 'user',
                     '-e', `AGENFK_DB_PATH=${dbPath}`,
                     'agenfk',
                     'node', serverPath
-                ], { stdio: 'inherit' });
+                ], { stdio: 'inherit', windowsHide: true });
                 if (result.status === 0) {
                     console.log(`  ${GREEN}Registered agenfk MCP server with Gemini CLI.${NC}`);
                 } else {
@@ -986,8 +989,8 @@ process.exit(0);
 
         if (shouldRun('claude')) {
             const claudeCmd = getCliCommand('claude');
-            if (spawnSync(claudeCmd, ['--version'], { stdio: 'ignore' }).status === 0) {
-                spawnSync(claudeCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'ignore' });
+            if (spawnSync(claudeCmd, ['--version'], { stdio: 'ignore', windowsHide: true }).status === 0) {
+                spawnSync(claudeCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'ignore', windowsHide: true });
             }
         }
         // Codex is the exception: MCP is on by default there (§6c registered it),
@@ -995,14 +998,14 @@ process.exit(0);
         // persisted opt-out).
         if (!codexMcp && shouldRun('codex')) {
             const codexCmd = getCliCommand('codex');
-            if (spawnSync(codexCmd, ['--version'], { stdio: 'ignore' }).status === 0) {
-                spawnSync(codexCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'ignore' });
+            if (spawnSync(codexCmd, ['--version'], { stdio: 'ignore', windowsHide: true }).status === 0) {
+                spawnSync(codexCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'ignore', windowsHide: true });
             }
         }
         if (shouldRun('gemini')) {
             const geminiCmd = getCliCommand('gemini');
-            if (spawnSync(geminiCmd, ['--version'], { stdio: 'ignore' }).status === 0) {
-                spawnSync(geminiCmd, ['mcp', 'remove', '-s', 'user', 'agenfk'], { stdio: 'ignore' });
+            if (spawnSync(geminiCmd, ['--version'], { stdio: 'ignore', windowsHide: true }).status === 0) {
+                spawnSync(geminiCmd, ['mcp', 'remove', '-s', 'user', 'agenfk'], { stdio: 'ignore', windowsHide: true });
             }
         }
         if (shouldRun('opencode')) {
@@ -1300,7 +1303,7 @@ process.exit(0);
 
     // 10c. Slash Commands — Gemini CLI (.toml wrappers referencing .md files)
     if (shouldRun('gemini')) {
-        const geminiInstalled = spawnSync(getCliCommand('gemini'), ['--version'], { stdio: 'ignore' }).status === 0;
+        const geminiInstalled = spawnSync(getCliCommand('gemini'), ['--version'], { stdio: 'ignore', windowsHide: true }).status === 0;
         if (geminiInstalled) {
             console.log(`${GREEN}[10c/14] Installing global slash commands (Gemini CLI)...${NC}`);
             const geminiCommandsBase = path.join(os.homedir(), '.gemini', 'commands');
@@ -1478,7 +1481,7 @@ process.exit(0);
     // 12c. Install Opencode MCP enforcer plugin
     if (shouldRun('opencode')) {
         const opencodePluginsDir = path.join(os.homedir(), '.config', 'opencode', 'plugins');
-        const opencodeInstalled = spawnSync(getCliCommand('opencode'), ['--version'], { stdio: 'ignore' }).status === 0;
+        const opencodeInstalled = spawnSync(getCliCommand('opencode'), ['--version'], { stdio: 'ignore', windowsHide: true }).status === 0;
         if (existsSync(path.join(os.homedir(), '.config', 'opencode')) || opencodeInstalled) {
             await fs.mkdir(opencodePluginsDir, { recursive: true });
             const opencodeEnforcerSource = path.join(rootDir, 'bin', 'agenfk-mcp-enforcer-opencode.mjs');
@@ -1507,7 +1510,7 @@ process.exit(0);
     if (shouldRun('pi')) {
         if (!onlyPlatform) console.log(`${GREEN}[12e/14] Installing pi extension (~/.pi/agent/extensions)...${NC}`);
         const piHome = path.join(os.homedir(), '.pi');
-        const piInstalled = spawnSync(getCliCommand('pi'), ['--version'], { stdio: 'ignore' }).status === 0;
+        const piInstalled = spawnSync(getCliCommand('pi'), ['--version'], { stdio: 'ignore', windowsHide: true }).status === 0;
         if (existsSync(piHome) || piInstalled) {
             const piExtDir = path.join(piHome, 'agent', 'extensions');
             await fs.mkdir(piExtDir, { recursive: true });
@@ -1527,11 +1530,11 @@ process.exit(0);
         console.log(`${GREEN}[7/14] Configuring Claude Code MCP...${NC}`);
         try {
             const claudeCmd = getCliCommand('claude');
-            const claudeCheck = spawnSync(claudeCmd, ['--version'], { stdio: 'ignore' });
+            const claudeCheck = spawnSync(claudeCmd, ['--version'], { stdio: 'ignore', windowsHide: true });
             if (claudeCheck.status === 0) {
                 console.log("  Registering AgenFK MCP server with Claude Code...");
                 // Remove any existing registration first (ignore errors if not registered)
-                spawnSync(claudeCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'ignore' });
+                spawnSync(claudeCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'ignore', windowsHide: true });
                 // Register with correct syntax: options, then -- to end variadic -e, then name + command
                 const result = spawnSync(claudeCmd, [
                     'mcp', 'add',
@@ -1541,7 +1544,7 @@ process.exit(0);
                     '--',
                     'agenfk',
                     cliDest, 'mcp'
-                ], { stdio: 'inherit' });
+                ], { stdio: 'inherit', windowsHide: true });
                 if (result.status === 0) {
                     console.log(`  ${GREEN}Registered agenfk MCP server (user scope).${NC}`);
                 } else {
@@ -1632,7 +1635,7 @@ process.exit(0);
         const cursorMcpPath = getCursorMcpPath();
         const cursorConfigDir = path.dirname(cursorMcpPath);
         const cursorInstalled = existsSync(cursorConfigDir) ||
-            spawnSync(cursorCmd, ['--version'], { stdio: 'ignore' }).status === 0;
+            spawnSync(cursorCmd, ['--version'], { stdio: 'ignore', windowsHide: true }).status === 0;
         if (cursorInstalled) {
             try {
                 const globalCursorMdc = path.join(getCursorRulesDir(), 'agenfk.mdc');
@@ -1651,7 +1654,7 @@ process.exit(0);
     if (shouldRun('codex')) {
         console.log(`${GREEN}[13c/14] Installing Codex workflow rules (AGENTS.md)...${NC}`);
         const codexCmd = getCliCommand('codex');
-        const codexInstalled = spawnSync(codexCmd, ['--version'], { stdio: 'ignore' }).status === 0;
+        const codexInstalled = spawnSync(codexCmd, ['--version'], { stdio: 'ignore', windowsHide: true }).status === 0;
         if (codexInstalled) {
             try {
                 const globalAgentsMd = path.join(os.homedir(), '.codex', 'AGENTS.md');
@@ -1670,7 +1673,7 @@ process.exit(0);
     if (shouldRun('gemini')) {
         console.log(`${GREEN}[13d/14] Installing Gemini CLI workflow rules (GEMINI.md)...${NC}`);
         const geminiCmd = getCliCommand('gemini');
-        const geminiInstalled = spawnSync(geminiCmd, ['--version'], { stdio: 'ignore' }).status === 0;
+        const geminiInstalled = spawnSync(geminiCmd, ['--version'], { stdio: 'ignore', windowsHide: true }).status === 0;
         if (geminiInstalled) {
             try {
                 const globalGeminiMd = path.join(os.homedir(), '.gemini', 'GEMINI.md');
@@ -1818,7 +1821,7 @@ process.exit(0);
             const child = spawn(
                 'node',
                 [path.join(rootDir, 'packages/cli/bin/agenfk.js'), 'restart', '--quiet'],
-                { cwd: rootDir, detached: true, stdio: 'ignore' },
+                { cwd: rootDir, detached: true, stdio: 'ignore', windowsHide: true },
             );
             // BUG 2f491181: install.mjs is now the SOLE owner of the post-
             // upgrade restart (the CLI no longer fires a fallback `up`). A

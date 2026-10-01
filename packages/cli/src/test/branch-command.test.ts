@@ -31,7 +31,7 @@ function expectCheckout(branch: string) {
   expect(mockedChildProcess.execFileSync).toHaveBeenCalledWith(
     'git',
     ['checkout', '-b', branch],
-    { stdio: 'inherit' },
+    { stdio: 'inherit', windowsHide: true },
   );
 }
 

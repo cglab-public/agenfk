@@ -822,10 +822,10 @@ async function callToolHandler(request: any): Promise<any> {
             // shell: branchName is stored data, and this runs implicitly on every
             // gatekeeper call, so a name like `main; rm -rf ~` must not be able to
             // break out of the command. `--` stops it being read as an option.
-            execFileSync('git', ['rev-parse', '--verify', '--', task.branchName], { stdio: 'ignore' });
-            const currentBranch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' }).trim();
+            execFileSync('git', ['rev-parse', '--verify', '--', task.branchName], { stdio: 'ignore', windowsHide: true });
+            const currentBranch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8', windowsHide: true }).trim();
             if (currentBranch !== task.branchName) {
-              execFileSync('git', ['checkout', '--', task.branchName], { stdio: 'ignore' });
+              execFileSync('git', ['checkout', '--', task.branchName], { stdio: 'ignore', windowsHide: true });
               branchHint = `\n🔀 Switched to branch '${task.branchName}'.`;
             } else {
               branchHint = `\n🔀 Already on branch '${task.branchName}'.`;

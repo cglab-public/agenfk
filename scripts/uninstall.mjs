@@ -340,9 +340,9 @@ async function run() {
     await step('Claude Code MCP config', shouldRun('claude'), async () => {
         console.log(`${GREEN}[5] Removing Claude Code MCP config...${NC}`);
         const claudeCmd = getCliCommand('claude');
-        const claudeCheck = spawnSync(claudeCmd, ['--version'], { stdio: 'ignore' });
+        const claudeCheck = spawnSync(claudeCmd, ['--version'], { stdio: 'ignore', windowsHide: true });
         if (claudeCheck.status === 0) {
-            spawnSync(claudeCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'inherit' });
+            spawnSync(claudeCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'inherit', windowsHide: true });
             console.log("  Removed: agenfk MCP from Claude Code");
             return true;
         }
@@ -416,9 +416,9 @@ async function run() {
     await step('Codex MCP config', shouldRun('codex'), async () => {
         console.log(`${GREEN}[6c] Removing Codex MCP config...${NC}`);
         const codexCmd = getCliCommand('codex');
-        const codexCheck = spawnSync(codexCmd, ['--version'], { stdio: 'ignore' });
+        const codexCheck = spawnSync(codexCmd, ['--version'], { stdio: 'ignore', windowsHide: true });
         if (codexCheck.status === 0) {
-            spawnSync(codexCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'inherit' });
+            spawnSync(codexCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'inherit', windowsHide: true });
             console.log("  Removed: agenfk MCP from Codex");
             return true;
         }
@@ -430,9 +430,9 @@ async function run() {
     await step('Gemini CLI MCP config', shouldRun('gemini'), async () => {
         console.log(`${GREEN}[6d] Removing Gemini CLI MCP config...${NC}`);
         const geminiCmd = getCliCommand('gemini');
-        const geminiCheck = spawnSync(geminiCmd, ['--version'], { stdio: 'ignore' });
+        const geminiCheck = spawnSync(geminiCmd, ['--version'], { stdio: 'ignore', windowsHide: true });
         if (geminiCheck.status === 0) {
-            spawnSync(geminiCmd, ['mcp', 'remove', '-s', 'user', 'agenfk'], { stdio: 'inherit' });
+            spawnSync(geminiCmd, ['mcp', 'remove', '-s', 'user', 'agenfk'], { stdio: 'inherit', windowsHide: true });
             console.log("  Removed: agenfk MCP from Gemini CLI");
             return true;
         }

@@ -72,8 +72,8 @@ export async function defaultSelfExtract(input: { installRoot: string; targetVer
   const url = `https://github.com/${DIST_REPO}/releases/download/${tag}/${DIST_ASSET}`;
   const tmpFile = path.join(os.tmpdir(), `agenfk-self-heal-${Date.now()}.tar.gz`);
   try {
-    execSync(`curl -fsSL -o "${tmpFile}" "${url}"`, { stdio: 'pipe' });
-    execSync(`tar -xzf "${tmpFile}" -C "${input.installRoot}"`, { stdio: 'pipe' });
+    execSync(`curl -fsSL -o "${tmpFile}" "${url}"`, { stdio: 'pipe', windowsHide: true });
+    execSync(`tar -xzf "${tmpFile}" -C "${input.installRoot}"`, { stdio: 'pipe', windowsHide: true });
     // `tar -xzf` is an overlay that deletes nothing, so files this version
     // dropped survive in the install root — and the next install.mjs run from
     // any route then treats them as shipped and re-installs them into every
@@ -104,7 +104,7 @@ export async function defaultSelfExtract(input: { installRoot: string; targetVer
       if (isDevTree) {
         console.log('[self-extract] prune skipped (dev checkout detected: .git present)');
       } else {
-        const listing = execSync(`tar -tzf "${tmpFile}"`, { encoding: 'utf8' })
+        const listing = execSync(`tar -tzf "${tmpFile}"`, { encoding: 'utf8', windowsHide: true })
           .split('\n').map((l) => l.trim()).filter(Boolean);
         const { removed, failed } = pruneInstallDirAgainstManifest(input.installRoot, listing);
         for (const rel of removed) console.log(`[self-extract] pruned (no longer shipped): ${rel}`);
@@ -125,7 +125,7 @@ export async function defaultSelfExtract(input: { installRoot: string; targetVer
     // fails (e.g. offline), we surface it as a failure rather than a false
     // success.
     const npmCmd = (os.platform() === 'win32') ? 'npm.cmd' : 'npm';
-    execSync(`${npmCmd} ci --omit=dev --ignore-scripts`, { cwd: input.installRoot, stdio: 'pipe' });
+    execSync(`${npmCmd} ci --omit=dev --ignore-scripts`, { cwd: input.installRoot, stdio: 'pipe', windowsHide: true });
     return { ok: true };
   } catch (e: any) {
     const msg = e?.stderr?.toString?.()?.trim() || e?.message || String(e);
@@ -147,6 +147,7 @@ function defaultRestartServer(installRoot: string): void {
       cwd: installRoot,
       detached: true,
       stdio: 'ignore',
+      windowsHide: true,
     });
     child.on('error', () => { /* best effort — operator can restart manually */ });
     child.unref();

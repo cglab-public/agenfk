@@ -43,7 +43,7 @@ async function fetchJson(url) {
   }
   const out = execSync(
     `curl -fsSL "${url}" -H "Accept: application/vnd.github+json" -H "User-Agent: agenfk-installer"`,
-    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true },
   );
   return JSON.parse(out);
 }
@@ -63,9 +63,9 @@ async function fetchLatestTagAsync(repo, beta = false) {
   }
   // gh CLI fallback (only reachable when both fetch + curl failed).
   if (beta) {
-    return execSync(`gh release list --repo ${repo} --limit 1 --json tagName --template '{{range .}}{{.tagName}}{{end}}'`, { encoding: 'utf8' }).trim();
+    return execSync(`gh release list --repo ${repo} --limit 1 --json tagName --template '{{range .}}{{.tagName}}{{end}}'`, { encoding: 'utf8', windowsHide: true }).trim();
   }
-  return execSync(`gh release view --repo ${repo} --json tagName --template '{{.tagName}}'`, { encoding: 'utf8' }).trim();
+  return execSync(`gh release view --repo ${repo} --json tagName --template '{{.tagName}}'`, { encoding: 'utf8', windowsHide: true }).trim();
 }
 
 // Sync wrapper to keep the existing call-sites simple. We synchronously block
@@ -92,10 +92,10 @@ async function downloadAsset(repo, tag, pattern, outputPath) {
     }
   }
   try {
-    execSync(`curl -fsSL "${url}" -o "${outputPath}"`, { stdio: 'inherit' });
+    execSync(`curl -fsSL "${url}" -o "${outputPath}"`, { stdio: 'inherit', windowsHide: true });
     return;
   } catch {}
-  execSync(`gh release download ${tag} --repo ${repo} --pattern '${pattern}' --output "${outputPath}"`, { stdio: 'inherit' });
+  execSync(`gh release download ${tag} --repo ${repo} --pattern '${pattern}' --output "${outputPath}"`, { stdio: 'inherit', windowsHide: true });
 }
 
 function ensureHubDeps(baseDir) {
@@ -108,12 +108,14 @@ function ensureHubDeps(baseDir) {
     execSync('npm install -w packages/hub --omit=dev --no-audit --no-fund', {
       cwd: baseDir,
       stdio: 'inherit',
+      windowsHide: true,
     });
   } catch {
     console.log(`${YELLOW}Workspace install failed; falling back to flat install in packages/hub...${RESET}`);
     execSync('npm install --omit=dev --no-audit --no-fund --no-package-lock', {
       cwd: path.join(baseDir, 'packages/hub'),
       stdio: 'inherit',
+      windowsHide: true,
     });
   }
 }
@@ -163,6 +165,7 @@ function startHub(baseDir) {
     stdio: 'inherit',
     env,
     cwd: baseDir,
+    windowsHide: true,
   });
   child.on('exit', code => process.exit(code ?? 0));
 }
@@ -182,7 +185,7 @@ if (!isNpxCache) {
   const hubDist = path.join(REPO_ROOT, 'packages/hub/dist/bin.js');
   if (shouldRebuild || !fs.existsSync(hubDist)) {
     console.log(`${GREEN}Building hub from source...${RESET}`);
-    execSync('npm run build -w packages/core -w packages/storage-sqlite -w packages/hub', { cwd: REPO_ROOT, stdio: 'inherit' });
+    execSync('npm run build -w packages/core -w packages/storage-sqlite -w packages/hub', { cwd: REPO_ROOT, stdio: 'inherit', windowsHide: true });
   }
   startHub(REPO_ROOT);
 } else {
@@ -196,7 +199,7 @@ if (!isNpxCache) {
     if (fs.cpSync) {
       fs.cpSync(REPO_ROOT, installDir, { recursive: true });
     } else {
-      execSync(`cp -r ${JSON.stringify(REPO_ROOT)}/. ${JSON.stringify(installDir)}/`, { stdio: 'inherit', shell: true });
+      execSync(`cp -r ${JSON.stringify(REPO_ROOT)}/. ${JSON.stringify(installDir)}/`, { stdio: 'inherit', shell: true, windowsHide: true });
     }
   }
 
@@ -213,7 +216,7 @@ async function ensureDistribution({ installDir, repo, beta }) {
   try {
     const tag = await fetchLatestTagAsync(repo, beta);
     await downloadAsset(repo, tag, 'agenfk-dist.tar.gz', path.join(installDir, 'agenfk-dist.tar.gz'));
-    execSync(`tar ${tarFlags} "${toPosixPath(path.join(installDir, 'agenfk-dist.tar.gz'))}" -C "${toPosixPath(installDir)}"`, { stdio: 'inherit' });
+    execSync(`tar ${tarFlags} "${toPosixPath(path.join(installDir, 'agenfk-dist.tar.gz'))}" -C "${toPosixPath(installDir)}"`, { stdio: 'inherit', windowsHide: true });
     fs.unlinkSync(path.join(installDir, 'agenfk-dist.tar.gz'));
     if (!fs.existsSync(path.join(installDir, 'packages/hub/dist/bin.js'))) {
       throw new Error(
@@ -234,8 +237,8 @@ async function ensureDistribution({ installDir, repo, beta }) {
   overlayMissingWorkspaces(REPO_ROOT, installDir);
 
   console.log(`${GREEN}Installing build toolchain (devDependencies)...${RESET}`);
-  execSync('npm install --include=dev --no-audit --no-fund --no-package-lock', { cwd: installDir, stdio: 'inherit' });
-  execSync('npm run build -w packages/core -w packages/storage-sqlite -w packages/hub', { cwd: installDir, stdio: 'inherit' });
+  execSync('npm install --include=dev --no-audit --no-fund --no-package-lock', { cwd: installDir, stdio: 'inherit', windowsHide: true });
+  execSync('npm run build -w packages/core -w packages/storage-sqlite -w packages/hub', { cwd: installDir, stdio: 'inherit', windowsHide: true });
 }
 
 // Walk the REPO_ROOT package.json's workspaces array and copy any workspace
@@ -254,7 +257,7 @@ function overlayMissingWorkspaces(srcRoot, dstRoot) {
       if (fs.cpSync) {
         fs.cpSync(srcDir, dstDir, { recursive: true });
       } else {
-        execSync(`cp -r ${JSON.stringify(srcDir)} ${JSON.stringify(path.dirname(dstDir))}/`, { stdio: 'inherit', shell: true });
+        execSync(`cp -r ${JSON.stringify(srcDir)} ${JSON.stringify(path.dirname(dstDir))}/`, { stdio: 'inherit', shell: true, windowsHide: true });
       }
     }
   } catch (e) {

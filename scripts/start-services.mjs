@@ -38,7 +38,8 @@ const apiLog = fs.openSync(apiLogPath, 'w');
 const apiProcess = spawn('node', [path.join(rootDir, 'packages/server/dist/server.js')], {
     env: { ...process.env, AGENFK_DB_PATH: dbPath, AGENFK_PORT: REQUESTED_API_PORT, VITE_PORT: UI_PORT },
     detached: true,
-    stdio: ['ignore', apiLog, apiLog]
+    stdio: ['ignore', apiLog, apiLog],
+    windowsHide: true
 });
 apiProcess.unref();
 
@@ -67,6 +68,7 @@ const uiProcess = spawn(npmCmd, ['run', 'preview'], {
     detached: true,
     stdio: ['ignore', uiLog, uiLog],
     shell: os.platform() === 'win32', // .cmd scripts need shell on Windows (MinGW + native)
+    windowsHide: true,
 });
 uiProcess.unref();
 
@@ -99,10 +101,10 @@ if (process.env.AGENFK_NO_OPEN_BROWSER) {
 }
 
 if (process.platform === 'win32') {
-    spawn('cmd.exe', ['/c', 'start', '', uiUrl], { detached: true, stdio: 'ignore' }).unref();
+    spawn('cmd.exe', ['/c', 'start', '', uiUrl], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
 } else {
     const openCmd = process.platform === 'darwin' ? 'open' : 'xdg-open';
-    spawn(openCmd, [uiUrl], { detached: true, stdio: 'ignore' }).unref();
+    spawn(openCmd, [uiUrl], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
 }
 
 process.exit(0);
