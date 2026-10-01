@@ -12,7 +12,7 @@ import { ChipRow, DataTable, Page, PageHeader, PeriodControl, QueryState } from 
 import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
 import { EventTypeChips } from '../components/EventTypeChips';
-import { fmtRelative, utcTitle } from '../dates';
+import { browserTimezone, fmtRelative, utcTitle } from '../dates';
 import { checkPassRate } from '../checkPassRate';
 import { buildDayAxis } from '../prOverview';
 import { Sparkline } from '../components/Sparkline';
@@ -128,6 +128,9 @@ export function OrgPage() {
   const usersQs = useMemo(() => {
     const p = new URLSearchParams(qs);
     if (eventTypeSel.set.size) p.set('types', [...eventTypeSel.set].join(','));
+    // Per-person closures are filed by the viewer's local day, like the timeline.
+    const tz = browserTimezone();
+    if (tz) p.set('tz', tz);
     return p.toString();
   }, [qs, eventTypeSel.set]);
   const typeScoped = eventTypeSel.set.size > 0;
@@ -138,11 +141,11 @@ export function OrgPage() {
     queryFn: async () => ((await api.get(`/v1/users${usersQs ? `?${usersQs}` : ''}`)).data as Partial<UsersResponse>[])
       .map(u => ({ items_closed: 0, validate_passes: 0, validate_fails: 0, prs_opened: 0, closed_daily: {}, ...u }) as UsersResponse),
   });
-  // Closures per UTC day (the hub groups by UTC date), over the period. An
+  // Closures per local day (the hub files them by the zone sent), over the period. An
   // item reopened and closed again counts once in Items closed but on each
   // day it closed here, so the line is labelled closures, not items.
   const activityAxis = useMemo(
-    () => buildDayAxis(fromIsoForRange(new Date(), range), new Date().toISOString(), 'UTC'),
+    () => buildDayAxis(fromIsoForRange(new Date(), range), new Date().toISOString(), browserTimezone() ?? 'UTC'),
     [range],
   );
 
@@ -285,8 +288,6 @@ export function OrgPage() {
                 rows={list}
                 rowKey={u => u.user_key}
                 defaultSort={{ key: 'last', dir: 'desc' }}
-                // Only the person links; a hovered row would promise more.
-                rowHover={false}
                 search={{
                   label: 'Search people',
                   placeholder: 'Search by name or email',

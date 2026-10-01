@@ -381,7 +381,7 @@ export function UserDetailPage() {
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-ink-secondary">Recent events</h2>
-          <span className="text-[11px] text-ink-tertiary" title={`All times in ${browserTimezone()}`}>{tl.data && tl.data.events.length > 0 && `${shownLine(tl.data.events.length, tl.data.total)} · `}times in {browserTimezone()}</span>
+          <span className="text-[11px] text-ink-tertiary" title={`All times in ${browserTimezone() ?? 'your local time'}`}>{tl.data && tl.data.events.length > 0 && `${shownLine(tl.data.events.length, tl.data.total)} · `}times in {browserTimezone() ?? 'local time'}</span>
         </div>
         <QueryState
           query={tl}

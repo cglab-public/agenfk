@@ -413,10 +413,13 @@ export function PrOverviewPage() {
     if (childHubSel.set.size) p.set('childHubId', [...childHubSel.set].join(','));
     p.set('from', from);
     if (toParam) p.set('to', toParam);
-    p.set('tz', timeZone);
-    // The offset too: a server whose ICU lacks the zone falls back to it
-    // rather than to UTC days under local-day columns.
-    p.set('tzOffsetMin', String(-new Date().getTimezoneOffset()));
+    // The zone, and the offset as the fallback for a server whose ICU lacks it.
+    // A browser that cannot name its zone sends neither: the axis then uses
+    // UTC days, and so must the server.
+    if (timeZone) {
+      p.set('tz', timeZone);
+      p.set('tzOffsetMin', String(-new Date().getTimezoneOffset()));
+    }
     return p;
   }, [projectSel.set, childHubSel.set, from, toParam, timeZone]);
 
@@ -437,13 +440,18 @@ export function PrOverviewPage() {
       // search return two unrelated PRs that merely share a number.
       if (childHubSel.set.size) p.set('childHubId', [...childHubSel.set].join(','));
       p.set('pr', String(queryPrNumber));
+      // The zone stays: a searched PR is filed under its local day too.
+      if (timeZone) {
+        p.set('tz', timeZone);
+        p.set('tzOffsetMin', String(-new Date().getTimezoneOffset()));
+      }
       return p.toString();
     }
     const p = new URLSearchParams(baseQs);
     if (modelSel.set.size) p.set('model', [...modelSel.set].join(','));
     if (devSel.set.size) p.set('users', [...devSel.set].join(','));
     return p.toString();
-  }, [baseQs, modelSel.set, devSel.set, projectSel.set, childHubSel.set, queryPrNumber]);
+  }, [baseQs, modelSel.set, devSel.set, projectSel.set, childHubSel.set, queryPrNumber, timeZone]);
 
   const overview = useQuery<PrOverviewResponse>({
     queryKey: ['pr-overview', dataQs],
@@ -577,7 +585,7 @@ export function PrOverviewPage() {
     [searchActive, d],
   );
   const axis = useMemo(
-    () => (d ? (searchActive ? searchDays : buildDayAxis(from, to, timeZone)) : []),
+    () => (d ? (searchActive ? searchDays : buildDayAxis(from, to, timeZone ?? 'UTC')) : []),
     [d, searchActive, searchDays, from, to, timeZone],
   );
   // Re-bucketed PR volume for the "PR volume by size" chart (daily/weekly/monthly).
@@ -586,7 +594,7 @@ export function PrOverviewPage() {
   const volumeBuckets = volume?.buckets ?? [];
   const maxBucketTotal = Math.max(1, ...volumeBuckets.map(b => b.total));
   // Reference date for the heatmap's "today" column highlight (local, like the axis).
-  const todayIso = buildDayAxis(new Date().toISOString(), new Date().toISOString(), timeZone)[0];
+  const todayIso = buildDayAxis(new Date().toISOString(), new Date().toISOString(), timeZone ?? 'UTC')[0];
   // Per-column header info, computed once per axis instead of per cell.
   const dayInfos = useMemo(() => axis.map(day => dayHeaderInfo(day, todayIso)), [axis, todayIso]);
   // One shared, fixed-position tooltip for the whole heatmap: per-cell hidden

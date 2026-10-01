@@ -159,13 +159,57 @@ export function queriesRouter(ctx: HubServerContext): Router {
        GROUP BY user_key`,
       done.params,
     );
-    const daily = await ctx.db.all<{ user_key: string; day: string; n: number | string }>(
-      `SELECT user_key, date(occurred_at) AS day, COUNT(DISTINCT ${CLOSED}) AS n
-       FROM events WHERE ${done.where.join(' AND ')}
-         AND (type = 'item.closed' OR type = 'step.transitioned')
-       GROUP BY user_key, day`,
-      done.params,
-    );
+    // Per day in the viewer's zone when one is given (the histogram's rule:
+    // hour groups in SQL, re-filed by the zone), else UTC days.
+    const tzRaw = singleValue(req, 'tz');
+    const timeZone = tzRaw && isKnownTimeZone(tzRaw) ? tzRaw : null;
+    const atRaw = f.to ? Date.parse(f.to) : NaN;
+    const shift = timeZone ? subHourShift(zoneOffsetMin(timeZone, Number.isNaN(atRaw) ? Date.now() : atRaw)) : 0;
+    let daily: Array<{ user_key: string; day: string; n: number | string }>;
+    if (timeZone) {
+      // One row per (person, item, hour): a day is only known once the hour is
+      // placed in the zone, and an item closed twice in that day (two hours, or
+      // item.closed and the board's DONE either side of an hour) counts once.
+      const hourly = await ctx.db.all<{ user_key: string; cid: string; hr: string }>(
+        // Grouped over a derived table by name: positional GROUP BY trips pg-mem.
+        `SELECT user_key, cid, hr FROM (
+           SELECT user_key, ${CLOSED} AS cid, strftime('%Y-%m-%dT%H:00', occurred_at${shift ? ', ?' : ''}) AS hr
+           FROM events WHERE ${done.where.join(' AND ')}
+             AND (type = 'item.closed' OR type = 'step.transitioned')
+         ) closures
+         WHERE cid IS NOT NULL
+         GROUP BY user_key, cid, hr`,
+        shift ? [`${shift} minutes`, ...done.params] : done.params,
+      );
+      // rebucketToZone keeps one row per (local day, type): with person and
+      // item in the type slot, that is one row per distinct item per day.
+      const userOf = new Map<string, string>();
+      const placed = rebucketToZone(
+        hourly.filter(h => h.cid != null).map(h => {
+          const type = `${h.user_key}\u0000${h.cid}`;
+          userOf.set(type, h.user_key);
+          return { time: h.hr, type, n: 1 };
+        }),
+        timeZone, shift, 'day',
+      );
+      const perDay = new Map<string, { user_key: string; day: string; n: number }>();
+      for (const r of placed) {
+        const user = userOf.get(r.type)!;
+        const k = `${user}\u0000${r.time}`;
+        const cur = perDay.get(k) ?? { user_key: user, day: r.time, n: 0 };
+        cur.n += 1;
+        perDay.set(k, cur);
+      }
+      daily = [...perDay.values()];
+    } else {
+      daily = await ctx.db.all<{ user_key: string; day: string; n: number | string }>(
+        `SELECT user_key, date(occurred_at) AS day, COUNT(DISTINCT ${CLOSED}) AS n
+         FROM events WHERE ${done.where.join(' AND ')}
+           AND (type = 'item.closed' OR type = 'step.transitioned')
+         GROUP BY user_key, day`,
+        done.params,
+      );
+    }
     const num = (v: unknown) => { const x = Number(v ?? 0); return Number.isFinite(x) ? x : 0; };
     const byUser = new Map(totals.map(t => [String(t.user_key), t]));
     const closedDaily = new Map<string, Record<string, number>>();

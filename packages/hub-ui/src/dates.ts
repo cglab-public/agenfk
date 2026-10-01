@@ -78,7 +78,9 @@ export function fmtRelative(input: string | number | Date): string {
   return d.toLocaleDateString(undefined, DATE_FORMAT);
 }
 
-export function browserTimezone(): string {
-  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; }
-  catch { return 'UTC'; }
+/** The browser's IANA zone, or null when it cannot name one (never a made-up
+ *  'UTC', which a server would then trust over the real offset). */
+export function browserTimezone(): string | null {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; }
+  catch { return null; }
 }

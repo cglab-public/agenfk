@@ -83,4 +83,30 @@ describe('GET /v1/users — what each person got done', () => {
     const u = await users('&to=2026-05-01T23:59:59.999Z');
     expect(u['bob@acme.com']).toMatchObject({ items_closed: 1, validate_passes: 0, prs_opened: 0 });
   });
+
+  it('files closures per day in the viewer zone when given one', async () => {
+    const token = await issueApiKey(db, 'org', 'z');
+    // 23:30 UTC on May 4 is 01:30 on May 5 in Berlin (CEST).
+    await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events: [
+      ev('carol', 'item.closed', '2026-05-04T23:30:00.000Z', { itemId: 'c1' }),
+    ] });
+    const utc = await users('');
+    expect(utc['carol@acme.com'].closed_daily).toEqual({ '2026-05-04': 1 });
+    const local = await users('&tz=Europe%2FBerlin');
+    expect(local['carol@acme.com'].closed_daily).toEqual({ '2026-05-05': 1 });
+    expect(local['carol@acme.com'].items_closed).toBe(1);
+  });
+
+  it('counts an item once per local day, even closed in two different hours', async () => {
+    const token = await issueApiKey(db, 'org', 'twice');
+    await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events: [
+      ev('dan', 'item.closed', '2026-05-06T08:00:00.000Z', { itemId: 'd1' }),
+      ev('dan', 'item.closed', '2026-05-06T12:00:00.000Z', { itemId: 'd1' }),
+      ev('dan', 'item.closed', '2026-05-06T13:00:00.000Z', { itemId: 'd2' }),
+    ] });
+    for (const q of ['', '&tz=Europe%2FBerlin', '&tz=Asia%2FKolkata']) {
+      const u = await users(q);
+      expect(u['dan@acme.com'].closed_daily, q).toEqual({ '2026-05-06': 2 });
+    }
+  });
 });

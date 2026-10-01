@@ -25,7 +25,7 @@ type Dir = 'asc' | 'desc';
  * table for assistive tech (aria-label, not a <caption>: each table already
  * sits under a visible heading that says the same).
  */
-export function DataTable<T>({ caption, columns, rows, rowKey, defaultSort, search, minWidth, rowHover = true }: {
+export function DataTable<T>({ caption, columns, rows, rowKey, defaultSort, search, minWidth, rowHover = false }: {
   caption: string;
   columns: DataColumn<T>[];
   rows: T[];
@@ -33,7 +33,7 @@ export function DataTable<T>({ caption, columns, rows, rowKey, defaultSort, sear
   defaultSort?: { key: string; dir: Dir };
   search?: { label: string; placeholder?: string; matches: (row: T, query: string) => boolean };
   minWidth?: number;
-  /** Off where a row is not itself a target, so hovering it promises nothing. */
+  /** On only where a row is itself a target: a hover promises a click. */
   rowHover?: boolean;
 }) {
   const [sort, setSort] = useState<{ key: string; dir: Dir } | null>(defaultSort ?? null);
