@@ -3,7 +3,7 @@ import { Check, ChevronDown, ChevronLeft, ChevronRight, Folder, LayoutGrid, List
 import { createPortal } from 'react-dom';
 import { OrgFlowPicker } from './OrgFlowPicker';
 import {
-  PRESETS, ago, backlogStates, finishedStates, matchesQuery, presentStates, presetStates, rowAction, selectedStates,
+  PRESETS, ago, backlogStates, closedAt, finishedStates, matchesQuery, presentStates, presetStates, rowAction, selectedStates,
   type Preset, type Selection,
 } from '../cardFilters';
 import { useQuery } from '@tanstack/react-query';
@@ -331,6 +331,21 @@ export function ProjectPage({
   // Every change to WHAT is shown starts again at its first page: page 3 of a
   // different list is a place nobody asked to go.
   const setQuery = (next: string) => { setQueryRaw(next); setPage(0); };
+  /*
+   * PER PROJECT. The shell reuses this page for every project, so a search
+   * typed in one made the next open on "No card matches", on page two. Reset
+   * while rendering, not in an effect, so the other project never paints with
+   * this one's filters first.
+   */
+  const [filtersFor, setFiltersFor] = React.useState(project.id);
+  if (filtersFor !== project.id) {
+    setFiltersFor(project.id);
+    setSelection({ preset: 'open' });
+    setTypes([]);
+    setQueryRaw('');
+    setPage(0);
+    setMenu(null);
+  }
 
   const finished = React.useMemo(() => finishedStates(flow), [flow]);
   const backlog = React.useMemo(() => backlogStates(flow), [flow]);
@@ -377,12 +392,14 @@ export function ProjectPage({
   const presetCount = (preset: Preset) =>
     presetStates(preset, states, flow).reduce((n, s) => n + (tally.byState.get(s) ?? 0), 0);
   /*
-   * The page, clamped rather than stored clamped: cards closed elsewhere can
-   * shrink the list under the page you are on, and the answer is its new last
-   * page, not an empty one.
+   * The page, clamped: cards closed elsewhere can shrink the list under the
+   * page you are on, and the answer is its new last page, not an empty one.
    */
   const lastPage = Math.max(0, Math.ceil(shown.length / PAGE_SIZE) - 1);
   const currentPage = Math.min(page, lastPage);
+  // And KEPT clamped: left at the old number, the page jumped back the moment
+  // cards arrived again - a move nobody made.
+  if (page > lastPage) setPage(lastPage);
   const pageCards = shown.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
   const pageIds = React.useMemo(() => new Set(pageCards.map(c => c.id)), [pageCards]);
 
@@ -486,7 +503,9 @@ export function ProjectPage({
             type="button"
             data-testid={`project-tab-${id}`}
             aria-current={tab === id ? 'page' : undefined}
-            onClick={() => setTab(id)}
+            // A menu left open on Cards would reopen on the way back: the
+            // keyboard route never presses outside it.
+            onClick={() => { setTab(id); setMenu(null); }}
             className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs ${
               tab === id
                 ? 'border-border-soft bg-surface font-semibold text-ink'
@@ -793,7 +812,8 @@ export function ProjectPage({
               const on = working[card.id];
               const action = rowAction(card.status, on, flow);
               const done = action === 'done';
-              const when = done ? ago(card.updatedAt) : null;
+              const closed = done ? closedAt(card) : null;
+              const when = closed ? ago(closed) : null;
               return (
               /*
                * Indented under the ancestors that are ON THIS PAGE only
@@ -823,7 +843,7 @@ export function ProjectPage({
                   <span
                     data-testid={`project-card-done-${card.id}`}
                     className="flex shrink-0 items-center gap-1.5 px-2 text-[11px] text-ink-tertiary"
-                    title={card.updatedAt ? new Date(card.updatedAt).toLocaleString() : undefined}
+                    title={closed ? new Date(closed).toLocaleString() : undefined}
                   >
                     <Check size={12} />
                     {when ? `${finishedWord(String(card.status))} ${when}` : finishedWord(String(card.status))}

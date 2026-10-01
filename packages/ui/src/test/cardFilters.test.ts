@@ -8,7 +8,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  ago, backlogStates, finishedStates, matchesQuery, presentStates, presetStates, rowAction, selectedStates,
+  ago, backlogStates, closedAt, finishedStates, matchesQuery, presentStates, presetStates, rowAction, selectedStates,
 } from '../cardFilters';
 
 const TDD = {
@@ -145,6 +145,14 @@ describe("the row's action", () => {
     expect(rowAction('START', undefined, SHIPPING)).toBe('start');
   });
 
+  it('an idea waits in the backlog too, and can be started', () => {
+    // Deliberately unlike the server's close rule, where IDEAS counts as out
+    // of play: an idea does not hold its parent's close, but it is not
+    // finished either - it is work nobody has picked up yet.
+    expect(rowAction('IDEAS', undefined, TDD)).toBe('start');
+    expect(presetStates('open', ['IDEAS', 'DONE'], TDD)).toEqual(['IDEAS']);
+  });
+
   it('a card part-way through, with nothing on it, is resumed', () => {
     expect(rowAction('REVIEW', undefined, TDD)).toBe('resume');
     expect(rowAction('PAUSED', undefined, TDD)).toBe('resume');
@@ -173,6 +181,30 @@ describe('the search', () => {
   it('matches everything when empty or blank', () => {
     expect(matchesQuery(c, '')).toBe(true);
     expect(matchesQuery(c, '   ')).toBe(true);
+  });
+});
+
+describe('when a card finished', () => {
+  const history = [
+    { fromStatus: 'TODO', toStatus: 'REVIEW', timestamp: '2026-09-20T10:00:00Z' },
+    { fromStatus: 'REVIEW', toStatus: 'DONE', timestamp: '2026-09-25T10:00:00Z' },
+    { fromStatus: 'DONE', toStatus: 'REVIEW', timestamp: '2026-09-26T10:00:00Z' },
+    { fromStatus: 'REVIEW', toStatus: 'DONE', timestamp: '2026-09-27T10:00:00Z' },
+  ];
+
+  it('is the last time it entered the state it is in', () => {
+    expect(closedAt({ status: 'DONE', history })).toBe('2026-09-27T10:00:00Z');
+  });
+
+  it('is not when it was last edited', () => {
+    // updatedAt moves on every edit: a card closed a week ago and renamed
+    // today read "Done just now".
+    expect(closedAt({ status: 'DONE', history, updatedAt: '2026-10-01T10:00:00Z' })).toBe('2026-09-27T10:00:00Z');
+  });
+
+  it('is unknown rather than guessed when the history does not say', () => {
+    expect(closedAt({ status: 'DONE', history: [] })).toBeNull();
+    expect(closedAt({ status: 'DONE' })).toBeNull();
   });
 });
 

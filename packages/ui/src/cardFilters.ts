@@ -23,7 +23,12 @@ type MaybeFlow = FlowLike | null | undefined;
 
 /** Out of the flow and out of play: nothing is left to do on them. */
 const ALWAYS_FINISHED = ['DONE', 'ARCHIVED', 'TRASHED'];
-/** Waiting for somebody to pick them up. */
+/**
+ * Waiting for somebody to pick them up. IDEAS included, unlike the server's
+ * close rule (finishedStatusesOf), where an idea counts as out of play: an
+ * idea does not hold its parent's close, but it is not finished - it is work
+ * nobody has started, so it shows under Open and offers Start.
+ */
 const ALWAYS_BACKLOG = ['TODO', 'IDEAS'];
 
 const sortedSteps = (flow: MaybeFlow): FlowStepLike[] =>
@@ -128,6 +133,20 @@ export function matchesQuery(card: { readonly id: string; readonly title: string
   const q = query.trim().toLowerCase();
   if (!q) return true;
   return card.title.toLowerCase().includes(q) || card.id.toLowerCase().startsWith(q);
+}
+
+/**
+ * When a card reached the state it is in: the last move INTO it, from the
+ * card's own history. Not `updatedAt`, which every edit moves - a card closed
+ * a week ago and renamed today read "Done just now". Null when the history
+ * does not say: an unknown time is left out rather than guessed.
+ */
+export function closedAt(card: {
+  readonly status: unknown;
+  readonly history?: readonly { readonly toStatus: unknown; readonly timestamp: string }[];
+}): string | null {
+  const into = (card.history ?? []).filter(h => String(h.toStatus) === String(card.status));
+  return into.length ? into[into.length - 1].timestamp : null;
 }
 
 /** "5d ago", for when a finished card closed. Coarse on purpose. */

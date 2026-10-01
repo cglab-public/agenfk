@@ -556,6 +556,32 @@ describe('filtering the cards', () => {
     open({ cards: [] });
     expect(screen.queryByTestId('project-filters')).toBeNull();
   });
+
+  it("starts another project's page on its own default, not on this one's filters", () => {
+    // The shell reuses this page for every project: a search typed in one
+    // made the next open on "No card matches".
+    const { rerender } = openFiltered();
+    fireEvent.change(screen.getByTestId('project-filter-search'), { target: { value: 'terraform' } });
+    openStates();
+    fireEvent.click(screen.getByTestId('project-preset-all'));
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <ProjectPage project={{ id: 'p2', name: 'other' } as never} cards={many} flow={FLOW as never} />
+      </QueryClientProvider>,
+    );
+    expect((screen.getByTestId('project-filter-search') as HTMLInputElement).value).toBe('');
+    expect(screen.getByTestId('project-filter-state').textContent).toContain('Open');
+    expect(screen.getByTestId('project-card-e1')).toBeTruthy();
+  });
+
+  it('does not reopen a menu when the page comes back from Settings', () => {
+    openFiltered();
+    openStates();
+    // The keyboard route: no press outside the menu ever closes it.
+    fireEvent.click(screen.getByTestId('project-tab-settings'));
+    fireEvent.click(screen.getByTestId('project-tab-cards'));
+    expect(screen.queryByTestId('project-filter-state-TODO')).toBeNull();
+  });
 });
 
 
@@ -610,6 +636,34 @@ describe('paging through many cards', () => {
     expect(screen.getByTestId('project-page-range').textContent).toBe('26–30 of 30');
   });
 
+  it('starts another project on its first page', () => {
+    const { rerender } = open({ cards: lots(60) });
+    fireEvent.click(screen.getByTestId('project-page-next'));
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <ProjectPage project={{ id: 'p2', name: 'other' } as never} cards={lots(60)} />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByTestId('project-page-range').textContent).toBe('1–25 of 60');
+  });
+
+  it('stays where it was put when the list grows back', () => {
+    // Clamped to the last page that existed, and kept there: cards arriving
+    // later must not move the reader back to a page they never chose.
+    const { rerender } = open({ cards: lots(60) });
+    fireEvent.click(screen.getByTestId('project-page-next'));
+    fireEvent.click(screen.getByTestId('project-page-next'));
+    const again = (n: number) => rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <ProjectPage project={project as never} cards={lots(n)} />
+      </QueryClientProvider>,
+    );
+    again(30);
+    expect(screen.getByTestId('project-page-range').textContent).toBe('26–30 of 30');
+    again(60);
+    expect(screen.getByTestId('project-page-range').textContent).toBe('26–50 of 60');
+  });
+
   it('shows no pager when everything fits', () => {
     open({ cards: lots(25) });
     expect(screen.queryByTestId('project-page-pager')).toBeNull();
@@ -639,7 +693,12 @@ describe('what a finished card offers', () => {
     ],
   };
   const rows = [
-    { id: 'd1', projectId: 'p1', type: ItemType.TASK, title: 'upgrade the gateway', status: Status.DONE, updatedAt: new Date(Date.now() - 5 * DAY).toISOString() },
+    {
+      id: 'd1', projectId: 'p1', type: ItemType.TASK, title: 'upgrade the gateway', status: Status.DONE,
+      // Edited today, finished five days ago: the label is about the second.
+      updatedAt: new Date().toISOString(),
+      history: [{ id: 'h1', fromStatus: 'REVIEW', toStatus: Status.DONE, timestamp: new Date(Date.now() - 5 * DAY).toISOString() }],
+    },
     { id: 'w1', projectId: 'p1', type: ItemType.TASK, title: 'freeze the protocols', status: 'REVIEW' },
   ] as never;
 
@@ -653,6 +712,12 @@ describe('what a finished card offers', () => {
     showDone();
     expect(screen.queryByTestId('project-card-start-d1')).toBeNull();
     expect(screen.getByTestId('project-card-done-d1').textContent).toBe('Done 5d ago');
+  });
+
+  it('says only that it is done when its history does not say when', () => {
+    open({ cards: [{ id: 'd2', projectId: 'p1', type: ItemType.TASK, title: 'old card', status: Status.DONE, updatedAt: new Date().toISOString() }] as never });
+    showDone();
+    expect(screen.getByTestId('project-card-done-d2').textContent).toBe('Done');
   });
 
   it("treats a custom flow's exit the same way", () => {
