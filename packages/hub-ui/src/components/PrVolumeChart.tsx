@@ -29,7 +29,7 @@ function developers(b: VolumeBucket): Array<{ user_key: string; count: number }>
  * with the stats beneath it (story da96916f).
  *
  * - A y-axis of nice ticks with a gridline each; bars scale against its top,
- *   so a bar's height reads off the axis (segments touch, so gaps add none).
+ *   so a bar's height reads off the axis (segments touch: a gap would add to it).
  * - Exact values in ONE styled tooltip, opened by hovering, tapping or
  *   focusing a bar — never in title= attributes, which are slow, unstyled and
  *   out of reach of a keyboard or a finger. It renders at the page root in
@@ -52,7 +52,9 @@ export function PrVolumeChart({ series, unit }: { series: VolumeSeries; unit: st
   const current = active != null && active <= last ? active : null;
   const at = (v: number) => `${(v / top) * 100}%`;
   const plotRef = useRef<HTMLDivElement>(null);
-  const scrollerRef = useRef<HTMLDivElement>(null);
+  // Whether the chart's focus came from the keyboard: only then does a pointer
+  // leaving it keep the tooltip (a click focuses it too, and must not pin it).
+  const byKeyboard = useRef(false);
 
   const onKeyDown = (e: KeyboardEvent) => {
     // Modified keys belong to the browser (Alt+Left is Back).
@@ -72,7 +74,11 @@ export function PrVolumeChart({ series, unit }: { series: VolumeSeries; unit: st
     }
     if (!(e.key in next)) return;
     e.preventDefault();
-    setActive(next[e.key]);
+    byKeyboard.current = true;
+    const to = next[e.key];
+    setActive(to);
+    // aria-activedescendant moves no scroll: bring the bar into the scroller's view.
+    if (to != null) document.getElementById(optionId(to))?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
   };
 
   // Where the tooltip goes, in viewport coordinates: over the active bar, at
@@ -88,12 +94,10 @@ export function PrVolumeChart({ series, unit }: { series: VolumeSeries; unit: st
       setPos({ x: b.left + b.width / 2, y: plot.getBoundingClientRect().top + 4 });
     };
     measure();
-    const scroller = scrollerRef.current;
-    scroller?.addEventListener('scroll', measure);
+    // Capture: also hears the chart's own scroller, which does not bubble.
     window.addEventListener('scroll', measure, true);
     window.addEventListener('resize', measure);
     return () => {
-      scroller?.removeEventListener('scroll', measure);
       window.removeEventListener('scroll', measure, true);
       window.removeEventListener('resize', measure);
     };
@@ -103,9 +107,11 @@ export function PrVolumeChart({ series, unit }: { series: VolumeSeries; unit: st
 
   const shown = current != null ? buckets[current] : null;
   const shownDevs = shown ? developers(shown).slice(0, 5) : [];
-  // Right-aligned near the right end of the chart, left-aligned near the left.
-  const along = current != null ? (current + 0.5) / buckets.length : 0;
-  const shift = along > 0.7 ? '-100%' : along < 0.3 ? '0%' : '-50%';
+  // Kept on screen: right-aligned near the viewport's right edge, left-aligned
+  // near its left, centred on the bar otherwise. By the bar's place on screen,
+  // not in the chart, which may be scrolled.
+  const EDGE = 125;
+  const shift = !pos ? '-50%' : window.innerWidth - pos.x < EDGE ? '-100%' : pos.x < EDGE ? '0%' : '-50%';
   const { stats } = series;
 
   return (
@@ -117,7 +123,7 @@ export function PrVolumeChart({ series, unit }: { series: VolumeSeries; unit: st
             <span key={t} data-y-tick className="absolute right-0 translate-y-1/2 leading-none" style={{ bottom: at(t) }}>{t}</span>
           ))}
         </div>
-        <div ref={scrollerRef} className="flex-1 min-w-0 overflow-x-auto">
+        <div className="flex-1 min-w-0 overflow-x-auto">
           <div className="min-w-[420px]">
             <div ref={plotRef} className="relative h-44">
               {ticks.map(t => (
@@ -134,8 +140,9 @@ export function PrVolumeChart({ series, unit }: { series: VolumeSeries; unit: st
                 onFocus={() => { setFocused(true); setActive(a => (a != null && a <= last ? a : last >= 0 ? last : null)); }}
                 onBlur={() => { setFocused(false); setActive(null); }}
                 onKeyDown={onKeyDown}
-                // A pointer leaving a focused chart must not drop the keyboard's place.
-                onMouseLeave={() => { if (!focused) setActive(null); }}
+                onPointerDown={() => { byKeyboard.current = false; }}
+                // A pointer leaving must not drop the keyboard's place.
+                onMouseLeave={() => { if (!focused || !byKeyboard.current) setActive(null); }}
                 // Inset: the scroller around the plot clips anything outside it.
                 className="absolute inset-0 flex items-end gap-1.5 rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
               >
@@ -151,9 +158,7 @@ export function PrVolumeChart({ series, unit }: { series: VolumeSeries; unit: st
                     className={`flex-1 flex flex-col justify-end h-full cursor-default ${current === i ? 'bg-accent-fill/40' : ''}`}
                   >
                     {SIZE_META_DESC.filter(s => b.sizes[s.key] > 0).map(s => (
-                      // A 1px surface line inside each segment's own height
-                      // separates the sizes without adding to the bar.
-                      <div key={s.key} data-segment className="rounded-[2px] border-t border-surface"
+                      <div key={s.key} data-segment className="rounded-[2px]"
                            style={{ background: s.color, height: at(b.sizes[s.key]) }} />
                     ))}
                   </div>
@@ -212,7 +217,7 @@ export function PrVolumeChart({ series, unit }: { series: VolumeSeries; unit: st
           size="sm"
           label="Busiest weekday"
           value={stats.busiestWeekday?.day ?? '—'}
-          hint={stats.busiestWeekday ? `${fmtAverage(stats.busiestWeekday.perDay)} PRs per ${stats.busiestWeekday.day} · ${pct(stats.busiestWeekday.share)} of PRs` : undefined}
+          hint={stats.busiestWeekday ? `${fmtAverage(stats.busiestWeekday.perDay)} PR${stats.busiestWeekday.perDay === 1 ? '' : 's'} per ${stats.busiestWeekday.day} · ${pct(stats.busiestWeekday.share)} of PRs` : undefined}
         />
         <StatTile
           size="sm"

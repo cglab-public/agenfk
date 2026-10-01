@@ -31,7 +31,7 @@ const DAYS = [
   day('2026-09-02', { xl: 3 }, { xl: [{ user_key: 'bob@acme.com', count: 2 }, { user_key: 'alice@acme.com', count: 1 }] }),
   day('2026-09-04', { m: 1, l: 1 }, { m: [{ user_key: 'carol@acme.com', count: 1 }], l: [{ user_key: 'carol@acme.com', count: 1 }] }),
 ];
-const mount = () => render(<PrVolumeChart series={buildVolumeSeries(DAYS, AXIS, 'daily')} unit="day" />);
+const mount = () => render(<PrVolumeChart series={buildVolumeSeries(DAYS, AXIS, 'daily', null)} unit="day" />);
 const chart = () => screen.getByRole('listbox', { name: /PR volume by size/i });
 const tooltip = () => screen.queryByTestId('volume-tooltip');
 
@@ -45,7 +45,7 @@ describe('the y-axis', () => {
   });
 
   it('scales bars against the axis top, so their heights read off it', () => {
-    render(<PrVolumeChart series={buildVolumeSeries([day('2026-09-01', { s: 7 })], ['2026-09-01'], 'daily')} unit="day" />);
+    render(<PrVolumeChart series={buildVolumeSeries([day('2026-09-01', { s: 7 })], ['2026-09-01'], 'daily', null)} unit="day" />);
     // 7 rounds the axis up to 8: the bar reaches 87.5%, not the top.
     const seg = screen.getByRole('option').querySelector('[data-segment]') as HTMLElement;
     expect(seg.style.height).toBe('87.5%');
@@ -155,7 +155,7 @@ describe('the stats under the chart', () => {
   });
 
   it('show a dash for both when there are no PRs', () => {
-    render(<PrVolumeChart series={buildVolumeSeries([], AXIS, 'daily')} unit="day" />);
+    render(<PrVolumeChart series={buildVolumeSeries([], AXIS, 'daily', null)} unit="day" />);
     const stats = screen.getByTestId('volume-stats');
     expect(within(stats).getByText('Busiest weekday').closest('[data-stat-tile]')).toHaveTextContent('—');
     expect(within(stats).getByText('L / XL share').closest('[data-stat-tile]')).toHaveTextContent('—');
@@ -190,7 +190,7 @@ describe('keyboard state', () => {
     const lb = chart();
     fireEvent.focus(lb);
     fireEvent.keyDown(lb, { key: 'End' });
-    rerender(<PrVolumeChart series={buildVolumeSeries(DAYS, AXIS.slice(0, 2), 'daily')} unit="day" />);
+    rerender(<PrVolumeChart series={buildVolumeSeries(DAYS, AXIS.slice(0, 2), 'daily', null)} unit="day" />);
     const ref = chart().getAttribute('aria-activedescendant');
     if (ref) expect(document.getElementById(ref)).not.toBeNull();
     fireEvent.keyDown(chart(), { key: 'ArrowLeft' });
@@ -212,5 +212,52 @@ describe('keyboard state', () => {
     fireEvent.focus(lb);
     expect(fireEvent.keyDown(lb, { key: 'Escape' })).toBe(false);
     expect(fireEvent.keyDown(lb, { key: 'Escape' })).toBe(true);
+  });
+});
+
+// Epic review round 2 (8706f29a).
+describe('after the second review', () => {
+  it('says "1 PR per", not "1 PRs per"', () => {
+    render(<PrVolumeChart series={buildVolumeSeries([day('2026-09-01', { s: 1 })], AXIS, 'daily', null)} unit="day" />);
+    expect(screen.getByTestId('volume-stats')).toHaveTextContent('1 PR per Tue');
+  });
+
+  it('keeps the tooltip on screen beside a bar at the viewport\'s right edge', () => {
+    mount();
+    const bar = screen.getAllByRole('option')[0];
+    const near = (left: number) => ({ left, top: 100, width: 10, height: 100, right: left + 10, bottom: 200, x: left, y: 100, toJSON: () => ({}) }) as DOMRect;
+    bar.getBoundingClientRect = () => near(window.innerWidth - 20);
+    fireEvent.mouseEnter(bar);
+    expect(tooltip()!.style.transform).toBe('translateX(-100%)');
+  });
+
+  it('lets the tooltip go when the pointer leaves after a click, even after using the keys', () => {
+    mount();
+    // Keyboard first, so the chart has been in keyboard mode…
+    fireEvent.focus(chart());
+    fireEvent.keyDown(chart(), { key: 'ArrowLeft' });
+    // …then a click on a bar.
+    const bar = screen.getAllByRole('option')[2];
+    fireEvent.pointerDown(bar);
+    fireEvent.click(bar);
+    expect(tooltip()).not.toBeNull();
+    fireEvent.mouseLeave(chart());
+    expect(tooltip()).toBeNull();
+  });
+
+  it('scrolls a bar the keyboard moves to into view', () => {
+    const calls: Array<{ el: Element; opts: unknown }> = [];
+    const original = (Element.prototype as any).scrollIntoView;
+    (Element.prototype as any).scrollIntoView = function (opts: unknown) { calls.push({ el: this, opts }); };
+    try {
+      mount();
+      fireEvent.focus(chart());
+      fireEvent.keyDown(chart(), { key: 'Home' });
+      const first = screen.getAllByRole('option')[0];
+      expect(calls.some(c => c.el === first)).toBe(true);
+      expect(calls.at(-1)?.opts).toEqual({ block: 'nearest', inline: 'nearest' });
+    } finally {
+      (Element.prototype as any).scrollIntoView = original;
+    }
   });
 });

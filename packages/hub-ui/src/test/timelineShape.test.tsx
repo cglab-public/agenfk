@@ -127,6 +127,6 @@ describe('the timeline draws in the box\'s own pixels', () => {
     resize(360);
     const xs = Array.from(container.querySelectorAll('svg[role="img"] text.font-mono')).map(t => Number(t.getAttribute('x')));
     expect(xs.length).toBeGreaterThan(1);
-    for (let i = 1; i < xs.length; i++) expect(xs[i] - xs[i - 1]).toBeGreaterThanOrEqual(40);
+    for (let i = 1; i < xs.length; i++) expect(xs[i] - xs[i - 1]).toBeGreaterThanOrEqual(47.5);
   });
 });

@@ -18,7 +18,7 @@ import { heatColor } from '../chartColours';
 import { Sparkline, sharedPeak } from '../components/Sparkline';
 import { parsePrQuery } from '../prSearch';
 import { buildMonthBands, dayHeaderInfo, contributionPcts, cellTooltip, placeTooltip } from '../prPerDay';
-import { buildVolumeSeries, type Granularity } from '../prVolumeGranularity';
+import { buildVolumeSeries, edgeCoverage, type Granularity } from '../prVolumeGranularity';
 import { PrVolumeChart } from '../components/PrVolumeChart';
 import { DataTable, DateRange, LocalTime, Page, PageHeader, PeriodControl, QueryError, Skeleton, StatTile } from '../components/ui';
 import { browserTimezone, endOfLocalDay, startOfLocalDay } from '../dates';
@@ -592,7 +592,12 @@ export function PrOverviewPage() {
     [d, searchActive, searchDays, from, to, timeZone],
   );
   // Re-bucketed PR volume for the "PR volume by size" chart (daily/weekly/monthly).
-  const volume = useMemo(() => (d ? buildVolumeSeries(d.byDay, axis, gran) : null), [d, axis, gran]);
+  // A PR search's axis is its matched days, whole; otherwise the period's
+  // first and last day are partial for a rolling range.
+  const volume = useMemo(
+    () => (d ? buildVolumeSeries(d.byDay, axis, gran, searchActive ? null : edgeCoverage(from, to, timeZone ?? 'UTC')) : null),
+    [d, axis, gran, searchActive, from, to, timeZone],
+  );
   const prsDelta = d?.previous ? pctDelta(d.totals.prs, d.previous.prs) : null;
   // The API sends the previous period's size points too (story 4e45bf2f).
   const sizeDelta = d?.previous ? pctDelta(d.totals.sizePoints, d.previous.sizePoints) : null;
@@ -656,8 +661,10 @@ export function PrOverviewPage() {
   };
   const onHeatKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const at = (e.target as HTMLElement).dataset.cell?.split('-').map(Number);
-    // Modified keys belong to the browser (Alt+Left is Back).
-    if (!at || heatRows === 0 || heatCols === 0 || e.altKey) return;
+    // Modified keys belong to the browser (Alt+Left is Back, Cmd+Left on a
+    // Mac); Ctrl/Cmd+Home/End are the grid's own corner moves.
+    const corners = e.key === 'Home' || e.key === 'End';
+    if (!at || heatRows === 0 || heatCols === 0 || e.altKey || ((e.metaKey || e.ctrlKey) && !corners)) return;
     // Escape dismisses the tooltip and leaves the focus where it is (WCAG
     // 1.4.13); Space on an empty day would otherwise scroll the page.
     if (e.key === 'Escape') { setHeatTip(null); return; }

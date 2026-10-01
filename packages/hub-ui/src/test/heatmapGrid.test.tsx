@@ -234,6 +234,15 @@ describe('keys the grid owns', () => {
     expect(fireEvent.keyDown(focused(), { key: ' ' })).toBe(false);
   });
 
+  it('leaves Cmd+Arrow and Ctrl+Arrow to the browser too', async () => {
+    const grid = await mount();
+    stops(grid)[0].focus();
+    const cell = focused();
+    expect(fireEvent.keyDown(cell, { key: 'ArrowLeft', metaKey: true })).toBe(true);
+    expect(fireEvent.keyDown(cell, { key: 'ArrowRight', ctrlKey: true })).toBe(true);
+    expect(focused()).toBe(cell);
+  });
+
   it('leaves Alt+Arrow to the browser', async () => {
     const grid = await mount();
     stops(grid)[0].focus();

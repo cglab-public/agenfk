@@ -110,10 +110,45 @@ const rangeLabelOf = (key: string, g: Granularity): string => {
  *  chart always covers the full window (empty buckets included — that's what
  *  makes the average a true per-bucket rate); `byDay` entries outside the axis
  *  are ignored, matching the daily chart's behaviour. */
+/** How much of the axis's first and last day a window covers, 0..1. */
+export interface DayEdges { first: number; last: number }
+
+/** Seconds since local midnight of `iso` in `timeZone` (UTC if unknown). */
+const CLOCK: Intl.DateTimeFormatOptions = { hourCycle: 'h23', hour: '2-digit', minute: '2-digit', second: '2-digit' };
+function secondsIntoDay(iso: string, timeZone: string): number {
+  const at = new Date(iso);
+  let parts: Intl.DateTimeFormatPart[];
+  try {
+    parts = new Intl.DateTimeFormat('en-US', { ...CLOCK, timeZone }).formatToParts(at);
+  } catch {
+    parts = new Intl.DateTimeFormat('en-US', { ...CLOCK, timeZone: 'UTC' }).formatToParts(at);
+  }
+  const n = (t: string) => Number(parts.find(p => p.type === t)?.value ?? 0);
+  return n('hour') * 3600 + n('minute') * 60 + n('second') + at.getUTCMilliseconds() / 1000;
+}
+
+/**
+ * The share of its first and last day a window [from, to] covers, read in the
+ * zone its day axis is built in. A rolling 7d/30d window starts at now − N
+ * days and ends now, so both edge days are partial; counted whole, today's
+ * weekday (the first AND the last day of a 7d window) had its rate halved
+ * (epic review 8706f29a). By the clock, so a DST day is off by its hour.
+ */
+export function edgeCoverage(fromIso: string, toIso: string, timeZone: string): DayEdges {
+  const clamp = (v: number) => Math.min(1, Math.max(0, v));
+  return { first: clamp(1 - secondsIntoDay(fromIso, timeZone) / 86400), last: clamp(secondsIntoDay(toIso, timeZone) / 86400) };
+}
+
+/**
+ * `edges`: how much of the axis's first and last day the period covers (see
+ * edgeCoverage), or null for whole days (a custom range, a PR search). It is
+ * required, not defaulted, so a caller has to say which it has.
+ */
 export function buildVolumeSeries(
   byDay: ReadonlyArray<DayPoint>,
   axis: ReadonlyArray<string>,
   granularity: Granularity,
+  edges: DayEdges | null,
 ): VolumeSeries {
   const axisSet = new Set(axis);
   const points = new Map<string, DayPoint>();
@@ -175,7 +210,11 @@ export function buildVolumeSeries(
   const total = buckets.reduce((s, b) => s + b.total, 0);
   const perWeekday = WEEKDAYS.map(() => 0);
   const occurrences = WEEKDAYS.map(() => 0);
-  for (const day of axis) occurrences[weekdayOf(day)] += 1;
+  axis.forEach((day, i) => {
+    // A day the period only partly covers is that much of an occurrence.
+    const weight = !edges || axis.length === 1 ? 1 : i === 0 ? edges.first : i === axis.length - 1 ? edges.last : 1;
+    occurrences[weekdayOf(day)] += weight;
+  });
   let large = 0;
   for (const p of points.values()) {
     perWeekday[weekdayOf(p.day)] += p.total;
