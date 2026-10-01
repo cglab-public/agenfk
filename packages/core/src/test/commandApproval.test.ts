@@ -27,6 +27,12 @@ describe('approving a command from the file', () => {
     expect(verdict.reason).toMatch(/has not been approved on this machine/i);
   });
 
+  it('says where a person approves it, and that the agent reading this cannot (34ee6b8a)', () => {
+    const reason = approvalFor(from, []).reason ?? '';
+    expect(reason).toMatch(/on the board/i);
+    expect(reason).toMatch(/an agent cannot/i);
+  });
+
   it('allows it once its exact text has been approved', () => {
     expect(approvalFor(from, [commandFingerprint('npm test')]).allowed).toBe(true);
   });

@@ -69,6 +69,7 @@ export function approvalFor(
     reason:
       `This project's ${from.key} comes from the repository's own file, and has not been approved on this machine yet:\n\n`
       + `  ${from.command.trim()}\n\n`
-      + 'Read it, then approve it to let it run here.',
+      + 'Read it, then approve it on the board - the project\'s Settings, in `agenfk ui` - to let it run here. '
+      + 'An agent cannot approve it: approving is the decision to run it, and that decision is a person\'s.',
   };
 }

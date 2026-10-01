@@ -2442,34 +2442,39 @@ function readDeclaredSettings(projectRoot?: string | null): {
 /**
  * "I have read this command and I am willing to run it here."
  *
- * Behind the internal token, like `verifyCommand` itself: this is the decision
- * to execute a shell string that arrived with a repository, and an
- * unauthenticated local route could make it on the user's behalf — which is
- * precisely the shape of the bug that put verifyCommand behind the token in
- * the first place (e60e20aa).
+ * A PERSON'S act, on the board - like a step approval or an override. This is
+ * the decision to execute a shell string that arrived with a repository. It
+ * used to sit behind the internal token, which kept browsers out but let the
+ * agent in: that token is the one the agent's own CLI holds, so an agent
+ * refused COMMAND_NEEDS_APPROVAL could approve the command and run it
+ * (34ee6b8a). The board's word is recorded as 'unverified' unless a passkey
+ * signs it, exactly as a step approval without `signature: passkey`.
  *
  * Stored per exact command. A pull that edits it asks again, because what was
  * read and approved is the string, not the field.
  */
-app.post("/projects/:id/approve-file-command", asyncHandler(async (req: any, res: any) => {
-  if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
+app.post("/projects/:id/approve-file-command", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  if (refuseUnlessBoard(req, res)) return;
   const project: any = await storage.getProject(req.params.id);
   if (!project) return res.status(404).json({ error: "Project not found" });
   const command = typeof req.body?.command === 'string' ? req.body.command : '';
   if (!command.trim()) return res.status(400).json({ error: "command is required" });
 
   const fingerprint = commandFingerprint(command);
+  const authority = gateAuthority(req, res, { purpose: 'file-command', itemId: project.id, checkId: fingerprint }, false);
+  if (!authority) return;
   const approved: string[] = Array.isArray(project.approvedFileCommands)
     ? project.approvedFileCommands
     : [];
-  if (!approved.includes(fingerprint)) {
-    await storage.updateProject(project.id, {
-      approvedFileCommands: [...approved, fingerprint],
-    } as any);
-  }
-  res.json({ approved: true, fingerprint });
+  // Who said yes, and how sure we are of it - the fingerprint list alone could not say.
+  const rec = { fingerprint, command: command.trim(), at: new Date().toISOString(), by: 'board', ...authority };
+  const records: any[] = Array.isArray(project.fileCommandApprovals) ? project.fileCommandApprovals : [];
+  await storage.updateProject(project.id, {
+    approvedFileCommands: approved.includes(fingerprint) ? approved : [...approved, fingerprint],
+    fileCommandApprovals: [...records.filter(r => r?.fingerprint !== fingerprint), rec],
+  } as any);
+  recordHubEvent({ type: 'command.approved', projectId: project.id, payload: { source: 'project-file', fingerprint, command: rec.command, by: 'board', authority: authority.authority } });
+  res.json({ approved: true, fingerprint, authority: authority.authority });
 }));
 
 app.get("/projects/:id/settings", asyncHandler(async (req: any, res: any) => {
@@ -2499,6 +2504,19 @@ app.get("/projects/:id/settings", asyncHandler(async (req: any, res: any) => {
       worktreeRoot: defaultWorktreeRoot(),
       homeDir: os.homedir(),
     }),
+    /*
+     * The commands the repository asks this machine to run, and whether a
+     * person here has approved each - what the screen offers to approve
+     * (34ee6b8a). Judged by the same approvalFor the verify uses, so the
+     * screen and the refusal can never disagree about one command.
+     */
+    fileCommands: (['verifyCommand', 'setupCommand'] as const)
+      .filter(key => typeof declared.settings[key] === 'string' && String(declared.settings[key]).trim())
+      .map(key => {
+        const command = String(declared.settings[key]);
+        const verdict = approvalFor({ key, command }, ((project as any).approvedFileCommands ?? []) as string[]);
+        return { key, command, fingerprint: verdict.fingerprint ?? commandFingerprint(command), approved: verdict.allowed };
+      }),
   });
 }));
 

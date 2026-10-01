@@ -254,6 +254,7 @@ export function ProjectPage({
   const [tab, setTab] = React.useState<'cards' | 'settings'>('cards');
   const [changingFlow, setChangingFlow] = React.useState(false);
   const [togglingWorktree, setTogglingWorktree] = React.useState(false);
+  const [approvingCommand, setApprovingCommand] = React.useState(false);
   const [typeFilter, setTypeFilter] = React.useState<string>('');
   const [statusFilter, setStatusFilter] = React.useState<string>('');
   const filtering = Boolean(typeFilter || statusFilter);
@@ -410,6 +411,36 @@ export function ProjectPage({
                       }}
                     />
                   )}
+                  {/*
+                    * A command the repository asks this machine to run, not yet
+                    * approved: the approval is a person's, so it lives here and
+                    * nowhere an agent can reach (34ee6b8a). The command itself is
+                    * the value shown under it - what is approved is what was read.
+                    */}
+                  {(() => {
+                    const pending = settings?.fileCommands?.find(c => c.key === row.key && !c.approved);
+                    if (!pending || row.origin !== 'from-file') return null;
+                    return (
+                      <button
+                        type="button"
+                        data-testid={`setting-approve-${row.key}`}
+                        disabled={approvingCommand}
+                        title="Let this machine run the command the repository declares"
+                        onClick={async () => {
+                          setApprovingCommand(true);
+                          try {
+                            await api.approveFileCommand(project.id, pending.command);
+                            await refetchSettings();
+                          } finally {
+                            setApprovingCommand(false);
+                          }
+                        }}
+                        className="shrink-0 rounded-lg border border-border-brand bg-brand px-2.5 py-1 text-[11px] font-semibold text-navy disabled:opacity-50"
+                      >
+                        Approve
+                      </button>
+                    );
+                  })()}
                 </div>
                 <p className="mt-1 text-xs text-ink-tertiary">{row.description}</p>
                 {/* The switch IS the value where there is one; the text repeated under it read as the control. */}

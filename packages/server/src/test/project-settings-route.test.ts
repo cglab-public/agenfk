@@ -187,31 +187,72 @@ describe('approving a command declared by the repository', () => {
     for (let i = 0; i < 6 && res.status === 200; i += 1) res = await step();
     expect(res.body.error).toBe('COMMAND_NEEDS_APPROVAL');
     expect(res.body.message).toContain('echo from-the-repo');
+    // Where to approve it - the board - since the agent reading this cannot.
+    expect(res.body.message).toMatch(/on the board/i);
     expect(res.body.fingerprint).toBeTruthy();
   });
 
-  it('is approved per exact command, through the token route', async () => {
+  /*
+   * Approving is the decision to RUN a string that came with a repository, so
+   * it is a person's act on the board - like a step approval or an override.
+   * It used to sit behind the internal token, which is the token the agent's
+   * own CLI holds: an agent refused COMMAND_NEEDS_APPROVAL could approve the
+   * command and run it (34ee6b8a).
+   */
+  it('is approved by a person on the board, per exact command', async () => {
     const created = await request(server).post('/projects').send({ name: 'approver' });
     const res = await request(server)
       .post(`/projects/${created.body.id}/approve-file-command`)
-      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .set('x-agenfk-ui', '1')
       .send({ command: 'echo from-the-repo' });
     expect(res.status).toBe(200);
     expect(res.body.approved).toBe(true);
+    // The board's word, recorded as such: no passkey was offered.
+    expect(res.body.authority).toBe('unverified');
 
     const project = await request(server).get(`/projects/${created.body.id}`);
     expect(project.body.approvedFileCommands).toContain(res.body.fingerprint);
+    expect(project.body.fileCommandApprovals).toEqual([
+      expect.objectContaining({ fingerprint: res.body.fingerprint, command: 'echo from-the-repo', by: 'board', authority: 'unverified' }),
+    ]);
   });
 
-  it('refuses the approval itself without the internal token', async () => {
-    // Approving is the decision to RUN a string that came with a repository.
-    // An unauthenticated local route could make it on the user's behalf, which
-    // is the shape of the bug that put verifyCommand behind the token.
-    const created = await request(server).post('/projects').send({ name: 'no-token' });
+  it("refuses the agent's token, even when the request claims to come from the board", async () => {
+    const created = await request(server).post('/projects').send({ name: 'agent-tries' });
+    const res = await request(server)
+      .post(`/projects/${created.body.id}/approve-file-command`)
+      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .set('x-agenfk-ui', '1')
+      .send({ command: 'echo from-the-repo' });
+    expect(res.status).toBe(403);
+    const project = await request(server).get(`/projects/${created.body.id}`);
+    expect(project.body.approvedFileCommands ?? []).toEqual([]);
+  });
+
+  it('refuses an approval that does not come from the board', async () => {
+    const created = await request(server).post('/projects').send({ name: 'no-board' });
     const res = await request(server)
       .post(`/projects/${created.body.id}/approve-file-command`)
       .send({ command: 'echo anything' });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(403);
+  });
+
+  it('tells the settings screen what the repository asks to run, and whether it is approved', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-file-cmds-'));
+    write(root, { projectId: 'x', verifyCommand: 'echo listed' });
+    const created = await request(server).post('/projects').send({ name: 'lists-them' });
+    await storage.updateProject(created.body.id, { projectRoot: root } as never);
+
+    const before = await request(server).get(`/projects/${created.body.id}/settings`);
+    expect(before.body.fileCommands).toEqual([
+      expect.objectContaining({ key: 'verifyCommand', command: 'echo listed', approved: false }),
+    ]);
+    await request(server)
+      .post(`/projects/${created.body.id}/approve-file-command`)
+      .set('x-agenfk-ui', '1')
+      .send({ command: 'echo listed' });
+    const after = await request(server).get(`/projects/${created.body.id}/settings`);
+    expect(after.body.fileCommands[0].approved).toBe(true);
   });
 
   it('never hands an unapproved command to the agent as a test-report fix', async () => {
@@ -281,7 +322,7 @@ describe('approving a command declared by the repository', () => {
 
     await request(server)
       .post(`/projects/${created.body.id}/approve-file-command`)
-      .set('x-agenfk-internal', VERIFY_TOKEN)
+      .set('x-agenfk-ui', '1')
       .send({ command: 'echo by-hand-marker' });
     const after = await request(server).get(`/items/${itemId}/leave-plan`);
     expect(after.body.advice).toContain('by-hand-marker');

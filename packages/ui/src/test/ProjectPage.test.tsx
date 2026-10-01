@@ -626,3 +626,42 @@ describe('settings the project file decided', () => {
     expect(screen.getByTestId('setting-file-problems').textContent).toMatch(/projectRoot/);
   });
 });
+
+
+/*
+ * 34ee6b8a: approving a command the repository declares is a person's act on
+ * the board - the CLI route the agent could reach is gone - so the row that
+ * shows the command is where the approval happens.
+ */
+describe('a command the repository asks to run', () => {
+  const rows = [
+    { key: 'flow', label: 'Flow', description: 'The steps a card moves through.', value: 'TDD Flow', origin: 'set-here', from: 'Chosen for this project.' },
+    {
+      key: 'verifyCommand', label: 'Verify command', description: 'Run on the last step.',
+      value: 'echo from-the-repo', origin: 'from-file', from: 'Declared by the repository, in .agenfk/project.json.',
+    },
+  ];
+  const openWith = async (approved: boolean) => {
+    (api.projectSettings as never as ReturnType<typeof vi.fn>).mockResolvedValue({
+      rows, fileProblems: [],
+      fileCommands: [{ key: 'verifyCommand', command: 'echo from-the-repo', fingerprint: 'abc', approved }],
+    } as never);
+    open();
+    fireEvent.click(screen.getByTestId('project-tab-settings'));
+    return waitFor(() => screen.getByTestId('setting-verifyCommand'));
+  };
+
+  it('offers a person the approval, next to the command it approves', async () => {
+    const approveFileCommand = vi.fn(async () => ({ approved: true }));
+    (api as unknown as { approveFileCommand: typeof approveFileCommand }).approveFileCommand = approveFileCommand;
+    await openWith(false);
+    expect(screen.getByTestId('setting-verifyCommand').textContent).toContain('echo from-the-repo');
+    fireEvent.click(screen.getByTestId('setting-approve-verifyCommand'));
+    await waitFor(() => expect(approveFileCommand).toHaveBeenCalledWith('p1', 'echo from-the-repo'));
+  });
+
+  it('offers nothing once it is approved', async () => {
+    await openWith(true);
+    expect(screen.queryByTestId('setting-approve-verifyCommand')).toBeNull();
+  });
+});
