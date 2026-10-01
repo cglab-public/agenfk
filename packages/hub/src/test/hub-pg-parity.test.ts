@@ -345,6 +345,16 @@ describe('PG parity: queries + rollup', () => {
     expect(r.body.map((u: any) => u.user_key).sort()).toEqual(['alice@acme.com', 'bob@acme.com']);
   });
 
+  it('GET /v1/users counts what each person got done, on PG (story f355efe4)', async () => {
+    const r = await supertest(fx.app).get('/v1/users').set('Cookie', fx.cookie);
+    const u = Object.fromEntries((r.body as any[]).map(x => [x.user_key, x]));
+    expect(u['alice@acme.com']).toMatchObject({
+      items_closed: 1, validate_passes: 1, validate_fails: 0, prs_opened: 0, closed_daily: { '2026-05-03': 1 },
+    });
+    expect(u['bob@acme.com']).toMatchObject({ items_closed: 0, prs_opened: 1, closed_daily: {} });
+    expect(typeof u['alice@acme.com'].items_closed).toBe('number');
+  });
+
   it('GET /v1/timeline filters by user + type', async () => {
     const r = await supertest(fx.app)
       .get('/v1/timeline?users=alice@acme.com&types=item.created')
