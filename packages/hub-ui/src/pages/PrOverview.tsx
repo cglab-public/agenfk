@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { GitPullRequest, RefreshCw, Search, X } from 'lucide-react';
@@ -86,6 +86,9 @@ interface ProjectsResponse { projects: string[] }
  * two rows — so a filter change can leave the wrong opener and size on screen.
  * Falls back to 'local' for a response from a hub that predates the field.
  */
+/** The heatmap's focus ring, on whichever element is a cell's focus target. */
+const HEAT_FOCUS_RING = 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent';
+
 const prKey = (p: { repo: string; prNumber: number; childHubId?: string }) =>
   `${p.childHubId ?? 'local'}\u0000${p.repo}#${p.prNumber}`;
 
@@ -604,9 +607,45 @@ export function PrOverviewPage() {
   // a stacking context that swallows the z-index — the CGLAB-131 defect). So it
   // renders at the page root, below, in viewport coordinates from placeTooltip.
   const [heatTip, setHeatTip] = useState<{ text: string; x: number; y: number; below: boolean } | null>(null);
-  const showHeatTip = (text: string) => (e: React.MouseEvent<HTMLDivElement>) => {
-    const r = e.currentTarget.getBoundingClientRect();
+  const heatTipAt = (text: string, el: Element) => {
+    const r = el.getBoundingClientRect();
     setHeatTip({ text, ...placeTooltip({ left: r.left, top: r.top, width: r.width, height: r.height }, text, window.innerWidth) });
+  };
+  const showHeatTip = (text: string) => (e: React.MouseEvent<HTMLDivElement>) => heatTipAt(text, e.currentTarget);
+
+  // The heatmap is an ARIA grid with ONE tab stop (story 6b898739): a stop per
+  // non-empty cell was hundreds at 90 days × 20 developers. The stop is the
+  // cell last focused, else the first day with PRs; the arrow keys move it.
+  const heatGridRef = useRef<HTMLDivElement>(null);
+  const [heatPos, setHeatPos] = useState<{ r: number; c: number } | null>(null);
+  const heatRows = d?.byDeveloper.length ?? 0;
+  const heatCols = axis.length;
+  const heatStop = useMemo(() => {
+    if (heatPos && heatPos.r < heatRows && heatPos.c < heatCols) return heatPos;
+    const devs = d?.byDeveloper ?? [];
+    for (let r = 0; r < devs.length; r++) {
+      const c = axis.findIndex(day => (devs[r].daily[day] ?? 0) > 0);
+      if (c >= 0) return { r, c };
+    }
+    return { r: 0, c: 0 };
+  }, [heatPos, heatRows, heatCols, d, axis]);
+  const onHeatKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const at = (e.target as HTMLElement).dataset.cell?.split('-').map(Number);
+    if (!at || heatRows === 0 || heatCols === 0) return;
+    const [r, c] = at;
+    const corner = e.ctrlKey || e.metaKey;
+    const next: Record<string, [number, number]> = {
+      ArrowLeft: [r, c - 1], ArrowRight: [r, c + 1], ArrowUp: [r - 1, c], ArrowDown: [r + 1, c],
+      Home: corner ? [0, 0] : [r, 0],
+      End: corner ? [heatRows - 1, heatCols - 1] : [r, heatCols - 1],
+    };
+    const to = next[e.key];
+    if (!to) return;
+    e.preventDefault();
+    const nr = Math.min(heatRows - 1, Math.max(0, to[0]));
+    const nc = Math.min(heatCols - 1, Math.max(0, to[1]));
+    setHeatPos({ r: nr, c: nc });
+    heatGridRef.current?.querySelector<HTMLElement>(`[data-cell="${nr}-${nc}"]`)?.focus();
   };
   // CGLAB-131 — the cell being drilled into (developer × day), or null.
   const [drill, setDrill] = useState<{ dev: string; day: string } | null>(null);
@@ -990,28 +1029,38 @@ export function PrOverviewPage() {
             <p className="text-[11px] text-ink-tertiary mb-4">Cell shade = PRs opened that day. Pills: share of PRs · share of size points.</p>
             <div className="overflow-x-auto">
               <div
+                ref={heatGridRef}
+                role="grid"
+                aria-label="PRs per developer, per day. Use the arrow keys to move between days."
+                onKeyDown={onHeatKey}
                 className="grid gap-1 items-center min-w-[560px]"
                 style={{ gridTemplateColumns: `minmax(150px, 190px) repeat(${Math.max(axis.length, 1)}, minmax(10px, 40px))` }}
               >
-                {/* header row 1: month name spanning its day columns */}
-                <div className="sticky left-0 z-10 self-stretch bg-surface" />
-                {buildMonthBands(axis).map((band, i) => (
-                  <div
-                    key={`${band.label}-${i}`}
-                    style={{ gridColumn: `span ${band.span}` }}
-                    className="text-center font-mono text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-tertiary border-b-2 border-border-soft pb-1"
-                  >
-                    {band.label}
-                  </div>
-                ))}
+                {/* header row 1: month name spanning its day columns. Visual
+                    only: each day header below names its own date. */}
+                <div aria-hidden="true" className="contents">
+                  <div className="sticky left-0 z-10 self-stretch bg-surface" />
+                  {buildMonthBands(axis).map((band, i) => (
+                    <div
+                      key={`${band.label}-${i}`}
+                      style={{ gridColumn: `span ${band.span}` }}
+                      className="text-center font-mono text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-tertiary border-b-2 border-border-soft pb-1"
+                    >
+                      {band.label}
+                    </div>
+                  ))}
+                </div>
 
                 {/* header row 2: weekday abbreviation + day number per column */}
-                <div className="sticky left-0 z-10 self-stretch bg-surface" />
+                <div role="row" className="contents">
+                <div role="columnheader" className="sticky left-0 z-10 self-stretch bg-surface"><span className="sr-only">Developer</span></div>
                 {axis.map((day, i) => {
                   const h = dayInfos[i];
                   return (
                     <div
                       key={day}
+                      role="columnheader"
+                      aria-label={day}
                       data-testid="heatmap-day"
                       className={`text-center rounded-md py-0.5 ${h.isToday
                         ? 'bg-canvas outline outline-1 outline-accent'
@@ -1024,15 +1073,16 @@ export function PrOverviewPage() {
                     </div>
                   );
                 })}
+                </div>
 
                 {/* one row per developer: name + contribution pills | day cells */}
-                {d.byDeveloper.map(dev => {
+                {d.byDeveloper.map((dev, ri) => {
                   const max = Math.max(1, ...axis.map(day => dev.daily[day] ?? 0));
                   const pct = contributionPcts(dev, d.totals);
                   return (
-                    <Fragment key={dev.user_key}>
+                    <div key={dev.user_key} role="row" className="contents">
                       {/* sticky so names + pills stay visible when the day axis scrolls */}
-                      <div className="sticky left-0 z-10 self-stretch flex items-center gap-2 pr-2 min-w-0 bg-surface">
+                      <div role="rowheader" className="sticky left-0 z-10 self-stretch flex items-center gap-2 pr-2 min-w-0 bg-surface">
                         {nameOf(dev.user_key)
                           ? <span title={dev.user_key} className="text-[11px] text-ink-secondary truncate">{labelOf(dev.user_key)}</span>
                           : <span title={dev.user_key} className="font-mono text-[11px] text-ink-tertiary truncate">{dev.user_key}</span>}
@@ -1046,31 +1096,49 @@ export function PrOverviewPage() {
                         const c = dev.daily[day] ?? 0;
                         const h = dayInfos[i];
                         const intensity = c === 0 ? 0 : c / max; // heatColor owns the visible floor
+                        const tip = cellTooltip(labelOf(dev.user_key), day, c);
+                        // The cell's one focus target: the drill button of a day
+                        // with PRs, else the empty cell itself. Only the grid's
+                        // stop is tabbable; the arrow keys reach the rest.
+                        const target = {
+                          'data-cell': `${ri}-${i}`,
+                          tabIndex: heatStop.r === ri && heatStop.c === i ? 0 : -1,
+                          onFocus: (e: React.FocusEvent<HTMLElement>) => { setHeatPos({ r: ri, c: i }); heatTipAt(tip, e.currentTarget); },
+                          onBlur: () => setHeatTip(null),
+                        };
                         return (
                           <div
                             key={day}
-                            onMouseEnter={showHeatTip(cellTooltip(labelOf(dev.user_key), day, c))}
+                            role="gridcell"
+                            onMouseEnter={showHeatTip(tip)}
                             onMouseLeave={() => setHeatTip(null)}
-                            // CGLAB-131 — non-empty cells are drillable: open the PR list.
-                            // (Clear the tooltip so it cannot peek out from the modal.)
-                            // role/tabIndex/keydown keep the drill reachable by keyboard.
-                            onClick={c > 0 ? () => openDrill(dev.user_key, day) : undefined}
-                            role={c > 0 ? 'button' : undefined}
-                            tabIndex={c > 0 ? 0 : undefined}
-                            aria-label={c > 0 ? `${c} PR${c === 1 ? '' : 's'} by ${labelOf(dev.user_key)} on ${day} — open list` : undefined}
-                            onKeyDown={c > 0 ? (e) => {
-                              if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDrill(dev.user_key, day); }
-                            } : undefined}
-                            className={`aspect-square rounded-[3px] ${c === 0
+                            {...(c === 0 ? { ...target, 'aria-label': `No PRs by ${labelOf(dev.user_key)} on ${day}` } : {})}
+                            className={`aspect-square rounded-[3px] ${HEAT_FOCUS_RING} ${c === 0
                               ? h.isWeekend
                                 ? 'bg-transparent border border-dashed border-ink-tertiary/40'
                                 : 'bg-border-soft'
                               : 'cursor-pointer hover:opacity-75 transition-opacity'}`}
                             style={{ background: c === 0 ? undefined : heatColor(intensity) }}
-                          />
+                          >
+                            {c > 0 && (
+                              // CGLAB-131 — a day with PRs opens its list (the
+                              // drill clears the tooltip so it cannot peek out
+                              // from the modal).
+                              <button
+                                type="button"
+                                {...target}
+                                aria-label={`${c} PR${c === 1 ? '' : 's'} by ${labelOf(dev.user_key)} on ${day} — open list`}
+                                onClick={() => openDrill(dev.user_key, day)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDrill(dev.user_key, day); }
+                                }}
+                                className={`block w-full h-full rounded-[3px] cursor-pointer ${HEAT_FOCUS_RING}`}
+                              />
+                            )}
+                          </div>
                         );
                       })}
-                    </Fragment>
+                    </div>
                   );
                 })}
               </div>
