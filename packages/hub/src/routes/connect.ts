@@ -92,7 +92,7 @@ export function connectRouter(ctx: HubServerContext): Router {
   // file mints or reveals a live bearer token, so admin is the only correct
   // gate — and CGLAB-75 was precisely the wrong one being picked from the two
   // sitting side by side. Leaving the unused one here invites the repeat.
-  const adminGuard = requireAdmin(ctx.config.sessionSecret);
+  const adminGuard = requireAdmin(ctx.config.sessionSecret, ctx.db);
 
   // ── Device-code flow ──────────────────────────────────────────────────────
 

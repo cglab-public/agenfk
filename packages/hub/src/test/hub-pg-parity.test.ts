@@ -10,6 +10,7 @@ import { openPgMemDb, backfillPrEventRemoteUrls } from '../db/postgres';
 import { issueApiKey } from '../auth/apiKey';
 import { createPasswordUser } from '../auth/password';
 import { recomputeRollups } from '../rollup';
+import { raceBehindGuard } from './helpers/raceBehindGuard';
 import type { HubDb } from '../db/types';
 
 /**
@@ -166,27 +167,30 @@ describe('PG parity: admin endpoints', () => {
 
   // The last-admin guard is a subquery inside the UPDATE, so it is dialect SQL
   // that a SQLite-only suite would pass and Postgres could reject.
-  it('refuses demoting the last active admin, and allows it while another admin remains', async () => {
+  it('refuses demoting the last active admin when a cross-demotion lands between guard and write', async () => {
     await createPasswordUser(fx.db, 'org', 'admin2@x', 'longenough1', 'admin');
     const login2 = await supertest(__server).post('/auth/login').send({ email: 'admin2@x', password: 'longenough1' });
     const cookie2 = login2.headers['set-cookie']?.[0] ?? '';
     const idOf = async (email: string) => (await fx.db.get<any>('SELECT id FROM users WHERE email = ?', [email])).id;
 
-    const demote2 = await supertest(fx.app).put(`/v1/admin/users/${await idOf('admin2@x')}`).set('Cookie', fx.cookie).send({ role: 'viewer' });
-    expect(demote2.status).toBe(200);
-    // admin2's session still says admin; the guard must still keep admin@x.
-    const demote1 = await supertest(fx.app).put(`/v1/admin/users/${await idOf('admin@x')}`).set('Cookie', cookie2).send({ role: 'viewer' });
+    // admin2 passes the session guard, then admin@x demotes admin2 (allowed:
+    // admin@x remains), then admin2's write runs. The UPDATE's own last-admin
+    // condition must keep admin@x.
+    const demote1 = await raceBehindGuard(fx.db, await idOf('admin2@x'),
+      async () => supertest(fx.app).put(`/v1/admin/users/${await idOf('admin@x')}`).set('Cookie', cookie2).send({ role: 'viewer' }),
+      async () => expect((await supertest(fx.app).put(`/v1/admin/users/${await idOf('admin2@x')}`).set('Cookie', fx.cookie).send({ role: 'viewer' })).status).toBe(200));
     expect(demote1.status).toBe(409);
     expect((await fx.db.get<any>('SELECT role FROM users WHERE email = ?', ['admin@x'])).role).toBe('admin');
   });
 
-  it('refuses deleting the last active admin from a stale admin session', async () => {
+  it('refuses deleting the last active admin when a deactivation lands between guard and delete', async () => {
     await createPasswordUser(fx.db, 'org', 'admin2@x', 'longenough1', 'admin');
     const login2 = await supertest(__server).post('/auth/login').send({ email: 'admin2@x', password: 'longenough1' });
     const cookie2 = login2.headers['set-cookie']?.[0] ?? '';
     const idOf = async (email: string) => (await fx.db.get<any>('SELECT id FROM users WHERE email = ?', [email])).id;
-    expect((await supertest(fx.app).put(`/v1/admin/users/${await idOf('admin2@x')}`).set('Cookie', fx.cookie).send({ active: false })).status).toBe(200);
-    const r = await supertest(fx.app).delete(`/v1/admin/users/${await idOf('admin@x')}`).set('Cookie', cookie2);
+    const r = await raceBehindGuard(fx.db, await idOf('admin2@x'),
+      async () => supertest(fx.app).delete(`/v1/admin/users/${await idOf('admin@x')}`).set('Cookie', cookie2),
+      async () => expect((await supertest(fx.app).put(`/v1/admin/users/${await idOf('admin2@x')}`).set('Cookie', fx.cookie).send({ active: false })).status).toBe(200));
     expect(r.status).toBe(409);
     expect(await fx.db.get<any>('SELECT id FROM users WHERE email = ?', ['admin@x'])).toBeTruthy();
   });

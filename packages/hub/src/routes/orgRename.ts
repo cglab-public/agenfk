@@ -45,7 +45,7 @@ const ORG_ID_REGEX = /^[a-z0-9][a-z0-9-]{1,62}$/;
 
 export function orgRenameRouter(ctx: HubServerContext): Router {
   const router = Router();
-  const guard = requireAdmin(ctx.config.sessionSecret);
+  const guard = requireAdmin(ctx.config.sessionSecret, ctx.db);
 
   // POST /v1/admin/orgs/rename
   router.post('/orgs/rename', guard, asyncRoute(async (req: Request, res: Response) => {

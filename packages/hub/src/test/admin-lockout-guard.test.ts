@@ -14,6 +14,7 @@ import { loginAs } from './helpers/loginAs';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { drainApp } from './helpers/drainApp';
+import { raceBehindGuard } from './helpers/raceBehindGuard';
 import { adminCanStillSignIn } from '../routes/admin';
 
 let server: any;
@@ -80,26 +81,27 @@ describe('PUT /users/:id refuses changes that lock admins out', () => {
     expect(Number(row.active)).toBe(0);
   });
 
-  // A session carries its role from sign-in, so a demoted admin's cookie still
-  // passes the admin guard. Without a last-admin check that stale session can
-  // demote the one admin left, and the org has no admin at all.
-  it('refuses to demote the last active admin, even from a stale admin session', async () => {
+  // The session guard reads the actor's row, then the route writes. Two admins
+  // demoting each other can each pass the guard before either write lands; the
+  // last-admin condition in the UPDATE is what keeps one admin standing.
+  // (A stale session no longer reaches the route at all: BUG 8ef3ed7d.)
+  it('refuses to demote the last active admin when a cross-demotion lands between guard and write', async () => {
     const a = await loginAs(app, 'admin@x', 'longenough1');
     const b = await loginAs(app, 'admin2@x', 'longenough1');
-    expect((await supertest(server).put(`/v1/admin/users/${await userId('admin2@x')}`).set('Cookie', a).send({ role: 'viewer' })).status).toBe(200);
-
-    const r = await supertest(server).put(`/v1/admin/users/${await userId('admin@x')}`).set('Cookie', b).send({ role: 'viewer' });
+    const r = await raceBehindGuard(ctx.db, await userId('admin2@x'),
+      async () => supertest(server).put(`/v1/admin/users/${await userId('admin@x')}`).set('Cookie', b).send({ role: 'viewer' }),
+      async () => expect((await supertest(server).put(`/v1/admin/users/${await userId('admin2@x')}`).set('Cookie', a).send({ role: 'viewer' })).status).toBe(200));
     expect(r.status).toBe(409);
     expect(r.body.error).toMatch(/last active admin/i);
     expect((await userRow('admin@x')).role).toBe('admin');
   });
 
-  it('refuses to deactivate the last active admin, even from a stale admin session', async () => {
+  it('refuses to deactivate the last active admin when a cross-deactivation lands between guard and write', async () => {
     const a = await loginAs(app, 'admin@x', 'longenough1');
     const b = await loginAs(app, 'admin2@x', 'longenough1');
-    expect((await supertest(server).put(`/v1/admin/users/${await userId('admin2@x')}`).set('Cookie', a).send({ active: false })).status).toBe(200);
-
-    const r = await supertest(server).put(`/v1/admin/users/${await userId('admin@x')}`).set('Cookie', b).send({ active: false });
+    const r = await raceBehindGuard(ctx.db, await userId('admin2@x'),
+      async () => supertest(server).put(`/v1/admin/users/${await userId('admin@x')}`).set('Cookie', b).send({ active: false }),
+      async () => expect((await supertest(server).put(`/v1/admin/users/${await userId('admin2@x')}`).set('Cookie', a).send({ active: false })).status).toBe(200));
     expect(r.status).toBe(409);
     expect(Number((await userRow('admin@x')).active)).toBe(1);
   });
@@ -107,9 +109,11 @@ describe('PUT /users/:id refuses changes that lock admins out', () => {
   it('counts an inactive admin as no admin', async () => {
     const a = await loginAs(app, 'admin@x', 'longenough1');
     const b = await loginAs(app, 'admin2@x', 'longenough1');
-    // admin2 stays role=admin but is switched off: it cannot sign in, so it does not count.
-    expect((await supertest(server).put(`/v1/admin/users/${await userId('admin2@x')}`).set('Cookie', a).send({ active: false })).status).toBe(200);
-    const r = await supertest(server).put(`/v1/admin/users/${await userId('admin@x')}`).set('Cookie', b).send({ role: 'viewer' });
+    // admin2 stays role=admin but is switched off (between its guard and its
+    // write): it cannot sign in, so it does not count as an admin left.
+    const r = await raceBehindGuard(ctx.db, await userId('admin2@x'),
+      async () => supertest(server).put(`/v1/admin/users/${await userId('admin@x')}`).set('Cookie', b).send({ role: 'viewer' }),
+      async () => expect((await supertest(server).put(`/v1/admin/users/${await userId('admin2@x')}`).set('Cookie', a).send({ active: false })).status).toBe(200));
     expect(r.status).toBe(409);
   });
 
@@ -135,12 +139,12 @@ describe('PUT /users/:id refuses changes that lock admins out', () => {
 });
 
 describe('DELETE /users/:id refuses removing the last active admin', () => {
-  it('refuses from a stale admin session, and keeps the row', async () => {
+  it('refuses when a deactivation lands between guard and delete, and keeps the row', async () => {
     const a = await loginAs(app, 'admin@x', 'longenough1');
     const b = await loginAs(app, 'admin2@x', 'longenough1');
-    expect((await supertest(server).put(`/v1/admin/users/${await userId('admin2@x')}`).set('Cookie', a).send({ active: false })).status).toBe(200);
-
-    const r = await supertest(server).delete(`/v1/admin/users/${await userId('admin@x')}`).set('Cookie', b);
+    const r = await raceBehindGuard(ctx.db, await userId('admin2@x'),
+      async () => supertest(server).delete(`/v1/admin/users/${await userId('admin@x')}`).set('Cookie', b),
+      async () => expect((await supertest(server).put(`/v1/admin/users/${await userId('admin2@x')}`).set('Cookie', a).send({ active: false })).status).toBe(200));
     expect(r.status).toBe(409);
     expect(r.body.error).toMatch(/last active admin/i);
     expect(await userRow('admin@x')).toBeTruthy();

@@ -142,7 +142,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   // Keyed by the signed-in user, not the address: the hub is reached through
   // shared corporate egress, and an IP bucket would be an office-wide cap.
   router.use(rateLimit({ windowMs: 60 * 1000, max: 300, keyFn: sessionUserKey(ctx.config.sessionSecret), message: 'Too many requests, slow down.' }));
-  const guard = requireAdmin(ctx.config.sessionSecret);
+  const guard = requireAdmin(ctx.config.sessionSecret, ctx.db);
 
   // ── Auth config ──────────────────────────────────────────────────────────
   router.get('/auth-config', guard, asyncRoute(async (req: Request, res: Response) => {
@@ -1379,13 +1379,12 @@ export function adminRouter(ctx: HubServerContext): Router {
       return res.status(400).json({ error: 'You cannot demote or deactivate your own account; ask another admin.' });
     }
     params.push(req.params.id, orgId);
-    // The last-admin check sits in the UPDATE itself rather than in a read
-    // before it, so there is no gap between check and write within one
-    // statement (on SQLite, where writes are serialised, that closes the race
-    // outright; on Postgres two exactly simultaneous cross-demotions could
-    // still both pass under READ COMMITTED). It matters beyond self-edits: a
-    // session keeps the role it signed in with, so a just-demoted admin can
-    // still reach this route.
+    // The session guard has checked the actor is an active admin, but another
+    // admin's change can land between that read and this write (two admins
+    // demoting each other). So the last-admin check sits in the UPDATE itself:
+    // on SQLite, where writes are serialised, that closes the race outright;
+    // on Postgres two exactly simultaneous cross-demotions could still both
+    // pass under READ COMMITTED.
     let where = 'id = ? AND org_id = ?';
     if (removesAdminAccess) {
       where += ` AND ${NOT_LAST_ACTIVE_ADMIN}`;

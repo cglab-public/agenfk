@@ -61,7 +61,7 @@ export function jiraAdminRouter(ctx: HubServerContext): Router {
     keyFn: sessionUserKey(ctx.config.sessionSecret),
     message: 'Too many requests, slow down.',
   }));
-  const guard = requireAdmin(ctx.config.sessionSecret);
+  const guard = requireAdmin(ctx.config.sessionSecret, ctx.db);
 
   const view = async (req: Request) => ({
     ...(await getJiraApp(ctx.db, req.session!.orgId)),
