@@ -38,6 +38,12 @@ export interface VolumeStats {
   average: number; // total / bucket count — ALL buckets in the range, incl. empty ones
   max: number;     // highest bucket total (0 when there are no PRs)
   maxLabel: string | null; // label of the max bucket (earliest on ties); null when total is 0
+  /** The weekday with the most PRs over the range (Monday first on ties) and
+   *  its share of them; null when there are no PRs. Counted per calendar day,
+   *  so it is the same whatever the granularity. */
+  busiestWeekday: { day: string; prs: number; share: number } | null;
+  /** Share of the range's PRs sized L or XL; null when there are none. */
+  largeShare: number | null;
 }
 
 export interface VolumeSeries {
@@ -54,6 +60,11 @@ const SHORT_MONTHS = [
 ] as const;
 
 const emptyDist = (): SizeDist => ({ xs: 0, s: 0, m: 0, l: 0, xl: 0 });
+
+/** Monday-first, the order ties are broken in. */
+const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const;
+/** 0 = Monday … 6 = Sunday, for a 'YYYY-MM-DD' calendar date. */
+const weekdayOf = (day: string): number => (new Date(day.slice(0, 10) + 'T00:00:00Z').getUTCDay() + 6) % 7;
 
 /** Monday of the ISO week containing `day` (YYYY-MM-DD, UTC) — a Sunday stays
  *  in the week that started on Monday.
@@ -160,6 +171,13 @@ export function buildVolumeSeries(
   });
 
   const total = buckets.reduce((s, b) => s + b.total, 0);
+  const perWeekday = WEEKDAYS.map(() => 0);
+  let large = 0;
+  for (const p of points.values()) {
+    perWeekday[weekdayOf(p.day)] += p.total;
+    large += (p.sizes.l ?? 0) + (p.sizes.xl ?? 0);
+  }
+  const top = perWeekday.reduce((best, n, i) => (n > perWeekday[best] ? i : best), 0);
   let max = 0;
   let maxLabel: string | null = null;
   for (const b of buckets) {
@@ -174,6 +192,8 @@ export function buildVolumeSeries(
       average: buckets.length ? total / buckets.length : 0,
       max,
       maxLabel,
+      busiestWeekday: total ? { day: WEEKDAYS[top], prs: perWeekday[top], share: perWeekday[top] / total } : null,
+      largeShare: total ? large / total : null,
     },
   };
 }

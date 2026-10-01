@@ -202,7 +202,7 @@ describe('PR overview draws every headline number with StatTile', () => {
   it('volume stats are compact StatTiles', async () => {
     renderPage(<PrOverviewPage />, '/prs');
     await screen.findByText('Total PRs');
-    for (const label of [/^Total$/, /^Average \//, /^Max/]) {
+    for (const label of [/^Busiest weekday$/, /^L \/ XL share$/, /^Average \//, /^Max/]) {
       const tile = screen.getByText(label).closest('[data-stat-tile]') as HTMLElement;
       expect(tile).not.toBeNull();
       expect(tile).toHaveAttribute('data-size', 'sm');

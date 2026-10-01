@@ -3,6 +3,7 @@ import { eventTypeLabel } from '../eventTypes';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api';
 import { useElementWidth } from '../hooks/useElementWidth';
+import { niceTicks } from './chartAxis';
 import { QueryState } from './ui';
 import { seriesColours, ALL_EVENTS_COLOR } from '../chartColours';
 import {
@@ -40,20 +41,6 @@ const RANGES: Array<{ key: RangeKey; label: string }> = [
   { key: '90d', label: '90d' },
 ];
 
-
-// "Nice" Y-axis ticks for an integer-count chart. Returns at most 5 evenly-spaced values.
-function niceTicks(max: number): number[] {
-  if (max <= 0) return [0, 1];
-  const target = 4;
-  const raw = max / target;
-  const pow = Math.pow(10, Math.floor(Math.log10(raw)));
-  const norm = raw / pow;
-  const step = (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * pow;
-  const top = Math.ceil(max / step) * step;
-  const out: number[] = [];
-  for (let v = 0; v <= top + 1e-9; v += step) out.push(Math.round(v));
-  return out;
-}
 
 function buildAxisForBounds(fromIso: string, toIso: string | undefined, bucket: Bucket): string[] {
   const from = new Date(fromIso);

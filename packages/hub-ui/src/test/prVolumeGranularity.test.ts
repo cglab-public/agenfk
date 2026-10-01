@@ -227,7 +227,7 @@ describe('buildVolumeSeries — stats', () => {
 
   it('yields zeroed stats and null maxLabel when there are no PRs', () => {
     const { stats } = buildVolumeSeries([], axis('2026-06-01', '2026-06-14'), 'weekly');
-    expect(stats).toEqual({ total: 0, average: 0, max: 0, maxLabel: null });
+    expect(stats).toEqual({ total: 0, average: 0, max: 0, maxLabel: null, busiestWeekday: null, largeShare: null });
   });
 });
 
@@ -244,7 +244,7 @@ describe('buildVolumeSeries — edge cases', () => {
   it('returns no buckets and zeroed stats for an empty axis (no division by zero)', () => {
     const { buckets, stats } = buildVolumeSeries([day('2026-06-01', { xs: 1 })], [], 'daily');
     expect(buckets).toEqual([]);
-    expect(stats).toEqual({ total: 0, average: 0, max: 0, maxLabel: null });
+    expect(stats).toEqual({ total: 0, average: 0, max: 0, maxLabel: null, busiestWeekday: null, largeShare: null });
   });
 
   it('ignores byDay entries outside the axis range', () => {
@@ -312,5 +312,49 @@ describe('buildVolumeSeries — mutation sweep', () => {
     const { buckets } = buildVolumeSeries([partial], axis('2026-06-01', '2026-06-07'), 'weekly');
     expect(buckets[0].devBySize.xs).toEqual([{ user_key: 'a@x.com', count: 1 }]);
     expect(buckets[0].devBySize.s).toEqual([]);
+  });
+});
+
+// Story da96916f: the stats under the chart no longer repeat the Total PRs
+// tile; they say which weekday is busiest and how much of the work is large.
+describe('buildVolumeSeries — busiest weekday and large share', () => {
+  // 2026-09-01 is a Tuesday; 09-08 the next Tuesday; 09-02 a Wednesday.
+  const range = axis('2026-09-01', '2026-09-14');
+  const days = [
+    day('2026-09-01', { s: 2 }),
+    day('2026-09-08', { m: 1, l: 1 }),
+    day('2026-09-02', { xl: 3 }),
+    day('2026-09-07', { xs: 1 }),
+  ];
+
+  it('names the weekday with the most PRs over the range, and its share', () => {
+    const { stats } = buildVolumeSeries(days, range, 'daily');
+    expect(stats.busiestWeekday).toEqual({ day: 'Tue', prs: 4, share: 4 / 8 });
+  });
+
+  it('is the same answer whatever the granularity', () => {
+    for (const g of ['daily', 'weekly', 'monthly'] as Granularity[]) {
+      expect(buildVolumeSeries(days, range, g).stats.busiestWeekday?.day).toBe('Tue');
+    }
+  });
+
+  it('breaks a tie towards the earlier weekday, Monday first', () => {
+    const tie = [day('2026-09-02', { s: 2 }), day('2026-09-07', { s: 2 })];
+    expect(buildVolumeSeries(tie, range, 'daily').stats.busiestWeekday?.day).toBe('Mon');
+  });
+
+  it('counts only the days inside the range', () => {
+    const outside = [...days, day('2026-08-30', { s: 9 })];
+    expect(buildVolumeSeries(outside, range, 'daily').stats.busiestWeekday?.day).toBe('Tue');
+  });
+
+  it('gives the share of L and XL PRs', () => {
+    expect(buildVolumeSeries(days, range, 'weekly').stats.largeShare).toBe(4 / 8);
+  });
+
+  it('has neither when there are no PRs', () => {
+    const { stats } = buildVolumeSeries([], range, 'daily');
+    expect(stats.busiestWeekday).toBeNull();
+    expect(stats.largeShare).toBeNull();
   });
 });

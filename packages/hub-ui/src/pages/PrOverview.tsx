@@ -13,12 +13,13 @@ import { csvParam } from '../urlParams';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useSettledKey } from '../hooks/useSettledKey';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
-import { SIZE_META, type SizeKey, buildDayAxis, fmtAverage, pctDelta } from '../prOverview';
+import { SIZE_META, type SizeKey, buildDayAxis, pctDelta } from '../prOverview';
 import { heatColor } from '../chartColours';
 import { Sparkline } from '../components/Sparkline';
 import { parsePrQuery } from '../prSearch';
 import { buildMonthBands, dayHeaderInfo, contributionPcts, cellTooltip, placeTooltip } from '../prPerDay';
 import { buildVolumeSeries, type Granularity } from '../prVolumeGranularity';
+import { PrVolumeChart } from '../components/PrVolumeChart';
 import { DataTable, DateRange, LocalTime, Page, PageHeader, PeriodControl, QueryError, Skeleton, StatTile } from '../components/ui';
 import { browserTimezone, endOfLocalDay, startOfLocalDay } from '../dates';
 import { describeFilters } from '../filterSummary';
@@ -89,7 +90,6 @@ const prKey = (p: { repo: string; prNumber: number; childHubId?: string }) =>
   `${p.childHubId ?? 'local'}\u0000${p.repo}#${p.prNumber}`;
 
 // XL→XS so the stacked bar renders largest at the bottom. Hoisted out of render.
-const SIZE_META_DESC = [...SIZE_META].reverse();
 const colorOf = (k: SizeKey) => SIZE_META.find(s => s.key === k)!.color;
 
 /** Horizontal stacked size-mix bar for one row of size counts. */
@@ -591,8 +591,6 @@ export function PrOverviewPage() {
   // Re-bucketed PR volume for the "PR volume by size" chart (daily/weekly/monthly).
   const volume = useMemo(() => (d ? buildVolumeSeries(d.byDay, axis, gran) : null), [d, axis, gran]);
   const prsDelta = d?.previous ? pctDelta(d.totals.prs, d.previous.prs) : null;
-  const volumeBuckets = volume?.buckets ?? [];
-  const maxBucketTotal = Math.max(1, ...volumeBuckets.map(b => b.total));
   // Reference date for the heatmap's "today" column highlight (local, like the axis).
   const todayIso = buildDayAxis(new Date().toISOString(), new Date().toISOString(), timeZone ?? 'UTC')[0];
   // Per-column header info, computed once per axis instead of per cell.
@@ -917,47 +915,7 @@ export function PrOverviewPage() {
                 </div>
               </div>
             </div>
-            <div className="overflow-x-auto">
-              <div className="flex items-end gap-1.5 h-44 min-w-[420px]">
-                {volumeBuckets.map(b => {
-                  const sizes = b.sizes;
-                  const sliceTitle = (key: SizeKey, label: string) => {
-                    const devs = b.devBySize[key] ?? [];
-                    const head = `${label} · ${b.rangeLabel} · ${sizes[key]} PR${sizes[key] === 1 ? '' : 's'}`;
-                    const lines = devs.map(x => `  ${x.user_key}: ${x.count}`).join('\n');
-                    return lines ? `${head}\n${lines}` : head;
-                  };
-                  return (
-                    <div key={b.key} className="flex-1 flex flex-col justify-end gap-0.5 h-full group" title={`${b.rangeLabel}: ${b.total} PR${b.total === 1 ? '' : 's'}`}>
-                      {SIZE_META_DESC.filter(s => sizes[s.key] > 0).map(s => (
-                        <div
-                          key={s.key}
-                          style={{ background: s.color, height: `${(sizes[s.key] / maxBucketTotal) * 100}%` }}
-                          className="rounded-[2px] hover:opacity-80 transition-opacity cursor-default"
-                          title={sliceTitle(s.key, s.label)}
-                        />
-                      ))}
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="flex gap-1.5 mt-2 min-w-[420px]">
-                {volumeBuckets.map((b, i) => (
-                  <div key={b.key} className="flex-1 text-center font-mono text-[9px] text-ink-tertiary">
-                    {volumeBuckets.length <= 16 || i % Math.ceil(volumeBuckets.length / 10 || 1) === 0 ? b.label : ''}
-                  </div>
-                ))}
-              </div>
-            </div>
-            {/* Stats under the chart — respect the selected granularity. Average
-                is per bucket over the WHOLE range (empty buckets included). */}
-            {volume && (
-              <div className="mt-4 flex gap-3 flex-wrap">
-                <StatTile size="sm" label="Total" value={volume.stats.total} />
-                <StatTile size="sm" label={`Average / ${GRANULARITIES.find(g => g.key === gran)?.unit ?? gran}`} value={fmtAverage(volume.stats.average)} />
-                <StatTile size="sm" label={`Max${volume.stats.maxLabel ? ` · ${volume.stats.maxLabel}` : ''}`} value={volume.stats.max} />
-              </div>
-            )}
+            {volume && <PrVolumeChart series={volume} unit={GRANULARITIES.find(g => g.key === gran)?.unit ?? gran} />}
           </section>
 
           {/* By developer */}
