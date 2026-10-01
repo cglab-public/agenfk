@@ -11,7 +11,7 @@ import {
   FolderOpen, Briefcase, Clock, FlaskConical, ShieldCheck,
   Copy, Check, Download, Pin, PinOff, ExternalLink, Trash2, Lightbulb, Book, Pause,
   ChevronUp, ChevronDown, X, FolderInput, GitBranch, SquareTerminal,
-  Settings,
+  Settings, ArrowLeft,
 } from 'lucide-react';
 import { useSocketEvent } from '../SocketContext';
 import { isDesktop } from '../desktop';
@@ -517,6 +517,9 @@ function titleCaseLabel(label: string): string {
   return label.replace(/\S+/g, w => (/[/\d]/.test(w) ? w : w.charAt(0) + w.slice(1).toLowerCase()));
 }
 
+// Sections rendered only at the top of the board, never inside a drill-down.
+const TOP_LEVEL_ONLY_STATUSES = new Set<string>([Status.IDEAS, Status.PAUSED, Status.BLOCKED, Status.ARCHIVED]);
+
 export const KanbanBoard: React.FC = () => {
   const queryClient = useQueryClient();
   const { theme, toggleTheme } = useTheme();
@@ -730,6 +733,14 @@ export const KanbanBoard: React.FC = () => {
   const [searchMatches, setSearchMatches] = useState<AgEnFKItem[]>([]);
   const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // A pending scroll must not land on whatever renders after the board. The
+  // 3s clear is left to run: StrictMode's rehearsal unmount would otherwise
+  // cancel it for a highlight the one-shot deep link never re-applies,
+  // leaving the ring stuck on.
+  useEffect(() => () => {
+    if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
+  }, []);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [isIdeasCollapsed, setIsIdeasCollapsed] = useState(true);
   const [isArchiveCollapsed, setIsArchiveCollapsed] = useState(true);
@@ -1098,11 +1109,18 @@ export const KanbanBoard: React.FC = () => {
     setNavPath([...navPath, { id: item.id, title: item.title, type: item.type }]);
   };
 
+  // Going back up the breadcrumb lands on a view where the card the user just
+  // came out of is one of many: highlight it so they are not left hunting for
+  // it. For crumb index i that card is the level just below, navPath[i + 1]
+  // (index -1 is the top of the board). Ideas / Paused / Blocked / Archived
+  // are shown only at the top, so below it a card in one of them has nothing
+  // to ring, and opening its section would only surprise the user later.
   const navigateTo = (index: number) => {
-    if (index === -1) {
-      setNavPath([]);
-    } else {
-      setNavPath(navPath.slice(0, index + 1));
+    if (index === navPath.length - 1) return;
+    const cameFrom = items?.find((i: AgEnFKItem) => i.id === navPath[index + 1].id);
+    setNavPath(navPath.slice(0, index + 1));
+    if (cameFrom && (index === -1 || !TOP_LEVEL_ONLY_STATUSES.has(cameFrom.status))) {
+      revealAndHighlight(cameFrom, true);
     }
   };
 
@@ -1288,12 +1306,30 @@ export const KanbanBoard: React.FC = () => {
     }
   };
 
-  const navigateToMatch = (item: AgEnFKItem) => {
+  // Opens the section a card lives in, rings it for 3s and scrolls it into
+  // view. `viewChanged` gives the new view's cards time to mount first.
+  const revealAndHighlight = (item: AgEnFKItem, viewChanged: boolean) => {
     if (item.status === Status.IDEAS) setIsIdeasCollapsed(false);
     if (item.status === Status.ARCHIVED) setIsArchiveCollapsed(false);
     if (item.status === Status.BLOCKED) setIsBlockedCollapsed(false);
     if (item.status === Status.PAUSED) setIsPausedCollapsed(false);
+    setHighlightedId(item.id);
 
+    // Only the latest navigation scrolls: a quicker second one cancels the first.
+    if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
+    scrollTimerRef.current = setTimeout(() => {
+      const element = document.getElementById(`card-${item.id}`);
+      if (element) {
+        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, item.status === Status.ARCHIVED || viewChanged ? 400 : 100);
+
+    // Brief highlight: clear after 3s, cancelling any previous timer
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    highlightTimerRef.current = setTimeout(() => setHighlightedId(null), 3000);
+  };
+
+  const navigateToMatch = (item: AgEnFKItem) => {
     const chain: NavItem[] = [];
     let currentParentId = item.parentId;
     while (currentParentId) {
@@ -1304,18 +1340,7 @@ export const KanbanBoard: React.FC = () => {
       } else break;
     }
     setNavPath(chain);
-    setHighlightedId(item.id);
-
-    setTimeout(() => {
-      const element = document.getElementById(`card-${item.id}`);
-      if (element) {
-        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-    }, item.status === Status.ARCHIVED || chain.length > 0 ? 400 : 100);
-
-    // Brief highlight: clear after 3s, cancelling any previous timer
-    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
-    highlightTimerRef.current = setTimeout(() => setHighlightedId(null), 3000);
+    revealAndHighlight(item, chain.length > 0);
   };
 
   const handleSearch = (e: React.FormEvent) => {
@@ -1881,17 +1906,27 @@ export const KanbanBoard: React.FC = () => {
 
         <div className="flex items-center justify-between border-t border-slate-100 dark:border-slate-800/50 pt-2 px-1">
           <div className="flex items-center gap-1.5 text-xs overflow-x-auto scrollbar-hide py-1">
-            <button onClick={() => navigateTo(-1)} className={clsx("flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all whitespace-nowrap", navPath.length === 0 ? "bg-accent-fill text-accent-ink font-bold" : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800")}>
-              <Home size={14} />
-              <span className={clsx(navPath.length === 0 ? "inline" : "hidden sm:inline")}>Top Level</span>
-            </button>
+            {navPath.length === 0 ? (
+              <button onClick={() => navigateTo(-1)} className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all whitespace-nowrap bg-accent-fill text-accent-ink font-bold">
+                <Home size={14} />
+                <span>Top Level</span>
+              </button>
+            ) : (
+              // Drilled in, the first button goes up one level and says where to.
+              <button
+                onClick={() => navigateTo(navPath.length - 2)}
+                aria-label={`Back to ${navPath.length > 1 ? navPath[navPath.length - 2].title : 'All Items'}`}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all whitespace-nowrap text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <ArrowLeft size={14} />
+                <span className="hidden sm:inline">Back</span>
+              </button>
+            )}
             {navPath.map((nav, index) => (
               <React.Fragment key={nav.id}>
                 <ChevronRight size={14} className="text-slate-300 dark:text-slate-500 flex-shrink-0" />
                 <button
-                  /* v8 ignore start */
                   onClick={() => navigateTo(index)}
-                  /* v8 ignore stop */
                   className={clsx("flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all whitespace-nowrap", index === navPath.length - 1 ? "bg-accent-fill text-accent-ink font-bold" : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800")}>
                   <span className={clsx("w-2 h-2 rounded-full", itemTypeDot(nav.type))}></span>
                   <span>{nav.title}</span>
