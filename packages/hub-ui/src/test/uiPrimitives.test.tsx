@@ -9,7 +9,7 @@
  * the token utility a variant must use, because jsdom runs no Tailwind.
  */
 import React from 'react';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, getDefaultNormalizer } from '@testing-library/react';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -303,7 +303,9 @@ describe('StatTile', () => {
   it('shows label and formatted value', () => {
     render(<StatTile label="Items closed" value={1548} />);
     expect(screen.getByText('Items closed')).toBeTruthy();
-    expect(screen.getByText((1548).toLocaleString())).toBeTruthy();
+    // Compare uncollapsed: the default normalizer turns fr-FR's narrow no-break
+    // space into a plain one, which the expected string still carries.
+    expect(screen.getByText((1548).toLocaleString(), { normalizer: getDefaultNormalizer({ collapseWhitespace: false }) })).toBeTruthy();
   });
 
   it('a rise is marked ok with an arrow and a word for screen readers', () => {
