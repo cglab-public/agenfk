@@ -12,6 +12,7 @@ import { loadModelMeta, resolveModelMetaAll } from '../util/modelMeta.js';
 import { resolveModelId } from '../util/modelMapping.js';
 import { childHubPredicate, childHubClause, selectedHubIds, HUB_COL_EVENTS, HUB_COL_ROLLUPS } from '../queries/childHub.js';
 import { asyncRoute } from '../util/asyncRoute.js';
+import { prUrlFor } from '../util/remoteUrl.js';
 import { userKeyFor } from '../util/userKey.js';
 import { loadAliasMap, resolveAliasKey } from '../util/userKeyAlias.js';
 
@@ -283,7 +284,16 @@ export function queriesRouter(ctx: HubServerContext): Router {
     const lastAt = last ? (last.occurred_at instanceof Date ? last.occurred_at.toISOString() : String(last.occurred_at)) : '';
 
     res.json({
-      events: rows.map((r: any) => ({ ...r, payload: JSON.parse(r.payload) })),
+      events: rows.map((r: any) => {
+        const payload = JSON.parse(r.payload);
+        const inner = payload?.payload ?? {};
+        // A link for a PR event, by the drill-down's rule: github.com only,
+        // never guessed for another host.
+        const pr_url = r.type === 'pr.opened' || r.type === 'pr.updated'
+          ? prUrlFor(r.remote_url, typeof inner.repo === 'string' ? inner.repo : null, inner.prNumber)
+          : null;
+        return { ...r, payload, pr_url };
+      }),
       // offset is ignored under a cursor, so it is not echoed as if it applied.
       limit, offset: before ? 0 : offset, total,
       // Present while a full page came back: there may be more.

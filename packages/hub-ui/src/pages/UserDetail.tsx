@@ -1,5 +1,5 @@
 import { Link, useParams, useSearchParams } from 'react-router-dom';
-import { useEffect, useMemo } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { ArrowLeft, ChevronDown, GitBranch, Server } from 'lucide-react';
 import { api } from '../api';
@@ -12,7 +12,8 @@ import { MetricsTilesRow, MetricsTotals } from '../components/MetricsTilesRow';
 import { Badge, Button, ChipRow, DateRange, LocalTime, Page, PeriodControl, QueryState } from '../components/ui';
 import { eventTone, itemTypeClass } from '../eventTone';
 import { shortRemote } from '../components/facetSearch';
-import { mergeEventTypes } from '../eventTypes';
+import { eventTypeLabel, mergeEventTypes } from '../eventTypes';
+import { eventFields } from '../eventDetails';
 import { EventTypeChips } from '../components/EventTypeChips';
 import { browserTimezone, endOfLocalDay, startOfLocalDay } from '../dates';
 import { useToggleSet } from '../hooks/useToggleSet';
@@ -45,6 +46,47 @@ interface MetricsResponse { bucket: string; series: Array<{ user_key: string; da
 
 interface TimelineRow {
   event_id: string; occurred_at: string; type: string; project_id: string | null; item_id: string | null; item_type: string | null; remote_url: string | null; item_title: string | null; external_id: string | null; user_key: string; reporting_version: string | null; payload: any;
+  /** A link to the pull request, for a PR event on a GitHub repo. */
+  pr_url?: string | null;
+}
+
+/** An expanded event: its fields in words, the raw JSON behind a toggle. */
+function EventBody({ e }: { e: TimelineRow }) {
+  const [raw, setRaw] = useState(false);
+  const fields = eventFields(e);
+  return (
+    <div className="px-5 pb-3 pt-2 bg-canvas/60 border-t border-border-soft -mt-0.5 space-y-2">
+      {fields.length > 0 && (
+        <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-[12px]">
+          {fields.map((f, i) => (
+            // By position: labels come from untrusted payload keys and can repeat.
+            <Fragment key={i}>
+              <dt className="text-ink-tertiary">{f.label}</dt>
+              <dd className="text-ink-secondary min-w-0 break-words whitespace-pre-wrap">
+                {f.href
+                  ? (
+                    // The key is the link text; the destination shows on hover.
+                    <a href={f.href} title={f.href} target="_blank" rel="noopener noreferrer" className="text-accent-ink underline decoration-dotted hover:decoration-solid">
+                      {f.value}<span className="sr-only"> (opens in a new tab)</span>
+                    </a>
+                  )
+                  : f.value}
+              </dd>
+            </Fragment>
+          ))}
+        </dl>
+      )}
+      <button
+        type="button"
+        aria-expanded={raw}
+        onClick={() => setRaw(v => !v)}
+        className="text-[11px] font-medium text-ink-tertiary hover:text-ink"
+      >
+        {raw ? 'Hide raw JSON' : 'Show raw JSON'}
+      </button>
+      {raw && <pre className="text-[11px] font-mono text-ink-secondary whitespace-pre-wrap break-words">{JSON.stringify(e.payload, null, 2)}</pre>}
+    </div>
+  );
 }
 interface EventTypesResponse { types: string[] }
 interface ProjectsResponse { projects: string[] }
@@ -354,7 +396,7 @@ export function UserDetailPage() {
                   <details key={e.event_id} className="group">
                     <summary className="flex items-center gap-3 px-5 py-2.5 cursor-pointer list-none hover:bg-canvas transition-colors">
                       <ChevronDown className="w-3.5 h-3.5 text-ink-tertiary group-open:rotate-180 transition-transform shrink-0" />
-                      <Badge tone={eventTone(e.type)} className="font-mono text-[10px] font-medium">{e.type}</Badge>
+                      <Badge tone={eventTone(e.type)} className="text-[10px] font-medium" title={e.type}>{eventTypeLabel(e.type)}</Badge>
                       {e.item_type && <span className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-semibold border ${itemTypeClass(e.item_type)}`}>{e.item_type}</span>}
                       {e.external_id && (
                         <span title={`External tracker: ${e.external_id}`} className="px-2 py-0.5 rounded-md text-[10px] font-mono border border-transparent bg-accent-fill text-accent-ink">
@@ -379,7 +421,7 @@ export function UserDetailPage() {
                       )}
                       <LocalTime value={e.occurred_at} className="text-[11px] text-ink-tertiary tabular-nums shrink-0" />
                     </summary>
-                    <pre className="px-5 pb-3 text-[11px] font-mono text-ink-secondary whitespace-pre-wrap break-words bg-canvas/60 border-t border-border-soft -mt-0.5">{JSON.stringify(e.payload, null, 2)}</pre>
+                    <EventBody e={e} />
                   </details>
                 );
               })}

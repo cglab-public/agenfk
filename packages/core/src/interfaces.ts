@@ -196,6 +196,8 @@ export interface HubEvent {
   itemTitle?: string;
   // Reference into an external tracker (e.g. Jira issue key like "WEB-123").
   externalId?: string;
+  // The tracker's browse URL for externalId, as stored on the item.
+  externalUrl?: string;
   type: HubEventType;
   payload: Record<string, unknown>;
 }

@@ -12,6 +12,9 @@ const TONE: Record<string, BadgeTone> = {
   'item.moved': 'accent',
   'item.closed': 'accent',
   'step.transitioned': 'accent',
+  'pr.opened': 'accent',
+  'pr.updated': 'accent',
+  'step.approved': 'ok',
 };
 
 export const eventTone = (type: string): BadgeTone => TONE[type] ?? 'neutral';
