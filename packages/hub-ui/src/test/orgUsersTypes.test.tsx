@@ -78,13 +78,19 @@ describe('Org Users panel follows the Event type filter', () => {
   it('labels the counts as matching the selected types', async () => {
     renderAt('/?types=item.closed');
     expect(await screen.findByText('1 with matching events')).toBeInTheDocument();
-    expect(screen.getByText(/12 matching events · last match/)).toBeInTheDocument();
+    // The Users table's columns say they count matches (story f15fb3a6 split the
+    // one-line row into columns).
+    expect(screen.getByRole('columnheader', { name: /Matching events/ })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: /Last match/ })).toBeInTheDocument();
+    expect(screen.getByRole('cell', { name: '12' })).toBeInTheDocument();
   });
 
   it('keeps the plain labels when no type is selected', async () => {
     renderAt('/?types=');
     expect(await screen.findByText('1 reporting')).toBeInTheDocument();
-    expect(screen.getByText(/12 events · last /)).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: /^Events/ })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: /Last active/ })).toBeInTheDocument();
+    expect(screen.getByRole('cell', { name: '12' })).toBeInTheDocument();
   });
 
   it('names no filter the tiles do apply as excluded', async () => {

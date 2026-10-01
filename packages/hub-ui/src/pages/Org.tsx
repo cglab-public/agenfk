@@ -8,11 +8,11 @@ import { FacetMultiselect } from '../components/FacetMultiselect';
 import { FilterAccordion, FILTERS_OPEN, parseFiltersOpen } from '../components/FilterAccordion';
 import { describeFilters } from '../filterSummary';
 import { MetricsTilesRow, MetricsTotals } from '../components/MetricsTilesRow';
-import { ChipRow, Page, PageHeader, PeriodControl, QueryState } from '../components/ui';
+import { ChipRow, DataTable, Page, PageHeader, PeriodControl, QueryState } from '../components/ui';
 import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
 import { EventTypeChips } from '../components/EventTypeChips';
-import { fmtRelative } from '../dates';
+import { fmtRelative, utcTitle } from '../dates';
 import { useToggleSet } from '../hooks/useToggleSet';
 import { useUrlFilters } from '../hooks/useUrlFilters';
 import { usePeopleNames } from '../hooks/usePeopleNames';
@@ -247,35 +247,67 @@ export function OrgPage() {
           empty={<div className="bg-card-glass border border-border-soft rounded-2xl px-5 py-8 text-center text-sm text-ink-tertiary">No users match the current filters.</div>}
         >
           {list => (
-            <div className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl divide-y divide-border-soft overflow-hidden">
-              {list.map(u => (
-                <Link
-                  key={u.user_key}
-                  // Carry the hub scope through the click-through: landing on a
-                  // person aggregated across every hub would contradict the board
-                  // just left, with nothing saying the scope had been dropped.
-                  to={`/users/${encodeURIComponent(u.user_key)}${hubQs}`}
-                  className="group flex items-center justify-between gap-3 px-5 py-3 hover:bg-accent-fill/50 transition-colors"
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-8 h-8 rounded-full bg-accent-fill text-accent-ink text-[11px] font-bold flex items-center justify-center shrink-0">
-                      {initialsOf(nameOf(u.user_key), u.user_key)}
-                    </div>
-                    <div className="min-w-0">
-                      {nameOf(u.user_key) ? (
-                        <>
-                          <div className="text-[13px] text-ink truncate group-hover:text-accent-ink transition-colors">{nameOf(u.user_key)}</div>
-                          <div className="font-mono text-[11px] text-ink-tertiary truncate">{u.user_key}</div>
-                        </>
-                      ) : (
-                        <div className="font-mono text-[13px] text-ink truncate group-hover:text-accent-ink transition-colors">{u.user_key}</div>
-                      )}
-                      <div className="text-[11px] text-ink-tertiary">{u.events_count.toLocaleString()} {typeScoped ? 'matching events · last match' : 'events · last'} {formatLastSeen(u.last_seen)}</div>
-                    </div>
-                  </div>
-                  <ChevronRight className="w-4 h-4 text-ink-tertiary group-hover:text-accent-ink transition-colors shrink-0" />
-                </Link>
-              ))}
+            <div className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl overflow-hidden">
+              <DataTable
+                caption="Users"
+                rows={list}
+                rowKey={u => u.user_key}
+                defaultSort={{ key: 'last', dir: 'desc' }}
+                // Only the person links; a hovered row would promise more.
+                rowHover={false}
+                search={{
+                  label: 'Search people',
+                  placeholder: 'Search by name or email',
+                  matches: (u, q) => `${nameOf(u.user_key) ?? ''} ${u.user_key}`.toLowerCase().includes(q.toLowerCase()),
+                }}
+                columns={[
+                  {
+                    key: 'person',
+                    header: 'Person',
+                    sortValue: u => (nameOf(u.user_key) ?? u.user_key).toLowerCase(),
+                    render: u => (
+                      <Link
+                        // Carry the hub scope through the click-through: landing on a
+                        // person aggregated across every hub would contradict the board
+                        // just left, with nothing saying the scope had been dropped.
+                        to={`/users/${encodeURIComponent(u.user_key)}${hubQs}`}
+                        className="group flex items-center gap-3 min-w-0 max-w-[320px]"
+                      >
+                        <div className="w-8 h-8 rounded-full bg-accent-fill text-accent-ink text-[11px] font-bold flex items-center justify-center shrink-0">
+                          {initialsOf(nameOf(u.user_key), u.user_key)}
+                        </div>
+                        <div className="min-w-0">
+                          {nameOf(u.user_key) ? (
+                            <>
+                              <div className="text-[13px] text-ink truncate group-hover:text-accent-ink transition-colors">{nameOf(u.user_key)}</div>
+                              <div className="font-mono text-[11px] text-ink-tertiary truncate">{u.user_key}</div>
+                            </>
+                          ) : (
+                            <div className="font-mono text-[13px] text-ink truncate group-hover:text-accent-ink transition-colors">{u.user_key}</div>
+                          )}
+                        </div>
+                        <ChevronRight className="w-4 h-4 text-ink-tertiary group-hover:text-accent-ink transition-colors shrink-0 ml-auto" />
+                      </Link>
+                    ),
+                  },
+                  {
+                    key: 'events',
+                    header: typeScoped ? 'Matching events' : 'Events',
+                    align: 'right',
+                    firstDir: 'desc',
+                    sortValue: u => u.events_count,
+                    render: u => <span className="font-mono tabular-nums text-ink">{u.events_count.toLocaleString()}</span>,
+                  },
+                  {
+                    key: 'last',
+                    header: typeScoped ? 'Last match' : 'Last active',
+                    align: 'right',
+                    firstDir: 'desc',
+                    sortValue: u => Date.parse(u.last_seen) || 0,
+                    render: u => <span className="text-[12px] text-ink-tertiary" title={utcTitle(u.last_seen)}>{formatLastSeen(u.last_seen)}</span>,
+                  },
+                ]}
+              />
             </div>
           )}
         </QueryState>

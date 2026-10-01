@@ -18,3 +18,5 @@ export { PageHeader } from './PageHeader';
 export { PeriodControl } from './PeriodControl';
 export { LocalTime } from './LocalTime';
 export { DateRange } from './DateRange';
+export { DataTable } from './DataTable';
+export type { DataColumn } from './DataTable';

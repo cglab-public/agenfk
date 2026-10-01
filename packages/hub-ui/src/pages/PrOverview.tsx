@@ -18,7 +18,7 @@ import { heatColor, SPARK_STROKE } from '../chartColours';
 import { parsePrQuery } from '../prSearch';
 import { buildMonthBands, dayHeaderInfo, contributionPcts, cellTooltip, placeTooltip } from '../prPerDay';
 import { buildVolumeSeries, type Granularity } from '../prVolumeGranularity';
-import { DateRange, LocalTime, Page, PageHeader, PeriodControl, QueryError, Skeleton, StatTile } from '../components/ui';
+import { DataTable, DateRange, LocalTime, Page, PageHeader, PeriodControl, QueryError, Skeleton, StatTile } from '../components/ui';
 import { browserTimezone, endOfLocalDay, startOfLocalDay } from '../dates';
 import { describeFilters } from '../filterSummary';
 import { usePeopleNames } from '../hooks/usePeopleNames';
@@ -969,37 +969,33 @@ export function PrOverviewPage() {
             <div className="px-5 py-4 border-b border-border-soft">
               <h2 className="text-sm font-semibold text-ink">By developer</h2>
             </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm min-w-[640px]">
-                <thead>
-                  <tr className="text-left font-mono text-[10px] uppercase tracking-[0.08em] text-ink-tertiary">
-                    <th className="px-5 py-2 font-semibold">Developer</th>
-                    <th className="px-3 py-2 font-semibold text-right">PRs</th>
-                    <th className="px-3 py-2 font-semibold w-[180px]">Size mix</th>
-                    <th className="px-3 py-2 font-semibold">XS · S · M · L · XL</th>
-                    <th className="px-5 py-2 font-semibold text-right">Trend</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border-soft">
-                  {d.byDeveloper.map(dev => (
-                    <tr key={dev.user_key} className="hover:bg-accent-fill/50 transition-colors">
-                      <td className="px-5 py-3">
-                        <div className="flex items-center gap-2.5">
-                          <div className="w-7 h-7 rounded-lg bg-accent-fill text-accent-ink text-[10px] font-bold flex items-center justify-center shrink-0">
-                            {initialsOf(nameOf(dev.user_key), dev.user_key)}
-                          </div>
-                          <PersonName name={nameOf(dev.user_key)} userKey={dev.user_key} className="max-w-[200px]" />
-                        </div>
-                      </td>
-                      <td className="px-3 py-3 text-right font-mono tabular-nums text-lg font-bold text-ink">{dev.prs}</td>
-                      <td className="px-3 py-3"><MixBar sizes={dev.sizes} total={dev.prs} /></td>
-                      <td className="px-3 py-3"><SizeCounts sizes={dev.sizes} /></td>
-                      <td className="px-5 py-3 text-right"><div className="inline-block"><Sparkline daily={dev.daily} axis={axis} /></div></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <DataTable
+              caption="By developer"
+              minWidth={720}
+              rows={d.byDeveloper}
+              rowKey={dev => dev.user_key}
+              defaultSort={{ key: 'prs', dir: 'desc' }}
+              columns={[
+                {
+                  key: 'dev',
+                  header: 'Developer',
+                  sortValue: dev => (nameOf(dev.user_key) ?? dev.user_key).toLowerCase(),
+                  render: dev => (
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-7 h-7 rounded-lg bg-accent-fill text-accent-ink text-[10px] font-bold flex items-center justify-center shrink-0">
+                        {initialsOf(nameOf(dev.user_key), dev.user_key)}
+                      </div>
+                      <PersonName name={nameOf(dev.user_key)} userKey={dev.user_key} className="max-w-[200px]" />
+                    </div>
+                  ),
+                },
+                { key: 'prs', header: 'PRs', align: 'right', firstDir: 'desc', sortValue: dev => dev.prs, render: dev => <span className="font-mono tabular-nums text-lg font-bold text-ink">{dev.prs}</span> },
+                { key: 'pts', header: 'Size points', align: 'right', firstDir: 'desc', sortValue: dev => dev.sizePoints, render: dev => <span className="font-mono tabular-nums text-ink-secondary">{dev.sizePoints.toLocaleString()}</span> },
+                { key: 'mix', header: 'Size mix', className: 'w-[180px]', render: dev => <MixBar sizes={dev.sizes} total={dev.prs} /> },
+                { key: 'counts', header: 'XS · S · M · L · XL', render: dev => <SizeCounts sizes={dev.sizes} /> },
+                { key: 'trend', header: 'Trend', align: 'right', render: dev => <div className="inline-block"><Sparkline daily={dev.daily} axis={axis} /></div> },
+              ]}
+            />
           </section>
 
           {/* By model */}
@@ -1008,31 +1004,29 @@ export function PrOverviewPage() {
               <h2 className="text-sm font-semibold text-ink">By model</h2>
               <p className="text-[11px] text-ink-tertiary mt-0.5">Which agent runtime opened the PRs.</p>
             </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm min-w-[560px]">
-                <thead>
-                  <tr className="text-left font-mono text-[10px] uppercase tracking-[0.08em] text-ink-tertiary">
-                    <th className="px-5 py-2 font-semibold">Model</th>
-                    <th className="px-3 py-2 font-semibold text-right">PRs</th>
-                    <th className="px-3 py-2 font-semibold w-[180px]">Size mix</th>
-                    <th className="px-5 py-2 font-semibold text-right">Share</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border-soft">
-                  {d.byModel.map(m => (
-                    <tr key={m.model} className="hover:bg-accent-fill/50 transition-colors">
-                      <td className="px-5 py-3">
-                        <div className="font-mono text-[12px] text-ink-secondary">{m.model}</div>
-                        {m.harnesses.length > 0 && <div className="text-[10px] text-ink-tertiary">via {m.harnesses.join(', ')}</div>}
-                      </td>
-                      <td className="px-3 py-3 text-right font-mono tabular-nums text-lg font-bold text-ink">{m.prs}</td>
-                      <td className="px-3 py-3"><MixBar sizes={m.sizes} total={m.prs} /></td>
-                      <td className="px-5 py-3 text-right font-mono tabular-nums text-ink-secondary">{Math.round((m.prs / d.totals.prs) * 100)}%</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <DataTable
+              caption="By model"
+              minWidth={560}
+              rows={d.byModel}
+              rowKey={m => m.model}
+              defaultSort={{ key: 'prs', dir: 'desc' }}
+              columns={[
+                {
+                  key: 'model',
+                  header: 'Model',
+                  sortValue: m => m.model.toLowerCase(),
+                  render: m => (
+                    <>
+                      <div className="font-mono text-[12px] text-ink-secondary">{m.model}</div>
+                      {m.harnesses.length > 0 && <div className="text-[10px] text-ink-tertiary">via {m.harnesses.join(', ')}</div>}
+                    </>
+                  ),
+                },
+                { key: 'prs', header: 'PRs', align: 'right', firstDir: 'desc', sortValue: m => m.prs, render: m => <span className="font-mono tabular-nums text-lg font-bold text-ink">{m.prs}</span> },
+                { key: 'mix', header: 'Size mix', className: 'w-[180px]', render: m => <MixBar sizes={m.sizes} total={m.prs} /> },
+                { key: 'share', header: 'Share', align: 'right', render: m => <span className="font-mono tabular-nums text-ink-secondary">{Math.round((m.prs / d.totals.prs) * 100)}%</span> },
+              ]}
+            />
           </section>
 
           {/* Per developer per day heatmap — calendar headers (month band +

@@ -180,19 +180,58 @@ export function queriesRouter(ctx: HubServerContext): Router {
     const f = readEventFilters(req);
     const limit = Math.min(Number.parseInt(singleValue(req, 'limit') ?? '100', 10) || 100, 500);
     const offset = Math.max(Number.parseInt(singleValue(req, 'offset') ?? '0', 10) || 0, 0);
+    // Keyset cursor "<occurred_at>|<event_id>": the next page starts strictly
+    // after the last event shown, so events arriving in between cannot push a
+    // shown one onto the next page, and ties on occurred_at cannot split
+    // differently from one request to the next (event_id breaks them).
+    const beforeRaw = singleValue(req, 'before');
+    let before: { at: string; id: string } | null = null;
+    if (beforeRaw != null) {
+      const bar = beforeRaw.indexOf('|');
+      const at = bar > 0 ? beforeRaw.slice(0, bar) : '';
+      const id = bar > 0 ? beforeRaw.slice(bar + 1) : '';
+      if (!at || !id || Number.isNaN(Date.parse(at.replace(' ', 'T')))) {
+        throw new BadQuery("Query parameter 'before' must be '<occurred_at>|<event_id>'.");
+      }
+      before = { at, id };
+    }
     const { where, params } = applyEventFilters(req.session!.orgId, f);
+    // The leading `occurred_at <= ?` is redundant with the OR but gives the
+    // planner a range to seek on idx_events_user_time instead of scanning
+    // down from the newest row.
+    const pageWhere = before ? [...where, 'occurred_at <= ?', '(occurred_at < ? OR (occurred_at = ? AND event_id < ?))'] : where;
+    const pageParams = before ? [...params, before.at, before.at, before.at, before.id] : params;
 
     const rows = await ctx.db.all<any>(
       `SELECT event_id, occurred_at, received_at, type, project_id, item_id, item_type, remote_url, item_title, external_id, user_key, reporting_version, payload
-       FROM events WHERE ${where.join(' AND ')}
-       ORDER BY occurred_at DESC
+       FROM events WHERE ${pageWhere.join(' AND ')}
+       ORDER BY occurred_at DESC, event_id DESC
        LIMIT ? OFFSET ?`,
-      [...params, limit, offset],
+      [...pageParams, limit, before ? 0 : offset],
     );
+
+    // How many events match in all, so a page can say what it is a page of.
+    // Only on the first page: a cursor page is a continuation and the client
+    // keeps the first page's count. Served by idx_events_user_time for the one
+    // caller (a person's page); an org-wide caller would scan more.
+    let total: number | undefined;
+    if (!before) {
+      const countRow = await ctx.db.get<{ n: number | string }>(
+        `SELECT COUNT(*) AS n FROM events WHERE ${where.join(' AND ')}`,
+        params,
+      );
+      // Postgres returns COUNT as a bigint string.
+      total = Number(countRow?.n ?? 0);
+    }
+    const last = rows[rows.length - 1];
+    const lastAt = last ? (last.occurred_at instanceof Date ? last.occurred_at.toISOString() : String(last.occurred_at)) : '';
 
     res.json({
       events: rows.map((r: any) => ({ ...r, payload: JSON.parse(r.payload) })),
-      limit, offset,
+      // offset is ignored under a cursor, so it is not echoed as if it applied.
+      limit, offset: before ? 0 : offset, total,
+      // Present while a full page came back: there may be more.
+      nextBefore: rows.length === limit && last ? `${lastAt}|${last.event_id}` : undefined,
     });
   }));
 

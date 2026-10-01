@@ -1,6 +1,6 @@
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { useEffect, useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { ArrowLeft, ChevronDown, GitBranch, Server } from 'lucide-react';
 import { api } from '../api';
 import { TimelineBar } from '../components/TimelineBar';
@@ -9,7 +9,7 @@ import { FacetMultiselect } from '../components/FacetMultiselect';
 import { FilterAccordion, FILTERS_OPEN, parseFiltersOpen } from '../components/FilterAccordion';
 import { describeFilters } from '../filterSummary';
 import { MetricsTilesRow, MetricsTotals } from '../components/MetricsTilesRow';
-import { Badge, ChipRow, DateRange, LocalTime, Page, PeriodControl, QueryState } from '../components/ui';
+import { Badge, Button, ChipRow, DateRange, LocalTime, Page, PeriodControl, QueryState } from '../components/ui';
 import { eventTone, itemTypeClass } from '../eventTone';
 import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
@@ -51,6 +51,16 @@ interface ProjectsResponse { projects: string[] }
 interface ItemTypesResponse { itemTypes: string[]; counts?: Record<string, number> }
 
 const KNOWN_ITEM_TYPES = ['EPIC', 'STORY', 'TASK', 'BUG'] as const;
+
+/** "Showing latest 200 of 1,059", or "Showing all 1,059" once everything is in. */
+function shownLine(loaded: number, total: number | undefined): string {
+  if (typeof total !== 'number') return `${loaded.toLocaleString()} shown`;
+  return loaded >= total ? `Showing all ${total.toLocaleString()}` : `Showing latest ${loaded.toLocaleString()} of ${total.toLocaleString()}`;
+}
+
+/** Events fetched per page of the list. */
+const EVENTS_PAGE = 200;
+interface TimelinePage { events: TimelineRow[]; total?: number; nextBefore?: string }
 
 
 
@@ -141,7 +151,6 @@ export function UserDetailPage() {
     if (customFromIso) p.set('from', customFromIso);
     else p.set('from', fromIsoForRange(new Date(), range));
     if (customToIso) p.set('to', customToIso);
-    p.set('limit', '200');
     return p;
   }, [decoded, eventTypeSel.set, projectSel.set, itemTypeSel.set, range, customFromIso, customToIso, hubCsv]);
 
@@ -173,13 +182,49 @@ export function UserDetailPage() {
     { events: 0, closed: 0, passes: 0, fails: 0, prsOpened: 0 },
   );
 
-  const tl = useQuery<{ events: TimelineRow[] }>({
+  // Pages of the newest events, newest first; Load more fetches the next page.
+  // The server says how many match in all, so the list never stops silently.
+  const tlPages = useInfiniteQuery<TimelinePage, Error, { pages: TimelinePage[] }, unknown[], string | null>({
     // hubCsv belongs in the KEY, not just the request: without it two hubs
     // share one cache entry and this page paints the other hub's events until a
     // background refetch lands — or forever, if that refetch errors.
     queryKey: ['timeline', userKey, [...eventTypeSel.set].sort().join(','), [...projectSel.set].sort().join(','), [...itemTypeSel.set].sort().join(','), range, customFromIso, customToIso, hubCsv ?? ''],
-    queryFn: async () => (await api.get(`/v1/timeline?${params}`)).data,
+    initialPageParam: null,
+    queryFn: async ({ pageParam }) => {
+      const p = new URLSearchParams(params);
+      p.set('limit', String(EVENTS_PAGE));
+      // A cursor from the last event shown, not an offset: events arriving in
+      // between cannot shift a shown one onto the next page.
+      if (pageParam) p.set('before', pageParam);
+      return (await api.get(`/v1/timeline?${p}`)).data;
+    },
+    getNextPageParam: (last, pages) => {
+      // A full last page always carries a cursor; stop once everything the
+      // first page counted is in, or Load more would fetch nothing.
+      const loaded = pages.reduce((n, pg) => n + pg.events.length, 0);
+      const total = pages[0].total;
+      if (typeof total === 'number' && loaded >= total) return undefined;
+      return last.nextBefore ?? undefined;
+    },
+    // The app refreshes every 30s. Once more than one page is loaded that would
+    // re-request every page in turn, so the list holds still until it is reset.
+    refetchInterval: query => ((query.state.data?.pages.length ?? 1) > 1 ? false : 30_000),
   });
+  const tl = {
+    data: tlPages.data
+      ? {
+        // De-duplicated by id as well, so an overlap can never show a row twice
+        // or reuse a React key.
+        events: [...new Map(tlPages.data.pages.flatMap(pg => pg.events).map(e => [e.event_id, e])).values()],
+        // The count comes with the first page only.
+        total: tlPages.data.pages[0].total,
+      }
+      : undefined,
+    isError: tlPages.isError,
+    error: tlPages.error,
+    isFetching: tlPages.isFetching,
+    refetch: tlPages.refetch,
+  };
 
   const types = mergeEventTypes(eventTypes.data?.types);
   const projectOptions = projects.data?.projects ?? [];
@@ -296,7 +341,7 @@ export function UserDetailPage() {
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-ink-secondary">Recent events</h2>
-          <span className="text-[11px] text-ink-tertiary" title={`All times in ${browserTimezone()}`}>{tl.data && `${tl.data.events.length} shown · `}times in {browserTimezone()}</span>
+          <span className="text-[11px] text-ink-tertiary" title={`All times in ${browserTimezone()}`}>{tl.data && tl.data.events.length > 0 && `${shownLine(tl.data.events.length, tl.data.total)} · `}times in {browserTimezone()}</span>
         </div>
         <QueryState
           query={tl}
@@ -343,6 +388,13 @@ export function UserDetailPage() {
             </div>
           )}
         </QueryState>
+        {tlPages.hasNextPage && (
+          <div className="flex justify-center">
+            <Button size="sm" onClick={() => { void tlPages.fetchNextPage(); }} disabled={tlPages.isFetchingNextPage}>
+              {tlPages.isFetchingNextPage ? 'Loading…' : 'Load more'}
+            </Button>
+          </div>
+        )}
       </section>
     </Page>
   );
