@@ -8201,7 +8201,7 @@ export interface LeavePlan {
   /** Why the card will be held instead of advancing, when it will be. */
   held?: string;
   /** Why verify will refuse before running anything: no verify command on the final step, or no tree to run in. */
-  refuses?: 'NO_VERIFY_COMMAND' | 'NO_TREE';
+  refuses?: 'NO_VERIFY_COMMAND' | 'COMMAND_NEEDS_APPROVAL' | 'NO_TREE';
   /** How a run may be smaller than the whole suite: 'affected-tests' (a related-tests command), 'reuse' (an unchanged tree's green). */
   narrowing: string[];
   /** One line for the agent. */
@@ -8239,7 +8239,9 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown 
   // NO_TREE refuses when something needs the capture: a check of THIS step, or the next step's BLOCKING
   // checks reading its entry baseline (the gate's entry-baseline hold). An entry only non-blocking checks
   // read lets the card move without one, and a verify command alone runs wherever it is spawned.
+  // 2a181a8d: an unapproved repository command is refused before the gate, so ahead of NO_TREE - and runs nothing.
   const refuses: LeavePlan['refuses'] = final && !toParent && !verifyCommand ? 'NO_VERIFY_COMMAND'
+    : final && !toParent && unapprovedFileVerify(project) ? 'COMMAND_NEEDS_APPROVAL'
     : !root && (cap.checks.length > 0 || (!!cap.entryBaseline && cap.nextNeedsPerTestEntry)) ? 'NO_TREE' : undefined;
   const role = (sorted[index] as any)?.role;
   const narrowing = runs === 'nothing' ? [] : [
@@ -8259,7 +8261,9 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown 
     || approvalFor({ key: 'verifyCommand', command: verifyCommand }, (project?.approvedFileCommands ?? []) as string[]).allowed)
     ? verifyCommand : undefined;
   const parts: string[] = [];
-  if (refuses === 'NO_VERIFY_COMMAND') parts.push(`Leaving ${step} needs the project's verify command, and none is set: verify will refuse until one is (\`agenfk update-project <id> --verify-command "<cmd>"\`).`);
+  // Not the command itself: the plan says it is refused, not what to run instead (34ee6b8a).
+  if (refuses === 'COMMAND_NEEDS_APPROVAL') parts.push(`Leaving ${step} runs the repository's own verify command, which nobody on this machine has approved: verify will refuse, and run nothing, until a person approves it on the board (the project's Settings in \`agenfk ui\`). An agent cannot approve it.`);
+  else if (refuses === 'NO_VERIFY_COMMAND') parts.push(`Leaving ${step} needs the project's verify command, and none is set: verify will refuse until one is (\`agenfk update-project <id> --verify-command "<cmd>"\`).`);
   else if (refuses === 'NO_TREE') parts.push(`Leaving ${step} runs the suite, but this card has no tree to run it in: verify will refuse until the project root is set or the card has a worktree.`);
   else if (runs === 'suite') {
     parts.push(`Leaving ${step} runs the project's suite${q(captureCommand)} for you${why}${entry}${thenCommand ? `, then the project's verify command${q(thenCommand)}, which gates the close` : ''}${closesOnCapture ? '; it is the verify command, so its green closes the card (after a partial run, a reused green, or a tree that moved, the whole command runs too)' : ''}.${dontPreRun}${smaller}`);
@@ -8305,7 +8309,7 @@ export interface LeavePrediction {
  */
 async function predictLeave(item: any, plan: LeavePlan, flow: { steps: any[] }, project: any): Promise<LeavePrediction> {
   // The step's checks run before the final gate's refusal: a capture is still spent on a verify that then refuses.
-  if (plan.refuses === 'NO_TREE' || (plan.refuses && plan.runs !== 'suite')) return { mode: 'none', advice: `On this tree it would run nothing: verify refuses (${plan.refuses}).` };
+  if (plan.refuses === 'NO_TREE' || plan.refuses === 'COMMAND_NEEDS_APPROVAL' || (plan.refuses && plan.runs !== 'suite')) return { mode: 'none', advice: `On this tree it would run nothing: verify refuses (${plan.refuses}).` };
   if (plan.runs === 'nothing') return { mode: 'none', advice: 'On this tree it would run nothing.' };
   const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
   const sorted = sortedFlowSteps(flow as any);
@@ -8665,6 +8669,19 @@ async function refuseOnChecks(res: any, item: any, gate: StepGate) {
   });
 }
 
+/**
+ * The refusal a close owes when it would run the repository's own
+ * verifyCommand (.agenfk/project.json) unapproved, or null (2a181a8d). One
+ * definition for the check before the gate and the one at the close, so the
+ * two cannot disagree about one command.
+ */
+function unapprovedFileVerify(project: any): { error: 'COMMAND_NEEDS_APPROVAL'; message: string; fingerprint?: string; command: string } | null {
+  const declared = readDeclaredSettings(project?.projectRoot).settings.verifyCommand;
+  if (typeof declared !== 'string') return null;
+  const verdict = approvalFor({ key: 'verifyCommand', command: declared }, ((project?.approvedFileCommands ?? []) as string[]));
+  return verdict.allowed ? null : { error: 'COMMAND_NEEDS_APPROVAL', message: verdict.reason ?? '', fingerprint: verdict.fingerprint, command: declared };
+}
+
 /** A response stand-in that writes a verify reply into a background run. */
 function runRecorder(run: ValidateRun) {
   return {
@@ -8678,6 +8695,9 @@ function runRecorder(run: ValidateRun) {
       // 5a8d22e6: a named cause and its fix reach whoever follows the run, not only a sync caller.
       if (typeof payload?.error === 'string') (run as any).error = payload.error;
       if (payload && 'fix' in payload) (run as any).fix = payload.fix;
+      // 2a181a8d: a COMMAND_NEEDS_APPROVAL refusal names what to approve - the background caller needs it too.
+      if (typeof payload?.fingerprint === 'string') (run as any).fingerprint = payload.fingerprint;
+      if (typeof payload?.command === 'string') (run as any).command = payload.command;
       // Keep the live full output when we have it; fall back to the preview.
       if (!run.output && payload?.output) run.output = payload.output;
       run.finishedAt = new Date();
@@ -8793,6 +8813,23 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const early = await checkStrays(res);
     if (early.refused) return;
     res = early.res;
+  }
+
+  /*
+   * 2a181a8d: a close that would run the repository's own unapproved
+   * verifyCommand is refused HERE, before the gate - otherwise its capture can
+   * run a stored test report's whole suite only for the final check to throw
+   * the run away. Not when the close is deferred to an open parent (verifyAt
+   * 'parent'): that close runs no command, so there is nothing to approve. The
+   * final check below still stands for a gate handed in from the background.
+   */
+  if (!opts?.gate) {
+    const upcoming = sorted[currentFlowStep.index + 1];
+    const finalMove = !upcoming || upcoming.name === Status.DONE || isBoundaryStep(upcoming);
+    if (finalMove) {
+      const refusal = unapprovedFileVerify(project);
+      if (refusal && !(await parentToDeferTo(item, activeFlow))) return res.status(400).json(refusal);
+    }
   }
 
   let gate = opts?.gate;
@@ -9057,33 +9094,6 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     : null;
   const projectVerify = fileVerify ?? projectVerifyCommand;
   /*
-   * Gated on the command that would ACTUALLY RUN, not on "the caller passed
-   * none": CGLAB-378 ignores a caller command on the final step, so a call
-   * carrying one still ends up running the file's command — and that is
-   * exactly the command that needs approval.
-   */
-  if (isFinalStep && fileVerify && projectVerify === fileVerify) {
-    const verdict = approvalFor(
-      { key: 'verifyCommand', command: fileVerify },
-      ((project as any)?.approvedFileCommands ?? []) as string[],
-    );
-    if (!verdict.allowed) {
-      return res.status(400).json({
-        error: 'COMMAND_NEEDS_APPROVAL',
-        message: verdict.reason,
-        fingerprint: verdict.fingerprint,
-        command: fileVerify,
-      });
-    }
-  }
-  const resolvedCommand = isFinalStep ? projectVerify : command;
-  const ignoredCommand = isFinalStep && command && command !== projectVerify ? command : undefined;
-  const commandNote = ignoredCommand ? ignoredCommandNote(ignoredCommand, projectVerify) : undefined;
-  // The async 202 is sent on the bare response: the run's outcome carries the
-  // note, and the CLI prints both.
-  const bareRes = res;
-  if (commandNote) res = withNote(res, commandNote);
-  /*
    * 281adef0: a flow with verifyAt 'parent' runs the project's suite once, at
    * the top-level card. A card whose parent is still OPEN closes here without
    * it - the parent's own final verify runs the suite over everything its
@@ -9094,6 +9104,24 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // The gate's decision stands: if it judged the suite as the card's own, the close runs it.
   // Asked again even when it deferred - the parent may have started its own verify since.
   const deferTo = isFinalStep && (!gate || gate.deferredTo) ? await parentToDeferTo(item, activeFlow) : null;
+  /*
+   * Gated on the command that would ACTUALLY RUN, not on "the caller passed
+   * none": CGLAB-378 ignores a caller command on the final step, so a call
+   * carrying one still ends up running the file's command — and that is
+   * exactly the command that needs approval. Not on a close deferred to its
+   * parent: that close runs no command (2a181a8d).
+   */
+  if (isFinalStep && !deferTo) {
+    const refusal = unapprovedFileVerify(project);
+    if (refusal) return res.status(400).json(refusal);
+  }
+  const resolvedCommand = isFinalStep ? projectVerify : command;
+  const ignoredCommand = isFinalStep && command && command !== projectVerify ? command : undefined;
+  const commandNote = ignoredCommand ? ignoredCommandNote(ignoredCommand, projectVerify) : undefined;
+  // The async 202 is sent on the bare response: the run's outcome carries the
+  // note, and the CLI prints both.
+  const bareRes = res;
+  if (commandNote) res = withNote(res, commandNote);
   if (deferTo) {
     // The re-entry from a background gate skipped the early stray check: ask here too.
     const strays = await checkStrays(res);
