@@ -200,6 +200,7 @@ export function AdminIdentities() {
             value={from}
             onChange={e => setFrom(e.target.value)}
             placeholder="from (old identity)"
+            aria-label="From (old identity)"
             className="flex-1 min-w-[12rem] rounded-lg border border-border-soft bg-surface px-3 py-2 text-sm text-ink font-mono"
           />
           <span className="text-ink-tertiary">→</span>
@@ -207,6 +208,7 @@ export function AdminIdentities() {
             value={to}
             onChange={e => setTo(e.target.value)}
             placeholder="to (kept identity)"
+            aria-label="To (kept identity)"
             className="flex-1 min-w-[12rem] rounded-lg border border-border-soft bg-surface px-3 py-2 text-sm text-ink font-mono"
           />
           <button

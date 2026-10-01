@@ -112,6 +112,7 @@ export function AdminRepoint() {
               onChange={e => setTargetUrl(e.target.value)}
               onBlur={() => setUrlTouched(true)}
               placeholder="https://hub.new-domain.com"
+              aria-label="New hub address"
               aria-invalid={!!urlError}
               aria-describedby={urlError ? 'address-change-url-error' : undefined}
               className="flex-1 rounded-lg border border-border-soft bg-surface px-3 py-2 text-sm text-ink"

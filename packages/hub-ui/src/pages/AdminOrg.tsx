@@ -108,13 +108,16 @@ function OrgIdentity() {
           <div className="flex-1 w-full">
             <input
               className={inputCls}
+              aria-label="New org id"
+              aria-invalid={inputError ? true : undefined}
+              aria-describedby={inputError ? 'org-rename-error' : undefined}
               placeholder="New org id (e.g. cglab)"
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               autoComplete="off"
               spellCheck={false}
             />
-            {inputError && <p className="mt-1 text-xs text-status-danger-text">{inputError}</p>}
+            {inputError && <p id="org-rename-error" className="mt-1 text-xs text-status-danger-text">{inputError}</p>}
           </div>
           <button type="submit" className={primaryBtnCls} disabled={!canSubmit}>
             Rename

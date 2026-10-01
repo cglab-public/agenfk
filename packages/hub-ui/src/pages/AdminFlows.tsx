@@ -287,6 +287,7 @@ export function AdminFlows() {
               <button
                 onClick={() => setExpandedFlowId(expanded ? null : f.id)}
                 data-testid={`admin-flow-row-${f.id}`}
+                aria-expanded={expanded}
                 className="w-full text-left p-4 hover:bg-accent-fill transition-colors flex items-center gap-3"
               >
                 <span className="text-ink-tertiary shrink-0">
@@ -1080,6 +1081,7 @@ function RegistryRepoPanel() {
       <div className="flex flex-col gap-2 sm:flex-row">
         <input
           data-testid="admin-registry-repo"
+          aria-label="Registry repository"
           className="flex-1 px-2.5 py-1.5 rounded-lg bg-canvas border border-border-soft text-xs text-ink"
           placeholder="owner/agenfk-flows"
           value={repo}
@@ -1088,6 +1090,7 @@ function RegistryRepoPanel() {
         {showToken && (
           <input
             data-testid="admin-registry-token"
+            aria-label="GitHub token"
             type="password"
             className="flex-1 px-2.5 py-1.5 rounded-lg bg-canvas border border-border-soft text-xs text-ink"
             placeholder={hasStoredToken ? 'token stored — blank keeps it' : 'GitHub token (contents:write)'}

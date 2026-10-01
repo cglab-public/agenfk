@@ -172,9 +172,10 @@ export function AdminAuth() {
       </section>
 
       <section className={cardCls}>
-        <h3 className="text-sm font-semibold text-ink">Email allowlist</h3>
+        <h3 id="auth-email-allowlist" className="text-sm font-semibold text-ink">Email allowlist</h3>
         <p className="mt-1 text-xs text-ink-tertiary">Comma-separated domains. Only addresses ending in these domains may sign in. Leave empty to accept any.</p>
         <input className={`${inputCls} mt-3 font-mono text-xs`}
+               aria-labelledby="auth-email-allowlist"
                placeholder='acme.com, *.subsidiary.com'
                defaultValue={c.emailAllowlist.join(', ')}
                onBlur={(e) => setDraft({ ...draft, emailAllowlist: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })} />
@@ -320,7 +321,7 @@ export function AdminKeys() {
           setIssued((r.data as any).token);
           setLabel('');
         }}>
-          <input className={`${inputCls} flex-1`} placeholder="Label, e.g. laptop-alice" value={label} onChange={(e) => setLabel(e.target.value)} />
+          <input className={`${inputCls} flex-1`} aria-label="Key label" placeholder="Label, e.g. laptop-alice" value={label} onChange={(e) => setLabel(e.target.value)} />
           <button type="submit" className={primaryBtnCls}>Issue key</button>
         </form>
         <InlineError error={create.error} className="mt-2" />

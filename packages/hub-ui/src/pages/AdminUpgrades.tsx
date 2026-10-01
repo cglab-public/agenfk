@@ -278,7 +278,7 @@ export function AdminUpgrades() {
         <div className="rounded-lg border border-border-soft bg-surface p-4 space-y-3">
           <div>
             <div className="flex items-center justify-between mb-1">
-              <label className="block text-[11px] font-medium text-ink-secondary">Target version</label>
+              <label htmlFor="upgrade-target-version" className="block text-[11px] font-medium text-ink-secondary">Target version</label>
               <button
                 type="button"
                 onClick={async () => {
@@ -298,6 +298,7 @@ export function AdminUpgrades() {
               </button>
             </div>
             <select
+              id="upgrade-target-version"
               value={targetVersion}
               onChange={(e) => setTargetVersion(e.target.value)}
               disabled={versionsLoading || availableVersions.length === 0}
@@ -343,6 +344,7 @@ export function AdminUpgrades() {
                   value={installationFilter}
                   onChange={(e) => setInstallationFilter(e.target.value)}
                   placeholder="Filter by user, email, or git name…"
+                  aria-label="Filter installations"
                   className="w-full px-2 py-1.5 text-sm border border-border-soft rounded-md bg-surface"
                 />
                 {selectedInstallationIds.size > 0 && (
@@ -415,6 +417,7 @@ export function AdminUpgrades() {
               <div className="w-full flex items-center justify-between px-3 py-2">
                 <button
                   onClick={() => toggleExpanded(d.directiveId)}
+                  aria-expanded={isOpen}
                   className="flex items-center gap-2 min-w-0 text-left flex-1"
                 >
                   {isOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
