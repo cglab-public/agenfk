@@ -98,4 +98,9 @@ describe('approving a command from the file', () => {
     expect(verdict.allowed).toBe(false);
     expect(verdict.reason).toContain('U+202E');
   });
+
+  it('counts a carriage return: it is not shown, and the shell keeps it in the word', () => {
+    // `npm run test\r # note` shows as `npm run test` and runs the script named `test\r`.
+    expect(hiddenCharacters('npm run test\r # note')).toEqual(['U+000D']);
+  });
 });

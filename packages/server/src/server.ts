@@ -49,6 +49,7 @@ export const VERIFY_TOKEN = (() => {
 })();
 import { exec, execFile, execSync, execFileSync, spawn } from "child_process";
 import { createServer } from "http";
+import * as net from "net";
 import { Server } from "socket.io";
 import { readGitStatus } from './gitStatus.js';
 import { buildHerdrSnapshot, realHerdrDeps } from './herdrRoutes.js';
@@ -2487,9 +2488,32 @@ function fromOwnBoardPage(req: any): boolean {
    * next request fall back to this IPv4 one, same Origin, same Host. The
    * desktop shell, the only place the approval is offered, loads 127.0.0.1.
    */
-  const bound = BIND_HOST.includes(':') ? `[${BIND_HOST}]` : BIND_HOST;
-  return page.hostname === bound && page.protocol === 'http:' && page.host === String(req.headers.host ?? '')
+  const bound = approvalPageHost(BIND_HOST);
+  return bound !== null && page.hostname === bound && page.protocol === 'http:' && page.host === String(req.headers.host ?? '')
     && Number(page.port || 80) === req.socket?.localPort;
+}
+
+/**
+ * The hostname a board page approving a command must have, given what the
+ * server binds - canonical and NUMERIC, or null for "none implicitly".
+ *
+ * - An IPv4 literal is itself; an IPv6 literal is canonicalised the way the
+ *   URL parser writes an Origin (`[::1]`), so an expanded form still matches.
+ * - A wildcard (0.0.0.0, ::) is reached by the desktop on 127.0.0.1.
+ * - A NAME - `localhost` above all - is null: it may resolve to an address
+ *   somebody else holds, which is the IPv6-to-IPv4 handoff this route closes.
+ *   Such a setup approves only from an origin set in AGENFK_BOARD_ORIGINS.
+ */
+export function approvalPageHost(bindHost: string): string | null {
+  const host = bindHost.trim();
+  const kind = net.isIP(host);
+  if (kind === 4) return host === '0.0.0.0' ? '127.0.0.1' : host;
+  if (kind === 6) {
+    let canonical: string;
+    try { canonical = new URL(`http://[${host}]`).hostname; } catch { return null; }
+    return canonical === '[::]' ? '127.0.0.1' : canonical;
+  }
+  return null;
 }
 
 app.post("/projects/:id/approve-file-command", limitExpensive, asyncHandler(async (req: any, res: any) => {

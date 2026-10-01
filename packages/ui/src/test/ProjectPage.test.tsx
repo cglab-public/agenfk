@@ -708,6 +708,18 @@ describe('a command the repository asks to run', () => {
     expect(value.textContent).toBe('npm run test⟨U+034F⟩');
   });
 
+  it('writes out a carriage return, which the shell keeps in the word before it', async () => {
+    const command = 'npm run test\r # note';
+    (api.projectSettings as never as ReturnType<typeof vi.fn>).mockResolvedValue({
+      rows: rows.map(r => (r.key === 'verifyCommand' ? { ...r, value: command } : r)), fileProblems: [],
+      fileCommands: [{ key: 'verifyCommand', command, fingerprint: 'abc', approved: false, hidden: ['U+000D'] }],
+    } as never);
+    open();
+    fireEvent.click(screen.getByTestId('project-tab-settings'));
+    const value = await waitFor(() => screen.getByTestId('setting-value-verifyCommand'));
+    expect(value.textContent).toBe('npm run test⟨U+000D⟩ # note');
+  });
+
   it('says why when the approval is refused', async () => {
     const approveFileCommand = vi.fn(async () => {
       throw Object.assign(new Error('Request failed'), { response: { data: { error: 'Approve it from the board this server serves.' } } });

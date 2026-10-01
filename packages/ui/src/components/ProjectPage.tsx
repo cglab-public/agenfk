@@ -143,11 +143,11 @@ const isOn = (value: string | null): boolean => value?.toLowerCase() === 'on';
  * A command with every character a screen cannot show faithfully written out
  * as `⟨U+XXXX⟩` - the same set core's hiddenCharacters names, so a bidi
  * override or a zero-width space is SEEN rather than obeyed (review of
- * 34ee6b8a). Tab and newline are left as they are.
+ * 34ee6b8a). Tab and newline are left as they are; a carriage return is not.
  */
 const revealHidden = (text: string): string =>
   text.replace(/[\p{Cf}\p{Cc}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu, ch =>
-    (ch === '\t' || ch === '\n' || ch === '\r') ? ch : `⟨U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}⟩`);
+    (ch === '\t' || ch === '\n') ? ch : `⟨U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}⟩`);
 
 /** The one row this page writes, unless the repository's file decided it. */
 const hasSwitch = (row: { key: string; origin: string }): boolean =>

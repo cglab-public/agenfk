@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
-import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
+import { app, initStorage, storage, VERIFY_TOKEN, approvalPageHost } from '../server';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -418,5 +418,28 @@ describe('approving a command declared by the repository', () => {
       .send({ command: 'echo by-hand-marker' });
     const after = await request(server).get(`/items/${itemId}/leave-plan`);
     expect(after.body.advice).toContain('by-hand-marker');
+  });
+});
+
+/*
+ * Which page may approve, by what the server binds (review of 34ee6b8a): a
+ * canonical numeric address, never a name - `localhost` may resolve to an
+ * address somebody else holds.
+ */
+describe('approvalPageHost', () => {
+  it('is the literal for an IPv4 or IPv6 bind, canonicalised as an Origin writes it', () => {
+    expect(approvalPageHost('127.0.0.1')).toBe('127.0.0.1');
+    expect(approvalPageHost('::1')).toBe('[::1]');
+    expect(approvalPageHost('0:0:0:0:0:0:0:1')).toBe('[::1]');
+  });
+
+  it('is 127.0.0.1 for a wildcard bind, where the desktop reaches it', () => {
+    expect(approvalPageHost('0.0.0.0')).toBe('127.0.0.1');
+    expect(approvalPageHost('::')).toBe('127.0.0.1');
+  });
+
+  it('is nothing for a name, localhost included', () => {
+    expect(approvalPageHost('localhost')).toBeNull();
+    expect(approvalPageHost('my-box.local')).toBeNull();
   });
 });

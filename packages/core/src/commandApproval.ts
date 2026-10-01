@@ -99,14 +99,17 @@ export function approvalFor(
  * while the shell runs a second command; a zero-width space makes `./verify`
  * name a different file (review of 34ee6b8a). A verify command never needs
  * one, so a command holding any is not offered for approval at all. Tab and
- * newline stay legal: they are shown as what they are.
+ * newline stay legal: they are shown as what they are. A carriage return is
+ * not: it is not shown, and the shell keeps it in the word before it.
  *
  * Returns each offending character as `U+XXXX`, in order, without repeats.
  */
 export function hiddenCharacters(command: string): string[] {
   const found = new Set<string>();
   for (const ch of command) {
-    if (ch === '\t' || ch === '\n' || ch === '\r') continue;
+    // Tab and newline only. Not CR: `npm run test\r # note` shows as `npm run test` while the
+    // shell names the script `test\r` - which the repository can supply (review of 34ee6b8a).
+    if (ch === '\t' || ch === '\n') continue;
     if (/[\p{Cf}\p{Cc}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u.test(ch)) {
       found.add(`U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, '0')}`);
     }
