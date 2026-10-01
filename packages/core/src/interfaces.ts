@@ -129,6 +129,9 @@ export interface LLMProvider extends AgEnFKPlugin {
 // in a local outbox and flushed to the hub via HTTPS. Pure type definitions —
 // no runtime imports — so this remains safe for browser consumers.
 
+/** Event types the hub still accepts but never stores or offers. */
+export type LegacyHubEventType = 'tokens.logged';
+
 export type HubEventType =
   | 'item.created'
   | 'item.updated'
@@ -151,7 +154,7 @@ export type HubEventType =
   | 'test.logged'
   // Legacy inbound-only event. Spokes no longer emit this, and Hub skips it
   // during ingest so token consumption is not stored.
-  | 'tokens.logged'
+  | LegacyHubEventType
   | 'session.started'
   | 'session.ended'
   // Fleet upgrade lifecycle (Story 2/3 of EPIC 541c12b3 — remote upgrade).

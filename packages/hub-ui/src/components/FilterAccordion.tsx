@@ -5,7 +5,7 @@
  * facet chips (Hub UI review). Three behaviours are load-bearing:
  *
  *  - **Collapsed does not mean inactive.** The filters keep applying while
- *    hidden, so one summary line is always shown ("30 days · item.closed · all
+ *    hidden, so one summary line is always shown ("30 days · Item closed · all
  *    projects"), built from the live selection so it cannot drift from it.
  *  - **Open/closed survives a reload and a shared link**: the caller keeps it
  *    in the URL (`filters=1`), like every other piece of filter state.

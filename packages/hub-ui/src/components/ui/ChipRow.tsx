@@ -1,5 +1,50 @@
-import { useId } from 'react';
+import { ReactNode, useId } from 'react';
 import { cn } from './cn';
+
+/** A filter's heading with its "Clear (n)" action. */
+export function FilterHeading({ id, label, count, onClear }: {
+  id: string;
+  label: string;
+  count: number;
+  onClear: () => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 flex-wrap">
+      <h3 id={id} className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{label}</h3>
+      {count > 0 && (
+        <button type="button" onClick={onClear} className="text-xs font-medium text-ink-tertiary hover:text-ink">
+          Clear ({count})
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** One toggle chip. `title` is the hover text (the raw value by default). */
+export function Chip({ on, onClick, title, mono = false, children }: {
+  on: boolean;
+  onClick: () => void;
+  title?: string;
+  mono?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      onClick={onClick}
+      title={title}
+      className={cn(
+        'px-2.5 py-1 rounded-full text-[11px] border transition-colors max-w-[260px] truncate',
+        mono && 'font-mono',
+        on ? 'text-accent-ink border-accent bg-accent-fill'
+          : 'bg-surface border-border-soft text-ink-secondary hover:border-accent hover:text-accent-ink',
+      )}
+    >
+      {children}
+    </button>
+  );
+}
 
 /** A labelled row of multi-select filter chips. */
 export function ChipRow({ label, options, selected, onToggle, onClear, optionLabel }: {
@@ -14,34 +59,13 @@ export function ChipRow({ label, options, selected, onToggle, onClear, optionLab
   if (options.length === 0) return null;
   return (
     <div>
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <h3 id={id} className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{label}</h3>
-        {selected.size > 0 && (
-          <button type="button" onClick={onClear} className="text-xs font-medium text-ink-tertiary hover:text-ink">
-            Clear ({selected.size})
-          </button>
-        )}
-      </div>
+      <FilterHeading id={id} label={label} count={selected.size} onClear={onClear} />
       <div role="group" aria-labelledby={id} className="mt-1.5 flex flex-wrap gap-1.5">
-        {options.map(t => {
-          const on = selected.has(t);
-          return (
-            <button
-              key={t}
-              type="button"
-              aria-pressed={on}
-              onClick={() => onToggle(t)}
-              title={t}
-              className={cn(
-                'px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors max-w-[260px] truncate',
-                on ? 'text-accent-ink border-accent bg-accent-fill'
-                  : 'bg-surface border-border-soft text-ink-secondary hover:border-accent hover:text-accent-ink',
-              )}
-            >
-              {optionLabel ? optionLabel(t) : t}
-            </button>
-          );
-        })}
+        {options.map(t => (
+          <Chip key={t} on={selected.has(t)} onClick={() => onToggle(t)} title={t} mono>
+            {optionLabel ? optionLabel(t) : t}
+          </Chip>
+        ))}
       </div>
     </div>
   );

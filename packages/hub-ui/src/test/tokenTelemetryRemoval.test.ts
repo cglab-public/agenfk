@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
+import { KNOWN_EVENT_TYPES, eventTypeLabel, groupEventTypes, mergeEventTypes } from '../eventTypes';
 
 function read(rel: string): string {
   return fs.readFileSync(path.resolve(__dirname, '..', rel), 'utf8');
@@ -8,7 +9,11 @@ function read(rel: string): string {
 
 describe('Hub UI token telemetry removal', () => {
   it('does not advertise tokens.logged in the event-type catalog', () => {
-    expect(read('eventTypes.ts')).not.toMatch(/tokens\.logged/);
+    // Behaviour, not source text: the filter never offers it and it has no label.
+    expect(mergeEventTypes([])).not.toContain('tokens.logged');
+    expect(KNOWN_EVENT_TYPES).not.toContain('tokens.logged' as never);
+    expect(eventTypeLabel('tokens.logged')).toBe('tokens.logged');
+    expect(groupEventTypes(['tokens.logged'])).toEqual([{ group: 'Other', types: ['tokens.logged'] }]);
   });
 
   it('does not render token usage metrics or timeline modes', () => {

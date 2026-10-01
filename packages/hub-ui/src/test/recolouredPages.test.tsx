@@ -135,7 +135,7 @@ describe('Org rollup', () => {
   it('headline tiles use plain words, not validate ✓ / ✗', async () => {
     mockApi();
     mount('/', '/', <OrgPage />);
-    for (const label of ['Items closed', 'Checks passed', 'Checks failed', 'PRs opened']) expect(await screen.findByText(label)).toBeInTheDocument();
+    for (const label of ['Items closed', 'Check pass rate', 'PRs opened']) expect(await screen.findByText(label)).toBeInTheDocument();
     expect(screen.queryByText(/Validate ✓|Validate ✗/)).toBeNull();
   });
 

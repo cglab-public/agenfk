@@ -1,5 +1,6 @@
 import type { RangeKey } from './components/timelineAxis';
 import { fmtDate, isDateInput } from './dates';
+import { eventTypeLabel } from './eventTypes';
 
 /**
  * The one line a collapsed filter bar shows, so hidden filters are never
@@ -23,7 +24,7 @@ export function describeFilters(f: {
   const day = (v: string) => (isDateInput(v) ? fmtDate(new Date(`${v}T00:00:00`)) : v);
   parts.push(f.from || f.to ? `${f.from ? day(f.from) : '…'} → ${f.to ? day(f.to) : '…'}` : RANGE_LABEL[f.range]);
   // An empty selection filters nothing: every event type applies.
-  if (f.types) parts.push(f.types.length === 0 ? 'all event types' : few(f.types, 'event types'));
+  if (f.types) parts.push(f.types.length === 0 ? 'all event types' : few(f.types.map(eventTypeLabel), 'event types'));
   if (f.projects) parts.push(f.projects.length === 0 ? 'all projects' : few(f.projects, 'projects', 1));
   if (f.itemTypes?.length) parts.push(few(f.itemTypes, 'item types'));
   if (f.childHubs) parts.push(`${f.childHubs} child hub${f.childHubs === 1 ? '' : 's'}`);

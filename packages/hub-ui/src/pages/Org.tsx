@@ -11,6 +11,7 @@ import { MetricsTilesRow, MetricsTotals } from '../components/MetricsTilesRow';
 import { ChipRow, Page, PageHeader, PeriodControl, QueryState } from '../components/ui';
 import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
+import { EventTypeChips } from '../components/EventTypeChips';
 import { fmtRelative } from '../dates';
 import { useToggleSet } from '../hooks/useToggleSet';
 import { useUrlFilters } from '../hooks/useUrlFilters';
@@ -219,7 +220,7 @@ export function OrgPage() {
             return n == null ? t : `${t} (${n})`;
           }}
         />
-        <ChipRow label="Event type" options={types} selected={eventTypeSel.set} onToggle={eventTypeSel.toggle} onClear={eventTypeSel.clear} />
+        <EventTypeChips options={types} selected={eventTypeSel.set} onToggle={eventTypeSel.toggle} onClear={eventTypeSel.clear} />
       </FilterAccordion>
 
       <TimelineBar

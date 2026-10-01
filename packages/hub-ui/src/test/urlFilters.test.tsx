@@ -77,7 +77,7 @@ describe('Org rollup keeps its filters in the URL', () => {
   it('writes the period and a chip into the URL', async () => {
     renderAt('/');
     fireEvent.click(await screen.findByRole('button', { name: '7d' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'item.created' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Item created' }));
     await waitFor(() => expect(current.get('range')).toBe('7d'));
     expect(current.get('types')?.split(',').sort()).toEqual(['item.closed', 'item.created']);
   });
@@ -85,8 +85,8 @@ describe('Org rollup keeps its filters in the URL', () => {
   it('opens a shared link as the sender saw it', async () => {
     renderAt('/?range=90d&types=item.created&projects=acme%2Fapi');
     expect(await screen.findByRole('button', { name: '90d', pressed: true })).toBeInTheDocument();
-    expect(pressed('item.created')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'item.closed', pressed: false })).toBeInTheDocument();
+    expect(pressed('Item created')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Item closed', pressed: false })).toBeInTheDocument();
     await waitFor(() => expect(lastCall('/v1/metrics').get('projects')).toBe('acme/api'));
   });
 
@@ -114,13 +114,13 @@ describe('Org rollup keeps its filters in the URL', () => {
   it('defaults a first visit to closed items over 30 days', async () => {
     renderAt('/');
     expect(await screen.findByRole('button', { name: '30d', pressed: true })).toBeInTheDocument();
-    expect(pressed('item.closed')).toBeInTheDocument();
+    expect(pressed('Item closed')).toBeInTheDocument();
   });
 
   it('keeps an explicitly cleared event-type filter cleared in the link', async () => {
     renderAt('/?types=');
-    await screen.findByRole('button', { name: 'item.closed' });
-    expect(screen.getByRole('button', { name: 'item.closed', pressed: false })).toBeInTheDocument();
+    await screen.findByRole('button', { name: 'Item closed' });
+    expect(screen.getByRole('button', { name: 'Item closed', pressed: false })).toBeInTheDocument();
   });
 
   it('remembers the choice for the next bare visit', async () => {
@@ -144,10 +144,10 @@ describe('Back restores the earlier view without rewriting it', () => {
   for (const [page, base] of [['Org', '/'], ['the user page', '/users/alice%40acme.com']] as const) {
     it(page, async () => {
       renderAt([`${base}?types=item.closed`, `${base}?types=item.closed%2Citem.created`]);
-      await screen.findByRole('button', { name: 'item.created', pressed: true });
+      await screen.findByRole('button', { name: 'Item created', pressed: true });
       seen = [];
       act(() => goBack());
-      await screen.findByRole('button', { name: 'item.created', pressed: false });
+      await screen.findByRole('button', { name: 'Item created', pressed: false });
       // The popped entry must never be overwritten with the view just left.
       expect(seen.some(q => new URLSearchParams(q).get('types')?.includes('item.created'))).toBe(false);
       expect(current.get('types')).toBe('item.closed');

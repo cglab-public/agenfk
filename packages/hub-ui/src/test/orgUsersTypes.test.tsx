@@ -58,7 +58,7 @@ describe('Org Users panel follows the Event type filter', () => {
 
   it('re-asks when the selection changes', async () => {
     renderAt('/?types=item.closed&filters=1');
-    fireEvent.click(await screen.findByRole('button', { name: 'item.created' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Item created' }));
     await waitFor(() => expect(lastCall('/v1/users').get('types')?.split(',').sort()).toEqual(['item.closed', 'item.created']));
   });
 

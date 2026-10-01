@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { eventTypeLabel } from '../eventTypes';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api';
 import { QueryState } from './ui';
@@ -341,7 +342,7 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
                       <li key={k} className="flex items-center justify-between gap-3">
                         <span className="flex items-center gap-1.5 min-w-0">
                           {stacked && <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ background: colours[k] }} />}
-                          <span className="font-mono text-ink-secondary truncate">{k}</span>
+                          <span className="text-ink-secondary truncate" title={k}>{eventTypeLabel(k)}</span>
                         </span>
                         <span className="font-semibold text-ink">{v}</span>
                       </li>
@@ -359,7 +360,7 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
           {stackedTypes.map(tp => (
             <span key={tp} className="flex items-center gap-1.5">
               <span className="inline-block w-2 h-2 rounded-sm" style={{ background: colours[tp] }} />
-              <span className="font-mono">{tp}</span>
+              <span title={tp}>{eventTypeLabel(tp)}</span>
             </span>
           ))}
         </footer>

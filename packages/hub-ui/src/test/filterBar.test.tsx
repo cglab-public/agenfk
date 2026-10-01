@@ -75,7 +75,7 @@ const renderAt = (entry: string) => {
 
 describe('describeFilters', () => {
   it('reads the defaults as one line', () => {
-    expect(describeFilters({ range: '30d', types: ['item.closed'], projects: [] })).toBe('30 days · item.closed · all projects');
+    expect(describeFilters({ range: '30d', types: ['item.closed'], projects: [] })).toBe('30 days · Item closed · all projects');
   });
 
   it('names a few values and counts many', () => {
@@ -96,7 +96,7 @@ describe('describeFilters', () => {
     // Local days, written the way every other date in the hub is (story 12753604).
     const day = (v: string) => fmtDate(new Date(`${v}T00:00:00`));
     expect(describeFilters({ range: '30d', from: '2026-09-01', to: '2026-09-10', types: ['item.closed'], projects: [] }))
-      .toBe(`${day('2026-09-01')} → ${day('2026-09-10')} · item.closed · all projects`);
+      .toBe(`${day('2026-09-01')} → ${day('2026-09-10')} · Item closed · all projects`);
     expect(describeFilters({ range: '30d', from: '2026-09-01', types: [] }))
       .toBe(`${day('2026-09-01')} → … · all event types`);
     // Not something a link can break: an invalid date is echoed, not "Invalid Date".
@@ -120,35 +120,35 @@ describe('Org rollup opens on data', () => {
     renderAt('/');
     const toggle = await screen.findByRole('button', { name: 'Edit filters' });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.getByText('30 days · item.closed · all projects')).toBeInTheDocument();
+    expect(screen.getByText('30 days · Item closed · all projects')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '30d', pressed: true })).toBeInTheDocument();
     // The chips are behind the fold, not merely scrolled away.
-    expect(screen.queryByRole('button', { name: 'item.created' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Item created' })).not.toBeInTheDocument();
   });
 
   it('opens on request, and remembers that in the link', async () => {
     renderAt('/');
     fireEvent.click(await screen.findByRole('button', { name: 'Edit filters' }));
-    expect(await screen.findByRole('button', { name: 'item.created' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Item created' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Hide filters' })).toHaveAttribute('aria-expanded', 'true');
     await waitFor(() => expect(current.get('filters')).toBe('1'));
   });
 
   it('opens a link that says so already open', async () => {
     renderAt('/?filters=1');
-    expect(await screen.findByRole('button', { name: 'item.created' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Item created' })).toBeInTheDocument();
   });
 
   it('summarises what the link applies', async () => {
     renderAt('/?range=7d&types=item.closed%2Citem.created&projects=acme%2Fapi');
-    expect(await screen.findByText('7 days · item.closed, item.created · acme/api')).toBeInTheDocument();
+    expect(await screen.findByText('7 days · Item closed, Item created · acme/api')).toBeInTheDocument();
   });
 });
 
 describe('the summary stays readable', () => {
   it('names a project by its short name, as the facet does', async () => {
     renderAt('/?projects=https%3A%2F%2Fgithub.com%2Facme%2Fsome-long-repo.git&itemTypes=TASK');
-    expect(await screen.findByText('30 days · item.closed · acme/some-long-repo · TASK')).toBeInTheDocument();
+    expect(await screen.findByText('30 days · Item closed · acme/some-long-repo · TASK')).toBeInTheDocument();
   });
 });
 
@@ -156,7 +156,7 @@ describe('user page opens on data', () => {
   it('opens on request, and remembers that in the link', async () => {
     renderAt('/users/alice%40acme.com?childHubId=h1');
     fireEvent.click(await screen.findByRole('button', { name: 'Edit filters' }));
-    expect(await screen.findByRole('button', { name: 'item.created' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Item created' })).toBeInTheDocument();
     await waitFor(() => expect(current.get('filters')).toBe('1'));
     expect(current.get('childHubId')).toBe('h1');
   });
@@ -165,15 +165,15 @@ describe('user page opens on data', () => {
     renderAt('/users/alice%40acme.com?from=2026-09-01&to=2026-09-10');
     // In the hub's one date format (story 12753604).
     const day = (v: string) => fmtDate(new Date(`${v}T00:00:00`));
-    expect(await screen.findByText(`${day('2026-09-01')} → ${day('2026-09-10')} · item.closed · all projects`)).toBeInTheDocument();
+    expect(await screen.findByText(`${day('2026-09-01')} → ${day('2026-09-10')} · Item closed · all projects`)).toBeInTheDocument();
   });
 
   it('starts collapsed, with the summary and the period in view', async () => {
     renderAt('/users/alice%40acme.com');
     expect(await screen.findByRole('button', { name: 'Edit filters' })).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.getByText('30 days · item.closed · all projects')).toBeInTheDocument();
+    expect(screen.getByText('30 days · Item closed · all projects')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '30d', pressed: true })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'item.created' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Item created' })).not.toBeInTheDocument();
   });
 });
 

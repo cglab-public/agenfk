@@ -869,7 +869,11 @@ export function PrOverviewPage() {
               delta={prsDelta}
               hint={prsDelta == null ? '— no prior period' : undefined}
             />
-            <StatTile label="Weighted size" value={d.totals.sizePoints} hint="size points" />
+            <StatTile
+              label="Weighted size"
+              value={d.totals.sizePoints}
+              hint={<>size points · <a href="#size-derivation" className="underline decoration-dotted hover:text-ink">how size is derived</a></>}
+            />
             <StatTile
               label="Active developers"
               value={d.totals.developers}
@@ -1088,8 +1092,8 @@ export function PrOverviewPage() {
                           : <span title={dev.user_key} className="font-mono text-[11px] text-ink-tertiary truncate">{dev.user_key}</span>}
                         {/* stacked vertically so long dev emails keep the width */}
                         <span className="ml-auto flex flex-col items-end gap-0.5 shrink-0">
-                          <span className="font-mono text-[9px] font-bold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-accent-ink bg-accent-fill border border-accent">{pct.prPct}% PRs</span>
-                          <span className="font-mono text-[9px] font-bold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-ink-secondary bg-canvas border border-border-soft">{pct.ptsPct}% pts</span>
+                          <span title={`${pct.prPct}% share of all PRs in the period`} className="text-[11px] font-semibold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-accent-ink bg-accent-fill border border-accent">{pct.prPct}% of PRs</span>
+                          <span title={`${pct.ptsPct}% share of all size points in the period`} className="text-[11px] font-semibold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-ink-secondary bg-canvas border border-border-soft">{pct.ptsPct}% of size</span>
                         </span>
                       </div>
                       {axis.map((day, i) => {
@@ -1143,7 +1147,7 @@ export function PrOverviewPage() {
 
           {/* Size model explainer */}
           <section className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5">
-            <h2 className="text-sm font-semibold text-ink mb-3">How size is derived</h2>
+            <h2 id="size-derivation" className="text-sm font-semibold text-ink mb-3 scroll-mt-4">How size is derived</h2>
             <div className="font-mono text-[13px] rounded-lg bg-canvas border border-border-soft px-4 py-3 text-ink-secondary">
               <span className="text-ink-tertiary">// count leaves — the unit of work in each branch</span><br />
               <span className="text-accent-ink">size_points</span> = leafStory·<b>4</b> + task·<b>2</b> + bug·<b>1</b>

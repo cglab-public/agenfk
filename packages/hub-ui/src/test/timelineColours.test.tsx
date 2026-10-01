@@ -37,7 +37,8 @@ function legend(c: HTMLElement): Record<string, string> {
   const out: Record<string, string> = {};
   for (const item of Array.from(c.querySelectorAll('footer > span'))) {
     const sw = item.querySelector('span') as HTMLElement;
-    out[item.textContent!.trim()] = sw.style.background;
+    // Keyed by the raw type id, which the label carries as its title.
+    out[(item.querySelector('[title]') as HTMLElement).title] = sw.style.background;
   }
   return out;
 }

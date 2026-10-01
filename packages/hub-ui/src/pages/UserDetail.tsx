@@ -13,6 +13,7 @@ import { Badge, ChipRow, DateRange, LocalTime, Page, PeriodControl, QueryState }
 import { eventTone, itemTypeClass } from '../eventTone';
 import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
+import { EventTypeChips } from '../components/EventTypeChips';
 import { browserTimezone, endOfLocalDay, startOfLocalDay } from '../dates';
 import { useToggleSet } from '../hooks/useToggleSet';
 import { useUrlFilters } from '../hooks/useUrlFilters';
@@ -276,7 +277,7 @@ export function UserDetailPage() {
             return n == null ? t : `${t} (${n})`;
           }}
         />
-        <ChipRow label="Event type" options={types} selected={eventTypeSel.set} onToggle={eventTypeSel.toggle} onClear={eventTypeSel.clear} />
+        <EventTypeChips options={types} selected={eventTypeSel.set} onToggle={eventTypeSel.toggle} onClear={eventTypeSel.clear} />
       </FilterAccordion>
 
       <TimelineBar

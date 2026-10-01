@@ -8,7 +8,7 @@ export { Field, Input, Select, controlClass } from './Field';
 export { cn } from './cn';
 export { Toggle } from './Toggle';
 export { StatTile } from './StatTile';
-export { ChipRow } from './ChipRow';
+export { Chip, ChipRow, FilterHeading } from './ChipRow';
 export { RowMenu } from './RowMenu';
 export type { RowMenuItem } from './RowMenu';
 export { CopyButton } from './CopyButton';
