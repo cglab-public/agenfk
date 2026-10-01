@@ -109,10 +109,11 @@ describe('PR Overview: Weighted size', () => {
     expect(within(tile).getByTestId('stat-delta')).toHaveTextContent(/▲\s*50%/);
   });
 
-  it('shows none without a previous period', async () => {
+  it('shows none without a previous period, and says so as Total PRs does', async () => {
     await mountPrs(null);
     const tile = screen.getByText('Weighted size').closest('[data-stat-tile]') as HTMLElement;
     expect(within(tile).queryByTestId('stat-delta')).toBeNull();
+    expect(tile).toHaveTextContent('— no prior period');
   });
 });
 

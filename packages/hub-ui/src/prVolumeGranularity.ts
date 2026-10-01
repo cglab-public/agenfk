@@ -38,10 +38,12 @@ export interface VolumeStats {
   average: number; // total / bucket count — ALL buckets in the range, incl. empty ones
   max: number;     // highest bucket total (0 when there are no PRs)
   maxLabel: string | null; // label of the max bucket (earliest on ties); null when total is 0
-  /** The weekday with the most PRs over the range (Monday first on ties) and
-   *  its share of them; null when there are no PRs. Counted per calendar day,
-   *  so it is the same whatever the granularity. */
-  busiestWeekday: { day: string; prs: number; share: number } | null;
+  /** The weekday with the most PRs per occurrence in the range (Monday first
+   *  on ties): its PRs, PRs per occurrence and share of all PRs; null when
+   *  there are none. Per occurrence because a 31-day range has five of two
+   *  weekdays and four of the rest, and raw totals hand those two a head
+   *  start. Counted per calendar day, so the same whatever the granularity. */
+  busiestWeekday: { day: string; prs: number; perDay: number; share: number } | null;
   /** Share of the range's PRs sized L or XL; null when there are none. */
   largeShare: number | null;
 }
@@ -172,12 +174,15 @@ export function buildVolumeSeries(
 
   const total = buckets.reduce((s, b) => s + b.total, 0);
   const perWeekday = WEEKDAYS.map(() => 0);
+  const occurrences = WEEKDAYS.map(() => 0);
+  for (const day of axis) occurrences[weekdayOf(day)] += 1;
   let large = 0;
   for (const p of points.values()) {
     perWeekday[weekdayOf(p.day)] += p.total;
     large += (p.sizes.l ?? 0) + (p.sizes.xl ?? 0);
   }
-  const top = perWeekday.reduce((best, n, i) => (n > perWeekday[best] ? i : best), 0);
+  const rate = (i: number) => (occurrences[i] ? perWeekday[i] / occurrences[i] : 0);
+  const top = perWeekday.reduce((best, _n, i) => (rate(i) > rate(best) ? i : best), 0);
   let max = 0;
   let maxLabel: string | null = null;
   for (const b of buckets) {
@@ -192,7 +197,7 @@ export function buildVolumeSeries(
       average: buckets.length ? total / buckets.length : 0,
       max,
       maxLabel,
-      busiestWeekday: total ? { day: WEEKDAYS[top], prs: perWeekday[top], share: perWeekday[top] / total } : null,
+      busiestWeekday: total ? { day: WEEKDAYS[top], prs: perWeekday[top], perDay: rate(top), share: perWeekday[top] / total } : null,
       largeShare: total ? large / total : null,
     },
   };

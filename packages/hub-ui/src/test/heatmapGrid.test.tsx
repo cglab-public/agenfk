@@ -176,3 +176,89 @@ describe('the tooltip', () => {
     await waitFor(() => expect(screen.queryByText(cellTooltip('bob@acme.com', '2026-08-12', 0))).toBeNull());
   });
 });
+
+// Epic review 115b658d.
+describe('the focus tooltip, after review', () => {
+  it('closes on Escape and keeps the focus where it was', async () => {
+    const grid = await mount();
+    stops(grid)[0].focus();
+    const text = cellTooltip('alice@acme.com', '2026-08-12', 2);
+    expect(await screen.findByText(text)).toBeInTheDocument();
+    const cell = focused();
+    press('Escape');
+    expect(screen.queryByText(text)).toBeNull();
+    expect(focused()).toBe(cell);
+  });
+
+  it('is measured after focus has scrolled the cell into view', async () => {
+    const grid = await mount();
+    let left = 100;
+    const spy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(
+      () => ({ left, top: 300, width: 20, height: 20, right: left + 20, bottom: 320, x: left, y: 300, toJSON: () => ({}) }) as DOMRect,
+    );
+    try {
+      stops(grid)[0].focus();
+      // The browser scrolls the focused cell into view after the focus event.
+      left = 500;
+      const tip = await screen.findByText(cellTooltip('alice@acme.com', '2026-08-12', 2));
+      expect(parseFloat(tip.style.left)).toBe(510);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('closes when the heatmap scrolls under it', async () => {
+    const grid = await mount();
+    stops(grid)[0].focus();
+    const text = cellTooltip('alice@acme.com', '2026-08-12', 2);
+    expect(await screen.findByText(text)).toBeInTheDocument();
+    fireEvent.scroll(grid.closest('.overflow-x-auto')!);
+    expect(screen.queryByText(text)).toBeNull();
+  });
+
+  it('does not open when the focus came from a click, as it does after the PR list closes', async () => {
+    const grid = await mount();
+    const target = stops(grid)[0];
+    fireEvent.pointerDown(target);
+    target.focus();
+    await new Promise(r => setTimeout(r, 50));
+    expect(screen.queryByText(cellTooltip('alice@acme.com', '2026-08-12', 2))).toBeNull();
+  });
+});
+
+describe('keys the grid owns', () => {
+  it('keeps Space on an empty day from scrolling the page', async () => {
+    const grid = await mount();
+    stops(grid)[0].focus();
+    press('ArrowRight');
+    expect(fireEvent.keyDown(focused(), { key: ' ' })).toBe(false);
+  });
+
+  it('leaves Alt+Arrow to the browser', async () => {
+    const grid = await mount();
+    stops(grid)[0].focus();
+    const cell = focused();
+    expect(fireEvent.keyDown(cell, { key: 'ArrowLeft', altKey: true })).toBe(true);
+    expect(focused()).toBe(cell);
+  });
+});
+
+describe('a new answer', () => {
+  it('puts the tab stop back on its first day with PRs', async () => {
+    const grid = await mount();
+    stops(grid)[0].focus();
+    press('End');
+    // The stop is on alice's row (row 0), last day.
+    expect(nameOf(stops(grid)[0])).toMatch(/by alice@acme\.com/);
+    // The next answer lists bob first: row 0 is now someone else.
+    const reordered = { ...overview, byDeveloper: [...overview.byDeveloper].reverse() };
+    get.mockImplementation(async (url: string) => {
+      if (url.startsWith('/v1/projects')) return { data: { projects: ['acme/api'] } };
+      if (url.startsWith('/v1/child-hubs')) return { data: { childHubs: [], hasLocal: true } };
+      if (url.startsWith('/v1/people')) return { data: { names: {} } };
+      return { data: reordered };
+    });
+    fireEvent.click(screen.getByRole('button', { name: '90d' }));
+    await waitFor(() => expect(nameOf(stops(grid)[0])).toBe('1 PR by bob@acme.com on 2026-08-13 — open list'));
+  });
+});

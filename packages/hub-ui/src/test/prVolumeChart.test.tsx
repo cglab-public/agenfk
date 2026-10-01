@@ -161,3 +161,56 @@ describe('the stats under the chart', () => {
     expect(within(stats).getByText('L / XL share').closest('[data-stat-tile]')).toHaveTextContent('—');
   });
 });
+
+// Epic review 115b658d.
+describe('the tooltip is not clipped by the chart\'s scroll box', () => {
+  it('renders outside the scrolling area, at the page root', () => {
+    mount();
+    fireEvent.mouseEnter(screen.getAllByRole('option')[1]);
+    const tip = tooltip()!;
+    const scroller = chart().closest('.overflow-x-auto')!;
+    expect(scroller.contains(tip)).toBe(false);
+    expect(tip.parentElement).toBe(document.body);
+  });
+});
+
+describe('keyboard state', () => {
+  it('survives the pointer leaving while the chart has focus', () => {
+    mount();
+    const lb = chart();
+    fireEvent.focus(lb);
+    fireEvent.keyDown(lb, { key: 'Home' });
+    fireEvent.mouseLeave(lb);
+    expect(document.getElementById(lb.getAttribute('aria-activedescendant')!)).toHaveAttribute('aria-label', expect.stringMatching(/^2026-09-01/));
+    expect(tooltip()).not.toBeNull();
+  });
+
+  it('points at a bar that exists when the series shrinks under it', () => {
+    const { rerender } = mount();
+    const lb = chart();
+    fireEvent.focus(lb);
+    fireEvent.keyDown(lb, { key: 'End' });
+    rerender(<PrVolumeChart series={buildVolumeSeries(DAYS, AXIS.slice(0, 2), 'daily')} unit="day" />);
+    const ref = chart().getAttribute('aria-activedescendant');
+    if (ref) expect(document.getElementById(ref)).not.toBeNull();
+    fireEvent.keyDown(chart(), { key: 'ArrowLeft' });
+    expect(document.getElementById(chart().getAttribute('aria-activedescendant')!)).toHaveAttribute('aria-label', expect.stringMatching(/^2026-09-0[12]/));
+  });
+
+  it('leaves modified arrows to the browser (Alt+Left is Back)', () => {
+    mount();
+    const lb = chart();
+    fireEvent.focus(lb);
+    const before = lb.getAttribute('aria-activedescendant');
+    expect(fireEvent.keyDown(lb, { key: 'ArrowLeft', altKey: true })).toBe(true);
+    expect(lb.getAttribute('aria-activedescendant')).toBe(before);
+  });
+
+  it('does not swallow Escape when no tooltip is open', () => {
+    mount();
+    const lb = chart();
+    fireEvent.focus(lb);
+    expect(fireEvent.keyDown(lb, { key: 'Escape' })).toBe(false);
+    expect(fireEvent.keyDown(lb, { key: 'Escape' })).toBe(true);
+  });
+});

@@ -96,7 +96,37 @@ describe('the timeline draws in the box\'s own pixels', () => {
       return el!;
     });
     const centre = Number(bar.getAttribute('x')) + Number(bar.getAttribute('width')) / 2;
-    const left = parseFloat(tip.style.left.replace(/^calc\(/, ''));
-    expect(left).toBeCloseTo((centre / 500) * 100, 1);
+    // In pixels from the wrapper's padding edge: its 12px padding plus the
+    // bar's own x. A percentage resolves against the padding box, which put
+    // the tooltip up to 12px off at either end (epic review 115b658d).
+    expect(tip.style.left).toBe(`${12 + centre}px`);
+  });
+
+  it('keeps the last width while its box is hidden and reports nothing', async () => {
+    const { container } = await mount();
+    resize(500);
+    resize(0);
+    expect(svgOf(container).getAttribute('viewBox')).toBe('0 0 500 220');
+  });
+
+  it('fits every hour of a week in a phone-wide box', async () => {
+    const { container, getByRole } = await mount();
+    resize(300);
+    fireEvent.click(getByRole('button', { name: 'hour' }));
+    await waitFor(() => expect(container.querySelectorAll('svg[role="img"] rect[fill="transparent"]').length).toBeGreaterThan(100));
+    for (const r of Array.from(container.querySelectorAll('svg[role="img"] rect'))) {
+      expect(Number(r.getAttribute('x')) + Number(r.getAttribute('width'))).toBeLessThanOrEqual(300);
+    }
+  });
+
+  it('spaces the x labels so they cannot overlap in a narrow box', async () => {
+    get.mockResolvedValue({ data: { bucket: 'day', buckets: [] } });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { container } = render(<QueryClientProvider client={qc}><TimelineBar range="90d" /></QueryClientProvider>);
+    await waitFor(() => expect(container.querySelector('svg[role="img"]')).not.toBeNull());
+    resize(360);
+    const xs = Array.from(container.querySelectorAll('svg[role="img"] text.font-mono')).map(t => Number(t.getAttribute('x')));
+    expect(xs.length).toBeGreaterThan(1);
+    for (let i = 1; i < xs.length; i++) expect(xs[i] - xs[i - 1]).toBeGreaterThanOrEqual(40);
   });
 });

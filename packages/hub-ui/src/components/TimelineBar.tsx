@@ -144,11 +144,20 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
   const m = { top: 12, right: 16, bottom: 32, left: 40 };
   const innerW = width - m.left - m.right;
   const innerH = height - m.top - m.bottom;
-  const barGap = 1;
-  const barW = Math.max(1, (innerW - barGap * (axis.length - 1)) / Math.max(axis.length, 1));
+  // Bars share the plot width exactly, however narrow: below 3px a slot they
+  // lose their gap, and may be thinner than a pixel, rather than run off the
+  // right edge (a week of hours in a phone-wide box).
+  const slots = Math.max(axis.length, 1);
+  const barGap = innerW / slots >= 3 ? 1 : 0;
+  const barW = (innerW - barGap * (slots - 1)) / slots;
 
-  // Show ~6 X-axis labels to avoid crowding.
-  const xLabelStep = Math.max(1, Math.ceil(axis.length / 6));
+  // About six x labels, fewer when the box cannot fit them 48px apart (real
+  // pixels now: nothing scales the text down to fit).
+  const LABEL_SPACING = 48;
+  const xLabelStep = Math.max(1, Math.ceil(axis.length / Math.max(2, Math.min(6, Math.floor(innerW / LABEL_SPACING)))));
+  // The last bucket is labelled too, unless that would crowd the label before it.
+  const lastLabelled = Math.floor((axis.length - 1) / xLabelStep) * xLabelStep;
+  const labelLast = (axis.length - 1 - lastLabelled) * (barW + barGap) >= LABEL_SPACING;
 
   const totalEvents = useMemo(() => axis.reduce((a, t) => a + (byTime.get(t)?.total ?? 0), 0), [axis, byTime]);
   const hovered = hoverIdx != null ? axis[hoverIdx] : null;
@@ -299,7 +308,7 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
 
           {/* X tick labels */}
           {axis.map((t, i) => {
-            if (i % xLabelStep !== 0 && i !== axis.length - 1) return null;
+            if (i % xLabelStep !== 0 && !(labelLast && i === axis.length - 1)) return null;
             const x = m.left + i * (barW + barGap) + barW / 2;
             return (
               <text key={t} x={x} y={m.top + innerH + 14}
@@ -319,12 +328,14 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
           </text>
         </svg>
 
-        {/* Hover tooltip — positioned over the SVG using percentages of the same coordinate system. */}
+        {/* Hover tooltip, in pixels: one viewBox unit is one pixel, and the
+            svg starts after the wrapper's 12px (px-3) padding. A percentage
+            resolved against the padding box and drifted up to 12px. */}
         {hoveredBucket && hoverIdx != null && (
           <div
             className="pointer-events-none absolute z-10 px-3 py-2 rounded-lg shadow-lg border border-border-soft bg-card-glass backdrop-blur text-[11px] min-w-[140px]"
             style={{
-              left: `calc(${(hoveredX / width) * 100}% )`,
+              left: `${12 + hoveredX}px`,
               top: '14px',
               transform: hoveredX > width * 0.7 ? 'translateX(-100%)' : 'translateX(8px)',
             }}

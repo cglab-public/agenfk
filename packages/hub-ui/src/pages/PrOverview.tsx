@@ -78,6 +78,9 @@ interface PrOverviewResponse {
 }
 interface ProjectsResponse { projects: string[] }
 
+/** The heatmap's focus ring, on whichever element is a cell's focus target. */
+const HEAT_FOCUS_RING = 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent';
+
 /**
  * A stable identity for one PR row.
  *
@@ -86,9 +89,6 @@ interface ProjectsResponse { projects: string[] }
  * two rows — so a filter change can leave the wrong opener and size on screen.
  * Falls back to 'local' for a response from a hub that predates the field.
  */
-/** The heatmap's focus ring, on whichever element is a cell's focus target. */
-const HEAT_FOCUS_RING = 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent';
-
 const prKey = (p: { repo: string; prNumber: number; childHubId?: string }) =>
   `${p.childHubId ?? 'local'}\u0000${p.repo}#${p.prNumber}`;
 
@@ -633,9 +633,35 @@ export function PrOverviewPage() {
     }
     return { r: 0, c: 0 };
   }, [heatPos, heatRows, heatCols, d, axis]);
+  // Whether the last input was a pointer. Focus a click gave (or the drill
+  // dialog handed back on closing) opens no tooltip: the pointer is elsewhere
+  // by then, and the tip would stay until something else took focus.
+  const heatPointer = useRef(false);
+  useEffect(() => {
+    const pointer = () => { heatPointer.current = true; };
+    const key = () => { heatPointer.current = false; };
+    document.addEventListener('pointerdown', pointer, true);
+    document.addEventListener('keydown', key, true);
+    return () => {
+      document.removeEventListener('pointerdown', pointer, true);
+      document.removeEventListener('keydown', key, true);
+    };
+  }, []);
+  /** The tooltip for a focused cell, measured on the next frame: the browser
+   *  scrolls a focused cell into view after the focus event, so measuring in
+   *  it placed the tip where the cell had been. */
+  const heatTipOnFocus = (text: string, el: HTMLElement) => {
+    if (heatPointer.current) return;
+    requestAnimationFrame(() => { if (document.activeElement === el) heatTipAt(text, el); });
+  };
   const onHeatKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const at = (e.target as HTMLElement).dataset.cell?.split('-').map(Number);
-    if (!at || heatRows === 0 || heatCols === 0) return;
+    // Modified keys belong to the browser (Alt+Left is Back).
+    if (!at || heatRows === 0 || heatCols === 0 || e.altKey) return;
+    // Escape dismisses the tooltip and leaves the focus where it is (WCAG
+    // 1.4.13); Space on an empty day would otherwise scroll the page.
+    if (e.key === 'Escape') { setHeatTip(null); return; }
+    if (e.key === ' ') { e.preventDefault(); return; }
     const [r, c] = at;
     const corner = e.ctrlKey || e.metaKey;
     const next: Record<string, [number, number]> = {
@@ -660,7 +686,10 @@ export function PrOverviewPage() {
   }, []);
   // A refetch replaces the data the open drill was built from — close it
   // rather than show a stale (or emptied) list against the new window.
-  useEffect(() => { setDrill(null); }, [d]);
+  // The heatmap's tab stop is a (row, column) of the old answer: on a new one
+  // it may name another developer or day, so it goes back to the first day
+  // with PRs.
+  useEffect(() => { setDrill(null); setHeatPos(null); }, [d]);
   const drillPrs = useMemo(() => {
     if (!drill || !d?.prs) return [];
     // The server already orders by open time, then repo#number, and applied the
@@ -910,7 +939,7 @@ export function PrOverviewPage() {
               label="Weighted size"
               value={d.totals.sizePoints}
               delta={sizeDelta}
-              hint={<>size points · <a href="#size-derivation" className="underline decoration-dotted hover:text-ink">how size is derived</a></>}
+              hint={<>{sizeDelta == null ? '— no prior period · ' : ''}size points · <a href="#size-derivation" className="underline decoration-dotted hover:text-ink">how size is derived</a></>}
             />
             <StatTile
               label="Active developers"
@@ -1032,7 +1061,10 @@ export function PrOverviewPage() {
           <section className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5">
             <h2 className="text-sm font-semibold text-ink mb-1">Per developer, per day</h2>
             <p className="text-[11px] text-ink-tertiary mb-4">Cell shade = PRs opened that day. Pills: share of PRs · share of size points.</p>
-            <div className="overflow-x-auto">
+            {/* scroll-padding: a cell focused into view must land clear of the
+                sticky name column (at most 190px plus the 4px gap), not under
+                it. A scroll moves the cells out from under the tooltip. */}
+            <div className="overflow-x-auto scroll-pl-[194px]" onScroll={() => setHeatTip(null)}>
               <div
                 ref={heatGridRef}
                 role="grid"
@@ -1108,7 +1140,7 @@ export function PrOverviewPage() {
                         const target = {
                           'data-cell': `${ri}-${i}`,
                           tabIndex: heatStop.r === ri && heatStop.c === i ? 0 : -1,
-                          onFocus: (e: React.FocusEvent<HTMLElement>) => { setHeatPos({ r: ri, c: i }); heatTipAt(tip, e.currentTarget); },
+                          onFocus: (e: React.FocusEvent<HTMLElement>) => { setHeatPos({ r: ri, c: i }); heatTipOnFocus(tip, e.currentTarget); },
                           onBlur: () => setHeatTip(null),
                         };
                         return (

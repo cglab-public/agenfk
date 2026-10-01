@@ -329,7 +329,8 @@ describe('buildVolumeSeries — busiest weekday and large share', () => {
 
   it('names the weekday with the most PRs over the range, and its share', () => {
     const { stats } = buildVolumeSeries(days, range, 'daily');
-    expect(stats.busiestWeekday).toEqual({ day: 'Tue', prs: 4, share: 4 / 8 });
+    // Two Tuesdays in the range: 4 PRs is 2 per Tuesday.
+    expect(stats.busiestWeekday).toEqual({ day: 'Tue', prs: 4, perDay: 2, share: 4 / 8 });
   });
 
   it('is the same answer whatever the granularity', () => {
@@ -346,6 +347,14 @@ describe('buildVolumeSeries — busiest weekday and large share', () => {
   it('counts only the days inside the range', () => {
     const outside = [...days, day('2026-08-30', { s: 9 })];
     expect(buildVolumeSeries(outside, range, 'daily').stats.busiestWeekday?.day).toBe('Tue');
+  });
+
+  it('ranks weekdays by PRs per occurrence, so one that occurs more often has no head start', () => {
+    // Tue 09-01 .. Tue 09-08: Tuesday occurs twice, Wednesday once. Raw totals
+    // tie at 2 (and the tie would go to Tuesday); per occurrence Wednesday leads.
+    const lopsided = axis('2026-09-01', '2026-09-08');
+    const d = [day('2026-09-01', { s: 1 }), day('2026-09-08', { s: 1 }), day('2026-09-02', { m: 2 })];
+    expect(buildVolumeSeries(d, lopsided, 'daily').stats.busiestWeekday).toEqual({ day: 'Wed', prs: 2, perDay: 2, share: 2 / 4 });
   });
 
   it('gives the share of L and XL PRs', () => {
