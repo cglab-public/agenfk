@@ -13,7 +13,7 @@
  * socket event.
  */
 import React from 'react';
-import { render, screen, cleanup, fireEvent, act, within } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, act, within, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { KanbanBoard } from '../components/KanbanBoard';
@@ -120,6 +120,17 @@ describe('3aea49f1: running verifies in the header', () => {
     expect(chip()).toBeNull();
   });
 
+  // The test above asserts an absence, which a slow fetch would also satisfy.
+  // Here the chip must render, so the under-10s run is shown to be filtered.
+  it('counts only the verifies past 10 seconds once the list has loaded', async () => {
+    vi.mocked(api.getVerifyRuns).mockResolvedValue([
+      run({ itemId: 'young', projectId: 'p1', projectName: 'Alpha', title: 'Young', startedAt: ago(4) }),
+      run({ itemId: 'old', projectId: 'p1', projectName: 'Alpha', title: 'Old', startedAt: ago(30) }),
+    ] as never);
+    render(<KanbanBoard />, { wrapper });
+    expect((await screen.findByTestId('verify-runs-chip')).textContent).toMatch(/1 verify running/);
+  });
+
   it('counts the verifies past 10 seconds, in any project', async () => {
     vi.mocked(api.getVerifyRuns).mockResolvedValue([
       run({ itemId: 'card-here', projectId: 'p1', projectName: 'Alpha', title: 'Card in Alpha', startedAt: ago(42) }),
@@ -206,11 +217,16 @@ describe('3aea49f1: running verifies in the header', () => {
     vi.mocked(api.getVerifyRuns).mockResolvedValue([run({ itemId: 'card-there', projectId: 'p2', projectName: 'Beta', title: 'Card in Beta', startedAt: ago(30) })] as never);
     render(<KanbanBoard />, { wrapper });
     await screen.findByTestId('verify-runs-chip');
-    vi.mocked(api.getVerifyRuns).mockResolvedValue([] as never);
+    // react-query reports the re-read through its own setTimeout(0), created
+    // after the test's: a fixed one-tick wait races it, and lost on a loaded CI
+    // runner (BUG cfb66ba8). A late answer makes that race fail every time.
+    vi.mocked(api.getVerifyRuns).mockImplementation(() => new Promise(r => setTimeout(() => r([] as never), 20)));
     const connect = socketHandlers.get('connect');
-    expect(connect, "the chip listens for 'connect'").toBeTypeOf('function');
-    await act(async () => { connect!(undefined); await new Promise(r => setTimeout(r, 0)); });
-    expect(chip()).toBeNull();
+    // Something listens for 'connect'; the assertion below proves it is the chip.
+    expect(connect).toBeTypeOf('function');
+    await act(async () => { connect!(undefined); });
+    // Wait for the state, not for a number of ticks.
+    await waitFor(() => expect(chip()).toBeNull());
   });
 
   // Found in the browser check: open when the last run ended, the list came back open with the next one, unasked.
