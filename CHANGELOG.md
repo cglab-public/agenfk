@@ -2,6 +2,33 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.20] — 2026-10-01
+
+Beta, cumulative over `2.0.0-beta.19`: everything in beta.19, plus the dashboard consistency work below.
+
+- **The dashboards read as one product.** Org, PR overview and the user page open with the same header, keep the
+  period in the same place, and draw every headline number the same way.
+- **One rule for dates and times.** Times show in your local zone with the UTC time on hover, dates use one
+  unambiguous format ("30 Sep 2026"), and a custom range is picked with paired From/To fields and a clear button.
+  PR overview and the activity timeline now file events under your local day by your zone's own rules, so a range
+  across a daylight-saving change is no longer an hour off. A malformed date in a shared link no longer breaks a page;
+  a shared `?from=` now means local midnight.
+- **Plain language.** Event types read as words under a few headings (Work items, Checks, Pull requests, Sessions,
+  Security, Fleet) with the raw id on hover; "Checks passed/failed" became one "Check pass rate" tile; size points say
+  what they are and link to how they are derived.
+- **Sortable, searchable tables.** Org's Users and PR overview's By developer / By model tables sort by any column;
+  Users can be searched by name or email. The user page says "Showing latest 200 of N" and loads more on request.
+- **Richer Org user rows.** Each person shows items closed, check pass rate, PRs and closures per day, computed by
+  the hub (`GET /v1/users` now returns these per person).
+- **Stat tiles filter on click.** Clicking a tile sets the Event type filter to what it counts; clicking again clears it.
+- **Readable event details.** Expanding an event on the user page shows its key fields (step change, failed checks,
+  PR, model, size, command…) with PR and JIRA links, and the raw JSON behind a toggle.
+- **Hub events carry the tracker link.** The local server now sends a linked item's tracker URL with its key, and
+  sends the key reliably (a stale cache dropped links added after an item's first event).
+- **Hub API:** `/v1/timeline` pages by cursor (`before`) and returns `total` and `pr_url`; `/v1/prs/overview`,
+  `/v1/histogram` and `/v1/users` accept `tz` (IANA zone). A repeated `tzOffsetMin` on `/v1/histogram` is now a 400.
+- **Federation:** a parent hub shows child-hub developers by name under the keep policy.
+
 ## [2.0.0-beta.19] — 2026-09-30
 
 Beta, cumulative over `2.0.0-beta.18`: everything in beta.18, plus the dashboard changes below.
