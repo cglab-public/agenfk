@@ -29,6 +29,15 @@ export function buildDayAxis(from: string, to: string): string[] {
   return out;
 }
 
+/** Average PRs per bucket: integers stay bare, a fractional rate always shows
+ *  exactly one decimal (2.04 → "2.0", so it never passes for exact), with the
+ *  locale's digit grouping. */
+export function fmtAverage(n: number): string {
+  return Number.isInteger(n)
+    ? n.toLocaleString()
+    : n.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+}
+
 /** Rounded percentage change vs a baseline. Returns null when there is no
  *  baseline to compare against (a 0→N jump isn't a meaningful percentage). */
 export function pctDelta(curr: number, prev: number): number | null {
