@@ -177,14 +177,14 @@ export function isAgenfkOwnedEntry(name) {
  * symlinked ~/.agenfk-system, or a path cased differently on APFS, is still
  * that directory (Codex review of 658ef023). False when either is missing.
  */
-export function sameDirectory(a, b, stat = (p) => statSync(p, { bigint: true })) {
+export function sameDirectory(a, b) {
   try {
     // BigInt: as plain numbers, distinct 64-bit inodes can round to one value
     // (2^53 and 2^53+1 do). And an inode of 0 is no identity at all - some
     // filesystems report it - so it never proves two paths the same: when in
     // doubt, the tree is treated as a checkout and left alone.
-    const x = stat(a);
-    const y = stat(b);
+    const x = statSync(a, { bigint: true });
+    const y = statSync(b, { bigint: true });
     if (!x.ino || !y.ino) return false;
     return x.dev === y.dev && x.ino === y.ino;
   } catch {

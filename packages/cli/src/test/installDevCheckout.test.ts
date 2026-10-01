@@ -4,8 +4,25 @@
  * too, which is the same overwrite `agenfk upgrade` was stopped from doing.
  * The checkout test is install-helpers' isDevCheckout, by filesystem identity.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'fs';
+
+/**
+ * Fake identities for a few paths, served by statSync itself - the call the
+ * helper really makes. A plain (non-BigInt) stat gets the inode as a NUMBER,
+ * rounded the way the real one rounds a 64-bit value, so a helper that drops
+ * `{ bigint: true }` is caught.
+ */
+const ids: Record<string, { dev: bigint; ino: bigint }> = {};
+vi.mock('fs', async (orig) => {
+  const real = await orig<typeof import('fs')>();
+  const statSync = ((p: any, o?: any) => {
+    const id = ids[String(p)];
+    if (!id) return real.statSync(p, o);
+    return o?.bigint ? { dev: id.dev, ino: id.ino } : { dev: Number(id.dev), ino: Number(id.ino) };
+  }) as typeof real.statSync;
+  return { ...real, statSync, default: { ...real, statSync } };
+});
 import * as os from 'os';
 import * as path from 'path';
 import { isDevCheckout, sameDirectory } from '../../../../scripts/install-helpers.mjs';
@@ -41,17 +58,21 @@ describe('isDevCheckout', () => {
 
 describe('sameDirectory, when identities are not to be trusted', () => {
   it('keeps 64-bit inodes apart that plain numbers would round together', () => {
-    const ids: Record<string, { dev: bigint; ino: bigint }> = {
-      a: { dev: 1n, ino: 9007199254740992n },
-      b: { dev: 1n, ino: 9007199254740993n },
-    };
-    expect(Number(ids.a.ino) === Number(ids.b.ino)).toBe(true); // the trap
-    expect(sameDirectory('a', 'b', (p: string) => ids[p])).toBe(false);
+    ids['/fake/a'] = { dev: 1n, ino: 9007199254740992n };
+    ids['/fake/b'] = { dev: 1n, ino: 9007199254740993n };
+    expect(Number(ids['/fake/a'].ino) === Number(ids['/fake/b'].ino)).toBe(true); // the trap
+    expect(sameDirectory('/fake/a', '/fake/b')).toBe(false);
   });
 
   it('never calls two paths the same on an inode of 0, which is no identity', () => {
-    const zero = (_p: string) => ({ dev: 1n, ino: 0n });
-    expect(sameDirectory('a', 'b', zero)).toBe(false);
+    ids['/fake/z1'] = { dev: 1n, ino: 0n };
+    ids['/fake/z2'] = { dev: 1n, ino: 0n };
+    expect(sameDirectory('/fake/z1', '/fake/z2')).toBe(false);
+  });
+
+  it('still calls one directory the same as itself', () => {
+    ids['/fake/same'] = { dev: 7n, ino: 42n };
+    expect(sameDirectory('/fake/same', '/fake/same')).toBe(true);
   });
 });
 
