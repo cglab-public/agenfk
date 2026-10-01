@@ -120,8 +120,9 @@ export function queriesRouter(ctx: HubServerContext): Router {
 
   router.get('/users', guard, asyncRoute(async (req: Request, res: Response) => {
     const f = readEventFilters(req);
-    const { where, params } = applyEventFilters(req.session!.orgId, { ...f, users: null });
-    const rows = await ctx.db.all(
+    const orgId = req.session!.orgId;
+    const { where, params } = applyEventFilters(orgId, { ...f, users: null });
+    const rows = await ctx.db.all<{ user_key: string; last_seen: unknown; events_count: number | string }>(
       `SELECT user_key,
               MAX(occurred_at) AS last_seen,
               COUNT(*) AS events_count
@@ -130,7 +131,62 @@ export function queriesRouter(ctx: HubServerContext): Router {
        ORDER BY last_seen DESC`,
       params,
     );
-    res.json(rows);
+
+    // What each listed person got done, from the same events under every
+    // filter EXCEPT event type: the list follows the type filter, but a person
+    // listed for item.closed still shows their checks and PRs. Live events,
+    // not rollups, so the row agrees with itself. "Closed" is defined exactly
+    // as /metrics defines it.
+    const done = applyEventFilters(orgId, { ...f, users: null, types: null });
+    const CLOSED = `CASE
+          WHEN type = 'item.closed' THEN item_id
+          WHEN type = 'step.transitioned'
+               AND json_extract(payload, '$.payload.toStatus') = 'DONE' THEN item_id
+        END`;
+    // The type IN (...) changes no count (every CASE ignores other types) but
+    // lets the planner use the type index instead of reading every event in
+    // the window. No SQL comments inside the query: they break on Postgres.
+    const totals = await ctx.db.all<Record<string, unknown>>(
+      `SELECT user_key,
+              COUNT(DISTINCT ${CLOSED}) AS items_closed,
+              SUM(CASE WHEN type = 'validate.passed' THEN 1 ELSE 0 END) AS validate_passes,
+              SUM(CASE WHEN type = 'validate.failed' THEN 1 ELSE 0 END) AS validate_fails,
+              SUM(CASE WHEN type = 'pr.opened' THEN 1 ELSE 0 END) AS prs_opened
+       FROM events WHERE ${done.where.join(' AND ')}
+         AND type IN ('item.closed', 'step.transitioned', 'validate.passed', 'validate.failed', 'pr.opened')
+       GROUP BY user_key`,
+      done.params,
+    );
+    const daily = await ctx.db.all<{ user_key: string; day: string; n: number | string }>(
+      `SELECT user_key, date(occurred_at) AS day, COUNT(DISTINCT ${CLOSED}) AS n
+       FROM events WHERE ${done.where.join(' AND ')}
+         AND (type = 'item.closed' OR type = 'step.transitioned')
+       GROUP BY user_key, day`,
+      done.params,
+    );
+    const num = (v: unknown) => { const x = Number(v ?? 0); return Number.isFinite(x) ? x : 0; };
+    const byUser = new Map(totals.map(t => [String(t.user_key), t]));
+    const closedDaily = new Map<string, Record<string, number>>();
+    for (const d of daily) {
+      const c = num(d.n);
+      if (c === 0) continue;
+      const m = closedDaily.get(d.user_key) ?? {};
+      m[String(d.day).slice(0, 10)] = c;
+      closedDaily.set(d.user_key, m);
+    }
+
+    res.json(rows.map(r => {
+      const t = byUser.get(r.user_key);
+      return {
+        ...r,
+        events_count: num(r.events_count),
+        items_closed: num(t?.items_closed),
+        validate_passes: num(t?.validate_passes),
+        validate_fails: num(t?.validate_fails),
+        prs_opened: num(t?.prs_opened),
+        closed_daily: closedDaily.get(r.user_key) ?? {},
+      };
+    }));
   }));
 
   // The display name behind each user_key, so a dashboard can show "Carol Diaz"

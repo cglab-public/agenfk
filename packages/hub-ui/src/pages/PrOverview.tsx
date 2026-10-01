@@ -14,7 +14,8 @@ import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useSettledKey } from '../hooks/useSettledKey';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
 import { SIZE_META, type SizeKey, buildDayAxis, fmtAverage, pctDelta } from '../prOverview';
-import { heatColor, SPARK_STROKE } from '../chartColours';
+import { heatColor } from '../chartColours';
+import { Sparkline } from '../components/Sparkline';
 import { parsePrQuery } from '../prSearch';
 import { buildMonthBands, dayHeaderInfo, contributionPcts, cellTooltip, placeTooltip } from '../prPerDay';
 import { buildVolumeSeries, type Granularity } from '../prVolumeGranularity';
@@ -22,7 +23,7 @@ import { DataTable, DateRange, LocalTime, Page, PageHeader, PeriodControl, Query
 import { browserTimezone, endOfLocalDay, startOfLocalDay } from '../dates';
 import { describeFilters } from '../filterSummary';
 import { usePeopleNames } from '../hooks/usePeopleNames';
-import { PersonName, initialsOf } from '../components/PersonName';
+import { PersonName, PersonAvatar } from '../components/PersonName';
 
 const GRANULARITIES: Array<{ key: Granularity; label: string; unit: string }> = [
   { key: 'daily', label: 'daily', unit: 'day' },
@@ -119,19 +120,6 @@ function SizeCounts({ sizes }: { sizes: SizeDist }) {
         </span>
       ))}
     </div>
-  );
-}
-
-/** Tiny inline sparkline of daily PR counts over the period axis. */
-function Sparkline({ daily, axis }: { daily: Record<string, number>; axis: string[] }) {
-  const values = axis.map(d => daily[d] ?? 0);
-  const w = 96, h = 24, max = Math.max(...values, 1);
-  const step = values.length > 1 ? w / (values.length - 1) : w;
-  const pts = values.map((v, i) => `${(i * step).toFixed(1)},${(h - (v / max) * (h - 4) - 2).toFixed(1)}`).join(' ');
-  return (
-    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-hidden className="overflow-visible">
-      <polyline points={pts} fill="none" stroke={SPARK_STROKE} strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" />
-    </svg>
   );
 }
 
@@ -982,9 +970,7 @@ export function PrOverviewPage() {
                   sortValue: dev => (nameOf(dev.user_key) ?? dev.user_key).toLowerCase(),
                   render: dev => (
                     <div className="flex items-center gap-2.5">
-                      <div className="w-7 h-7 rounded-lg bg-accent-fill text-accent-ink text-[10px] font-bold flex items-center justify-center shrink-0">
-                        {initialsOf(nameOf(dev.user_key), dev.user_key)}
-                      </div>
+                      <PersonAvatar name={nameOf(dev.user_key)} userKey={dev.user_key} size="sm" />
                       <PersonName name={nameOf(dev.user_key)} userKey={dev.user_key} className="max-w-[200px]" />
                     </div>
                   ),

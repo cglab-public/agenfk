@@ -135,7 +135,11 @@ describe('Org rollup', () => {
   it('headline tiles use plain words, not validate ✓ / ✗', async () => {
     mockApi();
     mount('/', '/', <OrgPage />);
-    for (const label of ['Items closed', 'Check pass rate', 'PRs opened']) expect(await screen.findByText(label)).toBeInTheDocument();
+    // Among the headline tiles: the Users table repeats some words as headers.
+    for (const label of ['Items closed', 'Check pass rate', 'PRs opened']) {
+      const hits = await screen.findAllByText(label);
+      expect(hits.some(el => el.closest('[data-stat-tile]'))).toBe(true);
+    }
     expect(screen.queryByText(/Validate ✓|Validate ✗/)).toBeNull();
   });
 

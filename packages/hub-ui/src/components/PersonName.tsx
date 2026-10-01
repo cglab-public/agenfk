@@ -18,3 +18,18 @@ export function initialsOf(name: string | undefined, userKey: string): string {
   if (words.length) return words.slice(0, 2).map(w => w[0]!.toUpperCase()).join('');
   return userKey.slice(0, 2).toUpperCase();
 }
+
+const AVATAR = {
+  sm: 'w-7 h-7 rounded-lg text-[10px]',
+  md: 'w-8 h-8 rounded-full text-[11px]',
+  lg: 'w-12 h-12 rounded-2xl text-base',
+} as const;
+
+/** The initials badge beside a person: small in tables, large on their page. */
+export function PersonAvatar({ name, userKey, size = 'md' }: { name?: string; userKey: string; size?: keyof typeof AVATAR }) {
+  return (
+    <div className={`${AVATAR[size]} bg-accent-fill text-accent-ink font-bold flex items-center justify-center shrink-0`}>
+      {initialsOf(name, userKey)}
+    </div>
+  );
+}

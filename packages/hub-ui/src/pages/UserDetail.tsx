@@ -18,7 +18,7 @@ import { browserTimezone, endOfLocalDay, startOfLocalDay } from '../dates';
 import { useToggleSet } from '../hooks/useToggleSet';
 import { useUrlFilters } from '../hooks/useUrlFilters';
 import { usePeopleNames } from '../hooks/usePeopleNames';
-import { initialsOf } from '../components/PersonName';
+import { PersonAvatar } from '../components/PersonName';
 import { useChildHubs } from '../hooks/useChildHubs';
 import { scrollPageToTop } from '../scroll';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
@@ -245,9 +245,7 @@ export function UserDetailPage() {
       </Link>
 
       <header className="flex items-center gap-4">
-        <div className="w-12 h-12 rounded-2xl bg-accent-fill text-accent-ink text-base font-bold flex items-center justify-center">
-          {initialsOf(personName, decoded)}
-        </div>
+        <PersonAvatar name={personName} userKey={decoded} size="lg" />
         <div className="min-w-0">
           <p className="text-[11px] uppercase tracking-[0.18em] text-accent-ink font-semibold">User</p>
           {personName ? (

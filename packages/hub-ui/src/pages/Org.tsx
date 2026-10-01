@@ -13,10 +13,13 @@ import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
 import { EventTypeChips } from '../components/EventTypeChips';
 import { fmtRelative, utcTitle } from '../dates';
+import { checkPassRate } from '../checkPassRate';
+import { buildDayAxis } from '../prOverview';
+import { Sparkline } from '../components/Sparkline';
 import { useToggleSet } from '../hooks/useToggleSet';
 import { useUrlFilters } from '../hooks/useUrlFilters';
 import { usePeopleNames } from '../hooks/usePeopleNames';
-import { initialsOf } from '../components/PersonName';
+import { PersonAvatar } from '../components/PersonName';
 import { useChildHubs } from '../hooks/useChildHubs';
 import { csvParam } from '../urlParams';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
@@ -29,7 +32,20 @@ const RANGES: Array<{ key: RangeKey; label: string }> = [
 ];
 
 interface MetricsResponse { bucket: string; series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; validate_passes: number; validate_fails: number; prs_opened: number }> }
-interface UsersResponse { user_key: string; last_seen: string; events_count: number }
+interface UsersResponse {
+  user_key: string;
+  last_seen: string;
+  /** Events matching the Event type filter. */
+  events_count: number;
+  // What the person got done, over every event type (the hub computes these
+  // in the same request, under every other filter).
+  items_closed: number;
+  validate_passes: number;
+  validate_fails: number;
+  prs_opened: number;
+  /** Items closed per UTC day. */
+  closed_daily: Record<string, number>;
+}
 interface EventTypesResponse { types: string[] }
 interface ProjectsResponse { projects: string[] }
 interface ItemTypesResponse { itemTypes: string[]; counts?: Record<string, number> }
@@ -118,8 +134,18 @@ export function OrgPage() {
   const nameOf = usePeopleNames();
   const users = useQuery<UsersResponse[]>({
     queryKey: ['users', usersQs],
-    queryFn: async () => (await api.get(`/v1/users${usersQs ? `?${usersQs}` : ''}`)).data,
+    // Missing counts read as none rather than crashing a cell.
+    queryFn: async () => ((await api.get(`/v1/users${usersQs ? `?${usersQs}` : ''}`)).data as Partial<UsersResponse>[])
+      .map(u => ({ items_closed: 0, validate_passes: 0, validate_fails: 0, prs_opened: 0, closed_daily: {}, ...u }) as UsersResponse),
   });
+  // Closures per UTC day (the hub groups by UTC date), over the period. An
+  // item reopened and closed again counts once in Items closed but on each
+  // day it closed here, so the line is labelled closures, not items.
+  const activityAxis = useMemo(
+    () => buildDayAxis(fromIsoForRange(new Date(), range), new Date().toISOString(), 'UTC'),
+    [range],
+  );
+
   // Both chip lists are partitioned by hub — offering a repo or an event type
   // from a hub the board is not showing is a dead end.
   const hubQs = childHubSel.set.size
@@ -248,8 +274,14 @@ export function OrgPage() {
         >
           {list => (
             <div className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl overflow-hidden">
+              {typeScoped && (
+                <p className="px-5 pt-3 text-[11px] text-ink-tertiary">
+                  Listed by matching events. Items closed, check pass rate and PRs count every event type.
+                </p>
+              )}
               <DataTable
                 caption="Users"
+                minWidth={860}
                 rows={list}
                 rowKey={u => u.user_key}
                 defaultSort={{ key: 'last', dir: 'desc' }}
@@ -273,9 +305,7 @@ export function OrgPage() {
                         to={`/users/${encodeURIComponent(u.user_key)}${hubQs}`}
                         className="group flex items-center gap-3 min-w-0 max-w-[320px]"
                       >
-                        <div className="w-8 h-8 rounded-full bg-accent-fill text-accent-ink text-[11px] font-bold flex items-center justify-center shrink-0">
-                          {initialsOf(nameOf(u.user_key), u.user_key)}
-                        </div>
+                        <PersonAvatar name={nameOf(u.user_key)} userKey={u.user_key} />
                         <div className="min-w-0">
                           {nameOf(u.user_key) ? (
                             <>
@@ -289,6 +319,41 @@ export function OrgPage() {
                         <ChevronRight className="w-4 h-4 text-ink-tertiary group-hover:text-accent-ink transition-colors shrink-0 ml-auto" />
                       </Link>
                     ),
+                  },
+                  {
+                    key: 'closed',
+                    header: 'Items closed',
+                    align: 'right',
+                    firstDir: 'desc',
+                    sortValue: u => u.items_closed,
+                    render: u => <span className="font-mono tabular-nums text-ink">{u.items_closed.toLocaleString()}</span>,
+                  },
+                  {
+                    key: 'rate',
+                    header: 'Check pass rate',
+                    align: 'right',
+                    firstDir: 'desc',
+                    // No checks sorts below any rate.
+                    sortValue: u => checkPassRate(u.validate_passes, u.validate_fails) ?? -1,
+                    render: u => {
+                      const pct = checkPassRate(u.validate_passes, u.validate_fails);
+                      return pct === null
+                        ? <span className="text-ink-tertiary" title="no checks ran">—</span>
+                        : <span className="font-mono tabular-nums text-ink" title={`${u.validate_passes} passed · ${u.validate_fails} failed`}>{pct}%</span>;
+                    },
+                  },
+                  {
+                    key: 'prs',
+                    header: 'PRs',
+                    align: 'right',
+                    firstDir: 'desc',
+                    sortValue: u => u.prs_opened,
+                    render: u => <span className="font-mono tabular-nums text-ink">{u.prs_opened.toLocaleString()}</span>,
+                  },
+                  {
+                    key: 'activity',
+                    header: 'Closed per day',
+                    render: u => <Sparkline daily={u.closed_daily} axis={activityAxis} label="Closures" />,
                   },
                   {
                     key: 'events',
