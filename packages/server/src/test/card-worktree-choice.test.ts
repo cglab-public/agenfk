@@ -119,6 +119,8 @@ describe('686fdbf6: a card chooses the tree it runs in', () => {
     const t = await setup();
     expect((await put(t.epic, { worktree: 'none' })).status).toBe(200);
     expect((await verifyFrom(t.epic, t.wt)).status).toBe(409);
+    // This verify CLOSES the epic, which a card does only once its children are finished (8024f6c4).
+    await storage.updateItem(t.child, { status: 'END' } as any);
     expect((await verifyFrom(t.epic, t.root)).status).toBe(200);
   });
 

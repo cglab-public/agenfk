@@ -270,6 +270,9 @@ describe('CGLAB-382: GET /items/:id/gate-events (what the PR shows)', () => {
     const c = await agent().post('/items').send({ type: 'TASK', title: 'child card', projectId: p.projectId, parentId: parent });
     await storage.updateItem(c.body.id, { status: 'PLAN' } as any);
     await approve(c.body.id, { note: 'go' });
+    // The parent's verify below closes it, which waits on open children (8024f6c4): the child is
+    // finished first. Its approval at PLAN is on record either way.
+    await storage.updateItem(c.body.id, { status: 'END' } as any);
     await validate(parent);
     await override(parent, { checkId: 'jira-key-valid', reason: 'spike card' });
     const res = await agent().get(`/items/${parent}/gate-events`);

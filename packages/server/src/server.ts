@@ -8861,6 +8861,35 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   }
 
   /*
+   * 8024f6c4: a card does not close while a direct child is unfinished. BUG
+   * 759b606c reached DONE with two children in TODO - accepted as done while
+   * its work did not exist. The parent roll-up was never the cause (it
+   * mirrors the LEAST advanced child); a verify on the parent itself was, and
+   * nothing here asked. Finished: on the flow's last step (or DONE), trashed,
+   * archived, or parked as an idea. Refused before any check or suite runs,
+   * on both entries - a gate handed in from the background included. Only
+   * direct children: each of them is held to the same rule on its own close.
+   */
+  {
+    const upcoming = sorted[currentFlowStep.index + 1];
+    const lastName = sorted[sorted.length - 1]?.name;
+    const closes = !upcoming || upcoming.name === Status.DONE || upcoming.name === lastName;
+    if (closes) {
+      const finished = new Set<string>([String(Status.DONE), String(lastName), String(Status.TRASHED), String(Status.ARCHIVED), String(Status.IDEAS)]);
+      const open = ((await storage.listItems({ parentId: item.id } as any)) as any[]).filter(c => !finished.has(String(c.status)));
+      if (open.length) {
+        const list = open.map(c => `  [${String(c.id).slice(0, 8)}] ${c.title} (${c.status})`).join('\n');
+        return res.status(400).json({
+          status: item.status,
+          error: 'CHILDREN_OPEN',
+          message: `❌ ${item.title} cannot close: ${open.length === 1 ? 'a child is' : `${open.length} children are`} not finished.\n\n${list}\n\nFinish, trash or archive ${open.length === 1 ? 'it' : 'them'} first.${staysOn(item.status)}`,
+          children: open.map(c => ({ id: c.id, title: c.title, status: c.status })),
+        });
+      }
+    }
+  }
+
+  /*
    * 2a181a8d: a close that would run the repository's own unapproved
    * verifyCommand is refused HERE, before the gate - otherwise its capture can
    * run a stored test report's whole suite only for the final check to throw
