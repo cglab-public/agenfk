@@ -291,91 +291,405 @@ describe('filtering the cards', () => {
     { id: 'b1', projectId: 'p1', type: ItemType.BUG, title: 'span cardinality', status: Status.DONE },
   ] as never;
 
-  const openFiltered = () => open({ cards: many, flow: FLOW as never });
+  const openFiltered = (props: Partial<React.ComponentProps<typeof ProjectPage>> = {}) =>
+    open({ cards: many, flow: FLOW as never, ...props });
+  const openStates = () => fireEvent.click(screen.getByTestId('project-filter-state'));
+  const openTypes = () => fireEvent.click(screen.getByTestId('project-filter-type'));
+  const checked = (testId: string) => screen.getByTestId(testId).getAttribute('aria-checked');
 
-  it('offers the states THIS project has, not a fixed list', async () => {
+  /*
+   * TWO MENUS AND A SEARCH BOX, and nothing else on the page until one is
+   * opened. A bar of presets over two rows of chips was the first try, and it
+   * buried the list it was there to narrow.
+   */
+  it('keeps the filters in compact menus, closed until opened', () => {
     openFiltered();
-    fireEvent.click(screen.getByTestId('project-filter-status'));
-    await waitFor(() => screen.getByTestId('project-filter-status-CREATE_UNIT_TESTS'));
-    expect(screen.getByTestId('project-filter-status-DISCOVERY')).toBeTruthy();
-    // IN_PROGRESS and REVIEW belong to the default flow, not to this one.
-    expect(screen.queryByTestId('project-filter-status-IN_PROGRESS')).toBeNull();
+    expect(screen.getByTestId('project-filter-state').getAttribute('aria-haspopup')).toBe('menu');
+    expect(screen.getByTestId('project-filter-type').getAttribute('aria-haspopup')).toBe('menu');
+    expect(screen.queryByTestId('project-filter-state-TODO')).toBeNull();
+    expect(screen.queryByTestId('project-preset-open')).toBeNull();
+    expect(screen.queryByTestId('project-filter-type-EPIC')).toBeNull();
   });
 
-  it('keeps the anchors, which are where most cards sit', async () => {
+  it('offers the states THIS project has, not a fixed list', () => {
+    openFiltered();
+    openStates();
+    expect(screen.getByTestId('project-filter-state-CREATE_UNIT_TESTS')).toBeTruthy();
+    expect(screen.getByTestId('project-filter-state-DISCOVERY')).toBeTruthy();
+    // IN_PROGRESS and REVIEW belong to the default flow, not to this one.
+    expect(screen.queryByTestId('project-filter-state-IN_PROGRESS')).toBeNull();
+  });
+
+  it('keeps the anchors, which are where most cards sit', () => {
     // TODO and DONE are `isSpecial` — the board hides them as columns, and
     // filtering is the one place they matter most.
     openFiltered();
-    fireEvent.click(screen.getByTestId('project-filter-status'));
-    await waitFor(() => screen.getByTestId('project-filter-status-TODO'));
-    expect(screen.getByTestId('project-filter-status-DONE')).toBeTruthy();
+    openStates();
+    expect(screen.getByTestId('project-filter-state-TODO')).toBeTruthy();
+    expect(screen.getByTestId('project-filter-state-DONE')).toBeTruthy();
   });
 
-  it('filters by type', async () => {
+  /*
+   * THE REPORT: 135 cards, most of them DONE, every one of them offering Start.
+   * Open is the default, and Open means "not finished".
+   */
+  it('hides the finished cards until somebody asks for them', () => {
     openFiltered();
-    fireEvent.click(screen.getByTestId('project-filter-type'));
-    fireEvent.click(await screen.findByTestId('project-filter-type-BUG'));
-    await waitFor(() => expect(screen.queryByTestId('project-card-e1')).toBeNull());
+    expect(screen.queryByTestId('project-card-b1')).toBeNull();
+    expect(screen.getByTestId('project-card-e1')).toBeTruthy();
+    expect(screen.getByTestId('project-filter-state').textContent).toContain('Open');
+    openStates();
+    expect(checked('project-preset-open')).toBe('true');
+    expect(checked('project-filter-state-DONE')).toBe('false');
+  });
+
+  it('shows only the finished ones under Done, and closes the menu', () => {
+    openFiltered();
+    openStates();
+    fireEvent.click(screen.getByTestId('project-preset-done'));
     expect(screen.getByTestId('project-card-b1')).toBeTruthy();
+    expect(screen.queryByTestId('project-card-e1')).toBeNull();
+    // A preset is a choice, not one of several ticks: the menu is done.
+    expect(screen.queryByTestId('project-filter-state-TODO')).toBeNull();
+    expect(screen.getByTestId('project-filter-state').textContent).toContain('Done');
   });
 
-  it('filters by state', async () => {
+  it('leaves the backlog out under In flight', () => {
     openFiltered();
-    fireEvent.click(screen.getByTestId('project-filter-status'));
-    fireEvent.click(await screen.findByTestId('project-filter-status-DISCOVERY'));
-    await waitFor(() => expect(screen.getByTestId('project-card-s1')).toBeTruthy());
+    openStates();
+    fireEvent.click(screen.getByTestId('project-preset-inflight'));
+    expect(screen.queryByTestId('project-card-e1')).toBeNull();
+    expect(screen.getByTestId('project-card-s1')).toBeTruthy();
+    expect(screen.getByTestId('project-card-t1')).toBeTruthy();
+    expect(screen.queryByTestId('project-card-b1')).toBeNull();
+  });
+
+  it('counts what each preset would show before it is pressed', () => {
+    openFiltered();
+    openStates();
+    expect(screen.getByTestId('project-preset-count-open').textContent).toBe('3');
+    expect(screen.getByTestId('project-preset-count-inflight').textContent).toBe('2');
+    expect(screen.getByTestId('project-preset-count-done').textContent).toBe('1');
+    expect(screen.getByTestId('project-preset-count-all').textContent).toBe('4');
+  });
+
+  it('takes a state out and puts it back, with the menu staying open', () => {
+    openFiltered();
+    openStates();
+    fireEvent.click(screen.getByTestId('project-filter-state-TODO'));
+    expect(screen.queryByTestId('project-card-e1')).toBeNull();
+    // Multi-select: ticking one does not close the menu on the next.
+    expect(checked('project-filter-state-TODO')).toBe('false');
+    expect(checked('project-preset-open')).toBe('false');
+    fireEvent.click(screen.getByTestId('project-filter-state-TODO'));
+    expect(screen.getByTestId('project-card-e1')).toBeTruthy();
+    expect(checked('project-preset-open')).toBe('true');
+  });
+
+  it('adds a finished state back with its tick', () => {
+    openFiltered();
+    openStates();
+    fireEvent.click(screen.getByTestId('project-filter-state-DONE'));
+    expect(screen.getByTestId('project-card-b1')).toBeTruthy();
+    expect(checked('project-preset-all')).toBe('true');
+  });
+
+  it('counts each state', () => {
+    openFiltered();
+    openStates();
+    expect(screen.getByTestId('project-filter-state-count-TODO').textContent).toBe('1');
+    expect(screen.getByTestId('project-filter-state-count-DONE').textContent).toBe('1');
+  });
+
+  it('names what is selected on the button, so a closed menu still says it', () => {
+    openFiltered();
+    openStates();
+    // Open without TODO IS In flight, and is named by it.
+    fireEvent.click(screen.getByTestId('project-filter-state-TODO'));
+    expect(screen.getByTestId('project-filter-state').textContent).toContain('In flight');
+    fireEvent.click(screen.getByTestId('project-filter-state-TODO'));
+    fireEvent.click(screen.getByTestId('project-filter-state-DISCOVERY'));
+    expect(screen.getByTestId('project-filter-state').textContent).toContain('2 states');
+    expect(screen.getByTestId('project-filter-type').textContent).toContain('All types');
+  });
+
+  it('filters by type, several at once', () => {
+    openFiltered();
+    openStates();
+    fireEvent.click(screen.getByTestId('project-preset-all'));
+    openTypes();
+    fireEvent.click(screen.getByTestId('project-filter-type-BUG'));
+    expect(screen.queryByTestId('project-card-e1')).toBeNull();
+    expect(screen.getByTestId('project-card-b1')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('project-filter-type-EPIC'));
+    expect(screen.getByTestId('project-card-e1')).toBeTruthy();
+    expect(screen.getByTestId('project-card-b1')).toBeTruthy();
+    expect(screen.queryByTestId('project-card-s1')).toBeNull();
+    expect(screen.getByTestId('project-filter-type').textContent).toContain('2 types');
+  });
+
+  it('offers a type only when the project has a card of it', () => {
+    openFiltered({ cards: [many[0], many[2]] as never });
+    openTypes();
+    expect(screen.getByTestId('project-filter-type-EPIC')).toBeTruthy();
+    expect(screen.queryByTestId('project-filter-type-BUG')).toBeNull();
+  });
+
+  it('filters by state', () => {
+    openFiltered();
+    openStates();
+    fireEvent.click(screen.getByTestId('project-filter-state-TODO'));
+    fireEvent.click(screen.getByTestId('project-filter-state-CREATE_UNIT_TESTS'));
+    expect(screen.getByTestId('project-card-s1')).toBeTruthy();
     expect(screen.queryByTestId('project-card-t1')).toBeNull();
   });
 
-  it('says how many of how many, so the count cannot lie', async () => {
+  it('closes a menu on Escape, and when the other one opens', () => {
     openFiltered();
-    expect(screen.getByTestId('project-page-count').textContent).toBe('4 cards');
-    fireEvent.click(screen.getByTestId('project-filter-type'));
-    fireEvent.click(await screen.findByTestId('project-filter-type-BUG'));
-    await waitFor(() =>
-      expect(screen.getByTestId('project-page-count').textContent).toBe('1 of 4 cards'));
+    openStates();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByTestId('project-filter-state-TODO')).toBeNull();
+    openStates();
+    openTypes();
+    expect(screen.queryByTestId('project-filter-state-TODO')).toBeNull();
+    expect(screen.getByTestId('project-filter-type-EPIC')).toBeTruthy();
   });
 
-  it('flattens while filtered, because an indent without its parent is a lie', async () => {
+  it('searches the titles', () => {
+    openFiltered();
+    fireEvent.change(screen.getByTestId('project-filter-search'), { target: { value: 'TERRAFORM' } });
+    expect(screen.getByTestId('project-card-t1')).toBeTruthy();
+    expect(screen.queryByTestId('project-card-e1')).toBeNull();
+  });
+
+  it('says how many of how many, so the count cannot lie', () => {
+    openFiltered();
+    // The default already hides the finished card, and says so.
+    expect(screen.getByTestId('project-page-count').textContent).toBe('3 of 4 cards');
+    openStates();
+    fireEvent.click(screen.getByTestId('project-preset-all'));
+    expect(screen.getByTestId('project-page-count').textContent).toBe('4 cards');
+    openTypes();
+    fireEvent.click(screen.getByTestId('project-filter-type-BUG'));
+    expect(screen.getByTestId('project-page-count').textContent).toBe('1 of 4 cards');
+  });
+
+  it('flattens while filtered, because an indent without its parent is a lie', () => {
     // t1 sits two levels deep. With its ancestors filtered out, indenting it
     // would draw a child of nothing.
     openFiltered();
-    fireEvent.click(screen.getByTestId('project-filter-status'));
-    fireEvent.click(await screen.findByTestId('project-filter-status-CREATE_UNIT_TESTS'));
-    await waitFor(() => screen.getByTestId('project-card-t1'));
+    openStates();
+    fireEvent.click(screen.getByTestId('project-filter-state-TODO'));
+    fireEvent.click(screen.getByTestId('project-filter-state-DISCOVERY'));
     const row = screen.getByTestId('project-card-t1').parentElement as HTMLElement;
     expect(row.style.marginLeft).toBe('0px');
   });
 
-  it('nests again when the filter is cleared', async () => {
+  it('nests again when the filter is cleared', () => {
     openFiltered();
-    fireEvent.click(screen.getByTestId('project-filter-type'));
-    fireEvent.click(await screen.findByTestId('project-filter-type-TASK'));
-    await waitFor(() => screen.getByTestId('project-card-t1'));
-    fireEvent.click(screen.getByTestId('project-filter-type'));
-    fireEvent.click(await screen.findByTestId('project-filter-type-all'));
-    await waitFor(() => screen.getByTestId('project-card-e1'));
-    const row = screen.getByTestId('project-card-t1').parentElement as HTMLElement;
-    expect(row.style.marginLeft).toBe('36px');
+    openTypes();
+    fireEvent.click(screen.getByTestId('project-filter-type-TASK'));
+    expect((screen.getByTestId('project-card-t1').parentElement as HTMLElement).style.marginLeft).toBe('0px');
+    fireEvent.click(screen.getByTestId('project-filters-reset'));
+    expect(screen.getByTestId('project-card-e1')).toBeTruthy();
+    expect((screen.getByTestId('project-card-t1').parentElement as HTMLElement).style.marginLeft).toBe('36px');
   });
 
-  it('says the filter is what emptied the list, not the project', async () => {
+  it('resets to Open, not to everything', () => {
+    openFiltered();
+    // Nothing to reset while the default is showing.
+    expect(screen.queryByTestId('project-filters-reset')).toBeNull();
+    openStates();
+    fireEvent.click(screen.getByTestId('project-preset-all'));
+    fireEvent.click(screen.getByTestId('project-filters-reset'));
+    expect(screen.queryByTestId('project-card-b1')).toBeNull();
+    expect(screen.getByTestId('project-filter-state').textContent).toContain('Open');
+  });
+
+  it('says the filter is what emptied the list, not the project', () => {
     // "No cards yet" is wrong when there are 135 and a filter that matches
     // none of them.
     openFiltered();
-    fireEvent.click(screen.getByTestId('project-filter-status'));
-    fireEvent.click(await screen.findByTestId('project-filter-status-DONE'));
-    fireEvent.click(screen.getByTestId('project-filter-type'));
-    fireEvent.click(await screen.findByTestId('project-filter-type-EPIC'));
-    await waitFor(() => screen.getByTestId('project-page-no-match'));
+    openStates();
+    fireEvent.click(screen.getByTestId('project-preset-done'));
+    openTypes();
+    fireEvent.click(screen.getByTestId('project-filter-type-EPIC'));
+    expect(screen.getByTestId('project-page-no-match')).toBeTruthy();
     expect(screen.queryByTestId('project-page-empty')).toBeNull();
+    fireEvent.click(screen.getByTestId('project-filter-clear'));
+    expect(screen.getByTestId('project-card-e1')).toBeTruthy();
   });
 
-  it('shows no filters at all when the project has no cards', async () => {
+  it('says so when every card is finished, and offers them', () => {
+    // Open is the default, so a finished project would otherwise read as an
+    // empty list with nothing to clear.
+    openFiltered({ cards: [many[3]] as never });
+    expect(screen.getByTestId('project-page-all-done')).toBeTruthy();
+    expect(screen.queryByTestId('project-page-no-match')).toBeNull();
+    fireEvent.click(screen.getByTestId('project-page-show-done'));
+    expect(screen.getByTestId('project-card-b1')).toBeTruthy();
+  });
+
+  it('can select a card whose state is not in the flow', () => {
+    // PAUSED and BLOCKED are not steps; a filter that cannot name them makes
+    // those cards unreachable.
+    openFiltered({ cards: [...(many as never[]), { id: 'p9', projectId: 'p1', type: ItemType.TASK, title: 'waiting on infra', status: 'PAUSED' }] as never });
+    expect(screen.getByTestId('project-card-p9')).toBeTruthy();
+    openStates();
+    expect(screen.getByTestId('project-filter-state-PAUSED')).toBeTruthy();
+  });
+
+  it('keeps showing a card that reaches a state for the first time while Open is chosen', () => {
+    const { rerender } = openFiltered();
+    const moved = (many as never[]).map((c: { id: string }) => (c.id === 's1' ? { ...c, status: 'REVIEW' } : c));
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <ProjectPage project={project as never} cards={moved as never} flow={FLOW as never} />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByTestId('project-card-s1')).toBeTruthy();
+  });
+
+  it('shows no filters at all when the project has no cards', () => {
     // Controls that can only ever produce the empty list they are already
     // showing.
     open({ cards: [] });
-    expect(screen.queryByTestId('project-filter-type')).toBeNull();
+    expect(screen.queryByTestId('project-filters')).toBeNull();
+  });
+});
+
+
+/*
+ * 135 cards is not a list anybody reads top to bottom. A page at a time, with
+ * the count in the footer still describing the whole filter.
+ */
+describe('paging through many cards', () => {
+  const lots = (n: number) => Array.from({ length: n }, (_, i) => ({
+    id: `c${i}`, projectId: 'p1', type: ItemType.TASK, title: `card ${i}`, status: Status.TODO,
+  })) as never;
+
+  it('shows a page at a time once there are more than fit', () => {
+    open({ cards: lots(30) });
+    expect(screen.getByTestId('project-card-c0')).toBeTruthy();
+    expect(screen.getByTestId('project-card-c24')).toBeTruthy();
+    expect(screen.queryByTestId('project-card-c25')).toBeNull();
+    expect(screen.getByTestId('project-page-range').textContent).toBe('1–25 of 30');
+  });
+
+  it('moves forward and back, and cannot step off either end', () => {
+    open({ cards: lots(30) });
+    expect((screen.getByTestId('project-page-prev') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByTestId('project-page-next'));
+    expect(screen.getByTestId('project-card-c25')).toBeTruthy();
+    expect(screen.queryByTestId('project-card-c0')).toBeNull();
+    expect(screen.getByTestId('project-page-range').textContent).toBe('26–30 of 30');
+    expect((screen.getByTestId('project-page-next') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByTestId('project-page-prev'));
+    expect(screen.getByTestId('project-card-c0')).toBeTruthy();
+  });
+
+  it('goes back to the first page when the filter changes', () => {
+    open({ cards: lots(60) });
+    fireEvent.click(screen.getByTestId('project-page-next'));
+    fireEvent.change(screen.getByTestId('project-filter-search'), { target: { value: 'card' } });
+    expect(screen.getByTestId('project-card-c0')).toBeTruthy();
+    expect(screen.getByTestId('project-page-range').textContent).toBe('1–25 of 60');
+  });
+
+  it('does not strand you on a page that no longer exists', () => {
+    const { rerender } = open({ cards: lots(60) });
+    fireEvent.click(screen.getByTestId('project-page-next'));
+    fireEvent.click(screen.getByTestId('project-page-next'));
+    expect(screen.getByTestId('project-page-range').textContent).toBe('51–60 of 60');
+    // Cards closed elsewhere while this page was open.
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <ProjectPage project={project as never} cards={lots(30)} />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByTestId('project-page-range').textContent).toBe('26–30 of 30');
+  });
+
+  it('shows no pager when everything fits', () => {
+    open({ cards: lots(25) });
+    expect(screen.queryByTestId('project-page-pager')).toBeNull();
+  });
+
+  it('counts the filter in the footer, not the page', () => {
+    open({ cards: lots(30) });
+    expect(screen.getByTestId('project-page-count').textContent).toBe('30 cards');
+  });
+});
+
+
+/*
+ * A finished card has nothing to start.
+ *
+ * The report: every DONE row offered Start, and pressing it opened an agent on
+ * work that was over. The row says when it closed instead, and the row itself
+ * still opens the card.
+ */
+describe('what a finished card offers', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const SHIPPING = {
+    steps: [
+      { name: 'START', order: 0, isAnchor: true },
+      { name: 'WORK', order: 1 },
+      { name: 'SHIPPED', order: 2, isSpecial: true },
+    ],
+  };
+  const rows = [
+    { id: 'd1', projectId: 'p1', type: ItemType.TASK, title: 'upgrade the gateway', status: Status.DONE, updatedAt: new Date(Date.now() - 5 * DAY).toISOString() },
+    { id: 'w1', projectId: 'p1', type: ItemType.TASK, title: 'freeze the protocols', status: 'REVIEW' },
+  ] as never;
+
+  const showDone = () => {
+    fireEvent.click(screen.getByTestId('project-filter-state'));
+    fireEvent.click(screen.getByTestId('project-preset-all'));
+  };
+
+  it('offers no Start, and says when it closed', () => {
+    open({ cards: rows, onStartAgent: () => {} });
+    showDone();
+    expect(screen.queryByTestId('project-card-start-d1')).toBeNull();
+    expect(screen.getByTestId('project-card-done-d1').textContent).toBe('Done 5d ago');
+  });
+
+  it("treats a custom flow's exit the same way", () => {
+    open({
+      cards: [{ id: 's9', projectId: 'p1', type: ItemType.TASK, title: 'ship it', status: 'SHIPPED' }] as never,
+      flow: SHIPPING as never,
+      onStartAgent: () => {},
+    });
+    showDone();
+    expect(screen.queryByTestId('project-card-start-s9')).toBeNull();
+    expect(screen.getByTestId('project-card-done-s9')).toBeTruthy();
+  });
+
+  it('offers nothing even while a terminal is still open on it', () => {
+    open({ cards: rows, working: { d1: 'ours' }, onStartAgent: () => {} });
+    showDone();
+    expect(screen.queryByTestId('project-card-start-d1')).toBeNull();
+  });
+
+  it('still opens the card from the row', () => {
+    const onOpenCard = vi.fn();
+    open({ cards: rows, onOpenCard, onStartAgent: () => {} });
+    showDone();
+    fireEvent.click(screen.getByTestId('project-card-d1'));
+    expect(onOpenCard).toHaveBeenCalledWith(rows[0]);
+  });
+
+  it('says Resume, not Start, on a card part-way through with nothing on it', () => {
+    // Start reads as "from the beginning"; the press reopens the card's own
+    // conversation when it has one.
+    const onStartAgent = vi.fn();
+    open({ cards: rows, onStartAgent });
+    const button = screen.getByTestId('project-card-start-w1');
+    expect(button.textContent).toContain('Resume');
+    expect(button.getAttribute('aria-label')).toBe('Resume work on freeze the protocols');
+    fireEvent.click(button);
+    expect(onStartAgent).toHaveBeenCalledWith(rows[1]);
   });
 });
 
