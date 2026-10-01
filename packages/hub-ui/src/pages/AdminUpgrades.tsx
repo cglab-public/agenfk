@@ -355,6 +355,7 @@ export function AdminUpgrades() {
                           key={id}
                           type="button"
                           onClick={() => toggleInstallation(id)}
+                          aria-label={`Remove ${label}`}
                           className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] rounded bg-accent-fill text-accent-ink hover:bg-status-danger-bg hover:text-status-danger-text"
                           title="Remove"
                         >
@@ -438,6 +439,8 @@ export function AdminUpgrades() {
                     <button
                       onClick={(e) => { e.stopPropagation(); onCancel(d); }}
                       disabled={cancelMut.isPending}
+                      // Two upgrades to one version differ only by when they were issued.
+                      aria-label={`${d.progress.pending > 0 ? 'Cancel waiting' : 'Clear stuck'} upgrade to v${d.targetVersion} (${new Date(d.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })})`}
                       className="ml-1 px-1.5 py-0.5 rounded border border-status-danger-text/40 text-status-danger-text hover:bg-status-danger-bg disabled:opacity-50"
                       title={d.progress.pending > 0
                         ? "Cancel this upgrade where it hasn't started; offers to clear stuck running ones too"
@@ -643,6 +646,7 @@ export function GroupUpgrades() {
                   disabled={cancelMut.isPending && cancelMut.variables === d.id}
                   className="text-[11px] text-status-danger-text hover:underline"
                   data-testid={`group-dispatch-cancel-${d.id}`}
+                  aria-label={`Cancel group upgrade to v${d.targetVersion}`}
                 >
                   Cancel
                 </button>

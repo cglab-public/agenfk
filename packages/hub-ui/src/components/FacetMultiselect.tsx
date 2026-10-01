@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { FilterHeading } from './ui/ChipRow';
 import { Check, ChevronDown, Search, X } from 'lucide-react';
 import { filterFacetOptions } from './facetSearch';
 
@@ -37,6 +38,7 @@ export function FacetMultiselect({
   disabled = false,
 }: Props) {
   const [open, setOpen] = useState(false);
+  const headingId = useId();
   const [query, setQuery] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -93,14 +95,7 @@ export function FacetMultiselect({
   if (visible.length <= inlineThreshold) {
     return (
       <div>
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{label}</h3>
-          {selected.size > 0 && (
-            <button onClick={onClear} disabled={disabled} className="text-[11px] font-medium text-ink-tertiary hover:text-danger-muted disabled:opacity-50 disabled:hover:text-ink-tertiary">
-              Clear ({selected.size})
-            </button>
-          )}
-        </div>
+        <FilterHeading id={headingId} label={label} count={selected.size} onClear={onClear} disabled={disabled} />
         <div className="mt-1.5 flex flex-wrap gap-1.5">
           {visible.map((t) => {
             const on = selected.has(t);
@@ -127,14 +122,7 @@ export function FacetMultiselect({
 
   return (
     <div ref={rootRef} className="relative">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <h3 className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{label}</h3>
-        {selected.size > 0 && (
-          <button onClick={onClear} disabled={disabled} className="text-[11px] font-medium text-ink-tertiary hover:text-danger-muted disabled:opacity-50 disabled:hover:text-ink-tertiary">
-            Clear ({selected.size})
-          </button>
-        )}
-      </div>
+      <FilterHeading id={headingId} label={label} count={selected.size} onClear={onClear} disabled={disabled} />
 
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
         <button

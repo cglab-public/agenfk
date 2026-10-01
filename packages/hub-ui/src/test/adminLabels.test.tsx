@@ -101,7 +101,7 @@ describe('admin pages speak plainly', () => {
     // The summary chips use the same words as the pills.
     expect(screen.getByText('1 running')).toBeInTheDocument();
     expect(screen.getByText('1 updated')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Clear stuck' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Clear stuck upgrade to v/ })).toBeInTheDocument();
     (await screen.findByRole('button', { name: /issue upgrade/i })).click();
     expect(await screen.findByText(/Oldest version reported/)).toBeInTheDocument();
     expect(visibleText()).not.toMatch(JARGON);
@@ -138,7 +138,7 @@ describe('admin pages speak plainly', () => {
     const confirmSpy = forbidWindowConfirm();
     mount(<AdminUpgrades />);
     ((await screen.findByText('v2.0.1', { selector: 'span' })).closest('button') as HTMLElement).click();
-    (await screen.findByRole('button', { name: 'Clear stuck' })).click();
+    (await screen.findByRole('button', { name: /^Clear stuck upgrade to v/ })).click();
     const asked = await answerConfirm(false);
     expect(asked).toMatch(/still running this upgrade/);
     expect(asked).not.toMatch(/\btoo\b/); // nothing else is being cancelled

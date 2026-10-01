@@ -2,17 +2,19 @@ import { ReactNode, useId } from 'react';
 import { cn } from './cn';
 
 /** A filter's heading with its "Clear (n)" action. */
-export function FilterHeading({ id, label, count, onClear }: {
+export function FilterHeading({ id, label, count, onClear, disabled }: {
   id: string;
   label: string;
   count: number;
   onClear: () => void;
+  disabled?: boolean;
 }) {
   return (
     <div className="flex items-center justify-between gap-3 flex-wrap">
       <h3 id={id} className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{label}</h3>
       {count > 0 && (
-        <button type="button" onClick={onClear} className="text-xs font-medium text-ink-tertiary hover:text-ink">
+        // Each facet has a Clear: the name says which filter it empties.
+        <button type="button" onClick={onClear} disabled={disabled} aria-label={`Clear ${label} filter (${count})`} className="text-xs font-medium text-ink-tertiary hover:text-ink disabled:opacity-50">
           Clear ({count})
         </button>
       )}

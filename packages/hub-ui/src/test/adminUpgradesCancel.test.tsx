@@ -101,7 +101,7 @@ describe('AdminUpgrades — cancelling a directive', () => {
   it('Cancel waiting POSTs a plain cancel once confirmed', async () => {
     routes([directive({ pending: 2 })]);
     renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: 'Cancel waiting' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Cancel waiting upgrade to v/ }));
     expect(await answerConfirm(true)).toMatch(/2 waiting upgrades/);
     await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/upgrade/dir-1/cancel', {}));
   });
@@ -109,7 +109,7 @@ describe('AdminUpgrades — cancelling a directive', () => {
   it('Cancel waiting does nothing when the admin declines', async () => {
     routes([directive({ pending: 2 })]);
     renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: 'Cancel waiting' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Cancel waiting upgrade to v/ }));
     await answerConfirm(false);
     await settle();
     expect(post).not.toHaveBeenCalled();
@@ -118,8 +118,8 @@ describe('AdminUpgrades — cancelling a directive', () => {
   it('with only running targets the control reads Clear stuck and sends force once confirmed', async () => {
     routes([directive({ in_progress: 1 }, [target('inst-1', 'in_progress')])]);
     renderPage();
-    const clear = await screen.findByRole('button', { name: 'Clear stuck' });
-    expect(screen.queryByRole('button', { name: 'Cancel waiting' })).not.toBeInTheDocument();
+    const clear = await screen.findByRole('button', { name: /^Clear stuck upgrade to v/ });
+    expect(screen.queryByRole('button', { name: /^Cancel waiting upgrade to v/ })).not.toBeInTheDocument();
     fireEvent.click(clear);
     expect(await answerConfirm(true)).toMatch(/still running/);
     await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/upgrade/dir-1/cancel', { force: true }));
@@ -128,7 +128,7 @@ describe('AdminUpgrades — cancelling a directive', () => {
   it('Clear stuck sends nothing when the force confirm is declined', async () => {
     routes([directive({ in_progress: 1 }, [target('inst-1', 'in_progress')])]);
     renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: 'Clear stuck' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Clear stuck upgrade to v/ }));
     await answerConfirm(false);
     await settle();
     expect(post).not.toHaveBeenCalled();
@@ -137,7 +137,7 @@ describe('AdminUpgrades — cancelling a directive', () => {
   it('with waiting and running targets, declining the force confirm still cancels the waiting ones', async () => {
     routes([directive({ pending: 1, in_progress: 1 }, [target('inst-1', 'pending'), target('inst-2', 'in_progress')])]);
     renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: 'Cancel waiting' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Cancel waiting upgrade to v/ }));
     expect(await answerConfirm(true)).toMatch(/waiting upgrade/);
     expect(await answerConfirm(false)).toMatch(/still running/);
     await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/upgrade/dir-1/cancel', {}));

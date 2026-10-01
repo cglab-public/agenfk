@@ -291,6 +291,7 @@ export function AdminKeys() {
                     <span className="text-[11px] text-ink-tertiary">expires {<LocalTime value={inv.expiresAt} format="date" />}</span>
                     <button
                       onClick={() => setInvites(prev => prev.filter(p => p.id !== inv.id))}
+                      aria-label={`Dismiss invite ${idx + 1}`}
                       title="Dismiss"
                       className="text-ink-tertiary hover:text-status-danger-text"
                     >
@@ -299,7 +300,7 @@ export function AdminKeys() {
                   </div>
                 </div>
                 <pre className="mt-2 px-3 py-2.5 rounded-lg bg-canvas text-ink text-xs font-mono overflow-x-auto select-all">{inv.joinCommand}</pre>
-                <CopyButton value={inv.joinCommand} label="Copy to clipboard" className="mt-2" />
+                <CopyButton value={inv.joinCommand} label={`Copy invite ${idx + 1} command`} className="mt-2" />
               </div>
             ))}
           </div>
@@ -389,6 +390,7 @@ export function AdminKeys() {
                                   confirmLabel: 'Revoke key',
                                 })) revoke.mutate(k.tokenHashPreview);
                               }}
+                              aria-label={`Revoke key ${k.label ?? k.tokenHashPreview}`}
                               className="inline-flex items-center gap-1 text-xs font-semibold text-ink-tertiary hover:text-status-danger-text">
                         <Trash2 className="w-3 h-3" /> Revoke
                       </button>
@@ -588,6 +590,7 @@ export function AdminUsers() {
                           })) remove.mutate(u.id);
                         }}
                         disabled={remove.isPending}
+                        aria-label={`Delete ${u.email}`}
                         title="Delete user"
                         className="inline-flex items-center gap-1 text-xs font-semibold text-ink-tertiary hover:text-status-danger-text disabled:opacity-50"
                       >
@@ -870,6 +873,7 @@ export function AdminInstallations() {
                 <button
                   onClick={() => unhide.mutate(p.userKey)}
                   disabled={unhide.isPending}
+                  aria-label={`Unhide ${p.userKey}`}
                   className="inline-flex items-center gap-1 text-[11px] font-semibold text-accent-ink hover:opacity-80"
                 >
                   <Eye className="w-3.5 h-3.5" /> Unhide

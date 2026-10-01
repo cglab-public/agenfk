@@ -101,7 +101,7 @@ describe('the copies that moved to the shared button still copy the right value'
     mount(<AdminKeys />);
     fireEvent.click(screen.getByRole('button', { name: /generate invite/i }));
     await screen.findByText('agenfk hub join tok-9');
-    fireEvent.click(screen.getByRole('button', { name: 'Copy to clipboard' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy invite 1 command' }));
     expect(writeText).toHaveBeenCalledWith('agenfk hub join tok-9');
   });
 

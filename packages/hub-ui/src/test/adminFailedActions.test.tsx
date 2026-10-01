@@ -343,7 +343,7 @@ describe('Identities: each control has its own error', () => {
     mount(<AdminIdentities />);
     fireEvent.change(await screen.findByPlaceholderText('from (old identity)'), { target: { value: 'typed' } });
     await screen.findByText(/12 events/);
-    fireEvent.click(screen.getAllByRole('button', { name: /^merge$/i })[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Merge dp into dp@acme.dev' }));
     await answerConfirm(true);
     await waitFor(() => expect(api.post).toHaveBeenCalled());
     await letMutationsLand();
@@ -354,7 +354,7 @@ describe('Identities: each control has its own error', () => {
     fn(api.post).mockRejectedValueOnce(refuse('source still has a live API key', 409));
     mount(<AdminIdentities />);
     await screen.findByText(/12 events/);
-    fireEvent.click(screen.getAllByRole('button', { name: /^merge$/i })[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Merge dp into dp@acme.dev' }));
     await answerConfirm(true);
     expect(await within(section(/identity suggestions/i)).findByText('source still has a live API key')).toBeInTheDocument();
     expect(within(section(/merge manually/i)).queryByText('source still has a live API key')).not.toBeInTheDocument();

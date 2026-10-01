@@ -164,6 +164,7 @@ export function AdminIdentities() {
                   <button
                     onClick={() => confirmMerge({ from: sug.from, to: sug.to }, sug.events)}
                     disabled={!canMergeInOneClick(sug) || merge.isPending}
+                    aria-label={`Merge ${sug.from} into ${sug.to}`}
                     title={blocked ?? 'Merge this identity'}
                     className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-accent bg-accent-fill px-2.5 py-1.5 text-[11px] font-semibold text-accent-ink disabled:opacity-40 disabled:cursor-not-allowed"
                   >
@@ -287,6 +288,7 @@ export function AdminIdentities() {
                             })) revert.mutate(m.id);
                           }}
                           disabled={revert.isPending}
+                          aria-label={`Revert merge of ${m.from} into ${m.to}`}
                           title="Move these events back to their original identity"
                           className="inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-status-warn-text"
                         >

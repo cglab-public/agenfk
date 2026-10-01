@@ -80,7 +80,7 @@ describe('FacetMultiselect disabled', () => {
         disabled
       />,
     );
-    const clear = screen.getByRole('button', { name: /Clear \(1\)/ });
+    const clear = screen.getByRole('button', { name: /^Clear .+ filter \(1\)$/ });
     expect(clear).toBeDisabled();
     fireEvent.click(clear);
     expect(onClear).not.toHaveBeenCalled();

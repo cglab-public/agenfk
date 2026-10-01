@@ -141,7 +141,7 @@ describe('Identities', () => {
     mount(<AdminIdentities />);
     // The suggestion's Merge comes first; the manual one below it starts disabled.
     await screen.findByText(/12 events/);
-    const btn = screen.getAllByRole('button', { name: /^merge$/i })[0];
+    const btn = screen.getByRole('button', { name: 'Merge dp into dp@acme.dev' });
     await asksFirst(() => { fireEvent.click(btn); }, /merge history.*newest first/i);
     expect(api.post).toHaveBeenCalledWith('/v1/admin/user-keys/merge', { from: 'dp', to: 'dp@acme.dev' });
   });
@@ -181,7 +181,7 @@ describe('Flows', () => {
     table = flowRoutes({ '/v1/admin/flow-assignments': [{ scope: 'org', targetId: '', flowId: 'f-local', updatedAt: '2026-09-01' }] });
     mount(<AdminFlows />);
     await expand();
-    const clear = await screen.findByRole('button', { name: 'Clear' });
+    const clear = await screen.findByRole('button', { name: 'Clear org default (Group TDD)' });
     await asksFirst(() => { fireEvent.click(clear); }, /keep the flow they already have/i);
     expect(api.put).toHaveBeenCalledWith('/v1/admin/flow-assignments', { scope: 'org', targetId: '', flowId: null });
   });

@@ -521,6 +521,7 @@ function AssignmentsPanel({
               })) remove.mutate({ scope: 'org', targetId: '' });
             }}
             disabled={remove.isPending}
+            aria-label={`Clear org default (${flow.name})`}
             className="text-[11px] text-status-danger-text hover:underline"
           >
             Clear
@@ -579,6 +580,7 @@ function AssignmentsPanel({
       <ScopeSection
         scope="repo"
         label="Repo overrides"
+        addLabel="Add repo override"
         chipClass="text-ink-secondary"
         rows={assignments.filter(a => a.scope === 'repo')}
         onRemove={(targetId) => confirmRemove('repo', assignments.find(a => a.scope === 'repo' && a.targetId === targetId), targetId)}
@@ -589,6 +591,7 @@ function AssignmentsPanel({
       <ScopeSection
         scope="installation"
         label="Installation overrides"
+        addLabel="Add installation override"
         chipClass="text-ink-secondary"
         rows={assignments.filter(a => a.scope === 'installation')}
         onRemove={(targetId) => confirmRemove('installation', undefined, targetId)}
@@ -827,6 +830,7 @@ function FlowDispatches({
                   disabled={cancel.isPending && cancel.variables === d.id}
                   className="text-[11px] text-status-danger-text hover:underline"
                   data-testid={`flow-dispatch-cancel-${d.id}`}
+                  aria-label={`Cancel dispatch of ${nameOf(d.flowId)} v${d.flowVersion}`}
                 >
                   Cancel
                 </button>
@@ -867,10 +871,12 @@ function FlowDispatches({
 }
 
 function ScopeSection({
-  label, chipClass, rows, onRemove, onAdd,
+  label, addLabel, chipClass, rows, onRemove, onAdd,
 }: {
   scope: 'repo' | 'installation';
   label: string;
+  /** The Add button's name: both sections have one, so a bare "Add" is ambiguous. */
+  addLabel: string;
   chipClass: string;
   rows: Assignment[];
   onRemove: (targetId: string) => void;
@@ -882,6 +888,7 @@ function ScopeSection({
         <span className="text-[11px] font-semibold text-ink-secondary">{label}</span>
         <button
           onClick={onAdd}
+          aria-label={addLabel}
           className="text-[11px] text-accent-ink hover:underline inline-flex items-center gap-1"
         >
           <Plus className="w-3 h-3" /> Add
@@ -898,7 +905,7 @@ function ScopeSection({
           <button
             onClick={() => onRemove(r.targetId)}
             className="text-ink-tertiary hover:text-status-danger-text"
-            aria-label="Remove"
+            aria-label={`Remove override for ${r.remoteUrl ?? r.targetId}`}
           >
             <Trash2 className="w-3.5 h-3.5" />
           </button>

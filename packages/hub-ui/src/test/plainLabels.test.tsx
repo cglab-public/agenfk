@@ -98,7 +98,7 @@ describe('EventTypeChips', () => {
     expect(screen.getByRole('button', { name: 'Check failed' })).toHaveAttribute('aria-pressed', 'true');
     fireEvent.click(screen.getByRole('button', { name: 'Item closed' }));
     expect(screen.getByRole('button', { name: 'Item closed' })).toHaveAttribute('aria-pressed', 'true');
-    fireEvent.click(screen.getByRole('button', { name: 'Clear (2)' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear Event type filter (2)' }));
     expect(screen.queryByRole('button', { pressed: true })).toBeNull();
   });
 });

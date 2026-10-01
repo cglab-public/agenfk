@@ -84,6 +84,8 @@ function EventBody({ e }: { e: TimelineRow }) {
       <button
         type="button"
         aria-expanded={raw}
+        // Several events can be open at once: name whose JSON this is.
+        aria-label={`${raw ? 'Hide' : 'Show'} raw JSON for ${eventTypeLabel(e.type)}${e.item_title ? ` ${e.item_title}` : ''}`}
         onClick={() => setRaw(v => !v)}
         className="text-[11px] font-medium text-ink-tertiary hover:text-ink"
       >

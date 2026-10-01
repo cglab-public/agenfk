@@ -163,10 +163,11 @@ describe('the user page event list', () => {
     expect(pr).toHaveAttribute('title', 'https://github.com/acme/api/pull/7');
     expect(within(details).getByText('Model').nextElementSibling).toHaveTextContent('claude-opus-5-5');
     expect(details.querySelector('pre')).toBeNull();
-    const toggle = within(details).getByRole('button', { name: 'Show raw JSON' });
+    // Several events can be open at once: each toggle names its own event.
+    const toggle = within(details).getByRole('button', { name: /^Show raw JSON for PR opened\b/ });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(toggle);
-    expect(within(details).getByRole('button', { name: 'Hide raw JSON' })).toHaveAttribute('aria-expanded', 'true');
+    expect(within(details).getByRole('button', { name: /^Hide raw JSON for PR opened\b/ })).toHaveAttribute('aria-expanded', 'true');
     expect(details.querySelector('pre')).toHaveTextContent('"prNumber": 7');
   });
 });
