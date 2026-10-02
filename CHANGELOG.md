@@ -2,6 +2,43 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.26] — 2026-10-02
+
+Pre-release. Beta, cumulative over `2.0.0-beta.25`: everything in beta.25 and beta.24 (below), plus the fixes in
+this section and the Windows CI job from `main` (PR #202).
+
+### Security
+
+- **JIRA secrets are owner-only (cc26b206).** `~/.agenfk/config.json` (the JIRA client secret) and
+  `jira-token.json` (access and refresh token) were written 0644, readable by every local user. Every writer -
+  the CLI, the server, telemetry and the installer - now writes them 0600, through a fresh file renamed over the
+  old one, so a reader that opened the old file cannot follow later writes. The server also tightens both on
+  start. If other people have logins on your machine, rotate the JIRA client secret: it may already have been read.
+- **A federation parent is never a link-local or cloud-metadata address (9afde47e, fa4f7dbd).**
+  `AGENFK_HUB_ALLOW_PRIVATE_PARENT` admits a parent on the LAN; it no longer admits `169.254.0.0/16`, `fe80::/10`,
+  AWS/GCP/OCI/Alibaba metadata (including their IPv6 addresses), Azure WireServer `168.63.129.16` or OCI Classic
+  `192.0.0.192`, in any spelling (IPv4-mapped, NAT64, 6to4, RFC 8215 local-use NAT64 under every placement). The
+  rule is applied to the URL, to every DNS answer and, for a stored IP-literal parent, before the socket opens. A
+  parent reached over link-local, which used to work with the opt-in, is now refused.
+
+### Upgrades pick the newest release by version
+
+- **`agenfk upgrade` never downgrades without being asked (3a261573).** On a beta, plain `upgrade` used to install
+  the older latest stable. It now refuses a version that is not newer; `--force` reinstalls the same version only,
+  and only `--version <x>` goes backwards. `--beta` includes stable, so a beta install moves to the stable that
+  graduates it. `/agenfk-upgrade` picks the channel from the installed version and no longer passes `--force`.
+- **"Latest" means newest by version, everywhere.** GitHub's `/releases/latest` picks by date, so an older line's
+  hotfix or a hub release could win. The CLI, the server's `/releases/latest` (which feeds the upgrade-tier gate,
+  the MCP notice and the board's reminder) and both npx installers now take the newest framework release by
+  version: never a `hub-v*` tag, a draft, or a tag with a prerelease part on stable (022b229a, 4bd98e16).
+- **The upgrade tier is the strongest among releases newer than yours (022b229a).** A mandatory hotfix on an older
+  line still gates, and `agenfk upgrade`, which installs the newest, satisfies it.
+
+### CI
+
+- **A Windows compat job runs beside the Linux one (PR #202).** Advisory for now (`continue-on-error`); it runs
+  `npm run test:windows` with a HOME that has spaces and accents.
+
 ## [2.0.0-beta.25] — 2026-10-02
 
 Pre-release. Beta, cumulative over `2.0.0-beta.24`.
