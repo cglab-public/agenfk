@@ -28,3 +28,4 @@ export * from './reviewProposal';
 export * from './projectSettings';
 export * from './projectFile';
 export * from './commandApproval';
+export * from './privateFile';

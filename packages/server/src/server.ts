@@ -17,7 +17,7 @@ import { retainSuperseded, withRecordRetention } from './recordRetention';
 import { compactAuthored, expandAuthored } from './authoredRecord';
 import { pruneStepRecords } from './pruneRecords';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { readProjectFile, approvalFor, commandFingerprint, hiddenCharacters, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, foreignClaimsFor, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
+import { readProjectFile, writePrivateFileSync, tightenPrivateFile, approvalFor, commandFingerprint, hiddenCharacters, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, foreignClaimsFor, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -1530,6 +1530,7 @@ export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null
 // ── Storage initialisation ───────────────────────────────────────────────────
 
 const initStorage = async () => {
+  tightenSecretFiles();
   // Priority: env var → ~/.agenfk/config.json → default
   if (process.env.AGENFK_DB_PATH) {
     dbPath = process.env.AGENFK_DB_PATH;
@@ -10585,11 +10586,24 @@ const loadJiraToken = (): JiraTokenData | null => {
 export let jiraValidationCache: { valid: boolean; checkedAt: number } | null = null;
 const JIRA_VALIDATION_TTL = 60_000; // 60 seconds
 
+// The token file holds the access AND refresh token: owner-only (BUG cc26b206).
 const saveJiraToken = (data: JiraTokenData): void => {
-  const dir = path.dirname(jiraTokenPath());
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(jiraTokenPath(), JSON.stringify(data, null, 2));
+  writePrivateFileSync(jiraTokenPath(), JSON.stringify(data, null, 2));
   jiraValidationCache = null;
+};
+
+/**
+ * Files an older release wrote 0644 (BUG cc26b206) are tightened at boot, not
+ * only on their next write: a refresh token can sit unwritten for months.
+ * config.json carries the JIRA clientSecret. A failure costs the warning, not
+ * the boot.
+ */
+export const tightenSecretFiles = (): void => {
+  for (const file of [path.join(os.homedir(), '.agenfk', 'config.json'), jiraTokenPath()]) {
+    try { tightenPrivateFile(file); } catch (e: any) {
+      console.warn(`[SERVER_START] Could not make ${file} owner-only (${e?.code ?? e?.message}); it may be readable by other local users.`);
+    }
+  }
 };
 
 const deleteJiraToken = (): void => {
@@ -10849,7 +10863,10 @@ app.get("/jira/oauth/authorize", limitExpensive, asyncHandler(async (req: any, r
   }
   const redirectUri = jiraConfig.redirectUri || `http://localhost:3000/jira/oauth/callback`;
   const { state } = generateOAuthState();
-  oauthStateStore.set(state, { expiresAt: Date.now() + 10 * 60 * 1000 });
+  // An abandoned sign-in never reaches the callback that deletes its state.
+  const now = Date.now();
+  for (const [key, entry] of oauthStateStore) if (entry.expiresAt <= now) oauthStateStore.delete(key);
+  oauthStateStore.set(state, { expiresAt: now + 10 * 60 * 1000 });
   const params = new URLSearchParams({
     audience: 'api.atlassian.com',
     client_id: jiraConfig.clientId,

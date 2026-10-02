@@ -6,6 +6,7 @@ import { spawn, spawnSync, execSync } from 'child_process';
 import crypto from 'crypto';
 import { fileURLToPath, pathToFileURL } from 'url';
 import readline from 'readline';
+import { writePrivateFileSync } from './private-file.mjs';
 import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, buildPosixWrapper, applyClaudeHooks, isDevCheckout } from './install-helpers.mjs';
 
 const GREEN = '\x1b[32m';
@@ -660,7 +661,8 @@ async function run() {
     if (configDirty) {
         // 3a. Write ~/.agenfk/config.json
         const configData = { ...existingConfig, dbPath, rulesScope, withMcp, codexMcp, telemetry: existingConfig.telemetry ?? true };
-        await fs.writeFile(agenfkConfigPath, JSON.stringify(configData, null, 2), 'utf8');
+        // Owner-only: it carries the JIRA clientSecret (BUG cc26b206).
+        writePrivateFileSync(agenfkConfigPath, JSON.stringify(configData, null, 2));
         detail(`  Config written: ${agenfkConfigPath}`);
     }
 

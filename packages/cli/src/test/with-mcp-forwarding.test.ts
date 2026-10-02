@@ -31,8 +31,8 @@ vi.mock('fs', () => ({
   existsSync: mockExistsSync,
   readFileSync: mockReadFileSync,
   writeFileSync: vi.fn(),
-  mkdirSync: vi.fn(),
-  default: { existsSync: mockExistsSync, readFileSync: mockReadFileSync, writeFileSync: vi.fn(), mkdirSync: vi.fn() },
+  mkdirSync: vi.fn(), chmodSync: vi.fn(), renameSync: vi.fn(), unlinkSync: vi.fn(),
+  default: { existsSync: mockExistsSync, readFileSync: mockReadFileSync, writeFileSync: vi.fn(), mkdirSync: vi.fn(), chmodSync: vi.fn(), renameSync: vi.fn(), unlinkSync: vi.fn() },
 }));
 vi.mock('axios');
 vi.mock('child_process', () => ({

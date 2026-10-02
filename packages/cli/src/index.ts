@@ -2,7 +2,7 @@ import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { harnessActor, resolveFromOptions } from './harnessModel.js';
 import axios from 'axios';
-import { readProjectFile, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
+import { readProjectFile, writePrivateFileSync, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
 import { findUpdateNotice } from './updateNotice.js';
 import { writeActiveWork } from './activeWork.js';
 import { resolveItemIdPrefix } from './resolveItemId.js';
@@ -431,7 +431,7 @@ function setPausedIntegrations(list: string[]): void {
     try { cfg = JSON.parse(fs.readFileSync(agenfkConfigPath(), 'utf8')); } catch {}
   }
   cfg.pausedIntegrations = list;
-  fs.writeFileSync(agenfkConfigPath(), JSON.stringify(cfg, null, 2), 'utf8');
+  writePrivateFileSync(agenfkConfigPath(), JSON.stringify(cfg, null, 2));
 }
 
 export { program };
@@ -2587,7 +2587,7 @@ jiraCommand
         config.jira = { clientId, clientSecret, redirectUri };
         const agenfkDir = path.join(os.homedir(), '.agenfk');
         if (!fs.existsSync(agenfkDir)) fs.mkdirSync(agenfkDir, { recursive: true });
-        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+        writePrivateFileSync(configPath, JSON.stringify(config, null, 2));
 
         console.log(chalk.green('\nJIRA integration configured successfully!'));
         console.log(chalk.gray(`  Client ID:    ${clientId}`));
@@ -2806,7 +2806,7 @@ githubCommand
 
     const agenfkDir = path.join(os.homedir(), '.agenfk');
     if (!fs.existsSync(agenfkDir)) fs.mkdirSync(agenfkDir, { recursive: true });
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    writePrivateFileSync(configPath, JSON.stringify(config, null, 2));
 
     console.log(chalk.green(`\nGitHub import configured for project ${projectId}!`));
     console.log(chalk.gray(`  Repository: ${owner}/${repo}`));
@@ -2890,7 +2890,7 @@ githubCommand
         if (Object.keys(config.github.repos).length === 0) {
           delete config.github;
         }
-        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+        writePrivateFileSync(configPath, JSON.stringify(config, null, 2));
         console.log(chalk.green('GitHub import configuration removed for this project.'));
       } else {
         console.log(chalk.yellow('No GitHub configuration found for this project.'));
@@ -3017,7 +3017,7 @@ configSetCommand
         config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       }
       config.flowRegistry = value;
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+      writePrivateFileSync(configPath, JSON.stringify(config, null, 2));
       console.log(chalk.green(`Flow registry set to: ${value}`));
     } catch (err: any) {
       console.error(chalk.red('Error updating config:'), err.message);
@@ -3525,7 +3525,7 @@ rulesCommand
         config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       }
       config.rulesScope = scope;
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+      writePrivateFileSync(configPath, JSON.stringify(config, null, 2));
 
       console.log(chalk.green(`Workflow rules & skills installed (${scope}):`));
       installed.forEach(l => console.log(l));
@@ -3606,7 +3606,7 @@ rulesCommand
       }
       if (config.rulesScope === scope) {
         delete config.rulesScope;
-        fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+        writePrivateFileSync(configPath, JSON.stringify(config, null, 2));
       }
 
       if (removed.length) {
