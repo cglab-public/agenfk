@@ -301,9 +301,13 @@ describe('Admin → Child hubs', () => {
     });
     const rows = await screen.findAllByRole('row');
     const emea = rows.find(r => r.textContent?.includes('acme-emea'))!;
-    expect(emea.textContent!.length).toBeLessThan(200);
-    // the whole sentence is still reachable
-    expect(within(emea).getByTitle(long)).toBeInTheDocument();
+    // Short on the row: the reason sits behind a disclosure, closed by default.
+    const disclosure = emea.querySelector('details')!;
+    expect(disclosure.open).toBe(false);
+    expect(disclosure.querySelector('summary')!.textContent!.length).toBeLessThan(200);
+    // The whole sentence is reachable without a mouse: in the disclosure, not a title.
+    expect(within(emea).queryByTitle(long)).toBeNull();
+    expect(disclosure.textContent).toContain(long);
   });
 
   it('tells the admin that detaching is how a release request is granted', async () => {

@@ -180,15 +180,21 @@ export function AdminChildHubs() {
                   <td className="px-2 py-2.5 font-medium text-ink">
                     {c.name}
                     {c.releaseRequested && !c.detached && (
-                      <span className="ml-2 inline-flex items-center gap-1 text-[11px] text-status-warn-text">
-                        <AlertTriangle className="w-3 h-3" />
-                        <span title={c.releaseReason ?? undefined}>
-                          release requested
-                          {c.releaseReason
-                            ? `: ${c.releaseReason.length > 60 ? `${c.releaseReason.slice(0, 60)}…` : c.releaseReason}`
-                            : ''}
+                      c.releaseReason && c.releaseReason.length > 60 ? (
+                        // The reason can be long: behind a disclosure anyone can
+                        // open, not cut off with the rest in a mouse-only title.
+                        <details className="ml-2 inline-block align-middle text-[11px] text-status-warn-text">
+                          <summary className="inline-flex items-center gap-1 cursor-pointer">
+                            <AlertTriangle className="w-3 h-3" /> release requested
+                          </summary>
+                          <p className="mt-1 max-w-prose whitespace-pre-wrap break-words text-ink-secondary">{c.releaseReason}</p>
+                        </details>
+                      ) : (
+                        // A short reason fits on the row as it is.
+                        <span className="ml-2 inline-flex items-center gap-1 text-[11px] text-status-warn-text">
+                          <AlertTriangle className="w-3 h-3" /> release requested{c.releaseReason ? `: ${c.releaseReason}` : ''}
                         </span>
-                      </span>
+                      )
                     )}
                     {c.detached && (
                       <span className="ml-2 text-[11px] text-ink-tertiary">

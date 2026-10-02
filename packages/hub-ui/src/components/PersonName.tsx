@@ -3,11 +3,13 @@
  * user_key (usually an email) under it; the key alone, in mono, when it does not.
  */
 export function PersonName({ name, userKey, className = '' }: { name?: string; userKey: string; className?: string }) {
-  if (!name) return <span className={`font-mono text-[12px] text-ink truncate ${className}`} title={userKey}>{userKey}</span>;
+  // Wrapped, not truncated: the key is what tells two people apart, and a
+  // cut-off key's rest lived only in a mouse-only title.
+  if (!name) return <span className={`font-mono text-[12px] text-ink break-all ${className}`}>{userKey}</span>;
   return (
-    <span className={`min-w-0 flex flex-col ${className}`} title={userKey}>
-      <span className="text-[13px] text-ink truncate">{name}</span>
-      <span className="font-mono text-[11px] text-ink-tertiary truncate">{userKey}</span>
+    <span className={`min-w-0 flex flex-col ${className}`}>
+      <span className="text-[13px] text-ink break-words">{name}</span>
+      <span className="font-mono text-[11px] text-ink-tertiary break-all">{userKey}</span>
     </span>
   );
 }

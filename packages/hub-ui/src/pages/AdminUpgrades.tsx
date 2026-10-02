@@ -462,7 +462,8 @@ export function AdminUpgrades() {
               {isOpen && d.targets.length > 0 && (
                 <div className="border-t border-border-soft divide-y divide-border-soft">
                   {d.targets.map(t => (
-                    <div key={t.installationId} className="flex items-center justify-between gap-3 px-3 py-1.5 text-[11px]">
+                    <div key={t.installationId} className="px-3 py-1.5 text-[11px]">
+                    <div className="flex items-center justify-between gap-3">
                       <span
                         className="text-ink-secondary truncate"
                         title={t.installationId}
@@ -480,8 +481,10 @@ export function AdminUpgrades() {
                           </span>
                         )}
                         <StatePill state={t.state} />
-                        {t.errorMessage && <span className="text-status-danger-text truncate max-w-[18ch]" title={t.errorMessage}>{t.errorMessage}</span>}
                       </span>
+                    </div>
+                    {/* Its own line, wrapped: the whole error, not a clipped one. */}
+                    {t.errorMessage && <p className="mt-0.5 text-status-danger-text break-words">{t.errorMessage}</p>}
                     </div>
                   ))}
                 </div>

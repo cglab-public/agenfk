@@ -858,7 +858,7 @@ function FlowDispatches({
                     >
                       <span className="font-medium text-ink">{t.name}</span>
                       <span className={'px-1.5 py-0.5 rounded text-[10px] font-bold ' + toneClass(row.tone)}>{row.label}</span>
-                      {row.detail && <span className="truncate min-w-0" title={row.detail}>{row.detail}</span>}
+                      {row.detail && <span className="break-words min-w-0">{row.detail}</span>}
                     </div>
                   );
                 })}
@@ -901,7 +901,7 @@ function ScopeSection({
       )}
       {rows.map((r) => (
         <div key={r.targetId} className="flex items-center justify-between bg-surface border border-border-soft rounded-md px-2 py-1.5">
-          <span className={'min-w-0 truncate font-mono text-[11px] ' + chipClass} title={r.remoteUrl ?? r.targetId}>
+          <span className={'min-w-0 break-all font-mono text-[11px] ' + chipClass}>
             {r.remoteUrl ?? r.targetId}
           </span>
           <button

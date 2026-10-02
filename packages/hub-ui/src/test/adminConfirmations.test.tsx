@@ -190,8 +190,7 @@ describe('Flows', () => {
     table = flowRoutes({ '/v1/admin/flow-assignments': [{ scope: 'repo', targetId: 'github.com/acme/api', remoteUrl: 'github.com/acme/api', flowId: 'f-local', updatedAt: '2026-09-01' }] });
     mount(<AdminFlows />);
     await expand();
-    const row = (await screen.findByTitle('github.com/acme/api')).parentElement as HTMLElement;
-    const remove = within(row).getByRole('button', { name: /remove/i });
+    const remove = await screen.findByRole('button', { name: 'Remove override for github.com/acme/api' });
     await asksFirst(() => { fireEvent.click(remove); }, /github\.com\/acme\/api.*org default.*keep the flow/i);
     expect(api.put).toHaveBeenCalledWith('/v1/admin/flow-assignments', { scope: 'repo', targetId: 'github.com/acme/api', flowId: null });
   });
@@ -200,8 +199,8 @@ describe('Flows', () => {
     table = flowRoutes({ '/v1/admin/flow-assignments': [{ scope: 'installation', targetId: 'inst-7', flowId: 'f-local', updatedAt: '2026-09-01' }] });
     mount(<AdminFlows />);
     await expand();
-    const row = (await screen.findByTitle('inst-7')).parentElement as HTMLElement;
-    await asksFirst(() => { fireEvent.click(within(row).getByRole('button', { name: /remove/i })); }, /inst-7/);
+    const remove = await screen.findByRole('button', { name: 'Remove override for inst-7' });
+    await asksFirst(() => { fireEvent.click(remove); }, /inst-7/);
     expect(api.put).toHaveBeenCalledWith('/v1/admin/flow-assignments', { scope: 'installation', targetId: 'inst-7', flowId: null });
   });
 
