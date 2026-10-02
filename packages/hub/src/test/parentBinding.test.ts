@@ -142,6 +142,47 @@ describe('assertHttpUrl', () => {
     }
   });
 
+  // BUG fa4f7dbd (from the 9afde47e review): three more addresses no parent
+  // lives at. Azure's WireServer is a PUBLIC address, so it was accepted even
+  // without the opt-in; local-use NAT64 was not unwrapped at all.
+  it('refuses Azure WireServer, OCI Classic metadata and local-use NAT64 spellings, opted in or not', () => {
+    for (const host of [
+      'http://168.63.129.16', 'http://168.63.129.16:32526',     // Azure WireServer (public address)
+      'http://192.0.0.192',                                    // OCI Classic metadata
+      'http://[64:ff9b:1::a9fe:a9fe]',                         // RFC 8215 local-use NAT64 of 169.254.169.254
+      'http://[64:ff9b:1::a83f:8110]',                         // ... of 168.63.129.16
+      'http://[::ffff:168.63.129.16]',
+      'http://[64:ff9b:1:1::a9fe:a9fe]', 'http://[64:ff9b:1:ffff::a83f:8110]', // any /96 in the /48 (review)
+      'http://[fd00:c1::a9fe:a9fe]',                           // OCI IMDS over IPv6
+    ]) {
+      expect(() => assertHttpUrl(host), host).toThrow();
+      expect(() => assertHttpUrl(host, { allowPrivate: true }), host).toThrow(/link-local or cloud-metadata/i);
+    }
+  });
+
+  it('treats local-use NAT64 as a local network: private whatever IPv4 it carries, admitted only with the opt-in', () => {
+    // It is local by definition (RFC 8215), so even a public IPv4 inside it
+    // needs the opt-in (re-review: the /48 entry had been dead code).
+    for (const host of ['http://[64:ff9b:1::a00:5]', 'http://[64:ff9b:1::808:808]', 'http://[64:ff9b:1:1::808:808]']) {
+      expect(() => assertHttpUrl(host), host).toThrow(/private or loopback/i);
+      expect(() => assertHttpUrl(host, { allowPrivate: true }), host).not.toThrow();
+    }
+  });
+
+  it('refuses a metadata address inside local-use NAT64 under EVERY RFC 6052 placement, opted in', () => {
+    // 169.254.169.254 and 168.63.129.16 written for a /48, /56 and /64 prefix
+    // (bits 64-71 are the skipped "u" octet), and for a /96.
+    for (const host of [
+      'http://[64:ff9b:1:a9fe:a9:fe00::]',      // /48
+      'http://[64:ff9b:1:a9:fe:a9fe::]',        // /56
+      'http://[64:ff9b:1:0:a9:fea9:fe00:0]',    // /64
+      'http://[64:ff9b:1:0:a8:3f81:1000:0]',    // /64, WireServer
+      'http://[64:ff9b:1::a9fe:a9fe]',          // /96
+    ]) {
+      expect(() => assertHttpUrl(host, { allowPrivate: true }), host).toThrow(/link-local or cloud-metadata/i);
+    }
+  });
+
   it('still admits the LAN parents the opt-in is for', () => {
     for (const host of ['http://10.0.0.5', 'http://[fd12:3456::1]', 'http://[fc00::1]', 'http://100.64.0.1', 'http://hub.lan:4000']) {
       expect(() => assertHttpUrl(host, { allowPrivate: true }), host).not.toThrow();

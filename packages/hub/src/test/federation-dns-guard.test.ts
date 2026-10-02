@@ -258,7 +258,9 @@ describe('end to end, through the real client (CGLAB-371 review, F1 + F7)', () =
 // ── BUG 9afde47e ───────────────────────────────────────────────────────────
 
 describe('link-local and cloud-metadata addresses, even with the opt-in (BUG 9afde47e)', () => {
-  const NEVER = ['169.254.169.254', '169.254.0.1', 'fe80::1', 'fd00:ec2::254', 'fd20:ce::254', '100.100.100.200', '::ffff:169.254.169.254', '64:ff9b::a9fe:a9fe'];
+  const NEVER = ['169.254.169.254', '169.254.0.1', 'fe80::1', 'fd00:ec2::254', 'fd20:ce::254', '100.100.100.200', '::ffff:169.254.169.254', '64:ff9b::a9fe:a9fe',
+    // BUG fa4f7dbd: Azure WireServer, OCI Classic metadata, local-use NAT64.
+    '168.63.129.16', '192.0.0.192', '64:ff9b:1::a9fe:a9fe'];
   const optedIn = (address: string) => lookupOf(
     guardedLookup({ allowPrivate: () => true, resolve: table({ 'parent.lan': [{ address, family: address.includes(':') ? 6 : 4 }] }) }),
     'parent.lan',
