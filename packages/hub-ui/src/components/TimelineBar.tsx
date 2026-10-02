@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useId, useMemo, useState, type KeyboardEvent } from 'react';
 import { eventTypeLabel } from '../eventTypes';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api';
@@ -160,9 +160,45 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
   const labelLast = (axis.length - 1 - lastLabelled) * (barW + barGap) >= LABEL_SPACING;
 
   const totalEvents = useMemo(() => axis.reduce((a, t) => a + (byTime.get(t)?.total ?? 0), 0), [axis, byTime]);
-  const hovered = hoverIdx != null ? axis[hoverIdx] : null;
+  // A shrunken axis (a range change) can leave the index past its end.
+  const current = hoverIdx != null && hoverIdx < axis.length ? hoverIdx : null;
+  const hovered = current != null ? axis[current] : null;
   const hoveredBucket = hovered ? byTime.get(hovered) : null;
-  const hoveredX = hoverIdx != null ? m.left + hoverIdx * (barW + barGap) + barW / 2 : 0;
+  const hoveredX = current != null ? m.left + current * (barW + barGap) + barW / 2 : 0;
+
+  // Keyboard and screen-reader access, as in PrVolumeChart: the chart is ONE
+  // tab stop (a listbox), each bar a named option, the arrow keys, Home and
+  // End walk it. The hover tooltip stays for the mouse, aria-hidden: the
+  // option names carry everything it shows.
+  const chartId = useId();
+  const optionId = (i: number) => `${chartId}-bucket-${i}`;
+  const last = axis.length - 1;
+  const optionLabel = (t: string) => {
+    const b = byTime.get(t);
+    if (!b || !b.total) return `${t}: no events`;
+    const perType = Object.entries(b.by_type).sort((x, y) => y[1] - x[1]).map(([k, v]) => `${eventTypeLabel(k)} ${v}`).join(', ');
+    return `${t}: ${b.total} event${b.total === 1 ? '' : 's'}${perType ? ` — ${perType}` : ''}`;
+  };
+  const onKeyDown = (e: KeyboardEvent) => {
+    // Modified keys belong to the browser (Alt+Left is Back).
+    if (last < 0 || e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.key === 'Escape') {
+      if (current == null) return;
+      e.preventDefault();
+      setHoverIdx(null);
+      return;
+    }
+    const cur = current ?? last;
+    const next: Record<string, number> = {
+      ArrowLeft: current == null ? last : Math.max(0, cur - 1),
+      ArrowRight: current == null ? last : Math.min(last, cur + 1),
+      Home: 0,
+      End: last,
+    };
+    if (!(e.key in next)) return;
+    e.preventDefault();
+    setHoverIdx(next[e.key]);
+  };
 
   const rangeBlurb = fromIsoOverride || toIsoOverride
     ? 'custom period'
@@ -233,8 +269,20 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
       )}
       {/* Measured here: its content box is exactly the svg's width. */}
       <div ref={boxRef} className={`px-3 pt-3 pb-3 relative ${q.data === undefined ? 'hidden' : ''}`}>
-        <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-[220px] block" role="img" aria-label="Event timeline histogram">
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          className="w-full h-[220px] block rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+          role="listbox"
+          aria-label={`Event timeline, per ${bucket}. Use the arrow keys to read each ${bucket}.`}
+          aria-orientation="horizontal"
+          tabIndex={0}
+          aria-activedescendant={current != null ? optionId(current) : undefined}
+          onFocus={() => setHoverIdx(i => (i != null && i <= last ? i : last >= 0 ? last : null))}
+          onBlur={() => setHoverIdx(null)}
+          onKeyDown={onKeyDown}
+        >
           {/* Y gridlines + labels */}
+          <g aria-hidden="true">
           {ticks.map((t) => {
             const y = m.top + innerH - (t / yTop) * innerH;
             return (
@@ -248,6 +296,7 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
               </g>
             );
           })}
+          </g>
 
           {/* Bars */}
           {axis.map((t, i) => {
@@ -259,9 +308,14 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
               : [{ type: 'all', n: total, color: ALL_EVENTS_COLOR }];
             let yCursor = m.top + innerH;
             const barH = (total / yTop) * innerH;
-            const isHover = hoverIdx === i;
+            const isHover = current === i;
             return (
               <g key={t}
+                 id={optionId(i)}
+                 role="option"
+                 aria-selected={isHover}
+                 aria-label={optionLabel(t)}
+                 onClick={() => setHoverIdx(i)}
                  onMouseEnter={() => setHoverIdx(i)}
                  onMouseLeave={() => setHoverIdx(prev => prev === i ? null : prev)}>
                 {/* invisible full-height hit target for easier hover on tiny bars */}
@@ -275,7 +329,7 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
                           x={x} y={yCursor} width={barW} height={segH}
                           rx={barW > 6 ? 1.5 : 0}
                           fill={s.color}
-                          opacity={isHover ? 1 : (hoverIdx == null ? 0.92 : 0.5)}
+                          opacity={isHover ? 1 : (current == null ? 0.92 : 0.5)}
                           style={{ transition: 'opacity 120ms ease-out' }} />
                   );
                 })}
@@ -302,7 +356,8 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
             );
           })}
 
-          {/* X axis baseline */}
+          {/* X axis baseline, tick labels and title: decoration for the eye */}
+          <g aria-hidden="true">
           <line x1={m.left} x2={m.left + innerW} y1={m.top + innerH} y2={m.top + innerH}
                 className="stroke-border-soft" />
 
@@ -326,13 +381,16 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
                 style={{ fontSize: 9, letterSpacing: '0.06em' }}>
             EVENTS
           </text>
+          </g>
         </svg>
 
         {/* Hover tooltip, in pixels: one viewBox unit is one pixel, and the
             svg starts after the wrapper's 12px (px-3) padding. A percentage
             resolved against the padding box and drifted up to 12px. */}
-        {hoveredBucket && hoverIdx != null && (
+        {hoveredBucket && current != null && (
           <div
+            data-testid="timeline-tooltip"
+            aria-hidden="true"
             className="pointer-events-none absolute z-10 px-3 py-2 rounded-lg shadow-lg border border-border-soft bg-card-glass backdrop-blur text-[11px] min-w-[140px]"
             style={{
               left: `${12 + hoveredX}px`,

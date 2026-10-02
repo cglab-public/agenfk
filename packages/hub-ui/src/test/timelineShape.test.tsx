@@ -44,12 +44,12 @@ async function mount() {
   get.mockResolvedValue({ data: { bucket: 'day', buckets: [{ time: today, total: 5, by_type: { 'item.closed': 5 } }] } });
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const r = render(<QueryClientProvider client={qc}><TimelineBar range="7d" /></QueryClientProvider>);
-  await waitFor(() => expect(r.container.querySelector('svg[role="img"]')).not.toBeNull());
+  await waitFor(() => expect(r.container.querySelector('svg[role="listbox"]')).not.toBeNull());
   return r;
 }
-const svgOf = (c: HTMLElement) => c.querySelector('svg[role="img"]') as SVGSVGElement;
+const svgOf = (c: HTMLElement) => c.querySelector('svg[role="listbox"]') as SVGSVGElement;
 /** The drawn bars (the coloured segments), not hit targets or placeholders. */
-const bars = (c: HTMLElement) => Array.from(c.querySelectorAll('svg[role="img"] rect'))
+const bars = (c: HTMLElement) => Array.from(c.querySelectorAll('svg[role="listbox"] rect'))
   .filter(r => { const f = r.getAttribute('fill'); return !!f && f !== 'transparent'; });
 
 describe('the timeline draws in the box\'s own pixels', () => {
@@ -113,8 +113,8 @@ describe('the timeline draws in the box\'s own pixels', () => {
     const { container, getByRole } = await mount();
     resize(300);
     fireEvent.click(getByRole('button', { name: 'hour' }));
-    await waitFor(() => expect(container.querySelectorAll('svg[role="img"] rect[fill="transparent"]').length).toBeGreaterThan(100));
-    for (const r of Array.from(container.querySelectorAll('svg[role="img"] rect'))) {
+    await waitFor(() => expect(container.querySelectorAll('svg[role="listbox"] rect[fill="transparent"]').length).toBeGreaterThan(100));
+    for (const r of Array.from(container.querySelectorAll('svg[role="listbox"] rect'))) {
       expect(Number(r.getAttribute('x')) + Number(r.getAttribute('width'))).toBeLessThanOrEqual(300);
     }
   });
@@ -123,9 +123,9 @@ describe('the timeline draws in the box\'s own pixels', () => {
     get.mockResolvedValue({ data: { bucket: 'day', buckets: [] } });
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const { container } = render(<QueryClientProvider client={qc}><TimelineBar range="90d" /></QueryClientProvider>);
-    await waitFor(() => expect(container.querySelector('svg[role="img"]')).not.toBeNull());
+    await waitFor(() => expect(container.querySelector('svg[role="listbox"]')).not.toBeNull());
     resize(360);
-    const xs = Array.from(container.querySelectorAll('svg[role="img"] text.font-mono')).map(t => Number(t.getAttribute('x')));
+    const xs = Array.from(container.querySelectorAll('svg[role="listbox"] text.font-mono')).map(t => Number(t.getAttribute('x')));
     expect(xs.length).toBeGreaterThan(1);
     for (let i = 1; i < xs.length; i++) expect(xs[i] - xs[i - 1]).toBeGreaterThanOrEqual(47.5);
   });

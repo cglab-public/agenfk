@@ -9,11 +9,13 @@ const SIZE_META_DESC = [...SIZE_META].reverse();
 const plural = (n: number) => `${n} PR${n === 1 ? '' : 's'}`;
 const pct = (share: number) => `${Math.round(share * 100)}%`;
 
-/** What a bar says to a screen reader: its span, total and sizes. */
+/** What a bar says to a screen reader: its span, total, sizes, and the top
+ *  developers the (aria-hidden) tooltip lists. */
 function barLabel(b: VolumeBucket): string {
   if (!b.total) return `${b.rangeLabel}: no PRs`;
   const sizes = SIZE_META.filter(s => b.sizes[s.key] > 0).map(s => `${b.sizes[s.key]} ${s.label}`).join(', ');
-  return `${b.rangeLabel}: ${plural(b.total)} — ${sizes}`;
+  const top = developers(b).slice(0, 5).map(d => `${d.user_key} ${d.count}`).join(', ');
+  return `${b.rangeLabel}: ${plural(b.total)} — ${sizes}${top ? ` — top: ${top}` : ''}`;
 }
 
 /** Who opened a bucket's PRs, most first, over every size. */

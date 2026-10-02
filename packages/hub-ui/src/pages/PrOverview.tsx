@@ -97,11 +97,15 @@ const colorOf = (k: SizeKey) => SIZE_META.find(s => s.key === k)!.color;
 
 /** Horizontal stacked size-mix bar for one row of size counts. */
 function MixBar({ sizes, total }: { sizes: SizeDist; total: number }) {
-  if (total === 0) return <div className="h-2 w-full rounded-full bg-border-soft" />;
+  // The segments are empty spans: the counts go in the bar's own name, not in
+  // a per-segment title that only a mouse can read.
+  const present = SIZE_META.filter(s => sizes[s.key] > 0);
+  const label = `Size mix: ${total === 0 ? 'no PRs' : present.map(s => `${s.label} ${sizes[s.key]}`).join(', ')}`;
+  if (total === 0) return <div role="img" aria-label={label} className="h-2 w-full rounded-full bg-border-soft" />;
   return (
     // 2px gaps keep neighbouring ramp steps apart; the track is neutral.
-    <div className="flex gap-[2px] h-2 w-full rounded-full overflow-hidden bg-border-soft">
-      {SIZE_META.filter(s => sizes[s.key] > 0).map(s => (
+    <div role="img" aria-label={label} className="flex gap-[2px] h-2 w-full rounded-full overflow-hidden bg-border-soft">
+      {present.map(s => (
         <span key={s.key} title={`${s.label}: ${sizes[s.key]}`} style={{ background: s.color, width: `${(sizes[s.key] / total) * 100}%` }} />
       ))}
     </div>
@@ -1056,6 +1060,7 @@ export function PrOverviewPage() {
                 },
                 { key: 'prs', header: 'PRs', align: 'right', firstDir: 'desc', sortValue: m => m.prs, render: m => <span className="font-mono tabular-nums text-lg font-bold text-ink">{m.prs}</span> },
                 { key: 'mix', header: 'Size mix', className: 'w-[180px]', render: m => <MixBar sizes={m.sizes} total={m.prs} /> },
+                { key: 'counts', header: 'XS · S · M · L · XL', render: m => <SizeCounts sizes={m.sizes} /> },
                 { key: 'share', header: 'Share', align: 'right', render: m => <span className="font-mono tabular-nums text-ink-secondary">{Math.round((m.prs / d.totals.prs) * 100)}%</span> },
               ]}
             />

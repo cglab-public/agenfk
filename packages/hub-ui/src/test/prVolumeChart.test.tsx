@@ -61,14 +61,16 @@ describe('values without title tooltips', () => {
     expect(plot.querySelectorAll('[title]')).toHaveLength(0);
   });
 
-  it('names every bar for a screen reader', () => {
+  it('names every bar for a screen reader, with who opened its PRs', () => {
+    // The tooltip is aria-hidden, so the name must carry everything it shows,
+    // the top developers included.
     mount();
     const names = screen.getAllByRole('option').map(o => o.getAttribute('aria-label'));
     expect(names).toEqual([
-      '2026-09-01: 2 PRs — 2 S',
-      '2026-09-02: 3 PRs — 3 XL',
+      '2026-09-01: 2 PRs — 2 S — top: alice@acme.com 2',
+      '2026-09-02: 3 PRs — 3 XL — top: bob@acme.com 2, alice@acme.com 1',
       '2026-09-03: no PRs',
-      '2026-09-04: 2 PRs — 1 M, 1 L',
+      '2026-09-04: 2 PRs — 1 M, 1 L — top: carol@acme.com 2',
     ]);
   });
 

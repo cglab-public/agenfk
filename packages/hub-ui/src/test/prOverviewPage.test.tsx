@@ -194,3 +194,19 @@ describe('PrOverviewPage model multi-select', () => {
     await waitFor(() => expect(urlNow()).toBe('model=gemini-3-flash'));
   });
 });
+
+describe('size mix without hover (story f17f36a5)', () => {
+  it('each size-mix bar says its counts to a screen reader', async () => {
+    renderPage('/prs');
+    const bars = await screen.findAllByRole('img', { name: /^Size mix: / });
+    expect(bars.length).toBeGreaterThan(0);
+    for (const b of bars) expect(b.getAttribute('aria-label')).toMatch(/^Size mix: (no PRs|(XS|S|M|L|XL) \d+(, (XS|S|M|L|XL) \d+)*)$/);
+  });
+
+  it('the By model table shows the size counts the developer table does', async () => {
+    renderPage('/prs');
+    await screen.findAllByRole('img', { name: /^Size mix: / });
+    // One per table: developers and models.
+    expect(screen.getAllByRole('columnheader', { name: 'XS · S · M · L · XL' })).toHaveLength(2);
+  });
+});
