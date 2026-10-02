@@ -77,7 +77,8 @@ export function StatTile({ label, value, delta, higherIsBetter = true, series, h
         {series && <span data-testid="stat-swatch" aria-hidden="true" className={cn('w-2 h-2 rounded-sm', SWATCH[series])} />}
         {label}
       </span>
-      <span className={cn('block font-extrabold tabular-nums text-ink truncate', size === 'sm' ? 'text-body' : 'text-display')} title={onClick ? undefined : shown}>{shown}</span>
+      {/* Wrapped, not truncated: a long value's rest lived only in a title. */}
+      <span className={cn('block font-extrabold tabular-nums text-ink break-words', size === 'sm' ? 'text-body' : 'text-display')}>{shown}</span>
       {deltaEl}
       {hint != null && hint !== '' && hint !== false && <span data-stat-hint className="block text-caption text-ink-tertiary">{hint}</span>}
     </Root>

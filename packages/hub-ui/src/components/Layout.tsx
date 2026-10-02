@@ -133,8 +133,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <div data-testid="sidebar-footer" className="mt-auto px-2 py-2 rounded-lg border border-border-soft bg-card-glass">
           <div className="eyebrow text-ink-tertiary">Signed in</div>
           <div
-            className={`mt-0.5 text-small text-ink truncate ${identity.isOpaqueId ? 'font-mono' : ''}`}
-            title={identity.label}
+            // Wrapped, not truncated: a long name or address was cut off with
+            // the rest only in a mouse-only title.
+            className={`mt-0.5 text-small text-ink ${identity.isOpaqueId ? 'font-mono break-all' : 'break-words'}`}
           >
             {identity.label}
           </div>

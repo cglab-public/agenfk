@@ -14,7 +14,7 @@
  * separate add-form was removed because "correct this row" and "add a row" are
  * the same operation against an upsert endpoint.
  */
-import { useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Check, Pencil, Trash2, X } from 'lucide-react';
 import { api } from '../api';
@@ -57,6 +57,7 @@ interface Draft {
 
 export function ModelTable({ groups, metaRows, loading, onError, invalidate, onUnmap, unmapping, unmappedCount, unusedCount }: Props) {
   const { confirm, dialog } = useConfirm();
+  const unmapHintId = useId();
   const [query, setQuery] = useState('');
   const [scope, setScope] = useState<'observed' | 'all'>('observed');
   const [editing, setEditing] = useState<string | null>(null);
@@ -248,6 +249,7 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
                   onSave={() => commit(row)}
                   onUnmap={onUnmap}
                   unmapping={unmapping}
+                  unmapHintId={unmapHintId}
                   onDelete={async () => {
                     if (await confirm({
                       title: `Delete the classification for "${row.canonicalModel}"?`,
@@ -261,6 +263,12 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
           </table>
         </div>
       )}
+      {/* What Unmap does, on screen once rather than in each button's title. */}
+      {visible.some(r => r.aliases.length > 0) && (
+        <p id={unmapHintId} className="mt-2 text-caption text-ink-tertiary">
+          Unmapping a spelling stops folding it into its model: dashboards show it as its own model again.
+        </p>
+      )}
 
       <p className="mt-3 text-caption text-ink-tertiary">
         Rules match by prefix, longest first, so a specific model beats its family. Editing a row
@@ -270,7 +278,7 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
   );
 }
 
-function ModelRow({ row, editing, draft, dirty, invalid, problem, busy, onEdit, onCancel, onChange, onSave, onDelete, onUnmap, unmapping }: {
+function ModelRow({ row, editing, draft, dirty, invalid, problem, busy, onEdit, onCancel, onChange, onSave, onDelete, onUnmap, unmapping, unmapHintId }: {
   row: UnifiedRow;
   editing: boolean;
   draft: Draft;
@@ -286,6 +294,7 @@ function ModelRow({ row, editing, draft, dirty, invalid, problem, busy, onEdit, 
   onDelete: () => void;
   onUnmap: (aliasModel: string) => void;
   unmapping: boolean;
+  unmapHintId: string;
 }) {
   const inherited = row.meta && !row.meta.exact;
   // An untouched row (a brand-new model starts empty) is not an error yet:
@@ -419,7 +428,7 @@ function ModelRow({ row, editing, draft, dirty, invalid, problem, busy, onEdit, 
               onClick={() => onUnmap(a.model)}
               disabled={unmapping}
               aria-label={`Unmap ${a.model}`}
-              title={`Stop mapping "${a.model}" — dashboards will show it as its own model again`}
+              aria-describedby={unmapHintId}
               className="p-1 rounded text-ink-tertiary hover:text-status-danger-text disabled:opacity-40"
             >
               <Trash2 className="w-3.5 h-3.5" />

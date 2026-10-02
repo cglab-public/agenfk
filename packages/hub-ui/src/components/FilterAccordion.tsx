@@ -55,7 +55,8 @@ export function FilterAccordion({
       <h2 id={headingId} className="sr-only">Filters</h2>
       <div className="flex items-center gap-2.5 px-5 py-2.5">
         <SlidersHorizontal className="w-4 h-4 text-ink-tertiary shrink-0" aria-hidden="true" />
-        <p data-filter-summary className="min-w-0 flex-1 truncate text-small text-ink-secondary" title={summary}>{summary}</p>
+        {/* Wrapped, not truncated: collapsed, the summary is all there is to read. */}
+        <p data-filter-summary className="min-w-0 flex-1 break-words text-small text-ink-secondary">{summary}</p>
         {activeCount > 0 && (
           <span
             className="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-caption font-mono border text-accent-ink border-accent bg-accent-fill"

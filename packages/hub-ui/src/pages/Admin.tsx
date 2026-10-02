@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { ADMIN_GROUPS } from './adminSections';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -655,6 +655,7 @@ const personLabel = (r: InstallationRow): string => r.gitName ?? r.osUser ?? r.g
 
 export function AdminInstallations() {
   const { confirm, dialog } = useConfirm();
+  const retiredHintId = useId();
   const qc = useQueryClient();
   // CGLAB-31: hidden people are excluded server-side by default; the toggle
   // re-fetches with ?includeHidden=1 and flags them inline.
@@ -718,6 +719,7 @@ export function AdminInstallations() {
             <h3 className="text-body font-semibold text-ink">Installations</h3>
             <p className="mt-0.5 text-small text-ink-tertiary">
               Every AgEnFK install that has reported events to this hub. Use this to audit which version is running where.
+              {' '}<span id={retiredHintId}>Retired installations are dead endpoints, excluded from upgrades and address changes.</span>
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -736,7 +738,8 @@ export function AdminInstallations() {
             <button
               onClick={() => setShowRetired(v => !v)}
               className="inline-flex items-center gap-1 text-caption font-semibold text-ink-tertiary hover:text-ink"
-              title="Retired installations are dead endpoints, excluded from upgrades and address changes"
+              // What retired means is in the header's description, on screen.
+              aria-describedby={retiredHintId}
             >
               {showRetired ? <ArchiveRestore className="w-3.5 h-3.5" /> : <Archive className="w-3.5 h-3.5" />}
               {showRetired ? `Hide retired (${retiredCount})` : 'Show retired'}

@@ -114,16 +114,17 @@ export function MixBar({ sizes, total }: { sizes: SizeDist; total: number }) {
 
 function SizeCounts({ sizes }: { sizes: SizeDist }) {
   return (
-    <div className="flex gap-1">
+    <div data-testid="size-counts" className="flex gap-1">
       {SIZE_META.map(s => (
         <span
           key={s.key}
-          title={`${s.label} PRs`}
           className={`min-w-[26px] text-center rounded-md px-1 py-0.5 font-mono text-caption tabular-nums ${sizes[s.key] === 0
             ? 'text-ink-tertiary bg-canvas'
             : 'text-ink-secondary bg-canvas'}`}
         >
-          {sizes[s.key]}
+          {/* The column header names the sizes once; each count says its own
+              to a screen reader, which reads it out of the header's order. */}
+          <span className="sr-only">{s.label} </span>{sizes[s.key]}
         </span>
       ))}
     </div>
@@ -1136,9 +1137,12 @@ export function PrOverviewPage() {
                     <div key={dev.user_key} role="row" className="contents">
                       {/* sticky so names + pills stay visible when the day axis scrolls */}
                       <div role="rowheader" className="sticky left-0 z-10 self-stretch flex items-center gap-2 pr-2 min-w-0 bg-surface">
+                        {/* Wrapped, not cut off with the rest in a mouse-only title. A
+                            name stands for its key; two people sharing a name get
+                            the key beside it from labelOf. */}
                         {nameOf(dev.user_key)
-                          ? <span title={dev.user_key} className="text-caption text-ink-secondary truncate">{labelOf(dev.user_key)}</span>
-                          : <span title={dev.user_key} className="font-mono text-caption text-ink-tertiary truncate">{dev.user_key}</span>}
+                          ? <span className="min-w-0 text-caption text-ink-secondary break-words">{labelOf(dev.user_key)}</span>
+                          : <span className="min-w-0 font-mono text-caption text-ink-tertiary break-all">{dev.user_key}</span>}
                         {/* stacked vertically so long dev emails keep the width */}
                         <span className="ml-auto flex flex-col items-end gap-0.5 shrink-0">
                           <span title={`${pct.prPct}% share of all PRs in the period`} className="text-caption font-semibold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-accent-ink bg-accent-fill border border-accent">{pct.prPct}% of PRs</span>

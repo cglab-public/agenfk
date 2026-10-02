@@ -11,7 +11,7 @@
  * installs still attributed by username), repair the unambiguous cases with one
  * click, and refuse to make the risky ones easy.
  */
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Users, AlertTriangle, Merge, History, ShieldAlert, Undo2 } from 'lucide-react';
 import { api } from '../api';
@@ -52,6 +52,7 @@ const MERGE_UNDO = 'Reversible from Merge history, newest first: a later merge t
 
 export function AdminIdentities() {
   const { confirm, dialog } = useConfirm();
+  const revertHintId = useId();
   const qc = useQueryClient();
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
@@ -249,7 +250,7 @@ export function AdminIdentities() {
           <History className="w-4 h-4" /> Merge history
         </h3>
         <p className="mt-0.5 text-small text-ink-tertiary">
-          Reverting a merge moves exactly the events it touched back. {MERGE_UNDO}
+          <span id={revertHintId}>Reverting a merge moves exactly the events it touched back to their original identity.</span> {MERGE_UNDO}
         </p>
         <InlineError error={revert.error} className="mt-2" />
         {revertNote && <p className="mt-2 text-small text-ink-tertiary">{revertNote}</p>}
@@ -291,7 +292,7 @@ export function AdminIdentities() {
                           }}
                           disabled={revert.isPending}
                           aria-label={`Revert merge of ${m.from} into ${m.to}`}
-                          title="Move these events back to their original identity"
+                          aria-describedby={revertHintId}
                           className="inline-flex items-center gap-1 text-caption font-semibold text-ink-tertiary hover:text-status-warn-text"
                         >
                           <Undo2 className="w-3.5 h-3.5" /> Revert

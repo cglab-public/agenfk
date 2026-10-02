@@ -6,7 +6,7 @@
  * per-installation rollout live. Auto-refreshes while any directive has
  * pending or in-progress targets.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
 import { api } from '../api';
@@ -75,6 +75,9 @@ interface GroupDispatch {
 }
 
 export function AdminUpgrades() {
+  const refreshHintId = useId();
+  const cancelHintId = useId();
+  const clearHintId = useId();
   const { confirm, dialog } = useConfirm();
   const qc = useQueryClient();
   const [showForm, setShowForm] = useState(false);
@@ -293,7 +296,7 @@ export function AdminUpgrades() {
                   });
                 }}
                 disabled={versionsLoading}
-                title="Bypass the hub's 10-minute cache and re-fetch the GitHub release list now"
+                aria-describedby={refreshHintId}
                 className="text-caption text-accent-ink hover:opacity-80 disabled:opacity-50"
               >
                 ↻ Refresh
@@ -317,6 +320,9 @@ export function AdminUpgrades() {
                 <option key={v} value={v}>{v}</option>
               ))}
             </select>
+            <p id={refreshHintId} className="mt-1 text-caption text-ink-tertiary">
+              Refresh bypasses the hub's 10-minute cache and re-fetches the GitHub release list now.
+            </p>
             {fleetFloor && (
               <p className="mt-1 text-caption text-ink-tertiary">
                 Oldest version reported: <span className="font-mono">v{fleetFloor}</span> — older releases hidden.
@@ -412,6 +418,18 @@ export function AdminUpgrades() {
         {directives.length === 0 && (
           <p className="text-small text-ink-tertiary">No upgrades sent yet.</p>
         )}
+        {/* What the row buttons do, on screen once rather than in each one's title. */}
+        {/* Only the sentences for buttons that are on screen. */}
+        {directives.some(d => d.progress.pending > 0 || d.progress.in_progress > 0) && (
+          <p className="text-caption text-ink-tertiary">
+            {directives.some(d => d.progress.pending > 0) && (
+              <span id={cancelHintId}>Cancel waiting cancels the upgrade where it hasn't started, and offers to clear stuck running ones too. </span>
+            )}
+            {directives.some(d => d.progress.pending === 0 && d.progress.in_progress > 0) && (
+              <span id={clearHintId}>Clear stuck marks stuck running upgrades as cancelled: a live upgrade keeps running, it just stops blocking the installation.</span>
+            )}
+          </p>
+        )}
         {directives.map(d => {
           const isOpen = expanded.has(d.directiveId);
           return (
@@ -447,9 +465,7 @@ export function AdminUpgrades() {
                       // Two upgrades to one version differ only by when they were issued.
                       aria-label={`${d.progress.pending > 0 ? 'Cancel waiting' : 'Clear stuck'} upgrade to v${d.targetVersion}${issuedAt(d.createdAt)}`}
                       className="ml-1 px-1.5 py-0.5 rounded border border-status-danger-text/40 text-status-danger-text hover:bg-status-danger-bg disabled:opacity-50"
-                      title={d.progress.pending > 0
-                        ? "Cancel this upgrade where it hasn't started; offers to clear stuck running ones too"
-                        : 'Mark stuck running upgrades as cancelled. A live upgrade keeps running; this only stops it blocking the installation'}
+                      aria-describedby={d.progress.pending > 0 ? cancelHintId : clearHintId}
                     >{d.progress.pending > 0 ? 'Cancel waiting' : 'Clear stuck'}</button>
                   )}
                 </span>

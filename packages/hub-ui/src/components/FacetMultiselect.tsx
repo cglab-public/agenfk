@@ -41,6 +41,7 @@ export function FacetMultiselect({
   const headingId = useId();
   const triggerId = useId();
   const panelId = useId();
+  const labelOf = (v: string) => (optionLabel ? optionLabel(v) : v);
   const [query, setQuery] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -106,8 +107,9 @@ export function FacetMultiselect({
         <FilterHeading id={headingId} label={label} count={selected.size} onClear={onClear} disabled={disabled} />
         <div role="group" aria-labelledby={headingId} className="mt-1.5 flex flex-wrap gap-1.5">
           {visible.map((t) => (
-            <Chip key={t} on={selected.has(t)} onClick={() => onToggle(t)} title={t} mono disabled={disabled}>
-              {optionLabel ? optionLabel(t) : t}
+            <Chip key={t} on={selected.has(t)} onClick={() => onToggle(t)} mono disabled={disabled}
+              detail={labelOf(t) !== t ? t : undefined}>
+              {labelOf(t)}
             </Chip>
           ))}
         </div>
@@ -148,14 +150,17 @@ export function FacetMultiselect({
         {selectedArr.map((v) => (
           <span
             key={v}
-            title={v}
             className="inline-flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-full font-mono text-caption border text-accent-ink border-accent bg-accent-fill max-w-[260px]"
           >
-            <span className="truncate">{optionLabel ? optionLabel(v) : v}</span>
+            {/* Wrapped, not cut off: the rest of a long value lived only in a
+                mouse-only title. The raw value behind a short label is shown
+                in the popover's row, and named here to a screen reader. */}
+            <span className="min-w-0 break-words">{labelOf(v)}</span>
+            {labelOf(v) !== v && <span className="sr-only">{v}</span>}
             <button
               onClick={() => onToggle(v)}
               disabled={disabled}
-              aria-label={`Remove ${optionLabel ? optionLabel(v) : v}`}
+              aria-label={`Remove ${labelOf(v)}`}
               className="rounded-full hover:bg-accent-fill p-0.5 -mr-0.5 disabled:cursor-not-allowed"
             >
               <X className="w-3 h-3" />
@@ -192,25 +197,33 @@ export function FacetMultiselect({
             {filtered.length === 0 ? (
               <p className="px-3 py-4 text-center text-small text-ink-tertiary">No matches.</p>
             ) : (
-              filtered.map((v) => {
+              filtered.map((v, i) => {
                 const on = selected.has(v);
+                const shown = labelOf(v);
+                // Named by its label alone; the raw value under it is the
+                // checkbox's description, not part of its name.
+                const optId = `${panelId}-opt-${i}`;
                 return (
                   <label
                     key={v}
-                    title={v}
                     // relative: the sr-only checkbox is absolutely positioned, and
                     // must scroll with the list or a focused option stays hidden.
                     className={`relative w-full flex items-center gap-2 px-3 py-1.5 text-left text-small font-mono transition-colors cursor-pointer has-[:disabled]:cursor-not-allowed has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:-outline-offset-2 has-[:focus-visible]:outline-accent ${on
                       ? 'bg-accent-fill text-accent-ink'
                       : 'text-ink hover:bg-accent-fill/50'}`}
                   >
-                    <input type="checkbox" className="sr-only" checked={on} disabled={disabled} onChange={() => onToggle(v)} />
+                    <input type="checkbox" className="sr-only" checked={on} disabled={disabled} onChange={() => onToggle(v)}
+                      aria-labelledby={`${optId}-label`} aria-describedby={shown !== v ? `${optId}-raw` : undefined} />
                     <span aria-hidden="true" className={`w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0 ${on
                       ? 'bg-accent border-accent text-surface'
                       : 'border-border-soft'}`}>
                       {on && <Check className="w-2.5 h-2.5" />}
                     </span>
-                    <span className="truncate">{optionLabel ? optionLabel(v) : v}</span>
+                    <span className="min-w-0 flex flex-col">
+                      <span id={`${optId}-label`} className="break-words">{shown}</span>
+                      {/* The raw value behind a short label, on screen rather than in a title. */}
+                      {shown !== v && <span id={`${optId}-raw`} className="break-all text-caption text-ink-tertiary">{v}</span>}
+                    </span>
                   </label>
                 );
               })

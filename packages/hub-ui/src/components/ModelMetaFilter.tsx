@@ -23,7 +23,7 @@
  * would add, so a chip is informative before it is clicked and an exhausted
  * vendor reads as exhausted rather than missing.
  */
-import { useMemo } from 'react';
+import { useId, useMemo } from 'react';
 import {
   modelMeta, providersFor, licenseClassesFor, modelsMatching,
   LICENSE_CLASS_LABEL, UNCLASSIFIED,
@@ -56,6 +56,10 @@ const SUPERSEDED_TITLE =
   'A PR search supersedes the model filter — this selection is kept but does not apply until the search is cleared';
 
 export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: Props) {
+  const id = useId();
+  const unclassifiedHintId = `${id}-unclassified`;
+  const openHintId = `${id}-open`;
+  const closedHintId = `${id}-closed`;
   const providers = useMemo(() => providersFor(rows), [rows]);
   const classes = useMemo(() => licenseClassesFor(rows), [rows]);
 
@@ -103,12 +107,12 @@ export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: P
                 disabled={off}
                 onClick={() => applyProvider(p)}
                 // The tooltip has to name the REAL reason the button is dead —
-                // see SUPERSEDED_TITLE.
+                // see SUPERSEDED_TITLE. What Unclassified means is said under
+                // the row, not only in a title.
                 title={disabled
                   ? SUPERSEDED_TITLE
-                  : p === UNCLASSIFIED
-                    ? 'Models the hub could not classify — configure them in Admin → Models'
-                    : `Add ${n} more ${p} model${n === 1 ? '' : 's'}`}
+                  : p === UNCLASSIFIED ? undefined : `Add ${n} more ${p} model${n === 1 ? '' : 's'}`}
+                aria-describedby={!disabled && p === UNCLASSIFIED ? unclassifiedHintId : undefined}
                 className={`px-2.5 py-1 rounded-full font-mono text-caption border transition-colors ${
                   off
                     ? 'text-ink-tertiary border-border-soft opacity-50 cursor-not-allowed'
@@ -121,6 +125,11 @@ export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: P
             );
           })}
         </div>
+        {(providers.includes(UNCLASSIFIED) || classes.includes(UNCLASSIFIED)) && (
+          <p id={unclassifiedHintId} className="mt-1 text-caption text-ink-tertiary">
+            Unclassified: models the hub could not classify — configure them in Admin → Models.
+          </p>
+        )}
       </div>
 
       <div>
@@ -134,11 +143,11 @@ export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: P
                 key={c}
                 disabled={off}
                 onClick={() => applyClass(c)}
-                title={disabled
-                  ? SUPERSEDED_TITLE
-                  : c === 'open_weights'
-                    ? 'Weights are publicly downloadable. Includes bespoke licences with commercial-use gates — this is open WEIGHTS, not open source.'
-                    : 'No downloadable weights — hosted API only.'}
+                // What each class means is said under the row, not only in a title.
+                title={disabled ? SUPERSEDED_TITLE : undefined}
+                aria-describedby={disabled ? undefined
+                  : c === 'open_weights' ? openHintId
+                    : c === UNCLASSIFIED ? unclassifiedHintId : closedHintId}
                 className={`px-2.5 py-1 rounded-full font-mono text-caption border transition-colors ${
                   off
                     ? 'text-ink-tertiary border-border-soft opacity-50 cursor-not-allowed'
@@ -151,6 +160,12 @@ export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: P
             );
           })}
         </div>
+        <p className="mt-1 text-caption text-ink-tertiary">
+          {classes.includes('open_weights') && (
+            <span id={openHintId}>Open weights: publicly downloadable, including bespoke licences with commercial-use gates — open weights, not open source. </span>
+          )}
+          {classes.includes('commercial') && <span id={closedHintId}>{LICENSE_CLASS_LABEL.commercial}: no downloadable weights, hosted API only.</span>}
+        </p>
       </div>
 
       {/* Show the licence of what is selected, so "Open weights" is verifiable

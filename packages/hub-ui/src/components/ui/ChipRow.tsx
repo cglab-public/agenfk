@@ -23,30 +23,40 @@ export function FilterHeading({ id, label, count, onClear, disabled }: {
   );
 }
 
-/** One toggle chip. `title` is the hover text (the raw value by default). */
-export function Chip({ on, onClick, title, mono = false, disabled, children }: {
+/**
+ * One toggle chip. `title` is the hover text. `detail` is the raw value behind
+ * a short label: shown under it, and the chip's description, so it does not
+ * live only in a mouse-only title.
+ */
+export function Chip({ on, onClick, title, detail, mono = false, disabled, children }: {
   on: boolean;
   onClick: () => void;
   title?: string;
+  detail?: string;
   mono?: boolean;
   disabled?: boolean;
   children: ReactNode;
 }) {
+  const detailId = useId();
   return (
     <button
       type="button"
       aria-pressed={on}
       onClick={onClick}
       title={title}
+      aria-describedby={detail ? detailId : undefined}
       disabled={disabled}
       className={cn(
-        'px-2.5 py-1 rounded-full text-caption border transition-colors max-w-[260px] truncate disabled:opacity-50 disabled:cursor-not-allowed',
+        // Wrapped, not truncated: a long label's rest lived only in the title.
+        'px-2.5 py-1 rounded-full text-caption border transition-colors max-w-[260px] break-words text-left disabled:opacity-50 disabled:cursor-not-allowed',
         mono && 'font-mono',
         on ? 'text-accent-ink border-accent bg-accent-fill'
           : 'bg-surface border-border-soft text-ink-secondary hover:border-accent hover:text-accent-ink',
       )}
     >
       {children}
+      {/* Out of the name (voice control says the label), in the description. */}
+      {detail && <span id={detailId} aria-hidden="true" className="block font-mono text-ink-tertiary break-all">{detail}</span>}
     </button>
   );
 }
