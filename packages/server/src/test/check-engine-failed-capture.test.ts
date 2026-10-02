@@ -16,7 +16,7 @@ const cap = (tests: T[] | null, over: Partial<CaptureRecord> = {}): CaptureRecor
 } as CaptureRecord);
 const ctx = (entry: CaptureRecord | null, now: T[]): EngineContext => ({
   root: '/repo', git: () => '', item: { id: 'A', type: 'TASK' }, cardBranch: null, cardKeys: [], testPaths: [], ignoredPaths: [],
-  foreignClaims: [], deferToCommand: [], children: [], capture: cap(now), entry, entryHead: null, records: {},
+  deferToCommand: [], children: [], capture: cap(now), entry, entryHead: null, records: {},
 } as unknown as EngineContext);
 
 const NOW = [t('adds', 'passed'), t('multiplies', 'failed')];

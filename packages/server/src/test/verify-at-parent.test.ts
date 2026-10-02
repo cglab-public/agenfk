@@ -197,33 +197,6 @@ describe("verifyAt: 'leaf' (the default)", () => {
   });
 });
 
-describe("verifyAt: 'parent' on the background path (281adef0 review)", () => {
-  it('a deferred close from a background step gate still refuses ownerless staged files', async () => {
-    // A command check makes the gate slow, so it runs in the background and re-enters verify with its result.
-    // The check itself stages the stray, so it lands AFTER the early check and only the re-entry can catch it.
-    const stage = "require('fs').writeFileSync('stray.txt','s');require('child_process').execSync('git add stray.txt')";
-    const steps = [s('TODO', 0, { isAnchor: true }), s('WORK', 1, { checks: [{ id: 'command-check', params: { name: 'ok', argv: [process.execPath, '-e', stage] } }] }), s('DONE', 2, { isAnchor: true })];
-    const { pid, dir } = await project('parent', { steps });
-    const parent = await card(pid);
-    const child = await card(pid, 'WORK', { parentId: parent });
-    expect((await agent().put(`/items/${child}`).send({ claims: ['mine.txt'] })).status).toBe(200);
-    // A working parent that claims nothing might own the stray (a note, not a refusal): give it claims.
-    expect((await agent().put(`/items/${parent}`).send({ claims: ['parent.txt'] })).status).toBe(200);
-    const started = await agent().post(`/items/${child}/validate`).set({ 'x-agenfk-internal': VERIFY_TOKEN! }).send({ evidence: 'ok', async: true });
-    expect(started.status, JSON.stringify(started.body)).toBe(202);
-    let final: any = started.body;
-    if (started.status === 202) {
-      for (let i = 0; i < 100; i++) {
-        final = (await agent().get(`/items/validate-runs/${started.body.runId}`).set({ 'x-agenfk-internal': VERIFY_TOKEN! })).body;
-        if (final.status && final.status !== 'running') break;
-        await new Promise(r => setTimeout(r, 50));
-      }
-    }
-    expect(JSON.stringify(final)).toContain('stray.txt');
-    expect((await get(child)).status).toBe('WORK');
-  });
-});
-
 describe("verifyAt: 'parent' - round-2 review (281adef0)", () => {
   it("a child whose work is in ANOTHER worktree runs its own: the parent's verify tests the parent's tree", async () => {
     const { pid, dir, runCount } = await project('parent');

@@ -34,8 +34,8 @@ const QUIET: TabIndicator = { state: null, label: null, urgent: false };
  * Human words, not enum names.
  *
  * `idle` is the one deliberately missing: a quiet agent is the normal case and
- * a dot on every tab announcing normality is the same noise as a chip on every
- * card announcing an absence. The tab is quiet when the agent is.
+ * a dot on every tab announcing normality is noise. The tab is quiet when the
+ * agent is.
  */
 const WORDS: Partial<Record<SessionState, string>> = {
   running: 'running',

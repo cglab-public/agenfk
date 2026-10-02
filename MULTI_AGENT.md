@@ -13,8 +13,15 @@ each other, this file is the one that was checked in.
 
 ## The decision
 
-**Several agents share one worktree. The collision control is a claim, not
-isolation.**
+**Several agents share one worktree. What keeps them apart is staging
+discipline, not isolation.**
+
+Claims - a per-card list of owned paths, enforced at the edit, at declaration
+and at the close commit - were built on top of this and then removed
+(26c059f6). They locked the parallel work they were meant to protect: two
+agents could not change different regions of one file, which a person does
+every day, and the refusals fired on the very work they guarded. Do not bring
+them back as a fix for a sweep; the close commits only what was staged.
 
 The earlier answer was the opposite — a branch and a worktree per child — and
 it was withdrawn in full. Two things killed it.
@@ -43,7 +50,8 @@ worker. Sharing one tree is the recommended path there, not the exception.
 Two agents editing one file in one tree is a **race, not a merge conflict**.
 Nobody is told, and the loser's edit is gone. Separate worktrees would have made
 it something a person has to resolve; one shared tree makes it silent. That is
-the whole reason the claims mechanism exists.
+why every agent stages only its own card's files, and why the close never
+sweeps the tree.
 
 ### Why not just give each agent a real copy
 
@@ -76,69 +84,34 @@ this repo is an npm workspace pinning exact versions, and its eight
 
 ---
 
-## Claims
-
-A claim is the list of paths a card owns while it is being worked. It is the
-only thing standing between two agents and one file.
-
-| Layer | Where | What it does |
-| --- | --- | --- |
-| Overlap logic | `packages/core/src/claims.ts` | Can these two paths collide? Pure. |
-| The gate | `packages/core/src/claimGate.ts` | Turns an overlap into a refusal. Pure. |
-| Pre-edit check | `packages/core/src/gatekeeper.ts` | Refuses to AUTHORIZE a card whose declared claims run into another card's. CLI and server inherit one verdict. It does not see the file being written. |
-| Mechanical block | `bin/agenfk-gatekeeper.mjs` | The PreToolUse hook. Refuses an edit to a file held by a PARKED card (TODO/PAUSED/BLOCKED). **Cannot** refuse when the holder is active: it receives a tool call, not an agent identity. |
-| Declaration | `PUT /items/:id` (`packages/server/src/server.ts`) | Validates, refuses a glob, refuses a claim another card holds (409). |
-| Close | `packages/server/src/closeCommit.ts` | Commits only the closing card's files out of the shared index. |
-
-### Two failure directions, and both are silent
-
-**Failing open** is the one that loses work: reporting "no conflict" when there
-is one. `claims.ts` had it four separate times, each found by review, each a
-pair that obviously overlaps reported as clear — a backslash separator, a
-doubled slash, a trailing-slash convention, and a malformed claim silently
-dropped. The lesson written into that module: *a claim that cannot be checked is
-worse than no claim, because it reports safety it has not established.*
-
-**Blocking everything** is the one that stops the project. Every card in the
-database predates the field, so a gate reading absence as conflict refuses the
-first edit anybody makes after it ships. **Absence authorizes.**
-
-### Claims are not globs
-
-The obvious design is `packages/ui/**` and a matcher. The question here is not
-"does this path match this pattern" — it is "can these two patterns ever match
-the same path", which is a different and much harder problem. So the input is
-constrained to two shapes where overlap is exact (a directory, or an exact
-file), and anything else is **reported as rejected** rather than quietly
-skipped. A glob compared as a literal is a claim on a file named `**`: it
-protects nothing while looking like it protects everything.
-
-### A paused card still holds its files
-
-`RELEASED_STATUSES` in `claimGate.ts` is deliberately **not**
-`INACTIVE_STATUSES` from the gatekeeper, and reusing it is the obvious mistake.
-That set answers "is this card working", which includes `PAUSED`. This one
-answers "are its files finished with" — and a paused card's are the opposite of
-finished: half-edited, lying in the shared tree, with the agent finding out on
-resume. Terminal statuses release, and so does IDEAS - an idea has never been worked, so it holds nothing. Note this list is a fixed set of NAMES, and a flow authored by `agenfk flow create` rarely calls its final step DONE; on such a flow a finished card holds its claims forever. Tracked as a defect.
-
----
-
-## Staging is the other half
+## Staging is the control
 
 The close commit was `git add -A && git commit` in the project root for seven
 months. It was correct when written — one tree, one session — and became wrong
 when worktrees arrived without anyone revisiting it. Not a bug: an expired
 premise.
 
-It now commits **the index**, limited to the card's claims when it has any.
+It now commits **the index**, and stages nothing itself.
 
 **Every agent stages only what its card changed.** `.git/index` belongs to the
 worktree, not to an agent, so a bare `git commit` still takes whatever any of
-them staged — narrower than `add -A`, and not isolation. The pathspec is what
-makes it true. Staging nothing commits nothing, on purpose: "nothing staged, so
+them staged — narrower than `add -A`, and not isolation: each agent's own
+`git add` is what makes it true. Staging nothing commits nothing, on purpose: "nothing staged, so
 stage everything" is the original defect with a condition in front of it, and it
 would fire precisely when an agent had been careful.
+
+### What went with claims
+
+The check engine used to leave out of a card's change the files and tests that
+another active card claimed (5b48b96b). That exclusion was part of claims and
+went with them: every change in the tree is now the card's own. In one shared
+tree a sibling's red test fails this card's `suite-green`, a sibling's deleted
+test fails `test-count-not-lower`, a sibling's source file fails
+`only-test-files-changed` on a tests-only step, and a sibling's dirty file fails
+`tree-clean`. A fan-out in one tree therefore needs timing as well as staging
+discipline: siblings whose work is red or half-written should not be verifying
+at the same moment. This is a known cost of the removal, not a defect to fix by
+bringing claims back.
 
 ### This has been exercised, once
 
@@ -147,10 +120,7 @@ cards' work before either closed; one agent noticed and said so; the split was
 done by hand into two commits and nobody's work was swept. Four commits, three
 agents, zero sweeps.
 
-What kept them apart was **staging discipline, not claims** — no card in the
-database has ever declared one. The mechanism is complete, tested end to end,
-and dormant, because the rules installed on a user's machine never mention that
-it exists (card `90fd9d32`).
+What kept them apart was **staging discipline**, and nothing else.
 
 ---
 
@@ -191,14 +161,7 @@ recorded here so nobody re-proposes it as an oversight.
 
 ## Where Orca is behind
 
-In shared-worktree mode — their recommended default — there is no file locking,
-no ownership record, no planning-time partitioning, and no post-hoc overlap
-check between two workers. The only thing between two agents and one file is a
-prose sentence addressed to the coordinating model, plus a task-spec convention
-asking each spec to state what it may edit. That is claims, written in English
-and enforced by nobody.
-
-Also worth knowing before copying their model: their built-in `Coordinator`
+Worth knowing before copying their model: their built-in `Coordinator`
 class does not decompose at all (`coordinator.ts` carries the comment
 *"decomposition isn't implemented yet"*, and the RPC that drove it is documented
 as retired), and the README's "fan one prompt across five agents" is a **manual
@@ -218,14 +181,13 @@ terminal, and no human gate UI exists in their renderer.
 
 ## What the interface has to show
 
-Four figures of *The Fleet That Cannot Run* specify the screen, and they are
+The figures of *The Fleet That Cannot Run* specify the screen, and they are
 recorded here because that artifact is a page and this file is the thing that
-survives. The mechanism above is worthless if nothing on screen says it is
-working: for a week it was complete, reachable, and invisible.
+survives. None of it is worth anything if nothing on screen says it is
+working.
 
 | What | Where | State |
 | --- | --- | --- |
-| `owns N paths` / `held` on a sidebar card | `packages/ui/src/claimState.ts` | **shipped** |
 | A state dot per session on the tab strip, failed and blocked coloured | `packages/ui/src/tabState.ts` | **shipped** |
 | `N need you`, jumping to the first stuck card | `AppShell.tsx` | **shipped** |
 | Two terminals side by side, with Split *disabled and giving its reason* | `packages/ui/src/splitAvailability.ts` | **shipped** |
@@ -241,9 +203,7 @@ panes open: the person asks for the pair that belongs side by side, because
 only they know which diff is about to be reviewed against which.
 
 **The good case stays quiet.** A running agent is visible but never competes
-with a failed or blocked one, and a card that claims nothing renders no chip at
-all. Every card in the database claims nothing, so a chip on all of them is
-thirty rows announcing an absence — the same reason an idle tab shows no dot.
+with a failed or blocked one, and an idle tab shows no dot.
 
 The layout was measured rather than guessed, and the measurement constrains the
 design: `WorktreePanel` is a fixed `w-72`, so on a 1440 window opening the git
@@ -256,24 +216,15 @@ later; it does not fit, and the split is what closes.
 
 ## Open, and in order
 
-1. `a539e75a` — claims fail OPEN on a case-insensitive filesystem. `SKILL.md`
-   and `skill.md` are the same file on APFS and NTFS and do not collide, so two
-   cards both believe they own it. Found by adversarial review; the highest
-   severity open item, because it loses work silently.
-2. `5d2a6df5` — `RELEASED_STATUSES` is a fixed set of NAMES, and a flow authored
-   by `agenfk flow create` rarely calls its final step DONE. On such a flow a
-   finished card holds its claims forever and the mechanism switches itself off.
-3. `0c3211ab` — fan-out in one tree, with claims checked before dispatch.
-4. `cada336b` — install dependencies per worktree via a setup script.
-5. `11a08ee9` — an MCP-only agent cannot declare a claim at all: the update
-   schema strips the field.
-6. The twelve children of `998fa96c` — the Orca reuse list above.
+1. `0c3211ab` — fan-out in one tree. Read *What went with claims* first:
+   siblings' red tests and files now count against each other's checks.
+2. `cada336b` — install dependencies per worktree via a setup script.
+3. The twelve children of `998fa96c` — the Orca reuse list above.
 
 ## The shape to watch for
 
-Three features this week were **complete on both ends and disconnected in the
-middle**: `closeCommit` accepted a claims pathspec no caller passed; the item
-route dropped a `claims` field because it destructures an allowlist; agent runs
-have a reader and a writer that nobody joined. Each was invisible for the same
+Features here have shipped **complete on both ends and disconnected in the
+middle**: the item route dropped `externalId` because it destructures an
+allowlist; agent runs have a reader and a writer that nobody joined. Each was invisible for the same
 reason — a feature never exercised end to end reports success at every layer it
 has.

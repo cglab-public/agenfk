@@ -36,7 +36,7 @@ describe('commitStagedForCard sha', () => {
       }
       return out;
     };
-    const r = commitStagedForCard(card, dir, { run }, undefined, { message: 'step(PLAN): Mine [c1]' });
+    const r = commitStagedForCard(card, dir, { run }, { message: 'step(PLAN): Mine [c1]' });
     expect(r.committed).toBe(true);
     expect(r.sha).toBe(sh('git log -1 --format=%H --grep=^step', dir));
     expect(r.sha).not.toBe(sh('git rev-parse HEAD', dir));

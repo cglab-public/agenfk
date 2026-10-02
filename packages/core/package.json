@@ -1,10 +1,11 @@
 {
   "name": "@agenfk/core",
-  "version": "2.0.0-beta.23",
+  "version": "2.0.0-beta.24",
   "description": "Core logic and interfaces for the AgenFK Engineering Framework",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
+    "prebuild": "node ../../scripts/clean-dist.mjs",
     "build": "tsc"
   },
   "devDependencies": {

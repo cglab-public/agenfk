@@ -1,11 +1,10 @@
 /**
  * The sheet you read before spending anything (CGLAB-207).
  *
- * Choosing an epic and dispatching its children is what the claims mechanism
- * was built for. This is where it is cashed in: every collision, every
- * unreadable claim and the depth ceiling are shown BEFORE a single agent
- * starts, because discovering them afterwards costs money to learn what the
- * gate already knew.
+ * Choosing an epic and dispatching its children is where a fan-out gets paid
+ * for. The depth ceiling, a child already running and a child stopped by the
+ * circuit breaker are shown BEFORE a single agent starts, because discovering
+ * them afterwards costs money to learn what was already known.
  *
  * THE BUTTON COUNTS WHAT WILL RUN. "Launch 3", never "Launch 4" with one
  * quietly held. It is the one number on this screen a person trusts without
@@ -18,12 +17,9 @@
 import React from 'react';
 import { clsx } from 'clsx';
 import { Zap, X } from 'lucide-react';
-import { planFleet, launchLabel, type FleetChild } from '../fleetPlan';
-import type { ClaimCard } from '../claimState';
+import { planFleet, launchLabel, type FleetChild, type FleetCard } from '../fleetPlan';
 
-export interface FleetSheetItem extends ClaimCard {
-  readonly title: string;
-  readonly parentId?: string | null;
+export interface FleetSheetItem extends FleetCard {
   /** Consecutive failed attempts, when the item carries one (CGLAB-202). */
   readonly failureCount?: number;
 }
@@ -31,7 +27,7 @@ export interface FleetSheetItem extends ClaimCard {
 export interface FleetSheetProps {
   /** The card whose children would be dispatched. */
   readonly parent: FleetSheetItem;
-  /** Every item in the project: holders can be anywhere, not just siblings. */
+  /** Every item in the project; the parent's children are picked from it. */
   readonly all: readonly FleetSheetItem[];
   /** Whether the parent may fan out at all, and why not. From `mayFanOut`. */
   readonly depth: { readonly allowed: boolean; readonly reason: string | null };
@@ -51,7 +47,7 @@ export interface FleetSheetProps {
   readonly onClose: () => void;
 }
 
-/** Amber for waiting, never red: a held child is the mechanism working. */
+/** Amber for waiting, never red: a held child is not a failure. */
 const HOLD_TONE = 'bg-status-warn-bg text-status-warn-text';
 
 function HoldRow({ child }: { readonly child: FleetChild }): React.ReactElement {
@@ -63,19 +59,13 @@ function HoldRow({ child }: { readonly child: FleetChild }): React.ReactElement 
         </span>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm text-ink">{child.title}</span>
-          {/* The sentence names the MOVE, and differs by who holds it: a
-              sibling finishes and releases, an outsider may sit for days.
-              Absent rather than empty when the reason belongs to the whole
-              fan-out - the ceiling says it once at the top, and an empty
-              element here is a thing a screen reader still walks into. */}
+          {/* The sentence names the MOVE. Absent rather than empty when the
+              reason belongs to the whole fan-out - the ceiling says it once at
+              the top, and an empty element here is a thing a screen reader
+              still walks into. */}
           {child.holdText ? (
             <span data-testid="fleet-hold-reason" className="mt-1 block text-xs text-ink-secondary">
               {child.holdText}
-            </span>
-          ) : null}
-          {child.claims?.length ? (
-            <span className="mt-1 block truncate font-mono text-[10px] text-ink-tertiary">
-              {child.claims.join(' · ')}
             </span>
           ) : null}
         </span>
@@ -93,18 +83,6 @@ function LaunchRow({ child }: { readonly child: FleetChild }): React.ReactElemen
         </span>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm text-ink">{child.title}</span>
-          {/*
-            * ONLY WHEN THERE IS SOMETHING TO SAY. "claims nothing" was printed
-            * in the same grey monospace as a real claim, so the SAFEST case —
-            * a card that touches no claimed file and therefore cannot collide
-            * — read as a warning. The module's own rule is that held rows are
-            * not errors; this was the mirror of that mistake.
-            */}
-          {child.claims?.length ? (
-            <span className="mt-1 block truncate font-mono text-[10px] text-ink-tertiary">
-              {child.claims.join(' · ')}
-            </span>
-          ) : null}
         </span>
       </div>
     </li>
@@ -181,7 +159,7 @@ export function FleetSheet({ parent, all, depth, running, terminalStatuses, onLa
       <div className="flex items-center gap-3 border-t border-border-soft px-4 py-3">
         <span data-testid="fleet-summary" className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-tertiary">
           {plan.heldCount > 0
-            ? `${plan.launchCount} ready · ${plan.heldCount} waiting on a path`
+            ? `${plan.launchCount} ready · ${plan.heldCount} held`
             : `${plan.launchCount} ready`}
         </span>
         <button

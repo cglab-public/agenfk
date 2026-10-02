@@ -5,10 +5,10 @@
  *
  * `AppSettingsDto` is a hand-written duplicate of `AppSettings`, and it has to
  * be: `@agenfk/core` compiles to CommonJS, so importing it from the browser
- * bundle either fails the build or ships a black window — the whole story is in
- * `claimState.ts`, which made the same call for the same reason.
+ * bundle either fails the build or ships a black window — the whole story is on
+ * `AppSettingsDto` in api.ts.
  *
- * That file also states the obligation a copy carries: a copy that DRIFTS is
+ * It also states the obligation a copy carries: a copy that DRIFTS is
  * worse than either sharing or not. The drift matters in ONE direction, and
  * this file is arranged around that fact.
  *

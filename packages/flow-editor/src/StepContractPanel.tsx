@@ -131,7 +131,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
   // close commit takes the work instead.
   const commits = stepContract?.commitsOnLeave;
   if (commits) {
-    musts.push("Stage its work before verify: this step commits the card's staged, claimed files when it leaves"
+    musts.push("Stage its work before verify: this step commits the card's staged files when it leaves"
       + (commits === 'required' ? ', and refuses to move on without that commit' : ''));
   }
 

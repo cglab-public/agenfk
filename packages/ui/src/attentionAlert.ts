@@ -26,8 +26,9 @@
  * `SoundTimingDto` from the api module, not `SoundTiming` from core.
  *
  * Even as a type-only import, reaching for `@agenfk/core` from a file in the
- * browser bundle is the road claimState.ts documents: core is CommonJS, and the
- * two ways to import it from here either fail the build or ship a black window.
+ * browser bundle is the road `AppSettingsDto` in api.ts documents: core is
+ * CommonJS, and the two ways to import it from here either fail the build or
+ * ship a black window.
  * The api module holds the mirror, and a test pins it against core.
  */
 import type { SoundTimingDto } from './api';

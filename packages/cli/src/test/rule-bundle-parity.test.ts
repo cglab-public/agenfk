@@ -150,8 +150,7 @@ describe('per-client rule bundle parity', () => {
  *
  * The suite above pins the command surface. This half pins the RULES that exist
  * because several agents share ONE worktree: staging is the only signal of who
- * touched what, and a claim is the only thing that stops two agents owning one
- * file. It checks each rule across the whole set, so a bundle that carries it
+ * touched what. It checks each rule across the whole set, so a bundle that carries it
  * while another does not is the failure - the shape drift actually takes.
  */
 /** Everything the installer copies onto a user's machine (the RULES half). */
@@ -176,10 +175,6 @@ const RULES = [
   {
     name: 'stage only what this card changed',
     needles: [/add\s+-A/i, /stage/i],
-  },
-  {
-    name: 'declare the files this card owns',
-    needles: [/\bclaims?\b/i, /agenfk\s+update[^\n]*--claims|claims\s*\[|"claims"/i],
   },
   {
     /*
@@ -224,46 +219,21 @@ describe('every shipped bundle carries every rule', () => {
 });
 
 /**
- * What the claims rule has to actually say.
+ * No bundle tells an agent to declare claims (26c059f6).
  *
- * The parity test above would pass on four files that each mention claims in
- * passing. These pin the two halves an agent cannot work without: the command
- * that declares them, and what happens when somebody else already holds the
- * path.
+ * The mechanism is gone and `agenfk update` has no `--claims` option. A rule
+ * that still told agents to run it would send every one of them into an
+ * "unknown option" error before its first edit - and a merge from a branch
+ * that predates the removal is exactly how such a section comes back.
  */
-describe('the claims rule is usable, not just present', () => {
-  const contents = RULE_BUNDLES.map(b => ({ b, text: read(b) }));
-
-  it('tells an agent how to declare, not only that claims exist', () => {
-    for (const { b, text } of contents) {
-      expect(
-        /--claims|"claims"|claims\s*\[/.test(text),
-        `${b} mentions claims without showing how to set them`,
-      ).toBe(true);
-    }
-  });
-
-  it('says what a claim may be, since a glob is refused', () => {
-    // The server returns 400 on a glob. A rule that does not say so produces an
-    // agent that learns it from an error, once per agent, forever.
-    for (const { b, text } of contents) {
-      expect(
-        /glob/i.test(text),
-        `${b} does not warn that globs are refused`,
-      ).toBe(true);
-    }
-  });
-
-  it('says a conflict is refused, and by whom', () => {
-    // Without this the refusal reads as a bug. With it, it reads as the
-    // mechanism working, and the agent knows to ask the holder.
-    for (const { b, text } of contents) {
-      expect(
-        /refus|conflict|409/i.test(text),
-        `${b} does not say a claimed path is refused`,
-      ).toBe(true);
-    }
-  });
+describe('the bundles no longer mention claims', () => {
+  for (const b of [...new Set<string>([...RULE_BUNDLES, ...Object.keys(BUNDLES)])]) {
+    it(`${b} carries no claims rule`, () => {
+      const text = read(b);
+      expect(/--claims/.test(text), `${b} still tells agents to run --claims`).toBe(false);
+      expect(/what your card owns/i.test(text), `${b} still carries the claims section`).toBe(false);
+    });
+  }
 });
 
 /**

@@ -735,104 +735,6 @@ describe('mutation hardening for the gatekeeper (CGLAB-110)', () => {
   });
 });
 
-/**
- * The claim gate, reached through the gatekeeper (819e7192).
- *
- * claimGate.test.ts proves the decision is right. This proves it is REACHED:
- * the branch was added to decideGatekeeperAuthorization and the whole core
- * suite stayed green, which says nothing about a path nothing walks.
- *
- * It also pins the two things easiest to get wrong in the wiring rather than
- * in the decision - the ORDER of the two questions, and which list the holders
- * come from.
- */
-describe('claim conflicts reach the gatekeeper', () => {
-  const claiming = (id: string, status: string, claims?: string[]): GatekeeperItem =>
-    ({ ...item(id, status), claims });
-
-  it('refuses a card whose claim another card already holds', () => {
-    const decision = decideGatekeeperAuthorization(
-      [claiming('mine', 'IN_PROGRESS', ['packages/ui/src/App.tsx']), claiming('theirs', 'REVIEW', ['packages/ui/'])],
-      tddFlow,
-      { itemId: 'mine' },
-    );
-    expect(decision.authorized, 'the claim gate is not wired in').toBe(false);
-    expect(decision.message).toContain('CLAIM CONFLICT');
-    expect(decision.message).toContain('theirs');
-  });
-
-  it('still authorizes when nothing is claimed, which is every card today', () => {
-    // The wiring must not turn into an outage on the deploy that adds it.
-    const decision = decideGatekeeperAuthorization(
-      [item('mine', 'IN_PROGRESS'), item('theirs', 'REVIEW')],
-      tddFlow,
-      { itemId: 'mine' },
-    );
-    expect(decision.authorized).toBe(true);
-  });
-
-  it('holds files for a PAUSED card, which getActiveStepItems drops', () => {
-    /*
-     * THE wiring test. The holders list must be `items`, not `workingItems`:
-     * getActiveStepItems filters PAUSED out, so passing it would hand a paused
-     * agent's half-edited files to somebody else, and it would find out on
-     * resume. Using the wrong list authorizes here, and the defect is invisible
-     * in claimGate.test.ts because that layer never sees the filter.
-     */
-    const decision = decideGatekeeperAuthorization(
-      [claiming('mine', 'IN_PROGRESS', ['packages/ui/src/App.tsx']), claiming('theirs', 'PAUSED', ['packages/ui/'])],
-      tddFlow,
-      { itemId: 'mine' },
-    );
-    expect(decision.authorized, 'a paused card lost its files through the gatekeeper').toBe(false);
-  });
-
-  it('answers "may it work at all" before "may it work here"', () => {
-    /*
-     * Order matters for the message, not the verdict. A card sitting on TODO
-     * with a colliding claim has two problems, and being told about the file
-     * conflict would send it to renegotiate a claim when what it needs is to
-     * start the card.
-     */
-    const decision = decideGatekeeperAuthorization(
-      [claiming('mine', 'TODO', ['packages/ui/src/App.tsx']), claiming('theirs', 'REVIEW', ['packages/ui/'])],
-      tddFlow,
-      { itemId: 'mine' },
-    );
-    expect(decision.authorized).toBe(false);
-    expect(decision.message).not.toContain('CLAIM CONFLICT');
-  });
-});
-
-describe('claims are per worktree through the gatekeeper (aaa01834)', () => {
-  const card = (id: string, status: string, extra: Partial<GatekeeperItem>): GatekeeperItem => ({ ...item(id, status), ...extra });
-
-  it("authorizes a card whose claim is held by a card in another worktree, resolving each through its parent", () => {
-    const d = decideGatekeeperAuthorization([
-      card('epicA', 'IN_PROGRESS', { type: 'EPIC', worktreePath: '/wt/a' }),
-      card('mine', 'IN_PROGRESS', { parentId: 'epicA', claims: ['packages/server/src/server.ts'] }),
-      card('epicB', 'IN_PROGRESS', { type: 'EPIC', worktreePath: '/wt/b', claims: ['packages/server/src/server.ts'] }),
-    ], tddFlow, { itemId: 'mine', projectRoot: '/repo' });
-    expect(d.authorized, d.message).toBe(true);
-  });
-
-  it('still refuses when both cards fall back to the project root', () => {
-    const d = decideGatekeeperAuthorization([
-      card('mine', 'IN_PROGRESS', { claims: ['a.ts'] }),
-      card('theirs', 'REVIEW', { claims: ['a.ts'] }),
-    ], tddFlow, { itemId: 'mine', projectRoot: '/repo' });
-    expect(d.authorized).toBe(false);
-  });
-
-  it('a card with its own worktree still collides with one at the root when the root is unknown', () => {
-    const d = decideGatekeeperAuthorization([
-      card('mine', 'IN_PROGRESS', { worktreePath: '/wt/a', claims: ['a.ts'] }),
-      card('theirs', 'REVIEW', { claims: ['a.ts'] }),
-    ], tddFlow, { itemId: 'mine' });
-    expect(d.authorized).toBe(false);
-  });
-});
-
 describe('the gatekeeper says when a step commits on leave (CGLAB-388 follow-up)', () => {
   const flowWith = (plan: Record<string, unknown>): GatekeeperFlow => ({
     name: 'Commit Flow',
@@ -840,7 +742,7 @@ describe('the gatekeeper says when a step commits on leave (CGLAB-388 follow-up)
   });
   it('tells the agent to stage its work before verify on an autoCommit step', () => {
     const d = decideGatekeeperAuthorization([item('a', 'PLAN')], flowWith({ autoCommit: true }), {});
-    expect(d.message).toMatch(/commits the card's staged, claimed files when it leaves/);
+    expect(d.message).toMatch(/commits the card's staged files when it leaves/);
     expect(d.message).toMatch(/stage your work before you advance the card/);
     expect(d.message).not.toMatch(/refuses to move on/);
   });

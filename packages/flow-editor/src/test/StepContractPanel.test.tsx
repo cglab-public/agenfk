@@ -120,7 +120,7 @@ describe('StepContractPanel', () => {
     const steps = [s('TODO', 0, { isAnchor: true }), s('SPECS', 1, { role: 'test-authoring', autoCommit: true, requireCommit: true } as Partial<FlowStep>), s('BUILD', 2, { role: 'coding' }), s('DONE', 3, { isAnchor: true, role: 'closing' })];
     show(steps, 1);
     const text = screen.getByTestId('contract-preview').textContent ?? '';
-    expect(text).toMatch(/Stage its work before verify: this step commits the card's staged, claimed files when it leaves/);
+    expect(text).toMatch(/Stage its work before verify: this step commits the card's staged files when it leaves/);
     expect(text).toMatch(/refuses to move on without that commit/);
   });
 

@@ -1,5 +1,5 @@
 /** The git and meta checks: tree-clean, on-card-branch, tree-in-sync, jira-key-valid, has-children. */
-import { checkOnWork, newCard, verify, update, write } from '../cards.mjs';
+import { checkOnWork, newCard, update, write } from '../cards.mjs';
 import { sh } from '../lib.mjs';
 
 const dirty = ({ dir }) => write(dir, { 'src/math.js': 'export const add = (a, b) => a + b + 0;\n' });
@@ -23,14 +23,6 @@ export const scenarios = [
   // tree-clean
   s('tree-clean', 'passes on a clean tree', 'pass'),
   s('tree-clean', 'blocks an uncommitted change to a tracked file', 'fail', { prepare: dirty }),
-  s('tree-clean', "does not count another active card's claimed files", 'pass', {
-    before: async ({ project }) => {
-      const other = await newCard(project, { title: 'other card' });
-      await update(other, { claims: ['src/'] });
-      await verify(other); // TODO -> WORK: an active card holding src/
-    },
-    prepare: dirty,
-  }),
   // No tree: the TODO entry guard already reads it, so the card never reaches WORK.
   s('tree-clean', 'is unavailable when the card has no tree (read on leaving TODO)', 'unavailable', { project: { root: false }, at: 'TODO' }),
 

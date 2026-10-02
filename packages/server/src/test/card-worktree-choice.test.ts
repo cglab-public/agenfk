@@ -152,18 +152,6 @@ describe('686fdbf6: a card chooses the tree it runs in', () => {
     dirs.push(after.worktreePath);
   });
 
-  it('a tree move is refused when a descendant that follows the card would collide there', async () => {
-    const t = await setup();
-    const other = await agent().post('/items').send({ type: 'TASK', title: `wtc-o-${++seq}`, projectId: t.pid });
-    await storage.updateItem(other.body.id, { status: 'WORK', worktreeChoice: t.root } as any);
-    expect((await put(other.body.id, { claims: ['lib/'] })).status).toBe(200);
-    expect((await put(t.child, { claims: ['lib/'] })).status).toBe(200);
-    const move = await put(t.epic, { worktree: t.root });
-    expect(move.status, JSON.stringify(move.body)).toBe(409);
-    expect(move.body.error).toContain(t.child);
-    expect((await storage.getItem(t.epic) as any)?.worktreeChoice).toBeUndefined();
-  });
-
   it("refuses to remove a card's worktree while another card chose to run in it", async () => {
     const t = await setup();
     expect((await put(t.child, { worktree: t.wt })).status).toBe(200);
@@ -193,17 +181,6 @@ describe('686fdbf6: a card chooses the tree it runs in', () => {
     const link = path.join(path.dirname(t.root), 'link-to-wt2');
     fs.symlinkSync(t.wt2, link);
     expect((await put(t.child, { worktree: link })).status).toBe(400);
-  });
-
-  it('choosing a tree is refused when a card there already holds the same files', async () => {
-    const t = await setup();
-    const other = await agent().post('/items').send({ type: 'TASK', title: `wtc-other-${++seq}`, projectId: t.pid });
-    await storage.updateItem(other.body.id, { status: 'WORK', worktreeChoice: t.wt2 } as any);
-    expect((await put(other.body.id, { claims: ['src/'] })).status).toBe(200);
-    expect((await put(t.child, { claims: ['src/'] })).status).toBe(200);
-    const move = await put(t.child, { worktree: t.wt2 });
-    expect(move.status, JSON.stringify(move.body)).toBe(409);
-    expect((await storage.getItem(t.child) as any)?.worktreeChoice).toBeUndefined();
   });
 
   it("'inherit' clears the choice: the card follows its parent again", async () => {

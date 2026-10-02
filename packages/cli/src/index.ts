@@ -1817,7 +1817,6 @@ program
   .option('--type <type>', 'New type (EPIC, STORY, TASK, BUG)')
   .option('--parent <parentId>', "Re-parent under another item; pass 'none' to detach to top level")
   .option('--jira-item <key>', "Link this card to a JIRA item by key (e.g. CGLAB-163); pass 'none' to unlink")
-  .option('--claims <paths>', 'Comma-separated paths this card owns; pass an empty string to release them')
   .option('--external-id <key>', 'Issue key in another tracker, e.g. a JIRA key')
   .option('--external-url <url>', 'Link to that issue')
   .option('--worktree <path>', "Where the card runs: a checkout of this repository, 'none' (the project root, whatever its parents have) or 'inherit' (clear the choice). Use this, never --parent, to move a card to another tree")
@@ -1844,19 +1843,6 @@ program
       if (options.title) updates.title = options.title;
       if (options.description) updates.description = options.description;
       if (options.type) updates.type = options.type.toUpperCase();
-      /*
-       * The paths this card owns while it is worked (819e7192).
-       *
-       * Split and trimmed here rather than sent raw: a shell quoting a list
-       * produces stray spaces, and a claim with a trailing space is MALFORMED -
-       * the server rejects it, correctly, with a message about a path the user
-       * believes they typed cleanly.
-       *
-       * An empty string releases, and that has to stay reachable: a card that
-       * over-claimed and cannot give the paths back blocks every sibling until
-       * it closes. `undefined` means "not mentioned" and leaves them alone,
-       * which is what every other `agenfk update` call in the world is doing.
-       */
       if (options.externalId !== undefined) updates.externalId = options.externalId;
       // 686fdbf6: a path is sent absolute, resolved from where the command runs.
       if (options.worktree !== undefined) {
@@ -1868,12 +1854,6 @@ program
         updates.worktree = w === 'none' || w === 'inherit' ? w : (fs.existsSync(abs) ? fs.realpathSync(abs) : abs);
       }
       if (options.externalUrl !== undefined) updates.externalUrl = options.externalUrl;
-      if (options.claims !== undefined) {
-        updates.claims = String(options.claims)
-          .split(',')
-          .map((c: string) => c.trim())
-          .filter(Boolean);
-      }
 
       if (options.parent !== undefined) {
         const detachWords = ['none', 'null', 'root', ''];
@@ -4067,18 +4047,10 @@ program
         }
       }
 
-      // Claims are per worktree (aaa01834): a card with no worktree of its own
-      // or an ancestor's works in the project root. Unknown stays strict.
-      let projectRoot: string | null = null;
-      if (projectId) {
-        try { projectRoot = (await axios.get(`${API_URL}/projects/${projectId}`, { timeout: 5000 })).data?.projectRoot ?? null; }
-        catch { /* unknown root: the gate stays strict */ }
-      }
       const decision = decideGatekeeperAuthorization(projectItems, activeFlow, {
         itemId: options.itemId,
         intent: options.intent,
         role: options.role,
-        projectRoot,
       });
 
       /*

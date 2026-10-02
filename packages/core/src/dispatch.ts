@@ -4,8 +4,8 @@
  * THE SCOPE IS DELIBERATELY SMALL, and choosing it was most of the work. The
  * obvious design is a parallel Run/Task/Dispatch model beside the existing one
  * - and it would be a second source of truth about what work exists, free to
- * drift from the cards. A CARD ALREADY IS A TASK: it has a state, a hierarchy,
- * claims and a failure count. A RUN is a fan-out of one parent, which the fleet
+ * drift from the cards. A CARD ALREADY IS A TASK: it has a state, a hierarchy
+ * and a failure count. A RUN is a fan-out of one parent, which the fleet
  * sheet already computes. What genuinely does not exist is the DISPATCH: the
  * attempt itself, which is the thing that can be in flight, come back, fail, or
  * go quiet.
@@ -209,9 +209,9 @@ export function resolveGate({ gateId, resolvedBy, raisedBy }: GateResolution): T
    * the guarantee this function exists for, walked past by a trailing space.
    * Both tests passed byte-identical strings, so neither could see it.
    *
-   * Case-folded because these are agent and terminal ids, not paths - the
-   * argument that stops `claimsCollide` folding case (Linux really does have
-   * two files there) has no counterpart here.
+   * Case-folded because these are agent and terminal ids, not paths: the
+   * argument against folding a path's case (Linux really does have two files
+   * there) has no counterpart here.
    */
   const resolver = resolvedBy.trim().toLowerCase();
   const raiser = raisedBy.trim().toLowerCase();

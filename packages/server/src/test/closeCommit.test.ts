@@ -52,12 +52,10 @@ describe('what reaches git', () => {
 
   it('commits without touching the working tree', () => {
     /*
-     * The name was a false claim for as long as claims existed: `-a` is not
-     * the only spelling of "take the working tree", and `git commit -- <paths>`
-     * is the other one. That defect lived behind this green test until an
-     * adversarial review reproduced it; the case that catches it needs a REAL
+     * `-a` is not the only spelling of "take the working tree": `git commit --
+     * <paths>` is the other one. The case that catches both needs a REAL
      * repository with the index and worktree differing, and lives in
-     * worktree-api.test.ts. This one keeps the flag half honest.
+     * worktree-api.test.ts. This one keeps the flags honest.
      */
     const git = spyGit();
     commitStagedForCard(card, '/repo', { run: git.run });
@@ -159,60 +157,18 @@ describe('when git fails', () => {
 /**
  * One index per WORKTREE, not per agent (review of d997368d).
  *
- * The commit that introduced this module said staging "is the signal that
- * already carries that knowledge" - which needs a per-agent index, and
- * `.git/index` is per-worktree. The design the same commit describes is several
- * agents in ONE worktree, so they share it.
- *
- * So `git commit` with no pathspec still takes whatever any of them staged:
- * agent B runs `git add b.ts`, agent A closes, and b.ts lands inside A's card.
- * Narrower than `add -A` and a real improvement, but the commit presented it as
- * solved and it was not.
- *
- * THE PATHSPEC IS WHAT MAKES IT TRUE. A card's claims are precisely the list of
- * paths it owns, so committing `-- <claims>` takes the card's files out of the
- * shared index and leaves everybody else's where they were. The claims module
- * exists; persisting them is the next card, and this is the half that has to be
- * ready when it lands.
+ * Several agents share one worktree, so they share `.git/index`, and a
+ * `git commit` with no pathspec takes whatever any of them staged. That is the
+ * contract: the close commits the index as it is, and staging only your own
+ * card's files is each agent's job.
  */
 describe('a shared index (review of d997368d)', () => {
-  it('limits the commit to the card\'s own paths when they are known', () => {
+  it('commits the whole index, with no pathspec', () => {
     const git = spyGit(['a.ts', 'b.ts']);
-    commitStagedForCard(card, '/repo', { run: git.run }, ['a.ts']);
-    const commit = git.calls.find(c => c.includes('commit'))!;
-    expect(commit, 'the commit took the whole index in a shared worktree').toContain('--');
-    expect(commit[commit.indexOf('--') + 1]).toBe('a.ts');
-  });
-
-  it('declines when none of the card\'s paths are staged', () => {
-    /*
-     * The other half. With a pathspec, "something is staged" is no longer the
-     * question - "is any of MINE staged" is. Committing here would produce an
-     * empty commit, or worse, silently succeed on a sibling's file.
-     */
-    const git = spyGit(['someone-elses.ts']);
-    const result = commitStagedForCard(card, '/repo', { run: git.run }, ['a.ts']);
-    expect(result.committed).toBe(false);
-    expect(git.calls.some(c => c.includes('commit'))).toBe(false);
-  });
-
-  it('takes the whole index when the card claims nothing, as before', () => {
-    // No claims yet is the state every card is in today. The behaviour has to
-    // stay what it is until they exist, or this lands as a silent no-op.
-    const git = spyGit(['a.ts']);
     const result = commitStagedForCard(card, '/repo', { run: git.run });
     expect(result.committed).toBe(true);
     const commit = git.calls.find(c => c.includes('commit'))!;
     expect(commit).not.toContain('--');
-  });
-
-  it('ignores a claim that is not well formed rather than passing it to git', () => {
-    // A pathspec is a command argument. A claim the claims module would reject
-    // must not reach git just because it arrived by a different door.
-    const git = spyGit(['a.ts']);
-    commitStagedForCard(card, '/repo', { run: git.run }, ['a.ts', '../../etc/passwd']);
-    const commit = git.calls.find(c => c.includes('commit'))!;
-    expect(commit.join(' ')).not.toContain('..');
   });
 });
 
