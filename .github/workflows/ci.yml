@@ -16,7 +16,7 @@ on:
 permissions:
   contents: read
 
-# Supersede in-flight PR runs of the same ref (notably the pricier Windows minutes); never cancel runs on main.
+# Supersede in-flight PR runs of the same ref (notably the pricier Windows minutes); runs already in progress on main are never cancelled (a still-queued older one may be superseded by GitHub).
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
