@@ -539,7 +539,9 @@ describe('GET /releases/update/:jobId', () => {
 describe('GET /releases/latest', () => {
   it('returns 502 when GitHub API fails', async () => {
     const axios = (await import('axios')).default as any;
-    axios.get.mockRejectedValueOnce(new Error('Network Error'));
+    // Both GitHub requests (latest and the list, BUG 022b229a): either one
+    // alone failing still answers from the other.
+    axios.get.mockRejectedValueOnce(new Error('Network Error')).mockRejectedValueOnce(new Error('Network Error'));
     const res = await agent().get('/releases/latest');
     expect(res.status).toBe(502);
     expect(res.body).toHaveProperty('currentVersion');

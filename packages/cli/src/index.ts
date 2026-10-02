@@ -2,7 +2,7 @@ import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { harnessActor, resolveFromOptions } from './harnessModel.js';
 import axios from 'axios';
-import { readProjectFile, writePrivateFileSync, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
+import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
 import { findUpdateNotice } from './updateNotice.js';
 import { writeActiveWork } from './activeWork.js';
 import { resolveItemIdPrefix } from './resolveItemId.js';
@@ -501,7 +501,7 @@ export function frameworkUpgradeInfo(payload: any): { version: string; tier: 'ma
   return { version: rawVersion, tier };
 }
 
-async function checkUpgradeTier(): Promise<void> {
+export async function checkUpgradeTier(): Promise<void> {
   const cacheFile = path.join(os.homedir(), '.agenfk', 'upgrade-tier-cache.json');
 
   // Try the local cache first
@@ -529,23 +529,34 @@ async function checkUpgradeTier(): Promise<void> {
     const resp = await axios.get(`${API_URL}/releases/latest`, { timeout: 3000 });
     ({ tier, version: latestVersion } = frameworkUpgradeInfo(resp.data));
   } catch {
-    // Server unavailable — fall back to GitHub API directly
+    // Server unavailable — fall back to GitHub API directly, with the server's
+    // rule (core releaseChannel, BUG 022b229a): newest framework stable by
+    // version, tier = the strongest among stables newer than this install.
     try {
       const repo = 'cglab-public/agenfk';
-      const releaseResp = await axios.get(
-        `https://api.github.com/repos/${repo}/releases/latest`,
-        { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'agenfk-cli' }, timeout: 5000 },
-      );
-      const tagName: string = releaseResp.data?.tag_name ?? '';
+      const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'agenfk-cli' };
+      const [latestRes, listRes] = await Promise.allSettled([
+        axios.get(`https://api.github.com/repos/${repo}/releases/latest`, { headers, timeout: 5000 }),
+        axios.get(`https://api.github.com/repos/${repo}/releases?per_page=100`, { headers, timeout: 5000 }),
+      ]);
+      if (latestRes.status === 'rejected' && listRes.status === 'rejected') return;
+      const candidates: any[] = [
+        ...(latestRes.status === 'fulfilled' ? [latestRes.value?.data] : []),
+        ...(listRes.status === 'fulfilled' && Array.isArray(listRes.value?.data) ? listRes.value.data : []),
+      ];
+      const winner: any = newestFrameworkStable(candidates);
+      const tagName: string = winner?.tag_name ?? '';
       let rawTier: unknown;
-      // Don't even fetch package.json for a hub tag: it would resolve the CLI
-      // manifest at a Docker-image tag and honour whatever tier it declares.
-      if (tagName && !isHubRelease(tagName)) {
-        const rawResp = await axios.get(
-          `https://raw.githubusercontent.com/${repo}/${tagName}/packages/cli/package.json`,
-          { timeout: 5000 },
-        );
-        rawTier = rawResp.data?.agenfkUpgradeTier;
+      // Never fetch package.json for a hub tag (newestFrameworkStable already
+      // excludes them): it would honour whatever tier a Docker-image tag declares.
+      if (tagName) {
+        const newer = newerFrameworkStables(candidates, CURRENT_VERSION);
+        const tags = newer.length ? newer.map((r: any) => r.tag_name as string) : [tagName];
+        rawTier = strongestTier(await Promise.all(tags.map(async (tag) => {
+          try {
+            return (await axios.get(`https://raw.githubusercontent.com/${repo}/${tag}/packages/cli/package.json`, { timeout: 2000 })).data?.agenfkUpgradeTier;
+          } catch { return undefined; }
+        })));
       }
       ({ tier, version: latestVersion } = frameworkUpgradeInfo({ tag_name: tagName, upgradeTier: rawTier }));
     } catch {
