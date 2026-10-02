@@ -244,7 +244,9 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
                   type="button"
                   aria-pressed={active}
                   onClick={() => !disabled && setBucketSel(b)}
-                  disabled={disabled}
+                  // aria-disabled, not disabled: a disabled button is skipped by
+                  // Tab, and its reason (the title, read as its description) with it.
+                  aria-disabled={disabled || undefined}
                   title={disabled ? 'Today view is hourly' : undefined}
                   className={`px-2.5 py-1 rounded-md transition-colors ${active
                     ? 'bg-card-glass text-accent-ink shadow-sm'

@@ -116,6 +116,7 @@ export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: P
               >
                 {label}
                 <span className="ml-1 text-ink-tertiary">{n}</span>
+                {!disabled && n === 0 && <span className="sr-only"> (all already selected)</span>}
               </button>
             );
           })}
@@ -145,6 +146,7 @@ export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: P
               >
                 {LICENSE_CLASS_LABEL[c]}
                 <span className="ml-1 text-ink-tertiary">{n}</span>
+                {!disabled && n === 0 && <span className="sr-only"> (all already selected)</span>}
               </button>
             );
           })}

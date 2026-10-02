@@ -285,6 +285,7 @@ function ModelRow({ row, editing, draft, dirty, invalid, busy, onEdit, onCancel,
   unmapping: boolean;
 }) {
   const inherited = row.meta && !row.meta.exact;
+  const saveBlocked = invalid ? 'Fix the highlighted value first' : !dirty ? 'No changes to save' : null;
 
   return (
     <>
@@ -342,10 +343,13 @@ function ModelRow({ row, editing, draft, dirty, invalid, busy, onEdit, onCancel,
               />
             </td>
             <td className="px-3 py-2 text-right whitespace-nowrap">
+              {/* Something to fix is said on screen: a disabled button's title
+                  reaches a mouse and a screen reader, not a sighted keyboard user. */}
+              {invalid && <span className="mr-1 text-[11px] text-status-danger-text">{saveBlocked}</span>}
               <button
                 onClick={onSave}
                 disabled={!dirty || invalid || busy}
-                title={invalid ? 'Fix the highlighted value first' : dirty ? 'Save' : 'No changes to save'}
+                title={saveBlocked ?? undefined}
                 aria-label="Save"
                 className="p-1 rounded text-accent-ink disabled:opacity-30 hover:bg-accent-fill"
               >
