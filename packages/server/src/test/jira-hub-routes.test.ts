@@ -16,6 +16,7 @@
  * Hub config is forced via env BEFORE importing the server module (hubClient
  * captures config at import) and global fetch is stubbed, so no network is hit.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -47,7 +48,7 @@ vi.mock('axios', async (importOriginal) => {
   return { ...actual, default: guard };
 });
 
-const TEST_DB = path.resolve('./jira-hub-routes-test-db.sqlite');
+const TEST_DB = testDbPath('jira-hub-routes-test-db.sqlite');
 const HUB_URL = 'http://hub.example.test';
 const HUB_CLOUD_URL = 'https://acme.atlassian.net';
 const LOCAL_CLOUD_URL = 'https://local-leftover.atlassian.net';

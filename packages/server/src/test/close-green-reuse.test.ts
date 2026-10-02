@@ -13,6 +13,7 @@
  * in one worktree, and the shared on-disk sandbox gave two of them false
  * failures. A dirty tree is not shared: its content is that card's own.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -28,7 +29,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./close-green-reuse-test-db.sqlite');
+const TEST_DB = testDbPath('close-green-reuse-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

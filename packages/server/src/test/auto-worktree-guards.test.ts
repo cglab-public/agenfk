@@ -16,10 +16,10 @@
  * precisely the collision this feature exists to prevent. A failure nobody can
  * see is worse than no feature.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as path from 'path';
 import { app, initStorage, VERIFY_TOKEN, shouldAutoWorktree, noteWorktreeFailure } from '../server';
 
 /**
@@ -39,7 +39,7 @@ beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
 
-const TEST_DB = path.resolve('./auto-worktree-guards-test-db.sqlite');
+const TEST_DB = testDbPath('auto-worktree-guards-test-db.sqlite');
 const internal = (r: request.Test) => r.set('x-agenfk-internal', VERIFY_TOKEN!);
 
 describe('who gets an automatic worktree', () => {

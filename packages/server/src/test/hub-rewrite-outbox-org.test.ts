@@ -8,10 +8,10 @@
  * Behaviour-based: drive the real Express route with supertest and assert on the
  * HTTP responses and the actual effect on the outbox rows.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as path from 'path';
 import { app, initStorage, storage, VERIFY_TOKEN } from '../server';
 
 /**
@@ -31,7 +31,7 @@ beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
 
-const TEST_DB = path.resolve('./hub-rewrite-outbox-org-test-db.sqlite');
+const TEST_DB = testDbPath('hub-rewrite-outbox-org-test-db.sqlite');
 const ROUTE = '/internal/hub/rewrite-outbox-org';
 
 describe('POST /internal/hub/rewrite-outbox-org', () => {

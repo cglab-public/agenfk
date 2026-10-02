@@ -3,6 +3,7 @@
  * These tests should FAIL before the JSONStorageProvider is removed and
  * initStorage() is simplified to always use SQLite.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import { app, initStorage } from '../server';
@@ -46,8 +47,8 @@ const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-sqlite-only-')
 fs.mkdirSync(path.join(sandboxHome, '.agenfk'), { recursive: true });
 vi.mocked(os.homedir).mockReturnValue(sandboxHome);
 
-const TEST_DB_JSON_PATH = path.resolve('./server-sqlite-only-test-db.json');
-const TEST_DB_SQLITE_PATH = path.resolve('./server-sqlite-only-test-db.sqlite');
+const TEST_DB_JSON_PATH = testDbPath('server-sqlite-only-test-db.json');
+const TEST_DB_SQLITE_PATH = testDbPath('server-sqlite-only-test-db.sqlite');
 
 describe('SQLite-only storage enforcement', () => {
   describe('when AGENFK_DB_PATH points to a .json path', () => {
@@ -90,7 +91,7 @@ describe('SQLite-only storage enforcement', () => {
   });
 
   describe('when AGENFK_DB_PATH points to a .sqlite path', () => {
-    const SQLITE_TEST_DB = path.resolve('./server-sqlite-explicit-test-db.sqlite');
+    const SQLITE_TEST_DB = testDbPath('server-sqlite-explicit-test-db.sqlite');
 
     beforeAll(async () => {
       if (fs.existsSync(SQLITE_TEST_DB)) fs.unlinkSync(SQLITE_TEST_DB);
@@ -110,7 +111,7 @@ describe('SQLite-only storage enforcement', () => {
   });
 
   describe('migration.json import on startup', () => {
-    const MIGRATION_DB = path.resolve('./server-migration-test-db.sqlite');
+    const MIGRATION_DB = testDbPath('server-migration-test-db.sqlite');
     const migrationPath = path.join(os.homedir(), '.agenfk', 'migration.json');
     let hadExistingMigration = false;
     let existingMigrationContent: string | null = null;

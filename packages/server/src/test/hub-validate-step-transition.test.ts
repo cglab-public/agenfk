@@ -11,6 +11,7 @@
  * which kept an unreachable PUT branch alive only because deleting it lowered
  * the count. It now drives the real routes and reads hub_outbox.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -25,7 +26,7 @@ vi.hoisted(() => {
 });
 vi.mock('axios', () => { const m = vi.fn() as any; m.get = vi.fn(); m.post = vi.fn(); m.create = vi.fn(() => m); return { default: m }; });
 
-const TEST_DB = path.resolve('./hub-validate-step-transition-test-db.sqlite');
+const TEST_DB = testDbPath('hub-validate-step-transition-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

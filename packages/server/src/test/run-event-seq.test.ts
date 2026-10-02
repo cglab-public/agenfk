@@ -16,10 +16,10 @@
  * Only the pi tailer supplies a position of its own; the hook and the CLI both
  * omit it, which is to say the broken path was the common one.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as path from 'path';
 import { app, initStorage, VERIFY_TOKEN, io } from '../server';
 
 // One listening server for the file. Per-call servers produced transport
@@ -30,7 +30,7 @@ beforeAll(() => { __server = app.listen(0); });
 afterAll(() => { __server?.close(); });
 
 
-const TEST_DB = path.resolve('./run-event-seq-test-db.sqlite');
+const TEST_DB = testDbPath('run-event-seq-test-db.sqlite');
 const internal = (r: request.Test) => r.set('x-agenfk-internal', VERIFY_TOKEN!);
 
 let runId: string;

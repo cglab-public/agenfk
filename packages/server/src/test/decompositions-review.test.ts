@@ -6,13 +6,14 @@
  * shape of the body, and the promise the whole feature rests on: THAT IT
  * WRITES NOTHING.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import { app, initStorage } from '../server';
 import * as fs from 'fs';
 import * as path from 'path';
 
-const TEST_DB = path.resolve('./decompositions-review-test-db.sqlite');
+const TEST_DB = testDbPath('decompositions-review-test-db.sqlite');
 
 let server: import('http').Server;
 beforeAll(async () => {

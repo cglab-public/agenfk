@@ -10,12 +10,12 @@
  * Env is saved/restored so hub config doesn't leak into other test files
  * (process.env is shared across the worker even though modules are isolated).
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import * as fs from 'fs';
-import * as path from 'path';
 import request from 'supertest';
 
-const TEST_DB = path.resolve('./flow-refresh-hubon-test-db.sqlite');
+const TEST_DB = testDbPath('flow-refresh-hubon-test-db.sqlite');
 const savedEnv: Record<string, string | undefined> = {};
 const ENV_KEYS = [
   'AGENFK_HUB_URL', 'AGENFK_HUB_TOKEN', 'AGENFK_HUB_ORG',

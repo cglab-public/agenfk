@@ -60,10 +60,22 @@ export function testHomeEnv() {
      * agrees.
      */
     fs.writeFileSync(path.join(home, '.agenfk', 'verify-token'), 'agenfk-test-verify-token');
+    /*
+     * And a place for the suite's sqlite databases (card c89e677d).
+     *
+     * The server tests resolved theirs against the cwd - the repository root -
+     * and unlinked only the main file while the server's WAL connection was
+     * open, so every run left its -wal/-shm sidecars at the root. Inside the
+     * sandbox they go wherever the sandbox goes. Read through testDbPath()
+     * (packages/server/src/test/helpers/testDb.ts).
+     */
+    const dbDir = path.join(home, 'test-dbs');
+    fs.mkdirSync(dbDir, { recursive: true });
     cached = {
       HOME: home,
       USERPROFILE: home, // Windows parity; harmless on POSIX
       AGENFK_REAL_HOME: REAL_HOME,
+      AGENFK_TEST_DB_DIR: dbDir,
     };
   }
   return cached;

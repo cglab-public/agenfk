@@ -13,6 +13,7 @@
  * into a working step, a card that qualifies has a worktree. Which function
  * arranged that is an implementation detail; the guarantee is not.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -35,7 +36,7 @@ beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
 
-const TEST_DB = path.resolve('./worktree-transitions-test-db.sqlite');
+const TEST_DB = testDbPath('worktree-transitions-test-db.sqlite');
 const internal = (r: request.Test) => r.set('x-agenfk-internal', VERIFY_TOKEN!);
 
 let repo: string;

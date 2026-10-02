@@ -6,6 +6,7 @@
  * vars are explicitly deleted so loadHubConfig() returns null. A benign fetch
  * stub is still set so any stray background call does not hit the network.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -21,7 +22,7 @@ vi.mock('os', async (importOriginal) => {
   return { ...actual, homedir: vi.fn(() => actual.homedir()) };
 });
 
-const TEST_DB = path.resolve('./flow-org-avail-huboff-test-db.sqlite');
+const TEST_DB = testDbPath('flow-org-avail-huboff-test-db.sqlite');
 const TMP_HOME = path.join(os.tmpdir(), 'agenfk-huboff-home');
 const savedEnv: Record<string, string | undefined> = {};
 const ENV_KEYS = [

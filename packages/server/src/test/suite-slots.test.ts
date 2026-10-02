@@ -9,6 +9,7 @@
  * maxConcurrentSuiteRuns: 0 is automatic (half the CPUs, at least 1),
  * anything else is used as given, up to the CPU count.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -18,7 +19,7 @@ import { execSync } from 'child_process';
 
 vi.mock('axios', () => { const m = vi.fn() as any; m.get = vi.fn(); m.post = vi.fn(); m.create = vi.fn(() => m); return { default: m }; });
 
-const TEST_DB = path.resolve('./suite-slots-test-db.sqlite');
+const TEST_DB = testDbPath('suite-slots-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

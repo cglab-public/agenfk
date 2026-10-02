@@ -10,6 +10,7 @@
  * child whose parent is already finished runs its own, so nothing lands
  * unverified.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -19,7 +20,7 @@ import { execSync } from 'child_process';
 
 vi.mock('axios', () => { const m = vi.fn() as any; m.get = vi.fn(); m.post = vi.fn(); m.create = vi.fn(() => m); return { default: m }; });
 
-const TEST_DB = path.resolve('./verify-at-parent-test-db.sqlite');
+const TEST_DB = testDbPath('verify-at-parent-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

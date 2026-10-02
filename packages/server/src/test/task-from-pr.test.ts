@@ -14,6 +14,7 @@
  * production and would pass even if the argv were wrong. A script on PATH is
  * exercised by the same `execFileSync` the real one is.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -37,7 +38,7 @@ beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
 
-const TEST_DB = path.resolve('./task-from-pr-test-db.sqlite');
+const TEST_DB = testDbPath('task-from-pr-test-db.sqlite');
 const internal = (r: request.Test) => r.set('x-agenfk-internal', VERIFY_TOKEN!);
 
 let repo: string;

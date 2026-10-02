@@ -3,14 +3,14 @@
  * first pass introduced. Same principle: an item only moves forward through
  * validate_progress, and a flow is untrusted input.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as path from 'path';
 import { app, initStorage, buildAllowedTransitions } from '../server';
 import type { Server } from 'http';
 
-const TEST_DB = path.resolve('./workflow-gate-round2-test-db.sqlite');
+const TEST_DB = testDbPath('workflow-gate-round2-test-db.sqlite');
 
 /**
  * ONE listening server for the whole file, instead of one per request.

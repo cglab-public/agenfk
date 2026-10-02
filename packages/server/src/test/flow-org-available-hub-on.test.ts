@@ -8,12 +8,12 @@
  * captures config at import), and global fetch is stubbed so no live network is
  * hit. Env is saved/restored so nothing leaks to other test files.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import * as fs from 'fs';
-import * as path from 'path';
 import request from 'supertest';
 
-const TEST_DB = path.resolve('./flow-org-avail-hubon-test-db.sqlite');
+const TEST_DB = testDbPath('flow-org-avail-hubon-test-db.sqlite');
 const savedEnv: Record<string, string | undefined> = {};
 const ENV_KEYS = [
   'AGENFK_HUB_URL', 'AGENFK_HUB_TOKEN', 'AGENFK_HUB_ORG',

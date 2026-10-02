@@ -11,6 +11,7 @@
  *    its modified tracked files as their index blobs) still matched today's
  *    (finding 8).
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -40,7 +41,7 @@ vi.mock('child_process', async (orig) => {
   return { ...real, execFileSync, default: { ...real, execFileSync } };
 });
 
-const TEST_DB = path.resolve('./capture-record-soundness-test-db.sqlite');
+const TEST_DB = testDbPath('capture-record-soundness-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

@@ -13,6 +13,7 @@
  *  2. REST functional tests — verify the underlying GET /items endpoint
  *     accepts custom statuses and returns items regardless of step name.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import { app, initStorage } from '../server';
@@ -37,7 +38,7 @@ afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); 
 
 
 const ROOT = path.resolve(__dirname, '../../../..');
-const TEST_DB = path.resolve('./mcp-status-enum-custom-flows-test-db.sqlite');
+const TEST_DB = testDbPath('mcp-status-enum-custom-flows-test-db.sqlite');
 
 const DEFAULT_FLOW_ENUM = `["TODO", "IN_PROGRESS", "TEST", "REVIEW", "DONE", "BLOCKED", "PAUSED"]`;
 

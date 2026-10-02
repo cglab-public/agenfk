@@ -9,14 +9,14 @@
  * warnings endpoints serve them), so the list leaves them out; GET /items/:id
  * still carries them.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as path from 'path';
 
 vi.mock('axios', () => { const m = vi.fn() as any; m.get = vi.fn(); m.post = vi.fn(); m.create = vi.fn(() => m); return { default: m }; });
 
-const TEST_DB = path.resolve('./items-list-slim-test-db.sqlite');
+const TEST_DB = testDbPath('items-list-slim-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

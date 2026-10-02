@@ -8,6 +8,7 @@
  * refusal now carries ONE actionable line, error code NO_TEST_REPORT, and a
  * ready-to-run command built from the project's real id and verify command.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -23,7 +24,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./no-test-report-test-db.sqlite');
+const TEST_DB = testDbPath('no-test-report-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

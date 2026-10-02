@@ -6,6 +6,7 @@
  *
  * All tests are intentionally failing until the feature is implemented.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import { app, initStorage, clearReleaseCache } from '../server';
@@ -38,7 +39,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./upgrade-tier-test-db.sqlite');
+const TEST_DB = testDbPath('upgrade-tier-test-db.sqlite');
 const CLI_PKG_PATH = path.resolve(__dirname, '../../../cli/package.json');
 const SERVER_PATH = path.resolve(__dirname, '../server.ts');
 

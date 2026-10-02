@@ -9,6 +9,7 @@
  * files run and their results are merged over the entry's. The merged record
  * says so and is never reused as a green. Anything else runs the whole suite.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -24,7 +25,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./lazy-capture-test-db.sqlite');
+const TEST_DB = testDbPath('lazy-capture-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

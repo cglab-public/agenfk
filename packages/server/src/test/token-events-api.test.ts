@@ -1,7 +1,7 @@
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as path from 'path';
 import { app, initStorage } from '../server';
 import { connectMcpClient, listToolNames, type ConnectedMcpClient } from './helpers/mcpClient';
 
@@ -31,7 +31,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./token-events-api-test-db.sqlite');
+const TEST_DB = testDbPath('token-events-api-test-db.sqlite');
 
 // The query_token_events MCP tool must actually be advertised by the live MCP
 // server. The `agenfk tokens` CLI command is exercised behaviourally in the CLI

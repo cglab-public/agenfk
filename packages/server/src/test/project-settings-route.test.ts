@@ -5,6 +5,7 @@
  * tested here — the status codes, the shape, and the promise that reading this
  * changes nothing.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import { app, initStorage, storage, VERIFY_TOKEN, approvalPageHost } from '../server';
@@ -13,7 +14,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { execSync } from 'child_process';
 
-const TEST_DB = path.resolve('./project-settings-route-test-db.sqlite');
+const TEST_DB = testDbPath('project-settings-route-test-db.sqlite');
 let server: import('http').Server;
 let projectId: string;
 

@@ -6,6 +6,7 @@
  * worktree belongs to an item, that asking twice is safe, and — the one that
  * matters most — that removing a worktree never destroys the work inside it.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import { execFileSync } from 'child_process';
@@ -30,7 +31,7 @@ beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
 
-const TEST_DB = path.resolve('./worktree-api-test-db.sqlite');
+const TEST_DB = testDbPath('worktree-api-test-db.sqlite');
 
 let repo: string;
 let root: string;

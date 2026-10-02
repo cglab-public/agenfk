@@ -7,6 +7,7 @@
  * Behaviour-based: enable the outbox, link an item, trigger a real event for
  * it, and read what lands in hub_outbox.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 
@@ -18,14 +19,13 @@ vi.hoisted(() => {
 
 import { app, initStorage } from '../server';
 import * as fs from 'fs';
-import * as path from 'path';
 
 let server: import('http').Server;
 const agent = () => request(server);
 beforeAll(() => { server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => server.close(() => r())); });
 
-const TEST_DB = path.resolve('./hub-external-url-test-db.sqlite');
+const TEST_DB = testDbPath('hub-external-url-test-db.sqlite');
 
 async function waitForOutbox(predicate: (p: any) => boolean, timeoutMs = 5000): Promise<any> {
   const db: any = (await import('../server')).storage['database'];

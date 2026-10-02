@@ -28,6 +28,7 @@
  * Same server message feeds the CLI (`agenfk verify`) and MCP
  * `validate_progress`, so fixing it here fixes both clients.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -42,7 +43,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./verify-diagnostics-test-db.sqlite');
+const TEST_DB = testDbPath('verify-diagnostics-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

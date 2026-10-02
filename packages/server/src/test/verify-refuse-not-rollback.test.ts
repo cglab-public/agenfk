@@ -30,10 +30,10 @@
  *  - an intermediate step with no command still advances without running
  *    anything (unchanged behaviour, pinned so the fix does not overreach).
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as path from 'path';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -43,7 +43,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./verify-refuse-not-rollback-test-db.sqlite');
+const TEST_DB = testDbPath('verify-refuse-not-rollback-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

@@ -7,15 +7,15 @@
  *   comments and CDATA with a left-to-right scan. It keeps the single-pass
  *   meaning, where whichever section opens first wins.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as path from 'path';
 import { EXPENSIVE_ROUTE_LIMIT } from '@agenfk/core';
 
 vi.mock('axios', () => { const m = vi.fn() as any; m.get = vi.fn(); m.post = vi.fn(); m.create = vi.fn(() => m); return { default: m }; });
 
-const TEST_DB = path.resolve('./codeql-hardening-test-db.sqlite');
+const TEST_DB = testDbPath('codeql-hardening-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

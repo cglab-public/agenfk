@@ -1,3 +1,4 @@
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeEach, beforeAll, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import { app, initStorage, storage, oauthStateStore, mapJiraTypeToAgEnFK, clearJiraValidationCache, VERIFY_TOKEN } from '../server';
@@ -37,7 +38,7 @@ vi.mock('os', async (importOriginal) => {
   return { ...actual, homedir: vi.fn(() => actual.homedir()) };
 });
 
-const TEST_DB = path.resolve('./server-test-db.sqlite');
+const TEST_DB = testDbPath('server-test-db.sqlite');
 
 describe('Server API', () => {
   beforeAll(async () => {

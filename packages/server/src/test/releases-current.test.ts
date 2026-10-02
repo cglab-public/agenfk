@@ -7,6 +7,7 @@
  * /releases/latest stays as it is (the CLI's upgrade tier gate and the update
  * reminder rely on it); What's New reads this instead.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -23,7 +24,7 @@ vi.mock('axios', () => {
 
 let __server: import('http').Server;
 const agent = () => request(__server);
-const TEST_DB = path.resolve('./releases-current-test-db.sqlite');
+const TEST_DB = testDbPath('releases-current-test-db.sqlite');
 const INSTALLED = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf8')).version as string;
 
 beforeAll(async () => {

@@ -10,11 +10,11 @@
  *
  * These tests hold the local server to the same contract.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import { app, initStorage } from '../server';
 import * as fs from 'fs';
-import * as path from 'path';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -33,7 +33,7 @@ beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
 
-const TEST_DB = path.resolve('./flow-step-validation-test-db.sqlite');
+const TEST_DB = testDbPath('flow-step-validation-test-db.sqlite');
 
 describe('local flow step-shape validation', () => {
   beforeAll(async () => {

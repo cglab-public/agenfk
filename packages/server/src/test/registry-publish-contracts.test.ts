@@ -3,6 +3,7 @@
  * machine (the gh path) keeps a flow's step roles and checks, and never
  * replaces a registry flow that has them with one that lacks them.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as path from 'path';
@@ -14,7 +15,7 @@ vi.mock('axios', () => { const m = vi.fn() as any; m.get = vi.fn(); m.post = vi.
 
 import { app, initStorage } from '../server';
 
-const TEST_DB = path.resolve('./registry-publish-contracts-test-db.sqlite');
+const TEST_DB = testDbPath('registry-publish-contracts-test-db.sqlite');
 let __server: import('http').Server;
 const agent = () => request(__server);
 const rich = [

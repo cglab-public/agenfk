@@ -9,6 +9,7 @@
  * 2026-09-23): a child passes with its parent, and a parent whose children all
  * carry reviews (an epic over reviewed stories) needs none of its own.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -24,7 +25,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./review-record-check-test-db.sqlite');
+const TEST_DB = testDbPath('review-record-check-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

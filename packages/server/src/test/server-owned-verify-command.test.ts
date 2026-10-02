@@ -22,6 +22,7 @@
  *    skips a required command on a mid-flow boundary, and it accepts only a
  *    green the server wrote — PUT /items cannot mint one (review round 1).
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -37,7 +38,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./server-owned-verify-command-test-db.sqlite');
+const TEST_DB = testDbPath('server-owned-verify-command-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

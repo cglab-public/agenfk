@@ -22,10 +22,10 @@
  *  - **Unknown keys are refused.** A store that accepts anything becomes a
  *    junk drawer, and a typo silently writes a setting nothing will ever read.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as path from 'path';
 import { app, initStorage } from '../server';
 
 /**
@@ -45,7 +45,7 @@ beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
 
-const TEST_DB = path.resolve('./app-settings-test-db.sqlite');
+const TEST_DB = testDbPath('app-settings-test-db.sqlite');
 
 describe('installation-wide settings', () => {
   beforeAll(async () => {
@@ -142,7 +142,7 @@ describe('every notification setting survives the round trip', () => {
   it('answers a fresh install with every notification default', async () => {
     // A fresh database, so this is the documented default and not a leftover
     // from another test in this file.
-    const fresh = path.resolve('./app-settings-notify-defaults.sqlite');
+    const fresh = testDbPath('app-settings-notify-defaults.sqlite');
     if (fs.existsSync(fresh)) fs.unlinkSync(fresh);
     const previous = process.env.AGENFK_DB_PATH;
     process.env.AGENFK_DB_PATH = fresh;
