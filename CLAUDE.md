@@ -88,7 +88,7 @@ The old version is read from the root `package.json`; commit the manifest change
 
 **MCP surface**: the server registers MCP tools (`mcp__agenfk__*`) backed by the same handlers as the REST endpoints. Tool definitions live in `packages/server/src` alongside the Express routes. Adding a new MCP tool means: handler in core, REST route in server, MCP tool registration in server, and (usually) a CLI subcommand in `packages/cli` for the fallback path.
 
-**Client integrations**: three clients are supported, with different enforcement models — see `AFK_ARCHITECTURE.md` for the full table. Claude Code and OpenCode get *mechanical* PreToolUse hooks (`agenfk-gatekeeper`, `agenfk-mcp-enforcer`) that hard-block edits without an active task and block bypass routes (direct DB reads, `curl localhost:3000`, raw CLI state queries). Cursor has no hook system, so enforcement there is instructional via `cursorrules/agenfk.mdc` (`alwaysApply: true`) plus the server-side gatekeeper.
+**Client integrations**: three clients are supported, with different enforcement models — see `AFK_ARCHITECTURE.md` for the full table. Claude Code and OpenCode get *mechanical* PreToolUse hooks (`agenfk-gatekeeper`, `agenfk-mcp-enforcer`) that hard-block edits without an active task and block the bypass routes around the server (direct DB reads, `curl localhost:3000`; the `agenfk` CLI and MCP are interchangeable and never blocked). Cursor has no hook system, so enforcement there is instructional via `cursorrules/agenfk.mdc` (`alwaysApply: true`) plus the server-side gatekeeper.
 
 ## Testing notes
 
