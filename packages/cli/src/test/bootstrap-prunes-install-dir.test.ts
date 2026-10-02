@@ -162,7 +162,8 @@ describe('npx upgrade with an archive: prunes against the ARCHIVE', () => {
     chmodSync(path.join(binDir, 'gh'), 0o755);
     writeFileSync(path.join(binDir, 'curl'),
       `#!/bin/sh\nout=""\nwhile [ $# -gt 0 ]; do case "$1" in -o) shift; out="$1";; esac; shift; done\n` +
-      `if [ -n "$out" ]; then cp ${JSON.stringify(tarball)} "$out"; else echo '"v9.9.9"'; fi\n`, 'utf8');
+      // The API answer is the release LIST the installer picks from (BUG 4bd98e16).
+      `if [ -n "$out" ]; then cp ${JSON.stringify(tarball)} "$out"; else echo '[{"tag_name":"v9.9.9","prerelease":false,"published_at":"2026-01-01T00:00:00Z"}]'; fi\n`, 'utf8');
     chmodSync(path.join(binDir, 'curl'), 0o755);
 
     r = run(source, home, binDir);

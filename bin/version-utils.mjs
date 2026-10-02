@@ -48,3 +48,38 @@ export function compareSemver(a, b) {
   }
   return 0;
 }
+
+/**
+ * Hub image releases (`hub-v*`) are a separate release line in the same repo,
+ * never the framework (mirror of @agenfk/core's isHubRelease).
+ */
+export function isHubRelease(tag) {
+  return /^hub-v/i.test(String(tag || ''));
+}
+
+/**
+ * The release a channel installs (BUG 4bd98e16), the same rule as the CLI's
+ * newestChannelRelease: never a hub tag, only the channel's kind (prerelease
+ * for --beta, stable otherwise), and the newest by VERSION, publish date only
+ * breaking ties - by date, a hub image or a hotfix on an older line published
+ * last would win. An unparseable tag sorts below any parseable one.
+ * `refs`: [{ tag, prerelease, publishedAt }]. Returns the tag, or null.
+ */
+export function newestChannelTag(refs, beta) {
+  const match = (refs || [])
+    // Stable never takes a tag with a prerelease part, even one published
+    // without --prerelease (the CLI's rule too).
+    .filter((r) => r && r.tag && !isHubRelease(r.tag) && !!r.prerelease === !!beta
+      && (beta || !(parseSemver(r.tag)?.pre.length)))
+    .sort((a, b) => {
+      const pa = parseSemver(a.tag), pb = parseSemver(b.tag);
+      if (pa && pb) {
+        const byVersion = compareSemver(b.tag, a.tag);
+        if (byVersion !== 0) return byVersion;
+      } else if (pa || pb) {
+        return pa ? -1 : 1;
+      }
+      return (b.publishedAt || 0) - (a.publishedAt || 0);
+    })[0];
+  return match ? match.tag : null;
+}
