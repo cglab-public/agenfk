@@ -8,11 +8,11 @@
  * INACTIVE_STATUSES (BLOCKED/PAUSED/TRASHED/ARCHIVED/IDEAS). Flow-aware: the
  * server resolves each item's project flow, so custom flows work too.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import { app, initStorage, storage } from '../server';
 import * as fs from 'fs';
-import * as path from 'path';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -31,7 +31,7 @@ beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
 
-const TEST_DB = path.resolve('./server-list-active-test-db.sqlite');
+const TEST_DB = testDbPath('server-list-active-test-db.sqlite');
 
 const idsByStatus = async (projectId: string, query: Record<string, string>) => {
   const res = await agent().get('/items').query({ projectId, ...query });

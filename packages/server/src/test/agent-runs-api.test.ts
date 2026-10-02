@@ -2,10 +2,10 @@
  * REST surface for agent runs (CGLAB-18a). Behaviour-based: drives the real
  * Express app + storage against a temp DB via supertest.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as path from 'path';
 import { app, initStorage } from '../server';
 
 /**
@@ -25,7 +25,7 @@ beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
 
-const TEST_DB = path.resolve('./agent-runs-api-test-db.sqlite');
+const TEST_DB = testDbPath('agent-runs-api-test-db.sqlite');
 
 describe('agent-runs REST', () => {
   beforeAll(async () => {

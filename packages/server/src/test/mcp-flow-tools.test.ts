@@ -8,11 +8,11 @@
  *  2. REST API functional tests — verify the endpoints the MCP tools delegate to
  *     behave correctly end-to-end.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import { app, initStorage } from '../server';
 import * as fs from 'fs';
-import * as path from 'path';
 import { connectMcpClient, listToolNames, type ConnectedMcpClient } from './helpers/mcpClient';
 
 /**
@@ -44,7 +44,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./mcp-flow-tools-test-db.sqlite');
+const TEST_DB = testDbPath('mcp-flow-tools-test-db.sqlite');
 
 // ── MCP registration tests ─────────────────────────────────────────────────────
 // Connect a genuine MCP client to the server over an in-memory transport and

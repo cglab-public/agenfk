@@ -11,6 +11,7 @@
  * - a card whose suite is deferred to its open parent (verifyAt 'parent')
  *   runs nothing, and was refused anyway.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -26,7 +27,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./file-command-approval-paths-test-db.sqlite');
+const TEST_DB = testDbPath('file-command-approval-paths-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

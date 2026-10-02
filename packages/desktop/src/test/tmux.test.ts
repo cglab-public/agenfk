@@ -204,7 +204,7 @@ describe('the agent line is built once, not twice', () => {
   it('does not repeat the agent\'s own base arguments', () => {
     // `extraArgs` IS the caller's already-resolved argument list. Concatenating
     // it onto the agent's base args emitted every base argument twice —
-    // harmless today because only `shell` has any (`bash -l -l`), and silently
+    // harmless today because only `shell` has any (`<shell> -l -l`), and silently
     // doubling for whichever agent gains one next.
     const line = buildTmuxShellCommand(tmuxSessionName('i', 'shell'), 'shell', ['-l']);
     // The QUOTED argument, not the substring: `history-limit` in the configure

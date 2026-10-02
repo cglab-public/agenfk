@@ -8,6 +8,7 @@
  * in hub_outbox — instead of grepping server.ts for resolveFlowName /
  * getInstallSource.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 
@@ -19,7 +20,6 @@ vi.hoisted(() => {
 
 import { app, initStorage } from '../server';
 import * as fs from 'fs';
-import * as path from 'path';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -35,7 +35,7 @@ beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
 
-const TEST_DB = path.resolve('./hub-flow-enrichment-test-db.sqlite');
+const TEST_DB = testDbPath('hub-flow-enrichment-test-db.sqlite');
 
 // recordHubEvent enqueues into hub_outbox without awaiting the HTTP response, and
 // awaits a flow-name lookup before inserting — so poll rather than read once.

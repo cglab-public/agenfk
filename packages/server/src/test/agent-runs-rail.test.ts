@@ -15,10 +15,10 @@
  * server reports what it stored; the client decides what counts as live from
  * the recency of `run:event`.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as path from 'path';
 import { randomUUID } from 'crypto';
 import { app, initStorage, VERIFY_TOKEN } from '../server';
 
@@ -37,7 +37,7 @@ beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
 
-const TEST_DB = path.resolve('./agent-runs-rail-test-db.sqlite');
+const TEST_DB = testDbPath('agent-runs-rail-test-db.sqlite');
 const internal = (r: request.Test) => r.set('x-agenfk-internal', VERIFY_TOKEN!);
 
 describe('GET /agent-runs', () => {

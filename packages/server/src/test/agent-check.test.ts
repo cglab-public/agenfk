@@ -2,6 +2,7 @@
  * efcacdeb (C3) - an agent-run check: the step's instruction, carried out by
  * the coding agent and reported with verify; labelled agent-reported.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -17,7 +18,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./agent-check-test-db.sqlite');
+const TEST_DB = testDbPath('agent-check-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 const STORE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-agentcheck-pk-'));

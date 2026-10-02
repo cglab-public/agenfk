@@ -2,6 +2,7 @@
  * Tests for POST /registry/flows/publish
  * Covers: owner direct-push path and non-owner fork+PR path.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as path from 'path';
@@ -32,7 +33,7 @@ vi.mock('axios', () => {
 
 import { app, initStorage } from '../server';
 
-const TEST_DB = path.resolve('./server-registry-test-db.sqlite');
+const TEST_DB = testDbPath('server-registry-test-db.sqlite');
 
 // Read-only gh probes still go through execSync.
 function makeExecMock(ghUser: string) {
@@ -169,7 +170,7 @@ beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
 
-const INSTALL_DB = path.resolve('./server-registry-install-test-db.sqlite');
+const INSTALL_DB = testDbPath('server-registry-install-test-db.sqlite');
 
 function makeRegistryFlowContent(steps: object[]) {
   return Buffer.from(JSON.stringify({

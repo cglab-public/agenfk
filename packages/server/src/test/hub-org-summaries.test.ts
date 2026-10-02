@@ -6,6 +6,7 @@
  * GET /internal/hub/status — which must expose them even when the hub is NOT
  * configured (a stale-org install is exactly when carry-over is needed).
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -39,7 +40,7 @@ const __server = app.listen(0);
 const agent = () => request(__server);
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
-const TEST_DB = path.resolve('./hub-org-summaries-test-db.sqlite');
+const TEST_DB = testDbPath('hub-org-summaries-test-db.sqlite');
 
 describe('hub outbox org summaries', () => {
   beforeAll(async () => {

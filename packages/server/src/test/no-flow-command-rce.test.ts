@@ -13,6 +13,7 @@
  * hold on purpose: they fail the day a step gains a command field, which is
  * precisely when someone should be stopped and made to think.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -36,7 +37,7 @@ beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
 
-const TEST_DB = path.resolve('./no-flow-command-rce-test-db.sqlite');
+const TEST_DB = testDbPath('no-flow-command-rce-test-db.sqlite');
 
 describe('a flow cannot supply the verify command', () => {
   let projectId: string;

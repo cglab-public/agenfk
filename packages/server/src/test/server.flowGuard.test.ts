@@ -6,11 +6,11 @@
  * proxies REST) returns 409. New writes default to source='local' and refuse
  * to honour a body-supplied source override.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import { app, initStorage, storage } from '../server';
 import * as fs from 'fs';
-import * as path from 'path';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -29,7 +29,7 @@ beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
 
-const TEST_DB = path.resolve('./flow-guard-test-db.sqlite');
+const TEST_DB = testDbPath('flow-guard-test-db.sqlite');
 
 describe('local flow read-only guard', () => {
   beforeAll(async () => {

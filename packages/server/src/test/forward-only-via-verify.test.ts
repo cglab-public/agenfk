@@ -25,10 +25,10 @@
  *    is not a boundary — and a platform status (PAUSED, ARCHIVED...) is not a
  *    detour past the entry step.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as path from 'path';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -38,7 +38,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./forward-only-via-verify-test-db.sqlite');
+const TEST_DB = testDbPath('forward-only-via-verify-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

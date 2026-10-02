@@ -7,10 +7,10 @@
  * the first step whose checks include the review record, and only verify moves
  * it on. A flow with no such step keeps the old behaviour.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as path from 'path';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -20,7 +20,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./parent-stops-at-review-test-db.sqlite');
+const TEST_DB = testDbPath('parent-stops-at-review-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

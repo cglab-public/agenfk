@@ -313,7 +313,7 @@ export class PtyRegistry {
      *
      * Decided by the ABSENCE of a target, not by the agent id — `shell` is
      * also a picker choice, and picking it for a card must keep the card's
-     * worktree and its `bash -l`. A `shell` with nowhere to point IS the home
+     * worktree and its login shell. A `shell` with nowhere to point IS the home
      * shell.
      */
     const isShell = !req.itemId && !req.projectId;

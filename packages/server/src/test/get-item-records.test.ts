@@ -6,10 +6,10 @@
  * gates, check-history and warnings endpoints, the list already strips them,
  * and a PUT does not take them - so they are opt-in: ?records=1.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as path from 'path';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -19,7 +19,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./get-item-records-test-db.sqlite');
+const TEST_DB = testDbPath('get-item-records-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

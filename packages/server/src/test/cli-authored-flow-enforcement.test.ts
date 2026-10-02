@@ -23,10 +23,10 @@
  * Nothing else in the suite drives `validate_progress` over a flow whose exit
  * step is not literally named `DONE`, which is why both survived three reviews.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as path from 'path';
 import { app, initStorage, VERIFY_TOKEN, storage } from '../server';
 
 /**
@@ -46,7 +46,7 @@ beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
 
-const TEST_DB = path.resolve('./cli-authored-flow-test-db.sqlite');
+const TEST_DB = testDbPath('cli-authored-flow-test-db.sqlite');
 
 /** Exactly what `agenfk flow create` emits: isSpecial only, never isAnchor. */
 const CLI_FLOW_STEPS = [

@@ -9,6 +9,7 @@
  * logged the same way. Unset, capture falls back to the exit code alone — per
  * test results are then UNAVAILABLE, never "passed".
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -24,7 +25,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./step-records-test-db.sqlite');
+const TEST_DB = testDbPath('step-records-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

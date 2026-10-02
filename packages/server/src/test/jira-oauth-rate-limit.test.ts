@@ -5,10 +5,10 @@
  * every call, and /jira/oauth/callback exchanges a code with Atlassian. Nothing
  * bounded either, so a loop in a local client could spin them without limit.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as path from 'path';
 import { EXPENSIVE_ROUTE_LIMIT } from '@agenfk/core';
 
 vi.mock('axios', () => {
@@ -19,7 +19,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./jira-oauth-rate-limit-test-db.sqlite');
+const TEST_DB = testDbPath('jira-oauth-rate-limit-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

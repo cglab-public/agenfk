@@ -5,11 +5,11 @@
  * pausing any item in an active (non-anchor, non-inactive) working step of its
  * project's active flow.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import { app, initStorage } from '../server';
 import * as fs from 'fs';
-import * as path from 'path';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -28,7 +28,7 @@ beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
 
-const TEST_DB = path.resolve('./pause-flow-aware-test-db.sqlite');
+const TEST_DB = testDbPath('pause-flow-aware-test-db.sqlite');
 
 describe('POST /items/:id/pause is flow-aware', () => {
   beforeAll(async () => {

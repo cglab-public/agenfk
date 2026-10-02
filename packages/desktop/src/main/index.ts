@@ -39,6 +39,7 @@ import { makeEmit } from './windowEmit.js';
 import { makeLoginPathCache } from './loginPathCache.js';
 import { SOUND_EXTENSIONS } from './customSound.js';
 import { showAttentionNotice } from './attentionNotice.js';
+import { platform, runningOn } from './platform.js';
 
 /**
  * What the sound picker offers.
@@ -159,7 +160,7 @@ function createWindow(url: string): BrowserWindow {
     minWidth: 960,
     minHeight: 600,
     show: false,
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    titleBarStyle: platform.titleBarStyle,
     backgroundColor: '#14181b',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
@@ -380,7 +381,7 @@ async function boot(): Promise<void> {
        * other half sitting one line below it.
        */
       tmuxStatus = await detectTmux({
-        platform: process.platform,
+        platform: runningOn,
         which: async file => whichOnPath(file, (await currentLoginPath()) ?? undefined),
       });
       if (!tmuxStatus.available) {
@@ -1023,7 +1024,7 @@ if (!app.requestSingleInstanceLock()) {
   app.setName('AgEnFK');
 
   void app.whenReady().then(() => {
-    if (process.platform !== 'darwin' || app.isPackaged) return;
+    if (!platform.hasDock || app.isPackaged) return;
     try {
       app.dock?.setIcon(path.join(__dirname, '../../build/icon.png'));
     } catch { /* an icon is not worth a failed launch */ }
@@ -1038,7 +1039,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') app.quit();
+    if (platform.quitsWhenAllWindowsClosed) app.quit();
   });
 
   app.on('before-quit', event => {

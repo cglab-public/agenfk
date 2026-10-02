@@ -17,6 +17,7 @@
  * Branches and worktrees are tracked on top-level items only, so a child card
  * has no worktreePath of its own — its tree is its top-level ancestor's.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -31,7 +32,7 @@ const agent = () => request(__server);
 beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
-const TEST_DB = path.resolve('./verify-worktree-root-test-db.sqlite');
+const TEST_DB = testDbPath('verify-worktree-root-test-db.sqlite');
 const internal = (r: request.Test) => r.set('x-agenfk-internal', VERIFY_TOKEN!);
 const git = (cwd: string, ...args: string[]) =>
   execFileSync('git', args, { cwd, stdio: 'pipe' }).toString().trim();

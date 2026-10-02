@@ -18,12 +18,12 @@
  * captures config at import time) and env is restored afterwards, following
  * the convention in flow-org-available-hub-on.test.ts.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
-import * as path from 'path';
 import * as fs from 'fs';
 
-const TEST_DB = path.resolve('./server-flow-registry-hub-test-db.sqlite');
+const TEST_DB = testDbPath('server-flow-registry-hub-test-db.sqlite');
 const savedEnv: Record<string, string | undefined> = {};
 const ENV_KEYS = [
   'AGENFK_HUB_URL', 'AGENFK_HUB_TOKEN', 'AGENFK_HUB_ORG',

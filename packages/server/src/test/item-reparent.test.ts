@@ -16,11 +16,11 @@
  * every consumer that walks the tree, which is reason enough to refuse it.
  * These tests pin the guards and the happy path the CLI needs.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import { app, initStorage } from '../server';
 import * as fs from 'fs';
-import * as path from 'path';
 
 /**
  * ONE listening server for the whole file (BUG 9de0c99c).
@@ -39,7 +39,7 @@ beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
 
-const TEST_DB = path.resolve('./item-reparent-test-db.sqlite');
+const TEST_DB = testDbPath('item-reparent-test-db.sqlite');
 
 describe('item re-parenting', () => {
   let projectId: string;

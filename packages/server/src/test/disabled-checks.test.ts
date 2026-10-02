@@ -9,6 +9,7 @@
  *    reply, on the card's gates and in the PR history - never silently.
  *  - The same steps on a flow that did NOT come from the hub still run it.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -19,7 +20,7 @@ import { randomUUID } from 'crypto';
 
 vi.mock('axios', () => { const m = vi.fn() as any; m.get = vi.fn(); m.post = vi.fn(); m.create = vi.fn(() => m); return { default: m }; });
 
-const TEST_DB = path.resolve('./disabled-checks-test-db.sqlite');
+const TEST_DB = testDbPath('disabled-checks-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

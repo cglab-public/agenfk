@@ -13,6 +13,7 @@
  * verify also records WHO advanced the card (the author identity the CLI
  * reports from its harness), which S5-T2's check compares the reviewer with.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -28,7 +29,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./review-records-test-db.sqlite');
+const TEST_DB = testDbPath('review-records-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

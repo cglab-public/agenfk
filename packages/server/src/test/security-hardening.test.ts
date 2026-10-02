@@ -6,6 +6,7 @@
  * assertions for the shell-injection sites that only execute once `gh`/`jira`
  * are configured (so the argv/allowlist shape is what we pin down).
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import { app, initStorage, isAllowedOrigin, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl, VERIFY_TOKEN, findProjectRoot } from '../server';
@@ -41,7 +42,7 @@ const sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-sec-hardening-
 fs.mkdirSync(path.join(sandboxHome, '.agenfk'), { recursive: true });
 vi.mocked(os.homedir).mockReturnValue(sandboxHome);
 
-const TEST_DB = path.resolve('./security-hardening-test-db.sqlite');
+const TEST_DB = testDbPath('security-hardening-test-db.sqlite');
 
 /*
  * THE TOKEN COMES FROM THE SERVER, not from a second read of the same file.

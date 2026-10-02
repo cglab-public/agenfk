@@ -11,6 +11,7 @@
  * mirroring flowSync.test.ts), plus the route behaviour when the hub is not
  * configured (the common case) to prove `?refresh=true` never breaks a read.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -171,7 +172,7 @@ describe('refreshProjectFlowFromHub', () => {
 });
 
 describe('GET /projects/:id/flow?refresh=true (route wiring)', () => {
-  const TEST_DB = path.resolve('./flow-refresh-route-test-db.sqlite');
+  const TEST_DB = testDbPath('flow-refresh-route-test-db.sqlite');
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let app: any, initStorage: any;
   let __server: any;

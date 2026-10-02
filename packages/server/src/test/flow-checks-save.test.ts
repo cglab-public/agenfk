@@ -8,6 +8,7 @@
  * check and the missing record — never stored with the bad part dropped, which
  * would run a flow its author did not write.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -23,7 +24,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./flow-checks-save-test-db.sqlite');
+const TEST_DB = testDbPath('flow-checks-save-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

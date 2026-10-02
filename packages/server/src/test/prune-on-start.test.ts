@@ -3,9 +3,9 @@
  * the restart after `agenfk upgrade` is what runs it. Every card keeps what its
  * next check reads, a closed one too (it can be reopened).
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import * as fs from 'fs';
-import * as path from 'path';
 import { SQLiteStorageProvider } from '@agenfk/storage-sqlite';
 
 vi.mock('axios', () => {
@@ -16,7 +16,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./prune-on-start-test-db.sqlite');
+const TEST_DB = testDbPath('prune-on-start-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 for (const suffix of ['', '-shm', '-wal']) if (fs.existsSync(`${TEST_DB}${suffix}`)) fs.unlinkSync(`${TEST_DB}${suffix}`);
 

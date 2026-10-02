@@ -9,6 +9,7 @@
  * prediction is checked against the verify that follows it, with a runner that
  * logs which files each run was given, and the dry run itself changes nothing.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -24,7 +25,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./leave-plan-predict-test-db.sqlite');
+const TEST_DB = testDbPath('leave-plan-predict-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

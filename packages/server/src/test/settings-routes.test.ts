@@ -18,10 +18,10 @@
  * What is exercised is the guard in front of it, which is the part with a
  * security claim attached.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as path from 'path';
 import { app, initStorage } from '../server';
 import { isTelemetryEnabled } from '@agenfk/telemetry';
 
@@ -29,12 +29,12 @@ let __server: import('http').Server;
 const agent = () => request(__server);
 beforeAll(async () => {
   __server = app.listen(0);
-  process.env.AGENFK_DB_PATH = path.resolve('./settings-routes-test-db.sqlite');
+  process.env.AGENFK_DB_PATH = testDbPath('settings-routes-test-db.sqlite');
   await initStorage();
 });
 afterAll(async () => {
   await new Promise<void>(r => __server.close(() => r()));
-  const db = path.resolve('./settings-routes-test-db.sqlite');
+  const db = testDbPath('settings-routes-test-db.sqlite');
   if (fs.existsSync(db)) fs.unlinkSync(db);
 });
 

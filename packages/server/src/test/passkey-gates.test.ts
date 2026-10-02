@@ -13,6 +13,7 @@
  * The first passkey is trust-on-first-use; adding or removing one needs an
  * assertion from a passkey already enrolled.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -28,7 +29,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./passkey-gates-test-db.sqlite');
+const TEST_DB = testDbPath('passkey-gates-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 const STORE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-passkeys-'));

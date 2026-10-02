@@ -14,13 +14,13 @@
  * evidence of a good attempt. The card reaching DONE clears, because that is
  * the one event that means the work landed.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as path from 'path';
 import { app, initStorage, VERIFY_TOKEN, storage } from '../server';
 
-const TEST_DB = path.resolve('./circuit-breaker-wiring-test-db.sqlite');
+const TEST_DB = testDbPath('circuit-breaker-wiring-test-db.sqlite');
 
 let __server: import('http').Server;
 const agent = () => request(__server);

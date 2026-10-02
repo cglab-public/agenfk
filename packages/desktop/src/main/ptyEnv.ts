@@ -22,6 +22,7 @@
  */
 import { execFile } from 'child_process';
 import * as os from 'os';
+import { platform, accountShell } from './platform.js';
 
 /**
  * Marks a login shell spawned BY the capture, so a user whose rc file launches
@@ -142,6 +143,11 @@ export function parseEnvDump(dump: string): Record<string, string> {
   return out;
 }
 
+/** The shell whose login environment is captured - the user's, as the terminal opens it. */
+export function loginShell(): string {
+  return platform.shell(process.env, accountShell()).file;
+}
+
 /**
  * The PATH an interactive login shell would have.
  *
@@ -149,13 +155,13 @@ export function parseEnvDump(dump: string): Record<string, string> {
  * PATH, never stop the app from opening one.
  */
 export function captureLoginPath(timeoutMs = 5000): Promise<string | null> {
-  if (process.platform === 'win32') return Promise.resolve(null);
+  if (!platform.capturesLoginPath) return Promise.resolve(null);
   // The guard, actually read. It was previously set into the child and
   // stripped from the result but never checked, so the comment promised a
   // safeguard that did not exist — and its test only asserted the constant was
   // non-empty, which passed with the mechanism entirely absent.
   if (process.env[LOGIN_CAPTURE_GUARD] === '1') return Promise.resolve(null);
-  const shell = process.env.SHELL || os.userInfo().shell || '/bin/bash';
+  const shell = loginShell();
   return new Promise(resolve => {
     execFile(
       shell,

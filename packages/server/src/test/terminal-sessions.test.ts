@@ -24,10 +24,10 @@
  * is deliberate: quitting is exactly the case this exists for, and the process
  * never gets to run any shutdown code when it is killed.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as path from 'path';
 import { app, initStorage } from '../server';
 
 /**
@@ -45,7 +45,7 @@ beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
 
-const TEST_DB = path.resolve('./terminal-sessions-test-db.sqlite');
+const TEST_DB = testDbPath('terminal-sessions-test-db.sqlite');
 
 /**
  * Every assertion is scoped to the project the test created.

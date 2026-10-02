@@ -13,6 +13,7 @@
  * These reflect future functionality and are expected to fail until the server
  * resolves the caller cwd to the project root.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeEach, afterAll, vi, beforeAll } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -27,7 +28,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./verify-cwd-test-db.sqlite');
+const TEST_DB = testDbPath('verify-cwd-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

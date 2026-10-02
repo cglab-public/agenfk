@@ -17,6 +17,7 @@
 import { execFile } from 'child_process';
 import { AGENT_IDS, listAgents, resolveAgentCommand } from './agents.js';
 import { captureLoginPath } from './ptyEnv.js';
+import { platform } from './platform.js';
 
 export interface DetectedAgent {
   readonly id: string;
@@ -104,9 +105,7 @@ export const whichOnPath = (file: string, pathOverride?: string): Promise<string
   // execFile'ing it fails with ENOENT every time — an earlier version tried it
   // first and silently fell through, paying a failed spawn on every probe for
   // an answer it could never give.
-  return process.platform === 'win32'
-    ? run('where', [file], env)
-    : run('which', [file], env);
+  return run(platform.pathLookup, [file], env);
 };
 
 /**

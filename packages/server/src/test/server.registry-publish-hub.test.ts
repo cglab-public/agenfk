@@ -16,13 +16,13 @@
  * Hub config is forced via env BEFORE the dynamic server import, as in
  * server.registry-hub.test.ts.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
-import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 
-const TEST_DB = path.resolve('./server-registry-publish-hub-test-db.sqlite');
+const TEST_DB = testDbPath('server-registry-publish-hub-test-db.sqlite');
 const savedEnv: Record<string, string | undefined> = {};
 const ENV_KEYS = [
   'AGENFK_HUB_URL', 'AGENFK_HUB_TOKEN', 'AGENFK_HUB_ORG',

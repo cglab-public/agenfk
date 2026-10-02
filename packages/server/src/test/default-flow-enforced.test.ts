@@ -2,6 +2,7 @@
  * @file CGLAB-381 (S5-T4) — a project on the built-in default flow, with no
  * flow of its own, is now gated by the default flow's roles.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -17,7 +18,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./default-flow-enforced-test-db.sqlite');
+const TEST_DB = testDbPath('default-flow-enforced-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

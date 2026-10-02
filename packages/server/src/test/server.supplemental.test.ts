@@ -3,6 +3,7 @@
  * Focuses on: simple info routes, db/backup, bulk updates, verify edge cases,
  * jira status/disconnect/projects, releases/latest, and error branches.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import { makeProject, makeItem } from './helpers/fixtures';
@@ -86,7 +87,7 @@ const stubReleasesUpdateExec = (() => {
 })();
 setReleasesUpdateExecImpl(stubReleasesUpdateExec as any);
 
-const TEST_DB = path.resolve('./server-supplemental-test-db.sqlite');
+const TEST_DB = testDbPath('server-supplemental-test-db.sqlite');
 
 // ── Global jira token guard ───────────────────────────────────────────────────
 // Save the real jira token before any test runs; restore after all tests so

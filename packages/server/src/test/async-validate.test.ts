@@ -19,10 +19,10 @@
  *    stay synchronous even when `async: true` is passed — no runId.
  *  - Unknown runId → 404.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as path from 'path';
 
 vi.mock('axios', () => {
   const mockAxios = vi.fn() as any;
@@ -32,7 +32,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./async-validate-test-db.sqlite');
+const TEST_DB = testDbPath('async-validate-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

@@ -9,6 +9,7 @@
  * Finished: on the flow's last step, or trashed, archived, or parked as an
  * idea. Refused before any check or suite runs.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -24,7 +25,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./parent-close-open-children-test-db.sqlite');
+const TEST_DB = testDbPath('parent-close-open-children-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

@@ -11,6 +11,7 @@
  * proxied axios mock) and pin the CGLAB-110 behaviour on both sides of the
  * type gate: a STORY in an active step authorizes, an EPIC still refuses.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import { app, initStorage, storage } from '../server';
@@ -62,7 +63,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./mcp-gatekeeper-test-db.sqlite');
+const TEST_DB = testDbPath('mcp-gatekeeper-test-db.sqlite');
 // The no-item-id path resolves the project by walking up from process.cwd()
 // to the nearest .agenfk/project.json (findProjectId, re-read per call). Point
 // the cwd at a scratch dir whose project.json names the TEST project, so the

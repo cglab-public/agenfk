@@ -12,6 +12,7 @@
  *  - several reports are read as one run, and a missing one is named;
  *  - `.gitignore` is content (a suite can read it).
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -27,7 +28,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./check-enhancements-test-db.sqlite');
+const TEST_DB = testDbPath('check-enhancements-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

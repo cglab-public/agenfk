@@ -4,14 +4,14 @@
  * header express-rate-limit sets, which is what the limiter being in the chain
  * looks like from outside.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as path from 'path';
 
 vi.mock('axios', () => { const m = vi.fn() as any; m.get = vi.fn(async () => { throw new Error('offline'); }); m.post = vi.fn(); m.create = vi.fn(() => m); return { default: m }; });
 
-const TEST_DB = path.resolve('./codeql-rate-limits-test-db.sqlite');
+const TEST_DB = testDbPath('codeql-rate-limits-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

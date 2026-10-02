@@ -8,6 +8,7 @@
  * own repository, `none` (the project root, whatever the parents have), or
  * `inherit` (the default: no choice of its own).
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -23,7 +24,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./card-worktree-choice-test-db.sqlite');
+const TEST_DB = testDbPath('card-worktree-choice-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

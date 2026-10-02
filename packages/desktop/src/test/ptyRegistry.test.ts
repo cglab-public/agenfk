@@ -21,6 +21,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PtyRegistry, MAX_SESSIONS_PER_WINDOW } from '../main/ptyRegistry';
 import { HIGH_WATERMARK } from '../main/flowControl';
 import * as os from 'os';
+import { platform, accountShell } from '../main/platform';
 
 interface FakePty {
   pid: number;
@@ -1258,7 +1259,9 @@ describe('a shell with no target', () => {
       registerRun: (x: unknown) => { runs.push(x); },
     });
     await r.spawn({ agentId: 'shell', windowId: 1, cols: 80, rows: 24 } as never);
-    expect(spawned[0].file).toBe(process.env.SHELL || '/bin/sh');
+    // Whatever the platform profile says - powershell.exe on Windows, $SHELL on
+    // a Unix - and nothing the registry decides on its own (card 2fd7c65c).
+    expect({ file: spawned[0].file, args: spawned[0].args }).toEqual(platform.shell(process.env, accountShell()));
     expect(spawned[0].cwd).toBe(os.homedir());
     // No card means no run to follow.
     expect(runs).toHaveLength(0);

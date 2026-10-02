@@ -1,7 +1,7 @@
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
-import * as path from 'path';
 
 // The hub outbox only receives events when the hub is configured (HubClient.isEnabled).
 // That config is read once, when ../server is first imported — so enable it here, before
@@ -46,7 +46,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./pr-registration-test-db.sqlite');
+const TEST_DB = testDbPath('pr-registration-test-db.sqlite');
 
 // recordHubEvent enqueues into hub_outbox asynchronously: the POST/PUT handler
 // fires it without awaiting, and it awaits a flow-name + git-remote lookup before

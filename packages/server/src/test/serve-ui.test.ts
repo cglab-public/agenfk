@@ -10,6 +10,7 @@
  *      `.message` from it, so serving index.html unconditionally there would
  *      silently break the health check.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -34,7 +35,7 @@ beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
 
-const TEST_DB = path.resolve('./serve-ui-test-db.sqlite');
+const TEST_DB = testDbPath('serve-ui-test-db.sqlite');
 
 const INDEX_HTML = '<!doctype html><title>AgEnFK</title><div id="root"></div>';
 const APP_JS = 'console.log("agenfk ui bundle");';

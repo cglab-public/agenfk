@@ -17,6 +17,7 @@
  * `isPersistableProjectRoot` was written for exactly that mistake and, until
  * now, had no caller that could FIX one.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -39,7 +40,7 @@ beforeAll(() => { __server = app.listen(0); });
 afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
 
 
-const TEST_DB = path.resolve('./project-root-test-db.sqlite');
+const TEST_DB = testDbPath('project-root-test-db.sqlite');
 const internal = (r: request.Test) => r.set('x-agenfk-internal', VERIFY_TOKEN!);
 
 let projectId: string;

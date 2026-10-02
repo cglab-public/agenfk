@@ -12,6 +12,7 @@
  * and a commit takes what was staged. A `claims` field still arriving from an
  * agent on old rules is ignored, and one stored on an old card changes nothing.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -21,7 +22,7 @@ import { execSync } from 'child_process';
 
 vi.mock('axios', () => { const m = vi.fn() as any; m.get = vi.fn(); m.post = vi.fn(); m.create = vi.fn(() => m); return { default: m }; });
 
-const TEST_DB = path.resolve('./claims-removed-test-db.sqlite');
+const TEST_DB = testDbPath('claims-removed-test-db.sqlite');
 process.env.AGENFK_DB_PATH = TEST_DB;
 if (fs.existsSync(TEST_DB)) fs.unlinkSync(TEST_DB);
 

@@ -8,6 +8,7 @@
  * consults it against the tree the next card would inherit. A gate that is
  * correct and never called is the exact failure mode this whole epic is about.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -20,7 +21,7 @@ let __server: import('http').Server;
 const agent = () => request(__server);
 const internal = (r: request.Test) => r.set('x-agenfk-internal', VERIFY_TOKEN!);
 
-const TEST_DB = path.resolve('./propagation-integration-test-db.sqlite');
+const TEST_DB = testDbPath('propagation-integration-test-db.sqlite');
 const repos: string[] = [];
 
 beforeAll(async () => {
