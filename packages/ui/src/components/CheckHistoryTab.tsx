@@ -14,13 +14,13 @@ type Result = Extract<CheckHistoryEntry, { kind: 'verify' }>['results'][number];
 
 /** A check's status in words, and its icon. */
 function status(r: Result): { label: string; icon: React.ReactNode } {
-  if (r.overridden) return { label: 'overridden', icon: <Unlock size={14} className="text-amber-500 shrink-0" /> };
-  if (r.outcome === 'pass') return { label: 'passed', icon: <CheckCircle2 size={14} className="text-emerald-500 shrink-0" /> };
+  if (r.overridden) return { label: 'overridden', icon: <Unlock size={14} className="text-status-warn-text shrink-0" /> };
+  if (r.outcome === 'pass') return { label: 'passed', icon: <CheckCircle2 size={14} className="text-status-ok-text shrink-0" /> };
   if (r.outcome === 'n/a') return { label: 'not applicable', icon: <MinusCircle size={14} className="text-slate-400 shrink-0" /> };
   // Its detail says to what: the verify command, the parent's verify, or the verify after a person's approval.
   if (r.outcome === 'deferred') return { label: 'deferred', icon: <FastForward size={14} className="text-slate-400 shrink-0" /> };
-  if (r.blocking) return { label: r.outcome === 'unavailable' ? 'blocked: could not judge' : 'blocked', icon: <XCircle size={14} className="text-rose-500 shrink-0" /> };
-  return { label: r.outcome === 'unavailable' ? 'warning: could not judge' : 'warning', icon: <AlertTriangle size={14} className="text-amber-500 shrink-0" /> };
+  if (r.blocking) return { label: r.outcome === 'unavailable' ? 'blocked: could not judge' : 'blocked', icon: <XCircle size={14} className="text-status-danger-text shrink-0" /> };
+  return { label: r.outcome === 'unavailable' ? 'warning: could not judge' : 'warning', icon: <AlertTriangle size={14} className="text-status-warn-text shrink-0" /> };
 }
 
 const when = (at: string) => new Date(at).toLocaleString();
@@ -66,7 +66,7 @@ function VerifyEntry({ e }: { e: Extract<CheckHistoryEntry, { kind: 'verify' }> 
       <div className="flex items-center gap-2 text-sm">
         <ListChecks size={14} className="text-slate-400 shrink-0" />
         <span className="font-semibold text-slate-700 dark:text-slate-200">Verify on {e.step}</span>
-        <span className={e.blocked ? 'text-rose-600 dark:text-rose-400 text-xs font-bold' : 'text-emerald-600 dark:text-emerald-400 text-xs font-bold'}>
+        <span className={e.blocked ? 'text-status-danger-text text-xs font-bold' : 'text-status-ok-text text-xs font-bold'}>
           {e.blocked ? 'Refused' : 'Passed'}
         </span>
         <span className="ml-auto text-xs text-slate-400">{when(e.at)}</span>
@@ -92,26 +92,26 @@ function Entry({ e }: { e: CheckHistoryEntry }) {
   if (e.kind === 'verify') return <VerifyEntry e={e} />;
   if (e.kind === 'approval') {
     return (
-      <li data-testid="check-history-entry" className="rounded-xl border border-emerald-200 dark:border-emerald-900 bg-emerald-50/50 dark:bg-emerald-950/30 px-4 py-3 text-sm">
+      <li data-testid="check-history-entry" className="rounded-xl border border-status-ok-text/40 bg-status-ok-bg px-4 py-3 text-sm">
         <div className="flex items-center gap-2">
-          <ShieldCheck size={14} className="text-emerald-600 shrink-0" />
-          <span className="font-semibold text-emerald-800 dark:text-emerald-200">Approved {e.step}</span>
-          <span className="text-xs text-emerald-700 dark:text-emerald-300">{signedBy(e.authority)}</span>
+          <ShieldCheck size={14} className="text-status-ok-text shrink-0" />
+          <span className="font-semibold text-status-ok-text">Approved {e.step}</span>
+          <span className="text-xs text-status-ok-text">{signedBy(e.authority)}</span>
           <span className="ml-auto text-xs text-slate-400">{when(e.at)}</span>
         </div>
-        {e.note && <p className="mt-1 text-xs text-emerald-800 dark:text-emerald-200">{e.note}</p>}
+        {e.note && <p className="mt-1 text-xs text-status-ok-text">{e.note}</p>}
       </li>
     );
   }
   return (
-    <li data-testid="check-history-entry" className="rounded-xl border border-amber-200 dark:border-amber-900 bg-amber-50/50 dark:bg-amber-950/30 px-4 py-3 text-sm">
+    <li data-testid="check-history-entry" className="rounded-xl border border-status-warn-text/40 bg-status-warn-bg px-4 py-3 text-sm">
       <div className="flex items-center gap-2">
-        <Unlock size={14} className="text-amber-600 shrink-0" />
-        <span className="font-semibold text-amber-900 dark:text-amber-100">Overrode {e.check} on {e.step}</span>
-        <span className="text-xs text-amber-700 dark:text-amber-300">{signedBy(e.authority)}</span>
+        <Unlock size={14} className="text-status-warn-text shrink-0" />
+        <span className="font-semibold text-status-warn-text">Overrode {e.check} on {e.step}</span>
+        <span className="text-xs text-status-warn-text">{signedBy(e.authority)}</span>
         <span className="ml-auto text-xs text-slate-400">{when(e.at)}</span>
       </div>
-      <p className="mt-1 text-xs text-amber-900 dark:text-amber-100">Reason: {e.reason}</p>
+      <p className="mt-1 text-xs text-status-warn-text">Reason: {e.reason}</p>
     </li>
   );
 }

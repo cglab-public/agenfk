@@ -88,14 +88,14 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
       onClick={onClose}
     >
       <div
-        className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-lg mx-4 max-h-[85vh] flex flex-col overflow-hidden"
+        className="bg-surface rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-lg mx-4 max-h-[85vh] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800 shrink-0">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-chip rounded-lg">
-              <Sparkles size={20} className="text-accent-text" />
+            <div className="p-2 bg-canvas rounded-lg">
+              <Sparkles size={20} className="text-accent-ink" />
             </div>
             <div>
               <h2 className="font-bold text-slate-800 dark:text-slate-100 text-lg">What's New</h2>
@@ -168,7 +168,7 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
         {/* Footer */}
         <div className="flex items-center justify-between px-6 py-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 shrink-0">
           {hasUpdate && latest ? (
-            <div className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
+            <div className="flex items-center gap-1.5 text-xs text-status-ok-text font-medium">
               <ArrowUpCircle size={14} />
               <span>v{latest.version} available — see the update notification</span>
             </div>
@@ -180,7 +180,7 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
               href={githubUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300 hover:text-accent-text font-medium transition-colors"
+              className="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300 hover:text-accent-ink font-medium transition-colors"
             >
               <ExternalLink size={14} />
               View on GitHub

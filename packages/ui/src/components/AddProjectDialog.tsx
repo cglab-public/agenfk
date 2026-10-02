@@ -73,7 +73,7 @@ function OwnerMark({ owner }: { owner: GitHubOwner | null }) {
     );
   }
   return (
-    <span className="grid h-4 w-4 shrink-0 place-items-center rounded-full bg-chip text-[9px] font-bold uppercase text-accent-text">
+    <span className="grid h-4 w-4 shrink-0 place-items-center rounded-full bg-accent-fill text-[9px] font-bold uppercase text-accent-ink">
       {owner?.login?.[0] ?? '?'}
     </span>
   );
@@ -345,7 +345,7 @@ export function AddProjectDialog(
               disabled={busy}
               className={`flex flex-1 items-center justify-center gap-2 rounded-lg border px-3 py-2 text-xs font-semibold transition-colors ${
                 mode === id
-                  ? 'border-border-brand bg-chip text-accent-text'
+                  ? 'border-accent bg-accent-fill text-accent-ink'
                   : 'border-border-soft bg-canvas text-ink-secondary hover:text-ink'
               }`}
             >
@@ -408,7 +408,7 @@ export function AddProjectDialog(
                     if (!namedByHand) setName(repoNameFrom(e.target.value));
                   }}
                   placeholder="git@github.com:team/repo.git"
-                  className="w-full rounded-lg border border-border-soft bg-canvas px-3 py-2 font-mono text-xs text-ink focus:outline-none focus:ring-2 focus:ring-brand"
+                  className="w-full rounded-lg border border-border-soft bg-canvas px-3 py-2 font-mono text-xs text-ink focus:outline-none focus:ring-2 focus:ring-focus-ring"
                 />
               </div>
               <div className="flex flex-col gap-2">
@@ -522,12 +522,12 @@ export function AddProjectDialog(
                                 data-testid={`add-project-owner-option-${o.login}`}
                                 onClick={() => { setOwner(o.login); setChoosingOwner(false); }}
                                 className={`flex items-center gap-2 rounded-lg px-2.5 py-2 text-xs ${
-                                  o.login === owner ? 'bg-chip text-ink' : 'text-ink-secondary hover:text-ink'
+                                  o.login === owner ? 'bg-accent-fill text-ink' : 'text-ink-secondary hover:text-ink'
                                 }`}
                               >
                                 <OwnerMark owner={o} />
                                 <span className="min-w-0 flex-1 truncate text-left">{o.login}</span>
-                                {o.login === owner && <Check size={13} className="text-accent-text" />}
+                                {o.login === owner && <Check size={13} className="text-accent-ink" />}
                               </button>
                             ))}
                             {matching.length === 0 && (
@@ -554,7 +554,7 @@ export function AddProjectDialog(
                           if (!namedByHand) setName(e.target.value);
                         }}
                         placeholder="Enter a repository name"
-                        className="w-full rounded-lg border border-border-soft bg-canvas px-3 py-2 font-mono text-xs text-ink focus:outline-none focus:ring-2 focus:ring-brand"
+                        className="w-full rounded-lg border border-border-soft bg-canvas px-3 py-2 font-mono text-xs text-ink focus:outline-none focus:ring-2 focus:ring-focus-ring"
                       />
                     </div>
                   </div>
@@ -579,7 +579,7 @@ export function AddProjectDialog(
                           disabled={busy}
                           onClick={() => setVisibility(v)}
                           className={`px-3 py-1.5 text-xs font-semibold capitalize ${
-                            visibility === v ? 'bg-chip text-accent-text' : 'bg-canvas text-ink-tertiary'
+                            visibility === v ? 'bg-accent-fill text-accent-ink' : 'bg-canvas text-ink-tertiary'
                           }`}
                         >
                           {v}
@@ -641,7 +641,7 @@ export function AddProjectDialog(
           )}
 
           {error && (
-            <p data-testid="add-project-error" className="whitespace-pre-wrap rounded-lg border border-danger-muted bg-canvas p-2 font-mono text-[11px] text-danger-text">
+            <p data-testid="add-project-error" className="whitespace-pre-wrap rounded-lg border border-status-danger-text/40 bg-canvas p-2 font-mono text-[11px] text-danger-text">
               {error}
             </p>
           )}

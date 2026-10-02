@@ -127,8 +127,8 @@ function depthOf(item: AgEnFKItem, byId: Map<string, AgEnFKItem>, shownIds: Read
 function stateDot(state: string, finished: ReadonlySet<string>, backlog: ReadonlySet<string>): string {
   if (finished.has(state)) return 'bg-ink-tertiary opacity-40';
   if (backlog.has(state)) return 'bg-ink-tertiary';
-  if (state.includes('REVIEW')) return 'bg-amber-400';
-  return 'bg-brand';
+  if (state.includes('REVIEW')) return 'bg-status-warn-text';
+  return 'bg-status-info-text';
 }
 
 /** What a finished card says instead of a button. */
@@ -205,7 +205,7 @@ function FilterMenu(
         onClick={() => onOpenChange(!open)}
         className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold ${
           active
-            ? 'border-border-brand bg-chip text-accent-text'
+            ? 'border-accent bg-accent-fill text-accent-ink'
             : 'border-border-soft bg-canvas text-ink-secondary hover:text-ink'
         }`}
       >
@@ -250,12 +250,12 @@ function MenuOption(
       data-testid={testId}
       onClick={onClick}
       className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs ${
-        checked ? 'text-ink' : 'text-ink-secondary hover:bg-chip hover:text-ink'
+        checked ? 'text-ink' : 'text-ink-secondary hover:bg-accent-fill hover:text-ink'
       }`}
     >
       <span
         className={`grid h-3.5 w-3.5 shrink-0 place-items-center border ${role === 'menuitemradio' ? 'rounded-full' : 'rounded'} ${
-          checked ? 'border-border-brand bg-brand text-navy' : 'border-border-soft'
+          checked ? 'border-accent bg-accent-fill text-accent-ink' : 'border-border-soft'
         }`}
       >
         {checked && <Check size={10} strokeWidth={3} />}
@@ -617,7 +617,7 @@ export function ProjectPage({
                             setApprovingCommand(false);
                           }
                         }}
-                        className="shrink-0 rounded-lg border border-border-brand bg-brand px-2.5 py-1 text-[11px] font-semibold text-navy disabled:opacity-50"
+                        className="shrink-0 rounded-lg border border-accent bg-brand px-2.5 py-1 text-[11px] font-semibold text-navy disabled:opacity-50"
                       >
                         Approve
                       </button>
@@ -741,7 +741,7 @@ export function ProjectPage({
                     </MenuOption>
                   ))}
                 </FilterMenu>
-                <label className="flex min-w-[10rem] max-w-xs flex-1 items-center gap-2 rounded-lg border border-border-soft bg-canvas px-2.5 py-1.5 text-ink-tertiary focus-within:border-border-brand">
+                <label className="flex min-w-[10rem] max-w-xs flex-1 items-center gap-2 rounded-lg border border-border-soft bg-canvas px-2.5 py-1.5 text-ink-tertiary focus-within:border-accent">
                   <Search size={12} className="shrink-0" />
                   <input
                     type="search"
@@ -760,7 +760,7 @@ export function ProjectPage({
                     type="button"
                     data-testid="project-filters-reset"
                     onClick={reset}
-                    className="text-[11px] font-semibold text-accent-text underline underline-offset-2"
+                    className="text-[11px] font-semibold text-accent-ink underline underline-offset-2"
                   >
                     Clear filters
                   </button>
@@ -789,7 +789,7 @@ export function ProjectPage({
               type="button"
               data-testid="project-page-show-done"
               onClick={() => choose({ preset: 'done' })}
-              className="mt-2 text-xs font-semibold text-accent-text underline underline-offset-2"
+              className="mt-2 text-xs font-semibold text-accent-ink underline underline-offset-2"
             >
               Show them
             </button>
@@ -804,7 +804,7 @@ export function ProjectPage({
               type="button"
               data-testid="project-filter-clear"
               onClick={reset}
-              className="mt-2 text-xs font-semibold text-accent-text underline underline-offset-2"
+              className="mt-2 text-xs font-semibold text-accent-ink underline underline-offset-2"
             >
               Clear filters
             </button>
@@ -829,7 +829,7 @@ export function ProjectPage({
                   type="button"
                   data-testid={`project-card-${card.id}`}
                   onClick={() => onOpenCard?.(card)}
-                  className={`flex min-w-0 flex-1 items-center gap-2.5 rounded-lg border border-border-soft px-2.5 py-2 text-left hover:bg-chip ${
+                  className={`flex min-w-0 flex-1 items-center gap-2.5 rounded-lg border border-border-soft px-2.5 py-2 text-left hover:bg-accent-fill ${
                     done ? 'bg-transparent' : 'bg-canvas'
                   }`}
                 >
@@ -879,12 +879,12 @@ export function ProjectPage({
                     }}
                     className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-2 text-[11px] font-semibold ${
                       on
-                        ? 'border-border-brand bg-chip text-accent-text'
+                        ? 'border-accent bg-accent-fill text-accent-ink'
                         : 'border-border-soft bg-canvas text-ink-secondary hover:text-ink'
                     }`}
                   >
                     {on
-                      ? <span data-testid={`project-card-live-${card.id}`} className="h-1.5 w-1.5 rounded-full bg-brand" />
+                      ? <span data-testid={`project-card-live-${card.id}`} className="h-1.5 w-1.5 rounded-full bg-status-ok-text" />
                       : action === 'resume' ? <RotateCcw size={12} /> : <Play size={12} />}
                     {action === 'open' ? 'Open' : action === 'elsewhere' ? 'Running' : action === 'resume' ? 'Resume' : 'Start'}
                   </button>
@@ -954,7 +954,7 @@ export function ProjectPage({
           type="button"
           data-testid="project-page-ask"
           onClick={() => onAsk?.(project.id)}
-          className="flex items-center gap-2 rounded-lg border border-border-brand bg-chip px-3 py-1.5 text-xs font-semibold text-accent-text"
+          className="flex items-center gap-2 rounded-lg border border-accent bg-accent-fill px-3 py-1.5 text-xs font-semibold text-accent-ink"
         >
           <Sparkles size={14} /> New task
         </button>

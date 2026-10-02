@@ -20,6 +20,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
 import { TerminalPane } from '../components/TerminalPane';
 import { TERMINAL_OPTIONS } from '../terminalOptions';
+import { guardTokens } from './helpers/tokenGuard';
 
 interface FakeTerm {
   opened: HTMLElement | null;
@@ -131,6 +132,8 @@ beforeEach(() => {
   };
 });
 afterEach(() => cleanup());
+// CGLAB-434: every test here also proves the panel renders on tokens.
+guardTokens();
 
 const renderPane = (props: Partial<React.ComponentProps<typeof TerminalPane>> = {}) =>
   render(<TerminalPane itemId="i1" agentId="claude-code" {...deps()} {...props} />);

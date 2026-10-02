@@ -23,8 +23,9 @@ import {
   type SuggestionLike,
 } from './identityPanel';
 import { isAttributedByUsername } from './attributionWarning';
+import { cardClass } from '../components/ui';
 
-const cardCls = 'bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5';
+const cardCls = cardClass;
 
 interface MergeRecord {
   id: string;
@@ -106,8 +107,8 @@ export function AdminIdentities() {
           {summary.total > 0 && (
             <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] tabular-nums text-ink-tertiary shrink-0">
               <span>{summary.ready} ready</span>
-              {summary.conflated > 0 && <span className="text-amber-600 dark:text-amber-400">{summary.conflated} need review</span>}
-              {summary.blocked > 0 && <span className="text-amber-600 dark:text-amber-400">{summary.blocked} blocked</span>}
+              {summary.conflated > 0 && <span className="text-status-warn-text">{summary.conflated} need review</span>}
+              {summary.blocked > 0 && <span className="text-status-warn-text">{summary.blocked} blocked</span>}
             </div>
           )}
         </header>
@@ -138,13 +139,13 @@ export function AdminIdentities() {
                     onClick={() => merge.mutate({ from: sug.from, to: sug.to })}
                     disabled={!canMergeInOneClick(sug) || merge.isPending}
                     title={blocked ?? 'Merge this identity'}
-                    className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-border-brand bg-chip px-2.5 py-1.5 text-[11px] font-semibold text-accent-text disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-accent bg-accent-fill px-2.5 py-1.5 text-[11px] font-semibold text-accent-ink disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     <Merge className="w-3.5 h-3.5" /> Merge
                   </button>
                 </div>
                 {blocked && (
-                  <p className="mt-2 inline-flex items-start gap-1.5 text-[11px] text-amber-600 dark:text-amber-400">
+                  <p className="mt-2 inline-flex items-start gap-1.5 text-[11px] text-status-warn-text">
                     <ShieldAlert className="w-3.5 h-3.5 shrink-0 mt-px" /> {blocked}
                   </p>
                 )}
@@ -184,12 +185,12 @@ export function AdminIdentities() {
           <button
             onClick={() => merge.mutate({ from: from.trim(), to: to.trim() })}
             disabled={!isValidManualMerge(from, to) || merge.isPending}
-            className="rounded-lg border border-border-brand bg-chip px-3 py-2 text-xs font-semibold text-accent-text disabled:opacity-40 disabled:cursor-not-allowed"
+            className="rounded-lg border border-accent bg-accent-fill px-3 py-2 text-xs font-semibold text-accent-ink disabled:opacity-40 disabled:cursor-not-allowed"
           >
             Merge
           </button>
         </div>
-        {error && <p className="mt-2 text-xs text-red-600 dark:text-red-400">{error}</p>}
+        {error && <p className="mt-2 text-xs text-status-danger-text">{error}</p>}
       </section>
 
       {misattributed.length > 0 && (
@@ -254,7 +255,7 @@ export function AdminIdentities() {
                           onClick={() => revert.mutate(m.id)}
                           disabled={revert.isPending}
                           title="Move these events back to their original identity"
-                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-amber-600 dark:hover:text-amber-400"
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-status-warn-text"
                         >
                           <Undo2 className="w-3.5 h-3.5" /> Revert
                         </button>

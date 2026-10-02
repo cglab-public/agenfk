@@ -18,6 +18,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { existsSync, readFileSync, readdirSync } from 'fs';
 import path from 'path';
 import { runInstall, runBootstrap, cleanupHome, REPO_ROOT, type RunResult } from './helpers/runInstaller';
+import { claudeHookCommands } from '../../../../scripts/install-helpers.mjs';
+import { HOOK_VARIANTS } from '../../../../scripts/uninstall-helpers.mjs';
 
 describe('install.mjs — default (CLI-only) install writes the expected artifacts', () => {
   let r: RunResult;
@@ -54,6 +56,19 @@ describe('install.mjs — default (CLI-only) install writes the expected artifac
     const settings = JSON.stringify(readJson('.claude', 'settings.json'));
     expect(settings).toContain('agenfk-gatekeeper');
     expect(settings).toContain('agenfk-pr-hook');
+  });
+
+  it('registers every agenfk hook in claude settings.json with the command the installer derives for it', () => {
+    // The table is the single rule for the command shape (#192); a hook wired
+    // past it — as agenfk-run-hook once was — shows up here as a mismatch.
+    const expected = claudeHookCommands(r.p('.local', 'bin'));
+    const hooks = readJson('.claude', 'settings.json').hooks as Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
+    const registered = Object.values(hooks).flat().flatMap((e) => e.hooks ?? []).map((h) => h.command ?? '')
+      .filter((c) => c.includes('agenfk-'));
+    for (const cmd of registered) expect(Object.values(expected)).toContain(cmd);
+    for (const name of HOOK_VARIANTS) expect(registered, name).toContain(expected[name]);
+    // Stop is per-turn: a run hook there closes a live session's run every turn.
+    expect(JSON.stringify(readJson('.claude', 'settings.json').hooks.Stop ?? [])).not.toContain('agenfk-');
   });
 
   it('installs the agenfk skills and slash commands', () => {

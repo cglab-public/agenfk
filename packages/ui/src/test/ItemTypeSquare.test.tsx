@@ -30,14 +30,15 @@ describe('the type grammar', () => {
     }
   });
 
-  it('paints each type the colour that tracker carries: epic violet, story green, task blue, bug red', () => {
-    // The colour is the half of the grammar that is recognised first, and these
-    // four are the ones people arrive already knowing. Getting TASK and STORY
-    // the wrong way round would be worse than having no colour at all.
-    expect(ITEM_TYPE_VISUAL[ItemType.EPIC].fill).toMatch(/violet/);
-    expect(ITEM_TYPE_VISUAL[ItemType.STORY].fill).toMatch(/emerald|green/);
-    expect(ITEM_TYPE_VISUAL[ItemType.TASK].fill).toMatch(/blue/);
-    expect(ITEM_TYPE_VISUAL[ItemType.BUG].fill).toMatch(/rose|red/);
+  it("paints each type its own visual-system token, the hue the hub and the board use for it", () => {
+    // Was the tracker palette (epic violet, story green, task blue, bug red).
+    // Since the visual system (CGLAB-434, v2.0.0-beta.17) every type colour
+    // comes from brand/tokens.css `--type-*`, and the square is where the
+    // product decides it - so it wears those tokens rather than a second palette.
+    expect(ITEM_TYPE_VISUAL[ItemType.EPIC].fill).toBe('bg-type-epic');
+    expect(ITEM_TYPE_VISUAL[ItemType.STORY].fill).toBe('bg-type-story');
+    expect(ITEM_TYPE_VISUAL[ItemType.TASK].fill).toBe('bg-type-task');
+    expect(ITEM_TYPE_VISUAL[ItemType.BUG].fill).toBe('bg-type-bug');
   });
 
   it('is the only type grammar in the product — no component paints a type by hand', () => {
@@ -158,14 +159,16 @@ describe('the type grammar', () => {
     expect(new Set(fills).size).toBe(fills.length);
   });
 
-  it('fills the square rather than tinting it, and puts a white glyph inside', () => {
+  it('fills the square rather than tinting it, and puts a contrasting glyph inside', () => {
     // An outlined or 10%-tinted chip is what the modal already had elsewhere.
-    // The tracker grammar is a SOLID square with a white mark on it.
+    // The tracker grammar is a SOLID square with a mark on it. The mark is
+    // `text-canvas`, not `text-white` (banned by the token guard): light on the
+    // dark light-theme type tokens, dark on the bright dark-theme ones.
     const { container } = render(<ItemTypeSquare type={ItemType.TASK} />);
     const square = container.firstElementChild as HTMLElement;
-    expect(square.className).toMatch(/bg-blue-\d{3}/);
+    expect(square.className).toMatch(/(?:^|\s)bg-type-task(?:\s|$)/);
     expect(square.className).not.toMatch(/\/10\b/);
-    expect(square.className).toMatch(/text-white/);
+    expect(square.className).toMatch(/(?:^|\s)text-canvas(?:\s|$)/);
     expect(square.querySelector('svg')).toBeTruthy();
   });
 

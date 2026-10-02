@@ -13,6 +13,8 @@ import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { WhatsNewModal } from '../components/WhatsNewModal';
 import { api } from '../api';
+import { guardTokens } from './helpers/tokenGuard';
+
 
 vi.mock('../api', () => ({
   api: {
@@ -40,6 +42,8 @@ describe("What's New shows the installed release", () => {
     vi.mocked(api.getLatestRelease).mockResolvedValue(LATEST_STABLE as any);
   });
   afterEach(() => { cleanup(); vi.clearAllMocks(); });
+  // CGLAB-434: after this suite's cleanup is registered, so the sweep runs first.
+  guardTokens();
 
   it("shows the installed beta's notes, not the latest stable's", async () => {
     vi.mocked(api.getCurrentRelease).mockResolvedValue({

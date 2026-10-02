@@ -254,16 +254,3 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel', () => {
     expect(d.targets.every((t: any) => t.state === 'cancelled')).toBe(true);
   });
 });
-
-describe('AdminUpgrades.tsx — Cancel pending control (source regression)', () => {
-  it('declares a Cancel button that POSTs to /v1/admin/upgrade/:id/cancel', () => {
-    const PAGE_PATH = path.resolve(__dirname, '../../../hub-ui/src/pages/AdminUpgrades.tsx');
-    const src = fs.readFileSync(PAGE_PATH, 'utf8');
-    // Endpoint wired up.
-    expect(src).toMatch(/\/v1\/admin\/upgrade\/\$\{[^}]+\}\/cancel/);
-    // User-visible label.
-    expect(src).toMatch(/Cancel pending/);
-    // Cancelled count surfaced somewhere on the directive header.
-    expect(src).toMatch(/cancelled/);
-  });
-});

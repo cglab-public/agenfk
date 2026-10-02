@@ -3,8 +3,9 @@ import { HubServerContext } from '../server.js';
 import { requireSession } from '../auth/session.js';
 import { recomputeRollups } from '../rollup.js';
 import { aggregateHistogramRows } from '../queries/histogram-aggregate.js';
+import { isKnownTimeZone, rebucketToZone, subHourShift, zoneOffsetMin } from '../queries/histogram-zone.js';
 import { coerceMetricsRow } from '../queries/metrics-coerce.js';
-import { aggregatePrOverview, parsePrNumberFilter, PrEventRow } from '../queries/pr-overview-aggregate.js';
+import { aggregatePrOverview, clampTzOffsetMin, parsePrNumberFilter, PrEventRow } from '../queries/pr-overview-aggregate.js';
 import { sanitizeRemoteUrl } from './events.js';
 import { rateLimit, sessionUserKey } from '../util/rateLimit.js';
 import { loadModelMappings } from '../util/modelMapping.js';
@@ -12,6 +13,9 @@ import { loadModelMeta, resolveModelMetaAll } from '../util/modelMeta.js';
 import { resolveModelId } from '../util/modelMapping.js';
 import { childHubPredicate, childHubClause, selectedHubIds, HUB_COL_EVENTS, HUB_COL_ROLLUPS } from '../queries/childHub.js';
 import { asyncRoute } from '../util/asyncRoute.js';
+import { prUrlFor } from '../util/remoteUrl.js';
+import { userKeyFor } from '../util/userKey.js';
+import { loadAliasMap, resolveAliasKey } from '../util/userKeyAlias.js';
 
 /**
  * A query parameter that is not the shape the route reads. Express parses
@@ -20,6 +24,13 @@ import { asyncRoute } from '../util/asyncRoute.js';
  * the router's error handler below.
  */
 class BadQuery extends Error {}
+
+/** `?tzOffsetMin=` — the viewer's minutes EAST of UTC, clamped to a real
+ *  zone; missing or unparseable means UTC. */
+function readTzOffsetMin(req: Request): number {
+  const raw = singleValue(req, 'tzOffsetMin');
+  return clampTzOffsetMin(raw == null ? NaN : Number.parseInt(raw, 10));
+}
 
 /** A parameter that must be ONE value: absent, or a single string. */
 function singleValue(req: Request, name: string): string | null {
@@ -111,8 +122,9 @@ export function queriesRouter(ctx: HubServerContext): Router {
 
   router.get('/users', guard, asyncRoute(async (req: Request, res: Response) => {
     const f = readEventFilters(req);
-    const { where, params } = applyEventFilters(req.session!.orgId, { ...f, users: null });
-    const rows = await ctx.db.all(
+    const orgId = req.session!.orgId;
+    const { where, params } = applyEventFilters(orgId, { ...f, users: null });
+    const rows = await ctx.db.all<{ user_key: string; last_seen: unknown; events_count: number | string }>(
       `SELECT user_key,
               MAX(occurred_at) AS last_seen,
               COUNT(*) AS events_count
@@ -121,26 +133,216 @@ export function queriesRouter(ctx: HubServerContext): Router {
        ORDER BY last_seen DESC`,
       params,
     );
-    res.json(rows);
+
+    // What each listed person got done, from the same events under every
+    // filter EXCEPT event type: the list follows the type filter, but a person
+    // listed for item.closed still shows their checks and PRs. Live events,
+    // not rollups, so the row agrees with itself. "Closed" is defined exactly
+    // as /metrics defines it.
+    const done = applyEventFilters(orgId, { ...f, users: null, types: null });
+    const CLOSED = `CASE
+          WHEN type = 'item.closed' THEN item_id
+          WHEN type = 'step.transitioned'
+               AND json_extract(payload, '$.payload.toStatus') = 'DONE' THEN item_id
+        END`;
+    // The type IN (...) changes no count (every CASE ignores other types) but
+    // lets the planner use the type index instead of reading every event in
+    // the window. No SQL comments inside the query: they break on Postgres.
+    const totals = await ctx.db.all<Record<string, unknown>>(
+      `SELECT user_key,
+              COUNT(DISTINCT ${CLOSED}) AS items_closed,
+              SUM(CASE WHEN type = 'validate.passed' THEN 1 ELSE 0 END) AS validate_passes,
+              SUM(CASE WHEN type = 'validate.failed' THEN 1 ELSE 0 END) AS validate_fails,
+              SUM(CASE WHEN type = 'pr.opened' THEN 1 ELSE 0 END) AS prs_opened
+       FROM events WHERE ${done.where.join(' AND ')}
+         AND type IN ('item.closed', 'step.transitioned', 'validate.passed', 'validate.failed', 'pr.opened')
+       GROUP BY user_key`,
+      done.params,
+    );
+    // Per day in the viewer's zone when one is given (the histogram's rule:
+    // hour groups in SQL, re-filed by the zone), else UTC days.
+    const tzRaw = singleValue(req, 'tz');
+    const timeZone = tzRaw && isKnownTimeZone(tzRaw) ? tzRaw : null;
+    const atRaw = f.to ? Date.parse(f.to) : NaN;
+    const shift = timeZone ? subHourShift(zoneOffsetMin(timeZone, Number.isNaN(atRaw) ? Date.now() : atRaw)) : 0;
+    let daily: Array<{ user_key: string; day: string; n: number | string }>;
+    if (timeZone) {
+      // One row per (person, item, hour): a day is only known once the hour is
+      // placed in the zone, and an item closed twice in that day (two hours, or
+      // item.closed and the board's DONE either side of an hour) counts once.
+      const hourly = await ctx.db.all<{ user_key: string; cid: string; hr: string }>(
+        // Grouped over a derived table by name: positional GROUP BY trips pg-mem.
+        `SELECT user_key, cid, hr FROM (
+           SELECT user_key, ${CLOSED} AS cid, strftime('%Y-%m-%dT%H:00', occurred_at${shift ? ', ?' : ''}) AS hr
+           FROM events WHERE ${done.where.join(' AND ')}
+             AND (type = 'item.closed' OR type = 'step.transitioned')
+         ) closures
+         WHERE cid IS NOT NULL
+         GROUP BY user_key, cid, hr`,
+        shift ? [`${shift} minutes`, ...done.params] : done.params,
+      );
+      // rebucketToZone keeps one row per (local day, type): with person and
+      // item in the type slot, that is one row per distinct item per day.
+      const userOf = new Map<string, string>();
+      const placed = rebucketToZone(
+        hourly.filter(h => h.cid != null).map(h => {
+          const type = `${h.user_key}\u0000${h.cid}`;
+          userOf.set(type, h.user_key);
+          return { time: h.hr, type, n: 1 };
+        }),
+        timeZone, shift, 'day',
+      );
+      const perDay = new Map<string, { user_key: string; day: string; n: number }>();
+      for (const r of placed) {
+        const user = userOf.get(r.type)!;
+        const k = `${user}\u0000${r.time}`;
+        const cur = perDay.get(k) ?? { user_key: user, day: r.time, n: 0 };
+        cur.n += 1;
+        perDay.set(k, cur);
+      }
+      daily = [...perDay.values()];
+    } else {
+      daily = await ctx.db.all<{ user_key: string; day: string; n: number | string }>(
+        `SELECT user_key, date(occurred_at) AS day, COUNT(DISTINCT ${CLOSED}) AS n
+         FROM events WHERE ${done.where.join(' AND ')}
+           AND (type = 'item.closed' OR type = 'step.transitioned')
+         GROUP BY user_key, day`,
+        done.params,
+      );
+    }
+    const num = (v: unknown) => { const x = Number(v ?? 0); return Number.isFinite(x) ? x : 0; };
+    const byUser = new Map(totals.map(t => [String(t.user_key), t]));
+    const closedDaily = new Map<string, Record<string, number>>();
+    for (const d of daily) {
+      const c = num(d.n);
+      if (c === 0) continue;
+      const m = closedDaily.get(d.user_key) ?? {};
+      m[String(d.day).slice(0, 10)] = c;
+      closedDaily.set(d.user_key, m);
+    }
+
+    res.json(rows.map(r => {
+      const t = byUser.get(r.user_key);
+      return {
+        ...r,
+        events_count: num(r.events_count),
+        items_closed: num(t?.items_closed),
+        validate_passes: num(t?.validate_passes),
+        validate_fails: num(t?.validate_fails),
+        prs_opened: num(t?.prs_opened),
+        closed_daily: closedDaily.get(r.user_key) ?? {},
+      };
+    }));
+  }));
+
+  // The display name behind each user_key, so a dashboard can show "Carol Diaz"
+  // rather than carol@acme.com. Keyed exactly as ingest keys events (email, or a
+  // namespaced OS user, then aliases), so every key the other routes return can
+  // be looked up. The most recently seen installation's name wins; a hidden
+  // person is never named.
+  router.get('/people/names', guard, asyncRoute(async (req: Request, res: Response) => {
+    const orgId = req.session!.orgId;
+    const rows = await ctx.db.all<{ id: string; os_user: string | null; git_name: string | null; git_email: string | null }>(
+      `SELECT id, os_user, git_name, git_email FROM installations
+       WHERE org_id = ? AND git_name IS NOT NULL
+       ORDER BY last_seen DESC`,
+      [orgId],
+    );
+    const aliases = await loadAliasMap(ctx.db, orgId);
+    const hidden = new Set((await ctx.db.all<{ user_key: string }>(
+      'SELECT user_key FROM hidden_users WHERE org_id = ?', [orgId],
+    )).map(h => h.user_key));
+    const names: Record<string, string> = {};
+    for (const row of rows) {
+      const name = row.git_name?.trim();
+      if (!name) continue;
+      const key = resolveAliasKey(
+        userKeyFor({ osUser: row.os_user ?? '', gitName: name, gitEmail: row.git_email }, row.id),
+        aliases,
+      );
+      if (hidden.has(key) || key in names) continue;
+      names[key] = name;
+    }
+    // A federation parent has no installation for a child hub's people; their
+    // names are recorded at delivery (child_people, keep-policy rows only).
+    // This hub's own installations win.
+    const children = await ctx.db.all<{ user_key: string; git_name: string }>(
+      'SELECT user_key, git_name FROM child_people WHERE org_id = ? ORDER BY last_seen DESC',
+      [orgId],
+    );
+    for (const row of children) {
+      const key = resolveAliasKey(row.user_key, aliases);
+      if (hidden.has(key) || key in names) continue;
+      names[key] = row.git_name;
+    }
+    res.json({ names });
   }));
 
   router.get('/timeline', guard, asyncRoute(async (req: Request, res: Response) => {
     const f = readEventFilters(req);
     const limit = Math.min(Number.parseInt(singleValue(req, 'limit') ?? '100', 10) || 100, 500);
     const offset = Math.max(Number.parseInt(singleValue(req, 'offset') ?? '0', 10) || 0, 0);
+    // Keyset cursor "<occurred_at>|<event_id>": the next page starts strictly
+    // after the last event shown, so events arriving in between cannot push a
+    // shown one onto the next page, and ties on occurred_at cannot split
+    // differently from one request to the next (event_id breaks them).
+    const beforeRaw = singleValue(req, 'before');
+    let before: { at: string; id: string } | null = null;
+    if (beforeRaw != null) {
+      const bar = beforeRaw.indexOf('|');
+      const at = bar > 0 ? beforeRaw.slice(0, bar) : '';
+      const id = bar > 0 ? beforeRaw.slice(bar + 1) : '';
+      if (!at || !id || Number.isNaN(Date.parse(at.replace(' ', 'T')))) {
+        throw new BadQuery("Query parameter 'before' must be '<occurred_at>|<event_id>'.");
+      }
+      before = { at, id };
+    }
     const { where, params } = applyEventFilters(req.session!.orgId, f);
+    // The leading `occurred_at <= ?` is redundant with the OR but gives the
+    // planner a range to seek on idx_events_user_time instead of scanning
+    // down from the newest row.
+    const pageWhere = before ? [...where, 'occurred_at <= ?', '(occurred_at < ? OR (occurred_at = ? AND event_id < ?))'] : where;
+    const pageParams = before ? [...params, before.at, before.at, before.at, before.id] : params;
 
     const rows = await ctx.db.all<any>(
       `SELECT event_id, occurred_at, received_at, type, project_id, item_id, item_type, remote_url, item_title, external_id, user_key, reporting_version, payload
-       FROM events WHERE ${where.join(' AND ')}
-       ORDER BY occurred_at DESC
+       FROM events WHERE ${pageWhere.join(' AND ')}
+       ORDER BY occurred_at DESC, event_id DESC
        LIMIT ? OFFSET ?`,
-      [...params, limit, offset],
+      [...pageParams, limit, before ? 0 : offset],
     );
 
+    // How many events match in all, so a page can say what it is a page of.
+    // Only on the first page: a cursor page is a continuation and the client
+    // keeps the first page's count. Served by idx_events_user_time for the one
+    // caller (a person's page); an org-wide caller would scan more.
+    let total: number | undefined;
+    if (!before) {
+      const countRow = await ctx.db.get<{ n: number | string }>(
+        `SELECT COUNT(*) AS n FROM events WHERE ${where.join(' AND ')}`,
+        params,
+      );
+      // Postgres returns COUNT as a bigint string.
+      total = Number(countRow?.n ?? 0);
+    }
+    const last = rows[rows.length - 1];
+    const lastAt = last ? (last.occurred_at instanceof Date ? last.occurred_at.toISOString() : String(last.occurred_at)) : '';
+
     res.json({
-      events: rows.map((r: any) => ({ ...r, payload: JSON.parse(r.payload) })),
-      limit, offset,
+      events: rows.map((r: any) => {
+        const payload = JSON.parse(r.payload);
+        const inner = payload?.payload ?? {};
+        // A link for a PR event, by the drill-down's rule: github.com only,
+        // never guessed for another host.
+        const pr_url = r.type === 'pr.opened' || r.type === 'pr.updated'
+          ? prUrlFor(r.remote_url, typeof inner.repo === 'string' ? inner.repo : null, inner.prNumber)
+          : null;
+        return { ...r, payload, pr_url };
+      }),
+      // offset is ignored under a cursor, so it is not echoed as if it applied.
+      limit, offset: before ? 0 : offset, total,
+      // Present while a full page came back: there may be more.
+      nextBefore: rows.length === limit && last ? `${lastAt}|${last.event_id}` : undefined,
     });
   }));
 
@@ -355,18 +557,28 @@ export function queriesRouter(ctx: HubServerContext): Router {
       res.status(400).json({ error: "bucket must be 'day' or 'hour'" });
       return;
     }
-    const tzRaw = req.query.tzOffsetMin;
-    const tzOffsetMin = typeof tzRaw === 'string' ? Number.parseInt(tzRaw, 10) : NaN;
-    const tzShift = Number.isFinite(tzOffsetMin)
-      ? Math.max(-14 * 60, Math.min(14 * 60, tzOffsetMin))
-      : 0;
+    const tzShift = readTzOffsetMin(req);
     const f = readEventFilters(req);
     const { where, params } = applyEventFilters(orgId, f);
 
-    const fmt = bucket === 'day' ? '%Y-%m-%d' : '%Y-%m-%dT%H:00';
-    const tzModifier = tzShift !== 0 ? `, ?` : '';
+    // With a zone the hub knows, group by hour in SQL and re-file the hours by
+    // the zone's own rules for each date (DST included); otherwise shift every
+    // event by the one offset given, as before.
+    const tzRaw = singleValue(req, 'tz');
+    const timeZone = tzRaw && isKnownTimeZone(tzRaw) ? tzRaw : null;
+    // A known zone sets its own alignment; the client's offset only matters
+    // for a zone the hub cannot read. Read at the window's end (or now).
+    const atRaw = f.to ? Date.parse(f.to) : NaN;
+    const shift = timeZone
+      ? subHourShift(zoneOffsetMin(timeZone, Number.isNaN(atRaw) ? Date.now() : atRaw))
+      : tzShift;
+
+    const fmt = bucket === 'day' && !timeZone ? '%Y-%m-%d' : '%Y-%m-%dT%H:00';
+    const tzModifier = shift !== 0 ? `, ?` : '';
     const sqlParams: any[] = [];
-    if (tzShift !== 0) sqlParams.push(`${tzShift >= 0 ? '+' : ''}${tzShift} minutes`);
+    // No leading '+': SQLite and Postgres take '30 minutes' as positive, and
+    // pg-mem (the parity tests' Postgres) cannot parse '+30 minutes'.
+    if (shift !== 0) sqlParams.push(`${shift} minutes`);
     sqlParams.push(...params);
     const rows = await ctx.db.all<{ time: string; type: string; n: number | string }>(
       `SELECT strftime('${fmt}', occurred_at${tzModifier}) AS time, type, COUNT(*) AS n
@@ -376,7 +588,8 @@ export function queriesRouter(ctx: HubServerContext): Router {
       sqlParams,
     );
 
-    res.json({ bucket, buckets: aggregateHistogramRows(rows) });
+    const filed = timeZone ? rebucketToZone(rows, timeZone, shift, bucket) : rows;
+    res.json({ bucket, buckets: aggregateHistogramRows(filed) });
   }));
 
   // PR Overview: total PRs per developer per size (XS–XL, derived from leaf
@@ -397,6 +610,12 @@ export function queriesRouter(ctx: HubServerContext): Router {
     // Passed through uncast: a repeated ?pr= arrives as an array and the parser
     // handles that shape rather than throwing.
     const prNumber = parsePrNumberFilter(req.query.pr);
+    // The viewer's zone, so byDay and each PR's day are local days (the
+    // histogram reads the same parameter the same way).
+    const tzOffsetMin = readTzOffsetMin(req);
+    // Preferred over the offset: an IANA zone follows DST per date. Validated
+    // where it is used (an unknown zone falls back), so it needs no check here.
+    const timeZone = singleValue(req, 'tz');
     // Admin alias -> canonical. Resolved inside the aggregator for the rows, and
     // the filter values go through the same mapping so a saved link to
     // `?model=qwen38-27b` still finds the group now filed under `qwen3.8:27b`.
@@ -467,6 +686,8 @@ export function queriesRouter(ctx: HubServerContext): Router {
         [...new Set(rawModels.map(m => resolveModelId(m, modelMapping) ?? m))], modelMetaRows,
       ),
       modelMetaRaw: modelMeta,
+      tzOffsetMin,
+      timeZone,
     });
 
     // What period these numbers relate to. Normally the requested window. Under

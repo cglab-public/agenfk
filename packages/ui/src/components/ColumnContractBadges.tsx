@@ -41,8 +41,8 @@ export const ColumnContractBadges: React.FC<{ step: FlowStep; checkCount?: numbe
           <CheckCheck size={11} aria-hidden="true" />{checkCount}
         </span>
       )}
-      {approval && <UserCheck size={12} aria-label="A person must approve" className="text-amber-600" />}
-      {approval?.params?.signature === 'passkey' && <KeyRound size={12} aria-label="Signed with a passkey" className="text-amber-600" />}
+      {approval && <UserCheck size={12} aria-label="A person must approve" className="text-status-warn-text" />}
+      {approval?.params?.signature === 'passkey' && <KeyRound size={12} aria-label="Signed with a passkey" className="text-status-warn-text" />}
     </span>
   );
 };

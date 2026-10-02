@@ -106,6 +106,7 @@ describe('Admin → Flows editor footer (hub host)', () => {
 
   it('labels the registry-config form distinctly from the editor save', async () => {
     renderPage();
+    fireEvent.click(screen.getByRole('tab', { name: 'Registry' })); // the registry has its own tab
     await waitFor(() => screen.getByTestId('admin-registry-save'));
 
     expect(screen.getByTestId('admin-registry-save').textContent).toBe('Save registry repo');

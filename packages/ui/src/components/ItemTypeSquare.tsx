@@ -27,7 +27,7 @@ import { clsx } from 'clsx';
 import { ItemType } from '../types';
 
 export interface ItemTypeVisual {
-  /** The filled background. Tailwind's palette, not a brand token: there is no violet in `packages/brand/tokens.css`, and inventing one for four squares is a bigger change than this card is. */
+  /** The filled background: the type's own theme token (brand/tokens.css `--type-*`, CGLAB-434), the hue the hub and the board already use for it. */
   readonly fill: string;
   /** Drawn white on the fill. A COMPONENT, not an element, so the glyph can be sized with the square it sits in. */
   readonly Glyph: LucideIcon;
@@ -35,10 +35,10 @@ export interface ItemTypeVisual {
 }
 
 export const ITEM_TYPE_VISUAL: Record<ItemType, ItemTypeVisual> = {
-  [ItemType.EPIC]: { fill: 'bg-violet-600', Glyph: Zap, stroke: 3 },
-  [ItemType.STORY]: { fill: 'bg-emerald-600', Glyph: Bookmark, stroke: 3 },
-  [ItemType.TASK]: { fill: 'bg-blue-600', Glyph: Check, stroke: 3.5 },
-  [ItemType.BUG]: { fill: 'bg-rose-600', Glyph: Circle, stroke: 4 },
+  [ItemType.EPIC]: { fill: 'bg-type-epic', Glyph: Zap, stroke: 3 },
+  [ItemType.STORY]: { fill: 'bg-type-story', Glyph: Bookmark, stroke: 3 },
+  [ItemType.TASK]: { fill: 'bg-type-task', Glyph: Check, stroke: 3.5 },
+  [ItemType.BUG]: { fill: 'bg-type-bug', Glyph: Circle, stroke: 4 },
 };
 
 /**
@@ -118,7 +118,7 @@ export function ItemTypeSquare({ type, testId, size = 'md' }: ItemTypeSquareProp
       // Reading it out twice is noise, not redundancy.
       aria-hidden="true"
       className={clsx(
-        'inline-flex shrink-0 items-center justify-center rounded-[3px] text-white',
+        'inline-flex shrink-0 items-center justify-center rounded-[3px] text-canvas',
         box,
         visual.fill,
       )}

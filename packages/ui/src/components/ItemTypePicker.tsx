@@ -81,7 +81,7 @@ export function ItemTypePicker({ value, onChange, disabled, testId = 'item-type-
             onChange(next);
           }
         }}
-        className="flex items-center gap-1.5 rounded-md border border-border-soft bg-surface px-2 py-1 text-xs font-bold text-ink focus:outline-none focus:ring-2 focus:ring-brand disabled:opacity-60"
+        className="flex items-center gap-1.5 rounded-md border border-border-soft bg-surface px-2 py-1 text-xs font-bold text-ink focus:outline-none focus:ring-2 focus:ring-focus-ring disabled:opacity-60"
       >
         <ItemTypeSquare type={value} testId={`${testId}-square`} />
         {value}
@@ -103,7 +103,7 @@ export function ItemTypePicker({ value, onChange, disabled, testId = 'item-type-
                 aria-selected={type === value}
                 data-testid={`${testId}-option-${type}`}
                 onClick={() => choose(type)}
-                className={`flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-chip ${type === value ? 'bg-chip' : ''}`}
+                className={`flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-accent-fill ${type === value ? 'bg-accent-fill' : ''}`}
               >
                 <ItemTypeSquare type={type} />
                 <span className="min-w-0">

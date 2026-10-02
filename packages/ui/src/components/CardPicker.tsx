@@ -151,7 +151,7 @@ function EmptyDoors({ onCreateCard, onClearSearch, onAsk }: { onCreateCard?: () 
           // through, the event object arrives where a string belongs and is
           // handed to `.trim()`.
           onClick={() => onCreateCard()}
-          className="rounded-lg border border-border-brand bg-chip px-3 py-2 text-xs font-semibold text-accent-text transition-opacity hover:opacity-90"
+          className="rounded-lg border border-accent bg-accent-fill px-3 py-2 text-xs font-semibold text-accent-ink transition-opacity hover:opacity-90"
         >
           ＋ New task
         </button>
@@ -182,7 +182,7 @@ function EmptyDoors({ onCreateCard, onClearSearch, onAsk }: { onCreateCard?: () 
           disabled={!onAsk}
           onClick={() => onAsk?.()}
           className={onAsk
-            ? 'w-full text-left text-xs font-semibold text-accent-text'
+            ? 'w-full text-left text-xs font-semibold text-accent-ink'
             : 'w-full cursor-not-allowed text-left text-xs font-semibold text-ink-secondary'}
         >
           ✧ Ask AgEnFK
@@ -286,14 +286,14 @@ export function CardPicker({ items, currentItemId, projectNames, onPick, onClose
               onChange={e => setQuery(e.target.value)}
               aria-label="Search cards by name"
               placeholder="Search cards…"
-              className="min-w-0 flex-1 rounded-md border border-border-soft bg-canvas px-2 py-1 text-[11px] text-ink placeholder:text-ink-tertiary focus:border-border-brand focus:outline-none"
+              className="min-w-0 flex-1 rounded-md border border-border-soft bg-canvas px-2 py-1 text-[11px] text-ink placeholder:text-ink-tertiary focus:border-accent focus:outline-none focus:ring-2 focus:ring-focus-ring"
             />
             {projectOptions.length > 1 && (
               <select
                 value={projectId}
                 onChange={e => setProjectId(e.target.value)}
                 aria-label="Filter by project"
-                className="shrink-0 rounded-md border border-border-soft bg-canvas px-2 py-1 text-[11px] text-ink-secondary focus:border-border-brand focus:outline-none"
+                className="shrink-0 rounded-md border border-border-soft bg-canvas px-2 py-1 text-[11px] text-ink-secondary focus:border-accent focus:outline-none focus:ring-2 focus:ring-focus-ring"
               >
                 <option value="">All projects</option>
                 {projectOptions.map(([id, name]) => (
@@ -312,7 +312,7 @@ export function CardPicker({ items, currentItemId, projectNames, onPick, onClose
                 onChange={e => setTypeFilter(e.target.value)}
                 aria-label="Filter by type"
                 data-testid="picker-type-filter"
-                className="shrink-0 rounded-md border border-border-soft bg-canvas px-2 py-1 text-[11px] text-ink-secondary focus:border-border-brand focus:outline-none"
+                className="shrink-0 rounded-md border border-border-soft bg-canvas px-2 py-1 text-[11px] text-ink-secondary focus:border-accent focus:outline-none"
               >
                 <option value="">All types</option>
                 {typeOptions.map(t => (
@@ -432,9 +432,9 @@ export function CardPicker({ items, currentItemId, projectNames, onPick, onClose
             type="button"
             data-testid="ask-agenfk-footer"
             onClick={() => onAsk()}
-            className="w-full border-t border-border-soft px-3 py-2 text-left hover:bg-chip"
+            className="w-full border-t border-border-soft px-3 py-2 text-left hover:bg-accent-fill"
           >
-            <span className="text-xs font-semibold text-accent-text">✧ New task</span>
+            <span className="text-xs font-semibold text-accent-ink">✧ New task</span>
             <span className="ml-2 text-[11px] text-ink-tertiary">
               No card for this yet? Describe the objective and review the proposed decomposition.
             </span>

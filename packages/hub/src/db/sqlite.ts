@@ -470,6 +470,18 @@ const SCHEMA_SQLITE = `
   );
   CREATE INDEX IF NOT EXISTS idx_user_key_aliases_merge ON user_key_aliases(merge_id);
 
+  -- A federation parent's record of child-hub developers' names (BUG 4159631f).
+  -- They have no installation here; the name comes from the forwarded actor,
+  -- recorded at /v1/federation/deliver and only for a keep-policy row.
+  CREATE TABLE IF NOT EXISTS child_people (
+    org_id TEXT NOT NULL,
+    child_hub_id TEXT NOT NULL,
+    user_key TEXT NOT NULL,
+    git_name TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    PRIMARY KEY (org_id, child_hub_id, user_key)
+  );
+
   CREATE TABLE IF NOT EXISTS hidden_users (
     org_id TEXT NOT NULL,
     user_key TEXT NOT NULL,

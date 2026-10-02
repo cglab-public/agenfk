@@ -15,6 +15,7 @@ export const ORG_ID_CHILD_TABLES: readonly string[] = [
   'api_keys',
   'auth_config',
   'child_hubs',
+  'child_people',
   'device_codes',
   'events',
   'federation_keys',

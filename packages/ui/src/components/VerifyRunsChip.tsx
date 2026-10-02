@@ -56,6 +56,10 @@ export function VerifyRunsChip({ placement = 'down' }: { placement?: 'down' | 'u
   }, [open]);
   if (!shown.length) return null;
   const label = `${shown.length} ${shown.length === 1 ? 'verify' : 'verifies'} running`;
+  // Green only while a check actually runs; entries that only wait on a person are a warning.
+  const tone = shown.some(e => e.runId)
+    ? 'bg-status-ok-bg text-status-ok-text border-status-ok-text/40 hover:border-status-ok-text'
+    : 'bg-status-warn-bg text-status-warn-text border-status-warn-text/40 hover:border-status-warn-text';
   return (
     <div ref={rootRef} className="relative">
       <button
@@ -66,7 +70,7 @@ export function VerifyRunsChip({ placement = 'down' }: { placement?: 'down' | 'u
         aria-controls={open ? listId : undefined}
         onClick={() => setOpen(o => !o)}
         title="Verifies running for more than 10 seconds, in every project"
-        className={`flex items-center gap-1.5 rounded-lg font-bold bg-brand/10 text-brand border border-brand/30 hover:bg-brand/15 transition-all ${placement === 'up' ? 'px-2 py-0 text-[11px]' : 'px-2.5 py-1.5 text-xs'}`}
+        className={`flex items-center gap-1.5 rounded-lg font-bold border ${tone} transition-all ${placement === 'up' ? 'px-2 py-0 text-[11px]' : 'px-2.5 py-1.5 text-xs'}`}
       >
         <Loader2 size={13} aria-hidden="true" className="animate-spin motion-reduce:animate-none" />
         <span>{label}</span>
@@ -78,7 +82,7 @@ export function VerifyRunsChip({ placement = 'down' }: { placement?: 'down' | 'u
           data-testid="verify-runs-list"
           role="region"
           aria-label="Verifies running"
-          className={`absolute ${placement === 'up' ? 'left-0 bottom-full mb-2' : 'right-0 top-full mt-2'} z-30 w-80 max-w-[90vw] rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg p-1`}
+          className={`absolute ${placement === 'up' ? 'left-0 bottom-full mb-2' : 'right-0 top-full mt-2'} z-30 w-80 max-w-[90vw] rounded-xl border border-slate-200 dark:border-slate-700 bg-surface shadow-lg p-1`}
         >
           <ul className="max-h-96 overflow-auto">
             {shown.map(e => (
@@ -87,7 +91,7 @@ export function VerifyRunsChip({ placement = 'down' }: { placement?: 'down' | 'u
                   type="button"
                   data-testid="verify-run-entry"
                   onClick={() => { setOpen(false); focusItem(e.itemId, e.projectId, { open: true }); }}
-                  className="w-full text-left rounded-lg px-2.5 py-2 hover:bg-slate-50 dark:hover:bg-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/50"
+                  className="w-full text-left rounded-lg px-2.5 py-2 hover:bg-slate-50 dark:hover:bg-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-focus-ring"
                 >
                   <div className="flex items-baseline gap-2">
                     <span className="flex-1 min-w-0 truncate text-xs font-semibold text-slate-800 dark:text-slate-100">

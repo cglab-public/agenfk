@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
 import { api } from '../api';
+import { LocalTime } from '../components/ui';
 import { groupUpgradeBody, groupUpgradeRow, groupUpgradesLive, type GroupUpgradeRequest } from './groupUpgradeState';
 import { ChildHubPicker, toggledSet } from './childHubPicker';
 import { NO_CHILD_HUBS_REASON, dispatchRefusalMessage, liveChildHubs, type ChildHubRow, type DispatchScopeMode } from './flowDispatch';
@@ -48,6 +49,7 @@ interface ApiKeyRow { tokenHashPreview: string; label: string | null; installati
 interface AvailableVersionsResponse { versions: string[]; fleetFloor: string | null }
 
 import { canIssueDirective } from './adminUpgradesGate';
+import { upgradeStateLabel, upgradeStateCount } from './adminLabels';
 import { installationDisplayName } from './installationDisplayName';
 import { buildInstallationOptions, type InstallationRow } from './installationOptions';
 import { filterInstallationOptions } from './filterInstallationOptions';
@@ -78,6 +80,10 @@ export function AdminUpgrades() {
   const [selectedInstallationIds, setSelectedInstallationIds] = useState<Set<string>>(new Set());
   const [installationFilter, setInstallationFilter] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // Separate from the issue form's error: that banner renders only while the
+  // form is open, so a refused cancel written there showed nothing.
+  // Keyed to the directive so the message sits on the row the admin clicked.
+  const [cancelError, setCancelError] = useState<{ directiveId: string; message: string } | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const directivesQ = useQuery<{ directives: Directive[] }>({
@@ -119,19 +125,20 @@ export function AdminUpgrades() {
       const r = await api.post(`/v1/admin/upgrade/${directiveId}/cancel`, force ? { force: true } : {});
       return r.data;
     },
+    onMutate: () => setCancelError(null),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['admin-upgrade'] });
     },
-    onError: (e: any) => {
+    onError: (e: any, { directiveId }) => {
       const data = e?.response?.data;
-      setError(data?.error ?? e?.message ?? 'Failed to cancel directive');
+      setCancelError({ directiveId, message: data?.error ?? e?.message ?? "Couldn't cancel the upgrade" });
     },
   });
 
   const onCancel = (d: Directive) => {
     const { pending, in_progress } = d.progress;
     if (pending > 0) {
-      if (!confirm(`Cancel ${pending} pending upgrade${pending === 1 ? '' : 's'} for v${d.targetVersion}? Installations already running or finished will not be affected.`)) return;
+      if (!confirm(`Cancel ${pending} waiting upgrade${pending === 1 ? '' : 's'} for v${d.targetVersion}? Installations already running or finished will not be affected.`)) return;
     }
     let force = false;
     if (in_progress > 0) {
@@ -139,10 +146,10 @@ export function AdminUpgrades() {
       // flight — but it may also be a dead agent wedging the installation
       // (new directives are refused while it stays in_progress).
       force = confirm(
-        `⚠️ ${in_progress} target${in_progress === 1 ? ' is' : 's are'} in_progress. ` +
-        `Force-cancel ${in_progress === 1 ? 'it' : 'them'} too?\n\n` +
+        `⚠️ ${in_progress} installation${in_progress === 1 ? ' is' : 's are'} still running this upgrade. ` +
+        `Mark ${in_progress === 1 ? 'it' : 'them'} as cancelled${pending > 0 ? ' too' : ''}?\n\n` +
         `Only do this when the upgrade is stuck (agent died or never reported back). ` +
-        `A genuinely running upgrade cannot be recalled — force-cancelling just clears its status here.`
+        `A genuinely running upgrade cannot be recalled — cancelling it just clears its status here.`
       );
       if (pending === 0 && !force) return; // nothing else to do
     }
@@ -185,12 +192,12 @@ export function AdminUpgrades() {
       if (status === 409 && Array.isArray(data?.conflicts) && data.conflicts.length > 0) {
         const keys = apiKeysQ.data ?? [];
         const lines = data.conflicts.map((c: any) =>
-          `  • ${installationDisplayName(keys, c.installationId)} (directive ${c.conflictingDirectiveId})`
+          `  • ${installationDisplayName(keys, c.installationId)} (upgrade ${c.conflictingDirectiveId})`
         ).join('\n');
-        setError(`Cannot issue: an upgrade is already pending or running on:\n${lines}`);
+        setError(`Cannot send: an upgrade is already waiting or running on:\n${lines}`);
         return;
       }
-      setError(data?.error ?? e?.message ?? 'Failed to issue directive');
+      setError(data?.error ?? e?.message ?? "Couldn't send the upgrade");
     },
   });
 
@@ -247,7 +254,7 @@ export function AdminUpgrades() {
         {!showForm && (
           <button
             onClick={() => setShowForm(true)}
-            className="text-[12px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-[image:var(--gradient-accent)] text-navy hover:opacity-90"
+            className="text-[12px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-brand text-navy hover:opacity-90"
           >
             <Plus className="w-3.5 h-3.5" /> Issue upgrade
           </button>
@@ -272,7 +279,7 @@ export function AdminUpgrades() {
                 }}
                 disabled={versionsLoading}
                 title="Bypass the hub's 10-minute cache and re-fetch the GitHub release list now"
-                className="text-[10px] text-accent-text hover:opacity-80 disabled:opacity-50"
+                className="text-[10px] text-accent-ink hover:opacity-80 disabled:opacity-50"
               >
                 ↻ Refresh
               </button>
@@ -296,7 +303,7 @@ export function AdminUpgrades() {
             </select>
             {fleetFloor && (
               <p className="mt-1 text-[10px] text-ink-tertiary">
-                Fleet floor: <span className="font-mono">v{fleetFloor}</span> — older releases hidden.
+                Oldest version reported: <span className="font-mono">v{fleetFloor}</span> — older releases hidden.
               </p>
             )}
           </div>
@@ -304,12 +311,16 @@ export function AdminUpgrades() {
             <label className="block text-[11px] font-medium text-ink-secondary mb-1">Scope</label>
             <div className="flex gap-2">
               <button
+                type="button"
+                aria-pressed={scopeMode === 'all'}
                 onClick={() => setScopeMode('all')}
-                className={`text-[12px] px-2 py-1 rounded ${scopeMode === 'all' ? 'bg-[image:var(--gradient-accent)] text-navy' : 'border border-border-soft'}`}
+                className={`text-[12px] px-2 py-1 rounded border ${scopeMode === 'all' ? 'border-accent bg-accent-fill text-accent-ink font-semibold' : 'border-border-soft text-ink-secondary'}`}
               >All ({installationOptions.length})</button>
               <button
+                type="button"
+                aria-pressed={scopeMode === 'installations'}
                 onClick={() => setScopeMode('installations')}
-                className={`text-[12px] px-2 py-1 rounded ${scopeMode === 'installations' ? 'bg-[image:var(--gradient-accent)] text-navy' : 'border border-border-soft'}`}
+                className={`text-[12px] px-2 py-1 rounded border ${scopeMode === 'installations' ? 'border-accent bg-accent-fill text-accent-ink font-semibold' : 'border-border-soft text-ink-secondary'}`}
               >Selected ({selectedInstallationIds.size})</button>
             </div>
             {scopeMode === 'installations' && (
@@ -331,7 +342,7 @@ export function AdminUpgrades() {
                           key={id}
                           type="button"
                           onClick={() => toggleInstallation(id)}
-                          className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] rounded bg-chip text-accent-text hover:bg-chip"
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[11px] rounded bg-accent-fill text-accent-ink hover:bg-status-danger-bg hover:text-status-danger-text"
                           title="Remove"
                         >
                           {label} <span aria-hidden>×</span>
@@ -348,7 +359,7 @@ export function AdminUpgrades() {
                     return (
                       <label
                         key={o.id}
-                        className="flex items-center gap-2 px-2 py-1.5 text-[12px] cursor-pointer hover:bg-chip"
+                        className="flex items-center gap-2 px-2 py-1.5 text-[12px] cursor-pointer hover:bg-accent-fill"
                       >
                         <input
                           type="checkbox"
@@ -365,15 +376,15 @@ export function AdminUpgrades() {
             )}
           </div>
           {error && (
-            <div className="text-[12px] text-rose-600 dark:text-rose-400 inline-flex items-center gap-1">
-              <AlertTriangle className="w-3.5 h-3.5" /> {error}
+            <div className="text-[12px] text-status-danger-text inline-flex items-start gap-1 whitespace-pre-line">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" /> {error}
             </div>
           )}
           <div className="flex justify-end gap-2 pt-2">
             <button onClick={() => { setShowForm(false); setError(null); }} className="text-[12px] px-2 py-1 text-ink-secondary">Cancel</button>
             <button
               onClick={onSubmit} disabled={issueMut.isPending || !canIssue}
-              className="text-[12px] px-2.5 py-1 rounded-md bg-[image:var(--gradient-accent)] text-navy hover:opacity-90 disabled:opacity-50"
+              className="text-[12px] px-2.5 py-1 rounded-md bg-brand text-navy hover:opacity-90 disabled:opacity-50"
             >Issue</button>
           </div>
         </div>
@@ -381,7 +392,7 @@ export function AdminUpgrades() {
 
       <div className="space-y-2">
         {directives.length === 0 && (
-          <p className="text-[12px] text-ink-tertiary">No directives issued yet.</p>
+          <p className="text-[12px] text-ink-tertiary">No upgrades sent yet.</p>
         )}
         {directives.map(d => {
           const isOpen = expanded.has(d.directiveId);
@@ -400,26 +411,33 @@ export function AdminUpgrades() {
                       : d.scope.type === 'installation'
                         ? `installation ${installationDisplayName(apiKeysQ.data ?? [], d.scope.installationId ?? '')}`
                         : `${d.targets.length} installations`}
-                    {' · '}{new Date(d.createdAt).toLocaleString()}
+                    {' · '}<LocalTime value={d.createdAt} />
                     {d.createdByEmail && ` · by ${d.createdByEmail}`}
                   </span>
                 </button>
                 <span className="flex items-center gap-1.5 text-[11px] shrink-0">
-                  {d.progress.pending > 0 && <span className="px-1.5 py-0.5 rounded bg-chip text-ink-secondary">{d.progress.pending} pending</span>}
-                  {d.progress.in_progress > 0 && <span className="px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300">{d.progress.in_progress} running</span>}
-                  {d.progress.succeeded > 0 && <span className="px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300">{d.progress.succeeded} ok</span>}
-                  {d.progress.failed > 0 && <span className="px-1.5 py-0.5 rounded bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300">{d.progress.failed} failed</span>}
-                  {d.progress.cancelled > 0 && <span className="px-1.5 py-0.5 rounded bg-chip text-ink-secondary">{d.progress.cancelled} cancelled</span>}
+                  {d.progress.pending > 0 && <span className="px-1.5 py-0.5 rounded bg-canvas text-ink-secondary">{upgradeStateCount('pending', d.progress.pending)}</span>}
+                  {d.progress.in_progress > 0 && <span className="px-1.5 py-0.5 rounded bg-status-warn-bg text-status-warn-text">{upgradeStateCount('in_progress', d.progress.in_progress)}</span>}
+                  {d.progress.succeeded > 0 && <span className="px-1.5 py-0.5 rounded bg-status-ok-bg text-status-ok-text">{upgradeStateCount('succeeded', d.progress.succeeded)}</span>}
+                  {d.progress.failed > 0 && <span className="px-1.5 py-0.5 rounded bg-status-danger-bg text-status-danger-text">{upgradeStateCount('failed', d.progress.failed)}</span>}
+                  {d.progress.cancelled > 0 && <span className="px-1.5 py-0.5 rounded bg-canvas text-ink-secondary">{upgradeStateCount('cancelled', d.progress.cancelled)}</span>}
                   {(d.progress.pending > 0 || d.progress.in_progress > 0) && (
                     <button
                       onClick={(e) => { e.stopPropagation(); onCancel(d); }}
                       disabled={cancelMut.isPending}
-                      className="ml-1 px-1.5 py-0.5 rounded border border-rose-300 dark:border-rose-700 text-rose-600 dark:text-rose-300 hover:bg-rose-50 dark:hover:bg-rose-900/30 disabled:opacity-50"
-                      title="Cancel pending targets on this directive; offers to force-cancel stuck in_progress ones"
-                    >{d.progress.pending > 0 ? 'Cancel pending' : 'Force-cancel'}</button>
+                      className="ml-1 px-1.5 py-0.5 rounded border border-status-danger-text/40 text-status-danger-text hover:bg-status-danger-bg disabled:opacity-50"
+                      title={d.progress.pending > 0
+                        ? "Cancel this upgrade where it hasn't started; offers to clear stuck running ones too"
+                        : 'Mark stuck running upgrades as cancelled. A live upgrade keeps running; this only stops it blocking the installation'}
+                    >{d.progress.pending > 0 ? 'Cancel waiting' : 'Clear stuck'}</button>
                   )}
                 </span>
               </div>
+              {cancelError?.directiveId === d.directiveId && (
+                <div role="alert" className="px-3 pb-2 text-[12px] text-status-danger-text flex items-start gap-1 whitespace-pre-line">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" /> {cancelError.message}
+                </div>
+              )}
               {isOpen && d.targets.length > 0 && (
                 <div className="border-t border-border-soft divide-y divide-border-soft">
                   {d.targets.map(t => (
@@ -441,7 +459,7 @@ export function AdminUpgrades() {
                           </span>
                         )}
                         <StatePill state={t.state} />
-                        {t.errorMessage && <span className="text-rose-500 dark:text-rose-400 truncate max-w-[18ch]" title={t.errorMessage}>{t.errorMessage}</span>}
+                        {t.errorMessage && <span className="text-status-danger-text truncate max-w-[18ch]" title={t.errorMessage}>{t.errorMessage}</span>}
                       </span>
                     </div>
                   ))}
@@ -521,7 +539,7 @@ export function GroupUpgrades() {
     return (
       <div className="mt-8" data-testid="group-upgrades">
         <h2 className="text-sm font-semibold text-ink mb-2">Group upgrades (child hubs)</h2>
-        <p className="text-xs text-rose-600 dark:text-rose-400" data-testid="group-upgrades-error">
+        <p className="text-xs text-status-danger-text" data-testid="group-upgrades-error">
           {childHubsQ.isError
             ? 'Could not load this hub\'s child hubs. Reload to try again.'
             : 'Could not load group upgrades. Reload to try again.'}
@@ -546,7 +564,7 @@ export function GroupUpgrades() {
             title={childHubs.length === 0 ? NO_CHILD_HUBS_REASON : undefined}
             className={
               'text-[12px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-border-soft ' +
-              (childHubs.length === 0 ? 'text-ink-tertiary opacity-60 cursor-not-allowed' : 'text-ink-secondary hover:bg-chip')
+              (childHubs.length === 0 ? 'text-ink-tertiary opacity-60 cursor-not-allowed' : 'text-ink-secondary hover:bg-accent-fill')
             }
             data-testid="group-upgrade-issue-btn"
           >
@@ -571,7 +589,7 @@ export function GroupUpgrades() {
         </div>
       )}
       {error && (
-        <p className="text-xs text-rose-600 dark:text-rose-400 mb-2" data-testid="group-upgrade-cancel-error">{error}</p>
+        <p className="text-xs text-status-danger-text mb-2" data-testid="group-upgrade-cancel-error">{error}</p>
       )}
       {dispatches.length === 0 && (
         <p className="text-xs text-ink-tertiary" data-testid="group-upgrades-empty">
@@ -584,12 +602,12 @@ export function GroupUpgrades() {
           <div key={d.id} className="p-3" data-testid={`group-dispatch-${d.id}`}>
             <div className="flex items-center gap-2 flex-wrap">
               <span className="font-semibold text-ink">{d.targetVersion}</span>
-              <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-chip text-ink-secondary">
+              <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-canvas text-ink-secondary">
                 {d.scope}
               </span>
               {d.cancelledAt && (
                 <span
-                  className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-chip text-ink-tertiary"
+                  className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-canvas text-ink-tertiary"
                   data-testid={`group-dispatch-cancelled-${d.id}`}
                 >
                   cancelled
@@ -602,7 +620,7 @@ export function GroupUpgrades() {
                   // Scoped to THIS dispatch: one shared isPending greyed out
                   // every other Cancel button on the board.
                   disabled={cancelMut.isPending && cancelMut.variables === d.id}
-                  className="text-[11px] text-rose-600 dark:text-rose-400 hover:underline"
+                  className="text-[11px] text-status-danger-text hover:underline"
                   data-testid={`group-dispatch-cancel-${d.id}`}
                 >
                   Cancel
@@ -627,11 +645,11 @@ export function GroupUpgrades() {
                       data-testid={`group-target-${d.id}-${t.childHubId}`}
                     >
                       <span className="font-medium text-ink">{t.name}</span>
-                      <span className="px-1.5 py-0.5 rounded bg-chip">{row.label}</span>
+                      <span className="px-1.5 py-0.5 rounded bg-canvas">{row.label}</span>
                       <span>{row.summary}</span>
                       {row.awaiting && (
                         <span
-                          className="text-amber-700 dark:text-amber-300"
+                          className="text-status-warn-text"
                           data-testid={`group-target-awaiting-${d.id}-${t.childHubId}`}
                         >
                           not confirmed
@@ -749,7 +767,7 @@ function GroupUpgradeIssue({
         Also downgrade installations already ahead of {targetVersion ? `v${targetVersion}` : 'the target'}. Unticked, each child hub skips those machines and reports them as “downgrade” in its counts.
       </label>
       {error && (
-        <p className="text-xs text-rose-600 dark:text-rose-400" data-testid="group-upgrade-error">{error}</p>
+        <p className="text-xs text-status-danger-text" data-testid="group-upgrade-error">{error}</p>
       )}
       <div className="flex justify-end gap-2">
         <button type="button" onClick={reset} className="text-[11px] text-ink-tertiary hover:underline">Cancel</button>
@@ -757,7 +775,7 @@ function GroupUpgradeIssue({
           type="button"
           onClick={submit}
           disabled={!canIssue || issue.isPending}
-          className="px-2.5 py-1 rounded-md bg-[image:var(--gradient-accent)] text-navy text-[11px] font-bold disabled:opacity-40"
+          className="px-2.5 py-1 rounded-md bg-brand text-navy text-[11px] font-bold disabled:opacity-40"
           data-testid="group-upgrade-send"
         >
           {issue.isPending ? 'Sending…' : 'Send'}
@@ -768,10 +786,10 @@ function GroupUpgradeIssue({
 }
 
 function StatePill({ state }: { state: UpgradeTarget['state'] }) {
-  const cls = state === 'succeeded' ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300'
-    : state === 'failed' ? 'bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300'
-    : state === 'in_progress' ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300'
-    : state === 'cancelled' ? 'bg-chip text-ink-tertiary line-through'
-    : 'bg-chip text-ink-secondary';
-  return <span className={`px-1.5 py-0.5 rounded ${cls}`}>{state}</span>;
+  const cls = state === 'succeeded' ? 'bg-status-ok-bg text-status-ok-text'
+    : state === 'failed' ? 'bg-status-danger-bg text-status-danger-text'
+    : state === 'in_progress' ? 'bg-status-warn-bg text-status-warn-text'
+    : state === 'cancelled' ? 'bg-canvas text-ink-tertiary line-through'
+    : 'bg-canvas text-ink-secondary';
+  return <span className={`px-1.5 py-0.5 rounded ${cls}`}>{upgradeStateLabel(state)}</span>;
 }

@@ -22,24 +22,24 @@ export function ConnectPage() {
   const ready = /^[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(display);
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-chip p-6">
+    <div className="min-h-screen flex items-center justify-center bg-canvas p-6">
       <div className="w-full max-w-md bg-card-glass backdrop-blur border border-border-soft rounded-2xl shadow-sm p-7">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-[image:var(--gradient-accent)] text-navy flex items-center justify-center">
+          <div className="w-10 h-10 rounded-xl bg-accent-fill text-accent-ink flex items-center justify-center">
             <Cpu className="w-5 h-5" />
           </div>
           <div>
-            <p className="text-[11px] uppercase tracking-[0.18em] text-accent-text font-semibold">Connect a device</p>
+            <p className="text-[11px] uppercase tracking-[0.18em] text-accent-ink font-semibold">Connect a device</p>
             <h1 className="text-lg font-bold text-ink">Authorize this installation</h1>
           </div>
         </div>
 
         {approve.isSuccess ? (
-          <div className="mt-5 p-4 rounded-xl bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-800 flex items-start gap-3">
-            <Check className="w-5 h-5 text-emerald-600 dark:text-emerald-400 mt-0.5 shrink-0" />
+          <div className="mt-5 p-4 rounded-xl bg-status-ok-bg border border-status-ok-text/40 flex items-start gap-3">
+            <Check className="w-5 h-5 text-status-ok-text mt-0.5 shrink-0" />
             <div>
-              <div className="text-sm font-semibold text-emerald-800 dark:text-emerald-200">Device connected</div>
-              <p className="mt-0.5 text-xs text-emerald-700 dark:text-emerald-300">Return to your terminal — the agenfk CLI will pick up the new credentials within a few seconds.</p>
+              <div className="text-sm font-semibold text-status-ok-text">Device connected</div>
+              <p className="mt-0.5 text-xs text-status-ok-text">Return to your terminal — the agenfk CLI will pick up the new credentials within a few seconds.</p>
             </div>
           </div>
         ) : (
@@ -55,11 +55,11 @@ export function ConnectPage() {
                 placeholder="ABCD-EFGH"
                 spellCheck={false}
                 autoComplete="off"
-                className="mt-1.5 w-full px-3 py-2.5 rounded-xl border border-border-soft bg-chip text-ink dark:text-white font-mono tracking-[0.2em] text-center uppercase text-lg focus:outline-none focus:ring-2 focus:ring-brand"
+                className="mt-1.5 w-full px-3 py-2.5 rounded-xl border border-border-soft bg-canvas text-ink font-mono tracking-[0.2em] text-center uppercase text-lg focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring"
               />
             </label>
             {approve.isError && (
-              <div className="mt-3 p-3 rounded-xl bg-rose-50 dark:bg-rose-900/30 border border-rose-200 dark:border-rose-800 text-xs text-rose-700 dark:text-rose-300 flex items-start gap-2">
+              <div className="mt-3 p-3 rounded-xl bg-status-danger-bg border border-status-danger-text/40 text-xs text-status-danger-text flex items-start gap-2">
                 <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
                 <span>{(approve.error as any)?.response?.data?.error ?? 'Could not approve. Re-check the code.'}</span>
               </div>
@@ -67,7 +67,7 @@ export function ConnectPage() {
             <button
               disabled={!ready || approve.isPending}
               onClick={() => approve.mutate(display)}
-              className="mt-5 w-full py-2.5 rounded-xl bg-[image:var(--gradient-accent)] text-navy shadow-glow disabled:opacity-50 font-bold transition-colors"
+              className="mt-5 w-full py-2.5 rounded-xl bg-brand text-navy disabled:opacity-50 font-bold transition-colors"
             >
               {approve.isPending ? 'Approving…' : 'Approve & connect'}
             </button>

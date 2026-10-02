@@ -17,6 +17,7 @@ import { Plus, Pencil, Trash2, X, ChevronDown, ChevronRight, Send } from 'lucide
 import { ChildHubPicker, toggledSet } from './childHubPicker';
 import { FlowEditorModal, type FlowClient, type RegistryClient, type Flow } from '@agenfk/flow-editor';
 import { api } from '../api';
+import { QueryError } from '../components/ui';
 import { RegistryPullsPanel } from './RegistryPullsPanel';
 import { flattenAdminFlow } from './adminFlowShape';
 import { repoOverrideOptions } from './repoOverrideOptions';
@@ -154,6 +155,15 @@ export function AdminFlows() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [initialFlowId, setInitialFlowId] = useState<string | undefined>(undefined);
   const [expandedFlowId, setExpandedFlowId] = useState<string | null>(null);
+  // Flows / Registry. Kept in the URL hash, not router state: the page also
+  // renders outside a router (its tests, the editor harness).
+  const [tab, setTabState] = useState<'flows' | 'registry'>(() =>
+    typeof window !== 'undefined' && window.location.hash === '#registry' ? 'registry' : 'flows');
+  const setTab = (t: 'flows' | 'registry') => {
+    setTabState(t);
+    const url = `${window.location.pathname}${window.location.search}${t === 'registry' ? '#registry' : ''}`;
+    window.history.replaceState(window.history.state, '', url);
+  };
   // Which registry the editor's second tab reads. Held in a ref-like getter so
   // the module-level client factory below can read the current value without
   // being rebuilt on every render (a new client object each render would
@@ -162,10 +172,11 @@ export function AdminFlows() {
   const sourceRef = useRef<RegistrySource>('org');
   sourceRef.current = registrySource;
 
-  const { data: flows = [] } = useQuery<Flow[]>({
+  const flowsQ = useQuery<Flow[]>({
     queryKey: ['admin-flows'],
     queryFn: () => flowClient.listFlows(),
   });
+  const flows = flowsQ.data ?? [];
   const { data: assignments = [] } = useQuery<Assignment[]>({
     queryKey: ['admin-flow-assignments'],
     queryFn: async () => (await api.get('/v1/admin/flow-assignments')).data,
@@ -220,22 +231,49 @@ export function AdminFlows() {
         <div>
           <h2 className="text-sm font-semibold text-ink">Org-managed flows</h2>
           <p className="mt-0.5 text-xs text-ink-tertiary">
-            Define and assign workflow flows. Connected installations adopt the most specific assignment (installation &gt; project &gt; org).
+            Define and assign workflow flows. An installation runs the most specific assignment: an installation override, then a repo override, then the org default.
           </p>
         </div>
         <button
-          className="px-3 py-1.5 rounded-lg bg-[image:var(--gradient-accent)] text-navy shadow-glow text-xs font-bold inline-flex items-center gap-1.5"
+          className="px-3 py-1.5 rounded-lg bg-brand text-navy text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
           onClick={() => openEditor()}
           data-testid="admin-flows-new-btn"
         >
-          <Plus className="w-3.5 h-3.5" /> New / Import
+          <Plus className="w-3.5 h-3.5" /> New flow
         </button>
       </header>
 
-      <div className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl divide-y divide-border-soft">
-        {flows.length === 0 && (
+      <div role="tablist" aria-label="Flows sections" className="inline-flex gap-0.5 p-1 rounded-xl border border-border-soft bg-surface">
+        {(['flows', 'registry'] as const).map(t => (
+          <button
+            key={t}
+            type="button"
+            role="tab"
+            id={`flows-tab-${t}`}
+            aria-selected={tab === t}
+            aria-controls={`flows-panel-${t}`}
+            onClick={() => setTab(t)}
+            className={'px-3 py-1.5 rounded-lg text-[12px] font-semibold transition-colors ' + (tab === t
+              ? 'bg-accent-fill text-accent-ink'
+              : 'text-ink-secondary hover:bg-accent-fill/50 hover:text-ink')}
+          >
+            {t === 'flows' ? 'Flows' : 'Registry'}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'flows' && (
+      <div role="tabpanel" id="flows-panel-flows" aria-labelledby="flows-tab-flows" className="space-y-4">
+      <div className="bg-surface border border-border-soft rounded-2xl divide-y divide-border-soft">
+        {flowsQ.isError && (
+          <div className="p-4"><QueryError error={flowsQ.error} onRetry={() => flowsQ.refetch()} /></div>
+        )}
+        {flowsQ.isPending && (
+          <div className="p-6 text-sm text-ink-tertiary" role="status">Loading…</div>
+        )}
+        {flowsQ.isSuccess && flows.length === 0 && (
           <div className="p-6 text-sm text-ink-tertiary">
-            No flows yet. Click <span className="font-semibold">New / Import</span> to create one or pull from the community registry.
+            No flows yet. Click <span className="font-semibold">New flow</span> to create one or import one from the community registry.
           </div>
         )}
         {flows.map((f) => {
@@ -249,7 +287,7 @@ export function AdminFlows() {
               <button
                 onClick={() => setExpandedFlowId(expanded ? null : f.id)}
                 data-testid={`admin-flow-row-${f.id}`}
-                className="w-full text-left p-4 hover:bg-chip transition-colors flex items-center gap-3"
+                className="w-full text-left p-4 hover:bg-accent-fill transition-colors flex items-center gap-3"
               >
                 <span className="text-ink-tertiary shrink-0">
                   {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
@@ -260,26 +298,26 @@ export function AdminFlows() {
                     <span className={
                       'text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold ' +
                       (f.source === 'community'
-                        ? 'bg-chip text-accent-text'
-                        : 'bg-chip text-ink-secondary')
+                        ? 'bg-accent-fill text-accent-ink'
+                        : 'bg-canvas text-ink-secondary')
                     }>{f.source ?? 'hub'}</span>
                     {isOrgDefault && (
-                      <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300">
+                      <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-status-ok-bg text-status-ok-text">
                         Org default
                       </span>
                     )}
                     {f.orgAvailable && !isOrgDefault && (
-                      <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-300">
+                      <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-accent-fill text-accent-ink">
                         Available
                       </span>
                     )}
                     {repoCount > 0 && (
-                      <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">
+                      <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-canvas text-ink-secondary border border-border-soft">
                         {repoCount} repo{repoCount === 1 ? '' : 's'}
                       </span>
                     )}
                     {installCount > 0 && (
-                      <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300">
+                      <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-canvas text-ink-secondary border border-border-soft">
                         {installCount} install{installCount === 1 ? '' : 's'}
                       </span>
                     )}
@@ -307,9 +345,15 @@ export function AdminFlows() {
       </div>
 
       <FlowDispatches flows={flows} isParent={isParent} hasLiveChildren={childHubs.length > 0} />
+      </div>
+      )}
 
-      <RegistryRepoPanel />
-      <RegistryPullsPanel />
+      {tab === 'registry' && (
+        <div role="tabpanel" id="flows-panel-registry" aria-labelledby="flows-tab-registry" className="space-y-4">
+          <RegistryRepoPanel />
+          <RegistryPullsPanel />
+        </div>
+      )}
 
       <FlowEditorModal
         isOpen={editorOpen}
@@ -350,10 +394,11 @@ export function AdminFlows() {
                   setRegistrySource(opt.value);
                   sourceRef.current = opt.value;
                 }}
+                aria-pressed={registrySource === opt.value}
                 className={clsx(
                   'px-2 py-0.5 rounded-full text-[11px] border transition-colors',
                   registrySource === opt.value
-                    ? 'border-brand text-ink bg-chip font-semibold'
+                    ? 'border-accent text-accent-ink bg-accent-fill font-semibold'
                     : 'border-border-soft text-ink-tertiary hover:text-ink',
                 )}
               >
@@ -423,7 +468,7 @@ function AssignmentsPanel({
   const lock = parentFlowLock(flow.source);
 
   return (
-    <div className="px-4 pb-4 pt-1 bg-chip border-t border-border-soft space-y-3">
+    <div className="px-4 pb-4 pt-1 bg-canvas border-t border-border-soft space-y-3">
       {lock.locked && (
         <p className="pt-2 text-xs text-ink-tertiary" data-testid="admin-flow-parent-lock">
           {lock.reason}
@@ -440,7 +485,7 @@ function AssignmentsPanel({
               'px-2 py-1 rounded-md text-[11px] font-semibold inline-flex items-center gap-1 ' +
               (lock.locked
                 ? 'text-ink-tertiary opacity-60 cursor-not-allowed'
-                : 'text-ink-secondary hover:bg-chip')
+                : 'text-ink-secondary hover:bg-accent-fill')
             }
             data-testid="admin-flow-edit-btn"
           >
@@ -452,7 +497,7 @@ function AssignmentsPanel({
       {/* Org-default toggle */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300">
+          <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-status-ok-bg text-status-ok-text">
             Org
           </span>
           <span className="text-xs text-ink-secondary">
@@ -463,7 +508,7 @@ function AssignmentsPanel({
           <button
             onClick={() => remove.mutate({ scope: 'org', targetId: '' })}
             disabled={remove.isPending}
-            className="text-[11px] text-rose-600 dark:text-rose-400 hover:underline"
+            className="text-[11px] text-status-danger-text hover:underline"
           >
             Clear
           </button>
@@ -471,7 +516,7 @@ function AssignmentsPanel({
           <button
             onClick={() => setOrgDefault.mutate()}
             disabled={setOrgDefault.isPending}
-            className="text-[11px] text-emerald-700 dark:text-emerald-400 font-semibold hover:underline"
+            className="text-[11px] text-accent-ink font-semibold hover:underline"
             data-testid="admin-flow-set-org-default"
           >
             Set as org default
@@ -484,8 +529,8 @@ function AssignmentsPanel({
           default, but the default is always available and locked on here. */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-300">
-            Picker
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold bg-accent-fill text-accent-ink">
+            Shown in flow picker
           </span>
           <span className="text-xs text-ink-secondary">{availability.hint}</span>
         </div>
@@ -498,8 +543,8 @@ function AssignmentsPanel({
             className={
               'text-[11px] font-semibold hover:underline ' +
               (availability.nextAvailable
-                ? 'text-teal-700 dark:text-teal-400'
-                : 'text-rose-600 dark:text-rose-400')
+                ? 'text-accent-ink'
+                : 'text-status-danger-text')
             }
             data-testid="admin-flow-toggle-availability"
           >
@@ -514,7 +559,7 @@ function AssignmentsPanel({
       <ScopeSection
         scope="repo"
         label="Repo overrides"
-        chipClass="bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300"
+        chipClass="text-ink-secondary"
         rows={assignments.filter(a => a.scope === 'repo')}
         onRemove={(targetId) => remove.mutate({ scope: 'repo', targetId })}
         onAdd={() => setAdding('repo')}
@@ -524,7 +569,7 @@ function AssignmentsPanel({
       <ScopeSection
         scope="installation"
         label="Installation overrides"
-        chipClass="bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300"
+        chipClass="text-ink-secondary"
         rows={assignments.filter(a => a.scope === 'installation')}
         onRemove={(targetId) => remove.mutate({ scope: 'installation', targetId })}
         onAdd={() => setAdding('installation')}
@@ -566,7 +611,7 @@ function ChildHubsRow({ flow, childHubs }: { flow: Flow; childHubs: ChildHubRow[
           title={gate.reason ?? undefined}
           className={
             'text-[11px] inline-flex items-center gap-1 ' +
-            (gate.allowed ? 'text-accent-text hover:underline' : 'text-ink-tertiary opacity-60 cursor-not-allowed')
+            (gate.allowed ? 'text-accent-ink hover:underline' : 'text-ink-tertiary opacity-60 cursor-not-allowed')
           }
           data-testid="admin-flow-dispatch-btn"
         >
@@ -630,14 +675,14 @@ function DispatchPicker({
         testIdPrefix="flow-dispatch"
       />
       {error && (
-        <p className="text-xs text-rose-600 dark:text-rose-400" data-testid="flow-dispatch-error">{error}</p>
+        <p className="text-xs text-status-danger-text" data-testid="flow-dispatch-error">{error}</p>
       )}
       <div className="flex justify-end">
         <button
           type="button"
           onClick={submit}
           disabled={send.isPending}
-          className="px-2.5 py-1 rounded-md bg-[image:var(--gradient-accent)] text-navy text-[11px] font-bold disabled:opacity-40"
+          className="px-2.5 py-1 rounded-md bg-brand text-navy text-[11px] font-bold disabled:opacity-40"
           data-testid="flow-dispatch-send"
         >
           {send.isPending ? 'Sending…' : 'Send'}
@@ -691,7 +736,7 @@ function FlowDispatches({
     return (
       <section className="space-y-2" data-testid="flow-dispatches">
         <h2 className="text-sm font-semibold text-ink">Dispatched to child hubs</h2>
-        <p className="text-xs text-rose-600 dark:text-rose-400" data-testid="flow-dispatches-error">
+        <p className="text-xs text-status-danger-text" data-testid="flow-dispatches-error">
           Could not load flow dispatches. Reload to try again.
         </p>
       </section>
@@ -713,18 +758,18 @@ function FlowDispatches({
   }
 
   const toneClass = (tone: string) =>
-    tone === 'ok' ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300'
-    : tone === 'error' ? 'bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300'
-    : tone === 'waiting' ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300'
-    : 'bg-chip text-ink-secondary';
+    tone === 'ok' ? 'bg-status-ok-bg text-status-ok-text'
+    : tone === 'error' ? 'bg-status-danger-bg text-status-danger-text'
+    : tone === 'waiting' ? 'bg-status-warn-bg text-status-warn-text'
+    : 'bg-canvas text-ink-secondary';
 
   return (
     <section className="space-y-2" data-testid="flow-dispatches">
       <h2 className="text-sm font-semibold text-ink">Dispatched to child hubs</h2>
       {error && (
-        <p className="text-xs text-rose-600 dark:text-rose-400" data-testid="flow-dispatches-action-error">{error}</p>
+        <p className="text-xs text-status-danger-text" data-testid="flow-dispatches-action-error">{error}</p>
       )}
-      <div className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl divide-y divide-border-soft">
+      <div className="bg-surface border border-border-soft rounded-2xl divide-y divide-border-soft">
         {dispatches.map(d => {
           const deleted = dispatchFlowDeleted(d, knownFlowIds);
           return (
@@ -732,12 +777,12 @@ function FlowDispatches({
             <div className="flex items-center gap-2 flex-wrap">
               <span className="font-semibold text-ink">{nameOf(d.flowId)}</span>
               <span className="text-[10px] text-ink-tertiary">v{d.flowVersion}</span>
-              <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-chip text-ink-secondary">
+              <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-canvas text-ink-secondary">
                 {d.scope}
               </span>
               {d.cancelledAt && (
                 <span
-                  className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-chip text-ink-tertiary"
+                  className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-canvas text-ink-tertiary"
                   data-testid={`flow-dispatch-cancelled-${d.id}`}
                 >
                   cancelled
@@ -751,7 +796,7 @@ function FlowDispatches({
                 <button
                   onClick={() => cancel.mutate(d.id)}
                   disabled={cancel.isPending && cancel.variables === d.id}
-                  className="text-[11px] text-rose-600 dark:text-rose-400 hover:underline"
+                  className="text-[11px] text-status-danger-text hover:underline"
                   data-testid={`flow-dispatch-cancel-${d.id}`}
                 >
                   Cancel
@@ -759,7 +804,7 @@ function FlowDispatches({
               )}
             </div>
             {deleted && !d.cancelledAt ? (
-              <p className="mt-1 text-xs text-rose-600 dark:text-rose-400" data-testid={`flow-dispatch-deleted-${d.id}`}>
+              <p className="mt-1 text-xs text-status-danger-text" data-testid={`flow-dispatch-deleted-${d.id}`}>
                 This flow has been deleted, so the dispatch can never land. Cancel it.
               </p>
             ) : d.targets.length === 0 ? (
@@ -808,7 +853,7 @@ function ScopeSection({
         <span className="text-[11px] font-semibold text-ink-secondary">{label}</span>
         <button
           onClick={onAdd}
-          className="text-[11px] text-accent-text hover:underline inline-flex items-center gap-1"
+          className="text-[11px] text-accent-ink hover:underline inline-flex items-center gap-1"
         >
           <Plus className="w-3 h-3" /> Add
         </button>
@@ -818,12 +863,12 @@ function ScopeSection({
       )}
       {rows.map((r) => (
         <div key={r.targetId} className="flex items-center justify-between bg-surface border border-border-soft rounded-md px-2 py-1.5">
-          <span className={'text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold ' + chipClass}>
+          <span className={'min-w-0 truncate font-mono text-[11px] ' + chipClass} title={r.remoteUrl ?? r.targetId}>
             {r.remoteUrl ?? r.targetId}
           </span>
           <button
             onClick={() => onRemove(r.targetId)}
-            className="text-ink-tertiary hover:text-rose-600 dark:hover:text-rose-400"
+            className="text-ink-tertiary hover:text-status-danger-text"
             aria-label="Remove"
           >
             <Trash2 className="w-3.5 h-3.5" />
@@ -890,7 +935,7 @@ function AddOverridePicker({
                 <button
                   disabled={taken}
                   onClick={() => onPick(o.id)}
-                  className="w-full text-left px-2 py-1 rounded-md hover:bg-chip disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="w-full text-left px-2 py-1 rounded-md hover:bg-accent-fill disabled:opacity-50 disabled:cursor-not-allowed"
                   data-testid={`admin-flow-${scope}-pick-${o.id}`}
                 >
                   <div className="text-[12px] font-mono text-ink">{o.label}</div>
@@ -971,7 +1016,7 @@ function RegistryRepoPanel() {
 
   return (
     <section
-      className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-4 space-y-3"
+      className="bg-surface border border-border-soft rounded-2xl p-4 space-y-3"
       data-testid="admin-registry-panel"
     >
       <div>
@@ -984,11 +1029,11 @@ function RegistryRepoPanel() {
 
       <div className="flex items-center gap-2 text-xs">
         <span className="text-ink-tertiary">Current:</span>
-        <code className="px-1.5 py-0.5 rounded bg-chip text-ink">{cfg?.repo ?? '…'}</code>
+        <code className="px-1.5 py-0.5 rounded bg-canvas text-ink">{cfg?.repo ?? '…'}</code>
         {cfg?.isPublic ? (
           <span className="text-ink-tertiary">(public community registry)</span>
         ) : (
-          <span className="text-emerald-600 dark:text-emerald-400">
+          <span className="text-status-ok-text">
             (org registry{cfg?.copiedAt ? ' · community flows copied' : ' · copy pending'})
           </span>
         )}
@@ -997,7 +1042,7 @@ function RegistryRepoPanel() {
       <div className="flex flex-col gap-2 sm:flex-row">
         <input
           data-testid="admin-registry-repo"
-          className="flex-1 px-2.5 py-1.5 rounded-lg bg-chip border border-border-soft text-xs text-ink"
+          className="flex-1 px-2.5 py-1.5 rounded-lg bg-canvas border border-border-soft text-xs text-ink"
           placeholder="owner/agenfk-flows"
           value={repo}
           onChange={(e) => setRepo(e.target.value)}
@@ -1006,7 +1051,7 @@ function RegistryRepoPanel() {
           <input
             data-testid="admin-registry-token"
             type="password"
-            className="flex-1 px-2.5 py-1.5 rounded-lg bg-chip border border-border-soft text-xs text-ink"
+            className="flex-1 px-2.5 py-1.5 rounded-lg bg-canvas border border-border-soft text-xs text-ink"
             placeholder={hasStoredToken ? 'token stored — blank keeps it' : 'GitHub token (contents:write)'}
             value={token}
             onChange={(e) => setToken(e.target.value)}
@@ -1015,13 +1060,13 @@ function RegistryRepoPanel() {
       </div>
 
       {error && (
-        <p className="text-xs text-rose-600 dark:text-rose-400" data-testid="admin-registry-error">
+        <p className="text-xs text-status-danger-text" data-testid="admin-registry-error">
           {error}
         </p>
       )}
 
       {movingToPublic && (
-        <p className="text-xs text-amber-700 dark:text-amber-300" data-testid="admin-registry-confirm">
+        <p className="text-xs text-status-warn-text" data-testid="admin-registry-confirm">
           {MOVE_BACK_TO_PUBLIC_CONFIRM}
         </p>
       )}
@@ -1032,12 +1077,12 @@ function RegistryRepoPanel() {
             ? `${result.copied} community flow(s) copied into ${repo.trim()}.`
             : 'Registry updated.'}
           {Array.isArray(result.failed) && result.failed.length > 0 && (
-            <span className="text-rose-600 dark:text-rose-400">
+            <span className="text-status-danger-text">
               {' '}Failed: {result.failed.join(', ')} — use Retry copy.
             </span>
           )}
           {result.truncated && (
-            <span className="text-amber-700 dark:text-amber-300">
+            <span className="text-status-warn-text">
               {' '}The source registry has more flows than one run copies — use Retry copy to continue.
             </span>
           )}
@@ -1054,7 +1099,7 @@ function RegistryRepoPanel() {
             if (movingToPublic && !window.confirm(MOVE_BACK_TO_PUBLIC_CONFIRM)) return;
             save.mutate();
           }}
-          className="px-3 py-1.5 rounded-lg bg-[image:var(--gradient-accent)] text-navy shadow-glow text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed"
+          className="px-3 py-1.5 rounded-lg bg-brand text-navy text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed"
         >
           {save.isPending ? 'Saving…' : registryConfigSaveLabel({ repo, token, hasStoredToken })}
         </button>
@@ -1071,7 +1116,7 @@ function RegistryRepoPanel() {
       </div>
 
       {save.error && (
-        <p className="text-xs text-rose-600 dark:text-rose-400" data-testid="admin-registry-save-error">
+        <p className="text-xs text-status-danger-text" data-testid="admin-registry-save-error">
           {(save.error as Error).message}
         </p>
       )}

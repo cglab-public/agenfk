@@ -55,14 +55,15 @@ describe('what a tab says', () => {
 
 describe('the colours', () => {
   it('gives failure and blocking the only saturated colours', () => {
-    expect(tabDotClass('failed')).toContain('red');
-    expect(tabDotClass('blocked')).toContain('amber');
+    // The reserved status tokens (CGLAB-434): danger for failure, warn for blocking.
+    expect(tabDotClass('failed')).toContain('status-danger');
+    expect(tabDotClass('blocked')).toContain('status-warn');
   });
 
   it('does not paint running in an alarm colour', () => {
     const running = tabDotClass('running');
-    expect(running).not.toContain('red');
-    expect(running).not.toContain('amber');
+    expect(running).not.toContain('status-danger');
+    expect(running).not.toContain('status-warn');
   });
 
   it('gives every state a class, so none renders as an invisible dot', () => {

@@ -328,10 +328,79 @@ describe('PG parity: queries + rollup', () => {
   });
   afterEach(async () => { try { await fx.db.close(); } catch { /* */ } });
 
+  it('GET /v1/people/names reads installations and recorded child-hub names on PG', async () => {
+    await fx.db.run(
+      'INSERT INTO child_people (org_id, child_hub_id, user_key, git_name, last_seen) VALUES (?, ?, ?, ?, ?)',
+      ['org', 'child-hub-1', 'hana@child.com', 'Hana Ito', '2026-05-05T10:00:00Z'],
+    );
+    const r = await supertest(fx.app).get('/v1/people/names').set('Cookie', fx.cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.names['bob@acme.com']).toBe('B');
+    expect(r.body.names['hana@child.com']).toBe('Hana Ito');
+  });
+
   it('GET /v1/users returns distinct user_keys', async () => {
     const r = await supertest(fx.app).get('/v1/users').set('Cookie', fx.cookie);
     expect(r.status).toBe(200);
     expect(r.body.map((u: any) => u.user_key).sort()).toEqual(['alice@acme.com', 'bob@acme.com']);
+  });
+
+  it('GET /v1/users counts what each person got done, on PG (story f355efe4)', async () => {
+    const r = await supertest(fx.app).get('/v1/users').set('Cookie', fx.cookie);
+    const u = Object.fromEntries((r.body as any[]).map(x => [x.user_key, x]));
+    expect(u['alice@acme.com']).toMatchObject({
+      items_closed: 1, validate_passes: 1, validate_fails: 0, prs_opened: 0, closed_daily: { '2026-05-03': 1 },
+    });
+    expect(u['bob@acme.com']).toMatchObject({ items_closed: 0, prs_opened: 1, closed_daily: {} });
+    expect(typeof u['alice@acme.com'].items_closed).toBe('number');
+  });
+
+  it('GET /v1/histogram files by an IANA zone on PG (BUG 27ede354)', async () => {
+    // alice's events are 08:00–10:00 UTC on 2026-05-03: 13:30–15:30 in Kolkata.
+    const r = await supertest(fx.app)
+      .get('/v1/histogram?bucket=hour&tz=Asia%2FKolkata&tzOffsetMin=330&users=alice@acme.com')
+      .set('Cookie', fx.cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.buckets.map((b: any) => b.time)).toEqual(['2026-05-03T13:00', '2026-05-03T14:00', '2026-05-03T15:00']);
+    // The single-offset fallback shifts by a modifier too, on PG as well.
+    const o = await supertest(fx.app).get('/v1/histogram?bucket=hour&tzOffsetMin=120&users=alice@acme.com').set('Cookie', fx.cookie);
+    expect(o.status).toBe(200);
+    expect(o.body.buckets.map((b: any) => b.time)).toEqual(['2026-05-03T10:00', '2026-05-03T11:00', '2026-05-03T12:00']);
+  });
+
+  it('GET /v1/timeline pages by cursor with a total and PR links on PG', async () => {
+    const all: string[] = [];
+    let before: string | undefined;
+    let first: any;
+    for (let i = 0; i < 10; i++) {
+      const r = await supertest(fx.app).get(`/v1/timeline?limit=1${before ? `&before=${encodeURIComponent(before)}` : ''}`).set('Cookie', fx.cookie);
+      expect(r.status).toBe(200);
+      first ??= r.body;
+      all.push(...r.body.events.map((e: any) => e.event_id));
+      before = r.body.nextBefore;
+      if (!before) break;
+    }
+    expect(first.total).toBe(4);
+    expect(typeof first.total).toBe('number');
+    expect(all.sort()).toEqual(['a1', 'a2', 'a3', 'b1']);
+    const pr = await supertest(fx.app).get('/v1/timeline?types=pr.opened').set('Cookie', fx.cookie);
+    // The fixture's remote is git@x:api.git: not github.com, so no link is guessed.
+    expect(pr.body.events[0]).toHaveProperty('pr_url', null);
+  });
+
+  it('GET /v1/users files closures by an IANA zone on PG', async () => {
+    // A close at 20:00 UTC on May 3 is 01:30 on May 4 in Kolkata: UTC filing
+    // and zone filing disagree, so this pins the zone path on PG.
+    await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).send({ events: [
+      sample({ eventId: 'z1', occurredAt: '2026-05-03T20:00:00Z', type: 'item.closed', itemId: 'zi',
+        actor: { osUser: 'zed', gitName: 'Z', gitEmail: 'zed@acme.com' } }),
+    ] });
+    const r = await supertest(fx.app).get('/v1/users?tz=Asia%2FKolkata').set('Cookie', fx.cookie);
+    expect(r.status).toBe(200);
+    const zed = (r.body as any[]).find(u => u.user_key === 'zed@acme.com');
+    expect(zed.closed_daily).toEqual({ '2026-05-04': 1 });
+    const utc = await supertest(fx.app).get('/v1/users').set('Cookie', fx.cookie);
+    expect((utc.body as any[]).find(u => u.user_key === 'zed@acme.com').closed_daily).toEqual({ '2026-05-03': 1 });
   });
 
   it('GET /v1/timeline filters by user + type', async () => {

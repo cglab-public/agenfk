@@ -2,7 +2,35 @@
 
 All notable changes to AgEnFK are documented here.
 
-## [Unreleased] — Electron desktop (CGLAB-164), continued
+## [2.0.0-beta.21] — 2026-10-02
+
+Pre-release. Beta, cumulative over `2.0.0-beta.20`: everything in beta.20 (and the `1.1.20` stable under
+it), plus the Electron desktop line (CGLAB-164) below.
+
+### New in this beta
+
+- **Project page, Cards tab.** Finished cards no longer offer Start: they say when they closed ("Done 4w ago",
+  read from the card's own history). Cards part-way through say Resume. Filters are two multi-select menus —
+  State (presets Open / In flight / Done / All above a tick per state, each counted) and Type — plus a search on
+  title or id. Open is the default, so finished cards are hidden until asked for. Long lists page 25 at a time.
+- **A card no longer closes while anything under it is unfinished.** The move that ends a card's flow is refused
+  (`CHILDREN_OPEN`, naming every open card) while a child or deeper descendant is open, judged by each card's own
+  project flow and checked again right before the write. The parent roll-up no longer closes a parent over a
+  paused or blocked child, and is released again when the last open descendant finishes.
+- **Commands a repository declares need a person's approval on the board.** A `verifyCommand` from
+  `.agenfk/project.json` runs only once approved on the project's Settings tab; approvals are pinned to a SHA-256
+  fingerprint of the exact command, and a command carrying hidden characters (bidi overrides, zero-width) is
+  refused and shown with them made visible. The CLI no longer approves. Existing approvals made before this beta
+  need approving again.
+- **Upgrades and the installer never overwrite a development checkout.** `agenfk upgrade`, the hub's
+  self-update and `install.mjs` refuse to extract a published build over a git checkout, comparing directories by
+  identity rather than by path spelling.
+- **Board date filter** (from the CGLAB-164 branch): choose Created or Updated, then a range.
+- **Settings:** the per-project "A worktree per card" setting is a real switch again.
+- **Merged onto the visual system (CGLAB-434).** The type square, the type badges, the project and card forms
+  and the board's date filter use the shared tokens; item types take their `--type-*` colours everywhere.
+
+### Earlier on this line (CGLAB-164)
 
 ### ⚠️ BREAKING — one origin: the API and the Kanban UI share a port (CGLAB-165)
 
@@ -97,6 +125,87 @@ on whatever branch you had out, with no worktree.
 - What an agent prints while it is asked for a decomposition is now on screen, stderr
   marked — "out of tokens" arrived on a stream nobody displayed — and its stdin is closed at
   launch, which is why `pi` appeared to hang forever.
+
+## [2.0.0-beta.20] — 2026-10-01
+
+Beta, cumulative over `2.0.0-beta.19`: everything in beta.19, plus the dashboard consistency work below.
+
+- **The dashboards read as one product.** Org, PR overview and the user page open with the same header, keep the
+  period in the same place, and draw every headline number the same way.
+- **One rule for dates and times.** Times show in your local zone with the UTC time on hover, dates use one
+  unambiguous format ("30 Sep 2026"), and a custom range is picked with paired From/To fields and a clear button.
+  PR overview and the activity timeline now file events under your local day by your zone's own rules, so a range
+  across a daylight-saving change is no longer an hour off. A malformed date in a shared link no longer breaks a page;
+  a shared `?from=` now means local midnight.
+- **Plain language.** Event types read as words under a few headings (Work items, Checks, Pull requests, Sessions,
+  Security, Fleet) with the raw id on hover; "Checks passed/failed" became one "Check pass rate" tile; size points say
+  what they are and link to how they are derived.
+- **Sortable, searchable tables.** Org's Users and PR overview's By developer / By model tables sort by any column;
+  Users can be searched by name or email. The user page says "Showing latest 200 of N" and loads more on request.
+- **Richer Org user rows.** Each person shows items closed, check pass rate, PRs and closures per day, computed by
+  the hub (`GET /v1/users` now returns these per person).
+- **Stat tiles filter on click.** Clicking a tile sets the Event type filter to what it counts; clicking again clears it.
+- **Readable event details.** Expanding an event on the user page shows its key fields (step change, failed checks,
+  PR, model, size, command…) with PR and JIRA links, and the raw JSON behind a toggle.
+- **Hub events carry the tracker link.** The local server now sends a linked item's tracker URL with its key, and
+  sends the key reliably (a stale cache dropped links added after an item's first event).
+- **Hub API:** `/v1/timeline` pages by cursor (`before`) and returns `total` and `pr_url`; `/v1/prs/overview`,
+  `/v1/histogram` and `/v1/users` accept `tz` (IANA zone). A repeated `tzOffsetMin` on `/v1/histogram` is now a 400.
+- **Federation:** a parent hub shows child-hub developers by name under the keep policy.
+
+## [2.0.0-beta.19] — 2026-09-30
+
+Beta, cumulative over `2.0.0-beta.18`: everything in beta.18, plus the dashboard changes below.
+
+- **Dashboards open on data, not on filters.** Org rollup, PR overview and the user page start with their filters
+  collapsed behind one summary line ("30 days · item.closed · all projects") and an Edit filters button; the period,
+  and PR overview's PR search, stay in view. Opening the filters is kept in the link (`filters=1`); an old `filters=0`
+  link still opens collapsed.
+- **Filters live in the link on every dashboard.** Org and the user page now keep their facets and period in the URL,
+  like PR overview, so a reload or a shared link shows the same view. A bare visit opens the way this browser last
+  left it; a custom date range is never carried from one person to the next.
+- **Loading and errors no longer look like an empty fleet.** Tiles, the Users list, the event list and the activity
+  timeline show a skeleton while loading instead of zeros ("0 reporting", "0 shown", "0 events"), and a failed query
+  shows the hub's reason with a Retry.
+- **People are shown by name.** The Users list, PR overview's developer table, heatmap and developer filter, and the
+  user page heading show the name from the person's installation, with the email under it; someone with no known name
+  still shows their key. New hub endpoint: `GET /v1/people/names`.
+- **Org's Users panel follows the Event type filter.** Its counts match the chart next to it and say so ("with
+  matching events"); the tiles above, which apply every filter except event type, now say that.
+- **Hub pages sit against the sidebar on wide screens** instead of floating in the middle of a large monitor.
+
+## [2.0.0-beta.18] — 2026-09-30
+
+Beta, cumulative over `2.0.0-beta.17`: everything in beta.17, plus the admin reorganisation, the card dates and the
+hook fixes below.
+
+- **The hook guards now run on Windows, and the MCP enforcer runs at all under Claude Code** (#192, #198, thanks
+  @Caldas). Claude Code runs hook commands through Git Bash; the installer registered unquoted backslash `.cmd` paths,
+  which bash cannot run, so every hook was skipped without a word. The gatekeeper and PR hook also never recognised
+  themselves as the entry script on Windows. And on every OS the enforcer read `tool` where Claude Code sends
+  `tool_name`, so its Bash/Read rules (direct database reads, `curl` to the local server) never fired: they do now.
+  The run hook, added after the fix was written, gets the same treatment, and every Claude Code hook command now comes
+  from one rule, so a new hook cannot miss it.
+- **Hub admin is grouped, with a landing page.** The rail groups the admin pages into People, Access, Fleet and Hub,
+  and `/admin` opens on an overview instead of the sign-in settings. Installations lead with the person, Flows and the
+  flow registry are separate tabs, enum values read as plain words, secrets and tokens get a copy button and a token
+  shown once warns before you leave the page, disabled sign-in providers collapse, and admin pages load and validate
+  fields the same way.
+- **A refused upgrade cancel says so on its row.** A hub error on Cancel waiting / Clear stuck used to go into the
+  issue form's banner, which is only shown while that form is open, so nothing appeared.
+- **Cards show when they were created and last updated**, on the card face and in the detail modal.
+
+## [2.0.0-beta.17] — 2026-09-30
+
+Beta, cumulative over `2.0.0-beta.16`: everything in beta.16, plus the visual system below (CGLAB-434).
+
+- **One visual system for the hub, the flow editor and the board.** Colours now come from shared tokens in
+  `packages/brand/tokens.css`: teal only for the brand mark and the one primary action on a surface, indigo for
+  selection, focus and links, muted neutral surfaces, status colours only for real state, a validated six-hue chart
+  palette and a size ramp whose ends stay visible in both themes. Item types keep their own colour everywhere.
+- **"Running" is one colour everywhere**, selected rows and tabs are visibly selected in dark mode, and dialogs,
+  dropdowns and menus are opaque instead of letting the page show through.
+- **Focus is visible on every control**, and light-mode helper text now meets 4.5:1 contrast.
 
 ## [2.0.0-beta.16] — 2026-09-30
 

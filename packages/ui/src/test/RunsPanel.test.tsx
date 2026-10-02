@@ -10,6 +10,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { RunsPanel } from '../components/RunsPanel';
 import { api } from '../api';
+import { guardTokens } from './helpers/tokenGuard';
 
 function renderPanelWithClient(itemId = 'i1') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -39,6 +40,8 @@ function renderPanel(itemId = 'i1') {
 }
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
+// CGLAB-434: every test here also proves the panel renders on tokens.
+guardTokens();
 
 describe('RunsPanel', () => {
   it('shows an empty state when there are no runs', async () => {

@@ -30,7 +30,7 @@ export function ThemeToggle() {
       title={label}
       aria-label={label}
       aria-pressed={isDark}
-      className={`${sidebarButtonClass} hover:bg-chip hover:border-border-brand hover:text-accent-text`}
+      className={`${sidebarButtonClass} hover:bg-accent-fill hover:border-accent hover:text-accent-ink`}
     >
       {isDark ? <Sun className="w-3 h-3" /> : <Moon className="w-3 h-3" />}
       <span>{isDark ? 'Light' : 'Dark'}</span>

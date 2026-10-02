@@ -23,6 +23,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { closesRun } from '../../../../bin/agenfk-run-hook.mjs';
+import { applyClaudeHooks } from '../../../../scripts/install-helpers.mjs';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
@@ -75,24 +76,20 @@ describe('the events that end a run', () => {
  * — so the `SessionEnd` branch was unreachable code and the per-turn close was
  * the only behaviour that ever ran.
  *
- * A source-level guard rather than a real install, deliberately: running the
- * installer writes into the developer's own client configuration. It reads the
- * file the way the shipped installer would be read, so a revert fails it.
+ * These run the installer's own settings merge (`applyClaudeHooks`, which
+ * install.mjs calls) against plain objects, so nothing touches the developer's
+ * client configuration and there is no copy of the logic to drift.
  */
 describe('how the installer subscribes', () => {
-  const source = (): string => {
-    const here = path.dirname(fileURLToPath(import.meta.url));
-    return fs.readFileSync(path.resolve(here, '../../../../scripts/install.mjs'), 'utf8');
-  };
-
   it('registers the run hook on SessionEnd', () => {
-    expect(source()).toContain('settings.hooks.SessionEnd.push');
+    const commands = JSON.stringify(migrate({}).hooks.SessionEnd);
+    expect(commands).toContain('agenfk-run-hook');
   });
 
   it('never registers it on Stop again', () => {
     // The regression in one assertion. Pushing the hook onto `Stop` is what
     // closed a live session's run once per turn.
-    expect(source()).not.toContain('settings.hooks.Stop.push');
+    expect(migrate({}).hooks.Stop).toBeUndefined();
   });
 
   it('removes a Stop registration left by an older install', () => {
@@ -129,18 +126,6 @@ describe('how the installer subscribes', () => {
     expect(settings.hooks.Stop).toBeUndefined();
   });
 
-  it('carries the timeout in the SHIPPED installer, not just in the copy above', () => {
-    /*
-     * The drift guard for the drift guard, and it was needed: removing
-     * `timeout` from install.mjs left the executable test below green, because
-     * that test runs a local copy of the branch. Anchoring the number in the
-     * real source is the only thing that catches a revert.
-     */
-    const at = source().indexOf('settings.hooks.SessionEnd.push');
-    expect(at).toBeGreaterThan(-1);
-    expect(source().slice(at, at + 1200)).toMatch(/timeout:\s*\d+/);
-  });
-
   it('gives the SessionEnd entry a timeout, because its budget is 1.5s', () => {
     /*
      * The finding that made this whole path nearly worthless. SessionEnd hooks
@@ -156,28 +141,10 @@ describe('how the installer subscribes', () => {
     expect(entry.hooks[0].timeout).toBeGreaterThanOrEqual(5);
   });
 
-  /**
-   * The installer's registration branch, lifted out of `install.mjs` so it can
-   * be run rather than read. Kept deliberately small and checked against the
-   * real source by the two tests above, so it cannot drift into fiction.
-   */
-  function migrate(settings: Record<string, any>): Record<string, any> {
-    const runHookDest = '/home/me/.local/bin/agenfk-run-hook';
-    settings.hooks = settings.hooks ?? {};
-    settings.hooks.SessionEnd = (settings.hooks.SessionEnd ?? []).filter(
-      (entry: unknown) => !JSON.stringify(entry).includes('agenfk-run-hook'),
-    );
-    settings.hooks.SessionEnd.push({
-      hooks: [{ type: 'command', command: `${runHookDest} --client claude-code`, timeout: 10 }],
-    });
-    if (settings.hooks.Stop) {
-      settings.hooks.Stop = settings.hooks.Stop.filter(
-        (entry: unknown) => !JSON.stringify(entry).includes('agenfk-run-hook'),
-      );
-      if (settings.hooks.Stop.length === 0) delete settings.hooks.Stop;
-    }
-    return settings;
-  }
+  // The installer's own merge, run rather than read: it lives in
+  // install-helpers.mjs, so there is no copy here to drift from install.mjs.
+  const migrate = (settings: Record<string, any>): Record<string, any> =>
+    applyClaudeHooks(settings, '/home/me/.local/bin', { platform: 'linux' });
 });
 
 describe('uninstalling', () => {

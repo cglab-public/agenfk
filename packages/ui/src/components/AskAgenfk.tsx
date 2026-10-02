@@ -282,7 +282,7 @@ export function AskAgenfk({ projectId, onCreated, onProjectAdded, onClose }: Ask
           type="button"
           data-testid="ask-add-project"
           onClick={() => { setError(null); setAdding(true); }}
-          className="shrink-0 rounded-md border border-border-brand bg-chip px-2 py-1 text-[11px] font-semibold text-accent-text"
+          className="shrink-0 rounded-md border border-accent bg-accent-fill px-2 py-1 text-[11px] font-semibold text-accent-ink"
         >
           ＋ Add project
         </button>
@@ -318,7 +318,7 @@ export function AskAgenfk({ projectId, onCreated, onProjectAdded, onClose }: Ask
           value={objective}
           onChange={e => setObjective(e.target.value)}
           placeholder="Port the admin API to horizon-lab, private subnets, keep the public gateway"
-          className="mt-1 w-full rounded-xl border border-border-soft bg-surface px-4 py-2 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-brand"
+          className="mt-1 w-full rounded-xl border border-border-soft bg-surface px-4 py-2 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-focus-ring"
         />
       </div>
 
@@ -364,7 +364,7 @@ export function AskAgenfk({ projectId, onCreated, onProjectAdded, onClose }: Ask
               setRunning(false);
             }
           }}
-          className="rounded-lg border border-border-brand bg-chip px-3 py-1.5 text-xs font-semibold text-accent-text disabled:opacity-50"
+          className="rounded-lg border border-accent bg-accent-fill px-3 py-1.5 text-xs font-semibold text-accent-ink disabled:opacity-50"
         >
           {running ? 'Asking the agent…' : 'Propose the decomposition'}
         </button>
@@ -379,7 +379,7 @@ export function AskAgenfk({ projectId, onCreated, onProjectAdded, onClose }: Ask
           {objective.trim() ? seedCommand(objective) : 'agenfk analyze "<objective>" --proposal'}
         </pre>
         {running && (
-          <p data-testid="ask-running" className="mt-2 text-[11px] text-accent-text">
+          <p data-testid="ask-running" className="mt-2 text-[11px] text-accent-ink">
             The agent is working on it. This takes as long as it takes — the proposal appears below.
           </p>
         )}
@@ -404,7 +404,7 @@ export function AskAgenfk({ projectId, onCreated, onProjectAdded, onClose }: Ask
         )}
         {contract && !running && (
           <>
-            <p data-testid="ask-copied" className="mt-2 text-[11px] text-accent-text">
+            <p data-testid="ask-copied" className="mt-2 text-[11px] text-accent-ink">
               {copied ? 'Copied. Paste it into your agent, then bring the answer back below.'
                       : 'Hand this to your agent, then bring the answer back below.'}
             </p>
@@ -443,8 +443,8 @@ export function AskAgenfk({ projectId, onCreated, onProjectAdded, onClose }: Ask
             const pasted = e.clipboardData?.getData('text') ?? '';
             if (pasted.trim()) window.setTimeout(() => void review(pasted), 0);
           }}
-          className={`mt-1 min-h-[120px] w-full rounded-xl border px-4 py-3 font-mono text-xs text-ink focus:outline-none focus:ring-2 focus:ring-brand ${
-            running ? 'agent-sweep cursor-wait border-border-brand bg-canvas' : 'border-border-soft bg-surface'
+          className={`mt-1 min-h-[120px] w-full rounded-xl border px-4 py-3 font-mono text-xs text-ink focus:outline-none focus:ring-2 focus:ring-focus-ring ${
+            running ? 'agent-sweep cursor-wait border-accent bg-canvas' : 'border-border-soft bg-surface'
           }`}
           placeholder={running
             ? `Asking ${agentId || 'the agent'}…`
@@ -531,9 +531,9 @@ export function AskAgenfk({ projectId, onCreated, onProjectAdded, onClose }: Ask
               thing a person cannot see. */}
           <p data-testid="ask-gate" className="text-xs text-ink-secondary">
             Nothing has been written.{' '}
-            <span className="font-mono font-bold text-accent-text">{creatable}</span>{' '}
+            <span className="font-mono font-bold text-accent-ink">{creatable}</span>{' '}
             {creatable === 1 ? 'card' : 'cards'} will be created in{' '}
-            <span className="font-mono font-bold text-accent-text">TODO</span>. None of them starts
+            <span className="font-mono font-bold text-accent-ink">TODO</span>. None of them starts
             until you move it.
             {blocked > 0 && (
               <span data-testid="ask-blocked"> {blocked} {blocked === 1 ? 'row has' : 'rows have'} a

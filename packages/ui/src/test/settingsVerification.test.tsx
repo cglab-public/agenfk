@@ -12,6 +12,7 @@ import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SettingsPanel } from '../components/SettingsPanel';
 import { api } from '../api';
+import { guardTokens } from './helpers/tokenGuard';
 
 const STORED = vi.hoisted(() => ({ tmuxByDefault: false, attentionAlerts: true, attentionSound: true, soundTiming: 'unfocused' as const, osNotifications: true, maxConcurrentSuiteRuns: 0 }));
 vi.mock('../api', () => ({
@@ -28,6 +29,8 @@ vi.mock('../api', () => ({
   },
 }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
+// CGLAB-434: every test here also proves the panel renders on tokens.
+guardTokens();
 
 const renderPanel = () => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -61,5 +64,16 @@ describe('Settings: Verification', () => {
     fireEvent.change(select, { target: { value: '3' } });
     fireEvent.change(select, { target: { value: '0' } });
     await waitFor(() => expect(api.updateSettings).toHaveBeenLastCalledWith({ maxConcurrentSuiteRuns: 0 }));
+  });
+});
+
+describe('Settings: Account (CGLAB-434)', () => {
+  it('renders the initials avatar of an account with no picture on tokens', async () => {
+    vi.mocked(api.getGitHubAccount).mockResolvedValue({
+      connected: true, login: 'leozin', name: 'Leonardo Rosa', email: null, avatarUrl: null,
+    } as never);
+    renderPanel();
+    fireEvent.click(await screen.findByRole('button', { name: /^Account$/ }));
+    expect(await screen.findByText('LR')).toBeTruthy();
   });
 });

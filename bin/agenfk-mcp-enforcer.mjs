@@ -121,7 +121,10 @@ if (!toolIntent) process.exit(0);
 // If user has explicitly approved fallback, allow bypass for this window
 if (isFallbackApproved()) process.exit(0);
 
-const tool = toolIntent.tool || '';
+// Claude Code (and Codex) send the tool as `tool_name`; `tool` is kept for
+// clients/tests that use the older shape. Reading only `tool` meant no rule
+// ever fired under Claude Code.
+const tool = toolIntent.tool_name || toolIntent.tool || '';
 const input = toolIntent.tool_input || {};
 
 // ── Bash tool checks ──────────────────────────────────────────────────────────

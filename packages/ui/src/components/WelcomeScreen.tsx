@@ -65,9 +65,9 @@ export function WelcomeScreen({ actions }: WelcomeScreenProps): React.ReactEleme
             <button
               type="button"
               onClick={action.onSelect}
-              className="group flex w-full items-start gap-3 rounded-lg border border-transparent px-4 py-3 text-left transition-colors hover:border-border-soft hover:bg-nav-surface focus-visible:border-brand focus-visible:outline-none"
+              className="group flex w-full items-start gap-3 rounded-lg border border-transparent px-4 py-3 text-left transition-colors hover:border-border-soft hover:bg-nav-surface focus-visible:border-accent focus-visible:outline-none"
             >
-              <action.Icon size={18} className="mt-0.5 shrink-0 text-ink-tertiary transition-colors group-hover:text-brand" />
+              <action.Icon size={18} className="mt-0.5 shrink-0 text-ink-tertiary transition-colors group-hover:text-accent-ink" />
               <span className="min-w-0">
                 <span className="block text-sm font-medium text-ink">{action.label}</span>
                 {/* Says what the action DOES, not what it is called again. The

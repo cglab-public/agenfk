@@ -29,8 +29,8 @@ import { CARD_STATE_LABEL, type CardState } from '../cardState';
  * default is not something a reader of this file — or of the row — can see.
  */
 const MARK: Record<CardState, string> = {
-  working: 'bg-emerald-500 ring-2 ring-emerald-500/20 animate-pulse motion-reduce:animate-none',
-  'needs-person': 'border-2 border-amber-500 bg-transparent',
+  working: 'bg-status-ok-text ring-2 ring-status-ok-text/40 animate-pulse motion-reduce:animate-none',
+  'needs-person': 'border-2 border-status-warn-text bg-transparent',
   quiet: 'border border-ink-tertiary/50 bg-transparent',
 };
 

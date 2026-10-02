@@ -107,13 +107,13 @@ function SettingRow({
           <p className="mt-1.5 text-[12px] leading-snug text-ink-tertiary">{meta}</p>
         )}
         {note && (
-          // A light/dark PAIR, like every other warning in this app.
-          // text-amber-400 alone is roughly 1.6:1 on the light theme's
+          // The warn status token, which carries its own light/dark values: the
+          // raw amber this replaced was roughly 1.6:1 on the light theme's
           // near-white card, which made the one message that says "sessions
           // will not survive quitting" unreadable for light-theme users.
           <p
             data-testid="setting-note"
-            className="mt-1.5 text-[12px] leading-snug text-amber-600 dark:text-amber-400"
+            className="mt-1.5 text-[12px] leading-snug text-status-warn-text"
           >
             {note}
           </p>
@@ -144,7 +144,7 @@ function RowButton({
         'disabled:cursor-not-allowed disabled:opacity-50',
         busy && 'cursor-wait',
         primary
-          ? 'border-border-brand bg-chip text-accent-text hover:bg-brand/15'
+          ? 'border-accent bg-accent-fill text-accent-ink hover:bg-accent/25'
           : 'border-border-soft bg-canvas text-ink-secondary hover:bg-nav-surface hover:text-ink',
       )}
     >
@@ -176,8 +176,8 @@ function Alert({
       className={clsx(
         'mt-6 rounded-lg border px-3 py-2 text-[12px]',
         tone === 'warning'
-          ? 'border-amber-600/40 bg-amber-500/10 text-amber-700 dark:text-amber-300'
-          : 'border-rose-600/40 bg-rose-500/10 text-rose-700 dark:text-rose-300',
+          ? 'border-status-warn-text/40 bg-status-warn-bg text-status-warn-text'
+          : 'border-status-danger-text/40 bg-status-danger-bg text-status-danger-text',
       )}
     >
       {children}
@@ -268,8 +268,8 @@ function HerdrRows(): React.ReactElement {
    * rendered in the inherited colour and been indistinguishable from the
    * healthy case. The convention this file already uses sits 145 lines up.
    */
-  const toneClass = d?.tone === 'warn' ? 'text-amber-600 dark:text-amber-400'
-    : d?.tone === 'good' ? 'text-accent-text' : 'text-ink-tertiary';
+  const toneClass = d?.tone === 'warn' ? 'text-status-warn-text'
+    : d?.tone === 'good' ? 'text-accent-ink' : 'text-ink-tertiary';
 
   return (
     <>
@@ -315,7 +315,7 @@ function HerdrRows(): React.ReactElement {
                   <span className="text-ink-secondary">{row.dir}</span>
                   <span className="text-ink-tertiary"> · {row.panes} pane{row.panes === 1 ? '' : 's'}</span>
                   {row.needsAPerson > 0 && (
-                    <span className="text-amber-600 dark:text-amber-400"> · {row.needsAPerson} waiting on a person</span>
+                    <span className="text-status-warn-text"> · {row.needsAPerson} waiting on a person</span>
                   )}
                 </span>
               ))}
@@ -581,7 +581,7 @@ export function SettingsPanel(): React.ReactElement {
               /* Initials, not a broken-image glyph. A packaged app is opened
                  offline and a new account has no avatar at all; two letters
                  beside somebody's name are better than a torn-paper icon. */
-              <span className="grid h-10 w-10 place-items-center rounded-full bg-[image:var(--gradient-accent)] text-[13px] font-bold text-navy">
+              <span className="grid h-10 w-10 place-items-center rounded-full bg-accent-fill text-[13px] font-bold text-accent-ink">
                 {initials(account.data.name, account.data.login)}
               </span>
             )}
@@ -645,7 +645,7 @@ export function SettingsPanel(): React.ReactElement {
           lead={updateState === 'current' ? (
             <span
               aria-hidden
-              className="grid h-6 w-6 place-items-center rounded-lg border border-border-brand bg-chip text-[13px] font-bold text-accent-text"
+              className="grid h-6 w-6 place-items-center rounded-lg border border-accent bg-accent-fill text-[13px] font-bold text-accent-ink"
             >
               ✓
             </span>
@@ -936,8 +936,8 @@ export function SettingsPanel(): React.ReactElement {
             className={clsx(
               'mb-0.5 flex w-full items-center rounded-md px-3 py-1.5 text-left text-[13px] transition-colors',
               section.id === shown.id
-                ? 'bg-canvas font-medium text-ink'
-                : 'text-ink-secondary hover:bg-canvas hover:text-ink',
+                ? 'bg-accent-fill font-medium text-accent-ink'
+                : 'text-ink-secondary hover:bg-nav-surface hover:text-ink',
             )}
           >
             {/* Decorative: the button's text already names the section, and a

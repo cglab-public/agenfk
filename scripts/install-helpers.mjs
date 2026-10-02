@@ -1,6 +1,7 @@
 import { existsSync, statSync } from 'fs';
 import os from 'os';
 import path from 'path';
+import { HOOK_VARIANTS } from './uninstall-helpers.mjs';
 
 // Pure, side-effect-free helpers extracted from install.mjs / bin/agenfk.js so the
 // install-flow decision logic can be unit-tested as real behavior (issue #86).
@@ -35,6 +36,130 @@ export function resolveRulesScope({ rulesScopeArg, envScope, existingScope, isTT
   // The default in both cases is 'global' (used directly when non-interactive,
   // and as the default answer when interactive).
   return { scope: 'global', shouldPrompt: Boolean(isTTY) };
+}
+
+// --- Windows hook commands under Git Bash (issue #192) ---------------------
+//
+// Claude Code hands a hook `command` to `bash -c` (Git Bash on Windows). An
+// unquoted `C:\Users\x\.local\bin\agenfk-*.cmd` loses every backslash to bash's
+// escape handling and fails "command not found" -- non-blocking, so the guard is
+// silently skipped. The command must be a quoted, forward-slash path to the
+// extensionless `#!/bin/sh` wrapper (a `.cmd` cannot be run by bash anyway).
+
+// Forward-slash form of a path; safe inside bash and accepted by Windows APIs.
+export function toBashPath(p) {
+  return String(p).replace(/\\/g, '/');
+}
+
+// The hook `command` string to register for Claude Code. `destBase` is the
+// extensionless path (e.g. ~/.local/bin/agenfk-mcp-enforcer); `args` is appended
+// outside the quotes. Off Windows the plain path is kept as-is.
+export function buildClaudeHookCommand(destBase, { platform = process.platform, args = '' } = {}) {
+  const suffix = args ? ` ${args}` : '';
+  if (platform === 'win32') return `"${toBashPath(destBase)}"${suffix}`;
+  return `${destBase}${suffix}`;
+}
+
+// Body of the extensionless POSIX wrapper that forwards to a hook's .mjs. The
+// .mjs path uses forward slashes so no backslash survives anywhere in the chain.
+export function buildPosixWrapper(mjsPath) {
+  return `#!/bin/sh\nexec node "${toBashPath(mjsPath)}" "$@"\n`;
+}
+
+// Every Claude Code hook command the installer registers, keyed by hook name.
+// Deriving the keys from HOOK_VARIANTS is the point: agenfk-run-hook (CGLAB-177)
+// was added after #192 was fixed and registered as a bare `.cmd` path, which Git
+// Bash cannot run. A hook added to HOOK_VARIANTS now gets the same command shape
+// or fails the test for this table.
+const CLAUDE_HOOK_ARGS = {
+  'agenfk-pr-hook': '--client claude-code',
+  'agenfk-run-hook': '--client claude-code',
+};
+
+export function claudeHookCommands(localBinDir, { platform = process.platform } = {}) {
+  const join = (name) => (platform === 'win32' ? path.win32 : path.posix).join(localBinDir, name);
+  return Object.fromEntries(HOOK_VARIANTS.map((name) => [
+    name,
+    buildClaudeHookCommand(join(name), { platform, args: CLAUDE_HOOK_ARGS[name] ?? '' }),
+  ]));
+}
+
+// Merge the agenfk hooks into a Claude Code settings object. Pure, so the win32
+// command shape can be tested on any OS: the installer only ever runs on the
+// host platform, and on POSIX a hand-built command and the table's are the same
+// string. Existing agenfk entries are replaced, never duplicated, so an upgrade
+// over the old bare `.cmd` registrations leaves one of each.
+export function applyClaudeHooks(settings, localBinDir, { platform = process.platform } = {}) {
+  const claudeHookCmd = claudeHookCommands(localBinDir, { platform });
+  if (!settings.hooks) settings.hooks = {};
+  if (!settings.hooks.PreToolUse) settings.hooks.PreToolUse = [];
+  
+  settings.hooks.PreToolUse = settings.hooks.PreToolUse.filter(entry =>
+      !JSON.stringify(entry).includes('agenfk-gatekeeper') &&
+      !JSON.stringify(entry).includes('agenfk-mcp-enforcer')
+  );
+
+  settings.hooks.PreToolUse.push({
+      matcher: 'Edit|Write|NotebookEdit',
+      hooks: [{ type: 'command', command: claudeHookCmd['agenfk-gatekeeper'] }]
+  });
+
+  settings.hooks.PreToolUse.push({
+      matcher: 'Bash|Read',
+      hooks: [{ type: 'command', command: claudeHookCmd['agenfk-mcp-enforcer'] }]
+  });
+
+  // PostToolUse hook for PR sizing (fires on Bash so it can react to
+  // `gh pr create` and `git push`).
+  if (!settings.hooks.PostToolUse) settings.hooks.PostToolUse = [];
+  settings.hooks.PostToolUse = settings.hooks.PostToolUse.filter(entry =>
+      !JSON.stringify(entry).includes('agenfk-pr-hook') &&
+      !JSON.stringify(entry).includes('agenfk-run-hook')
+  );
+  settings.hooks.PostToolUse.push({
+      matcher: 'Bash',
+      hooks: [{ type: 'command', command: claudeHookCmd['agenfk-pr-hook'] }]
+  });
+  // Records tool calls as agent-run events (CGLAB-177). Matches the tools
+  // worth a transcript line; the hook itself filters further and never
+  // blocks, so a slow or absent server costs nothing.
+  settings.hooks.PostToolUse.push({
+      matcher: 'Bash|Edit|Write|NotebookEdit|Task|WebFetch',
+      hooks: [{ type: 'command', command: claudeHookCmd['agenfk-run-hook'] }]
+  });
+  // Closes the run when the session ends. Without this every run the
+  // hook opens stays `running` with no endedAt forever — the sessions
+  // rail shows work that finished weeks ago as still in flight, and the
+  // states that need a run to reach an outcome are unreachable.
+  //
+  // SessionEnd, NOT Stop. `Stop` is a per-TURN hook — it fires each time
+  // the assistant finishes answering, and can block "the turn from
+  // ending" — so registering it there closed the run after the first
+  // turn of a live session and, because closing drops the cache entry,
+  // made the next tool call open a brand new run. One session became
+  // dozens. See `closesRun` in bin/agenfk-run-hook.mjs.
+  settings.hooks.SessionEnd = (settings.hooks.SessionEnd ?? []).filter(
+      entry => !JSON.stringify(entry).includes('agenfk-run-hook'),
+  );
+  settings.hooks.SessionEnd.push({
+      // An explicit timeout, and it is NOT belt-and-braces. SessionEnd
+      // hooks are given a far tighter budget than every other event —
+      // 1.5 seconds against ten minutes — and the per-hook `timeout`
+      // field (in seconds) is the only way to raise it. Without this the
+      // close has to finish node startup and a PATCH inside 1.5s, and a
+      // slow local server eats the whole budget silently, which is the
+      // exact failure closing on SessionEnd was meant to fix.
+      hooks: [{ type: 'command', command: claudeHookCmd['agenfk-run-hook'], timeout: 10 }]
+  });
+  // Remove the old registration from anyone who installed before the fix,
+  // or the per-turn close keeps happening beside the correct one.
+  if (settings.hooks.Stop) {
+      settings.hooks.Stop = settings.hooks.Stop.filter(
+          entry => !JSON.stringify(entry).includes('agenfk-run-hook'),
+      );
+      if (settings.hooks.Stop.length === 0) delete settings.hooks.Stop;
+  }
+  return settings;
 }
 
 // Build a valid Codex CLI hooks.json config that registers the AgEnFK PR-sizing

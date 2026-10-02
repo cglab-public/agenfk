@@ -36,10 +36,10 @@ import { DiffModal } from './DiffModal';
 
 /** Colour carries the kind, and the letter carries it again for greyscale. */
 const STATE_MARK: Record<string, { letter: string; className: string }> = {
-  added: { letter: 'A', className: 'text-emerald-600 dark:text-emerald-400' },
-  modified: { letter: 'M', className: 'text-amber-600 dark:text-amber-400' },
-  deleted: { letter: 'D', className: 'text-rose-600 dark:text-rose-400' },
-  renamed: { letter: 'R', className: 'text-sky-600 dark:text-sky-400' },
+  added: { letter: 'A', className: 'text-status-ok-text' },
+  modified: { letter: 'M', className: 'text-status-warn-text' },
+  deleted: { letter: 'D', className: 'text-status-danger-text' },
+  renamed: { letter: 'R', className: 'text-status-info-text' },
   untracked: { letter: '?', className: 'text-ink-tertiary' },
 };
 
@@ -82,7 +82,7 @@ export function WorktreePanel({ itemId }: {
             className={clsx(
               'flex-1 px-3 py-1.5 font-mono text-[10px] font-bold uppercase tracking-wide transition-colors',
               view === v
-                ? 'border-b-2 border-brand text-ink'
+                ? 'border-b-2 border-accent text-ink'
                 : 'border-b-2 border-transparent text-ink-tertiary hover:text-ink-secondary',
             )}
           >
@@ -95,7 +95,7 @@ export function WorktreePanel({ itemId }: {
         {isError && (
           <div
             role="alert"
-            className="m-3 rounded-lg border border-amber-600/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300"
+            className="m-3 rounded-lg border border-status-warn-text/40 bg-status-warn-bg px-3 py-2 text-[11px] text-status-warn-text"
           >
             Could not read the worktree. It may not exist yet, or it is not a
             git repository.

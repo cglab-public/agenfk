@@ -175,10 +175,12 @@ describe('the browser board reaches Settings (7b640e64)', () => {
     const backdrop = await screen.findByRole('dialog', { name: /settings/i });
     const panel = backdrop.firstElementChild as HTMLElement;
     for (const c of ['bg-black/50', 'backdrop-blur-sm']) expect(backdrop).toHaveClass(c);
-    for (const c of ['bg-white', 'dark:bg-slate-900', 'border', 'border-slate-200', 'dark:border-slate-700', 'shadow-2xl']) {
+    // CGLAB-434: the raised-surface token, which sits a step above the board's canvas in both themes.
+    for (const c of ['bg-surface', 'border', 'border-slate-200', 'dark:border-slate-700', 'shadow-2xl']) {
       expect(panel).toHaveClass(c);
     }
     expect(panel).not.toHaveClass('bg-canvas'); // the board's own colour
+    expect(panel.className).not.toMatch(/(?:^|\s)dark:bg-/); // a dark twin would override the token
   });
 
   it('the sections not shown cannot be reached: hidden from assistive tech and inert', async () => {

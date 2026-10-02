@@ -23,6 +23,10 @@ import { MemoryRouter, useSearchParams } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PrOverviewPage } from '../pages/PrOverview';
 import { api } from '../api';
+import { withFiltersOpen } from './filtersOpen';
+
+/** The bar's one-line summary (always shown, collapsed or open). */
+const summaryLine = () => (document.querySelector('[data-filter-summary]')?.textContent ?? '');
 
 vi.mock('../api', () => ({ api: { get: vi.fn() } }));
 const get = api.get as unknown as ReturnType<typeof vi.fn>;
@@ -90,7 +94,7 @@ const mount = (entry: string) => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={[entry]}>
+      <MemoryRouter initialEntries={[withFiltersOpen(entry)]}>
         <PrOverviewPage />
         <UrlProbe />
       </MemoryRouter>
@@ -173,12 +177,13 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers(); get.mockReset(); });
 
 describe('PR Overview PR-number search box', () => {
-  it('renders the search inside the Filters accordion', async () => {
-    renderPage();
+  it('keeps the search in view with the filters folded, but out of the header', async () => {
+    renderPage('/prs?filters=0');
     const box = await screen.findByRole('textbox', { name: /PR number/i });
-    // The user's call: the search is a filter, so it sits with the other
-    // filters — not in the header, where it would read as a page-level nav.
-    expect(box.closest('#pr-overview-filters-body')).not.toBeNull();
+    // It outranks the facets, so it is not inside the collapsed fold…
+    expect(box.closest('[hidden]')).toBeNull();
+    // …but it is still a filter, not page-level navigation (the user's call).
+    expect(box.closest('header')).toBeNull();
   });
 
   it('writes the number to the URL, so the view is shareable', async () => {
@@ -331,7 +336,7 @@ describe('Superseded controls read as inactive', () => {
     });
     render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <MemoryRouter initialEntries={['/prs?pr=57']}>
+        <MemoryRouter initialEntries={[withFiltersOpen('/prs?pr=57')]}>
           <PrOverviewPage />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -354,9 +359,9 @@ describe('Superseded controls read as inactive', () => {
 
 describe('PR search and the collapsed filter bar', () => {
   it('counts as an active filter, so a collapsed bar cannot hide that it applies', async () => {
-    renderPage('/prs?pr=57');
+    renderPage('/prs?pr=57&filters=0');
     await waitFor(() => expect(screen.getByText('1 active')).toBeInTheDocument());
-    expect(screen.getByText(/PR #57/)).toBeInTheDocument();
+    expect(summaryLine()).toMatch(/^PR #57/);
   });
 
   it('does not count the superseded facets alongside it', async () => {
@@ -369,7 +374,7 @@ describe('PR search and the collapsed filter bar', () => {
   it('keeps the search applied while the bar is collapsed', async () => {
     renderPage('/prs?pr=57&filters=0');
     await waitFor(() => expect(searchQuery()).not.toBeNull());
-    expect(screen.getByRole('button', { name: /Filters/ })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByRole('button', { name: 'Edit filters' })).toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByText('1 active')).toBeInTheDocument();
   });
 });
@@ -394,7 +399,7 @@ describe('Project stays live under the search', () => {
     });
     render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <MemoryRouter initialEntries={['/prs?pr=57']}>
+        <MemoryRouter initialEntries={[withFiltersOpen('/prs?pr=57')]}>
           <PrOverviewPage />
           <UrlProbe />
         </MemoryRouter>
@@ -434,7 +439,7 @@ describe('PR search result state', () => {
     });
     render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <MemoryRouter initialEntries={['/prs?pr=57']}>
+        <MemoryRouter initialEntries={[withFiltersOpen('/prs?pr=57')]}>
           <PrOverviewPage />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -487,7 +492,7 @@ describe('PR search result state', () => {
     });
     render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <MemoryRouter initialEntries={['/prs?pr=57']}>
+        <MemoryRouter initialEntries={[withFiltersOpen('/prs?pr=57')]}>
           <PrOverviewPage />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -522,12 +527,10 @@ describe('Superseded selections stay out of the badge and the summary', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'glm-5.2' }));
 
     await waitFor(() => expect(screen.getByText('2 active')).toBeInTheDocument());
-    // The summary chips render only while the bar is collapsed (`{!open && …}`),
-    // so collapse it to read what the badge is summarising. Singular copy here:
-    // with `size === 1` inverted this reads "1 developers".
-    fireEvent.click(screen.getByRole('button', { name: /Filters/ }));
-    expect(screen.getByText('1 developer')).toBeInTheDocument();
-    expect(screen.getByText('1 model')).toBeInTheDocument();
+    // The summary line is always shown. Singular copy here: with `size === 1`
+    // inverted this reads "1 developers".
+    expect(summaryLine()).toMatch(/· 1 developer ·/);
+    expect(summaryLine()).toMatch(/· 1 model$/);
   });
 
   it('pluralises the summary for two selected models', async () => {
@@ -539,8 +542,7 @@ describe('Superseded selections stay out of the badge and the summary', () => {
     // One filter, two selections — the badge counts filters, not picks.
     await waitFor(() => expect(screen.getByText('1 active')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole('button', { name: /Filters/ }));
-    await waitFor(() => expect(screen.getByText('2 models')).toBeInTheDocument());
+    await waitFor(() => expect(summaryLine()).toMatch(/· 2 models$/));
   });
 
   it('drops both from the badge and the summary the moment a search takes over', async () => {
@@ -557,12 +559,8 @@ describe('Superseded selections stay out of the badge and the summary', () => {
     fireEvent.change(searchBox(), { target: { value: '57' } });
 
     await waitFor(() => expect(screen.getByText('1 active')).toBeInTheDocument());
-    fireEvent.click(screen.getByRole('button', { name: /Filters/ }));
-    // The page title names the PR too, so this is a count rather than a
-    // single-element lookup.
-    expect(screen.getAllByText('PR #57').length).toBeGreaterThan(0);
-    expect(screen.queryByText('1 developer')).not.toBeInTheDocument();
-    expect(screen.queryByText('1 model')).not.toBeInTheDocument();
+    expect(summaryLine()).toMatch(/^PR #57/);
+    expect(summaryLine()).not.toMatch(/developer|model/);
   });
 });
 
@@ -589,7 +587,7 @@ describe('Licence-weight chips follow the same disable rule', () => {
     });
     render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <MemoryRouter initialEntries={['/prs?pr=57']}>
+        <MemoryRouter initialEntries={[withFiltersOpen('/prs?pr=57')]}>
           <PrOverviewPage />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -657,7 +655,7 @@ describe('Search URL and axis stay honest', () => {
     });
     render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <MemoryRouter initialEntries={['/prs?pr=57']}>
+        <MemoryRouter initialEntries={[withFiltersOpen('/prs?pr=57')]}>
           <PrOverviewPage />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -765,7 +763,8 @@ describe('Copy tracks the data, not the request', () => {
 
     fireEvent.change(searchBox(), { target: { value: '57' } });
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument(), { timeout: 2500 });
-    expect(screen.getByRole('alert')).toHaveTextContent(/Could not load this overview/);
+    // The hub's own reason, not a generic line (QueryState).
+    expect(screen.getByRole('alert')).toHaveTextContent(/scan timed out/);
     // …and the failed search does not leave the PREVIOUS answer sitting there
     // looking like the answer to the new one. Verified, not assumed: v5 drops the
     // placeholder across an error, so the stale KPI strip is gone.
@@ -895,7 +894,7 @@ describe('Superseded facets stay on screen', () => {
     });
     render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <MemoryRouter initialEntries={['/prs?pr=999&model=glm-5.2&developers=alice@acme.com']}>
+        <MemoryRouter initialEntries={[withFiltersOpen('/prs?pr=999&model=glm-5.2&developers=alice@acme.com')]}>
           <PrOverviewPage />
         </MemoryRouter>
       </QueryClientProvider>,
@@ -926,7 +925,7 @@ describe('Superseded facets stay on screen', () => {
     });
     render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <MemoryRouter initialEntries={['/prs?pr=57&developers=carol@acme.com']}>
+        <MemoryRouter initialEntries={[withFiltersOpen('/prs?pr=57&developers=carol@acme.com')]}>
           <PrOverviewPage />
         </MemoryRouter>
       </QueryClientProvider>,

@@ -32,7 +32,7 @@ export function BoardSettingsDialog({ onClose }: { onClose: () => void }): React
         // 35e1fe96: the tallest section's height, capped at the viewport - the panel's body scrolls, not the dialog.
         // d8bda14f: the Org Flows picker's frame. bg-canvas is the board's own colour, and in dark mode
         // its 10% border-soft outline left no visible edge.
-        className="relative flex max-h-full w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900"
+        className="relative flex max-h-full w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-surface shadow-2xl dark:border-slate-700"
         onClick={e => e.stopPropagation()}
       >
         <button

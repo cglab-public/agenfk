@@ -10,8 +10,11 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { FleetSheet, type FleetSheetItem, type FleetSheetProps } from '../components/FleetSheet';
+import { guardTokens } from './helpers/tokenGuard';
 
 afterEach(cleanup);
+// CGLAB-434: every test here also proves the panel renders on tokens.
+guardTokens();
 
 const OK: FleetSheetProps['depth'] = { allowed: true, reason: null };
 const epic: FleetSheetItem = { id: 'epic', title: 'The epic', status: 'IN_PROGRESS' };

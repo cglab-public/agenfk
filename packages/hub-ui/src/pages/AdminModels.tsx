@@ -8,10 +8,11 @@ import {
 } from './modelMappings';
 import { ModelMetaRow } from './adminModelMeta';
 import { ModelTable } from '../components/ModelTable';
+import { buttonClass, cardClass, controlClass } from '../components/ui';
 
-const inputCls = 'w-full px-3 py-2 rounded-lg border border-border-soft bg-chip text-ink dark:text-white text-sm placeholder:text-ink-tertiary focus:outline-none focus:ring-2 focus:ring-brand';
-const cardCls = 'bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5';
-const primaryBtnCls = 'px-4 py-2 rounded-lg bg-[image:var(--gradient-accent)] text-navy shadow-glow disabled:opacity-50 text-sm font-bold transition-colors';
+const inputCls = controlClass;
+const cardCls = cardClass;
+const primaryBtnCls = buttonClass('primary');
 
 interface ModelsResponse {
   mappings: MappingRow[];
@@ -135,7 +136,7 @@ export function AdminModels() {
         </datalist>
 
         {error && (
-          <p role="alert" className="mt-2 text-xs font-semibold text-red-600 dark:text-red-400">{error}</p>
+          <p role="alert" className="mt-2 text-xs font-semibold text-status-danger-text">{error}</p>
         )}
         {suggestions.length > 0 && !error && (
           <p className="mt-2 text-[11px] text-ink-tertiary">

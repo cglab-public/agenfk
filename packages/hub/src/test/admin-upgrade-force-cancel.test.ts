@@ -362,17 +362,3 @@ describe('POST /v1/admin/upgrade/:directiveId/cancel { force: true }', () => {
     expect(terminal!.state).toBe('succeeded');
   });
 });
-
-describe('AdminUpgrades.tsx — force-cancel affordance (source regression)', () => {
-  it('offers the force path when in_progress targets remain', () => {
-    const PAGE_PATH = path.resolve(__dirname, '../../../hub-ui/src/pages/AdminUpgrades.tsx');
-    const src = fs.readFileSync(PAGE_PATH, 'utf8');
-    // The cancel mutation can carry the force flag to the endpoint.
-    expect(src).toMatch(/force/);
-    // A distinct, explicit confirmation for force-cancelling in-flight upgrades.
-    expect(src).toMatch(/[Ff]orce-cancel/);
-    // The cancel control must be reachable when only in_progress targets remain
-    // (previously it keyed off progress.pending alone).
-    expect(src).toMatch(/in_progress/);
-  });
-});

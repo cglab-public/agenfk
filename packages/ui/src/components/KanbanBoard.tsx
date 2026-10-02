@@ -41,6 +41,7 @@ import { useTheme } from '../ThemeContext';
 import { Logo } from './Logo';
 import { capture } from '../posthog';
 import { calculateCost, formatCost, calculateCycleTimeMs, formatDuration } from '../utils';
+import { cardShortDate, cardAgo, cardFullTimestamp } from '../cardDates';
 import { BoardDateFilter } from './BoardDateFilter';
 import { type DateFilter, emptyColumnMessage, isDateFilterActive, loadDateFilter, matchesDateFilter, saveDateFilter } from '../boardDateFilter';
 
@@ -62,23 +63,13 @@ interface NavItem {
   type: ItemType;
 }
 
-const statusBorderColors: Record<Status, string> = {
-  [Status.IDEAS]: "border-t-slate-400",
-  [Status.TODO]: "border-t-slate-400",
-  [Status.IN_PROGRESS]: "border-t-brand",
-  [Status.TEST]: "border-t-story-blue",
-  [Status.REVIEW]: "border-t-amber-500",
-  [Status.DONE]: "border-t-brand-dark",
-  [Status.BLOCKED]: "border-t-red-500",
-  [Status.PAUSED]: "border-t-orange-400",
-  [Status.ARCHIVED]: "border-t-gray-300",
-};
 
 // Sensible cycle of on-brand colors assigned to custom/arbitrary flow step
 // names that have no explicit FlowStep.color and aren't one of the known
 // Status values above — keeps the "no rainbow" rule for flows with
 // non-default step names instead of falling back to a single fixed hue.
-const UNKNOWN_STEP_COLOR_CYCLE = ['#04cc98', '#4f8ef7', '#7fe5ca', '#056f71', '#94a3b8'];
+// Theme tokens (brand/tokens.css, CGLAB-434), so each theme gets its own steps.
+const UNKNOWN_STEP_COLOR_CYCLE = ['var(--series-1)', 'var(--series-2)', 'var(--series-3)', 'var(--series-4)', 'var(--series-5)'];
 
 function colorForUnknownStatus(status: string): string {
   let hash = 0;
@@ -89,17 +80,19 @@ function colorForUnknownStatus(status: string): string {
   return UNKNOWN_STEP_COLOR_CYCLE[index];
 }
 
-// Default hex colors for main flow columns — used when a FlowStep has no color set
+// Default colours for the standard columns, used when a FlowStep has no colour
+// of its own. Theme tokens (CGLAB-434): working steps take series colours, the
+// states (done/blocked/paused) take the reserved status tokens.
 const DEFAULT_STEP_COLORS: Record<string, string> = {
-  [Status.TODO]: '#94a3b8',
-  [Status.IN_PROGRESS]: '#04cc98',
-  [Status.REVIEW]: '#f59e0b',
-  [Status.TEST]: '#4f8ef7',
-  [Status.DONE]: '#056f71',
-  [Status.BLOCKED]: '#ef4444',
-  [Status.PAUSED]: '#fb923c',
-  [Status.ARCHIVED]: '#d1d5db',
-  [Status.IDEAS]: '#94a3b8',
+  [Status.TODO]: 'var(--text-tertiary)',
+  [Status.IN_PROGRESS]: 'var(--accent)',
+  [Status.REVIEW]: 'var(--series-4)',
+  [Status.TEST]: 'var(--series-5)',
+  [Status.DONE]: 'var(--status-ok-text)',
+  [Status.BLOCKED]: 'var(--status-danger-text)',
+  [Status.PAUSED]: 'var(--status-warn-text)',
+  [Status.ARCHIVED]: 'var(--color-slate-300)',
+  [Status.IDEAS]: 'var(--text-tertiary)',
 };
 
 const statusIcons: Record<Status, React.ReactNode> = {
@@ -251,7 +244,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
           scale: 1.05,
           zIndex: 9999,
           y: -5,
-          boxShadow: "0 25px 50px -12px rgba(99, 102, 241, 0.25)",
+          boxShadow: "0 25px 50px -12px color-mix(in srgb, var(--accent) 25%, transparent)",
         },
         idle: {
           scale: 1,
@@ -270,8 +263,8 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
         },
       }}
       className={clsx(
-        "group bg-card-glass backdrop-blur rounded-xl p-3 border border-border-soft cursor-move hover:shadow-glow hover:border-border-brand transition-colors duration-200",
-        highlightedId === item.id && "search-highlight border-brand",
+        "group bg-card-glass backdrop-blur rounded-xl p-3 border border-border-soft cursor-move hover:border-accent transition-colors duration-200",
+        highlightedId === item.id && "search-highlight border-accent",
         dragId === item.id && "opacity-40",
         item.status === Status.DONE && dragId !== item.id && "opacity-60",
         isFlying ? "!z-[9999] isolate" : (highlightedId === item.id ? "z-20 relative" : "z-0 relative")
@@ -290,10 +283,10 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
       onDoubleClick={onDoubleClick}
     >
       {dropTargetId === item.id && dropPosition === 'above' && (
-        <div className="absolute -top-[1px] left-0 right-0 h-[2px] bg-brand rounded-t-xl z-50 pointer-events-none" />
+        <div className="absolute -top-[1px] left-0 right-0 h-[2px] bg-accent rounded-t-xl z-50 pointer-events-none" />
       )}
       {dropTargetId === item.id && dropPosition === 'below' && (
-        <div className="absolute -bottom-[1px] left-0 right-0 h-[2px] bg-brand rounded-b-xl z-50 pointer-events-none" />
+        <div className="absolute -bottom-[1px] left-0 right-0 h-[2px] bg-accent rounded-b-xl z-50 pointer-events-none" />
       )}
       <div className="flex justify-between items-start mb-2">
         <div className="flex items-center gap-1.5">
@@ -304,12 +297,12 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
           <ItemTypeBadge type={item.type} size="sm" />
           {/* item-type-colour-ok: the type decides whether this drill-down
               button EXISTS — only a parent can be drilled into — never what
-              colour it is. The chip is `bg-chip` for every type that has one.
+              colour it is. The chip is `bg-accent-fill` for every type that has one.
               Marked deliberately: without it this site passed the grammar
               sweep on about thirty characters of slack, so a reflow of the
               line below would have turned it red for an innocent reason. */}
           {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && items?.some((i: AgEnFKItem) => i.parentId === item.id) && (
-            <button onClick={(e) => { e.stopPropagation(); onDrillDown(item); }} className="bg-chip hover:bg-chip/70 text-accent-text px-1.5 py-0.5 rounded text-[9px] font-bold flex items-center gap-1 transition-colors" aria-label={`Show ${items?.filter((i: AgEnFKItem) => i.parentId === item.id).length} child items`}>
+            <button onClick={(e) => { e.stopPropagation(); onDrillDown(item); }} className="bg-accent-fill hover:bg-accent-fill/70 text-accent-ink px-1.5 py-0.5 rounded text-[9px] font-bold flex items-center gap-1 transition-colors" aria-label={`Show ${items?.filter((i: AgEnFKItem) => i.parentId === item.id).length} child items`}>
               <Search size={9} /> {items?.filter((i: AgEnFKItem) => i.parentId === item.id).length}
             </button>
           )}
@@ -320,7 +313,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
               <button
                 ref={moveMenuButtonRef}
                 onClick={(e) => { e.stopPropagation(); setIsMoveMenuOpen(v => !v); }}
-                className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-500 hover:text-accent-text transition-colors"
+                className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-500 hover:text-accent-ink transition-colors"
                 title="Move to project"
               >
                 <FolderInput size={11} />
@@ -328,14 +321,14 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
               {isMoveMenuOpen && (
                 <div
                   ref={moveMenuRef}
-                  className="absolute right-0 top-5 z-50 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg py-1 min-w-[140px]"
+                  className="absolute right-0 top-5 z-50 bg-surface border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg py-1 min-w-[140px]"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <p className="px-2 py-1 text-[9px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">Move to project</p>
                   {projects.filter(p => p.id !== item.projectId).map(p => (
                     <button
                       key={p.id}
-                      className="w-full text-left px-2 py-1 text-[11px] text-slate-700 dark:text-slate-300 hover:bg-chip hover:text-accent-text truncate"
+                      className="w-full text-left px-2 py-1 text-[11px] text-slate-700 dark:text-slate-300 hover:bg-accent-fill hover:text-accent-ink truncate"
                       onClick={() => { setIsMoveMenuOpen(false); onMoveToProject(item.id, p.id); }}
                     >
                       {p.name}
@@ -360,17 +353,17 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
             onClick={(e) => { e.stopPropagation(); onOpenTerminal(item); }}
             aria-label={`Open a terminal on ${item.title}`}
             title="Open a terminal on this card"
-            className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-500 hover:text-accent-text transition-colors"
+            className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-500 hover:text-accent-ink transition-colors"
           >
             <SquareTerminal size={11} />
           </button>
           )}
-          <button onClick={(e) => { e.stopPropagation(); onArchive(item.id); }} className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-500 hover:text-rose-500 dark:hover:text-rose-400 transition-colors">
+          <button onClick={(e) => { e.stopPropagation(); onArchive(item.id); }} className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded text-slate-300 dark:text-slate-500 hover:text-status-danger-text transition-colors">
             <Archive size={11} />
           </button>
         </div>
       </div>
-      <h3 className="font-semibold text-slate-800 dark:text-slate-100 text-[13px] leading-snug mb-1.5 group-hover:text-accent-text transition-colors">{item.title}</h3>
+      <h3 className="font-semibold text-slate-800 dark:text-slate-100 text-[13px] leading-snug mb-1.5 group-hover:text-accent-ink transition-colors">{item.title}</h3>
       {item.activeRun && <div className="mb-1.5"><VerifyRunBadge run={item.activeRun} /></div>}
       {!item.parentId && (item.branchName || item.prUrl) && (
         <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
@@ -386,10 +379,10 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
               rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()}
               className={`inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded font-mono font-medium border transition-colors ${
-                item.prStatus === 'merged'  ? 'bg-chip text-accent-text border-border-brand hover:bg-chip/70' :
-                item.prStatus === 'closed'  ? 'bg-danger-muted/10 text-danger-muted border-danger-muted/30 hover:bg-danger-muted/20' :
+                item.prStatus === 'merged'  ? 'bg-status-ok-bg text-status-ok-text border-status-ok-text/40 hover:border-status-ok-text' :
+                item.prStatus === 'closed'  ? 'bg-status-danger-bg text-status-danger-text border-status-danger-text/40' :
                 item.prStatus === 'draft'   ? 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700' :
-                                              'bg-brand/10 text-brand border-brand/30 hover:bg-brand/20'
+                                              'bg-accent-fill text-accent-ink border-accent/40 hover:bg-accent-fill/70'
               }`}
               title={`PR: ${item.prStatus || 'open'}`}
             >
@@ -416,7 +409,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
                   <span>{progress}%</span>
                 </div>
                 <div className="h-1 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden border border-slate-50 dark:border-slate-800">
-                  <div className="h-full bg-[image:var(--gradient-accent)] transition-all duration-500" style={{ width: `${progress}%` }} />
+                  <div className="h-full bg-accent transition-all duration-500" style={{ width: `${progress}%` }} />
                 </div>
               </div>
             );
@@ -432,7 +425,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
               target="_blank"
               rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()}
-              className="text-accent-text hover:opacity-80 transition-colors flex items-center gap-0.5"
+              className="text-accent-ink hover:opacity-80 transition-colors flex items-center gap-0.5"
               title={item.externalUrl.includes('github.com') ? `GitHub Issue #${item.externalId}` : `Open JIRA: ${item.externalId}`}
             >
               {item.externalUrl.includes('github.com') ? (
@@ -465,9 +458,9 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
             onClick={(e) => { e.stopPropagation(); onCopyId(item.id); }}
             title="Copy Full ID"
           >
-            <span className="group-hover/id:text-accent-text transition-colors">#{item.id.substring(0, 4)}</span>
+            <span className="group-hover/id:text-accent-ink transition-colors">#{item.id.substring(0, 4)}</span>
             <div className="opacity-0 group-hover/id:opacity-100 transition-opacity">
-              {copiedId === item.id ? <Check size={9} className="text-emerald-500" /> : <Copy size={9} />}
+              {copiedId === item.id ? <Check size={9} className="text-status-ok-text" /> : <Copy size={9} />}
             </div>
           </div>
           <div className="flex items-center gap-1 font-medium text-slate-500 dark:text-slate-400">
@@ -480,12 +473,21 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
         </div>
         {/* Hiding tokens for now due to algorithm enhancements
         {item.tokenUsage && item.tokenUsage.length > 0 && (
-          <div className="flex items-center gap-1 font-medium text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-1.5 py-0.5 rounded-full">
-            <Zap size={9} className="fill-amber-600" />
+          <div className="flex items-center gap-1 font-medium text-status-warn-text bg-status-warn-bg px-1.5 py-0.5 rounded-full">
+            <Zap size={9} className="fill-status-warn-text" />
             {item.tokenUsage.reduce((acc, curr) => acc + curr.input + curr.output, 0).toLocaleString()}
           </div>
         )}
         */}
+      </div>
+      {/* When the card was made and last touched, on open and closed cards alike;
+          the full local times are on hover. */}
+      <div
+        data-testid={`card-dates-${item.id}`}
+        className="mt-1 truncate font-mono text-[9px] text-ink-tertiary"
+        title={`Created ${cardFullTimestamp(item.createdAt)}\nUpdated ${cardFullTimestamp(item.updatedAt)}`}
+      >
+        Created {cardShortDate(item.createdAt)} · Updated {cardAgo(item.updatedAt)}
       </div>
     </motion.div>
   );
@@ -1492,7 +1494,7 @@ export const KanbanBoard: React.FC = () => {
   if (isLoadingProjects) {
     return (
       <div className="flex h-screen w-full flex-col items-center justify-center bg-canvas text-ink-secondary">
-        <Loader2 className="h-10 w-10 animate-spin text-accent-text mb-4" />
+        <Loader2 className="h-10 w-10 animate-spin text-accent-ink mb-4" />
         <p className="font-medium">Connecting to AgEnFK Brain...</p>
       </div>
     );
@@ -1511,7 +1513,7 @@ export const KanbanBoard: React.FC = () => {
               <X size={18} />
             </button>
           )}
-          <h2 className="text-2xl font-bold text-slate-900 dark:text-white mb-2">Welcome to AgEnFK</h2>
+          <h2 className="text-2xl font-bold text-ink mb-2">Welcome to AgEnFK</h2>
           <p className="text-slate-500 dark:text-slate-400 mb-8 text-sm">Select an existing project or create a new one to get started.</p>
           
           <div className="space-y-4">
@@ -1529,7 +1531,7 @@ export const KanbanBoard: React.FC = () => {
                   placeholder="Search projects..."
                   aria-label="Search projects"
                   aria-activedescendant={highlightedProjectIndex >= 0 && highlightedProjectIndex < sortedFilteredProjects.length ? `project-option-${sortedFilteredProjects[highlightedProjectIndex].id}` : undefined}
-                  className="w-full p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand mb-2"
+                  className="w-full p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-ink focus:outline-none focus:ring-2 focus:ring-focus-ring mb-2"
                 />
                 <div className="grid gap-2 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 max-h-[60vh] overflow-y-auto" role="listbox" aria-label="Projects" data-columns={columnCount}>
                   {projectSearch.trim() !== '' && sortedFilteredProjects.length === 0 ? (
@@ -1552,22 +1554,22 @@ export const KanbanBoard: React.FC = () => {
                       // the guard above deliberately ignores.
                       className={`flex items-center gap-3 p-4 rounded-xl border transition-all group ${
                         isConfirmingDelete
-                          ? 'border-red-200 dark:border-red-900/40'
+                          ? 'border-status-danger-text/40'
                           : `cursor-pointer ${
                               index === highlightedProjectIndex
-                                ? 'border-border-brand bg-chip'
-                                : 'border-slate-100 dark:border-slate-800 hover:border-border-brand hover:bg-chip'
+                                ? 'border-accent bg-accent-fill'
+                                : 'border-slate-100 dark:border-slate-800 hover:border-accent hover:bg-accent-fill'
                             }`
                       }`}
                     >
                       {isConfirmingDelete ? (
                         <>
-                          <Trash2 className="text-red-500 shrink-0" size={20} />
-                          <span className="flex-1 text-sm font-semibold text-red-600 dark:text-red-400">Delete "{p.name}"?</span>
+                          <Trash2 className="text-status-danger-text shrink-0" size={20} />
+                          <span className="flex-1 text-sm font-semibold text-status-danger-text">Delete "{p.name}"?</span>
                           <button
                             onClick={() => deleteProjectMutation.mutate(p.id)}
                             disabled={deleteProjectMutation.isPending}
-                            className="text-xs font-bold px-3 py-1 rounded-lg bg-red-600 hover:bg-red-700 text-white transition-all disabled:opacity-50"
+                            className="text-xs font-bold px-3 py-1 rounded-lg bg-status-danger-bg text-status-danger-text border border-status-danger-text/40 hover:border-status-danger-text transition-all disabled:opacity-50"
                           >
                             {deleteProjectMutation.isPending ? <Loader2 className="animate-spin" size={12} /> : 'Delete'}
                           </button>
@@ -1581,12 +1583,12 @@ export const KanbanBoard: React.FC = () => {
                       ) : (
                         <>
                           <div className="flex flex-1 items-center gap-3 text-left">
-                            <Briefcase className="text-slate-400 group-hover:text-accent-text shrink-0" size={20} />
+                            <Briefcase className="text-slate-400 group-hover:text-accent-ink shrink-0" size={20} />
                             <span className="font-semibold text-slate-700 dark:text-slate-200">{p.name}</span>
                           </div>
                           <button
                             onClick={(e) => { e.stopPropagation(); setConfirmDeleteProjectId(p.id); }}
-                            className="opacity-0 group-hover:opacity-100 p-1 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all"
+                            className="opacity-0 group-hover:opacity-100 p-1 rounded-lg text-slate-400 hover:text-status-danger-text hover:bg-status-danger-bg transition-all"
                             title="Delete project"
                             aria-label={`Delete project ${p.name}`}
                           >
@@ -1624,7 +1626,7 @@ export const KanbanBoard: React.FC = () => {
                     onChange={(e) => setNewProjectName(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && newProjectName.trim() && createProjectMutation.mutate(draftProject())}
                     placeholder="e.g. My Awesome App"
-                    className="w-full text-lg font-bold bg-surface border border-border-soft rounded-xl px-4 py-2 text-ink focus:outline-none focus:ring-2 focus:ring-brand"
+                    className="w-full text-lg font-bold bg-canvas border border-border-soft rounded-xl px-4 py-2 text-ink focus:outline-none focus:ring-2 focus:ring-focus-ring"
                   />
                 </div>
 
@@ -1635,7 +1637,7 @@ export const KanbanBoard: React.FC = () => {
                     value={newProjectDescription}
                     onChange={(e) => setNewProjectDescription(e.target.value)}
                     placeholder="What this project is for..."
-                    className="w-full bg-surface border border-border-soft rounded-xl px-4 py-3 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-brand min-h-[120px]"
+                    className="w-full bg-canvas border border-border-soft rounded-xl px-4 py-3 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-focus-ring min-h-[120px]"
                   />
                 </div>
 
@@ -1655,7 +1657,7 @@ export const KanbanBoard: React.FC = () => {
                   <h4 className="text-xs font-bold text-ink-tertiary uppercase tracking-widest">Commands · set from the CLI, later</h4>
                   <p className="text-xs leading-relaxed text-ink-secondary">
                     With no <span className="font-semibold text-ink-secondary">verify command</span>, the move into the last step of
-                    the flow is refused with <code className="rounded bg-chip px-1 py-0.5 font-mono text-[11px] text-ink-secondary">NO_VERIFY_COMMAND</code> unless
+                    the flow is refused with <code className="rounded bg-accent-fill px-1 py-0.5 font-mono text-[11px] text-ink-secondary">NO_VERIFY_COMMAND</code> unless
                     one is passed to that call. With no <span className="font-semibold text-ink-secondary">setup command</span>, a
                     worktree cut for a repo that declares a dependency manifest arrives with those dependencies not installed and says
                     so — nothing is guessed from a lockfile, because a wrong install running for minutes costs more than none at all.
@@ -1679,7 +1681,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
                 <div className="flex justify-end gap-3 border-t border-border-soft pt-4">
                   <button
                     onClick={() => setIsCreatingProject(false)}
-                    className="bg-surface hover:bg-chip text-ink border border-border-soft px-4 py-2 rounded-lg font-medium text-sm transition-all shadow-sm active:scale-95"
+                    className="bg-surface hover:bg-accent-fill text-ink border border-border-soft px-4 py-2 rounded-lg font-medium text-sm transition-all shadow-sm active:scale-95"
                   >
                     Cancel
                   </button>
@@ -1694,7 +1696,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
                      */
                     disabled={!newProjectName.trim() || createProjectMutation.isPending}
                     onClick={() => createProjectMutation.mutate(draftProject())}
-                    className="bg-[image:var(--gradient-accent)] text-navy shadow-glow hover:opacity-90 disabled:opacity-50 px-6 py-2 rounded-lg font-bold text-sm transition-all active:scale-95 flex items-center gap-2"
+                    className="bg-brand text-navy hover:opacity-90 disabled:opacity-50 px-6 py-2 rounded-lg font-bold text-sm transition-all active:scale-95 flex items-center gap-2"
                   >
                     {createProjectMutation.isPending ? <Loader2 className="animate-spin" size={16} /> : <Plus size={16} />}
                     Create project
@@ -1704,7 +1706,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
             ) : (
               <button 
                 onClick={() => setIsCreatingProject(true)}
-                className="w-full flex items-center justify-center gap-2 p-4 rounded-xl border-2 border-dashed border-slate-200 dark:border-slate-800 hover:border-border-brand hover:bg-chip text-accent-text font-bold transition-all mt-4"
+                className="w-full flex items-center justify-center gap-2 p-4 rounded-xl border-2 border-dashed border-slate-200 dark:border-slate-800 hover:border-accent hover:bg-accent-fill text-accent-ink font-bold transition-all mt-4"
               >
                 <Plus size={20} />
                 Create New Project
@@ -1783,7 +1785,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
       // there buys ~100px of scrollbar on an empty board.
       !isDesktop() && 'min-h-screen',
     )}>
-      <header className="bg-nav-surface backdrop-blur border-b border-border-brand px-6 py-3 flex flex-col gap-3 sticky top-0 z-10 shadow-sm dark:shadow-none">
+      <header className="bg-nav-surface backdrop-blur border-b border-border-soft px-6 py-3 flex flex-col gap-3 sticky top-0 z-10 shadow-sm dark:shadow-none">
         <div className="flex items-center justify-between gap-4">
           {/* In the desktop app the sidebar already carries the logo, the app
               name, the version, the README and the active project — repeating
@@ -1823,11 +1825,11 @@ agenfk update-project <id> --setup-command "npm ci"`}
                   because it is a property of the project, not of the board. */}
               <div className="flex items-center gap-1.5 mt-1">
                 <p className="text-[10px] text-slate-500 dark:text-slate-400 font-bold uppercase tracking-widest">
-                  Project: <span className="text-accent-text">{activeProject?.name || 'Loading...'}</span>
+                  Project: <span className="text-accent-ink">{activeProject?.name || 'Loading...'}</span>
                 </p>
                 <button
                   onClick={() => setIsPickerOpen(true)}
-                  className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md text-slate-400 hover:text-accent-text transition-colors"
+                  className="p-0.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md text-slate-400 hover:text-accent-ink transition-colors"
                   title="Switch Project"
                 >
                   <FolderOpen size={11} />
@@ -1841,7 +1843,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
                     className={clsx(
                       'p-0.5 rounded transition-colors',
                       isPinned
-                        ? 'text-accent-text hover:opacity-80'
+                        ? 'text-accent-ink hover:opacity-80'
                         : 'text-slate-300 dark:text-slate-500 hover:text-slate-500 dark:hover:text-slate-400'
                     )}
                   >
@@ -1870,7 +1872,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
                 value={searchQuery}
                 onChange={(e) => { setSearchTerm(e.target.value); if (!e.target.value.trim()) clearSearch(); }}
                 onKeyDown={(e) => { if (e.key === 'Escape') clearSearch(); }}
-                className="w-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl pl-10 pr-4 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-brand/50 transition-all dark:text-slate-200 shadow-inner"
+                className="w-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl pl-10 pr-4 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-focus-ring transition-all dark:text-slate-200 shadow-inner"
               />
               <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
             </div>
@@ -1909,7 +1911,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
                 className={clsx(
                   'p-1.5 rounded-lg transition-colors',
                   isPinned
-                    ? 'text-accent-text bg-chip hover:opacity-80'
+                    ? 'text-accent-ink bg-accent-fill hover:opacity-80'
                     : 'text-slate-400 dark:text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-600 dark:hover:text-slate-300',
                 )}
               >
@@ -1924,7 +1926,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
                 <button
                   onClick={() => setIsJiraImportOpen(true)}
                   data-testid="jira-import-btn"
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-xs font-bold text-slate-600 dark:text-slate-300 hover:text-accent-text transition-all shadow-sm border border-transparent hover:border-slate-200 dark:hover:border-slate-700"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 hover:bg-surface rounded-lg text-xs font-bold text-slate-600 dark:text-slate-300 hover:text-accent-ink transition-all shadow-sm border border-transparent hover:border-slate-200 dark:hover:border-slate-700"
                 >
                   <Download size={14} />
                   <span className="hidden xl:inline">Import</span>
@@ -1941,7 +1943,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
                     target="_blank"
                     rel="noopener noreferrer"
                     title={`Open ${ghStatus.owner}/${ghStatus.repo} Issues`}
-                    className="flex items-center gap-1.5 px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-chip border border-slate-200 dark:border-slate-700 hover:border-border-brand rounded-md text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-accent-text transition-colors"
+                    className="flex items-center gap-1.5 px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-accent-fill border border-slate-200 dark:border-slate-700 hover:border-accent rounded-md text-xs font-medium text-slate-600 dark:text-slate-300 hover:text-accent-ink transition-colors"
                   >
                     <svg width={12} height={12} viewBox="0 0 16 16" fill="currentColor">
                       <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
@@ -1950,7 +1952,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
                   </a>
                   <button
                     onClick={() => setIsGitHubImportOpen(true)}
-                    className="flex items-center gap-1.5 px-2.5 py-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-xs font-bold text-slate-600 dark:text-slate-300 hover:text-accent-text transition-all shadow-sm border border-transparent hover:border-slate-200 dark:hover:border-slate-700"
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 hover:bg-surface rounded-lg text-xs font-bold text-slate-600 dark:text-slate-300 hover:text-accent-ink transition-all shadow-sm border border-transparent hover:border-slate-200 dark:hover:border-slate-700"
                     title="Import GitHub Issues"
                   >
                     <Download size={14} />
@@ -1968,7 +1970,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
                   data-testid="manage-flow-btn"
                   onClick={() => setIsFlowEditorOpen(true)}
                   title="Manage Flow"
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-xs font-bold text-slate-600 dark:text-slate-300 hover:text-accent-text transition-all shadow-sm border border-transparent hover:border-slate-200 dark:hover:border-slate-700"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 hover:bg-surface rounded-lg text-xs font-bold text-slate-600 dark:text-slate-300 hover:text-accent-ink transition-all shadow-sm border border-transparent hover:border-slate-200 dark:hover:border-slate-700"
                 >
                   <GitBranch size={14} />
                   <span className="hidden xl:inline">Flow</span>
@@ -1980,7 +1982,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
                   data-testid="org-flows-btn"
                   onClick={() => setIsOrgFlowPickerOpen(true)}
                   title="Org Flows"
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-xs font-bold text-slate-600 dark:text-slate-300 hover:text-accent-text transition-all shadow-sm border border-transparent hover:border-slate-200 dark:hover:border-slate-700"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 hover:bg-surface rounded-lg text-xs font-bold text-slate-600 dark:text-slate-300 hover:text-accent-ink transition-all shadow-sm border border-transparent hover:border-slate-200 dark:hover:border-slate-700"
                 >
                   <Briefcase size={14} />
                   <span className="hidden xl:inline">Org Flows</span>
@@ -1996,7 +1998,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
                   onClick={() => setIsSettingsOpen(true)}
                   title="Settings"
                   aria-label="Settings"
-                  className="p-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-slate-500 hover:text-accent-text transition-all"
+                  className="p-1.5 hover:bg-surface rounded-lg text-slate-500 hover:text-accent-ink transition-all"
                 >
                   <Settings size={16} />
                 </button>
@@ -2004,7 +2006,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
 
               <button
                 onClick={toggleTheme}
-                className="p-1.5 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-slate-500 hover:text-accent-text transition-all"
+                className="p-1.5 hover:bg-surface rounded-lg text-slate-500 hover:text-accent-ink transition-all"
                 title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
               >
                 {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
@@ -2027,7 +2029,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
 
         <div className="flex items-center justify-between border-t border-slate-100 dark:border-slate-800/50 pt-2 px-1">
           <div className="flex items-center gap-1.5 text-xs overflow-x-auto scrollbar-hide py-1">
-            <button onClick={() => navigateTo(-1)} className={clsx("flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all whitespace-nowrap", navPath.length === 0 ? "bg-[image:var(--gradient-accent)] text-navy font-bold shadow-glow" : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800")}>
+            <button onClick={() => navigateTo(-1)} className={clsx("flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all whitespace-nowrap", navPath.length === 0 ? "bg-accent-fill text-accent-ink font-bold" : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800")}>
               <Home size={14} />
               <span className={clsx(navPath.length === 0 ? "inline" : "hidden sm:inline")}>Top Level</span>
             </button>
@@ -2038,7 +2040,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
                   /* v8 ignore start */
                   onClick={() => navigateTo(index)}
                   /* v8 ignore stop */
-                  className={clsx("flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all whitespace-nowrap", index === navPath.length - 1 ? "bg-[image:var(--gradient-accent)] text-navy font-bold shadow-glow" : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800")}>
+                  className={clsx("flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all whitespace-nowrap", index === navPath.length - 1 ? "bg-accent-fill text-accent-ink font-bold" : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800")}>
                   {/* The breadcrumb dot is a type colour too (CGLAB-164): it used to be
                       `EPIC ? brand-light : story-blue`, which put a blue dot
                       directly above the emerald STORY badge it had just
@@ -2056,15 +2058,15 @@ agenfk update-project <id> --setup-command "npm ci"`}
             {/* Tokens/Cost section hidden temporarily for algorithm enhancements
             <div className="flex flex-col items-end">
               <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5 leading-none mb-1">
-                <Zap size={10} className="text-amber-500" />
+                <Zap size={10} className="text-status-warn-text" />
                 Tokens / Cost
-                <button onClick={() => queryClient.invalidateQueries({ queryKey: ['items'] })} className="hover:text-accent-text transition-colors">
+                <button onClick={() => queryClient.invalidateQueries({ queryKey: ['items'] })} className="hover:text-accent-ink transition-colors">
                   <Loader2 size={10} className={clsx(isLoading && "animate-spin")} />
                 </button>
               </div>
               <div className="text-[11px] font-mono font-bold text-slate-600 dark:text-slate-300 leading-none">
                 {items?.reduce((acc: number, i: any) => acc + (i.tokenUsage?.reduce((t: number, u: any) => t + u.input + u.output, 0) || 0), 0).toLocaleString()}
-                {pricesData ? <span className="text-accent-text ml-1">({formatCost(items?.reduce((acc: number, i: any) => acc + calculateCost(i.tokenUsage, pricesData), 0) || 0)})</span> : ''}
+                {pricesData ? <span className="text-accent-ink ml-1">({formatCost(items?.reduce((acc: number, i: any) => acc + calculateCost(i.tokenUsage, pricesData), 0) || 0)})</span> : ''}
               </div>
             </div>
             */}
@@ -2072,7 +2074,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
             {activeFlow && (
               <div className="flex flex-col items-end">
                 <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5 leading-none mb-1">
-                  <GitBranch size={10} className="text-accent-text" />
+                  <GitBranch size={10} className="text-accent-ink" />
                   Flow
                 </div>
                 <div className="text-[11px] font-mono font-bold text-slate-600 dark:text-slate-300 leading-none truncate max-w-[120px]" title={activeFlow.name}>
@@ -2083,11 +2085,11 @@ agenfk update-project <id> --setup-command "npm ci"`}
 
             <div className="flex flex-col items-end">
               <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5 leading-none mb-1">
-                <Clock size={10} className="text-emerald-500" />
+                <Clock size={10} className="text-ink-tertiary" />
                 Cycle Total / Avg
               </div>
               <div className="text-[11px] font-mono font-bold text-slate-600 dark:text-slate-300 leading-none">
-                {formatDuration(totalCycleMs)} <span className="text-emerald-600 dark:text-emerald-400 ml-1">/ {formatDuration(avgCycleMs)}</span>
+                {formatDuration(totalCycleMs)} <span className="text-ink-tertiary ml-1">/ {formatDuration(avgCycleMs)}</span>
               </div>
             </div>
           </div>
@@ -2100,10 +2102,10 @@ agenfk update-project <id> --setup-command "npm ci"`}
             {/* Ideas Section — hidden in drill-down view */}
             {navPath.length === 0 && <div data-testid="ideas-column-wrapper" className={clsx("flex flex-col transition-all duration-300 h-full shrink-0", !isIdeasCollapsed ? "w-64" : "w-12")}>
               {isIdeasCollapsed ? (
-                <button data-testid="ideas-collapsed-button" onClick={() => setIsIdeasCollapsed(false)} className="h-full w-full bg-chip/50 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-chip transition-colors group border border-dashed border-border-brand">
-                  <Lightbulb size={16} className="text-accent-text/70 group-hover:text-accent-text shrink-0" />
-                  <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-accent-text shrink-0 mt-2">Ideas</span>
-                  <span className="bg-white dark:bg-slate-800 text-accent-text text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-border-brand mt-auto" data-testid="side-count-IDEAS">{sideCount(Status.IDEAS)}</span>
+                <button data-testid="ideas-collapsed-button" onClick={() => setIsIdeasCollapsed(false)} className="h-full w-full bg-surface rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-accent-fill transition-colors group border border-dashed border-border-soft">
+                  <Lightbulb size={16} className="text-accent-ink/70 group-hover:text-accent-ink shrink-0" />
+                  <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-accent-ink shrink-0 mt-2">Ideas</span>
+                  <span className="bg-surface text-accent-ink text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-accent mt-auto" data-testid="side-count-IDEAS">{sideCount(Status.IDEAS)}</span>
                 </button>
               ) : (
                 /* v8 ignore start */
@@ -2114,10 +2116,10 @@ agenfk update-project <id> --setup-command "npm ci"`}
                   <div className="flex items-center justify-between mb-3 px-1 border-t-4 border-t-slate-400 pt-2">
                     <div className="flex items-center gap-2">
                       <button onClick={() => setIsIdeasCollapsed(true)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded"><ChevronLeft size={14} className="text-slate-500" /></button>
-                      <Lightbulb size={14} className="text-accent-text" />
+                      <Lightbulb size={14} className="text-accent-ink" />
                       <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider text-xs">Ideas</h2>
                     </div>
-                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700" data-testid="side-count-IDEAS">{sideCount(Status.IDEAS)}</span>
+                    <span className="bg-surface text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700" data-testid="side-count-IDEAS">{sideCount(Status.IDEAS)}</span>
                   </div>
                   <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                     <AnimatePresence mode="popLayout" initial={false}>
@@ -2158,7 +2160,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
 
           {isLoadingFlow && !activeFlow && (
             <div className="flex items-center justify-center flex-1 min-h-[200px]">
-              <Loader2 size={24} className="animate-spin text-accent-text" />
+              <Loader2 size={24} className="animate-spin text-accent-ink" />
             </div>
           )}
 
@@ -2171,17 +2173,19 @@ agenfk update-project <id> --setup-command "npm ci"`}
               <div
                 data-testid={`column-header-${status}`}
                 className="group flex flex-col gap-0.5 mb-3 px-1 border-t-4 pt-2"
+                // The flow step's own stored colour: user data, not chrome.
+                data-user-colour=""
                 style={{ borderTopColor: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? colorForUnknownStatus(status) }}
               >
                 <div data-testid={`column-title-${status}`} className="flex items-center gap-2 min-w-0">
-                  <div className="p-1 rounded-md text-slate-500 bg-slate-50 dark:bg-slate-800 shrink-0" style={{ color: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? colorForUnknownStatus(status) }}>
+                  <div className="p-1 rounded-md text-slate-500 bg-slate-50 dark:bg-slate-800 shrink-0" data-user-colour="" style={{ color: flowStep?.color ?? DEFAULT_STEP_COLORS[status] ?? colorForUnknownStatus(status) }}>
                     {renderStepIcon(flowStep?.icon, statusIcons[status as Status] ?? <Briefcase size={14} />)}
                   </div>
                   <h2 title={columnLabel} className="flex-1 min-w-0 truncate font-bold text-ink-secondary text-sm">{titleCaseLabel(columnLabel)}</h2>
                   <button onClick={() => handleArchiveColumn(status as Status)} className="p-1 shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 dark:text-slate-500 transition-opacity" title="Archive Column">
                     <Archive size={12} />
                   </button>
-                  <span data-testid={`column-count-${status}`} className="shrink-0 bg-chip text-accent-text text-xs font-mono font-bold px-2 py-1 rounded-full shadow-sm border border-border-soft">
+                  <span data-testid={`column-count-${status}`} className="shrink-0 bg-accent-fill text-accent-ink text-xs font-mono font-bold px-2 py-1 rounded-full shadow-sm border border-border-soft">
                     {getItemsByStatus(status as Status).length}
                   </span>
                 </div>
@@ -2237,13 +2241,13 @@ agenfk update-project <id> --setup-command "npm ci"`}
               {/* Expanded sections render as independent columns side-by-side with main board */}
               {!isPausedCollapsed && (
                 <div className="flex flex-col w-full md:flex-1 md:min-w-[180px] h-full bg-slate-100/50 dark:bg-slate-950/20 rounded-xl p-4 border border-slate-200 dark:border-slate-800 transition-all duration-300" onDrop={(e) => handleDrop(e, Status.PAUSED)} onDragOver={handleDragOver}>
-                  <div className="flex items-center justify-between mb-3 px-1 border-t-4 border-t-orange-400 pt-2">
+                  <div className="flex items-center justify-between mb-3 px-1 border-t-4 border-t-status-warn-text pt-2">
                     <div className="flex items-center gap-2">
                       <button onClick={() => setIsPausedCollapsed(true)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded transition-colors" title="Collapse Column"><ChevronRight size={14} className="text-slate-500" /></button>
-                      <Pause size={14} className="text-orange-500" />
+                      <Pause size={14} className="text-status-warn-text" />
                       <h2 className="font-bold text-slate-700 dark:text-slate-300 text-xs uppercase tracking-wider">Paused</h2>
                     </div>
-                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700" data-testid="side-count-PAUSED">{sideCount(Status.PAUSED)}</span>
+                    <span className="bg-surface text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700" data-testid="side-count-PAUSED">{sideCount(Status.PAUSED)}</span>
                   </div>
                   <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                     <AnimatePresence mode="popLayout" initial={false}>
@@ -2281,13 +2285,13 @@ agenfk update-project <id> --setup-command "npm ci"`}
 
               {!isBlockedCollapsed && (
                 <div className="flex flex-col w-full md:flex-1 md:min-w-[180px] h-full bg-slate-100/50 dark:bg-slate-950/20 rounded-xl p-4 border border-slate-200 dark:border-slate-800 transition-all duration-300" onDrop={(e) => handleDrop(e, Status.BLOCKED)} onDragOver={handleDragOver}>
-                  <div className="flex items-center justify-between mb-3 px-1 border-t-4 border-t-red-400 pt-2">
+                  <div className="flex items-center justify-between mb-3 px-1 border-t-4 border-t-status-danger-text pt-2">
                     <div className="flex items-center gap-2">
                       <button onClick={() => setIsBlockedCollapsed(true)} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded transition-colors" title="Collapse Column"><ChevronRight size={14} className="text-slate-500" /></button>
-                      <AlertCircle size={14} className="text-red-500" />
+                      <AlertCircle size={14} className="text-status-danger-text" />
                       <h2 className="font-bold text-slate-700 dark:text-slate-300 text-xs uppercase tracking-wider">Blocked</h2>
                     </div>
-                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700" data-testid="side-count-BLOCKED">{sideCount(Status.BLOCKED)}</span>
+                    <span className="bg-surface text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700" data-testid="side-count-BLOCKED">{sideCount(Status.BLOCKED)}</span>
                   </div>
                   <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                     <AnimatePresence mode="popLayout" initial={false}>
@@ -2343,14 +2347,14 @@ agenfk update-project <id> --setup-command "npm ci"`}
                               trashArchivedMutation.mutate(selectedProjectId!);
                             }
                           }}
-                          className="p-1 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded text-slate-400 hover:text-rose-500 transition-colors"
+                          className="p-1 hover:bg-status-danger-bg rounded text-slate-400 hover:text-status-danger-text transition-colors"
                           title="Trash All Archived"
                         >
                           <Trash2 size={12} />
                         </button>
                       )}
                     </div>
-                    <span className="bg-white dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700" data-testid="side-count-ARCHIVED">{sideCount(Status.ARCHIVED)}</span>
+                    <span className="bg-surface text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700" data-testid="side-count-ARCHIVED">{sideCount(Status.ARCHIVED)}</span>
                   </div>
                   <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                     <AnimatePresence mode="popLayout" initial={false}>
@@ -2392,28 +2396,28 @@ agenfk update-project <id> --setup-command "npm ci"`}
                   {isPausedCollapsed && (
                     <button
                       onClick={() => setIsPausedCollapsed(false)}
-                      className="flex-1 w-full bg-orange-50/50 dark:bg-orange-900/10 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-orange-100/50 dark:hover:bg-orange-900/20 transition-colors group border border-dashed border-orange-200 dark:border-orange-900/30"
+                      className="flex-1 w-full bg-status-warn-bg rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:border-status-warn-text hover:border-solid transition-colors group border border-dashed border-status-warn-text/40"
                     >
-                      <Pause size={16} className="text-orange-400 group-hover:text-orange-500 shrink-0" />
-                      <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-orange-400 shrink-0 mt-2">Paused</span>
-                      <span className="bg-white dark:bg-slate-800 text-orange-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-orange-100 dark:border-orange-900/30 mt-auto" data-testid="side-count-PAUSED">{sideCount(Status.PAUSED)}</span>
+                      <Pause size={16} className="text-status-warn-text group-hover:text-status-warn-text shrink-0" />
+                      <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-status-warn-text shrink-0 mt-2">Paused</span>
+                      <span className="bg-surface text-status-warn-text text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-status-warn-text/40 mt-auto" data-testid="side-count-PAUSED">{sideCount(Status.PAUSED)}</span>
                     </button>
                   )}
                   {isBlockedCollapsed && (
                     <button
                       onClick={() => setIsBlockedCollapsed(false)}
-                      className="flex-1 w-full bg-red-50/50 dark:bg-red-900/10 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-red-100/50 dark:hover:bg-red-900/20 transition-colors group border border-dashed border-red-200 dark:border-red-900/30"
+                      className="flex-1 w-full bg-status-danger-bg rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:border-status-danger-text hover:border-solid transition-colors group border border-dashed border-status-danger-text/40"
                     >
-                      <AlertCircle size={16} className="text-red-400 group-hover:text-red-500 shrink-0" />
-                      <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-red-400 shrink-0 mt-2">Blocked</span>
-                      <span className="bg-white dark:bg-slate-800 text-red-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-red-100 dark:border-red-900/30 mt-auto" data-testid="side-count-BLOCKED">{sideCount(Status.BLOCKED)}</span>
+                      <AlertCircle size={16} className="text-status-danger-text group-hover:text-status-danger-text shrink-0" />
+                      <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-status-danger-text shrink-0 mt-2">Blocked</span>
+                      <span className="bg-surface text-status-danger-text text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-status-danger-text/40 mt-auto" data-testid="side-count-BLOCKED">{sideCount(Status.BLOCKED)}</span>
                     </button>
                   )}
                   {isArchiveCollapsed && (
                     <button onClick={() => setIsArchiveCollapsed(false)} className="flex-1 w-full bg-slate-200/50 dark:bg-slate-900/50 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-slate-300 dark:hover:bg-slate-800 transition-colors group border border-dashed border-slate-300 dark:border-slate-800">
-                      <Archive size={16} className="text-slate-500 group-hover:text-accent-text shrink-0" />
+                      <Archive size={16} className="text-slate-500 group-hover:text-accent-ink shrink-0" />
                       <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-slate-500 shrink-0 mt-2">Archived</span>
-                      <span className="bg-white dark:bg-slate-800 text-slate-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-slate-100 dark:border-slate-700 mt-auto" data-testid="side-count-ARCHIVED">{sideCount(Status.ARCHIVED)}</span>
+                      <span className="bg-surface text-slate-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-slate-100 dark:border-slate-700 mt-auto" data-testid="side-count-ARCHIVED">{sideCount(Status.ARCHIVED)}</span>
                     </button>
                   )}
                 </div>

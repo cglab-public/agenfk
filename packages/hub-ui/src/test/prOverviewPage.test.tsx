@@ -20,6 +20,7 @@ import { MemoryRouter, useSearchParams } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PrOverviewPage } from '../pages/PrOverview';
 import { api } from '../api';
+import { withFiltersOpen } from './filtersOpen';
 
 vi.mock('../api', () => ({ api: { get: vi.fn() } }));
 const get = api.get as unknown as ReturnType<typeof vi.fn>;
@@ -71,7 +72,7 @@ const renderPage = (entry: string, models: string[] = THREE_MODELS) => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={[entry]}>
+      <MemoryRouter initialEntries={[withFiltersOpen(entry)]}>
         <PrOverviewPage />
         <UrlProbe />
       </MemoryRouter>
@@ -82,7 +83,12 @@ const renderPage = (entry: string, models: string[] = THREE_MODELS) => {
 const overviewUrls = () =>
   get.mock.calls.map(c => String(c[0])).filter(u => u.startsWith('/v1/prs/overview'));
 const qs = (url: string) => new URLSearchParams(url.split('?')[1] ?? '');
-const urlNow = () => screen.getByTestId('url-probe').textContent;
+// The query string minus the bar's open flag, which these tests open to reach the facets.
+const urlNow = () => {
+  const q = new URLSearchParams(screen.getByTestId('url-probe').textContent ?? '');
+  q.delete('filters');
+  return q.toString();
+};
 
 // Same fixed-date fixture as the drill-down suite, so the same clock coupling
 // applies: the page's axis is a window measured from the real `now`, and from

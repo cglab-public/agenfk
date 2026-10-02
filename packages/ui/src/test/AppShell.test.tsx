@@ -12,6 +12,7 @@
  */
 import { render, screen, fireEvent, cleanup, act, within, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { guardTokens } from './helpers/tokenGuard';
 import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AppShell } from '../components/AppShell';
@@ -172,6 +173,9 @@ afterEach(() => {
   cleanup();
   delete (window as unknown as Record<string, unknown>).agenfkDesktop;
 });
+// CGLAB-434: every test here also proves the shell renders on tokens.
+guardTokens();
+
 
 describe('AppShell — chrome', () => {
   it('renders the board it is given', () => {

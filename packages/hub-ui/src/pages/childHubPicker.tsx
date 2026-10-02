@@ -33,7 +33,7 @@ export function ChildHubPicker({
 }) {
   const pill = (active: boolean) =>
     'text-[11px] px-2 py-0.5 rounded-full border transition-colors ' +
-    (active ? 'border-brand text-ink bg-chip font-semibold' : 'border-border-soft text-ink-tertiary hover:text-ink');
+    (active ? 'border-accent text-accent-ink bg-accent-fill font-semibold' : 'border-border-soft text-ink-tertiary hover:text-ink');
 
   return (
     <div className="space-y-2">

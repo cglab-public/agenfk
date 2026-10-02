@@ -27,7 +27,7 @@ const PRESETS: { range: DateRange; label: string }[] = [
 const segmentClass = (on: boolean) => clsx(
   'px-2.5 py-1 rounded-lg text-xs transition-all whitespace-nowrap',
   on
-    ? 'bg-[image:var(--gradient-accent)] text-navy font-bold shadow-glow'
+    ? 'bg-accent-fill text-accent-ink font-bold'
     : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800',
 );
 
@@ -105,7 +105,7 @@ export const BoardDateFilter: React.FC<Props> = ({ value, onChange }) => {
         className={clsx(
           'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-colors',
           active
-            ? 'text-accent-text bg-chip border border-border-brand'
+            ? 'text-accent-ink bg-accent-fill border border-accent'
             : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800',
         )}
       >
@@ -116,7 +116,7 @@ export const BoardDateFilter: React.FC<Props> = ({ value, onChange }) => {
       {active && (
         <span
           data-testid="date-filter-chip"
-          className="flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full text-[11px] font-bold bg-chip text-accent-text border border-border-brand whitespace-nowrap"
+          className="flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full text-[11px] font-bold bg-accent-fill text-accent-ink border border-accent whitespace-nowrap"
         >
           {describeDateFilter(value)}
           <button
@@ -127,7 +127,7 @@ export const BoardDateFilter: React.FC<Props> = ({ value, onChange }) => {
               // The chip (and this button) unmount; keep focus in the control.
               triggerRef.current?.focus();
             }}
-            className="p-0.5 rounded-full hover:bg-white/60 dark:hover:bg-slate-800"
+            className="p-0.5 rounded-full hover:bg-canvas"
           >
             <X size={12} />
           </button>
@@ -140,7 +140,7 @@ export const BoardDateFilter: React.FC<Props> = ({ value, onChange }) => {
           id={panelId}
           role="group"
           aria-label="Date filter options"
-          className="absolute right-0 top-full mt-2 z-50 w-72 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg p-3 flex flex-col gap-3"
+          className="absolute right-0 top-full mt-2 z-50 w-72 bg-surface border border-border-soft rounded-lg shadow-lg p-3 flex flex-col gap-3"
         >
           <div role="group" aria-label="Date field" className="flex gap-1">
             {FIELDS.map(({ field, label }) => (

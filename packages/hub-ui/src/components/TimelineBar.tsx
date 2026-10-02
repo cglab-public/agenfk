@@ -1,6 +1,9 @@
 import { useMemo, useState } from 'react';
+import { eventTypeLabel } from '../eventTypes';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api';
+import { QueryState } from './ui';
+import { seriesColours, ALL_EVENTS_COLOR } from '../chartColours';
 import {
   buildAxis,
   effectiveBucket,
@@ -36,10 +39,6 @@ const RANGES: Array<{ key: RangeKey; label: string }> = [
   { key: '90d', label: '90d' },
 ];
 
-// Teal ramp matching the CG/lab brand accent when no specific type selected.
-const ACCENT = '#04cc98';
-const TYPE_COLORS = ['#04cc98', '#7fe5ca', '#056f71', '#4f8ef7', '#f59e0b', '#f26d7e', '#ec4899', '#0d9488', '#eab308', '#3b82f6', '#22d3ee', '#06b6d4'];
-const colorForType = (type: string, idx: number) => TYPE_COLORS[idx % TYPE_COLORS.length];
 
 // "Nice" Y-axis ticks for an integer-count chart. Returns at most 5 evenly-spaced values.
 function niceTicks(max: number): number[] {
@@ -73,6 +72,11 @@ function buildAxisForBounds(fromIso: string, toIso: string | undefined, bucket: 
   return out;
 }
 
+/** The browser's IANA zone, or null when it cannot say. */
+function namedTimeZone(): string | null {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch { return null; }
+}
+
 export function TimelineBar({ users, types, projects, itemTypes, childHubs, className, title, range: rangeProp, onRangeChange, fromIsoOverride, toIsoOverride }: Props) {
   const [rangeInternal, setRangeInternal] = useState<RangeKey>('30d');
   const range = rangeProp ?? rangeInternal;
@@ -103,9 +107,14 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
   if (toIsoOverride) params.set('to', toIsoOverride);
   params.set('bucket', bucket);
   params.set('tzOffsetMin', String(tzOffsetMin));
+  // The zone itself, so the hub files each date by its own offset (DST); the
+  // offset above stays as the fallback for a zone the hub does not know. A
+  // browser that cannot name its zone sends none rather than a made-up UTC.
+  const timeZone = namedTimeZone();
+  if (timeZone) params.set('tz', timeZone);
 
   const q = useQuery<HistogramResponse>({
-    queryKey: ['histogram', users?.join(',') ?? '', types?.join(',') ?? '', projects?.join(',') ?? '', itemTypes?.join(',') ?? '', childHubs?.join(',') ?? '', range, fromIsoOverride ?? '', toIsoOverride ?? '', bucket, tzOffsetMin],
+    queryKey: ['histogram', users?.join(',') ?? '', types?.join(',') ?? '', projects?.join(',') ?? '', itemTypes?.join(',') ?? '', childHubs?.join(',') ?? '', range, fromIsoOverride ?? '', toIsoOverride ?? '', bucket, tzOffsetMin, timeZone ?? ''],
     queryFn: async () => (await api.get(`/v1/histogram?${params}`)).data,
   });
 
@@ -122,6 +131,8 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
   }, [q.data]);
 
   const stackedTypes = types && types.length > 0 ? types : null;
+  // One lookup for bars, legend and hover list, so they cannot disagree.
+  const colours = useMemo(() => seriesColours(stackedTypes ?? []), [stackedTypes?.join(',')]);
 
   const maxTotal = useMemo(() => {
     let m = 0;
@@ -164,19 +175,21 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
         <div className="min-w-0">
           <h3 className="text-sm font-semibold text-ink truncate">{title ?? 'Activity'}</h3>
           <p className="mt-0.5 text-[11px] text-ink-tertiary">
-            {totalEvents.toLocaleString()} event{totalEvents === 1 ? '' : 's'} · {rangeBlurb}{users?.length ? ` · ${users.length} user${users.length === 1 ? '' : 's'}` : ''}{stackedTypes ? ` · ${stackedTypes.length} type${stackedTypes.length === 1 ? '' : 's'}` : ''}
+            {q.data && `${totalEvents.toLocaleString()} event${totalEvents === 1 ? '' : 's'} · `}{rangeBlurb}{users?.length ? ` · ${users.length} user${users.length === 1 ? '' : 's'}` : ''}{stackedTypes ? ` · ${stackedTypes.length} type${stackedTypes.length === 1 ? '' : 's'}` : ''}
           </p>
         </div>
         <div className="flex items-center gap-2">
           {/* Range picker only shown when not controlled externally (standalone usage) */}
           {rangeProp == null && (
-            <div className="inline-flex rounded-lg border border-border-soft bg-chip p-0.5 text-[11px] font-medium">
+            <div className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium">
               {RANGES.map(r => (
                 <button
                   key={r.key}
+                  type="button"
+                  aria-pressed={range === r.key}
                   onClick={() => setRange(r.key)}
                   className={`px-2.5 py-1 rounded-md transition-colors ${range === r.key
-                    ? 'bg-card-glass text-accent-text shadow-sm'
+                    ? 'bg-card-glass text-accent-ink shadow-sm'
                     : 'text-ink-tertiary hover:text-ink'}`}
                 >
                   {r.label}
@@ -184,18 +197,20 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
               ))}
             </div>
           )}
-          <div className="inline-flex rounded-lg border border-border-soft bg-chip p-0.5 text-[11px] font-medium">
+          <div className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium">
             {(['day', 'hour'] as const).map(b => {
               const active = bucket === b;
               const disabled = isToday && b === 'day';
               return (
                 <button
                   key={b}
+                  type="button"
+                  aria-pressed={active}
                   onClick={() => !disabled && setBucketSel(b)}
                   disabled={disabled}
                   title={disabled ? 'Today view is hourly' : undefined}
                   className={`px-2.5 py-1 rounded-md transition-colors ${active
-                    ? 'bg-card-glass text-accent-text shadow-sm'
+                    ? 'bg-card-glass text-accent-ink shadow-sm'
                     : disabled
                       ? 'text-ink-tertiary/50 cursor-not-allowed'
                       : 'text-ink-tertiary hover:text-ink'}`}
@@ -208,7 +223,14 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
         </div>
       </header>
 
-      <div className="px-3 pt-3 pb-3 relative">
+      {/* No "0 events" over an empty chart while the answer is on its way, or
+          when it never came: that reads as an idle fleet. */}
+      {q.data === undefined && (
+        <div className="px-5 py-4">
+          <QueryState query={q} label="activity timeline">{() => null}</QueryState>
+        </div>
+      )}
+      <div className={`px-3 pt-3 pb-3 relative ${q.data === undefined ? 'hidden' : ''}`}>
         <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="w-full h-[220px] block" role="img" aria-label="Event timeline histogram">
           {/* Y gridlines + labels */}
           {ticks.map((t) => {
@@ -231,8 +253,8 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
             const total = b?.total ?? 0;
             const x = m.left + i * (barW + barGap);
             const segs = stackedTypes
-              ? stackedTypes.map((tp, idx) => ({ type: tp, n: b?.by_type[tp] ?? 0, color: colorForType(tp, idx) }))
-              : [{ type: 'all', n: total, color: ACCENT }];
+              ? stackedTypes.map(tp => ({ type: tp, n: b?.by_type[tp] ?? 0, color: colours[tp] }))
+              : [{ type: 'all', n: total, color: ALL_EVENTS_COLOR }];
             let yCursor = m.top + innerH;
             const barH = (total / yTop) * innerH;
             const isHover = hoverIdx === i;
@@ -323,13 +345,14 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
                 {Object.entries(hoveredBucket.by_type)
                   .sort((a, b) => b[1] - a[1])
                   .map(([k, v]) => {
-                    const idx = stackedTypes ? stackedTypes.indexOf(k) : -1;
-                    const color = idx >= 0 ? colorForType(k, idx) : ACCENT;
+                    // A swatch only means something when the chart is split by
+                    // type; unstacked, every row would get the same colour.
+                    const stacked = !!stackedTypes?.includes(k);
                     return (
                       <li key={k} className="flex items-center justify-between gap-3">
                         <span className="flex items-center gap-1.5 min-w-0">
-                          <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ background: color }} />
-                          <span className="font-mono text-ink-secondary truncate">{k}</span>
+                          {stacked && <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ background: colours[k] }} />}
+                          <span className="text-ink-secondary truncate" title={k}>{eventTypeLabel(k)}</span>
                         </span>
                         <span className="font-semibold text-ink">{v}</span>
                       </li>
@@ -344,10 +367,10 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
       {/* Legend (only when filtered by type) */}
       {stackedTypes && stackedTypes.length > 0 && (
         <footer className="flex flex-wrap gap-x-4 gap-y-1.5 px-5 pb-4 pt-1 text-[11px] text-ink-tertiary">
-          {stackedTypes.map((tp, idx) => (
+          {stackedTypes.map(tp => (
             <span key={tp} className="flex items-center gap-1.5">
-              <span className="inline-block w-2 h-2 rounded-sm" style={{ background: colorForType(tp, idx) }} />
-              <span className="font-mono">{tp}</span>
+              <span className="inline-block w-2 h-2 rounded-sm" style={{ background: colours[tp] }} />
+              <span title={tp}>{eventTypeLabel(tp)}</span>
             </span>
           ))}
         </footer>

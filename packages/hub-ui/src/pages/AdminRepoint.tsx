@@ -7,9 +7,11 @@
  * say "safe" until every one of them has confirmed ON the new hostname.
  */
 import { useState } from 'react';
+import { addressChangeError } from './adminValidation';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowRightLeft, AlertTriangle, CheckCircle2, Clock, Ban } from 'lucide-react';
 import { api } from '../api';
+import { cardClass } from '../components/ui';
 import {
   classifyTarget,
   sortTargets,
@@ -19,7 +21,7 @@ import {
   type TargetClass,
 } from './repointBoard';
 
-const cardCls = 'bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5';
+const cardCls = cardClass;
 
 interface BoardResponse {
   campaign: { id: string; targetUrl: string; allowedHost: string; createdAt: string } | null;
@@ -37,11 +39,11 @@ const CLASS_LABEL: Record<TargetClass, string> = {
 };
 
 const CLASS_STYLE: Record<TargetClass, string> = {
-  done: 'text-emerald-600 dark:text-emerald-400',
+  done: 'text-status-ok-text',
   waiting: 'text-ink-tertiary',
-  stale: 'text-amber-600 dark:text-amber-400',
-  blocked: 'text-amber-600 dark:text-amber-400',
-  failed: 'text-red-600 dark:text-red-400',
+  stale: 'text-status-warn-text',
+  blocked: 'text-status-warn-text',
+  failed: 'text-status-danger-text',
 };
 
 function ClassIcon({ cls }: { cls: TargetClass }) {
@@ -77,6 +79,10 @@ export function AdminRepoint() {
   });
 
   const campaign = board.data?.campaign ?? null;
+  const [urlTouched, setUrlTouched] = useState(false);
+  const urlProblem = addressChangeError(targetUrl);
+  // Shown once the admin leaves the field; the button is disabled either way.
+  const urlError = urlTouched ? urlProblem : null;
   const targets = board.data?.targets ?? [];
   const openedAt = campaign?.createdAt ?? '';
   const summary = drainSummary(targets, openedAt);
@@ -102,20 +108,26 @@ export function AdminRepoint() {
             <input
               value={targetUrl}
               onChange={e => setTargetUrl(e.target.value)}
+              onBlur={() => setUrlTouched(true)}
               placeholder="https://hub.new-domain.com"
+              aria-invalid={!!urlError}
+              aria-describedby={urlError ? 'address-change-url-error' : undefined}
               className="flex-1 rounded-lg border border-border-soft bg-surface px-3 py-2 text-sm text-ink"
             />
             <button
               onClick={() => open.mutate()}
-              disabled={!targetUrl.trim() || open.isPending}
-              className="rounded-lg border border-border-brand bg-chip px-3 py-2 text-xs font-semibold text-accent-text disabled:opacity-50"
+              disabled={!targetUrl.trim() || !!urlProblem || open.isPending}
+              className="rounded-lg border border-accent bg-accent-fill px-3 py-2 text-xs font-semibold text-accent-ink disabled:opacity-50"
             >
-              Start campaign
+              Start the address change
             </button>
           </div>
         )}
+        {!campaign && urlError && (
+          <p id="address-change-url-error" className="mt-2 text-xs text-status-danger-text">{urlError}</p>
+        )}
         {openError && (
-          <p className="mt-2 text-xs text-red-600 dark:text-red-400">{String(openError)}</p>
+          <p className="mt-2 text-xs text-status-danger-text">{String(openError)}</p>
         )}
 
         {campaign && (
@@ -130,22 +142,22 @@ export function AdminRepoint() {
                 disabled={close.isPending}
                 className="text-[11px] font-semibold text-ink-tertiary hover:text-ink"
               >
-                Close campaign
+                End the address change
               </button>
             </div>
 
             <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-ink-tertiary tabular-nums">
               <span>{summary.done}/{summary.total} moved</span>
               {summary.waiting > 0 && <span>{summary.waiting} waiting</span>}
-              {summary.stale > 0 && <span className="text-amber-600 dark:text-amber-400">{summary.stale} not checking in</span>}
-              {summary.blocked > 0 && <span className="text-amber-600 dark:text-amber-400">{summary.blocked} blocked</span>}
-              {summary.failed > 0 && <span className="text-red-600 dark:text-red-400">{summary.failed} failed</span>}
+              {summary.stale > 0 && <span className="text-status-warn-text">{summary.stale} not checking in</span>}
+              {summary.blocked > 0 && <span className="text-status-warn-text">{summary.blocked} blocked</span>}
+              {summary.failed > 0 && <span className="text-status-danger-text">{summary.failed} failed</span>}
             </div>
 
-            <p className={`mt-3 text-xs ${safe ? 'text-emerald-600 dark:text-emerald-400' : 'text-ink-tertiary'}`}>
+            <p className={`mt-3 text-xs ${safe ? 'text-status-ok-text' : 'text-ink-tertiary'}`}>
               {safe
                 ? 'Every installation has confirmed on the new address. Delete the old DNS record — do not point it at a proxy that answers 404.'
-                : 'Keep serving the old address. Installations that stopped checking in will never move on their own: retire them under Installations to finish the campaign.'}
+                : 'Keep serving the old address. Installations that stopped checking in will never move on their own: retire them under Installations to finish the address change.'}
             </p>
           </div>
         )}
@@ -168,7 +180,7 @@ export function AdminRepoint() {
                 {sortTargets(targets, openedAt).map(t => {
                   const cls = classifyTarget(t, openedAt);
                   return (
-                    <tr key={t.installationId} className="hover:bg-chip transition-colors">
+                    <tr key={t.installationId} className="hover:bg-accent-fill transition-colors">
                       <td className="px-5 py-2.5 font-mono text-[11px] text-ink-secondary">{t.installationId}</td>
                       <td className="px-2 py-2.5 text-xs text-ink-secondary">
                         {t.gitEmail ?? t.gitName ?? t.osUser ?? <span className="text-ink-tertiary">—</span>}

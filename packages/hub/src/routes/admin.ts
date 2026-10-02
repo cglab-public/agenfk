@@ -903,7 +903,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       return;
     }
     if (await openCampaign(orgId)) {
-      res.status(409).json({ error: 'A repoint campaign is already open. Close it before starting another.' });
+      res.status(409).json({ error: 'An address change is already under way. End it before starting another.' });
       return;
     }
 
@@ -992,7 +992,7 @@ export function adminRouter(ctx: HubServerContext): Router {
       "UPDATE repoint_campaigns SET closed_at = datetime('now') WHERE id = ? AND org_id = ? AND closed_at IS NULL",
       [req.params.id, req.session!.orgId],
     );
-    if (r.changes === 0) { res.status(404).json({ error: 'Unknown or already-closed campaign' }); return; }
+    if (r.changes === 0) { res.status(404).json({ error: 'Unknown or already-ended address change' }); return; }
     res.json({ id: req.params.id, closed: true });
   }));
 

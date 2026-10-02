@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { GitPullRequest, RefreshCw, Search, TrendingUp, TrendingDown, X } from 'lucide-react';
+import { GitPullRequest, RefreshCw, Search, X } from 'lucide-react';
 import { api } from '../api';
 import { FacetMultiselect } from '../components/FacetMultiselect';
 import { FilterAccordion, parseFiltersOpen } from '../components/FilterAccordion';
@@ -13,31 +13,23 @@ import { csvParam } from '../urlParams';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useSettledKey } from '../hooks/useSettledKey';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
-import { SIZE_META, type SizeKey, buildDayAxis, pctDelta } from '../prOverview';
+import { SIZE_META, type SizeKey, buildDayAxis, fmtAverage, pctDelta } from '../prOverview';
+import { heatColor } from '../chartColours';
+import { Sparkline } from '../components/Sparkline';
 import { parsePrQuery } from '../prSearch';
 import { buildMonthBands, dayHeaderInfo, contributionPcts, cellTooltip, placeTooltip } from '../prPerDay';
 import { buildVolumeSeries, type Granularity } from '../prVolumeGranularity';
+import { DataTable, DateRange, LocalTime, Page, PageHeader, PeriodControl, QueryError, Skeleton, StatTile } from '../components/ui';
+import { browserTimezone, endOfLocalDay, startOfLocalDay } from '../dates';
+import { describeFilters } from '../filterSummary';
+import { usePeopleNames } from '../hooks/usePeopleNames';
+import { PersonName, PersonAvatar } from '../components/PersonName';
 
 const GRANULARITIES: Array<{ key: Granularity; label: string; unit: string }> = [
   { key: 'daily', label: 'daily', unit: 'day' },
   { key: 'weekly', label: 'weekly', unit: 'week' },
   { key: 'monthly', label: 'monthly', unit: 'month' },
 ];
-
-/** Average PRs per bucket: integers stay bare, fractional rates show 1 decimal. */
-function fmtAverage(n: number): string {
-  return Number.isInteger(n) ? String(n) : n.toFixed(1);
-}
-
-/** One stat tile under the volume chart (Total / Average / Max). */
-function VolumeStat({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div className="rounded-lg border border-border-soft bg-chip px-3 py-2">
-      <div className="text-[10px] uppercase tracking-[0.12em] font-mono text-ink-tertiary">{label}</div>
-      <div className="mt-0.5 font-mono text-[15px] font-bold tabular-nums text-ink">{value}</div>
-    </div>
-  );
-}
 
 const RANGES: Array<{ key: RangeKey; label: string }> = [
   { key: 'today', label: 'today' },
@@ -100,32 +92,12 @@ const prKey = (p: { repo: string; prNumber: number; childHubId?: string }) =>
 const SIZE_META_DESC = [...SIZE_META].reverse();
 const colorOf = (k: SizeKey) => SIZE_META.find(s => s.key === k)!.color;
 
-function DeltaBadge({ value }: { value: number | null }) {
-  if (value == null) return <span className="text-[11px] text-ink-tertiary">— no prior period</span>;
-  const up = value >= 0;
-  return (
-    <span className={`inline-flex items-center gap-1 text-[11px] font-semibold ${up ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
-      {up ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-      {up ? '+' : ''}{value}%
-    </span>
-  );
-}
-
-function Tile({ label, value, children }: { label: string; value: React.ReactNode; children?: React.ReactNode }) {
-  return (
-    <div className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-4">
-      <div className="text-[10px] uppercase tracking-[0.14em] font-mono text-ink-tertiary">{label}</div>
-      <div className="mt-2 text-3xl font-bold tabular-nums text-ink">{value}</div>
-      <div className="mt-1.5">{children}</div>
-    </div>
-  );
-}
-
 /** Horizontal stacked size-mix bar for one row of size counts. */
 function MixBar({ sizes, total }: { sizes: SizeDist; total: number }) {
-  if (total === 0) return <div className="h-2 w-full rounded-full bg-chip" />;
+  if (total === 0) return <div className="h-2 w-full rounded-full bg-border-soft" />;
   return (
-    <div className="flex h-2 w-full rounded-full overflow-hidden bg-chip">
+    // 2px gaps keep neighbouring ramp steps apart; the track is neutral.
+    <div className="flex gap-[2px] h-2 w-full rounded-full overflow-hidden bg-border-soft">
       {SIZE_META.filter(s => sizes[s.key] > 0).map(s => (
         <span key={s.key} title={`${s.label}: ${sizes[s.key]}`} style={{ background: s.color, width: `${(sizes[s.key] / total) * 100}%` }} />
       ))}
@@ -141,26 +113,13 @@ function SizeCounts({ sizes }: { sizes: SizeDist }) {
           key={s.key}
           title={`${s.label} PRs`}
           className={`min-w-[26px] text-center rounded-md px-1 py-0.5 font-mono text-[11px] tabular-nums ${sizes[s.key] === 0
-            ? 'text-ink-tertiary bg-chip'
-            : 'text-ink-secondary bg-chip'}`}
+            ? 'text-ink-tertiary bg-canvas'
+            : 'text-ink-secondary bg-canvas'}`}
         >
           {sizes[s.key]}
         </span>
       ))}
     </div>
-  );
-}
-
-/** Tiny inline sparkline of daily PR counts over the period axis. */
-function Sparkline({ daily, axis }: { daily: Record<string, number>; axis: string[] }) {
-  const values = axis.map(d => daily[d] ?? 0);
-  const w = 96, h = 24, max = Math.max(...values, 1);
-  const step = values.length > 1 ? w / (values.length - 1) : w;
-  const pts = values.map((v, i) => `${(i * step).toFixed(1)},${(h - (v / max) * (h - 4) - 2).toFixed(1)}`).join(' ');
-  return (
-    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} aria-hidden className="overflow-visible">
-      <polyline points={pts} fill="none" stroke="#04cc98" strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" />
-    </svg>
   );
 }
 
@@ -230,7 +189,7 @@ function PrDrilldownModal({ dev, day, prs, onClose }: {
             ref={closeRef}
             onClick={onClose}
             aria-label="Close"
-            className="rounded-lg border border-border-soft px-2 py-1 text-[12px] text-ink-tertiary hover:text-ink hover:bg-chip transition-colors"
+            className="rounded-lg border border-border-soft px-2 py-1 text-[12px] text-ink-tertiary hover:text-ink hover:bg-accent-fill transition-colors"
           >
             ✕
           </button>
@@ -242,7 +201,7 @@ function PrDrilldownModal({ dev, day, prs, onClose }: {
             const rowBody = (
               <>
                 {p.url ? (
-                  <span className="font-mono text-[13px] font-bold text-accent-text shrink-0">
+                  <span className="font-mono text-[13px] font-bold text-accent-ink shrink-0">
                     #{p.prNumber}
                   </span>
                 ) : (
@@ -266,7 +225,7 @@ function PrDrilldownModal({ dev, day, prs, onClose }: {
                     </span>
                   )}
                   <div className="mt-0.5 font-mono text-[10px] text-ink-tertiary tabular-nums">
-                    {Number.isNaN(openedAt.getTime()) ? '' : openedAt.toISOString().slice(11, 19)} UTC
+                    {!Number.isNaN(openedAt.getTime()) && <LocalTime value={openedAt} />}
                   </div>
                 </div>
               </>
@@ -281,7 +240,7 @@ function PrDrilldownModal({ dev, day, prs, onClose }: {
                   target="_blank"
                   rel="noreferrer"
                   title="Open on GitHub"
-                  className="flex items-center gap-3 px-5 py-2.5 hover:bg-chip/40 transition-colors"
+                  className="flex items-center gap-3 px-5 py-2.5 hover:bg-accent-fill/40 transition-colors"
                 >
                   {rowBody}
                 </a>
@@ -419,8 +378,8 @@ export function PrOverviewPage() {
     // moment: anyone who copied the link, or reloaded, mid-typing got PR #5. The
     // box still follows the keyboard; the committed query is what the URL holds.
     if (queryPrNumber !== null) p.set('pr', String(queryPrNumber));
-    // Only the non-default (collapsed) state is written, so the common URL stays clean.
-    if (!filtersOpen) p.set('filters', '0');
+    // Only the non-default (open) state is written, so the common URL stays clean.
+    if (filtersOpen) p.set('filters', '1');
     // Remembered so the follow-the-URL effect above can tell our own write from
     // somebody else's navigation.
     lastWritten.current = p.toString();
@@ -429,12 +388,17 @@ export function PrOverviewPage() {
     navigate({ search: p.toString() ? `?${p}` : '', hash: location.hash }, { replace: true });
   }, [projectSel.set, devSel.set, modelSel.set, childHubSel.set, range, gran, customFrom, customTo, filtersOpen, queryPrNumber, navigate, location.hash]);
 
+  // A custom range is the viewer's LOCAL days, like the presets and the user page.
+  // A malformed date in a shared link is no bound, not a crash.
   const from = useMemo(
-    () => (customFrom ? `${customFrom}T00:00:00.000Z` : fromIsoForRange(new Date(), range)),
+    () => startOfLocalDay(customFrom) || fromIsoForRange(new Date(), range),
     [customFrom, range],
   );
   // Inclusive end-of-day so a PR opened any time on `customTo` is counted.
-  const toParam = customTo ? `${customTo}T23:59:59.999Z` : '';
+  const toParam = endOfLocalDay(customTo);
+  // The viewer's IANA zone, so the server files each PR under the local day it
+  // was opened and the axis below matches it, by each date's own offset.
+  const timeZone = browserTimezone();
 
   // Shared filters (project + date window). Model and developer are NOT here —
   // they're applied only to the data query, so the options query can list the
@@ -449,8 +413,15 @@ export function PrOverviewPage() {
     if (childHubSel.set.size) p.set('childHubId', [...childHubSel.set].join(','));
     p.set('from', from);
     if (toParam) p.set('to', toParam);
+    // The zone, and the offset as the fallback for a server whose ICU lacks it.
+    // A browser that cannot name its zone sends neither: the axis then uses
+    // UTC days, and so must the server.
+    if (timeZone) {
+      p.set('tz', timeZone);
+      p.set('tzOffsetMin', String(-new Date().getTimezoneOffset()));
+    }
     return p;
-  }, [projectSel.set, childHubSel.set, from, toParam]);
+  }, [projectSel.set, childHubSel.set, from, toParam, timeZone]);
 
   const dataQs = useMemo(() => {
     // Search mode: projects + the number, and nothing else. The superseded
@@ -469,13 +440,18 @@ export function PrOverviewPage() {
       // search return two unrelated PRs that merely share a number.
       if (childHubSel.set.size) p.set('childHubId', [...childHubSel.set].join(','));
       p.set('pr', String(queryPrNumber));
+      // The zone stays: a searched PR is filed under its local day too.
+      if (timeZone) {
+        p.set('tz', timeZone);
+        p.set('tzOffsetMin', String(-new Date().getTimezoneOffset()));
+      }
       return p.toString();
     }
     const p = new URLSearchParams(baseQs);
     if (modelSel.set.size) p.set('model', [...modelSel.set].join(','));
     if (devSel.set.size) p.set('users', [...devSel.set].join(','));
     return p.toString();
-  }, [baseQs, modelSel.set, devSel.set, projectSel.set, childHubSel.set, queryPrNumber]);
+  }, [baseQs, modelSel.set, devSel.set, projectSel.set, childHubSel.set, queryPrNumber, timeZone]);
 
   const overview = useQuery<PrOverviewResponse>({
     queryKey: ['pr-overview', dataQs],
@@ -547,6 +523,27 @@ export function PrOverviewPage() {
   const universe = optionsQuery.data ?? (mainIsUniverse ? overview.data : undefined);
   const modelOptions = universe?.byModel.map(m => m.model) ?? [];
   const devOptions = universe?.byDeveloper.map(x => x.user_key) ?? [];
+  const nameOf = usePeopleNames();
+  // A person's name where a label has room for one thing; the key is added
+  // when two keys share a name (one person, two machines without a git email),
+  // or the two would be indistinguishable.
+  // Counted once per answer, not per call: the heatmap asks for a label twice
+  // per cell and re-renders on every hover.
+  const sharedNames = useMemo(() => {
+    const count = new Map<string, number>();
+    for (const k of new Set([...devOptions, ...(overview.data?.byDeveloper ?? []).map(x => x.user_key)])) {
+      const n = nameOf(k);
+      if (n) count.set(n, (count.get(n) ?? 0) + 1);
+    }
+    return count;
+    // devOptions is derived from `universe` each render; its content is what matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [devOptions.join('\u0000'), overview.data, nameOf]);
+  const labelOf = (key: string): string => {
+    const name = nameOf(key);
+    if (!name) return key;
+    return (sharedNames.get(name) ?? 0) > 1 ? `${name} (${key})` : name;
+  };
   // Partitioned by hub, like the model and developer lists: a repo chip from a
   // hub the board is not showing is a dead end.
   const hubQs = childHubSel.set.size
@@ -588,15 +585,16 @@ export function PrOverviewPage() {
     [searchActive, d],
   );
   const axis = useMemo(
-    () => (d ? (searchActive ? searchDays : buildDayAxis(from, to)) : []),
-    [d, searchActive, searchDays, from, to],
+    () => (d ? (searchActive ? searchDays : buildDayAxis(from, to, timeZone ?? 'UTC')) : []),
+    [d, searchActive, searchDays, from, to, timeZone],
   );
   // Re-bucketed PR volume for the "PR volume by size" chart (daily/weekly/monthly).
   const volume = useMemo(() => (d ? buildVolumeSeries(d.byDay, axis, gran) : null), [d, axis, gran]);
+  const prsDelta = d?.previous ? pctDelta(d.totals.prs, d.previous.prs) : null;
   const volumeBuckets = volume?.buckets ?? [];
   const maxBucketTotal = Math.max(1, ...volumeBuckets.map(b => b.total));
-  // Reference date for the heatmap's "today" column highlight (UTC, like the axis).
-  const todayIso = new Date().toISOString().slice(0, 10);
+  // Reference date for the heatmap's "today" column highlight (local, like the axis).
+  const todayIso = buildDayAxis(new Date().toISOString(), new Date().toISOString(), timeZone ?? 'UTC')[0];
   // Per-column header info, computed once per axis instead of per cell.
   const dayInfos = useMemo(() => axis.map(day => dayHeaderInfo(day, todayIso)), [axis, todayIso]);
   // One shared, fixed-position tooltip for the whole heatmap: per-cell hidden
@@ -658,86 +656,55 @@ export function PrOverviewPage() {
     return out;
   }, [searchActive, prNumber, childHubSel.set, projectSel.set, devSel.set, modelSel.set]);
 
-  return (
-    <div className="max-w-[1200px] mx-auto space-y-6">
-      <header className="flex items-end justify-between gap-4 flex-wrap">
-        <div>
-          <p className="text-[11px] uppercase tracking-[0.18em] text-accent-text font-semibold">Analytics</p>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight text-ink flex items-center gap-2">
-            <GitPullRequest className="w-6 h-6 text-accent-text" /> PR Overview
-          </h1>
-          <p className="mt-1 text-sm text-ink-tertiary">Pull requests per developer, weighted by size — for the selected period, with a daily breakdown.</p>
-        </div>
-        {/* Hover explains the greyed presets on a shared link: the "do not
-            apply" note lives inside the accordion, so with `?filters=0` a
-            colleague landing on this page sees disabled controls and no reason. */}
-        <div
-          className="flex items-center gap-2"
-          title={searchActive
-            ? 'A PR search supersedes the date range — this selection is kept but does not apply until the search is cleared'
-            : undefined}
-        >
-          <div className="inline-flex rounded-lg border border-border-soft bg-chip p-0.5 text-[11px] font-medium">
-            {RANGES.map(r => {
-              const active = !customFrom && !customTo && range === r.key;
-              return (
-                <button
-                  key={r.key}
-                  onClick={() => pickRange(r.key)}
-                  // Superseded by a PR search: disabled, not hidden, and the
-                  // selection survives so clearing the search restores it.
-                  disabled={searchActive}
-                  className={`px-2.5 py-1 rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${active
-                    ? 'bg-surface text-accent-text shadow-sm'
-                    : 'text-ink-tertiary hover:text-ink'}`}
-                >
-                  {r.label}
-                </button>
-              );
-            })}
-          </div>
-          <div className="inline-flex items-center gap-1 text-[11px] text-ink-tertiary">
-            <input
-              type="date"
-              value={customFrom}
-              max={customTo || undefined}
-              onChange={e => setCustomFrom(e.target.value)}
-              aria-label="From date"
-              disabled={searchActive}
-              className="rounded-lg border border-border-soft bg-surface text-ink-secondary px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50"
-            />
-            <span>→</span>
-            <input
-              type="date"
-              value={customTo}
-              min={customFrom || undefined}
-              onChange={e => setCustomTo(e.target.value)}
-              aria-label="To date"
-              disabled={searchActive}
-              className="rounded-lg border border-border-soft bg-surface text-ink-secondary px-2 py-1 disabled:cursor-not-allowed disabled:opacity-50"
-            />
-            {(customFrom || customTo) && (
-              <button
-                onClick={() => { setCustomFrom(''); setCustomTo(''); }}
-                disabled={searchActive}
-                className="ml-0.5 px-1.5 py-1 rounded-md text-ink-tertiary hover:text-rose-600 dark:hover:text-rose-400 disabled:cursor-not-allowed disabled:opacity-50"
-                title="Clear date range"
-              >
-                ✕
-              </button>
-            )}
-          </div>
-        </div>
-      </header>
+  // A PR search replaces the period; everything else it leaves in play is
+  // already phrased in activeFilters.
+  const filterSummary = searchActive
+    ? activeFilters.join(' · ')
+    : describeFilters({
+      range,
+      from: customFrom,
+      to: customTo,
+      projects: [...projectSel.set].map(shortRemote),
+      extra: activeFilters.filter(f => !/project|child hub/.test(f)),
+      childHubs: childHubSel.set.size,
+    });
 
-      <FilterAccordion
-        activeCount={activeFilters.length}
-        activeSummary={activeFilters}
-        initialOpen={filtersOpen}
-        onOpenChange={setFiltersOpen}
-      >
-      {/* PR search sits with the other filters (it IS one) but first, and stays
-          outside the accordion's fold of facet rows because it outranks them. */}
+  return (
+    <Page>
+      {/* Hover on the period explains the greyed presets on a shared link: the
+          "do not apply" note lives inside the accordion, so with `?filters=0` a
+          colleague landing on this page sees disabled controls and no reason. */}
+      <PageHeader
+        eyebrow="Analytics"
+        icon={<GitPullRequest className="w-6 h-6 text-accent-ink" />}
+        title="PR Overview"
+        subtitle="Pull requests per developer, weighted by size — for the selected period, with a daily breakdown."
+        toolbar={(
+          <PeriodControl
+            ranges={RANGES}
+            // From the validated bounds: a malformed date in a link applies the
+            // preset, so the preset is what shows as pressed.
+            active={!startOfLocalDay(customFrom) && !toParam ? range : null}
+            onPick={pickRange}
+            // Superseded by a PR search: disabled, not hidden, and the
+            // selection survives so clearing the search restores it.
+            disabled={searchActive}
+            title={searchActive
+              ? 'A PR search supersedes the date range — this selection is kept but does not apply until the search is cleared'
+              : undefined}
+          >
+            <DateRange
+              from={customFrom}
+              to={customTo}
+              onChange={(f, t) => { setCustomFrom(f); setCustomTo(t); }}
+              disabled={searchActive}
+            />
+          </PeriodControl>
+        )}
+      />
+
+      {/* PR search is a filter, but it outranks the facets: it stays in view
+          above the collapsed bar rather than inside its fold. */}
       <div>
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <label
@@ -756,7 +723,7 @@ export function PrOverviewPage() {
             </button>
           )}
         </div>
-        <div className="mt-1.5 flex items-center gap-2 rounded-lg border border-border-soft bg-surface px-2.5 py-1.5 focus-within:border-border-brand">
+        <div className="mt-1.5 flex items-center gap-2 rounded-lg border border-border-soft bg-surface px-2.5 py-1.5 focus-within:border-accent focus-within:ring-2 focus-within:ring-focus-ring">
           <Search className="w-3.5 h-3.5 text-ink-tertiary shrink-0" aria-hidden="true" />
           <input
             id="pr-number-search"
@@ -795,6 +762,13 @@ export function PrOverviewPage() {
         </p>
       </div>
 
+      <FilterAccordion
+        activeCount={activeFilters.length}
+        summary={filterSummary}
+        open={filtersOpen}
+        onOpenChange={setFiltersOpen}
+      >
+
       {childHubs.show && (
         <FacetMultiselect
           label="Child hub"
@@ -822,6 +796,7 @@ export function PrOverviewPage() {
       <FacetMultiselect
         label="Developer"
         options={devOptions}
+        optionLabel={labelOf}
         selected={devSel.set}
         onToggle={devSel.toggle}
         onClear={devSel.clear}
@@ -849,7 +824,7 @@ export function PrOverviewPage() {
       />
       </FilterAccordion>
 
-      {overview.isLoading && <div className="text-sm text-ink-tertiary py-8 text-center">Loading…</div>}
+      {overview.isLoading && <Skeleton label="PR overview" rows={4} className="py-4" />}
       {/* keepPreviousData turned a failed request from a blank section into a
           confident lie: the previous answer stays on screen indefinitely, under
           the NEW labels, with no signal that anything went wrong. Say so. */}
@@ -861,9 +836,7 @@ export function PrOverviewPage() {
           so the stale answer is already gone; the banner explains the gap rather
           than dressing it up.) */}
       {overview.isError && (
-        <div role="alert" className="rounded-2xl border border-border-soft bg-surface px-4 py-2.5 text-xs font-medium text-red-600 dark:text-red-400">
-          Could not load this overview.
-        </div>
+        <QueryError error={overview.error} onRetry={() => { void overview.refetch(); }} live="assertive" retrying={overview.isFetching} />
       )}
       {d && d.totals.prs === 0 && (
         <div className="rounded-2xl border border-border-soft bg-surface px-5 py-10 text-center text-sm text-ink-tertiary">
@@ -886,28 +859,33 @@ export function PrOverviewPage() {
         <>
           {/* KPIs */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <Tile label="Total PRs" value={d.totals.prs}>
-              <DeltaBadge value={d.previous ? pctDelta(d.totals.prs, d.previous.prs) : null} />
-            </Tile>
-            <Tile label="Weighted size" value={<span>{d.totals.sizePoints}</span>}>
-              <span className="text-[11px] text-ink-tertiary">size points</span>
-            </Tile>
-            <Tile label="Active developers" value={d.totals.developers}>
-              <span className="text-[11px] text-ink-tertiary">{(d.totals.prs / Math.max(1, d.totals.developers)).toFixed(1)} PRs / dev</span>
-            </Tile>
-            <Tile label="Median size" value={<span className="uppercase">{d.totals.medianBucket ?? '—'}</span>}>
-              <span className="text-[11px] text-ink-tertiary">across {d.totals.prs} PRs</span>
-            </Tile>
+            <StatTile
+              label="Total PRs"
+              value={d.totals.prs}
+              delta={prsDelta}
+              hint={prsDelta == null ? '— no prior period' : undefined}
+            />
+            <StatTile
+              label="Weighted size"
+              value={d.totals.sizePoints}
+              hint={<>size points · <a href="#size-derivation" className="underline decoration-dotted hover:text-ink">how size is derived</a></>}
+            />
+            <StatTile
+              label="Active developers"
+              value={d.totals.developers}
+              hint={`${(d.totals.prs / Math.max(1, d.totals.developers)).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} PRs / dev`}
+            />
+            <StatTile label="Median size" value={(d.totals.medianBucket ?? '—').toUpperCase()} hint={`across ${d.totals.prs.toLocaleString()} PRs`} />
           </div>
 
           {/* Resize strip */}
           {d.resized.count > 0 && (
-            <div className="flex items-center gap-3 flex-wrap rounded-xl border border-border-soft border-l-[3px] border-l-brand bg-gradient-to-r from-chip to-transparent px-4 py-3">
-              <RefreshCw className="w-4 h-4 text-accent-text" />
+            <div className="flex items-center gap-3 flex-wrap rounded-xl border border-border-soft border-l-[3px] border-l-accent bg-surface px-4 py-3">
+              <RefreshCw className="w-4 h-4 text-accent-ink" />
               <span className="text-[13px] text-ink-secondary">
                 <b className="text-ink">{d.resized.count} PRs re-sized</b> this period —{' '}
-                <span className="text-emerald-600 dark:text-emerald-400 font-semibold">{d.resized.grew} grew ↑</span>,{' '}
-                <span className="text-rose-600 dark:text-rose-400 font-semibold">{d.resized.shrank} shrank ↓</span>.
+                <span className="text-ink font-semibold">{d.resized.grew} grew ↑</span>,{' '}
+                <span className="text-ink font-semibold">{d.resized.shrank} shrank ↓</span>.
               </span>
               <span className="ml-auto text-[11px] text-ink-tertiary">Each PR counts once, at its latest sizing.</span>
             </div>
@@ -923,14 +901,14 @@ export function PrOverviewPage() {
                     <span className="w-3 h-3 rounded-sm" style={{ background: s.color }} /> {s.label}
                   </span>
                 ))}
-                <div className="inline-flex rounded-lg border border-border-soft bg-chip p-0.5 text-[11px] font-medium" role="group" aria-label="Chart granularity">
+                <div className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium" role="group" aria-label="Chart granularity">
                   {GRANULARITIES.map(g => (
                     <button
                       key={g.key}
                       onClick={() => setGran(g.key)}
                       aria-pressed={gran === g.key}
                       className={`px-2.5 py-1 rounded-md transition-colors ${gran === g.key
-                        ? 'bg-surface text-accent-text shadow-sm'
+                        ? 'bg-surface text-accent-ink shadow-sm'
                         : 'text-ink-tertiary hover:text-ink'}`}
                     >
                       {g.label}
@@ -975,9 +953,9 @@ export function PrOverviewPage() {
                 is per bucket over the WHOLE range (empty buckets included). */}
             {volume && (
               <div className="mt-4 flex gap-3 flex-wrap">
-                <VolumeStat label="Total" value={volume.stats.total} />
-                <VolumeStat label={`Average / ${GRANULARITIES.find(g => g.key === gran)?.unit ?? gran}`} value={fmtAverage(volume.stats.average)} />
-                <VolumeStat label={`Max${volume.stats.maxLabel ? ` · ${volume.stats.maxLabel}` : ''}`} value={volume.stats.max} />
+                <StatTile size="sm" label="Total" value={volume.stats.total} />
+                <StatTile size="sm" label={`Average / ${GRANULARITIES.find(g => g.key === gran)?.unit ?? gran}`} value={fmtAverage(volume.stats.average)} />
+                <StatTile size="sm" label={`Max${volume.stats.maxLabel ? ` · ${volume.stats.maxLabel}` : ''}`} value={volume.stats.max} />
               </div>
             )}
           </section>
@@ -987,37 +965,31 @@ export function PrOverviewPage() {
             <div className="px-5 py-4 border-b border-border-soft">
               <h2 className="text-sm font-semibold text-ink">By developer</h2>
             </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm min-w-[640px]">
-                <thead>
-                  <tr className="text-left font-mono text-[10px] uppercase tracking-[0.08em] text-ink-tertiary">
-                    <th className="px-5 py-2 font-semibold">Developer</th>
-                    <th className="px-3 py-2 font-semibold text-right">PRs</th>
-                    <th className="px-3 py-2 font-semibold w-[180px]">Size mix</th>
-                    <th className="px-3 py-2 font-semibold">XS · S · M · L · XL</th>
-                    <th className="px-5 py-2 font-semibold text-right">Trend</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border-soft">
-                  {d.byDeveloper.map(dev => (
-                    <tr key={dev.user_key} className="hover:bg-chip/50 transition-colors">
-                      <td className="px-5 py-3">
-                        <div className="flex items-center gap-2.5">
-                          <div className="w-7 h-7 rounded-lg bg-[image:var(--gradient-accent)] text-navy text-[10px] font-bold flex items-center justify-center shrink-0">
-                            {dev.user_key.slice(0, 2).toUpperCase()}
-                          </div>
-                          <span className="font-mono text-[12px] text-ink-secondary truncate max-w-[200px]">{dev.user_key}</span>
-                        </div>
-                      </td>
-                      <td className="px-3 py-3 text-right font-mono tabular-nums text-lg font-bold text-ink">{dev.prs}</td>
-                      <td className="px-3 py-3"><MixBar sizes={dev.sizes} total={dev.prs} /></td>
-                      <td className="px-3 py-3"><SizeCounts sizes={dev.sizes} /></td>
-                      <td className="px-5 py-3 text-right"><div className="inline-block"><Sparkline daily={dev.daily} axis={axis} /></div></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <DataTable
+              caption="By developer"
+              minWidth={720}
+              rows={d.byDeveloper}
+              rowKey={dev => dev.user_key}
+              defaultSort={{ key: 'prs', dir: 'desc' }}
+              columns={[
+                {
+                  key: 'dev',
+                  header: 'Developer',
+                  sortValue: dev => (nameOf(dev.user_key) ?? dev.user_key).toLowerCase(),
+                  render: dev => (
+                    <div className="flex items-center gap-2.5">
+                      <PersonAvatar name={nameOf(dev.user_key)} userKey={dev.user_key} size="sm" />
+                      <PersonName name={nameOf(dev.user_key)} userKey={dev.user_key} className="max-w-[200px]" />
+                    </div>
+                  ),
+                },
+                { key: 'prs', header: 'PRs', align: 'right', firstDir: 'desc', sortValue: dev => dev.prs, render: dev => <span className="font-mono tabular-nums text-lg font-bold text-ink">{dev.prs}</span> },
+                { key: 'pts', header: 'Size points', align: 'right', firstDir: 'desc', sortValue: dev => dev.sizePoints, render: dev => <span className="font-mono tabular-nums text-ink-secondary">{dev.sizePoints.toLocaleString()}</span> },
+                { key: 'mix', header: 'Size mix', className: 'w-[180px]', render: dev => <MixBar sizes={dev.sizes} total={dev.prs} /> },
+                { key: 'counts', header: 'XS · S · M · L · XL', render: dev => <SizeCounts sizes={dev.sizes} /> },
+                { key: 'trend', header: 'Trend', align: 'right', render: dev => <div className="inline-block"><Sparkline daily={dev.daily} axis={axis} /></div> },
+              ]}
+            />
           </section>
 
           {/* By model */}
@@ -1026,31 +998,29 @@ export function PrOverviewPage() {
               <h2 className="text-sm font-semibold text-ink">By model</h2>
               <p className="text-[11px] text-ink-tertiary mt-0.5">Which agent runtime opened the PRs.</p>
             </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm min-w-[560px]">
-                <thead>
-                  <tr className="text-left font-mono text-[10px] uppercase tracking-[0.08em] text-ink-tertiary">
-                    <th className="px-5 py-2 font-semibold">Model</th>
-                    <th className="px-3 py-2 font-semibold text-right">PRs</th>
-                    <th className="px-3 py-2 font-semibold w-[180px]">Size mix</th>
-                    <th className="px-5 py-2 font-semibold text-right">Share</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border-soft">
-                  {d.byModel.map(m => (
-                    <tr key={m.model} className="hover:bg-chip/50 transition-colors">
-                      <td className="px-5 py-3">
-                        <div className="font-mono text-[12px] text-ink-secondary">{m.model}</div>
-                        {m.harnesses.length > 0 && <div className="text-[10px] text-ink-tertiary">via {m.harnesses.join(', ')}</div>}
-                      </td>
-                      <td className="px-3 py-3 text-right font-mono tabular-nums text-lg font-bold text-ink">{m.prs}</td>
-                      <td className="px-3 py-3"><MixBar sizes={m.sizes} total={m.prs} /></td>
-                      <td className="px-5 py-3 text-right font-mono tabular-nums text-ink-secondary">{Math.round((m.prs / d.totals.prs) * 100)}%</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <DataTable
+              caption="By model"
+              minWidth={560}
+              rows={d.byModel}
+              rowKey={m => m.model}
+              defaultSort={{ key: 'prs', dir: 'desc' }}
+              columns={[
+                {
+                  key: 'model',
+                  header: 'Model',
+                  sortValue: m => m.model.toLowerCase(),
+                  render: m => (
+                    <>
+                      <div className="font-mono text-[12px] text-ink-secondary">{m.model}</div>
+                      {m.harnesses.length > 0 && <div className="text-[10px] text-ink-tertiary">via {m.harnesses.join(', ')}</div>}
+                    </>
+                  ),
+                },
+                { key: 'prs', header: 'PRs', align: 'right', firstDir: 'desc', sortValue: m => m.prs, render: m => <span className="font-mono tabular-nums text-lg font-bold text-ink">{m.prs}</span> },
+                { key: 'mix', header: 'Size mix', className: 'w-[180px]', render: m => <MixBar sizes={m.sizes} total={m.prs} /> },
+                { key: 'share', header: 'Share', align: 'right', render: m => <span className="font-mono tabular-nums text-ink-secondary">{Math.round((m.prs / d.totals.prs) * 100)}%</span> },
+              ]}
+            />
           </section>
 
           {/* Per developer per day heatmap — calendar headers (month band +
@@ -1071,7 +1041,7 @@ export function PrOverviewPage() {
                   <div
                     key={`${band.label}-${i}`}
                     style={{ gridColumn: `span ${band.span}` }}
-                    className="text-center font-mono text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-tertiary border-b-2 border-border-brand pb-1"
+                    className="text-center font-mono text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-tertiary border-b-2 border-border-soft pb-1"
                   >
                     {band.label}
                   </div>
@@ -1086,12 +1056,12 @@ export function PrOverviewPage() {
                       key={day}
                       data-testid="heatmap-day"
                       className={`text-center rounded-md py-0.5 ${h.isToday
-                        ? 'bg-chip outline outline-1 outline-border-brand'
-                        : h.isWeekend ? 'bg-chip' : ''}`}
+                        ? 'bg-canvas outline outline-1 outline-accent'
+                        : h.isWeekend ? 'bg-canvas' : ''}`}
                     >
                       <span className={`block font-mono text-[8px] uppercase leading-tight ${h.isWeekend ? 'text-ink-tertiary' : 'text-ink-tertiary'}`}>{h.weekday}</span>
                       <span className={`block font-mono text-[11px] font-bold tabular-nums leading-tight ${h.isToday
-                        ? 'text-accent-text'
+                        ? 'text-accent-ink'
                         : h.isWeekend ? 'text-ink-tertiary' : 'text-ink-secondary'}`}>{h.dayNum}</span>
                     </div>
                   );
@@ -1105,21 +1075,23 @@ export function PrOverviewPage() {
                     <Fragment key={dev.user_key}>
                       {/* sticky so names + pills stay visible when the day axis scrolls */}
                       <div className="sticky left-0 z-10 self-stretch flex items-center gap-2 pr-2 min-w-0 bg-surface">
-                        <span title={dev.user_key} className="font-mono text-[11px] text-ink-tertiary truncate">{dev.user_key}</span>
+                        {nameOf(dev.user_key)
+                          ? <span title={dev.user_key} className="text-[11px] text-ink-secondary truncate">{labelOf(dev.user_key)}</span>
+                          : <span title={dev.user_key} className="font-mono text-[11px] text-ink-tertiary truncate">{dev.user_key}</span>}
                         {/* stacked vertically so long dev emails keep the width */}
                         <span className="ml-auto flex flex-col items-end gap-0.5 shrink-0">
-                          <span className="font-mono text-[9px] font-bold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-accent-text bg-chip border border-border-brand">{pct.prPct}% PRs</span>
-                          <span className="font-mono text-[9px] font-bold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-brand-dark dark:text-brand-light bg-mint/40 dark:bg-brand/10 border border-border-brand">{pct.ptsPct}% pts</span>
+                          <span title={`${pct.prPct}% share of all PRs in the period`} className="text-[11px] font-semibold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-accent-ink bg-accent-fill border border-accent">{pct.prPct}% of PRs</span>
+                          <span title={`${pct.ptsPct}% share of all size points in the period`} className="text-[11px] font-semibold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-ink-secondary bg-canvas border border-border-soft">{pct.ptsPct}% of size</span>
                         </span>
                       </div>
                       {axis.map((day, i) => {
                         const c = dev.daily[day] ?? 0;
                         const h = dayInfos[i];
-                        const intensity = c === 0 ? 0 : 0.25 + (c / max) * 0.7;
+                        const intensity = c === 0 ? 0 : c / max; // heatColor owns the visible floor
                         return (
                           <div
                             key={day}
-                            onMouseEnter={showHeatTip(cellTooltip(dev.user_key, day, c))}
+                            onMouseEnter={showHeatTip(cellTooltip(labelOf(dev.user_key), day, c))}
                             onMouseLeave={() => setHeatTip(null)}
                             // CGLAB-131 — non-empty cells are drillable: open the PR list.
                             // (Clear the tooltip so it cannot peek out from the modal.)
@@ -1127,16 +1099,16 @@ export function PrOverviewPage() {
                             onClick={c > 0 ? () => openDrill(dev.user_key, day) : undefined}
                             role={c > 0 ? 'button' : undefined}
                             tabIndex={c > 0 ? 0 : undefined}
-                            aria-label={c > 0 ? `${c} PR${c === 1 ? '' : 's'} by ${dev.user_key} on ${day} — open list` : undefined}
+                            aria-label={c > 0 ? `${c} PR${c === 1 ? '' : 's'} by ${labelOf(dev.user_key)} on ${day} — open list` : undefined}
                             onKeyDown={c > 0 ? (e) => {
                               if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDrill(dev.user_key, day); }
                             } : undefined}
                             className={`aspect-square rounded-[3px] ${c === 0
                               ? h.isWeekend
-                                ? 'bg-chip border border-dashed border-border-soft'
-                                : 'bg-chip'
+                                ? 'bg-transparent border border-dashed border-ink-tertiary/40'
+                                : 'bg-border-soft'
                               : 'cursor-pointer hover:opacity-75 transition-opacity'}`}
-                            style={{ background: c === 0 ? undefined : `rgba(99,102,241,${intensity.toFixed(2)})` }}
+                            style={{ background: c === 0 ? undefined : heatColor(intensity) }}
                           />
                         );
                       })}
@@ -1153,7 +1125,7 @@ export function PrOverviewPage() {
               defect). Coordinates are viewport-relative, from placeTooltip. */}
           {heatTip && (
             <div
-              className={`pointer-events-none fixed z-50 -translate-x-1/2 whitespace-nowrap rounded-md bg-surface text-ink border border-slate-200 dark:border-slate-700 font-mono text-[10px] px-2 py-1 shadow-lg ${heatTip.below ? '' : '-translate-y-full'}`}
+              className={`pointer-events-none fixed z-50 -translate-x-1/2 whitespace-nowrap rounded-md bg-surface text-ink border border-border-soft font-mono text-[10px] px-2 py-1 shadow-lg ${heatTip.below ? '' : '-translate-y-full'}`}
               style={{ left: heatTip.x, top: heatTip.y }}
             >
               {heatTip.text}
@@ -1163,10 +1135,10 @@ export function PrOverviewPage() {
 
           {/* Size model explainer */}
           <section className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5">
-            <h2 className="text-sm font-semibold text-ink mb-3">How size is derived</h2>
-            <div className="font-mono text-[13px] rounded-lg bg-chip border border-border-soft px-4 py-3 text-ink-secondary">
+            <h2 id="size-derivation" className="text-sm font-semibold text-ink mb-3 scroll-mt-4">How size is derived</h2>
+            <div className="font-mono text-[13px] rounded-lg bg-canvas border border-border-soft px-4 py-3 text-ink-secondary">
               <span className="text-ink-tertiary">// count leaves — the unit of work in each branch</span><br />
-              <span className="text-accent-text">size_points</span> = leafStory·<b>4</b> + task·<b>2</b> + bug·<b>1</b>
+              <span className="text-accent-ink">size_points</span> = leafStory·<b>4</b> + task·<b>2</b> + bug·<b>1</b>
             </div>
             <p className="text-[12px] text-ink-tertiary mt-3 max-w-2xl">
               An Epic rolls up its Stories, and a Story rolls up its Tasks &amp; Bugs — so summing all four tiers
@@ -1184,6 +1156,6 @@ export function PrOverviewPage() {
           </section>
         </>
       )}
-    </div>
+    </Page>
   );
 }

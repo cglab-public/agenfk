@@ -140,7 +140,7 @@ let repointSyncHandle: RepointSyncHandle | null = null;
 //   any project still ships with its remoteUrl populated. (Bug 0bc7669b: the
 //   prior implementation did fire-and-forget warming, leaving the first event
 //   for every project with remoteUrl=null.)
-// - itemTitle / externalId: same lazy-cache pattern via itemMetaCache.
+// - itemTitle / externalId / externalUrl: read from the item on each event.
 //
 // Returns a Promise so internal awaits work; existing call sites that ignore
 // the return value remain correct because hubClient.recordEvent itself only
@@ -174,34 +174,24 @@ const recordHubEvent = async (input: RecordEventInput): Promise<void> => {
 
   let itemTitle: string | null = (input as any).itemTitle ?? payloadTitle ?? null;
   let externalId: string | null = (input as any).externalId ?? payloadExternalId ?? null;
+  let externalUrl: string | null = (input as any).externalUrl ?? null;
   if (input.itemId) {
-    const cached = itemMetaCache.get(input.itemId);
-    if (cached) {
-      itemTitle = itemTitle ?? cached.title ?? null;
-      externalId = externalId ?? cached.externalId ?? null;
-    } else {
-      warmItemMeta(input.itemId).catch(() => { /* best-effort */ });
-    }
-    // Prime the cache when this very event already carries the metadata, so
-    // subsequent events for the same item don't need a storage round-trip.
-    if (itemTitle || externalId) {
-      itemMetaCache.set(input.itemId, {
-        title: itemTitle ?? cached?.title ?? null,
-        externalId: externalId ?? cached?.externalId ?? null,
-      });
-    }
+    // Read from the item itself, every time: a cache primed by the first event
+    // (item.created carries no tracker link) never learned a link added later,
+    // so linked items reached the hub without their key or URL.
+    const meta = await readItemMeta(input.itemId);
+    itemTitle = itemTitle ?? meta.title;
+    externalId = externalId ?? meta.externalId;
+    // The URL belongs to the key: only take the stored one for the stored key.
+    externalUrl = externalUrl ?? (externalId === meta.externalId ? meta.externalUrl : null);
   }
 
-  hubClient.recordEvent({ ...input, payload, itemType, remoteUrl, itemTitle, externalId } as RecordEventInput);
+  hubClient.recordEvent({ ...input, payload, itemType, remoteUrl, itemTitle, externalId, externalUrl } as RecordEventInput);
 };
 
 // projectId → git remote URL ("" when no remote, null when not yet resolved).
 const projectRemoteCache = new Map<string, string | null>();
 
-// itemId → { title, externalId }. Best-effort cache, populated lazily by
-// warmItemMeta() and primed inline by recordHubEvent when an event arrives
-// already carrying the metadata.
-const itemMetaCache = new Map<string, { title: string | null; externalId: string | null }>();
 async function resolveFlowName(projectId: string | undefined): Promise<string> {
   if (!projectId) return DEFAULT_FLOW.name;
   try {
@@ -215,16 +205,17 @@ async function resolveFlowName(projectId: string | undefined): Promise<string> {
   }
 }
 
-async function warmItemMeta(itemId: string): Promise<void> {
+/** An item's title and tracker link for a hub event; nulls when unreadable. */
+async function readItemMeta(itemId: string): Promise<{ title: string | null; externalId: string | null; externalUrl: string | null }> {
   try {
-    const it = await storage.getItem(itemId);
-    if (!it) { itemMetaCache.set(itemId, { title: null, externalId: null }); return; }
-    itemMetaCache.set(itemId, {
-      title: typeof (it as any).title === 'string' ? (it as any).title : null,
-      externalId: typeof (it as any).externalId === 'string' ? (it as any).externalId : null,
-    });
+    const it: any = await storage.getItem(itemId);
+    return {
+      title: typeof it?.title === 'string' ? it.title : null,
+      externalId: typeof it?.externalId === 'string' ? it.externalId : null,
+      externalUrl: typeof it?.externalUrl === 'string' ? it.externalUrl : null,
+    };
   } catch {
-    itemMetaCache.set(itemId, { title: null, externalId: null });
+    return { title: null, externalId: null, externalUrl: null };
   }
 }
 

@@ -7,6 +7,7 @@ import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import {
     HOOK_VARIANTS,
+    hookBinFilenames,
     stripAgenfkHookEntries,
     resolveConfirmation,
     summarizeResults,
@@ -324,10 +325,10 @@ async function run() {
     // 4. CLI symlink + all hook scripts in ~/.local/bin (#88 Bug 2: was gatekeeper-only)
     await step('~/.local/bin scripts (agenfk CLI + hooks)', !onlyPlatform, async () => {
         console.log(`${GREEN}[4] Removing agenfk CLI symlink and hook scripts from ~/.local/bin...${NC}`);
-        const suffix = os.platform() === 'win32' ? '.cmd' : '';
         let removed = false;
-        for (const name of ['agenfk', ...HOOK_VARIANTS]) {
-            const dest = path.join(localBinDir, `${name}${suffix}`);
+        // On Windows that is the .cmd shims AND the extensionless sh wrappers (#192).
+        for (const name of hookBinFilenames(os.platform())) {
+            const dest = path.join(localBinDir, name);
             if (await rmIfExists(dest)) {
                 console.log(`  Removed: ${dest}`);
                 removed = true;

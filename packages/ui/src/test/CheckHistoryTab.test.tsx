@@ -9,6 +9,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { CheckHistoryTab } from '../components/CheckHistoryTab';
 import { api } from '../api';
+import { guardTokens } from './helpers/tokenGuard';
 
 vi.mock('../api', () => ({ api: { getCheckHistory: vi.fn() } }));
 vi.mock('../SocketContext', () => ({ useSocketEvent: vi.fn() }));
@@ -22,6 +23,8 @@ function show(history: unknown[]) {
 
 beforeEach(() => vi.clearAllMocks());
 afterEach(() => cleanup());
+// CGLAB-434: every test here also proves the panel renders on tokens.
+guardTokens();
 
 describe('CheckHistoryTab', () => {
   it('says so when no check has run on the card yet', async () => {

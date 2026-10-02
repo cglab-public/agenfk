@@ -24,10 +24,11 @@ import {
   type UnifiedRow,
 } from '../pages/adminModelsUnified';
 import type { ModelGroup } from '../pages/modelMappings';
+import { cardClass, cn, controlClass } from './ui';
 
-const cardCls = 'bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5';
-const inputCls = 'w-full px-2 py-1 rounded-md border border-border-soft bg-chip text-ink dark:text-white text-[12px] placeholder:text-ink-tertiary focus:outline-none focus:ring-2 focus:ring-brand';
-const filterCls = 'w-full px-3 py-2 rounded-lg border border-border-soft bg-chip text-ink dark:text-white text-sm placeholder:text-ink-tertiary focus:outline-none focus:ring-2 focus:ring-brand';
+const cardCls = cardClass;
+const inputCls = cn(controlClass, 'px-2 py-1 rounded-md text-[12px]');
+const filterCls = controlClass;
 
 interface Props {
   groups: ModelGroup[];
@@ -151,7 +152,7 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
           {(unknownCount > 0 || adminCount > 0) && (
             <p className="mt-1 text-[11px] text-ink-tertiary">
               {unknownCount > 0 && (
-                <span className="text-amber-600 dark:text-amber-400 font-semibold">
+                <span className="text-status-warn-text font-semibold">
                   {unknownCount} unknown
                 </span>
               )}
@@ -181,7 +182,7 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
       </header>
 
       {unmappedCount > 0 && (
-        <p className="mt-2 text-[11px] font-semibold text-amber-600 dark:text-amber-400">
+        <p className="mt-2 text-[11px] font-semibold text-status-warn-text">
           <AlertTriangle className="w-3.5 h-3.5 inline -mt-0.5 mr-1" />
           {unmappedCount} unmapped — these names are each their own group. Use “add a mapping”
           above to fold spellings of the same model together.
@@ -204,7 +205,7 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
       />
 
       {rowError && (
-        <p role="alert" className="mt-2 text-[12px] text-rose-600 dark:text-rose-400">{rowError}</p>
+        <p role="alert" className="mt-2 text-[12px] text-status-danger-text">{rowError}</p>
       )}
 
       {loading && <p className="mt-3 text-sm text-ink-tertiary">Loading…</p>}
@@ -283,12 +284,12 @@ function ModelRow({ row, editing, draft, dirty, invalid, busy, onEdit, onCancel,
 
   return (
     <>
-      <tr className={`border-t border-border-soft ${row.unknown ? 'bg-amber-500/5' : ''}`}>
+      <tr className={`border-t border-border-soft ${row.unknown ? 'bg-status-warn-bg' : ''}`}>
         <td className="px-5 py-2 align-top">
           <div className="font-mono text-[12px] font-semibold text-ink">{row.canonicalModel}</div>
           <div className="mt-0.5 flex items-center gap-2 text-[10px] text-ink-tertiary">
             {row.aliasCount > 0 && <span>{row.aliasCount} alias{row.aliasCount === 1 ? '' : 'es'}</span>}
-            {row.meta?.source === 'admin' && <span className="text-accent-text">edited</span>}
+            {row.meta?.source === 'admin' && <span className="text-accent-ink">edited</span>}
             {inherited && (
               <span title={`Inherited from the rule "${row.meta?.matchedKey}"`} className="cursor-help">
                 from {row.meta?.matchedKey}
@@ -342,14 +343,14 @@ function ModelRow({ row, editing, draft, dirty, invalid, busy, onEdit, onCancel,
                 disabled={!dirty || invalid || busy}
                 title={invalid ? 'Fix the highlighted value first' : dirty ? 'Save' : 'No changes to save'}
                 aria-label="Save"
-                className="p-1 rounded text-accent-text disabled:opacity-30 hover:bg-chip"
+                className="p-1 rounded text-accent-ink disabled:opacity-30 hover:bg-accent-fill"
               >
                 <Check className="w-4 h-4" />
               </button>
               <button
                 onClick={onCancel}
                 aria-label="Cancel"
-                className="p-1 rounded text-ink-tertiary hover:text-ink hover:bg-chip"
+                className="p-1 rounded text-ink-tertiary hover:text-ink hover:bg-accent-fill"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -358,7 +359,7 @@ function ModelRow({ row, editing, draft, dirty, invalid, busy, onEdit, onCancel,
         ) : (
           <>
             <td className="px-3 py-2 text-[12px] text-ink">
-              {row.meta?.provider ?? <span className="text-amber-600 dark:text-amber-400 font-semibold">{UNKNOWN_LABEL}</span>}
+              {row.meta?.provider ?? <span className="text-status-warn-text font-semibold">{UNKNOWN_LABEL}</span>}
             </td>
             <td className="px-3 py-2 text-[12px] text-ink-secondary">
               {row.meta ? licenseClassLabel(row.meta.licenseClass) : '—'}
@@ -371,7 +372,7 @@ function ModelRow({ row, editing, draft, dirty, invalid, busy, onEdit, onCancel,
                 onClick={onEdit}
                 aria-label={`Edit classification for ${row.canonicalModel}`}
                 title={row.unknown ? 'Classify this model' : 'Edit'}
-                className="p-1 rounded text-ink-tertiary hover:text-accent-text hover:bg-chip"
+                className="p-1 rounded text-ink-tertiary hover:text-accent-ink hover:bg-accent-fill"
               >
                 <Pencil className="w-3.5 h-3.5" />
               </button>
@@ -380,7 +381,7 @@ function ModelRow({ row, editing, draft, dirty, invalid, busy, onEdit, onCancel,
                   onClick={onDelete}
                   disabled={busy}
                   aria-label={`Delete classification for ${row.canonicalModel}`}
-                  className="p-1 rounded text-ink-tertiary hover:text-rose-600 disabled:opacity-40"
+                  className="p-1 rounded text-ink-tertiary hover:text-status-danger-text disabled:opacity-40"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
@@ -409,7 +410,7 @@ function ModelRow({ row, editing, draft, dirty, invalid, busy, onEdit, onCancel,
               disabled={unmapping}
               aria-label={`Unmap ${a.model}`}
               title={`Stop mapping "${a.model}" — dashboards will show it as its own model again`}
-              className="p-1 rounded text-ink-tertiary hover:text-rose-600 disabled:opacity-40"
+              className="p-1 rounded text-ink-tertiary hover:text-status-danger-text disabled:opacity-40"
             >
               <Trash2 className="w-3.5 h-3.5" />
             </button>

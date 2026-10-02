@@ -12,6 +12,8 @@ import { ItemType, Status } from '../types';
 import { ITEM_TYPE_VISUAL } from '../components/ItemTypeSquare';
 import { io } from 'socket.io-client';
 import { SocketProvider } from '../SocketContext';
+import { expectOnTokens, guardTokens } from './helpers/tokenGuard';
+import { cardShortDate, cardAgo } from '../cardDates';
 
 // Mock socket.io-client. Handlers are recorded rather than dropped so a test
 // can fire a server event — `project_switched` in particular, since the pin
@@ -121,6 +123,9 @@ describe('KanbanBoard', () => {
   afterEach(() => {
     cleanup();
   });
+
+  // CGLAB-434: every test here also proves the board renders on tokens.
+  guardTokens();
 
   describe('switching project from outside the board (CGLAB-168)', () => {
     it('clears the drill-down so the new project is not filtered by the old one\'s epic', async () => {
@@ -320,6 +325,7 @@ describe('KanbanBoard', () => {
       }
     };
     afterEach(() => asDesktop(false));
+  guardTokens();
 
     const withProject = async () => {
       const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
@@ -1352,6 +1358,120 @@ describe('the terminal button on a card', () => {
     expect(screen.queryByRole('button', { name: /open a terminal on/i })).toBeNull();
   });
 });
+
+/**
+ * The board renders on the visual-system tokens only (CGLAB-434 S5.1): no raw
+ * Tailwind palette colours (slate stays: tokens.css remaps it to the neutral
+ * ramp), no gradients, glow or old teal chrome, teal only on primary buttons
+ * and the brand mark, and no inline hex/rgba colours except a step's own
+ * stored colour. A step without one falls back to a token: status tokens for
+ * done/blocked/paused, series or accent for working steps.
+ */
+describe('board colours are on tokens (CGLAB-434)', () => {
+  // The sweep itself is the shared helper (test/helpers/tokenGuard.ts).
+
+  const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+  const at = { createdAt: new Date(), updatedAt: new Date(), history: [] };
+  const items = [
+    { id: 'e1', projectId: 'p1', type: ItemType.EPIC, title: 'Epic A', status: Status.IN_PROGRESS, ...at },
+    { id: 's1', projectId: 'p1', type: ItemType.STORY, title: 'Story B', status: Status.REVIEW, ...at },
+    { id: 't1', projectId: 'p1', type: ItemType.TASK, title: 'Task C', status: Status.TODO, ...at },
+    { id: 'b1', projectId: 'p1', type: ItemType.BUG, title: 'Bug D', status: Status.TEST, ...at },
+    { id: 'x1', projectId: 'p1', type: ItemType.TASK, title: 'Blocked E', status: Status.BLOCKED, ...at },
+    { id: 'a1', projectId: 'p1', type: ItemType.TASK, title: 'Archived F', status: Status.ARCHIVED, ...at },
+    // A PR chip and a progress bar render too.
+    { id: 'pr1', projectId: 'p1', type: ItemType.TASK, title: 'PR G', status: Status.IN_PROGRESS, prUrl: 'https://github.com/acme/api/pull/7', prNumber: 7, prStatus: 'merged', ...at },
+    { id: 'c1', projectId: 'p1', parentId: 'e1', type: ItemType.TASK, title: 'Child H', status: Status.DONE, ...at },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    queryClient.clear();
+    vi.mocked(api.getProjectFlow).mockResolvedValue(DEFAULT_FLOW_MOCK as any);
+    vi.mocked(api.listProjects).mockResolvedValue([project as any]);
+    vi.mocked(api.listItems).mockResolvedValue(items as any);
+    localStorage.setItem('agenfk_project_id', 'p1');
+  });
+  afterEach(() => cleanup());
+  guardTokens();
+
+  it('the board, every item type, blocked and archive open, is on tokens only', async () => {
+    render(<KanbanBoard />, { wrapper });
+    await screen.findByText('Bug D');
+    // Open the collapsed Blocked and Archived columns (their labels sit inside
+    // the toggle buttons). Asserted, so a renamed label fails instead of skipping.
+    for (const label of ['Blocked', 'Archived']) {
+      const btn = screen.queryAllByText(label).map(el => el.closest('button')).find(Boolean);
+      expect(btn, `${label} toggle`).toBeTruthy();
+      fireEvent.click(btn!);
+    }
+    await screen.findByText('Blocked E');
+    await screen.findByText('Archived F');
+    expectOnTokens(document.body);
+  });
+
+  it('the card detail modal, overview and subitems, is on tokens only', async () => {
+    vi.mocked(api.getItem).mockImplementation((async (id: string) => items.find(i => i.id === id)) as any);
+    render(<KanbanBoard />, { wrapper });
+    const card = await screen.findByText('Epic A');
+    fireEvent.doubleClick(card.closest('[draggable="true"]') || card.closest('.group') || card.parentElement!);
+    const title = await screen.findAllByText('Epic A');
+    expect(title.length).toBeGreaterThan(1);
+    expectOnTokens(document.body);
+    const subTab = screen.queryAllByRole('button').find(b => /^Subitems/.test(b.textContent?.trim() ?? ''));
+    expect(subTab, 'Subitems tab').toBeTruthy();
+    fireEvent.click(subTab!);
+    await screen.findAllByText('Child H');
+    expectOnTokens(document.body);
+  });
+
+  it('item types wear their type tokens on the card', async () => {
+    render(<KanbanBoard />, { wrapper });
+    for (const [title, token] of [['Epic A', 'type-epic'], ['Story B', 'type-story'], ['Task C', 'type-task'], ['Bug D', 'type-bug']] as const) {
+      const card = (await screen.findByText(title)).closest('[draggable="true"]') as HTMLElement;
+      const cls = [card, ...Array.from(card.querySelectorAll('*'))].map(el => el.getAttribute('class') ?? '').join(' ');
+      expect(cls, title).toMatch(new RegExp(`(?:^|\\s)(?:text|bg|border)-${token}(?:/\\d+)?(?:\\s|$)`));
+    }
+  });
+});
+
+describe('card dates on the card face', () => {
+  const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+  const created = '2024-03-12T14:03:00Z';
+  const updated = new Date(Date.now() - 2 * 3600_000).toISOString();
+  const at = { createdAt: created, updatedAt: updated, history: [] };
+  const items = [
+    { id: 'open1', projectId: 'p1', type: ItemType.TASK, title: 'Open card', status: Status.IN_PROGRESS, ...at },
+    { id: 'done1', projectId: 'p1', type: ItemType.TASK, title: 'Closed card', status: Status.DONE, ...at },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    queryClient.clear();
+    vi.mocked(api.getProjectFlow).mockResolvedValue(DEFAULT_FLOW_MOCK as any);
+    vi.mocked(api.listProjects).mockResolvedValue([project as any]);
+    vi.mocked(api.listItems).mockResolvedValue(items as any);
+    localStorage.setItem('agenfk_project_id', 'p1');
+  });
+  afterEach(() => cleanup());
+  guardTokens();
+
+  for (const [id, title] of [['open1', 'Open card'], ['done1', 'Closed card']] as const) {
+    it(`shows when "${title}" was created and last updated, with the full times on hover`, async () => {
+      render(<KanbanBoard />, { wrapper });
+      await screen.findByText(title);
+      const dates = await screen.findByTestId(`card-dates-${id}`);
+      // Exact face text, so the two dates cannot swap labels unnoticed.
+      expect(dates.textContent).toBe(`Created ${cardShortDate(created)} · Updated ${cardAgo(updated)}`);
+      const hover = dates.getAttribute('title') ?? '';
+      expect(hover).toContain(`Created ${new Date(created).toLocaleString()}`);
+      expect(hover).toContain(`Updated ${new Date(updated).toLocaleString()}`);
+    });
+  }
+});
+
 
 /**
  * One type grammar, everywhere a card is drawn (CGLAB-164).

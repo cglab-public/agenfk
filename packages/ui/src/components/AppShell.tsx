@@ -1873,7 +1873,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <span
             className={clsx(
               'inline-block h-1.5 w-1.5 rounded-full',
-              connection === 'connected' ? 'bg-brand' : 'bg-ink-tertiary',
+              connection === 'connected' ? 'bg-status-ok-text' : 'bg-ink-tertiary',
             )}
           />
           <span data-testid="connection-state">{CONNECTION_LABEL[connection]}</span>
@@ -2509,7 +2509,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
             if (e.key === 'ArrowLeft') { e.preventDefault(); onNudge(-16); }
             if (e.key === 'ArrowRight') { e.preventDefault(); onNudge(16); }
           }}
-          className="absolute inset-y-0 right-0 z-10 w-[5px] translate-x-[2px] cursor-col-resize hover:bg-brand/30 focus-visible:bg-brand/40 focus-visible:outline-none"
+          className="absolute inset-y-0 right-0 z-10 w-[5px] translate-x-[2px] cursor-col-resize hover:bg-accent/30 focus-visible:bg-accent/40 focus-visible:outline-none"
         />
       )}
       {/* Traffic-light strip, macOS only: Electron hides the native title bar
@@ -2663,7 +2663,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                     'flex w-full items-center gap-2 rounded-md py-1.5 text-left text-[13px] transition-colors',
                     open ? 'px-2' : 'justify-center px-0',
                     current
-                      ? 'bg-canvas font-semibold text-ink'
+                      ? 'bg-accent-fill font-semibold text-accent-ink'
                       : 'text-ink-secondary hover:bg-canvas/60 hover:text-ink',
                     disabled && 'cursor-not-allowed opacity-50 hover:bg-transparent hover:text-ink-secondary',
                   )}
@@ -2766,7 +2766,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                   });
                 }}
                 title="Open the projects with work running in them"
-                className="rounded text-emerald-400 underline decoration-dotted underline-offset-2 transition-colors hover:text-emerald-300"
+                className="rounded text-status-ok-text underline decoration-dotted underline-offset-2 transition-colors hover:decoration-solid"
               >
                 {running} running
               </button>
@@ -2780,7 +2780,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                   revealOnBoard({ itemId: first.itemId, projectId: first.projectId });
                 }}
                 title="Go to the first card that needs you"
-                className="rounded text-amber-400 underline decoration-dotted underline-offset-2 transition-colors hover:text-amber-300"
+                className="rounded text-status-warn-text underline decoration-dotted underline-offset-2 transition-colors hover:decoration-solid"
               >
                 {stuck.length} need you
               </button>
@@ -2903,7 +2903,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                 className={clsx(
                   'flex min-w-0 flex-1 items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors',
                   isActive
-                    ? 'bg-canvas font-semibold text-ink'
+                    ? 'bg-accent-fill font-semibold text-accent-ink'
                     : 'text-ink-secondary hover:bg-canvas/60 hover:text-ink',
                 )}
               >
@@ -2983,7 +2983,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                 // reach the control by keyboard.
                 className={clsx(
                   'absolute right-1 rounded p-1 text-ink-tertiary transition-colors hover:text-ink focus:opacity-100',
-                  isPinned ? 'opacity-100 text-brand' : 'opacity-0 group-hover:opacity-100',
+                  isPinned ? 'opacity-100 text-accent-ink' : 'opacity-0 group-hover:opacity-100',
                 )}
               >
                 {isPinned ? <PinOff size={11} /> : <Pin size={11} />}
@@ -3058,7 +3058,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                         <span
                           className={clsx(
                             'shrink-0',
-                            r.needsAPerson && 'text-amber-600 dark:text-amber-400',
+                            r.needsAPerson && 'text-status-warn-text',
                           )}
                         >
                           {r.state === 'unverifiable' ? 'unknown' : r.state}
@@ -3184,7 +3184,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                                 title="Plan a fan-out of this card's children"
                                 aria-label={`Plan a fan-out of ${item.title}`}
                                 onClick={e => { e.stopPropagation(); onOpenFleet(item.id); }}
-                                className="shrink-0 rounded px-1 font-mono text-[10px] uppercase leading-[16px] tracking-wide text-ink-tertiary opacity-70 hover:text-brand hover:opacity-100"
+                                className="shrink-0 rounded px-1 font-mono text-[10px] uppercase leading-[16px] tracking-wide text-ink-tertiary opacity-70 hover:text-accent-ink hover:opacity-100"
                               >
                                 fleet
                               </button>
@@ -3221,7 +3221,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                                    * for words somebody has to read.
                                    */
                                   state.rejected.length || state.heldBy.length
-                                    ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300'
+                                    ? 'bg-status-warn-bg text-status-warn-text'
                                     : 'text-ink-tertiary opacity-70',
                                 )}
                               >
@@ -3317,7 +3317,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
             role="menu"
             aria-label={`Actions for ${cardMenu.item.title}`}
             style={{ top: cardMenu.y, left: cardMenu.x }}
-            className="fixed z-50 min-w-[10rem] overflow-hidden rounded-lg border border-border-soft bg-nav-surface py-1 shadow-2xl"
+            className="fixed z-50 min-w-[10rem] overflow-hidden rounded-lg border border-border-soft bg-surface py-1 shadow-2xl"
           >
             <button
               role="menuitem"
@@ -3496,7 +3496,7 @@ function SortMenu({
         data-filtering={filtering || undefined}
         className={clsx(
           'flex items-center rounded p-1 transition-colors hover:bg-canvas',
-          filtering ? 'text-brand' : 'text-ink-tertiary hover:text-ink-secondary',
+          filtering ? 'text-accent-ink' : 'text-ink-tertiary hover:text-ink-secondary',
         )}
       >
         <ListFilter size={13} />
@@ -3523,7 +3523,7 @@ function SortMenu({
               )}
             >
               {option.label}
-              {value === option.value && <Check size={12} className="text-brand" />}
+              {value === option.value && <Check size={12} className="text-accent-ink" />}
             </button>
           ))}
 
@@ -3549,7 +3549,7 @@ function SortMenu({
                 )}
               >
                 All
-                {!filtering && <Check size={12} className="text-brand" />}
+                {!filtering && <Check size={12} className="text-accent-ink" />}
               </button>
               {agentOptions.map(option => {
                 const on = selectedAgents.includes(option.agentId);
@@ -3574,7 +3574,7 @@ function SortMenu({
                     <span className="min-w-0 flex-1 truncate">{option.label}</span>
                     {/* The count answers the question without opening it twice. */}
                     <span className="shrink-0 font-mono text-[10px] text-ink-tertiary">{option.count}</span>
-                    {on && <Check size={12} className="shrink-0 text-brand" />}
+                    {on && <Check size={12} className="shrink-0 text-accent-ink" />}
                   </button>
                 );
               })}

@@ -34,13 +34,13 @@ export const StepContractButton: React.FC<{
       data-testid={`step-contract-btn-${index}`}
       onClick={onOpen}
       title="Role, checks and approvals"
-      className="w-full text-left rounded-md border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-1.5 text-xs hover:border-border-brand"
+      className="w-full text-left rounded-md border border-slate-200 dark:border-slate-600 bg-surface px-2 py-1.5 text-xs hover:border-accent"
     >
       <span className="flex items-center gap-1.5">
-        <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: role?.color ?? 'transparent', border: role ? 'none' : '1px dashed #94a3b8' }} />
+        <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: role?.color ?? 'transparent', border: role ? 'none' : '1px dashed var(--text-tertiary)' }} />
         <span className="font-semibold truncate flex-1 text-slate-700 dark:text-slate-200">{role?.name ?? (step.role ? String(step.role) : 'No role')}</span>
-        {approval && <UserCheck size={12} aria-label="A person approves" className="text-amber-600 shrink-0" />}
-        {approval?.params?.signature === 'passkey' && <KeyRound size={12} aria-label="Signed with a passkey" className="text-amber-600 shrink-0" />}
+        {approval && <UserCheck size={12} aria-label="A person approves" className="text-status-warn-text shrink-0" />}
+        {approval?.params?.signature === 'passkey' && <KeyRound size={12} aria-label="Signed with a passkey" className="text-status-warn-text shrink-0" />}
       </span>
       <span className="block text-slate-500 dark:text-slate-400">{count} {count === 1 ? 'check' : 'checks'}</span>
     </button>
@@ -71,7 +71,7 @@ export const StepContractDialog: React.FC<{
   // Dimmed, blurred, and one surface up with a border: a dialog over the
   // editor must not share its background (it blended into it in dark mode).
   <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" role="dialog" aria-modal="true" aria-label={`Checks for ${step.label || step.name}`}>
-    <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-2xl">
+    <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl bg-surface border border-slate-200 dark:border-slate-700 shadow-2xl">
       <div className="flex items-center gap-2 px-5 py-3 border-b border-slate-200 dark:border-slate-700">
         <div className="flex-1">
           <div className="font-bold text-slate-900 dark:text-slate-100">{step.label || step.name}</div>
@@ -83,7 +83,7 @@ export const StepContractDialog: React.FC<{
       </div>
       <div className="p-5 space-y-3">
         {disabled && readOnlyNote && (
-          <div className="text-xs rounded-lg bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900 text-blue-900 dark:text-blue-100 px-3 py-2">{readOnlyNote}</div>
+          <div className="text-xs rounded-lg bg-status-info-bg border border-status-info-text/40 text-status-info-text px-3 py-2">{readOnlyNote}</div>
         )}
         <StepContractPanel step={step} stepContract={stepContract} contract={contract} disabled={disabled} canDisableChecks={canDisableChecks} onChange={onChange} />
       </div>
@@ -140,7 +140,7 @@ export const ContractProblems: React.FC<{
   // Messages the orphan rows do not already say.
   const other = contract.errors.filter(e => !/needs the record/.test(e));
   return (
-    <div data-testid="flow-contract-problems" className="rounded-xl border border-orange-300 bg-orange-50 dark:bg-orange-950/30 dark:border-orange-800 px-4 py-3 space-y-3">
+    <div data-testid="flow-contract-problems" className="rounded-xl border border-status-warn-text/40 bg-status-warn-bg px-4 py-3 space-y-3">
       {orphans.map(o => {
         const index = steps.findIndex(s => s.name === o.step);
         const stepLabel = steps[index]?.label || o.step;
@@ -148,21 +148,21 @@ export const ContractProblems: React.FC<{
         const recs = o.missing.map(r => RECORD_TEXTS[r] ?? r).join(', ');
         return (
           <div key={`${o.step}-${o.check}`} className="flex gap-2">
-            <AlertTriangle size={16} className="text-orange-700 shrink-0 mt-0.5" aria-hidden />
+            <AlertTriangle size={16} className="text-status-warn-text shrink-0 mt-0.5" aria-hidden />
             <div className="space-y-2 flex-1">
-              <div className="text-sm text-orange-900 dark:text-orange-100">
+              <div className="text-sm text-status-warn-text">
                 <span className="font-semibold">"{title}" on {stepLabel} has nothing to check.</span> It needs the {recs}, which no step before {stepLabel} makes.
               </div>
               {!disabled && (
                 <div className="flex gap-2 flex-wrap">
                   {o.missing.every(r => WRITING_TESTS_MAKES.has(r)) && (
                     <button type="button" onClick={() => onAddWritingTestsBefore(index)}
-                      className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900">
+                      className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-ink text-surface">
                       Add a "Writing tests" step before {stepLabel}
                     </button>
                   )}
                   <button type="button" onClick={() => onRemoveCheck(index, o.check)}
-                    className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-orange-300 text-orange-900 dark:text-orange-100 bg-white dark:bg-transparent">
+                    className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-status-warn-text/40 text-status-warn-text bg-surface">
                     Remove this check
                   </button>
                 </div>
@@ -172,11 +172,11 @@ export const ContractProblems: React.FC<{
         );
       })}
       {other.map((e, i) => (
-        <div key={i} className="flex gap-2 text-sm text-orange-900 dark:text-orange-100">
+        <div key={i} className="flex gap-2 text-sm text-status-warn-text">
           <AlertTriangle size={16} className="shrink-0 mt-0.5" aria-hidden /> {e}
         </div>
       ))}
-      <div className="text-xs text-orange-800 dark:text-orange-200">Fix these to save. The server checks the same thing, so a flow like this is refused from the registry and the hub too.</div>
+      <div className="text-xs text-status-warn-text">Fix these to save. The server checks the same thing, so a flow like this is refused from the registry and the hub too.</div>
     </div>
   );
 };
@@ -187,11 +187,11 @@ export const TemplatePicker: React.FC<{ onApply: (steps: FlowStep[]) => void }> 
   return (
     <div className="relative">
       <button type="button" onClick={() => setOpen(v => !v)}
-        className="flex items-center gap-1 text-xs font-semibold text-accent-text hover:opacity-80">
+        className="flex items-center gap-1 text-xs font-semibold text-accent-ink hover:opacity-80">
         <LayoutTemplate size={14} /> Start from template
       </button>
       {open && (
-        <div className="absolute right-0 top-6 z-50 w-72 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg p-2 space-y-1">
+        <div className="absolute right-0 top-6 z-50 w-72 rounded-xl border border-slate-200 dark:border-slate-700 bg-surface shadow-lg p-2 space-y-1">
           {Object.values(FLOW_TEMPLATES).map(t => (
             <button key={t.name} type="button" onClick={() => { onApply(t.steps); setOpen(false); }}
               className="w-full text-left rounded-lg px-3 py-2 hover:bg-slate-100 dark:hover:bg-slate-700">

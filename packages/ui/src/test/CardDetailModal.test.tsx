@@ -119,6 +119,14 @@ describe('CardDetailModal', () => {
     );
   };
 
+  it('shows when the card was created and when it was last updated', async () => {
+    const created = '2026-09-12T14:03:00Z';
+    const updated = '2026-09-29T09:30:00Z';
+    renderModal({ ...mockItem, status: Status.DONE, createdAt: created, updatedAt: updated });
+    expect(await screen.findByText(`Created: ${new Date(created).toLocaleString()}`)).toBeTruthy();
+    expect(screen.getByText(`Updated: ${new Date(updated).toLocaleString()}`)).toBeTruthy();
+  });
+
   it('shows a JIRA reference that has no browse URL', async () => {
     renderModal({ ...mockItem, externalId: 'CGLAB-163' });
     expect(screen.getByText('CGLAB-163')).toBeDefined();
@@ -890,10 +898,10 @@ describe('the create form is a draft, not a finished card', () => {
     // you are on without reading it.
     openDraft();
     const square = screen.getByTestId('new-item-type-square');
-    expect(square.className).toMatch(/bg-blue-\d{3}/); // TASK
+    expect(square.className).toMatch(/bg-type-task/); // TASK
     fireEvent.click(screen.getByRole('button', { name: /type/i }));
     fireEvent.click(screen.getByTestId(`new-item-type-option-${ItemType.EPIC}`));
-    expect(screen.getByTestId('new-item-type-square').className).toMatch(/bg-violet-\d{3}/);
+    expect(screen.getByTestId('new-item-type-square').className).toMatch(/bg-type-epic/);
   });
 
   it('says what the chosen type means, and updates when it changes', () => {

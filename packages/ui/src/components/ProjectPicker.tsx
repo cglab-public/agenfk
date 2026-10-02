@@ -132,7 +132,7 @@ export function ProjectPicker({ value, projects, onChange, testId = 'project-pic
                   data-testid={`${testId}-option-${project.id}`}
                   onClick={() => { if (usable) { onChange(project.id); setOpen(false); } }}
                   className={`flex w-full items-start gap-2.5 px-3 py-2 text-left ${
-                    usable ? 'hover:bg-chip' : 'cursor-not-allowed opacity-50'
+                    usable ? 'hover:bg-accent-fill' : 'cursor-not-allowed opacity-50'
                   }`}
                 >
                   <Folder size={14} className="mt-0.5 shrink-0 text-ink-tertiary" />
@@ -144,7 +144,7 @@ export function ProjectPicker({ value, projects, onChange, testId = 'project-pic
                       {project.projectRoot ?? 'no folder yet — an agent has nowhere to run'}
                     </span>
                   </span>
-                  {project.id === value && <Check size={14} className="mt-0.5 shrink-0 text-accent-text" />}
+                  {project.id === value && <Check size={14} className="mt-0.5 shrink-0 text-accent-ink" />}
                 </button>
               </li>
             );

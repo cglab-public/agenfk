@@ -14,9 +14,10 @@ import { api } from '../api';
 import { apiErrorText as errText } from '../apiError';
 import { fmtDateTime } from '../dates';
 import { parentUrlFromJoinToken } from '../joinToken';
+import { cardClass, cn, controlClass } from '../components/ui';
 
-const cardCls = 'bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5';
-const inputCls = 'w-full rounded-lg border border-border-soft bg-surface px-2 py-1.5 text-sm text-ink';
+const cardCls = cardClass;
+const inputCls = cn(controlClass, 'px-2 py-1.5');
 
 interface Status {
   bound: boolean;
@@ -75,7 +76,7 @@ export function AdminFederation() {
   if (status.isError) {
     return (
       <section className={cardCls}>
-        <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+        <p role="alert" className="text-sm text-status-danger-text">
           Could not load federation status: {errText(status.error)}
         </p>
       </section>
@@ -87,9 +88,9 @@ export function AdminFederation() {
     return (
       <section className={cardCls}>
         <h2 className="text-sm font-semibold text-ink inline-flex items-center gap-1.5">
-          <AlertTriangle className="w-4 h-4 text-amber-500" /> Parent hub
+          <AlertTriangle className="w-4 h-4 text-status-warn-text" /> Parent hub
         </h2>
-        <p role="alert" className="mt-2 text-sm text-red-600 dark:text-red-400">
+        <p role="alert" className="mt-2 text-sm text-status-danger-text">
           This hub has a parent, but its stored credential cannot be read: {d.error}
         </p>
         <p className="mt-2 text-xs text-ink-tertiary">
@@ -127,7 +128,7 @@ export function AdminFederation() {
             </p>
           )}
           {inviteToken.trim() && !joinDestination && (
-            <p className="text-xs text-amber-600 dark:text-amber-400">
+            <p className="text-xs text-status-warn-text">
               This is not a usable join token. If it came from a hub running an older version, that
               hub must be upgraded before it can issue one — its tokens do not carry its address.
             </p>
@@ -140,12 +141,12 @@ export function AdminFederation() {
           <div>
             <button type="button" onClick={() => join.mutate()}
               disabled={!joinDestination || join.isPending}
-              className="rounded-lg border border-border-soft px-3 py-1.5 text-xs font-medium text-ink hover:bg-chip disabled:opacity-50">
+              className="rounded-lg border border-border-soft px-3 py-1.5 text-xs font-medium text-ink hover:bg-accent-fill disabled:opacity-50">
               Join
             </button>
           </div>
           {join.isError && (
-            <p role="alert" className="text-xs text-red-600 dark:text-red-400">{errText(join.error)}</p>
+            <p role="alert" className="text-xs text-status-danger-text">{errText(join.error)}</p>
           )}
         </div>
       </section>
@@ -185,7 +186,7 @@ export function AdminFederation() {
             detaches this one, Leave becomes available.
           </p>
           {d.releaseRequested ? (
-            <p className="mt-3 inline-flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+            <p className="mt-3 inline-flex items-center gap-1.5 text-xs text-status-warn-text">
               <Clock className="w-3.5 h-3.5" /> Waiting for the parent hub to release this hub.
             </p>
           ) : (
@@ -197,14 +198,14 @@ export function AdminFederation() {
               </label>
               <div>
                 <button type="button" onClick={() => requestRelease.mutate()} disabled={requestRelease.isPending}
-                  className="rounded-lg border border-border-soft px-3 py-1.5 text-xs font-medium text-ink hover:bg-chip disabled:opacity-50">
+                  className="rounded-lg border border-border-soft px-3 py-1.5 text-xs font-medium text-ink hover:bg-accent-fill disabled:opacity-50">
                   Request release
                 </button>
               </div>
             </div>
           )}
           {requestRelease.isError && (
-            <p role="alert" className="mt-2 text-xs text-red-600 dark:text-red-400">{errText(requestRelease.error)}</p>
+            <p role="alert" className="mt-2 text-xs text-status-danger-text">{errText(requestRelease.error)}</p>
           )}
           <div className="mt-4">
             <button type="button" disabled
@@ -225,7 +226,7 @@ export function AdminFederation() {
           </p>
           <div className="mt-3">
             <button type="button" onClick={() => setConfirmLeave(true)}
-              className="rounded-lg border border-border-soft px-3 py-1.5 text-xs font-medium text-ink hover:bg-chip">
+              className="rounded-lg border border-border-soft px-3 py-1.5 text-xs font-medium text-ink hover:bg-accent-fill">
               Leave
             </button>
           </div>
@@ -235,23 +236,23 @@ export function AdminFederation() {
                 Clear this hub&apos;s parent? It becomes standalone again.
               </p>
               {d.outboxDepth > 0 && (
-                <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                <p className="mt-1 text-xs text-status-warn-text">
                   {d.outboxDepth} queued item(s) were never delivered. They stay on this hub, but
                   nothing will send them.
                 </p>
               )}
               <div className="mt-2 flex items-center gap-2">
                 <button type="button" onClick={() => leave.mutate()} disabled={leave.isPending}
-                  className="rounded-lg border border-red-500/40 px-3 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-chip disabled:opacity-50">
+                  className="rounded-lg border border-status-danger-text/40 px-3 py-1.5 text-xs font-medium text-status-danger-text hover:bg-status-danger-bg disabled:opacity-50">
                   Yes, leave
                 </button>
                 <button type="button" onClick={() => setConfirmLeave(false)}
-                  className="rounded-lg px-3 py-1.5 text-xs text-ink-tertiary hover:bg-chip">
+                  className="rounded-lg px-3 py-1.5 text-xs text-ink-tertiary hover:bg-accent-fill">
                   Cancel
                 </button>
               </div>
               {leave.isError && (
-                <p role="alert" className="mt-2 text-xs text-red-600 dark:text-red-400">{errText(leave.error)}</p>
+                <p role="alert" className="mt-2 text-xs text-status-danger-text">{errText(leave.error)}</p>
               )}
             </div>
           )}

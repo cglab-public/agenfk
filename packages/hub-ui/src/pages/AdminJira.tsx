@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api';
 import { apiErrorText } from '../apiError';
+import { buttonClass, cardClass, controlClass, CopyButton, QueryError } from '../components/ui';
 
 /**
  * Admin → JIRA (CGLAB-412). The admin registers the org's Atlassian OAuth app
@@ -18,10 +19,10 @@ export interface JiraAdminView {
   redirectUri: string;
 }
 
-const inputCls = 'w-full px-3 py-2 rounded-lg border border-border-soft bg-chip text-ink dark:text-white text-sm placeholder:text-ink-tertiary focus:outline-none focus:ring-2 focus:ring-brand';
-const cardCls = 'bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5';
-const primaryBtnCls = 'px-4 py-2 rounded-lg bg-[image:var(--gradient-accent)] text-navy shadow-glow disabled:opacity-50 text-sm font-bold transition-colors';
-const dangerBtnCls = 'px-4 py-2 rounded-lg border border-rose-500/50 text-rose-600 dark:text-rose-400 text-sm font-semibold hover:bg-rose-500/10 disabled:opacity-50 transition-colors';
+const inputCls = controlClass;
+const cardCls = cardClass;
+const primaryBtnCls = buttonClass('primary');
+const dangerBtnCls = buttonClass('danger');
 
 export function AdminJira() {
   const qc = useQueryClient();
@@ -46,12 +47,15 @@ export function AdminJira() {
     onSuccess: onSaved,
   });
 
-  if (!cfg.data) return <div className="text-sm text-ink-tertiary">Loading…</div>;
+  // Only a failed first load replaces the page; a failed refresh keeps it.
+  if (cfg.isError && !cfg.data) return <QueryError error={cfg.error} onRetry={() => cfg.refetch()} />;
+  if (!cfg.data) return <p role="status" className="text-sm text-ink-tertiary">Loading…</p>;
   const c = cfg.data;
   const idValue = clientId ?? c.clientId;
 
   return (
     <div className="space-y-4 max-w-2xl">
+      {cfg.isError && <QueryError error={cfg.error} onRetry={() => cfg.refetch()} />}
       <section className={cardCls}>
         <h3 className="text-sm font-semibold text-ink">Connections</h3>
         <p className="mt-1 text-sm text-ink-tertiary">
@@ -61,7 +65,7 @@ export function AdminJira() {
         </p>
         <p className="mt-3 text-sm text-ink">
           <span data-testid="jira-connected-count" className="font-mono font-semibold">{c.connectedCount}</span>
-          {' '}installation{c.connectedCount === 1 ? '' : 's'} connected
+          {' '}agenfk board{c.connectedCount === 1 ? '' : 's'} connected
         </p>
         {c.configured && (
           <div className="mt-4 flex items-center gap-3">
@@ -77,7 +81,7 @@ export function AdminJira() {
             >
               Disconnect everyone
             </button>
-            {disconnectAll.isError && <span className="text-xs text-rose-600 dark:text-rose-400">{apiErrorText(disconnectAll.error)}</span>}
+            {disconnectAll.isError && <span className="text-xs text-status-danger-text">{apiErrorText(disconnectAll.error)}</span>}
           </div>
         )}
       </section>
@@ -93,11 +97,12 @@ export function AdminJira() {
       >
         <h3 className="text-sm font-semibold text-ink">Atlassian OAuth app</h3>
         <p className="mt-1 text-xs text-ink-tertiary">
-          Create an OAuth 2.0 (3LO) app at developer.atlassian.com with the Jira API scopes
+          Create an OAuth 2.0 integration at developer.atlassian.com with the Jira API scopes
           <span className="font-mono"> read:jira-user</span> and <span className="font-mono">read:jira-work</span>, and register this callback URL:
         </p>
         <p className="mt-2 font-mono text-xs break-all text-ink">{c.redirectUri}</p>
-        <p className="mt-3 text-xs text-amber-700 dark:text-amber-300" data-testid="jira-distribution-step">
+        <CopyButton value={c.redirectUri} label="Copy callback URL" className="mt-1" />
+        <p className="mt-3 text-xs text-status-warn-text" data-testid="jira-distribution-step">
           Then, in the app's <span className="font-semibold">Distribution</span> tab, set the distribution status to
           <span className="font-semibold"> Sharing</span>. Atlassian keeps a new app private: until it is shared, only the
           app's contributors can connect their JIRA, and everyone else is stopped at the consent screen.
@@ -105,7 +110,7 @@ export function AdminJira() {
         <div className="mt-4 grid sm:grid-cols-2 gap-3">
           <label className="block">
             <span className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">Client ID</span>
-            <input className={`${inputCls} mt-1.5`} value={idValue} onChange={(e) => setClientId(e.target.value)} />
+            <input className={`${inputCls} mt-1.5`} value={idValue} onChange={(e) => { save.reset(); setClientId(e.target.value); }} />
           </label>
           <label className="block">
             <span className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">Client secret</span>
@@ -115,7 +120,7 @@ export function AdminJira() {
               autoComplete="off"
               placeholder={c.clientSecretSet ? '•••••• (leave blank to keep)' : 'client secret'}
               value={clientSecret}
-              onChange={(e) => setClientSecret(e.target.value)}
+              onChange={(e) => { save.reset(); setClientSecret(e.target.value); }}
             />
           </label>
         </div>
@@ -124,8 +129,8 @@ export function AdminJira() {
           <button type="submit" disabled={save.isPending} className={primaryBtnCls}>
             {save.isPending ? 'Saving…' : 'Save'}
           </button>
-          {save.isSuccess && <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">✓ Saved</span>}
-          {save.isError && <span className="text-xs text-rose-600 dark:text-rose-400 font-medium">{apiErrorText(save.error)}</span>}
+          {save.isSuccess && <span className="text-xs text-status-ok-text font-medium">✓ Saved</span>}
+          {save.isError && <span className="text-xs text-status-danger-text font-medium">{apiErrorText(save.error)}</span>}
         </div>
       </form>
     </div>

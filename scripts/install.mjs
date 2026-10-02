@@ -6,7 +6,7 @@ import { spawn, spawnSync, execSync } from 'child_process';
 import crypto from 'crypto';
 import { fileURLToPath, pathToFileURL } from 'url';
 import readline from 'readline';
-import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, isDevCheckout } from './install-helpers.mjs';
+import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, buildPosixWrapper, applyClaudeHooks, isDevCheckout } from './install-helpers.mjs';
 
 const GREEN = '\x1b[32m';
 const BLUE = '\x1b[34m';
@@ -670,9 +670,7 @@ async function run() {
     // Hoist path constants needed both inside and outside the rulesOnly block
     const localBinDir = path.join(os.homedir(), '.local', 'bin');
     const gatekeeperDestBase = path.join(localBinDir, 'agenfk-gatekeeper');
-    const gatekeeperDest = os.platform() === 'win32' ? `${gatekeeperDestBase}.cmd` : gatekeeperDestBase;
     const enforcerDestBase = path.join(localBinDir, 'agenfk-mcp-enforcer');
-    const enforcerDest = os.platform() === 'win32' ? `${enforcerDestBase}.cmd` : enforcerDestBase;
     const prHookDestBase = path.join(localBinDir, 'agenfk-pr-hook');
     const prHookDest = os.platform() === 'win32' ? `${prHookDestBase}.cmd` : prHookDestBase;
     // CGLAB-177: records Claude Code's tool calls as agent runs, so the Runs
@@ -680,7 +678,6 @@ async function run() {
     // writes a transcript the server tails; Claude Code writes none, so its
     // runs are pushed in by this hook instead.
     const runHookDestBase = path.join(localBinDir, 'agenfk-run-hook');
-    const runHookDest = os.platform() === 'win32' ? `${runHookDestBase}.cmd` : runHookDestBase;
 
     // --rules-only: skip steps 3b–12, jump straight to rules installation (step 13)
     if (rulesOnly) {
@@ -1358,11 +1355,10 @@ async function run() {
         if (os.platform() === 'win32') {
             // Always write .cmd on Windows
             await fs.writeFile(`${gatekeeperDestBase}.cmd`, `@echo off\nnode "${gatekeeperSource}" %*`, 'utf8');
-            // If MinGW, also write extension-less version for bash
-            if (isMinGW) {
-                await fs.writeFile(gatekeeperDestBase, `#!/bin/sh\nnode "${gatekeeperSource}" "$@"`, 'utf8');
-                chmodSync(gatekeeperDestBase, 0o755);
-            }
+            // Always write the extension-less sh wrapper too: Claude Code runs hooks
+            // through Git Bash, which cannot execute a .cmd (#192).
+            await fs.writeFile(gatekeeperDestBase, buildPosixWrapper(gatekeeperSource), 'utf8');
+            chmodSync(gatekeeperDestBase, 0o755);
         } else {
             if (existsSync(gatekeeperSource)) {
                 await fs.copyFile(gatekeeperSource, gatekeeperDestBase);
@@ -1376,10 +1372,8 @@ async function run() {
 
         if (os.platform() === 'win32') {
             await fs.writeFile(`${enforcerDestBase}.cmd`, `@echo off\nnode "${enforcerSource}" %*`, 'utf8');
-            if (isMinGW) {
-                await fs.writeFile(enforcerDestBase, `#!/bin/sh\nnode "${enforcerSource}" "$@"`, 'utf8');
-                chmodSync(enforcerDestBase, 0o755);
-            }
+            await fs.writeFile(enforcerDestBase, buildPosixWrapper(enforcerSource), 'utf8');
+            chmodSync(enforcerDestBase, 0o755);
         } else {
             if (existsSync(enforcerSource)) {
                 await fs.copyFile(enforcerSource, enforcerDestBase);
@@ -1394,10 +1388,8 @@ async function run() {
 
         if (os.platform() === 'win32') {
             await fs.writeFile(`${prHookDestBase}.cmd`, `@echo off\nnode "${prHookSource}" %*`, 'utf8');
-            if (isMinGW) {
-                await fs.writeFile(prHookDestBase, `#!/bin/sh\nnode "${prHookSource}" "$@"`, 'utf8');
-                chmodSync(prHookDestBase, 0o755);
-            }
+            await fs.writeFile(prHookDestBase, buildPosixWrapper(prHookSource), 'utf8');
+            chmodSync(prHookDestBase, 0o755);
         } else {
             if (existsSync(prHookSource)) {
                 await fs.copyFile(prHookSource, prHookDestBase);
@@ -1410,10 +1402,9 @@ async function run() {
         const runHookSource = path.join(rootDir, 'bin', 'agenfk-run-hook.mjs');
         if (os.platform() === 'win32') {
             await fs.writeFile(`${runHookDestBase}.cmd`, `@echo off\nnode "${runHookSource}" %*`, 'utf8');
-            if (isMinGW) {
-                await fs.writeFile(runHookDestBase, `#!/bin/sh\nnode "${runHookSource}" "$@"`, 'utf8');
-                chmodSync(runHookDestBase, 0o755);
-            }
+            // Claude Code runs hooks through Git Bash, which cannot execute a .cmd (#192).
+            await fs.writeFile(runHookDestBase, buildPosixWrapper(runHookSource), 'utf8');
+            chmodSync(runHookDestBase, 0o755);
         } else if (existsSync(runHookSource)) {
             // A SHIM, not a copy. This hook imports the event mapper from
             // packages/server/dist, resolved relative to its own file — and a
@@ -1648,75 +1639,8 @@ async function run() {
             } catch (e) {}
         }
         
-        // 12a. PreToolUse hook
-        if (!settings.hooks) settings.hooks = {};
-        if (!settings.hooks.PreToolUse) settings.hooks.PreToolUse = [];
-        
-        settings.hooks.PreToolUse = settings.hooks.PreToolUse.filter(entry =>
-            !JSON.stringify(entry).includes('agenfk-gatekeeper') &&
-            !JSON.stringify(entry).includes('agenfk-mcp-enforcer')
-        );
-
-        settings.hooks.PreToolUse.push({
-            matcher: 'Edit|Write|NotebookEdit',
-            hooks: [{ type: 'command', command: gatekeeperDest }]
-        });
-
-        settings.hooks.PreToolUse.push({
-            matcher: 'Bash|Read',
-            hooks: [{ type: 'command', command: enforcerDest }]
-        });
-
-        // PostToolUse hook for PR sizing (fires on Bash so it can react to
-        // `gh pr create` and `git push`).
-        if (!settings.hooks.PostToolUse) settings.hooks.PostToolUse = [];
-        settings.hooks.PostToolUse = settings.hooks.PostToolUse.filter(entry =>
-            !JSON.stringify(entry).includes('agenfk-pr-hook') &&
-            !JSON.stringify(entry).includes('agenfk-run-hook')
-        );
-        settings.hooks.PostToolUse.push({
-            matcher: 'Bash',
-            hooks: [{ type: 'command', command: `${prHookDest} --client claude-code` }]
-        });
-        // Records tool calls as agent-run events (CGLAB-177). Matches the tools
-        // worth a transcript line; the hook itself filters further and never
-        // blocks, so a slow or absent server costs nothing.
-        settings.hooks.PostToolUse.push({
-            matcher: 'Bash|Edit|Write|NotebookEdit|Task|WebFetch',
-            hooks: [{ type: 'command', command: `${runHookDest} --client claude-code` }]
-        });
-        // Closes the run when the session ends. Without this every run the
-        // hook opens stays `running` with no endedAt forever — the sessions
-        // rail shows work that finished weeks ago as still in flight, and the
-        // states that need a run to reach an outcome are unreachable.
-        //
-        // SessionEnd, NOT Stop. `Stop` is a per-TURN hook — it fires each time
-        // the assistant finishes answering, and can block "the turn from
-        // ending" — so registering it there closed the run after the first
-        // turn of a live session and, because closing drops the cache entry,
-        // made the next tool call open a brand new run. One session became
-        // dozens. See `closesRun` in bin/agenfk-run-hook.mjs.
-        settings.hooks.SessionEnd = (settings.hooks.SessionEnd ?? []).filter(
-            entry => !JSON.stringify(entry).includes('agenfk-run-hook'),
-        );
-        settings.hooks.SessionEnd.push({
-            // An explicit timeout, and it is NOT belt-and-braces. SessionEnd
-            // hooks are given a far tighter budget than every other event —
-            // 1.5 seconds against ten minutes — and the per-hook `timeout`
-            // field (in seconds) is the only way to raise it. Without this the
-            // close has to finish node startup and a PATCH inside 1.5s, and a
-            // slow local server eats the whole budget silently, which is the
-            // exact failure closing on SessionEnd was meant to fix.
-            hooks: [{ type: 'command', command: `${runHookDest} --client claude-code`, timeout: 10 }]
-        });
-        // Remove the old registration from anyone who installed before the fix,
-        // or the per-turn close keeps happening beside the correct one.
-        if (settings.hooks.Stop) {
-            settings.hooks.Stop = settings.hooks.Stop.filter(
-                entry => !JSON.stringify(entry).includes('agenfk-run-hook'),
-            );
-            if (settings.hooks.Stop.length === 0) delete settings.hooks.Stop;
-        }
+        // 12a. The agenfk hooks: Pre/PostToolUse, and SessionEnd for runs.
+        settings = applyClaudeHooks(settings, localBinDir);
 
         // Remove legacy mcpServers key if present (MCP is now registered via `claude mcp add`)
         delete settings.mcpServers;
