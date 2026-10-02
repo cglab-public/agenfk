@@ -13,6 +13,7 @@ import { suggestTestReport, withTestFiles } from './testReportHint';
 import { SuiteSlots, suiteRunLimit, waitingLine } from './suiteSlots';
 import { DEFAULT_REUSE_IGNORE, namedByTests, reuseIgnoreMatcher } from './reuseIgnore';
 import { capturedGreen, countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, describeCapture, TEST_FILE_PATTERN, ANY_TEST_FILE_PATTERN, needsCapture, needsEntryRecord, parseAgentReports, parseCheckAnswers, describeTreeWarnings, MAX_UNREVIEWED_LINES, type AgentReport, type CheckResult, type TreeWarning } from './checkEngine';
+import { retainSuperseded, withRecordRetention } from './recordRetention';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, foreignClaimsFor, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
@@ -1329,7 +1330,7 @@ export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null
 
   // Working-tree changes the author did NOT stage: not ours to commit, ours to
   // mention. Porcelain v1 with -z (a quoted path is a name the reader cannot
-  // copy), consuming the second   a rename emits.
+  // copy), consuming the second NUL a rename emits.
   const unstaged: string[] = [];
   const status = await git(['status', '--porcelain', '-z'], root);
   const entries = status.out.split('\0');
@@ -1402,7 +1403,8 @@ const initStorage = async () => {
     dbPath = remapped;
   }
 
-  storage = new SQLiteStorageProvider();
+  // ec325925: every record write keeps only the captures something still reads.
+  storage = withRecordRetention(new SQLiteStorageProvider());
 
   console.log(`[SERVER_START] Using Database: ${dbPath} (SQLite)`);
   await storage.init({ path: dbPath });
@@ -1902,14 +1904,13 @@ async function frozenTestsRollbackRefusal(item: any, toStatus: string, flow: Tra
   return `TESTS CHANGED ON ${occupied}: ${changed.slice(0, 5).join(', ')}${changed.length > 5 ? ` and ${changed.length - 5} more` : ''}. ${occupied} does not change the tests, and a rollback would re-take its baseline after the change. Put them back first${reopen}.`;
 }
 
-const SUPERSEDED_KEPT = 20;
 function supersededByRollback(item: any, toStatus: string, flow: TransitionFlow): any[] | undefined {
   const kept = new Set(recordsAfterRollback(item?.stepRecords, toStatus, flow) ?? []);
   const dropped = (item?.stepRecords ?? []).filter((r: any) => !kept.has(r) && r?.kind === 'capture');
   if (!dropped.length) return undefined;
   const at = new Date().toISOString();
-  // Bounded: only reuse reads them, and the newest greens are the ones worth reusing.
-  return [...(item.supersededRecords ?? []), ...dropped.map((r: any) => ({ ...r, supersededAt: at, rolledBackTo: toStatus }))].slice(-SUPERSEDED_KEPT);
+  // Bounded: only reuse reads them, so only greens are kept, the newest first (recordRetention).
+  return retainSuperseded([...(item.supersededRecords ?? []), ...dropped.map((r: any) => ({ ...r, supersededAt: at, rolledBackTo: toStatus }))]);
 }
 
 /** Refusal text for completing a card outside verify, whatever the exit step is called. */
