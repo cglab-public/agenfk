@@ -3,8 +3,21 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import supertest from 'supertest';
+import { loginAs } from './helpers/loginAs';
 import { createHubApp } from '../server';
+import { drainApp } from './helpers/drainApp';
 import { createPasswordUser } from '../auth/password';
+
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-flows-registry-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -16,10 +29,6 @@ const cleanup = () => {
   }
 };
 
-const loginAs = async (app: any, email: string, password: string) => {
-  const r = await supertest(app).post('/auth/login').send({ email, password });
-  return r.headers['set-cookie']?.[0] ?? '';
-};
 
 describe('hub admin: built-in default flow + registry proxy + install', () => {
   let app: any;
@@ -36,6 +45,8 @@ describe('hub admin: built-in default flow + registry proxy + install', () => {
       defaultOrgId: 'org-a',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
     await createPasswordUser(ctx.db, 'org-a', 'view@x',  'longenough1', 'viewer');
@@ -44,6 +55,8 @@ describe('hub admin: built-in default flow + registry proxy + install', () => {
   });
 
   afterEach(async () => {
+    // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
     vi.unstubAllGlobals();
@@ -51,7 +64,7 @@ describe('hub admin: built-in default flow + registry proxy + install', () => {
 
   // ── /v1/admin/flows/default ───────────────────────────────────────────────
   it('GET /v1/admin/flows/default returns the built-in flow', async () => {
-    const r = await supertest(app).get('/v1/admin/flows/default').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/admin/flows/default').set('Cookie', cookieAdmin);
     expect(r.status).toBe(200);
     expect(typeof r.body.name).toBe('string');
     expect(Array.isArray(r.body.steps)).toBe(true);
@@ -59,7 +72,7 @@ describe('hub admin: built-in default flow + registry proxy + install', () => {
   });
 
   it('GET /v1/admin/flows/default rejects non-admin', async () => {
-    const r = await supertest(app).get('/v1/admin/flows/default').set('Cookie', cookieView);
+    const r = await supertest(__server).get('/v1/admin/flows/default').set('Cookie', cookieView);
     expect(r.status).toBe(403);
   });
 
@@ -86,7 +99,7 @@ describe('hub admin: built-in default flow + registry proxy + install', () => {
     });
     vi.stubGlobal('fetch', fakeFetch);
 
-    const r = await supertest(app).get('/v1/admin/registry/flows').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/admin/registry/flows').set('Cookie', cookieAdmin);
     expect(r.status).toBe(200);
     expect(r.body).toHaveLength(2);
     expect(r.body[0].name).toBe('One');
@@ -97,13 +110,13 @@ describe('hub admin: built-in default flow + registry proxy + install', () => {
   it('GET /v1/admin/registry/flows returns [] when registry directory is missing (404)', async () => {
     const fakeFetch = vi.fn(async () => ({ ok: false, status: 404, json: async () => ({}) }));
     vi.stubGlobal('fetch', fakeFetch);
-    const r = await supertest(app).get('/v1/admin/registry/flows').set('Cookie', cookieAdmin);
+    const r = await supertest(__server).get('/v1/admin/registry/flows').set('Cookie', cookieAdmin);
     expect(r.status).toBe(200);
     expect(r.body).toEqual([]);
   });
 
   it('GET /v1/admin/registry/flows rejects non-admin', async () => {
-    const r = await supertest(app).get('/v1/admin/registry/flows').set('Cookie', cookieView);
+    const r = await supertest(__server).get('/v1/admin/registry/flows').set('Cookie', cookieView);
     expect(r.status).toBe(403);
   });
 
@@ -129,7 +142,7 @@ describe('hub admin: built-in default flow + registry proxy + install', () => {
     });
     vi.stubGlobal('fetch', fakeFetch);
 
-    const r = await supertest(app).post('/v1/admin/flows/install').set('Cookie', cookieAdmin)
+    const r = await supertest(__server).post('/v1/admin/flows/install').set('Cookie', cookieAdmin)
       .send({ filename: 'community.json' });
     expect(r.status).toBe(201);
     expect(r.body.source).toBe('community');
@@ -137,17 +150,17 @@ describe('hub admin: built-in default flow + registry proxy + install', () => {
     expect(r.body.definition.steps.length).toBeGreaterThan(0);
 
     // Should be visible in the list now.
-    const list = await supertest(app).get('/v1/admin/flows').set('Cookie', cookieAdmin);
+    const list = await supertest(__server).get('/v1/admin/flows').set('Cookie', cookieAdmin);
     expect(list.body.find((f: any) => f.name === 'Imported Flow')).toBeTruthy();
   });
 
   it('POST /v1/admin/flows/install requires a filename', async () => {
-    const r = await supertest(app).post('/v1/admin/flows/install').set('Cookie', cookieAdmin).send({});
+    const r = await supertest(__server).post('/v1/admin/flows/install').set('Cookie', cookieAdmin).send({});
     expect(r.status).toBe(400);
   });
 
   it('POST /v1/admin/flows/install rejects non-admin', async () => {
-    const r = await supertest(app).post('/v1/admin/flows/install').set('Cookie', cookieView)
+    const r = await supertest(__server).post('/v1/admin/flows/install').set('Cookie', cookieView)
       .send({ filename: 'whatever.json' });
     expect(r.status).toBe(403);
   });

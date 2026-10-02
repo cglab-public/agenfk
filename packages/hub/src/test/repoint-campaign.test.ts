@@ -21,10 +21,22 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import supertest from 'supertest';
+import { loginAs } from './helpers/loginAs';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { drainApp } from './helpers/drainApp';
+
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-repoint-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -38,10 +50,6 @@ const cleanup = () => {
   }
 };
 
-const loginAs = async (app: any, email: string, password: string) => {
-  const r = await supertest(app).post('/auth/login').send({ email, password });
-  return r.headers['set-cookie']?.[0] ?? '';
-};
 
 describe('repoint campaign (hub side)', () => {
   let app: any;
@@ -59,21 +67,21 @@ describe('repoint campaign (hub side)', () => {
     );
 
   const openCampaign = (targetUrl = NEW_URL, cookie = cookieAdmin) =>
-    supertest(app).post('/v1/admin/repoint').set('Cookie', cookie).send({ targetUrl });
+    supertest(__server).post('/v1/admin/repoint').set('Cookie', cookie).send({ targetUrl });
 
   const board = (cookie = cookieAdmin) =>
-    supertest(app).get('/v1/admin/repoint').set('Cookie', cookie);
+    supertest(__server).get('/v1/admin/repoint').set('Cookie', cookie);
 
   const directiveFor = (token: string) =>
-    supertest(app).get('/v1/repoint-directive').set('Authorization', `Bearer ${token}`);
+    supertest(__server).get('/v1/repoint-directive').set('Authorization', `Bearer ${token}`);
 
-  /** Report an outcome as the client would, from a chosen hostname. */
+  /** Report an outcome as the client would, from a chosen hostname (the Host a proxy preserves). */
   const report = (token: string, installationId: string, type: string, payload: any, host?: string) => {
-    const req = supertest(app)
+    const req = supertest(__server)
       .post('/v1/events')
       .set('Authorization', `Bearer ${token}`)
       .set('X-Installation-Id', installationId);
-    if (host) req.set('X-Forwarded-Host', host);
+    if (host) req.set('Host', host);
     return req.send({
       events: [{
         eventId: `ev-${Math.random().toString(36).slice(2)}`,
@@ -102,6 +110,8 @@ describe('repoint campaign (hub side)', () => {
       defaultOrgId: 'org-a',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
     await createPasswordUser(ctx.db, 'org-a', 'view@x', 'longenough1', 'viewer');
@@ -115,15 +125,15 @@ describe('repoint campaign (hub side)', () => {
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
   describe('authz', () => {
     it('rejects unauthenticated admin calls', async () => {
-      expect((await supertest(app).post('/v1/admin/repoint').send({ targetUrl: NEW_URL })).status).toBe(401);
-      expect((await supertest(app).get('/v1/admin/repoint')).status).toBe(401);
+      expect((await supertest(__server).post('/v1/admin/repoint').send({ targetUrl: NEW_URL })).status).toBe(401);
+      expect((await supertest(__server).get('/v1/admin/repoint')).status).toBe(401);
     });
 
     it('rejects a viewer opening a campaign', async () => {
@@ -131,7 +141,7 @@ describe('repoint campaign (hub side)', () => {
     });
 
     it('rejects an unauthenticated directive poll', async () => {
-      expect((await supertest(app).get('/v1/repoint-directive')).status).toBe(401);
+      expect((await supertest(__server).get('/v1/repoint-directive')).status).toBe(401);
     });
   });
 
@@ -173,7 +183,7 @@ describe('repoint campaign (hub side)', () => {
     });
 
     it('excludes retired installations from the campaign', async () => {
-      await supertest(app).post('/v1/admin/installations/inst-2/retire').set('Cookie', cookieAdmin);
+      await supertest(__server).post('/v1/admin/installations/inst-2/retire').set('Cookie', cookieAdmin);
 
       const r = await openCampaign();
 
@@ -190,7 +200,7 @@ describe('repoint campaign (hub side)', () => {
 
     it('allows a new campaign once the previous one is closed', async () => {
       const first = await openCampaign();
-      await supertest(app).post(`/v1/admin/repoint/${first.body.id}/close`).set('Cookie', cookieAdmin);
+      await supertest(__server).post(`/v1/admin/repoint/${first.body.id}/close`).set('Cookie', cookieAdmin);
 
       expect((await openCampaign('https://hub.other.example')).status).toBe(201);
     });
@@ -234,7 +244,7 @@ describe('repoint campaign (hub side)', () => {
       // Hiding also revokes their keys, so the poll normally 401s before
       // reaching this filter; the key is re-issued here to exercise the filter
       // itself, which is the backstop for a key issued after the hide.
-      await supertest(app).post('/v1/admin/hidden-users')
+      await supertest(__server).post('/v1/admin/hidden-users')
         .set('Cookie', cookieAdmin).send({ userKey: 'a@acme.com' });
       await openCampaign();
       const fresh = await issueApiKey(ctx.db, 'org-a', 'post-hide', { installationId: 'inst-1' } as any);
@@ -246,7 +256,7 @@ describe('repoint campaign (hub side)', () => {
 
     it('204s after the campaign is closed', async () => {
       const c = await openCampaign();
-      await supertest(app).post(`/v1/admin/repoint/${c.body.id}/close`).set('Cookie', cookieAdmin);
+      await supertest(__server).post(`/v1/admin/repoint/${c.body.id}/close`).set('Cookie', cookieAdmin);
 
       expect((await directiveFor(token1)).status).toBe(204);
     });
@@ -347,22 +357,36 @@ describe('repoint campaign (hub side)', () => {
       expect((await board()).body.drained).toBe(false);
     });
 
-    it('ignores a client-appended X-Forwarded-Host hop', async () => {
-      // Nothing strips this header, so its leftmost element is attacker-chosen.
-      // A proxy appends, meaning the trustworthy hop is the LAST one.
+    it('ignores X-Forwarded-Host entirely: the ALB never sets it, so the client wrote it', async () => {
+      // Any hop in it, first or last, is attacker-chosen in production. The
+      // arrival host is the Host header, which the proxy preserves.
       const c = await openCampaign();
 
-      await report(token1, 'inst-1', 'hub:repoint:succeeded', { campaignId: c.body.id, url: NEW_URL },
-        `${NEW_HOST}, hub.old.example`);
+      await supertest(__server).post('/v1/events')
+        .set('Authorization', `Bearer ${token1}`).set('X-Installation-Id', 'inst-1')
+        .set('Host', 'hub.old.example').set('X-Forwarded-Host', `hub.internal, ${NEW_HOST}`)
+        .send({ events: [{
+          eventId: `ev-${Math.random().toString(36).slice(2)}`, installationId: 'inst-1', orgId: 'org-a',
+          occurredAt: new Date().toISOString(), actor: { osUser: 'dev', gitName: null, gitEmail: 'dev@acme.com' },
+          type: 'hub:repoint:succeeded', payload: { campaignId: c.body.id, url: NEW_URL },
+        }] });
 
       expect((await targetState(c.body.id, 'inst-1')).state).toBe('pending');
     });
 
-    it('accepts the real host when a proxy appended it last', async () => {
+    it('matches a target written as an IPv6 literal', async () => {
+      // "[2606:4700::1111]:8443".split(':')[0] is "[" - an IPv6 host needs a real parse.
+      const target = 'https://[2606:4700::1111]:8443';
+      const c = await openCampaign(target);
+      expect(c.status, JSON.stringify(c.body)).toBe(201);
+      await report(token1, 'inst-1', 'hub:repoint:succeeded', { campaignId: c.body.id, url: target }, '[2606:4700::1111]:8443');
+      expect((await targetState(c.body.id, 'inst-1')).state).toBe('succeeded');
+    });
+
+    it('accepts a report that arrived on the target host', async () => {
       const c = await openCampaign();
 
-      await report(token1, 'inst-1', 'hub:repoint:succeeded', { campaignId: c.body.id, url: NEW_URL },
-        `hub.internal, ${NEW_HOST}`);
+      await report(token1, 'inst-1', 'hub:repoint:succeeded', { campaignId: c.body.id, url: NEW_URL }, NEW_HOST);
 
       expect((await targetState(c.body.id, 'inst-1')).state).toBe('succeeded');
     });
@@ -429,8 +453,8 @@ describe('repoint campaign (hub side)', () => {
       // The documented escape hatch must not invert when it is used on all of
       // them: nothing is left resolving the old name, so it is safe to drop.
       const c = await openCampaign();
-      await supertest(app).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
-      await supertest(app).post('/v1/admin/installations/inst-2/retire').set('Cookie', cookieAdmin);
+      await supertest(__server).post('/v1/admin/installations/inst-1/retire').set('Cookie', cookieAdmin);
+      await supertest(__server).post('/v1/admin/installations/inst-2/retire').set('Cookie', cookieAdmin);
 
       const r = await board();
 
@@ -445,7 +469,7 @@ describe('repoint campaign (hub side)', () => {
 
       // inst-2 is a wiped laptop that will never poll again — retiring it is
       // the documented way to finish a campaign.
-      await supertest(app).post('/v1/admin/installations/inst-2/retire').set('Cookie', cookieAdmin);
+      await supertest(__server).post('/v1/admin/installations/inst-2/retire').set('Cookie', cookieAdmin);
 
       expect((await board()).body.drained).toBe(true);
     });
@@ -455,19 +479,19 @@ describe('repoint campaign (hub side)', () => {
     it('closes it and stops handing out directives', async () => {
       const c = await openCampaign();
 
-      const r = await supertest(app).post(`/v1/admin/repoint/${c.body.id}/close`).set('Cookie', cookieAdmin);
+      const r = await supertest(__server).post(`/v1/admin/repoint/${c.body.id}/close`).set('Cookie', cookieAdmin);
 
       expect(r.status).toBe(200);
       expect((await board()).body.campaign).toBeNull();
     });
 
     it('404s an unknown campaign', async () => {
-      expect((await supertest(app).post('/v1/admin/repoint/nope/close').set('Cookie', cookieAdmin)).status).toBe(404);
+      expect((await supertest(__server).post('/v1/admin/repoint/nope/close').set('Cookie', cookieAdmin)).status).toBe(404);
     });
 
     it('rejects a viewer closing it', async () => {
       const c = await openCampaign();
-      expect((await supertest(app).post(`/v1/admin/repoint/${c.body.id}/close`).set('Cookie', cookieView)).status).toBe(403);
+      expect((await supertest(__server).post(`/v1/admin/repoint/${c.body.id}/close`).set('Cookie', cookieView)).status).toBe(403);
     });
   });
 });

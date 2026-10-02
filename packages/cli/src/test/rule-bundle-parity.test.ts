@@ -144,3 +144,119 @@ describe('per-client rule bundle parity', () => {
     }
   });
 });
+
+/**
+ * The RULE half of bundle parity (90fd9d32).
+ *
+ * The suite above pins the command surface. This half pins the RULES that exist
+ * because several agents share ONE worktree: staging is the only signal of who
+ * touched what. It checks each rule across the whole set, so a bundle that carries it
+ * while another does not is the failure - the shape drift actually takes.
+ */
+/** Everything the installer copies onto a user's machine (the RULES half). */
+const RULE_BUNDLES = [
+  'SKILL.md',
+  'clauderules/CLAUDE.md',
+  'codexrules/AGENTS.md',
+  'cursorrules/agenfk.mdc',
+] as const;
+
+const read = (rel: string): string => fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
+
+/**
+ * A rule, described by several spellings rather than one.
+ *
+ * Matching a single sentence would make this a test of phrasing: reword the
+ * rule in one bundle to suit that client's voice and it goes red for no reason.
+ * Each entry lists the load-bearing ideas, and a bundle carries the rule when
+ * it carries all of them.
+ */
+const RULES = [
+  {
+    name: 'stage only what this card changed',
+    needles: [/add\s+-A/i, /stage/i],
+  },
+  {
+    /*
+     * The two rules about a supervisor GUESSING (CGLAB-204), and they are
+     * checked as one because they fail together: both are what an agent does
+     * when it has no news and decides anyway.
+     */
+    name: 'absence authorises nothing, and a failed launch is not relaunched',
+    needles: [/absence/i, /authoris|authoriz/i, /relaunch|launch again/i],
+  },
+] as const;
+
+const carries = (text: string, needles: readonly RegExp[]): boolean =>
+  needles.every(n => n.test(text));
+
+describe('every shipped bundle carries every rule', () => {
+  const contents = new Map(RULE_BUNDLES.map(b => [b, read(b)]));
+
+  it('ships all four bundles, so the list itself cannot rot silently', () => {
+    // If a bundle is renamed or dropped, this file must be updated with it -
+    // otherwise the parity check below quietly stops covering a client.
+    for (const b of RULE_BUNDLES) {
+      expect(fs.existsSync(path.join(REPO_ROOT, b)), `${b} is missing`).toBe(true);
+    }
+  });
+
+  for (const rule of RULES) {
+    it(`agrees on: ${rule.name}`, () => {
+      /*
+       * Reported as a SET rather than one assertion per file, so a run names
+       * every bundle that is behind. Fixing them one red at a time is how a
+       * rule ends up in two of four.
+       */
+      const missing = RULE_BUNDLES.filter(b => !carries(contents.get(b)!, rule.needles));
+      expect(
+        missing,
+        `these bundles do not carry "${rule.name}": ${missing.join(', ')}. `
+        + 'All four reach a user machine and must say the same thing.',
+      ).toEqual([]);
+    });
+  }
+});
+
+/**
+ * No bundle tells an agent to declare claims (26c059f6).
+ *
+ * The mechanism is gone and `agenfk update` has no `--claims` option. A rule
+ * that still told agents to run it would send every one of them into an
+ * "unknown option" error before its first edit - and a merge from a branch
+ * that predates the removal is exactly how such a section comes back.
+ */
+describe('the bundles no longer mention claims', () => {
+  for (const b of [...new Set<string>([...RULE_BUNDLES, ...Object.keys(BUNDLES)])]) {
+    it(`${b} carries no claims rule`, () => {
+      const text = read(b);
+      expect(/--claims/.test(text), `${b} still tells agents to run --claims`).toBe(false);
+      expect(/what your card owns/i.test(text), `${b} still carries the claims section`).toBe(false);
+    });
+  }
+});
+
+/**
+ * NO MERGE-CONFLICT MARKER EVER SHIPS.
+ *
+ * A diff3 base marker (`||||||| <sha>`) survived a merge in three of these
+ * bundles, and the installer then wrote it into every user's live config -
+ * `~/.claude/CLAUDE.md` is loaded into EVERY Claude Code session, so the junk
+ * reached every agent on that machine, not just the one who hit the conflict.
+ *
+ * Only the BASE marker survived, which is exactly why nobody saw it: the text
+ * around it read as a plausible union of both sides, so the file never looked
+ * broken. A guard is the only thing that catches that shape.
+ */
+describe('shipped rule bundles carry no merge-conflict marker', () => {
+  // `|` is table syntax and `=` can be a setext underline, so these require the
+  // diff3 shapes specifically: seven of a kind, then a space or end of line.
+  const MARKERS: RegExp[] = [/^<{7}(?: |$)/, /^\|{7}(?: |$)/, /^={7}$/, /^>{7}(?: |$)/];
+  for (const file of Object.keys(BUNDLES)) {
+    it(`${file} is clean`, () => {
+      const text = fs.readFileSync(path.join(REPO_ROOT, file), 'utf8');
+      const bad = text.split('\n').filter(l => MARKERS.some(re => re.test(l)));
+      expect(bad, `merge-conflict marker(s) in ${file}: ${bad.join(' | ')}`).toEqual([]);
+    });
+  }
+});

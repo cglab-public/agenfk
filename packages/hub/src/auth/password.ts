@@ -29,6 +29,8 @@ export interface UserRow {
   id: string;
   org_id: string;
   email: string;
+  /** Display name from the identity provider; null when none was supplied. */
+  name: string | null;
   password_hash: string | null;
   provider: 'password' | 'google' | 'entra';
   provider_subject: string | null;

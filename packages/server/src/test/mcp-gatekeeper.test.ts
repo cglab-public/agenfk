@@ -11,13 +11,28 @@
  * proxied axios mock) and pin the CGLAB-110 behaviour on both sides of the
  * type gate: a STORY in an active step authorizes, an EPIC still refuses.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
-import { app, initStorage } from '../server';
+import { app, initStorage, storage } from '../server';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { connectMcpClient, type ConnectedMcpClient } from './helpers/mcpClient';
+
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. The
+ * churn produced `Error: Parse Error: Expected HTTP/` — a transport failure
+ * that hands the test an empty body, so one bad socket surfaces as a confident
+ * wrong assertion in whichever test happened to be running.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
 
 // The MCP handler reaches the REST layer through an axios client
 // (createApiClient). Other MCP test files mock axios as a no-op because the
@@ -48,7 +63,7 @@ vi.mock('axios', () => {
   return { default: mockAxios };
 });
 
-const TEST_DB = path.resolve('./mcp-gatekeeper-test-db.sqlite');
+const TEST_DB = testDbPath('mcp-gatekeeper-test-db.sqlite');
 // The no-item-id path resolves the project by walking up from process.cwd()
 // to the nearest .agenfk/project.json (findProjectId, re-read per call). Point
 // the cwd at a scratch dir whose project.json names the TEST project, so the
@@ -71,16 +86,16 @@ describe('workflow_gatekeeper MCP handler: a STORY is directly actionable (CGLAB
     await initStorage();
     mcp = await connectMcpClient();
 
-    const proj = await request(app).post('/projects').send({ name: 'gatekeeper-mirror' });
+    const proj = await agent().post('/projects').send({ name: 'gatekeeper-mirror' });
     projectId = proj.body.id;
 
-    const story = await request(app).post('/items').send({ type: 'STORY', title: 'mirror story', projectId });
+    const story = await agent().post('/items').send({ type: 'STORY', title: 'mirror story', projectId });
     storyId = story.body.id;
-    await request(app).put(`/items/${storyId}`).send({ status: 'IN_PROGRESS' });
+    await storage.updateItem(storyId, { status: 'IN_PROGRESS' } as any);
 
-    const epic = await request(app).post('/items').send({ type: 'EPIC', title: 'mirror epic', projectId });
+    const epic = await agent().post('/items').send({ type: 'EPIC', title: 'mirror epic', projectId });
     epicId = epic.body.id;
-    await request(app).put(`/items/${epicId}`).send({ status: 'IN_PROGRESS' });
+    await storage.updateItem(epicId, { status: 'IN_PROGRESS' } as any);
   });
 
   afterAll(async () => {
@@ -100,6 +115,29 @@ describe('workflow_gatekeeper MCP handler: a STORY is directly actionable (CGLAB
     expect(text).toContain('AUTHORIZED');
     expect(text).toContain('STORY');
     expect(text).not.toContain('WORKFLOW BREACH');
+  });
+
+  it("says what leaving the card's step will run (37a292a7)", async () => {
+    const result = await mcp.client.callTool({
+      name: 'workflow_gatekeeper',
+      arguments: { intent: 'leave plan', itemId: storyId },
+    } as any);
+    const text = toolText(result);
+    expect(result.isError).not.toBe(true);
+    expect(text).toMatch(/Leaving IN_PROGRESS runs/);
+  });
+
+  it('validate_progress with plan: true answers what leaving runs, without moving the card (2ebacb23)', async () => {
+    const result = await mcp.client.callTool({
+      name: 'validate_progress',
+      // A dry run needs no evidence (as the CLI's --plan).
+      arguments: { itemId: storyId, plan: true },
+    } as any);
+    const text = toolText(result);
+    expect(result.isError).not.toBe(true);
+    expect(text).toMatch(/Leaving IN_PROGRESS runs/);
+    expect(text).toMatch(/On this tree/);
+    expect(((await storage.getItem(storyId)) as any).status).toBe('IN_PROGRESS');
   });
 
   it('still refuses an EPIC targeted by id, and names the child-item route', async () => {

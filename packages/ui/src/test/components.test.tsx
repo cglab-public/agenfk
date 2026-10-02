@@ -10,6 +10,7 @@ import { api } from '../api';
 vi.mock('../api', () => ({
   api: {
     getLatestRelease: vi.fn(() => Promise.resolve(null)),
+    getCurrentRelease: vi.fn(() => Promise.resolve(null)),
     getReadme: vi.fn(() => Promise.resolve(null)),
     listItems: vi.fn(() => Promise.resolve([])),
     listProjects: vi.fn(() => Promise.resolve([])),
@@ -48,6 +49,9 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+// CGLAB-434: every test here also proves the panel renders on tokens.
+guardTokens();
+
 // ─── App ──────────────────────────────────────────────────────────────────────
 
 describe('App', () => {
@@ -64,6 +68,10 @@ describe('App', () => {
 import { WhatsNewModal } from '../components/WhatsNewModal';
 
 describe('WhatsNewModal', () => {
+  // Each test sets the source it reads; nothing inherits the previous one's.
+  beforeEach(() => {
+    (api.getCurrentRelease as any).mockReset().mockReturnValue(new Promise(() => {}));
+  });
   it('should not render when isOpen is false', () => {
     const qc = makeQueryClient();
     const { container } = render(
@@ -74,7 +82,8 @@ describe('WhatsNewModal', () => {
   });
 
   it('should render the modal when isOpen is true (loading state)', () => {
-    (api.getLatestRelease as any).mockReturnValue(new Promise(() => {})); // never resolves
+    // 4aac7076: the notes are the installed release's (getCurrentRelease); getLatestRelease feeds only the footer.
+    (api.getCurrentRelease as any).mockReturnValue(new Promise(() => {})); // never resolves
     const qc = makeQueryClient();
     render(<WhatsNewModal isOpen={true} onClose={() => {}} />, {
       wrapper: wrapper(qc),
@@ -84,7 +93,8 @@ describe('WhatsNewModal', () => {
   });
 
   it('should render release data when loaded', async () => {
-    (api.getLatestRelease as any).mockResolvedValue({
+    (api.getCurrentRelease as any).mockResolvedValue({
+      published: true,
       version: '2.0.0',
       name: 'Big Release',
       body: 'Lots of changes',
@@ -150,7 +160,7 @@ describe('WhatsNewModal', () => {
   });
 
   it('should show "Unable to load release notes" when no data', async () => {
-    (api.getLatestRelease as any).mockResolvedValue(null);
+    (api.getCurrentRelease as any).mockResolvedValue(null);
     const qc = makeQueryClient();
     render(<WhatsNewModal isOpen={true} onClose={() => {}} />, {
       wrapper: wrapper(qc),
@@ -281,6 +291,7 @@ describe('ReadmeModal', () => {
 // ─── ReleaseReminder ──────────────────────────────────────────────────────────
 
 import { ReleaseReminder } from '../components/ReleaseReminder';
+import { guardTokens } from './helpers/tokenGuard';
 
 describe('ReleaseReminder', () => {
   beforeEach(() => {
@@ -329,6 +340,54 @@ describe('ReleaseReminder', () => {
     await waitFor(() => {
       expect(screen.getByTitle(/New release available/i)).toBeDefined();
     });
+  });
+
+  // CGLAB-434: the upgrade tiers each colour the badge and the modal header; the guard sweeps both.
+  for (const tier of ['mandatory', 'recommended'] as const) {
+    it(`renders the ${tier} tier's badge and modal`, async () => {
+      (api.getLatestRelease as any).mockResolvedValue({
+        version: '2.0.0', tagName: 'v2.0.0', name: 'Big Release', body: 'Changes!',
+        publishedAt: '2024-01-01T00:00:00Z', url: 'https://github.com/release',
+        currentVersion: '1.0.0', upgradeTier: tier,
+      });
+      render(<ReleaseReminder />, { wrapper: wrapper(makeQueryClient()) });
+      const badge = await screen.findByTitle(tier === 'mandatory' ? /Mandatory upgrade required/i : /New release available/i);
+      fireEvent.click(badge);
+      expect(await screen.findByRole('button', { name: tier === 'mandatory' ? /Upgrade Now \(Required\)/ : /Update Now/ })).toBeDefined();
+    });
+  }
+
+  // The tiers, as rendered (these replace source greps in server/upgrade-tier.test.ts).
+  const releaseWithTier = (upgradeTier?: 'mandatory' | 'recommended') => ({
+    version: '2.0.0', tagName: 'v2.0.0', name: 'Big Release', body: 'Changes!',
+    publishedAt: '2024-01-01T00:00:00Z', url: 'https://github.com/release',
+    currentVersion: '1.0.0', ...(upgradeTier ? { upgradeTier } : {}),
+  });
+
+  it('mandatory: a danger-toned badge, and no way to dismiss the upgrade', async () => {
+    (api.getLatestRelease as any).mockResolvedValue(releaseWithTier('mandatory'));
+    render(<ReleaseReminder />, { wrapper: wrapper(makeQueryClient()) });
+    const badge = await screen.findByTitle(/Mandatory upgrade required/i);
+    expect(badge.className).toMatch(/(?:^|\s)bg-status-danger-bg(?:\s|$)/);
+    fireEvent.click(badge);
+    await screen.findByRole('button', { name: /Upgrade Now \(Required\)/ });
+    expect(screen.queryByRole('button', { name: /^Dismiss$/i })).toBeNull();
+  });
+
+  it('recommended: a warn-toned badge that can still be dismissed', async () => {
+    (api.getLatestRelease as any).mockResolvedValue(releaseWithTier('recommended'));
+    render(<ReleaseReminder />, { wrapper: wrapper(makeQueryClient()) });
+    const badge = await screen.findByTitle(/New release available/i);
+    expect(badge.className).toMatch(/(?:^|\s)bg-status-warn-bg(?:\s|$)/);
+    fireEvent.click(badge);
+    expect(await screen.findByRole('button', { name: /^Dismiss$/i })).toBeDefined();
+  });
+
+  it('optional: an ok-toned badge', async () => {
+    (api.getLatestRelease as any).mockResolvedValue(releaseWithTier());
+    render(<ReleaseReminder />, { wrapper: wrapper(makeQueryClient()) });
+    const badge = await screen.findByTitle(/New release available/i);
+    expect(badge.className).toMatch(/(?:^|\s)bg-status-ok-bg(?:\s|$)/);
   });
 
   it('should open modal when rocket button is clicked', async () => {

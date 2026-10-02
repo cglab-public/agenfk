@@ -23,7 +23,7 @@
  * would add, so a chip is informative before it is clicked and an exhausted
  * vendor reads as exhausted rather than missing.
  */
-import { useMemo } from 'react';
+import { useId, useMemo } from 'react';
 import {
   modelMeta, providersFor, licenseClassesFor, modelsMatching,
   LICENSE_CLASS_LABEL, UNCLASSIFIED,
@@ -56,6 +56,10 @@ const SUPERSEDED_TITLE =
   'A PR search supersedes the model filter — this selection is kept but does not apply until the search is cleared';
 
 export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: Props) {
+  const id = useId();
+  const unclassifiedHintId = `${id}-unclassified`;
+  const openHintId = `${id}-open`;
+  const closedHintId = `${id}-closed`;
   const providers = useMemo(() => providersFor(rows), [rows]);
   const classes = useMemo(() => licenseClassesFor(rows), [rows]);
 
@@ -84,12 +88,12 @@ export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: P
 
   return (
     <div className="space-y-2">
-      <p className="text-[11px] text-ink-tertiary">
+      <p className="text-caption text-ink-tertiary">
         Select by vendor or license — adds the matching models to the selection.
       </p>
 
       <div>
-        <h4 className="text-[10px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">Provider</h4>
+        <h4 className="eyebrow text-ink-tertiary">Provider</h4>
         <div className="mt-1.5 flex flex-wrap gap-1.5">
           {providers.map(p => {
             const n = counts.byProvider.get(p) ?? 0;
@@ -103,27 +107,33 @@ export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: P
                 disabled={off}
                 onClick={() => applyProvider(p)}
                 // The tooltip has to name the REAL reason the button is dead —
-                // see SUPERSEDED_TITLE.
+                // see SUPERSEDED_TITLE. What Unclassified means is said under
+                // the row, not only in a title.
                 title={disabled
                   ? SUPERSEDED_TITLE
-                  : p === UNCLASSIFIED
-                    ? 'Models the hub could not classify — configure them in Admin → Models'
-                    : `Add ${n} more ${p} model${n === 1 ? '' : 's'}`}
-                className={`px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors ${
+                  : p === UNCLASSIFIED ? undefined : `Add ${n} more ${p} model${n === 1 ? '' : 's'}`}
+                aria-describedby={!disabled && p === UNCLASSIFIED ? unclassifiedHintId : undefined}
+                className={`px-2.5 py-1 rounded-full font-mono text-caption border transition-colors ${
                   off
                     ? 'text-ink-tertiary border-border-soft opacity-50 cursor-not-allowed'
-                    : 'text-ink-secondary border-border-soft hover:text-accent-text hover:border-border-brand'}`}
+                    : 'text-ink-secondary border-border-soft hover:text-accent-ink hover:border-accent'}`}
               >
                 {label}
                 <span className="ml-1 text-ink-tertiary">{n}</span>
+                {!disabled && n === 0 && <span className="sr-only"> (all already selected)</span>}
               </button>
             );
           })}
         </div>
+        {(providers.includes(UNCLASSIFIED) || classes.includes(UNCLASSIFIED)) && (
+          <p id={unclassifiedHintId} className="mt-1 text-caption text-ink-tertiary">
+            Unclassified: models the hub could not classify — configure them in Admin → Models.
+          </p>
+        )}
       </div>
 
       <div>
-        <h4 className="text-[10px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">Weights</h4>
+        <h4 className="eyebrow text-ink-tertiary">Weights</h4>
         <div className="mt-1.5 flex flex-wrap gap-1.5">
           {classes.map(c => {
             const n = counts.byClass.get(c) ?? 0;
@@ -133,22 +143,29 @@ export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: P
                 key={c}
                 disabled={off}
                 onClick={() => applyClass(c)}
-                title={disabled
-                  ? SUPERSEDED_TITLE
-                  : c === 'open_weights'
-                    ? 'Weights are publicly downloadable. Includes bespoke licences with commercial-use gates — this is open WEIGHTS, not open source.'
-                    : 'No downloadable weights — hosted API only.'}
-                className={`px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors ${
+                // What each class means is said under the row, not only in a title.
+                title={disabled ? SUPERSEDED_TITLE : undefined}
+                aria-describedby={disabled ? undefined
+                  : c === 'open_weights' ? openHintId
+                    : c === UNCLASSIFIED ? unclassifiedHintId : closedHintId}
+                className={`px-2.5 py-1 rounded-full font-mono text-caption border transition-colors ${
                   off
                     ? 'text-ink-tertiary border-border-soft opacity-50 cursor-not-allowed'
-                    : 'text-ink-secondary border-border-soft hover:text-accent-text hover:border-border-brand'}`}
+                    : 'text-ink-secondary border-border-soft hover:text-accent-ink hover:border-accent'}`}
               >
                 {LICENSE_CLASS_LABEL[c]}
                 <span className="ml-1 text-ink-tertiary">{n}</span>
+                {!disabled && n === 0 && <span className="sr-only"> (all already selected)</span>}
               </button>
             );
           })}
         </div>
+        <p className="mt-1 text-caption text-ink-tertiary">
+          {classes.includes('open_weights') && (
+            <span id={openHintId}>Open weights: publicly downloadable, including bespoke licences with commercial-use gates — open weights, not open source. </span>
+          )}
+          {classes.includes('commercial') && <span id={closedHintId}>{LICENSE_CLASS_LABEL.commercial}: no downloadable weights, hosted API only.</span>}
+        </p>
       </div>
 
       {/* Show the licence of what is selected, so "Open weights" is verifiable
@@ -158,7 +175,7 @@ export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: P
           apply, so it is made inert too: the accordion says these filters "do not
           apply", and a still-clickable control inside it contradicts that. */}
       {selected.size > 0 && (
-        <details className="text-[11px]" aria-disabled={disabled || undefined} title={disabled ? SUPERSEDED_TITLE : undefined}>
+        <details className="text-caption" aria-disabled={disabled || undefined} title={disabled ? SUPERSEDED_TITLE : undefined}>
           <summary className={`text-ink-tertiary ${disabled ? 'opacity-60 pointer-events-none' : 'cursor-pointer hover:text-ink-secondary'}`}>
             License of {selected.size} selected model{selected.size === 1 ? '' : 's'}
           </summary>
@@ -166,7 +183,7 @@ export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: P
             {[...selected].sort().map(m => {
               const meta = modelMeta(m, rows);
               return (
-                <li key={m} className="font-mono text-[10.5px] text-ink-tertiary truncate">
+                <li key={m} className="font-mono text-caption text-ink-tertiary truncate">
                   <span className="text-ink-secondary">{m}</span>
                   {' — '}
                   {meta.provider === UNCLASSIFIED ? 'unclassified' : meta.provider}

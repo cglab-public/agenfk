@@ -16,6 +16,17 @@ import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-installation-version-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
 const cleanup = () => {
@@ -53,9 +64,11 @@ describe('Story 7 — per-installation agenfk version', () => {
       defaultOrgId: 'org-a',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await createPasswordUser(ctx.db, 'org-a', 'admin@x', 'longenough1', 'admin');
-    const login = await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
+    const login = await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
     cookieAdmin = login.headers['set-cookie']?.[0] ?? '';
     fleetToken = await issueApiKey(ctx.db, 'org-a', 'inst-1-key', { installationId: 'inst-1' } as any);
   });
@@ -63,7 +76,7 @@ describe('Story 7 — per-installation agenfk version', () => {
   // Drain in-flight responses before pulling the DB out from under them — see
   // helpers/drainApp.ts for the ECONNRESET this prevents.
   afterEach(async () => {
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
@@ -81,7 +94,7 @@ describe('Story 7 — per-installation agenfk version', () => {
 
   describe('hub ingest persists x-agenfk-version header', () => {
     it('records the header on the matching installation row', async () => {
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/events')
         .set('Authorization', `Bearer ${fleetToken}`)
         .set('x-agenfk-version', '0.3.0-beta.22')
@@ -95,11 +108,11 @@ describe('Story 7 — per-installation agenfk version', () => {
     });
 
     it('updates to the latest version when a newer batch arrives', async () => {
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/events').set('Authorization', `Bearer ${fleetToken}`)
         .set('x-agenfk-version', '0.3.0-beta.21')
         .send({ events: [sample({ eventId: 'e1' })] });
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/events').set('Authorization', `Bearer ${fleetToken}`)
         .set('x-agenfk-version', '0.3.0-beta.22')
         .send({ events: [sample({ eventId: 'e2' })] });
@@ -111,12 +124,12 @@ describe('Story 7 — per-installation agenfk version', () => {
     });
 
     it('leaves the row alone when the header is absent', async () => {
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/events').set('Authorization', `Bearer ${fleetToken}`)
         .set('x-agenfk-version', '0.3.0-beta.20')
         .send({ events: [sample({ eventId: 'e1' })] });
       // Second batch with no header — must not clobber to null/unknown.
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/events').set('Authorization', `Bearer ${fleetToken}`)
         .send({ events: [sample({ eventId: 'e2' })] });
       const row = await ctx.db.get<{ agenfk_version: string }>(
@@ -127,7 +140,7 @@ describe('Story 7 — per-installation agenfk version', () => {
     });
 
     it('rejects malformed version values (semver allowlist)', async () => {
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/events').set('Authorization', `Bearer ${fleetToken}`)
         .set('x-agenfk-version', '0.0.0; rm -rf /')
         .send({ events: [sample()] });
@@ -149,7 +162,7 @@ describe('Story 7 — per-installation agenfk version', () => {
     // view stuck on the previous version after a fleet upgrade.
     it('updates agenfk_version even when every event in the batch is a duplicate', async () => {
       // First batch: ingests one event and stamps the old version.
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/events').set('Authorization', `Bearer ${fleetToken}`)
         .set('x-agenfk-version', '0.3.0-beta.30')
         .send({ events: [sample({ eventId: 'dup-1' })] });
@@ -157,7 +170,7 @@ describe('Story 7 — per-installation agenfk version', () => {
       // Second batch: same eventId (duplicate), but a NEW version header. The
       // duplicate is ignored at the events table, but the installation row
       // must still be refreshed.
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/events').set('Authorization', `Bearer ${fleetToken}`)
         .set('x-agenfk-version', '0.3.0-beta.31')
         .send({ events: [sample({ eventId: 'dup-1' })] });
@@ -190,7 +203,7 @@ describe('Story 7 — per-installation agenfk version', () => {
       );
 
       // Post the succeeded event with NO X-Agenfk-Version header.
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/events').set('Authorization', `Bearer ${fleetToken}`)
         .send({
           events: [sample({
@@ -229,7 +242,7 @@ describe('Story 7 — per-installation agenfk version', () => {
          VALUES ('dir-mix', 'inst-1', 'in_progress')`,
       );
 
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/events').set('Authorization', `Bearer ${fleetToken}`)
         .set('x-agenfk-version', '0.3.0-beta.30') // running process
         .send({
@@ -258,12 +271,12 @@ describe('Story 7 — per-installation agenfk version', () => {
     // Recent Events admin view.
     it('GET /v1/timeline rows include reporting_version from the batch header', async () => {
       // Need a user-level cookie to call /v1/timeline (it's session-guarded).
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/events').set('Authorization', `Bearer ${fleetToken}`)
         .set('x-agenfk-version', '0.3.0-beta.32')
         .send({ events: [sample({ eventId: 'rv-1', actor: { osUser: 'rv-user', gitName: null, gitEmail: 'rv@example.com' } })] });
 
-      const r = await supertest(app).get('/v1/timeline').set('Cookie', cookieAdmin);
+      const r = await supertest(__server).get('/v1/timeline').set('Cookie', cookieAdmin);
       expect(r.status).toBe(200);
       const ev = r.body.events.find((e: any) => e.event_id === 'rv-1');
       expect(ev).toBeDefined();
@@ -271,20 +284,20 @@ describe('Story 7 — per-installation agenfk version', () => {
     });
 
     it('reporting_version is null when the batch had no header', async () => {
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/events').set('Authorization', `Bearer ${fleetToken}`)
         .send({ events: [sample({ eventId: 'rv-noheader' })] });
-      const r = await supertest(app).get('/v1/timeline').set('Cookie', cookieAdmin);
+      const r = await supertest(__server).get('/v1/timeline').set('Cookie', cookieAdmin);
       const ev = r.body.events.find((e: any) => e.event_id === 'rv-noheader');
       expect(ev.reporting_version).toBeFalsy();
     });
 
     it('reporting_version is null when the header was malformed (semver allowlist applies to the row too)', async () => {
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/events').set('Authorization', `Bearer ${fleetToken}`)
         .set('x-agenfk-version', 'not-a-version!')
         .send({ events: [sample({ eventId: 'rv-bad' })] });
-      const r = await supertest(app).get('/v1/timeline').set('Cookie', cookieAdmin);
+      const r = await supertest(__server).get('/v1/timeline').set('Cookie', cookieAdmin);
       const ev = r.body.events.find((e: any) => e.event_id === 'rv-bad');
       expect(ev.reporting_version).toBeFalsy();
     });
@@ -293,7 +306,7 @@ describe('Story 7 — per-installation agenfk version', () => {
   describe('admin endpoints surface the version', () => {
     it('GET /v1/admin/upgrade includes agenfkVersion on per-installation target rows', async () => {
       // Seed an event so the installations row exists with a known version.
-      await supertest(app)
+      await supertest(__server)
         .post('/v1/events').set('Authorization', `Bearer ${fleetToken}`)
         .set('x-agenfk-version', '0.3.0-beta.22')
         .send({ events: [sample()] });
@@ -312,7 +325,7 @@ describe('Story 7 — per-installation agenfk version', () => {
          VALUES ('dir-1', 'inst-1', 'pending')`,
       );
 
-      const r = await supertest(app).get('/v1/admin/upgrade').set('Cookie', cookieAdmin);
+      const r = await supertest(__server).get('/v1/admin/upgrade').set('Cookie', cookieAdmin);
       expect(r.status).toBe(200);
       const d = r.body.directives.find((x: any) => x.directiveId === 'dir-1');
       expect(d).toBeDefined();

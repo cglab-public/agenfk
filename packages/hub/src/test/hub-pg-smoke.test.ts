@@ -10,6 +10,17 @@ import { issueApiKey } from '../auth/apiKey';
 import { createPasswordUser } from '../auth/password';
 import type { HubDb } from '../db/types';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const SECRET = 'a'.repeat(64);
 
 describe('hub server end-to-end on Postgres (pg-mem)', () => {
@@ -27,6 +38,8 @@ describe('hub server end-to-end on Postgres (pg-mem)', () => {
       db,
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
   });
 
   afterEach(async () => {
@@ -55,7 +68,7 @@ describe('hub server end-to-end on Postgres (pg-mem)', () => {
       itemId: 'i1',
       payload: { title: 'demo' },
     };
-    const r = await supertest(app).post('/v1/events')
+    const r = await supertest(__server).post('/v1/events')
       .set('Authorization', `Bearer ${token}`)
       .send({ events: [event] });
     expect(r.status).toBe(200);
@@ -71,12 +84,12 @@ describe('hub server end-to-end on Postgres (pg-mem)', () => {
   it('queries timeline + event-types via PG (json_extract / strftime translated)', async () => {
     // Seed an admin so we can grab a session for /v1/timeline.
     await createPasswordUser(db, 'org', 'admin@x', 'longenough1', 'admin');
-    const login = await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
+    const login = await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
     const cookie = login.headers['set-cookie']?.[0] ?? '';
     expect(login.status).toBe(200);
 
     const token = await issueApiKey(db, 'org', 'pg-test');
-    await supertest(app).post('/v1/events')
+    await supertest(__server).post('/v1/events')
       .set('Authorization', `Bearer ${token}`)
       .send({
         events: [{
@@ -93,12 +106,12 @@ describe('hub server end-to-end on Postgres (pg-mem)', () => {
         }],
       });
 
-    const tl = await supertest(app).get('/v1/timeline').set('Cookie', cookie);
+    const tl = await supertest(__server).get('/v1/timeline').set('Cookie', cookie);
     expect(tl.status).toBe(200);
     expect(tl.body.events.length).toBe(1);
     expect(tl.body.events[0].type).toBe('item.created');
 
-    const types = await supertest(app).get('/v1/event-types').set('Cookie', cookie);
+    const types = await supertest(__server).get('/v1/event-types').set('Cookie', cookie);
     expect(types.status).toBe(200);
     expect(types.body.types).toContain('item.created');
   });
@@ -110,13 +123,13 @@ describe('hub server end-to-end on Postgres (pg-mem)', () => {
     // aggregator must normalise PG's Date/jsonb-text rows onto the same shape
     // as SQLite (opener attribution, latest sizing, GitHub links).
     await createPasswordUser(db, 'org', 'admin@x', 'longenough1', 'admin');
-    const login = await supertest(app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
+    const login = await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
     const cookie = login.headers['set-cookie']?.[0] ?? '';
     expect(login.status).toBe(200);
 
     const token = await issueApiKey(db, 'org', 'pg-test');
     const send = (events: any[]) =>
-      supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
+      supertest(__server).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
 
     const pr = (over: any) => ({
       eventId: over.eventId,
@@ -153,7 +166,7 @@ describe('hub server end-to-end on Postgres (pg-mem)', () => {
            model: 'claude-opus-4-8', sizing: { epic: 0, story: 0, task: 4, bug: 0 } }),
     ]);
 
-    const r = await supertest(app).get('/v1/prs/overview').set('Cookie', cookie);
+    const r = await supertest(__server).get('/v1/prs/overview').set('Cookie', cookie);
     expect(r.status).toBe(200);
     expect(r.body.totals.prs).toBe(2);
     expect(r.body.prs).toHaveLength(2);
@@ -174,7 +187,7 @@ describe('hub server end-to-end on Postgres (pg-mem)', () => {
     });
 
     // The developer filter is opener-based on PG too.
-    const filtered = await supertest(app).get('/v1/prs/overview?users=bob@acme.com').set('Cookie', cookie);
+    const filtered = await supertest(__server).get('/v1/prs/overview?users=bob@acme.com').set('Cookie', cookie);
     expect(filtered.status).toBe(200);
     expect(filtered.body.prs.map((p: any) => p.prNumber)).toEqual([2]);
   });

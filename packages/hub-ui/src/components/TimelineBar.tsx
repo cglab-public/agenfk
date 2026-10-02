@@ -1,6 +1,11 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { eventTypeLabel } from '../eventTypes';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api';
+import { useElementWidth } from '../hooks/useElementWidth';
+import { niceTicks } from './chartAxis';
+import { QueryState } from './ui';
+import { seriesColours, ALL_EVENTS_COLOR } from '../chartColours';
 import {
   buildAxis,
   effectiveBucket,
@@ -36,24 +41,6 @@ const RANGES: Array<{ key: RangeKey; label: string }> = [
   { key: '90d', label: '90d' },
 ];
 
-// Teal ramp matching the CG/lab brand accent when no specific type selected.
-const ACCENT = '#04cc98';
-const TYPE_COLORS = ['#04cc98', '#7fe5ca', '#056f71', '#4f8ef7', '#f59e0b', '#f26d7e', '#ec4899', '#0d9488', '#eab308', '#3b82f6', '#22d3ee', '#06b6d4'];
-const colorForType = (type: string, idx: number) => TYPE_COLORS[idx % TYPE_COLORS.length];
-
-// "Nice" Y-axis ticks for an integer-count chart. Returns at most 5 evenly-spaced values.
-function niceTicks(max: number): number[] {
-  if (max <= 0) return [0, 1];
-  const target = 4;
-  const raw = max / target;
-  const pow = Math.pow(10, Math.floor(Math.log10(raw)));
-  const norm = raw / pow;
-  const step = (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * pow;
-  const top = Math.ceil(max / step) * step;
-  const out: number[] = [];
-  for (let v = 0; v <= top + 1e-9; v += step) out.push(Math.round(v));
-  return out;
-}
 
 function buildAxisForBounds(fromIso: string, toIso: string | undefined, bucket: Bucket): string[] {
   const from = new Date(fromIso);
@@ -73,12 +60,18 @@ function buildAxisForBounds(fromIso: string, toIso: string | undefined, bucket: 
   return out;
 }
 
+/** The browser's IANA zone, or null when it cannot say. */
+function namedTimeZone(): string | null {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch { return null; }
+}
+
 export function TimelineBar({ users, types, projects, itemTypes, childHubs, className, title, range: rangeProp, onRangeChange, fromIsoOverride, toIsoOverride }: Props) {
   const [rangeInternal, setRangeInternal] = useState<RangeKey>('30d');
   const range = rangeProp ?? rangeInternal;
   const setRange = (r: RangeKey) => { setRangeInternal(r); onRangeChange?.(r); };
   const [bucketSel, setBucketSel] = useState<Bucket>('day');
   const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+  const [boxRef, boxWidth] = useElementWidth<HTMLDivElement>(920);
 
   const bucket = effectiveBucket(range, bucketSel);
   const isToday = range === 'today';
@@ -103,9 +96,14 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
   if (toIsoOverride) params.set('to', toIsoOverride);
   params.set('bucket', bucket);
   params.set('tzOffsetMin', String(tzOffsetMin));
+  // The zone itself, so the hub files each date by its own offset (DST); the
+  // offset above stays as the fallback for a zone the hub does not know. A
+  // browser that cannot name its zone sends none rather than a made-up UTC.
+  const timeZone = namedTimeZone();
+  if (timeZone) params.set('tz', timeZone);
 
   const q = useQuery<HistogramResponse>({
-    queryKey: ['histogram', users?.join(',') ?? '', types?.join(',') ?? '', projects?.join(',') ?? '', itemTypes?.join(',') ?? '', childHubs?.join(',') ?? '', range, fromIsoOverride ?? '', toIsoOverride ?? '', bucket, tzOffsetMin],
+    queryKey: ['histogram', users?.join(',') ?? '', types?.join(',') ?? '', projects?.join(',') ?? '', itemTypes?.join(',') ?? '', childHubs?.join(',') ?? '', range, fromIsoOverride ?? '', toIsoOverride ?? '', bucket, tzOffsetMin, timeZone ?? ''],
     queryFn: async () => (await api.get(`/v1/histogram?${params}`)).data,
   });
 
@@ -122,6 +120,8 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
   }, [q.data]);
 
   const stackedTypes = types && types.length > 0 ? types : null;
+  // One lookup for bars, legend and hover list, so they cannot disagree.
+  const colours = useMemo(() => seriesColours(stackedTypes ?? []), [stackedTypes?.join(',')]);
 
   const maxTotal = useMemo(() => {
     let m = 0;
@@ -135,22 +135,84 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
   const ticks = useMemo(() => niceTicks(maxTotal), [maxTotal]);
   const yTop = ticks[ticks.length - 1] || 1;
 
-  // SVG geometry — a real chart with margins so axes don't get clipped.
-  const width = 920;
+  // SVG geometry — a real chart with margins so axes don't get clipped. The
+  // viewBox is as wide as the box it sits in, so one unit is one pixel both
+  // ways: stretching a fixed 920-wide drawing over the box squashed its text
+  // and turned rounded corners into ellipses (story f6fce254).
+  const width = boxWidth;
   const height = 220;
   const m = { top: 12, right: 16, bottom: 32, left: 40 };
   const innerW = width - m.left - m.right;
   const innerH = height - m.top - m.bottom;
-  const barGap = 1;
-  const barW = Math.max(1, (innerW - barGap * (axis.length - 1)) / Math.max(axis.length, 1));
+  // Bars share the plot width exactly, however narrow: below 3px a slot they
+  // lose their gap, and may be thinner than a pixel, rather than run off the
+  // right edge (a week of hours in a phone-wide box).
+  const slots = Math.max(axis.length, 1);
+  const barGap = innerW / slots >= 3 ? 1 : 0;
+  const barW = (innerW - barGap * (slots - 1)) / slots;
 
-  // Show ~6 X-axis labels to avoid crowding.
-  const xLabelStep = Math.max(1, Math.ceil(axis.length / 6));
+  // About six x labels, fewer when the box cannot fit them 48px apart (real
+  // pixels now: nothing scales the text down to fit).
+  const LABEL_SPACING = 48;
+  const xLabelStep = Math.max(1, Math.ceil(axis.length / Math.max(2, Math.min(6, Math.floor(innerW / LABEL_SPACING)))));
+  // The last bucket is labelled too, unless that would crowd the label before it.
+  const lastLabelled = Math.floor((axis.length - 1) / xLabelStep) * xLabelStep;
+  const labelLast = (axis.length - 1 - lastLabelled) * (barW + barGap) >= LABEL_SPACING;
 
   const totalEvents = useMemo(() => axis.reduce((a, t) => a + (byTime.get(t)?.total ?? 0), 0), [axis, byTime]);
-  const hovered = hoverIdx != null ? axis[hoverIdx] : null;
+  // A shrunken axis (a range change) can leave the index past its end.
+  const current = hoverIdx != null && hoverIdx < axis.length ? hoverIdx : null;
+  const hovered = current != null ? axis[current] : null;
   const hoveredBucket = hovered ? byTime.get(hovered) : null;
-  const hoveredX = hoverIdx != null ? m.left + hoverIdx * (barW + barGap) + barW / 2 : 0;
+  const hoveredX = current != null ? m.left + current * (barW + barGap) + barW / 2 : 0;
+
+  // Keyboard and screen-reader access, as in PrVolumeChart: the chart is ONE
+  // tab stop (a listbox), each bar a named option, the arrow keys, Home and
+  // End walk it. The hover tooltip stays for the mouse, aria-hidden: the
+  // option names carry everything it shows.
+  const chartId = useId();
+  // Whether the last input was the keyboard: only then does a pointer leaving
+  // the focused chart keep its place (a click focuses it too, and must not pin
+  // the tooltip). As in PrVolumeChart.
+  const byKeyboard = useRef(false);
+  useEffect(() => {
+    const key = () => { byKeyboard.current = true; };
+    const pointer = () => { byKeyboard.current = false; };
+    document.addEventListener('keydown', key, true);
+    document.addEventListener('pointerdown', pointer, true);
+    return () => {
+      document.removeEventListener('keydown', key, true);
+      document.removeEventListener('pointerdown', pointer, true);
+    };
+  }, []);
+  const optionId = (i: number) => `${chartId}-bucket-${i}`;
+  const last = axis.length - 1;
+  const optionLabel = (t: string) => {
+    const b = byTime.get(t);
+    if (!b || !b.total) return `${t}: no events`;
+    const perType = Object.entries(b.by_type).sort((x, y) => y[1] - x[1]).map(([k, v]) => `${eventTypeLabel(k)} ${v}`).join(', ');
+    return `${t}: ${b.total} event${b.total === 1 ? '' : 's'}${perType ? ` — ${perType}` : ''}`;
+  };
+  const onKeyDown = (e: KeyboardEvent) => {
+    // Modified keys belong to the browser (Alt+Left is Back).
+    if (last < 0 || e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.key === 'Escape') {
+      if (current == null) return;
+      e.preventDefault();
+      setHoverIdx(null);
+      return;
+    }
+    const cur = current ?? last;
+    const next: Record<string, number> = {
+      ArrowLeft: current == null ? last : Math.max(0, cur - 1),
+      ArrowRight: current == null ? last : Math.min(last, cur + 1),
+      Home: 0,
+      End: last,
+    };
+    if (!(e.key in next)) return;
+    e.preventDefault();
+    setHoverIdx(next[e.key]);
+  };
 
   const rangeBlurb = fromIsoOverride || toIsoOverride
     ? 'custom period'
@@ -162,21 +224,23 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
     <section className={`relative bg-card-glass backdrop-blur border border-border-soft rounded-2xl ${className ?? ''}`}>
       <header className="flex items-center justify-between gap-4 px-5 pt-4 pb-3 border-b border-border-soft">
         <div className="min-w-0">
-          <h3 className="text-sm font-semibold text-ink truncate">{title ?? 'Activity'}</h3>
-          <p className="mt-0.5 text-[11px] text-ink-tertiary">
-            {totalEvents.toLocaleString()} event{totalEvents === 1 ? '' : 's'} · {rangeBlurb}{users?.length ? ` · ${users.length} user${users.length === 1 ? '' : 's'}` : ''}{stackedTypes ? ` · ${stackedTypes.length} type${stackedTypes.length === 1 ? '' : 's'}` : ''}
+          <h3 className="text-body font-semibold text-ink truncate">{title ?? 'Activity'}</h3>
+          <p className="mt-0.5 text-caption text-ink-tertiary">
+            {q.data && `${totalEvents.toLocaleString()} event${totalEvents === 1 ? '' : 's'} · `}{rangeBlurb}{users?.length ? ` · ${users.length} user${users.length === 1 ? '' : 's'}` : ''}{stackedTypes ? ` · ${stackedTypes.length} type${stackedTypes.length === 1 ? '' : 's'}` : ''}
           </p>
         </div>
         <div className="flex items-center gap-2">
           {/* Range picker only shown when not controlled externally (standalone usage) */}
           {rangeProp == null && (
-            <div className="inline-flex rounded-lg border border-border-soft bg-chip p-0.5 text-[11px] font-medium">
+            <div role="group" aria-label="Period" className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-caption font-medium">
               {RANGES.map(r => (
                 <button
                   key={r.key}
+                  type="button"
+                  aria-pressed={range === r.key}
                   onClick={() => setRange(r.key)}
                   className={`px-2.5 py-1 rounded-md transition-colors ${range === r.key
-                    ? 'bg-card-glass text-accent-text shadow-sm'
+                    ? 'bg-card-glass text-accent-ink shadow-sm'
                     : 'text-ink-tertiary hover:text-ink'}`}
                 >
                   {r.label}
@@ -184,18 +248,22 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
               ))}
             </div>
           )}
-          <div className="inline-flex rounded-lg border border-border-soft bg-chip p-0.5 text-[11px] font-medium">
+          <div role="group" aria-label="Bucket size" className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-caption font-medium">
             {(['day', 'hour'] as const).map(b => {
               const active = bucket === b;
               const disabled = isToday && b === 'day';
               return (
                 <button
                   key={b}
+                  type="button"
+                  aria-pressed={active}
                   onClick={() => !disabled && setBucketSel(b)}
-                  disabled={disabled}
+                  // aria-disabled, not disabled: a disabled button is skipped by
+                  // Tab, and its reason (the title, read as its description) with it.
+                  aria-disabled={disabled || undefined}
                   title={disabled ? 'Today view is hourly' : undefined}
                   className={`px-2.5 py-1 rounded-md transition-colors ${active
-                    ? 'bg-card-glass text-accent-text shadow-sm'
+                    ? 'bg-card-glass text-accent-ink shadow-sm'
                     : disabled
                       ? 'text-ink-tertiary/50 cursor-not-allowed'
                       : 'text-ink-tertiary hover:text-ink'}`}
@@ -208,9 +276,29 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
         </div>
       </header>
 
-      <div className="px-3 pt-3 pb-3 relative">
-        <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="w-full h-[220px] block" role="img" aria-label="Event timeline histogram">
+      {/* No "0 events" over an empty chart while the answer is on its way, or
+          when it never came: that reads as an idle fleet. */}
+      {q.data === undefined && (
+        <div className="px-5 py-4">
+          <QueryState query={q} label="activity timeline">{() => null}</QueryState>
+        </div>
+      )}
+      {/* Measured here: its content box is exactly the svg's width. */}
+      <div ref={boxRef} className={`px-3 pt-3 pb-3 relative ${q.data === undefined ? 'hidden' : ''}`}>
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          className="w-full h-[220px] block rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+          role="listbox"
+          aria-label={`Event timeline, per ${bucket}. Use the arrow keys to read each ${bucket}.`}
+          aria-orientation="horizontal"
+          tabIndex={0}
+          aria-activedescendant={current != null ? optionId(current) : undefined}
+          onFocus={() => setHoverIdx(i => (i != null && i <= last ? i : last >= 0 ? last : null))}
+          onBlur={() => setHoverIdx(null)}
+          onKeyDown={onKeyDown}
+        >
           {/* Y gridlines + labels */}
+          <g aria-hidden="true">
           {ticks.map((t) => {
             const y = m.top + innerH - (t / yTop) * innerH;
             return (
@@ -218,12 +306,13 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
                 <line x1={m.left} x2={m.left + innerW} y1={y} y2={y}
                       className="stroke-border-soft" strokeDasharray={t === 0 ? '0' : '2 3'} />
                 <text x={m.left - 6} y={y} textAnchor="end" dominantBaseline="middle"
-                      className="fill-ink-tertiary" style={{ fontSize: 10 }}>
+                      className="fill-ink-tertiary" style={{ fontSize: 11 }}>
                   {t}
                 </text>
               </g>
             );
           })}
+          </g>
 
           {/* Bars */}
           {axis.map((t, i) => {
@@ -231,15 +320,24 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
             const total = b?.total ?? 0;
             const x = m.left + i * (barW + barGap);
             const segs = stackedTypes
-              ? stackedTypes.map((tp, idx) => ({ type: tp, n: b?.by_type[tp] ?? 0, color: colorForType(tp, idx) }))
-              : [{ type: 'all', n: total, color: ACCENT }];
+              ? stackedTypes.map(tp => ({ type: tp, n: b?.by_type[tp] ?? 0, color: colours[tp] }))
+              : [{ type: 'all', n: total, color: ALL_EVENTS_COLOR }];
             let yCursor = m.top + innerH;
             const barH = (total / yTop) * innerH;
-            const isHover = hoverIdx === i;
+            const isHover = current === i;
             return (
               <g key={t}
+                 id={optionId(i)}
+                 role="option"
+                 aria-selected={isHover}
+                 aria-label={optionLabel(t)}
+                 onClick={() => setHoverIdx(i)}
                  onMouseEnter={() => setHoverIdx(i)}
-                 onMouseLeave={() => setHoverIdx(prev => prev === i ? null : prev)}>
+                 // A pointer leaving must not drop the keyboard's place.
+                 onMouseLeave={(e) => {
+                   if (byKeyboard.current && e.currentTarget.ownerSVGElement === document.activeElement) return;
+                   setHoverIdx(prev => prev === i ? null : prev);
+                 }}>
                 {/* invisible full-height hit target for easier hover on tiny bars */}
                 <rect x={x} y={m.top} width={barW + barGap} height={innerH} fill="transparent" />
                 {segs.map(s => {
@@ -251,7 +349,7 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
                           x={x} y={yCursor} width={barW} height={segH}
                           rx={barW > 6 ? 1.5 : 0}
                           fill={s.color}
-                          opacity={isHover ? 1 : (hoverIdx == null ? 0.92 : 0.5)}
+                          opacity={isHover ? 1 : (current == null ? 0.92 : 0.5)}
                           style={{ transition: 'opacity 120ms ease-out' }} />
                   );
                 })}
@@ -270,7 +368,7 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
                   <text x={x + barW / 2} y={m.top + innerH - barH - 4}
                         textAnchor="middle"
                         className="fill-ink font-semibold"
-                        style={{ fontSize: 10 }}>
+                        style={{ fontSize: 11 }}>
                     {total}
                   </text>
                 )}
@@ -278,19 +376,20 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
             );
           })}
 
-          {/* X axis baseline */}
+          {/* X axis baseline, tick labels and title: decoration for the eye */}
+          <g aria-hidden="true">
           <line x1={m.left} x2={m.left + innerW} y1={m.top + innerH} y2={m.top + innerH}
                 className="stroke-border-soft" />
 
           {/* X tick labels */}
           {axis.map((t, i) => {
-            if (i % xLabelStep !== 0 && i !== axis.length - 1) return null;
+            if (i % xLabelStep !== 0 && !(labelLast && i === axis.length - 1)) return null;
             const x = m.left + i * (barW + barGap) + barW / 2;
             return (
               <text key={t} x={x} y={m.top + innerH + 14}
                     textAnchor="middle"
                     className="fill-ink-tertiary font-mono"
-                    style={{ fontSize: 10 }}>
+                    style={{ fontSize: 11 }}>
                 {shortLabel(t, bucket, range)}
               </text>
             );
@@ -299,17 +398,22 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
           {/* Axis titles */}
           <text x={m.left} y={m.top - 2}
                 className="fill-ink-tertiary"
-                style={{ fontSize: 9, letterSpacing: '0.06em' }}>
+                style={{ fontSize: 11, letterSpacing: '0.14em' }}>
             EVENTS
           </text>
+          </g>
         </svg>
 
-        {/* Hover tooltip — positioned over the SVG using percentages of the same coordinate system. */}
-        {hoveredBucket && hoverIdx != null && (
+        {/* Hover tooltip, in pixels: one viewBox unit is one pixel, and the
+            svg starts after the wrapper's 12px (px-3) padding. A percentage
+            resolved against the padding box and drifted up to 12px. */}
+        {hoveredBucket && current != null && (
           <div
-            className="pointer-events-none absolute z-10 px-3 py-2 rounded-lg shadow-lg border border-border-soft bg-card-glass backdrop-blur text-[11px] min-w-[140px]"
+            data-testid="timeline-tooltip"
+            aria-hidden="true"
+            className="pointer-events-none absolute z-10 px-3 py-2 rounded-lg shadow-lg border border-border-soft bg-card-glass backdrop-blur text-caption min-w-[140px]"
             style={{
-              left: `calc(${(hoveredX / width) * 100}% )`,
+              left: `${12 + hoveredX}px`,
               top: '14px',
               transform: hoveredX > width * 0.7 ? 'translateX(-100%)' : 'translateX(8px)',
             }}
@@ -323,13 +427,14 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
                 {Object.entries(hoveredBucket.by_type)
                   .sort((a, b) => b[1] - a[1])
                   .map(([k, v]) => {
-                    const idx = stackedTypes ? stackedTypes.indexOf(k) : -1;
-                    const color = idx >= 0 ? colorForType(k, idx) : ACCENT;
+                    // A swatch only means something when the chart is split by
+                    // type; unstacked, every row would get the same colour.
+                    const stacked = !!stackedTypes?.includes(k);
                     return (
                       <li key={k} className="flex items-center justify-between gap-3">
                         <span className="flex items-center gap-1.5 min-w-0">
-                          <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ background: color }} />
-                          <span className="font-mono text-ink-secondary truncate">{k}</span>
+                          {stacked && <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ background: colours[k] }} />}
+                          <span className="text-ink-secondary truncate" title={k}>{eventTypeLabel(k)}</span>
                         </span>
                         <span className="font-semibold text-ink">{v}</span>
                       </li>
@@ -343,11 +448,11 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
 
       {/* Legend (only when filtered by type) */}
       {stackedTypes && stackedTypes.length > 0 && (
-        <footer className="flex flex-wrap gap-x-4 gap-y-1.5 px-5 pb-4 pt-1 text-[11px] text-ink-tertiary">
-          {stackedTypes.map((tp, idx) => (
+        <footer className="flex flex-wrap gap-x-4 gap-y-1.5 px-5 pb-4 pt-1 text-caption text-ink-tertiary">
+          {stackedTypes.map(tp => (
             <span key={tp} className="flex items-center gap-1.5">
-              <span className="inline-block w-2 h-2 rounded-sm" style={{ background: colorForType(tp, idx) }} />
-              <span className="font-mono">{tp}</span>
+              <span className="inline-block w-2 h-2 rounded-sm" style={{ background: colours[tp] }} />
+              <span title={tp}>{eventTypeLabel(tp)}</span>
             </span>
           ))}
         </footer>

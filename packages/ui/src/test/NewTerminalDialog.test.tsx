@@ -1,0 +1,207 @@
+/**
+ * @vitest-environment jsdom
+ *
+ * CGLAB-169: the dialog that opens a terminal on a card.
+ *
+ * Small surface, three real hazards:
+ *
+ *  - Re-entrancy. Create is reachable by click and by the keyboard shortcut,
+ *    and launching an agent CLI takes a moment. Two presses would spawn two
+ *    processes in the same worktree, both editing the same files.
+ *  - Auto-approve. The toggle disables the agent's own permission prompts, so
+ *    it must default off, must be offered only where the agent can honour it,
+ *    and must not survive as a sticky preference the user forgot they set.
+ *  - Dismissal. Escape must not tear the dialog down while a spawn is in
+ *    flight, or the session is created with nobody holding it.
+ */
+import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import React from 'react';
+import { NewTerminalDialog } from '../components/NewTerminalDialog';
+import { guardTokens } from './helpers/tokenGuard';
+
+const AGENTS = [
+  { id: 'claude-code', label: 'Claude Code', installed: true, supportsAutoApprove: true },
+  { id: 'codex', label: 'Codex', installed: false, supportsAutoApprove: true },
+  { id: 'gemini', label: 'Gemini CLI', installed: true, supportsAutoApprove: false },
+  { id: 'shell', label: 'Shell', installed: true, supportsAutoApprove: false },
+];
+
+const renderDialog = (props: Partial<React.ComponentProps<typeof NewTerminalDialog>> = {}) => {
+  const onCreate = props.onCreate ?? vi.fn(async () => {});
+  const onClose = props.onClose ?? vi.fn();
+  const view = render(
+    <NewTerminalDialog
+      cardTitle="Fix the flaky test"
+      onCreate={onCreate}
+      onClose={onClose}
+      listAgents={async () => AGENTS}
+      {...props}
+    />,
+  );
+  return { view, onCreate, onClose };
+};
+
+const createButton = () => screen.getByRole('button', { name: /^create$/i });
+
+beforeEach(() => {
+  // The dialog remembers the chosen agent. Without clearing it, a test that
+  // picks Gemini CLI leaves the NEXT test's picker showing Gemini CLI, and every
+  // lookup for "Claude Code" fails for a reason that has nothing to do with
+  // what is being tested.
+  localStorage.clear();
+});
+afterEach(() => cleanup());
+// CGLAB-434: every test here also proves the panel renders on tokens.
+guardTokens();
+
+describe('what it opens with', () => {
+  it('names the card, so you know which worktree you are about to work in', async () => {
+    renderDialog();
+    expect(await screen.findByText(/fix the flaky test/i)).toBeDefined();
+  });
+
+  it('is a dialog as far as assistive tech is concerned', async () => {
+    renderDialog();
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.getAttribute('aria-modal')).toBe('true');
+    expect(dialog.getAttribute('aria-label') || dialog.getAttribute('aria-labelledby')).toBeTruthy();
+  });
+
+});
+
+describe('creating', () => {
+  it('passes the chosen agent', async () => {
+    const { onCreate } = renderDialog();
+    fireEvent.click(createButton());
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith({ agentId: 'claude-code' }));
+  });
+
+
+  it('creates on the keyboard shortcut', async () => {
+    const { onCreate } = renderDialog();
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.keyDown(dialog, { key: 'Enter', metaKey: true });
+    await waitFor(() => expect(onCreate).toHaveBeenCalled());
+  });
+
+  it('does not spawn twice when Create is pressed twice', async () => {
+    // Launching an agent takes a moment and Create is reachable two ways. Two
+    // processes in one worktree would both be editing the same files.
+    let release: () => void = () => {};
+    const onCreate = vi.fn(() => new Promise<void>(res => { release = res; }));
+    renderDialog({ onCreate });
+    // Waits for the dialog to settle. Was the auto-approve switch until that
+    // moved to Settings; the agent picker is the thing that must be present now.
+    await screen.findByText(/agent/i);
+
+    // Captured once: after the first press the button relabels to "Opening…",
+    // so looking it up again by name would miss the very element under test.
+    const button = createButton();
+    fireEvent.click(button);
+    fireEvent.click(button);
+    const dialog = screen.getByRole('dialog');
+    fireEvent.keyDown(dialog, { key: 'Enter', metaKey: true });
+
+    expect(onCreate).toHaveBeenCalledTimes(1);
+    release();
+  });
+
+  it('says it is working rather than looking unresponsive', async () => {
+    const onCreate = vi.fn(() => new Promise<void>(() => {}));
+    renderDialog({ onCreate });
+    // Waits for the dialog to settle. Was the auto-approve switch until that
+    // moved to Settings; the agent picker is the thing that must be present now.
+    await screen.findByText(/agent/i);
+    fireEvent.click(createButton());
+    expect(await screen.findByRole('button', { name: /opening/i })).toBeDefined();
+  });
+
+  it('shows the failure instead of closing silently', async () => {
+    // A worktree that cannot be created gives a message naming what to fix.
+    // Closing on failure would throw that away.
+    const onCreate = vi.fn(async () => { throw new Error('project has no project root'); });
+    const { onClose } = renderDialog({ onCreate });
+    // Waits for the dialog to settle. Was the auto-approve switch until that
+    // moved to Settings; the agent picker is the thing that must be present now.
+    await screen.findByText(/agent/i);
+    fireEvent.click(createButton());
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', expect.stringMatching(/project root/i));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('recovers after a failure rather than staying stuck', async () => {
+    let fail = true;
+    const onCreate = vi.fn(async () => { if (fail) throw new Error('nope'); });
+    renderDialog({ onCreate });
+    // Waits for the dialog to settle. Was the auto-approve switch until that
+    // moved to Settings; the agent picker is the thing that must be present now.
+    await screen.findByText(/agent/i);
+
+    fireEvent.click(createButton());
+    await screen.findByRole('alert');
+
+    fail = false;
+    fireEvent.click(createButton());
+    await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(2));
+  });
+});
+
+describe('dismissing', () => {
+  it('closes on Escape', async () => {
+    const { onClose } = renderDialog();
+    fireEvent.keyDown(await screen.findByRole('dialog'), { key: 'Escape' });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('refuses to close while a spawn is in flight', async () => {
+    // The main process would be left holding a session nobody asked to keep.
+    const onCreate = vi.fn(() => new Promise<void>(() => {}));
+    const { onClose } = renderDialog({ onCreate });
+    // Waits for the dialog to settle. Was the auto-approve switch until that
+    // moved to Settings; the agent picker is the thing that must be present now.
+    await screen.findByText(/agent/i);
+    fireEvent.click(createButton());
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+
+/*
+ * Opaque, because it floats over a terminal.
+ *
+ * `bg-nav-surface` is a 72%-alpha token for bars and rails, which sit over a
+ * blurred backdrop. This dialog does not: the agent's own output showed
+ * through the sentence asking which agent to open.
+ */
+it('does not let what is behind it show through', () => {
+  renderDialog();
+  const panel = screen.getByRole('dialog');
+  expect(panel.className).toContain('bg-surface');
+  expect(panel.className).not.toContain('bg-nav-surface');
+});
+
+
+/*
+ * Where the agent actually is.
+ *
+ * The dialog said "Already open in an AgEnFK terminal" for any row on the
+ * card — including a run recorded by the hook for an agent running in
+ * somebody's own shell. So the person read "it is already open here" beside a
+ * button offering to open it, which is the sentence that made this screen read
+ * as broken.
+ */
+it('says when the agent is running outside this app, and what opening does', () => {
+  renderDialog({ existing: { agentId: 'claude-code', where: 'outside' } });
+  const said = screen.getByTestId('existing-session').textContent ?? '';
+  expect(said).toMatch(/outside AgEnFK/i);
+  expect(said).toMatch(/second agent in the same worktree/i);
+  expect(said).not.toMatch(/already open in an agenfk terminal/i);
+});
+
+it('still says "already open" when this app really holds the terminal', () => {
+  renderDialog({ existing: { agentId: 'claude-code', where: 'agenfk' } });
+  expect(screen.getByTestId('existing-session').textContent)
+    .toMatch(/already open in an agenfk terminal/i);
+});

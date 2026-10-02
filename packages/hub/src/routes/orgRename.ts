@@ -15,6 +15,7 @@ export const ORG_ID_CHILD_TABLES: readonly string[] = [
   'api_keys',
   'auth_config',
   'child_hubs',
+  'child_people',
   'device_codes',
   'events',
   'federation_keys',
@@ -23,8 +24,11 @@ export const ORG_ID_CHILD_TABLES: readonly string[] = [
   'flows',
   'hidden_users',
   'installations',
+  'jira_connections',
+  'jira_oauth_pending',
   'model_mappings',
   'model_meta',
+  'org_jira',
   'org_settings',
   'repoint_campaigns',
   'rollups_daily',
@@ -41,7 +45,7 @@ const ORG_ID_REGEX = /^[a-z0-9][a-z0-9-]{1,62}$/;
 
 export function orgRenameRouter(ctx: HubServerContext): Router {
   const router = Router();
-  const guard = requireAdmin(ctx.config.sessionSecret);
+  const guard = requireAdmin(ctx.config.sessionSecret, ctx.db);
 
   // POST /v1/admin/orgs/rename
   router.post('/orgs/rename', guard, asyncRoute(async (req: Request, res: Response) => {

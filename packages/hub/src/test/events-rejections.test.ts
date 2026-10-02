@@ -26,6 +26,17 @@ import { createHubApp } from '../server';
 import { issueApiKey } from '../auth/apiKey';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-events-rejections-${process.pid}.sqlite`);
 const cleanup = () => {
   for (const suffix of ['', '-wal', '-shm']) {
@@ -63,7 +74,7 @@ describe('hub /v1/events — per-event rejections (CGLAB-117)', () => {
   let token: string;
 
   const post = (events: any[], bearer: string = token) =>
-    supertest(app).post('/v1/events')
+    supertest(__server).post('/v1/events')
       .set('Authorization', `Bearer ${bearer}`)
       .send({ events });
 
@@ -71,13 +82,15 @@ describe('hub /v1/events — per-event rejections (CGLAB-117)', () => {
     cleanup();
     const out = await createHubApp({ dbPath: TEST_DB, secretKey: '0'.repeat(64), sessionSecret: 'sess', defaultOrgId: 'org' });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     token = await issueApiKey(ctx.db, 'org', 'test');
   });
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });

@@ -22,26 +22,27 @@ describe('SQLite → Postgres dialect translator', () => {
     expect(out).toBe('UPDATE t SET ts = now() WHERE id = $1');
   });
 
-  it('rewrites date(col) to to_char(col::timestamptz, ...)', () => {
+  // Every day/hour key is formatted in UTC, whatever the session TimeZone:
+  // to_char() on a bare timestamptz formats in the session's zone (BUG ba7880e0).
+  it('rewrites date(col) to a UTC to_char(col::timestamptz, ...)', () => {
     const out = toPostgres('SELECT date(occurred_at) AS day FROM events');
-    expect(out).toContain("to_char((occurred_at)::timestamptz, 'YYYY-MM-DD')");
+    expect(out).toContain("to_char(timezone('UTC', (occurred_at)::timestamptz), 'YYYY-MM-DD')");
   });
 
-  it('rewrites strftime day-pattern to to_char', () => {
+  it('rewrites strftime day-pattern to a UTC to_char', () => {
     const out = toPostgres("SELECT strftime('%Y-%m-%d', occurred_at) AS d FROM events");
-    expect(out).toContain("to_char((occurred_at)::timestamptz, 'YYYY-MM-DD')");
+    expect(out).toContain("to_char(timezone('UTC', (occurred_at)::timestamptz), 'YYYY-MM-DD')");
   });
 
-  it('rewrites strftime hour-pattern to to_char', () => {
+  it('rewrites strftime hour-pattern to a UTC to_char', () => {
     const out = toPostgres("SELECT strftime('%Y-%m-%dT%H:00', occurred_at) AS d FROM events");
-    expect(out).toContain('to_char(');
-    expect(out).toContain("'YYYY-MM-DD\"T\"HH24\":00\"'");
+    expect(out).toContain("to_char(timezone('UTC', (occurred_at)::timestamptz), 'YYYY-MM-DD\"T\"HH24\":00\"')");
   });
 
-  it('rewrites strftime with tz modifier to to_char(col + interval N min, ...)', () => {
+  it('rewrites strftime with tz modifier to a UTC to_char(col + interval N min, ...)', () => {
     const out = toPostgres("SELECT strftime('%Y-%m-%d', occurred_at, ?) FROM events");
     // The ? becomes $1; the interval is built from that bind value
-    expect(out).toContain("to_char((occurred_at)::timestamptz + ($1)::interval, 'YYYY-MM-DD')");
+    expect(out).toContain("to_char(timezone('UTC', (occurred_at)::timestamptz + ($1)::interval), 'YYYY-MM-DD')");
   });
 
   it('rewrites json_extract to jsonb_extract_path_text', () => {

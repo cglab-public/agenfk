@@ -30,13 +30,33 @@ const isNewerVersion = (latest: string, current: string): boolean => {
   /* v8 ignore stop */
 };
 
+/** The installed version's own release (GET /releases/current). */
+interface CurrentReleaseInfo {
+  version: string;
+  published: boolean;
+  name: string;
+  body: string;
+  publishedAt: string | null;
+  url: string;
+  currentVersion: string;
+}
+
 interface WhatsNewModalProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
 export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose }) => {
-  const { data: release, isLoading } = useQuery<ReleaseInfo>({
+  // 4aac7076: the notes are the INSTALLED release's. The latest-stable feed only
+  // decides the "available" footer - on a beta it used to supply the notes too.
+  const { data: release, isLoading } = useQuery<CurrentReleaseInfo>({
+    queryKey: ['currentRelease'],
+    queryFn: api.getCurrentRelease,
+    staleTime: 15 * 60 * 1000,
+    retry: false,
+    enabled: isOpen,
+  });
+  const { data: latest } = useQuery<ReleaseInfo>({
     queryKey: ['latestRelease'],
     queryFn: api.getLatestRelease,
     staleTime: 15 * 60 * 1000,
@@ -58,7 +78,9 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
 
   if (!isOpen) return null;
 
-  const hasUpdate = release ? isNewerVersion(release.version, release.currentVersion) : false;
+  const hasUpdate = latest ? isNewerVersion(latest.version, latest.currentVersion) : false;
+  // The installed release's page; without it (the notes could not be read), the releases page.
+  const githubUrl = release?.url || (latest?.url ? latest.url.replace(/\/tag\/[^/]+$/, '') : '');
 
   return (
     <div
@@ -66,14 +88,14 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
       onClick={onClose}
     >
       <div
-        className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-lg mx-4 max-h-[85vh] flex flex-col overflow-hidden"
+        className="bg-surface rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-lg mx-4 max-h-[85vh] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800 shrink-0">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-chip rounded-lg">
-              <Sparkles size={20} className="text-accent-text" />
+            <div className="p-2 bg-canvas rounded-lg">
+              <Sparkles size={20} className="text-accent-ink" />
             </div>
             <div>
               <h2 className="font-bold text-slate-800 dark:text-slate-100 text-lg">What's New</h2>
@@ -109,19 +131,23 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
                 <div className="h-4 bg-slate-100 dark:bg-slate-800 rounded animate-pulse w-2/3" />
               </div>
             </div>
+          ) : release && !release.published ? (
+            <div className="flex items-center justify-center p-8 text-slate-400 text-sm text-center">
+              No release notes were published for v{release.version}.
+            </div>
           ) : release ? (
             <>
               {release.name && (
                 <div className="px-6 pt-4 shrink-0">
                   <h3 className="font-semibold text-slate-700 dark:text-slate-200">{release.name}</h3>
-                  <p className="text-xs text-slate-400 mt-1">
+                  {release.publishedAt && <p className="text-xs text-slate-400 mt-1">
                     Released{' '}
                     {new Date(release.publishedAt).toLocaleDateString('en-US', {
                       year: 'numeric',
                       month: 'long',
                       day: 'numeric',
                     })}
-                  </p>
+                  </p>}
                 </div>
               )}
               <div className="flex-1 overflow-y-auto px-6 py-4">
@@ -141,20 +167,20 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({ isOpen, onClose })
 
         {/* Footer */}
         <div className="flex items-center justify-between px-6 py-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 shrink-0">
-          {hasUpdate && release ? (
-            <div className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
+          {hasUpdate && latest ? (
+            <div className="flex items-center gap-1.5 text-xs text-status-ok-text font-medium">
               <ArrowUpCircle size={14} />
-              <span>v{release.version} available — see the update notification</span>
+              <span>v{latest.version} available — see the update notification</span>
             </div>
           ) : (
             <span className="text-xs text-slate-400">You're up to date</span>
           )}
-          {release && (
+          {githubUrl && (
             <a
-              href={release.url}
+              href={githubUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300 hover:text-accent-text font-medium transition-colors"
+              className="flex items-center gap-1.5 text-sm text-slate-600 dark:text-slate-300 hover:text-accent-ink font-medium transition-colors"
             >
               <ExternalLink size={14} />
               View on GitHub

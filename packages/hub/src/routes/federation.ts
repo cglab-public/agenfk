@@ -2,9 +2,10 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { randomBytes, randomUUID } from 'crypto';
 import { HubServerContext } from '../server.js';
 import { requireAdmin } from '../auth/session.js';
-import { signInviteToken, verifyInviteToken, burnInviteNonce, INVITE_TTL_MS } from '../auth/inviteToken.js';
+import { signInviteToken, verifyInviteToken, burnInviteNonce, INVITE_TTL_MS, MAX_INVITE_TOKEN_LEN } from '../auth/inviteToken.js';
 import { semverOrNull } from '../util/semver.js';
 import { effectiveIdentityPolicy } from '../services/federation/forwarding.js';
+import { recordChildPerson, forwardedActorName, parentAllowsNames } from '../services/migrateChildPeopleNames.js';
 import { sanitizeRemoteUrl, remoteUrlFromRepo } from '../util/remoteUrl.js';
 import { loadAliasMap, resolveAliasKey } from '../util/userKeyAlias.js';
 import { recomputeRollups } from '../rollup.js';
@@ -20,9 +21,6 @@ import { MAX_CHILD_HUB_NAME_LEN, validChildHubName } from '../util/childHubRow.j
 // (next to the installation invite) while the child-facing API lives under
 // /v1 like every other machine-to-machine route.
 
-// An invite is ~200 chars. Cap the input before it reaches createHmac so an
-// unauthenticated caller cannot make the hub HMAC megabytes per request.
-const MAX_INVITE_TOKEN_LEN = 4096;
 /** Same ceiling as /v1/events: one delivery must not be able to monopolise a writer. */
 const MAX_DELIVER_ROWS = 500;
 
@@ -65,7 +63,7 @@ export function forwardedEventId(childHubId: string, eventId: string): string {
 /** Admin-facing: mint a child-hub invite. Mounted under /hub/federation. */
 export function federationInviteRouter(ctx: HubServerContext): Router {
   const router = Router();
-  const adminGuard = requireAdmin(ctx.config.sessionSecret);
+  const adminGuard = requireAdmin(ctx.config.sessionSecret, ctx.db);
 
   router.post('/invite/create', adminGuard, (req: Request, res: Response) => {
     res.json(mintChildHubInvite(req.session!.orgId, ctx.config.secretKey, publicHubUrl(req)));
@@ -447,6 +445,8 @@ export function federationRouter(ctx: HubServerContext): Router {
       );
       const hidden = new Set(hiddenRows.map(r => r.user_key));
       const aliases = await loadAliasMap(ctx.db, orgId);
+      // Names are recorded only under the parent's own current policy (see below).
+      const namesAllowed = await parentAllowsNames(ctx.db, orgId, childHubId);
 
       let accepted = 0;
       let duplicates = 0;
@@ -507,6 +507,12 @@ export function federationRouter(ctx: HubServerContext): Router {
           );
           if (result.changes === 0) { duplicates++; continue; }
           accepted++;
+
+          // Name the person (BUG 4159631f), but only under the group's `keep`
+          // policy: a pseudonymize row is never trusted to have dropped one.
+          if (namesAllowed && r.payload?.identityPolicy === 'keep') {
+            await recordChildPerson(ctx.db, { orgId, childHubId, userKey, name: forwardedActorName(e), occurredAt: e.occurredAt });
+          }
 
           await applyFlowDispatchReport(e, { orgId, childHubId, now, str });
           await applyUpgradeProgressReport(e, { orgId, childHubId, now, str });

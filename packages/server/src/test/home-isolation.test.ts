@@ -121,3 +121,30 @@ describe('home isolation (item 9c297075)', () => {
     }
   });
 });
+
+/**
+ * The environment the suite is LAUNCHED from (BUG 6b3e7a98).
+ *
+ * A sibling of the HOME pinning above, and it comes from the same lesson one
+ * level out. `server.ts` mounts the static UI at module level when
+ * `AGENFK_SERVE_UI` is set — so a suite that inherits it is testing a different
+ * Express app than the one these tests were written against: `GET /` answers a
+ * page instead of the API's JSON.
+ *
+ * It is inherited exactly when the suite is run BY the framework. `agenfk
+ * verify` spawns the command from the server, and the server was launched by
+ * the desktop app, which sets this to the bundle inside the .app. So the suite
+ * passed from a shell and failed from the tool, and which assertions broke
+ * depended on which files were in that run — which reads as "a different test
+ * every time".
+ *
+ * Worth a test rather than trusting the config, because the failure it
+ * prevents does not look like a configuration problem. It looks like flakiness,
+ * and it cost eleven hypotheses that all went looking for state shared BETWEEN
+ * tests. There is none. The shared state was the environment.
+ */
+describe('the launching environment', () => {
+  it('does not let AGENFK_SERVE_UI through', () => {
+    expect(process.env.AGENFK_SERVE_UI || '').toBe('');
+  });
+});

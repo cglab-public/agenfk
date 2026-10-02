@@ -11,6 +11,17 @@ import { createHubApp } from '../server';
 import { issueApiKey } from '../auth/apiKey';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-events-hidden-${process.pid}.sqlite`);
 const cleanup = () => {
   for (const suffix of ['', '-wal', '-shm']) {
@@ -41,13 +52,15 @@ describe('hub /v1/events — hidden users dropped at ingest (CGLAB-31)', () => {
     cleanup();
     const out = await createHubApp({ dbPath: TEST_DB, secretKey: '0'.repeat(64), sessionSecret: 'sess', defaultOrgId: 'org' });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     token = await issueApiKey(ctx.db, 'org', 'test');
   });
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
@@ -57,7 +70,7 @@ describe('hub /v1/events — hidden users dropped at ingest (CGLAB-31)', () => {
 
   it('drops events from a hidden person and does NOT store them', async () => {
     await hide('alice@example.com');
-    const r = await supertest(app).post('/v1/events')
+    const r = await supertest(__server).post('/v1/events')
       .set('Authorization', `Bearer ${token}`)
       .send({ events: [sampleEvent({ eventId: 'e1' })] });
     expect(r.status).toBe(200);
@@ -68,7 +81,7 @@ describe('hub /v1/events — hidden users dropped at ingest (CGLAB-31)', () => {
 
   it('does NOT upsert the hidden person\'s installation (hidden install cannot resurrect)', async () => {
     await hide('alice@example.com');
-    await supertest(app).post('/v1/events')
+    await supertest(__server).post('/v1/events')
       .set('Authorization', `Bearer ${token}`)
       .send({ events: [sampleEvent({ eventId: 'e1' })] });
     const inst = await ctx.db.get('SELECT id FROM installations WHERE id = ?', ['inst-1']);
@@ -82,7 +95,7 @@ describe('hub /v1/events — hidden users dropped at ingest (CGLAB-31)', () => {
       ['inst-1', 'org', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'alice', 'alice@example.com'],
     );
     await hide('alice@example.com');
-    await supertest(app).post('/v1/events')
+    await supertest(__server).post('/v1/events')
       .set('Authorization', `Bearer ${token}`)
       .send({ events: [sampleEvent({ eventId: 'e1' })] });
     const inst = await ctx.db.get<{ last_seen: string }>('SELECT last_seen FROM installations WHERE id = ?', ['inst-1']);
@@ -91,7 +104,7 @@ describe('hub /v1/events — hidden users dropped at ingest (CGLAB-31)', () => {
 
   it('still ingests events from non-hidden people in the same batch', async () => {
     await hide('alice@example.com');
-    const r = await supertest(app).post('/v1/events')
+    const r = await supertest(__server).post('/v1/events')
       .set('Authorization', `Bearer ${token}`)
       .send({
         events: [
@@ -110,7 +123,7 @@ describe('hub /v1/events — hidden users dropped at ingest (CGLAB-31)', () => {
 
   it('matches the hidden user_key case-insensitively (event git email in any case)', async () => {
     await hide('alice@example.com');
-    const r = await supertest(app).post('/v1/events')
+    const r = await supertest(__server).post('/v1/events')
       .set('Authorization', `Bearer ${token}`)
       .send({ events: [sampleEvent({ eventId: 'e1', actor: { osUser: 'alice', gitName: 'A', gitEmail: 'Alice@Example.COM' } })] });
     expect(r.body.ingested).toBe(0);
@@ -120,7 +133,7 @@ describe('hub /v1/events — hidden users dropped at ingest (CGLAB-31)', () => {
 
   it('reports dropped events in the response so operators can see the filter working', async () => {
     await hide('alice@example.com');
-    const r = await supertest(app).post('/v1/events')
+    const r = await supertest(__server).post('/v1/events')
       .set('Authorization', `Bearer ${token}`)
       .send({
         events: [
@@ -137,7 +150,7 @@ describe('hub /v1/events — hidden users dropped at ingest (CGLAB-31)', () => {
   it('unhiding restores ingest (reversible)', async () => {
     await hide('alice@example.com');
     await ctx.db.run('DELETE FROM hidden_users WHERE org_id = ? AND user_key = ?', ['org', 'alice@example.com']);
-    const r = await supertest(app).post('/v1/events')
+    const r = await supertest(__server).post('/v1/events')
       .set('Authorization', `Bearer ${token}`)
       .send({ events: [sampleEvent({ eventId: 'e1' })] });
     expect(r.body.ingested).toBe(1);
@@ -146,7 +159,7 @@ describe('hub /v1/events — hidden users dropped at ingest (CGLAB-31)', () => {
   it('hidden in another org does not affect this org\'s ingest', async () => {
     await ctx.db.run('INSERT OR IGNORE INTO orgs (id, name) VALUES (?, ?)', ['org-b', 'org-b']);
     await ctx.db.run('INSERT INTO hidden_users (org_id, user_key) VALUES (?, ?)', ['org-b', 'alice@example.com']);
-    const r = await supertest(app).post('/v1/events')
+    const r = await supertest(__server).post('/v1/events')
       .set('Authorization', `Bearer ${token}`)
       .send({ events: [sampleEvent({ eventId: 'e1' })] });
     expect(r.body.ingested).toBe(1);

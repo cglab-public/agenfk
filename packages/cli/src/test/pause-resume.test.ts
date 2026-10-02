@@ -64,9 +64,6 @@ vi.mock('child_process', () => ({
   default: { execSync: vi.fn(), spawn: vi.fn(), spawnSync: mockSpawnSync },
 }));
 
-vi.mock('figlet', () => ({
-  default: { textSync: vi.fn().mockReturnValue('AgEnFK') },
-}));
 
 vi.mock('axios');
 

@@ -72,7 +72,7 @@ Once the implementation is complete, the agent moves the card to **REVIEW** and 
 
 ### 4. Test verification
 
-The card advances to **TEST**, where AgEnFK runs your project's full test suite using the configured `verifyCommand`. If tests fail, the card is automatically moved back to IN_PROGRESS and the agent fixes the issues — no manual intervention needed.
+The card advances to **TEST**, where AgEnFK runs your project's full test suite using the configured `verifyCommand`. If tests fail, the card does not reach DONE: it stays on TEST and the agent fixes the issues and verifies again — no manual intervention needed.
 
 ### 5. Done
 
@@ -135,13 +135,13 @@ After installation, complete the setup:
     ```bash
     agenfk up
     ```
-    This launches the API server on `http://localhost:3000` and the Kanban UI (typically `http://localhost:5173`).
+    This launches the server on `http://localhost:3000`, which serves both the API and the Kanban board. The
+    board starts, stops and restarts with it (an upgrade's restart included).
 
-    To access the dashboard through a reverse proxy or tunnel, publish the UI
-    origin only (for example, `https://agenfk.example.com` → `localhost:5173`).
-    The dashboard uses same-origin API and WebSocket URLs, and the bundled Vite
-    preview server proxies those requests to the local API. Protect remote
-    access with authentication; the dashboard can modify workflow data.
+    To access the dashboard through a reverse proxy or tunnel, publish that one
+    origin (for example, `https://agenfk.example.com` → `localhost:3000`). The
+    dashboard uses same-origin API and WebSocket URLs. Protect remote access
+    with authentication; the dashboard can modify workflow data.
 
     Allow the public hostname when starting or restarting the services:
 

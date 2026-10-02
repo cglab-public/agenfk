@@ -8,6 +8,8 @@ import {
   TokenEvent,
   TokenEventQuery,
   IngestionState,
+  AppSettings,
+  TerminalSession,
   Pr,
   PrSizing,
   AgentRun,
@@ -33,6 +35,12 @@ export interface StorageQuery {
   parentId?: string;
   limit?: number;
   offset?: number;
+  /**
+   * e248239d: false leaves each capture record's per-test results as a
+   * `testsBlob` reference instead of reading them back - for a caller that
+   * never reads them (the item list). Default true.
+   */
+  hydrate?: boolean;
 }
 
 export interface StorageProvider extends AgEnFKPlugin {
@@ -48,6 +56,19 @@ export interface StorageProvider extends AgEnFKPlugin {
   updateItem(id: string, updates: Partial<AgEnFKItem>): Promise<AgEnFKItem>;
   deleteItem(id: string): Promise<boolean>;
   getItem(id: string): Promise<AgEnFKItem | null>;
+  /**
+   * 80920048: one stored value by its hash - a capture record's file map
+   * (`fileShasBlob`), which reads leave as a reference. Null when it is not
+   * there. Optional: a provider without it gives no partial runs from a map.
+   */
+  readBlob?(hash: string): Promise<unknown | null>;
+  /**
+   * ec325925: replace a card's step records as housekeeping - no updatedAt,
+   * no history - and drop the results blobs nothing references any more.
+   * Optional: a provider without them is simply not pruned.
+   */
+  rewriteRecords?(id: string, records: { stepRecords?: unknown[]; supersededRecords?: unknown[] }): Promise<void>;
+  sweepUnreferencedBlobs?(): Promise<number>;
   listItems(query?: StorageQuery): Promise<AgEnFKItem[]>;
   listChildren(parentId: string): Promise<AgEnFKItem[]>;
 
@@ -67,6 +88,12 @@ export interface StorageProvider extends AgEnFKPlugin {
   // Observability — token events (server-side ingestion of per-client session logs)
   insertTokenEvent(event: TokenEvent): Promise<void>;
   queryTokenEvents(query: TokenEventQuery): Promise<TokenEvent[]>;
+  listTerminalSessions(projectId?: string): Promise<TerminalSession[]>;
+  recordTerminalSession(session: TerminalSession): Promise<TerminalSession>;
+  forgetTerminalSession(id: string): Promise<void>;
+  getSettings(): Promise<AppSettings>;
+  /** Merges: keys left out keep their stored value rather than being blanked. */
+  updateSettings(patch: Partial<AppSettings>): Promise<AppSettings>;
   getIngestionState(sourcePath: string): Promise<IngestionState | null>;
   setIngestionState(state: IngestionState): Promise<void>;
 
@@ -76,7 +103,15 @@ export interface StorageProvider extends AgEnFKPlugin {
   getAgentRun(id: string): Promise<AgentRun | null>;
   listAgentRuns(query: AgentRunQuery): Promise<AgentRun[]>;
   getAgentRunBySession(sessionId: string): Promise<AgentRun | null>;
-  appendRunEvent(event: RunEvent): Promise<void>;
+  /**
+   * Append an event, answering with the position it was given.
+   *
+   * The position may be assigned by the store when the caller omits it, and
+   * the caller needs it back: the object it handed over still says undefined,
+   * and anything that broadcasts that object leaves every consumer unable to
+   * order or de-duplicate. Null means nothing was written.
+   */
+  appendRunEvent(event: RunEvent): Promise<number | null>;
   listRunEvents(runId: string): Promise<RunEvent[]>;
 
   // Observability — PR sizing (agent-declared)
@@ -101,6 +136,9 @@ export interface LLMProvider extends AgEnFKPlugin {
 // in a local outbox and flushed to the hub via HTTPS. Pure type definitions —
 // no runtime imports — so this remains safe for browser consumers.
 
+/** Event types the hub still accepts but never stores or offers. */
+export type LegacyHubEventType = 'tokens.logged';
+
 export type HubEventType =
   | 'item.created'
   | 'item.updated'
@@ -111,11 +149,19 @@ export type HubEventType =
   | 'validate.invoked'
   | 'validate.passed'
   | 'validate.failed'
+  // A person's go-ahead for a step, or their pass of a blocked check (CGLAB-382).
+  | 'step.approved'
+  | 'check.overridden'
+  // A passkey enrolled on, or removed from, the board (CGLAB-383).
+  | 'passkey.enrolled'
+  | 'passkey.removed'
+  // A person's approval of a command check's exact argv for a project (efcacdeb).
+  | 'command.approved'
   | 'comment.added'
   | 'test.logged'
   // Legacy inbound-only event. Spokes no longer emit this, and Hub skips it
   // during ingest so token consumption is not stored.
-  | 'tokens.logged'
+  | LegacyHubEventType
   | 'session.started'
   | 'session.ended'
   // Fleet upgrade lifecycle (Story 2/3 of EPIC 541c12b3 — remote upgrade).
@@ -157,6 +203,8 @@ export interface HubEvent {
   itemTitle?: string;
   // Reference into an external tracker (e.g. Jira issue key like "WEB-123").
   externalId?: string;
+  // The tracker's browse URL for externalId, as stored on the item.
+  externalUrl?: string;
   type: HubEventType;
   payload: Record<string, unknown>;
 }

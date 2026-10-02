@@ -78,6 +78,8 @@ The old version is read from the root `package.json`; commit the manifest change
 
 **Storage**: SQLite-only via `better-sqlite3` (`packages/storage-sqlite`). The repo previously supported `db.json`; existing JSON DBs are auto-migrated by the installer. WAL mode + indexed schema.
 
+**Serving the UI**: the server serves the built board itself - `agenfk up` (`scripts/start-services.mjs`) sets `AGENFK_SERVE_UI` to `packages/ui/dist`, so REST, Socket.io and assets share one origin and the board's lifecycle is the server's (no separate UI process; with no build the API runs alone and says so). That one origin is also what the Electron desktop shell loads. For UI development, `cd packages/ui && npm run dev` still runs vite against the API. The path must be a *build output*: a directory containing `node_modules/` or `src/` is rejected, because `packages/ui/index.html` exists and the near-miss typo would otherwise expose the source tree. With the variable unset, behaviour is unchanged.
+
 **Workflow engine** (`packages/core` + enforced by `packages/server`):
 - Items have type (EPIC / STORY / TASK / BUG) and move through a configurable **Flow** of `FlowStep`s (default: TODO → IN_PROGRESS → REVIEW → TEST → DONE; per-project flows override this).
 - Forward transitions are gated by `validate_progress(itemId, evidence, command?)`. The final step's `command` defaults to `project.verifyCommand`.
@@ -86,7 +88,7 @@ The old version is read from the root `package.json`; commit the manifest change
 
 **MCP surface**: the server registers MCP tools (`mcp__agenfk__*`) backed by the same handlers as the REST endpoints. Tool definitions live in `packages/server/src` alongside the Express routes. Adding a new MCP tool means: handler in core, REST route in server, MCP tool registration in server, and (usually) a CLI subcommand in `packages/cli` for the fallback path.
 
-**Client integrations**: three clients are supported, with different enforcement models — see `AFK_ARCHITECTURE.md` for the full table. Claude Code and OpenCode get *mechanical* PreToolUse hooks (`agenfk-gatekeeper`, `agenfk-mcp-enforcer`) that hard-block edits without an active task and block bypass routes (direct DB reads, `curl localhost:3000`, raw CLI state queries). Cursor has no hook system, so enforcement there is instructional via `cursorrules/agenfk.mdc` (`alwaysApply: true`) plus the server-side gatekeeper.
+**Client integrations**: three clients are supported, with different enforcement models — see `AFK_ARCHITECTURE.md` for the full table. Claude Code and OpenCode get *mechanical* PreToolUse hooks (`agenfk-gatekeeper`, `agenfk-mcp-enforcer`) that hard-block edits without an active task and block the bypass routes around the server (direct DB reads, `curl localhost:3000`; the `agenfk` CLI and MCP are interchangeable and never blocked). Cursor has no hook system, so enforcement there is instructional via `cursorrules/agenfk.mdc` (`alwaysApply: true`) plus the server-side gatekeeper.
 
 ## Testing notes
 
@@ -100,6 +102,7 @@ The old version is read from the root `package.json`; commit the manifest change
 
 - `README.md` — user-facing overview, install/usage.
 - `AFK_ARCHITECTURE.md` — system architecture, multi-agent orchestration, client enforcement matrix.
+- `MULTI_AGENT.md` — **read before touching worktrees or the close commit.** Several agents share ONE worktree; a branch-and-worktree per child was tried and withdrawn, and so were claims (per-card owned paths). Carries why staging is each agent's own job and what was verified against Orca.
 - `SDLC.md` — the lifecycle the framework enforces on its users (also describes rules this repo dogfoods on itself).
 - `SKILL.md` — the master skill file installed across clients; mirror changes here when editing `commands/` or `skills/`.
 - `AGENFK_COMPARISON.md`, `AFK_PROJECT_SCOPE.md` — design context.

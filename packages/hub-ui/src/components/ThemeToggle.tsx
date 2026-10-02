@@ -7,15 +7,16 @@ import { useTheme } from '../ThemeContext';
  * hover accent.
  */
 export const sidebarButtonClass =
-  'flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-[11px] font-semibold border border-border-soft text-ink-secondary transition-colors';
+  'flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-caption font-semibold border border-border-soft text-ink-secondary transition-colors';
 
 /**
  * Sidebar light/dark switch.
  *
  * Labelling convention: the icon and the accessible name both describe the
  * DESTINATION mode ("Switch to dark mode" while currently light), which is
- * what users expect from a one-shot toggle. `aria-pressed` carries the actual
- * current state for assistive tech.
+ * what users expect from a one-shot toggle, and the name contains the visible
+ * "Dark"/"Light". No aria-pressed: "Switch to light mode, pressed" would give
+ * two answers to one question.
  */
 export function ThemeToggle() {
   const { theme, toggleTheme } = useTheme();
@@ -29,8 +30,7 @@ export function ThemeToggle() {
       onClick={toggleTheme}
       title={label}
       aria-label={label}
-      aria-pressed={isDark}
-      className={`${sidebarButtonClass} hover:bg-chip hover:border-border-brand hover:text-accent-text`}
+      className={`${sidebarButtonClass} hover:bg-accent-fill hover:border-accent hover:text-accent-ink`}
     >
       {isDark ? <Sun className="w-3 h-3" /> : <Moon className="w-3 h-3" />}
       <span>{isDark ? 'Light' : 'Dark'}</span>

@@ -1,20 +1,30 @@
 /**
  * @vitest-environment jsdom
  */
-import { render, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor, within, act } from '@testing-library/react';
 import { KanbanBoard } from '../components/KanbanBoard';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../ThemeContext';
+import { ActiveProjectProvider, useActiveProject } from '../ActiveProject';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api } from '../api';
 import { ItemType, Status } from '../types';
+import { ITEM_TYPE_VISUAL } from '../components/ItemTypeSquare';
 import { io } from 'socket.io-client';
+import { SocketProvider } from '../SocketContext';
+import { expectOnTokens, guardTokens } from './helpers/tokenGuard';
+import { cardShortDate, cardAgo } from '../cardDates';
 
-// Mock socket.io-client
+// Mock socket.io-client. Handlers are recorded rather than dropped so a test
+// can fire a server event — `project_switched` in particular, since the pin
+// exists to suppress exactly that and nothing else proves it does.
+const socketHandlers: Record<string, (payload: unknown) => void> = {};
 vi.mock('socket.io-client', () => ({
   io: vi.fn(() => ({
-    on: vi.fn(),
-    off: vi.fn(),
+    connected: true,
+    connect: vi.fn(),
+    on: vi.fn((event: string, handler: (payload: unknown) => void) => { socketHandlers[event] = handler; }),
+    off: vi.fn((event: string) => { delete socketHandlers[event]; }),
     emit: vi.fn(),
     disconnect: vi.fn(),
   })),
@@ -75,9 +85,14 @@ vi.mock('../api', () => ({
     trashArchivedItems: vi.fn(() => Promise.resolve({})),
     getJiraStatus: vi.fn(() => Promise.resolve({ configured: false, connected: false })),
     getLatestRelease: vi.fn(() => Promise.resolve(null)),
+    getCurrentRelease: vi.fn(() => Promise.resolve(null)),
     getVersion: vi.fn(() => Promise.resolve({ version: '1.0.0' })),
     getProjectFlow: vi.fn(() => Promise.resolve(DEFAULT_FLOW_MOCK)),
     getGitHubStatus: vi.fn(() => Promise.resolve({ configured: false })),
+    getSettings: vi.fn(() => Promise.resolve({ boardPinned: false, pinnedProjects: [] })),
+    // Answers the settled state, as the real route does.
+    updateSettings: vi.fn((patch: Record<string, unknown>) =>
+      Promise.resolve({ boardPinned: false, pinnedProjects: [], ...patch })),
   }
 }));
 
@@ -89,9 +104,11 @@ const queryClient = new QueryClient({
 
 const wrapper = ({ children }: { children: React.ReactNode }) => (
   <QueryClientProvider client={queryClient}>
+    <ActiveProjectProvider>
     <ThemeProvider>
       {children}
     </ThemeProvider>
+    </ActiveProjectProvider>
   </QueryClientProvider>
 );
 
@@ -107,10 +124,356 @@ describe('KanbanBoard', () => {
     cleanup();
   });
 
-  it('should show project selector when no project is selected', async () => {
+  // CGLAB-434: every test here also proves the board renders on tokens.
+  guardTokens();
+
+  describe('switching project from outside the board (CGLAB-168)', () => {
+    it('clears the drill-down so the new project is not filtered by the old one\'s epic', async () => {
+      // The sidebar sets the shared project id directly. If navPath survives
+      // that, every column filters project B's items by project A's epic id:
+      // an empty board under a breadcrumb still naming A's epic, with nothing
+      // on screen to explain it.
+      const projects = [
+        { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() },
+        { id: 'p2', name: 'P2', createdAt: new Date(), updatedAt: new Date() },
+      ];
+      const epic = { id: 'e1', projectId: 'p1', type: ItemType.EPIC, title: 'Epic One', status: Status.IN_PROGRESS, createdAt: new Date(), updatedAt: new Date() };
+      const child = { id: 'c1', projectId: 'p1', parentId: 'e1', type: ItemType.TASK, title: 'Child Task', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() };
+      const other = { id: 'o1', projectId: 'p2', type: ItemType.TASK, title: 'Other Task', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() };
+
+      vi.mocked(api.listProjects).mockResolvedValue(projects as any);
+      vi.mocked(api.listItems).mockImplementation((async (params: any) =>
+        params?.projectId === 'p2' ? [other] : [epic, child]) as any);
+      localStorage.setItem('agenfk_project_id', 'p1');
+
+      function Harness() {
+        const { setActiveProjectId } = useActiveProject();
+        return (
+          <>
+            <button onClick={() => setActiveProjectId('p2')}>switch outside</button>
+            <KanbanBoard />
+          </>
+        );
+      }
+      render(<Harness />, { wrapper });
+
+      // Drill into the epic via its child-count button.
+      fireEvent.click(await screen.findByRole('button', { name: /Show 1 child items/i }));
+      await screen.findByText('Child Task');
+
+      fireEvent.click(screen.getByText('switch outside'));
+
+      // The new project's item must be visible, not filtered away.
+      expect(await screen.findByText('Other Task')).toBeDefined();
+      expect(screen.queryByText('Child Task')).toBeNull();
+    });
+  });
+
+  describe('navigating to a card from the sidebar (CGLAB-172)', () => {
+    const ITEM = { id: 'i1', projectId: 'p1', type: ItemType.TASK, title: 'Target Task', status: Status.IN_PROGRESS, createdAt: new Date(), updatedAt: new Date() };
+
+    function FocusHarness() {
+      const { focusItem, setActiveProjectId } = useActiveProject();
+      return (
+        <>
+          <button onClick={() => focusItem('i1', 'p1')}>focus i1</button>
+          <button onClick={() => setActiveProjectId('p2')}>go to p2</button>
+          <KanbanBoard />
+        </>
+      );
+    }
+
+    it('does not re-hijack the search box when the items list refreshes', async () => {
+      // The effect that reacts to focusedItemId has `items` in its deps, and
+      // focusedItemId is never cleared. An agent fires items_updated
+      // constantly, and each one gives `items` a new reference. Without a
+      // one-shot guard the board keeps re-applying a navigation the user
+      // finished with minutes ago: it overwrites whatever they have since
+      // typed, re-runs the search and scrolls the board back.
+      const projects = [{ id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() }];
+      vi.mocked(api.listProjects).mockResolvedValue(projects as any);
+      // The refetch must return genuinely DIFFERENT data, not just a fresh
+      // array. TanStack Query's structuralSharing reuses the previous object
+      // when the payload is deep-equal, so an identical refetch leaves `items`
+      // referentially unchanged and the effect never re-runs — the bug hides.
+      // What actually happens in an AgEnFK install is an agent touching some
+      // OTHER item in the project, which is what this simulates.
+      let revision = 0;
+      vi.mocked(api.listItems).mockImplementation((async () => {
+        revision += 1;
+        return [ITEM, { ...ITEM, id: 'i2', title: `Agent Task ${revision}` }];
+      }) as any);
+      localStorage.setItem('agenfk_project_id', 'p1');
+      render(<FocusHarness />, { wrapper });
+      await screen.findByText('Target Task');
+
+      fireEvent.click(screen.getByText('focus i1'));
+      const search = screen.getByPlaceholderText(/Search Item ID or Name/i) as HTMLInputElement;
+      await waitFor(() => expect(search.value).toBe('i1'));
+
+      // The user moves on and types their own query.
+      fireEvent.change(search, { target: { value: 'something else' } });
+      expect(search.value).toBe('something else');
+
+      // An agent touches any item in the project. Wait for the NEW data to be
+      // on screen, so the assertion below cannot pass merely because the
+      // refetch had not landed yet.
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: ['items'] });
+      });
+      await screen.findByText(/Agent Task 2/);
+
+      expect(search.value).toBe('something else');
+    });
+
+    it('does not flash NOT FOUND on a project the user opened normally', async () => {
+      // Focus a card in p1, then switch to p2 from the sidebar. The stale
+      // focusedItemId re-fires against p2's items, finds nothing, and the
+      // header reports NOT FOUND for a project the user just opened by hand.
+      const projects = [
+        { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() },
+        { id: 'p2', name: 'P2', createdAt: new Date(), updatedAt: new Date() },
+      ];
+      const other = { id: 'o1', projectId: 'p2', type: ItemType.TASK, title: 'Other Task', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() };
+      vi.mocked(api.listProjects).mockResolvedValue(projects as any);
+      vi.mocked(api.listItems).mockImplementation((async (params: any) =>
+        params?.projectId === 'p2' ? [other] : [ITEM]) as any);
+      localStorage.setItem('agenfk_project_id', 'p1');
+      render(<FocusHarness />, { wrapper });
+      await screen.findByText('Target Task');
+
+      fireEvent.click(screen.getByText('focus i1'));
+      await waitFor(() =>
+        expect((screen.getByPlaceholderText(/Search Item ID or Name/i) as HTMLInputElement).value).toBe('i1'));
+
+      fireEvent.click(screen.getByText('go to p2'));
+      expect(await screen.findByText('Other Task')).toBeDefined();
+      expect(screen.queryByText(/NOT FOUND/i)).toBeNull();
+    });
+
+    it('waits for fresh data instead of burning the one-shot on a stale cache', async () => {
+      // The hole the first guard left. TanStack returns a CACHED array
+      // synchronously while it refetches in the background, and
+      // `invalidateQueries` does not refetch INACTIVE queries — so a project
+      // the user left minutes ago still has its old item list in cache,
+      // missing everything an agent has created since.
+      //
+      // Click such an item in the sidebar and the effect ran against that
+      // stale array, found nothing, flashed NOT FOUND, and burned the ref. The
+      // fresh data then arrived and the guard refused to re-run: the click did
+      // nothing at all, for an item plainly visible in the sidebar.
+      const projects = [{ id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() }];
+      vi.mocked(api.listProjects).mockResolvedValue(projects as any);
+
+      // Seed the cache the way a previous visit would have, WITHOUT i1.
+      queryClient.setQueryData(['items', 'p1'], []);
+
+      // The refetch is still in flight when the click lands.
+      let release: (v: unknown) => void = () => {};
+      const inFlight = new Promise(res => { release = res; });
+      vi.mocked(api.listItems).mockImplementation((async () => {
+        await inFlight;
+        return [ITEM];
+      }) as any);
+
+      localStorage.setItem('agenfk_project_id', 'p1');
+      render(<FocusHarness />, { wrapper });
+      // The header has to exist before we can click, but the items fetch is
+      // still parked on `inFlight` — which is precisely the state under test:
+      // cached data on screen, fresh data not yet arrived.
+      const search = await screen.findByPlaceholderText(/Search Item ID or Name/i) as HTMLInputElement;
+
+      fireEvent.click(screen.getByText('focus i1'));
+
+      // Now the real data lands.
+      await act(async () => { release([ITEM]); await Promise.resolve(); });
+      await screen.findByText('Target Task');
+
+      // The navigation must have happened once the data was actually there.
+      await waitFor(() => expect(search.value).toBe('i1'));
+    });
+
+    it('still goes to the card when the same row is clicked twice', async () => {
+      // The guard must key on the nonce, not the bare id, or the second click
+      // on an already-visited row becomes a no-op.
+      const projects = [{ id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() }];
+      vi.mocked(api.listProjects).mockResolvedValue(projects as any);
+      vi.mocked(api.listItems).mockResolvedValue([ITEM] as any);
+      localStorage.setItem('agenfk_project_id', 'p1');
+      render(<FocusHarness />, { wrapper });
+      await screen.findByText('Target Task');
+
+      fireEvent.click(screen.getByText('focus i1'));
+      const search = screen.getByPlaceholderText(/Search Item ID or Name/i) as HTMLInputElement;
+      await waitFor(() => expect(search.value).toBe('i1'));
+
+      fireEvent.change(search, { target: { value: '' } });
+      fireEvent.click(screen.getByText('focus i1'));
+      await waitFor(() => expect(search.value).toBe('i1'));
+    });
+  });
+
+  describe('desktop shell — no duplicated identity (CGLAB-168)', () => {
+    const asDesktop = (on: boolean) => {
+      if (on) {
+        Object.defineProperty(window, 'agenfkDesktop', {
+          value: { isDesktop: true, platform: 'darwin', versions: { electron: '40', chrome: '1', node: '24' } },
+          configurable: true, writable: true,
+        });
+      } else {
+        delete (window as unknown as Record<string, unknown>).agenfkDesktop;
+      }
+    };
+    afterEach(() => asDesktop(false));
+  guardTokens();
+
+    const withProject = async () => {
+      const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+      vi.mocked(api.listProjects).mockResolvedValue([project] as any);
+      vi.mocked(api.listItems).mockResolvedValue([] as any);
+      localStorage.setItem('agenfk_project_id', 'p1');
+      render(<KanbanBoard />, { wrapper });
+      // Wait on something that renders in BOTH modes. It used to be the
+      // "New Item" button; that door was removed with the manual form
+      // (82345ab9), so the search box — which these tests are about — is the
+      // thing to wait on now.
+      await screen.findByPlaceholderText(/search/i);
+    };
+
+    it('puts the search first in the header, where the identity block used to sit', async () => {
+      // With the logo, the app name and the project line all gone in desktop
+      // mode, the left of the header is empty and the search floats in the
+      // middle of it. Ordering is the assertion that survives a CSS rewrite.
+      asDesktop(true);
+      await withProject();
+      const header = document.querySelector('header')!;
+      const controls = Array.from(header.querySelectorAll('input, button'));
+      expect(controls[0]).toBe(screen.getByPlaceholderText(/Search Item ID or Name/i));
+    });
+
+    it('drops the project line too — the sidebar owns project switching now', async () => {
+      asDesktop(true);
+      await withProject();
+      expect(screen.queryByText(/PROJECT:/i)).toBeNull();
+    });
+
+    it('KEEPS the auto-switch pin reachable in the desktop app', async () => {
+      // This is NOT the sidebar's pin. The sidebar's pin writes
+      // agenfk_pinned_projects and only reorders the list; this one writes
+      // agenfk_project_pinned and is the only thing that stops a
+      // `project_switched` event from yanking the board to whatever project an
+      // agent just touched. Hiding it with the rest of the identity block
+      // deleted a working control with no replacement: anyone already pinned
+      // was stuck pinned, anyone not pinned could never pin.
+      asDesktop(true);
+      await withProject();
+      expect(screen.queryByTestId('pin-project-btn')).not.toBeNull();
+    });
+
+    it('wires the desktop pin to the preference the socket handler reads', async () => {
+      asDesktop(true);
+      await withProject();
+      fireEvent.click(screen.getByTestId('pin-project-btn'));
+      // Written to the SERVER (SQLite), not localStorage: the pin has to
+      // survive the UI port changing, and localStorage is origin-scoped.
+      await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ boardPinned: true }));
+      expect(localStorage.getItem('agenfk_project_pinned')).toBeNull();
+    });
+
+    it('lets the desktop pin actually suppress an agent-driven switch', async () => {
+      // The end-to-end guarantee, which the assertion above does NOT make: the
+      // preference is only worth restoring if firing the event it guards
+      // leaves the board where the user put it.
+      asDesktop(true);
+      const projects = [
+        { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() },
+        { id: 'p2', name: 'P2', createdAt: new Date(), updatedAt: new Date() },
+      ];
+      const mine = { id: 'a1', projectId: 'p1', type: ItemType.TASK, title: 'My Work', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() };
+      const theirs = { id: 'b1', projectId: 'p2', type: ItemType.TASK, title: 'Agent Work', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() };
+      vi.mocked(api.listProjects).mockResolvedValue(projects as any);
+      vi.mocked(api.listItems).mockImplementation((async (params: any) =>
+        params?.projectId === 'p2' ? [theirs] : [mine]) as any);
+      localStorage.setItem('agenfk_project_id', 'p1');
+      render(
+        <QueryClientProvider client={queryClient}>
+          <ActiveProjectProvider>
+            <SocketProvider>
+              <ThemeProvider><KanbanBoard /></ThemeProvider>
+            </SocketProvider>
+          </ActiveProjectProvider>
+        </QueryClientProvider>,
+      );
+      await screen.findByText('My Work');
+
+      fireEvent.click(screen.getByTestId('pin-project-btn'));
+      await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ boardPinned: true }));
+
+      // An agent touches project 2. Unpinned, this yanks the board there.
+      await act(async () => { socketHandlers['project_switched']?.({ projectId: 'p2' }); });
+
+      expect(screen.queryByText('Agent Work')).toBeNull();
+      expect(screen.getByText('My Work')).toBeDefined();
+    });
+
+    it('keeps the project line in the browser, where nothing else shows it', async () => {
+      asDesktop(false);
+      await withProject();
+      expect(screen.getByText(/PROJECT:/i)).toBeDefined();
+    });
+
+    it('drops the app name and version chip in the desktop app, where the title bar carries them', async () => {
+      asDesktop(true);
+      await withProject();
+      expect(screen.queryByText('AgEnFK Dashboard')).toBeNull();
+      expect(screen.queryByRole('button', { name: /README/i })).toBeNull();
+    });
+
+    it('drops the project PICKER but not the pin — they do different things', async () => {
+      // The distinction the first cut of this story got wrong. The picker is
+      // pure navigation and the sidebar now does it better, so it goes. The
+      // pin changes behaviour (it suppresses auto-switching) and the sidebar
+      // has no equivalent, so it stays. Asserting both in one test is what
+      // stops the next cleanup from sweeping them up together again.
+      asDesktop(true);
+      await withProject();
+      expect(screen.queryByRole('button', { name: /Switch Project/i })).toBeNull();
+      expect(screen.queryByTestId('pin-project-btn')).not.toBeNull();
+    });
+
+    it('leaves the browser header exactly as it was', async () => {
+      asDesktop(false);
+      await withProject();
+      expect(screen.getByText('AgEnFK Dashboard')).toBeDefined();
+      expect(screen.getByRole('button', { name: /README/i })).toBeDefined();
+    });
+  });
+
+  it('shows the welcome screen when there are no projects at all', async () => {
+    /*
+     * This used to expect the project PICKER, which is a chooser - and with no
+     * projects it was a dialog asking a question that had no answers. The
+     * welcome screen asks the question somebody in that position actually has
+     * (004bd193).
+     *
+     * "None yet" and "none chosen" are different screens now; the picker is
+     * still what the second one shows, covered below.
+     */
     vi.mocked(api.listProjects).mockResolvedValue([]);
     render(<KanbanBoard />, { wrapper });
-    expect(await screen.findByText(/Welcome to AgEnFK/i)).toBeDefined();
+    expect(await screen.findByTestId('welcome-screen')).toBeDefined();
+    expect(screen.getByRole('button', { name: /new project/i })).toBeDefined();
+  });
+
+  it('still shows the picker when projects exist but none is chosen', async () => {
+    // The branch the welcome screen must not have swallowed: here there IS
+    // something to pick from, so a chooser is the right answer.
+    vi.mocked(api.listProjects).mockResolvedValue([
+      { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() },
+    ]);
+    render(<KanbanBoard />, { wrapper });
+    expect(await screen.findByTestId('project-picker-panel')).toBeDefined();
+    expect(screen.queryByTestId('welcome-screen')).toBeNull();
   });
 
   it('should render items in correct columns', async () => {
@@ -132,8 +495,8 @@ describe('KanbanBoard', () => {
     
     render(<KanbanBoard />, { wrapper });
     
-    const createBtn = await screen.findByText(/Create New Project/i);
-    fireEvent.click(createBtn);
+    // Through the welcome screen now, which is what an empty install shows.
+    fireEvent.click(await screen.findByRole('button', { name: /new project/i }));
     
     const input = await screen.findByPlaceholderText(/e.g. My Awesome App/i);
     fireEvent.change(input, { target: { value: 'New Project' } });
@@ -267,7 +630,7 @@ describe('KanbanBoard', () => {
 
       const task1Card = (await screen.findByText('Task 1')).closest('[draggable="true"]')!;
       const task2Card = (await screen.findByText('Task 2')).closest('[draggable="true"]')!;
-      const todoColumn = screen.getByText('TODO').closest('.flex-col')!;
+      const todoColumn = screen.getByTestId('column-header-TODO').parentElement!;
 
       // 1. Drag Start on Task 2
       const dataTransfer = {
@@ -330,7 +693,7 @@ describe('KanbanBoard', () => {
       }, { timeout: 3000 });
 
       const child1Card = (await screen.findByText('Child One')).closest('[draggable="true"]')!;
-      const todoColumn = screen.getByText('TODO').closest('.flex-col')!;
+      const todoColumn = screen.getByTestId('column-header-TODO').parentElement!;
 
       // Drag Child Two onto Child One (top half → above)
       const dataTransfer = {
@@ -363,7 +726,7 @@ describe('KanbanBoard', () => {
     });
   });
 
-  it('should toggle the pin button and persist to localStorage', async () => {
+  it('should toggle the pin button and persist it to the server', async () => {
     const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
     const items = [
       { id: 'i1', projectId: 'p1', type: ItemType.TASK, title: 'Task 1', status: Status.TODO, createdAt: new Date(), updatedAt: new Date(), history: [] },
@@ -377,11 +740,14 @@ describe('KanbanBoard', () => {
 
     const pinBtn = screen.getByTestId('pin-project-btn');
     fireEvent.click(pinBtn);
-    expect(localStorage.getItem('agenfk_project_pinned')).toBe('true');
+    // SQLite, not localStorage: origin-scoped storage forgot the pin when the
+    // UI port changed.
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ boardPinned: true }));
+    expect(localStorage.getItem('agenfk_project_pinned')).toBeNull();
 
     // Click again to unpin
     fireEvent.click(pinBtn);
-    expect(localStorage.getItem('agenfk_project_pinned')).toBeNull();
+    await waitFor(() => expect(api.updateSettings).toHaveBeenLastCalledWith({ boardPinned: false }));
   });
 
   it('should search for an item by title and highlight it', async () => {
@@ -417,7 +783,7 @@ describe('KanbanBoard', () => {
 
     render(<KanbanBoard />, { wrapper });
     // Wait for the main board to render (column headers appear)
-    await screen.findByText('TODO');
+    await screen.findByText('Todo');
 
     const searchInput = screen.getByPlaceholderText(/Search Item ID or Name/i);
     fireEvent.change(searchInput, { target: { value: 'xyzNotFound' } });
@@ -517,8 +883,8 @@ describe('KanbanBoard', () => {
 
     fireEvent.dragStart(taskCard, { dataTransfer });
 
-    // Drop onto the IN_PROGRESS column (rendered as "IN PROGRESS")
-    const inProgressCol = screen.getByText('IN PROGRESS').closest('.flex-col')!;
+    // Drop onto the IN_PROGRESS column (label "IN PROGRESS", shown in title case)
+    const inProgressCol = screen.getByTestId('column-header-IN_PROGRESS').parentElement!;
     fireEvent.drop(inProgressCol, { dataTransfer });
 
     await waitFor(() => {
@@ -569,7 +935,7 @@ describe('KanbanBoard', () => {
     localStorage.setItem('agenfk_project_id', 'p1');
 
     render(<KanbanBoard />, { wrapper });
-    await screen.findByText('TODO');
+    await screen.findByText('Todo');
 
     // Click the version button (What's new)
     const whatsNewBtn = screen.getByTitle(/What's new/i);
@@ -588,7 +954,7 @@ describe('KanbanBoard', () => {
     localStorage.setItem('agenfk_project_id', 'p1');
 
     render(<KanbanBoard />, { wrapper });
-    await screen.findByText('TODO');
+    await screen.findByText('Todo');
 
     const readmeBtn = screen.getByTitle(/View project README/i);
     fireEvent.click(readmeBtn);
@@ -605,21 +971,19 @@ describe('KanbanBoard', () => {
     localStorage.setItem('agenfk_project_id', 'p1');
 
     render(<KanbanBoard />, { wrapper });
-    await screen.findByText('TODO');
+    await screen.findByText('Todo');
 
-    // The Ideas collapsed button has title with "Ideas" text
     const ideasText = screen.queryByText('Ideas');
-    if (ideasText) {
-      const ideasBtn = ideasText.closest('button');
-      if (ideasBtn) {
-        fireEvent.click(ideasBtn);
-        await waitFor(() => {
-          expect(screen.getByText('Add idea')).toBeDefined();
-        });
-      }
-    }
-    // Verify board still renders
-    expect(screen.queryByText('TODO')).toBeDefined();
+    if (!ideasText) return; // The rail is not rendered in this configuration.
+    const ideasBtn = ideasText.closest('button');
+    if (!ideasBtn) return;
+    fireEvent.click(ideasBtn);
+    /*
+     * Expanded is read from the column's own heading now. It used to be read
+     * from its "Add idea" button, which went with the manual form (82345ab9) —
+     * a proxy for the state rather than the state.
+     */
+    await waitFor(() => expect(screen.getAllByText(/ideas/i).length).toBeGreaterThan(0));
   });
 
   it('should navigate back to project selector via folder icon', async () => {
@@ -629,7 +993,7 @@ describe('KanbanBoard', () => {
     localStorage.setItem('agenfk_project_id', 'p1');
 
     render(<KanbanBoard />, { wrapper });
-    await screen.findByText('TODO');
+    await screen.findByText('Todo');
 
     const switchProjectBtn = screen.getByTitle('Switch Project');
     fireEvent.click(switchProjectBtn);
@@ -639,22 +1003,7 @@ describe('KanbanBoard', () => {
     });
   });
 
-  it('should open new item modal when column Add button is clicked', async () => {
-    const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
-    vi.mocked(api.listProjects).mockResolvedValue([project as any]);
-    vi.mocked(api.listItems).mockResolvedValue([]);
-    localStorage.setItem('agenfk_project_id', 'p1');
 
-    render(<KanbanBoard />, { wrapper });
-    await screen.findByText('TODO');
-
-    const addTodoBtn = screen.getByText(/Add todo/i);
-    fireEvent.click(addTodoBtn);
-
-    await waitFor(() => {
-      expect(document.querySelector('.fixed.inset-0')).not.toBeNull();
-    });
-  });
 
   it('should handle card drag over and drag leave events', async () => {
     const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
@@ -692,7 +1041,7 @@ describe('KanbanBoard', () => {
     localStorage.setItem('agenfk_project_id', 'p1');
 
     render(<KanbanBoard />, { wrapper });
-    await screen.findByText('TODO');
+    await screen.findByText('Todo');
 
     fireEvent.click(screen.getByTitle(/What's new/i));
     await waitFor(() => expect(document.querySelector('.fixed.inset-0')).not.toBeNull());
@@ -709,7 +1058,7 @@ describe('KanbanBoard', () => {
     localStorage.setItem('agenfk_project_id', 'p1');
 
     render(<KanbanBoard />, { wrapper });
-    await screen.findByText('TODO');
+    await screen.findByText('Todo');
 
     fireEvent.click(screen.getByTitle(/View project README/i));
     await waitFor(() => expect(screen.getByText('Project README')).toBeDefined());
@@ -776,7 +1125,7 @@ describe('KanbanBoard', () => {
       localStorage.setItem('agenfk_project_id', 'proj-abc');
 
       render(<KanbanBoard />, { wrapper });
-      await screen.findByText('TODO');
+      await screen.findByText('Todo');
 
       await waitFor(() => {
         expect(api.getProjectFlow).toHaveBeenCalledWith('proj-abc');
@@ -794,9 +1143,9 @@ describe('KanbanBoard', () => {
 
       // Fallback columns should still render
       await waitFor(() => {
-        expect(screen.getByText('TODO')).toBeDefined();
-        expect(screen.getByText('IN PROGRESS')).toBeDefined();
-        expect(screen.getByText('DONE')).toBeDefined();
+        expect(screen.getByRole('heading', { name: 'Todo' })).toBeDefined();
+        expect(screen.getByRole('heading', { name: 'In Progress' })).toBeDefined();
+        expect(screen.getByRole('heading', { name: 'Done' })).toBeDefined();
       });
     });
 
@@ -957,5 +1306,294 @@ describe('KanbanBoard', () => {
         expect(screen.queryByText('Move to project')).toBeNull();
       });
     });
+  });
+});
+
+/**
+ * Opening a terminal from a card (CGLAB-176).
+ *
+ * The button is desktop-only, and that is not a limitation of the feature — it
+ * is where its consumer lives. `App.tsx` mounts `AppShell`, the only thing that
+ * reads the terminal request, behind `isDesktop()`. In a browser the click
+ * would bump a nonce nobody reads: no dialog, no error, no explanation.
+ *
+ * Caught in review, not by the first round of tests, and the reason is worth
+ * recording: the shell test mounts `AppShell` directly, and the provider test
+ * asserts only that the context field changed. Neither could see that nothing
+ * downstream was listening in the shipped tree.
+ */
+describe('the terminal button on a card', () => {
+  const asDesktop = (on: boolean) => {
+    if (on) {
+      Object.defineProperty(window, 'agenfkDesktop', {
+        value: { isDesktop: true, platform: 'darwin', versions: { electron: '40', chrome: '1', node: '24' } },
+        configurable: true, writable: true,
+      });
+    } else {
+      delete (window as unknown as Record<string, unknown>).agenfkDesktop;
+    }
+  };
+  afterEach(() => asDesktop(false));
+
+  const boardWithOneCard = async () => {
+    const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+    vi.mocked(api.listProjects).mockResolvedValue([project] as any);
+    vi.mocked(api.listItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p1', title: 'Wire the thing', type: 'TASK', status: 'TODO', createdAt: new Date(), updatedAt: new Date() },
+    ] as any);
+    localStorage.setItem('agenfk_project_id', 'p1');
+    render(<KanbanBoard />, { wrapper });
+    await screen.findByText('Wire the thing');
+  };
+
+  it('is offered on the desktop, where something is listening', async () => {
+    asDesktop(true);
+    await boardWithOneCard();
+    expect(screen.getByRole('button', { name: /open a terminal on Wire the thing/i })).toBeTruthy();
+  });
+
+  it('is not offered in a browser, where the click would do nothing', async () => {
+    asDesktop(false);
+    await boardWithOneCard();
+    expect(screen.queryByRole('button', { name: /open a terminal on/i })).toBeNull();
+  });
+});
+
+/**
+ * The board renders on the visual-system tokens only (CGLAB-434 S5.1): no raw
+ * Tailwind palette colours (slate stays: tokens.css remaps it to the neutral
+ * ramp), no gradients, glow or old teal chrome, teal only on primary buttons
+ * and the brand mark, and no inline hex/rgba colours except a step's own
+ * stored colour. A step without one falls back to a token: status tokens for
+ * done/blocked/paused, series or accent for working steps.
+ */
+describe('board colours are on tokens (CGLAB-434)', () => {
+  // The sweep itself is the shared helper (test/helpers/tokenGuard.ts).
+
+  const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+  const at = { createdAt: new Date(), updatedAt: new Date(), history: [] };
+  const items = [
+    { id: 'e1', projectId: 'p1', type: ItemType.EPIC, title: 'Epic A', status: Status.IN_PROGRESS, ...at },
+    { id: 's1', projectId: 'p1', type: ItemType.STORY, title: 'Story B', status: Status.REVIEW, ...at },
+    { id: 't1', projectId: 'p1', type: ItemType.TASK, title: 'Task C', status: Status.TODO, ...at },
+    { id: 'b1', projectId: 'p1', type: ItemType.BUG, title: 'Bug D', status: Status.TEST, ...at },
+    { id: 'x1', projectId: 'p1', type: ItemType.TASK, title: 'Blocked E', status: Status.BLOCKED, ...at },
+    { id: 'a1', projectId: 'p1', type: ItemType.TASK, title: 'Archived F', status: Status.ARCHIVED, ...at },
+    // A PR chip and a progress bar render too.
+    { id: 'pr1', projectId: 'p1', type: ItemType.TASK, title: 'PR G', status: Status.IN_PROGRESS, prUrl: 'https://github.com/acme/api/pull/7', prNumber: 7, prStatus: 'merged', ...at },
+    { id: 'c1', projectId: 'p1', parentId: 'e1', type: ItemType.TASK, title: 'Child H', status: Status.DONE, ...at },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    queryClient.clear();
+    vi.mocked(api.getProjectFlow).mockResolvedValue(DEFAULT_FLOW_MOCK as any);
+    vi.mocked(api.listProjects).mockResolvedValue([project as any]);
+    vi.mocked(api.listItems).mockResolvedValue(items as any);
+    localStorage.setItem('agenfk_project_id', 'p1');
+  });
+  afterEach(() => cleanup());
+  guardTokens();
+
+  it('the board, every item type, blocked and archive open, is on tokens only', async () => {
+    render(<KanbanBoard />, { wrapper });
+    await screen.findByText('Bug D');
+    // Open the collapsed Blocked and Archived columns (their labels sit inside
+    // the toggle buttons). Asserted, so a renamed label fails instead of skipping.
+    for (const label of ['Blocked', 'Archived']) {
+      const btn = screen.queryAllByText(label).map(el => el.closest('button')).find(Boolean);
+      expect(btn, `${label} toggle`).toBeTruthy();
+      fireEvent.click(btn!);
+    }
+    await screen.findByText('Blocked E');
+    await screen.findByText('Archived F');
+    expectOnTokens(document.body);
+  });
+
+  it('the card detail modal, overview and subitems, is on tokens only', async () => {
+    vi.mocked(api.getItem).mockImplementation((async (id: string) => items.find(i => i.id === id)) as any);
+    render(<KanbanBoard />, { wrapper });
+    const card = await screen.findByText('Epic A');
+    fireEvent.doubleClick(card.closest('[draggable="true"]') || card.closest('.group') || card.parentElement!);
+    const title = await screen.findAllByText('Epic A');
+    expect(title.length).toBeGreaterThan(1);
+    expectOnTokens(document.body);
+    const subTab = screen.queryAllByRole('button').find(b => /^Subitems/.test(b.textContent?.trim() ?? ''));
+    expect(subTab, 'Subitems tab').toBeTruthy();
+    fireEvent.click(subTab!);
+    await screen.findAllByText('Child H');
+    expectOnTokens(document.body);
+  });
+
+  it('item types wear their type tokens on the card', async () => {
+    render(<KanbanBoard />, { wrapper });
+    for (const [title, token] of [['Epic A', 'type-epic'], ['Story B', 'type-story'], ['Task C', 'type-task'], ['Bug D', 'type-bug']] as const) {
+      const card = (await screen.findByText(title)).closest('[draggable="true"]') as HTMLElement;
+      const cls = [card, ...Array.from(card.querySelectorAll('*'))].map(el => el.getAttribute('class') ?? '').join(' ');
+      expect(cls, title).toMatch(new RegExp(`(?:^|\\s)(?:text|bg|border)-${token}(?:/\\d+)?(?:\\s|$)`));
+    }
+  });
+});
+
+describe('card dates on the card face', () => {
+  const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+  const created = '2024-03-12T14:03:00Z';
+  const updated = new Date(Date.now() - 2 * 3600_000).toISOString();
+  const at = { createdAt: created, updatedAt: updated, history: [] };
+  const items = [
+    { id: 'open1', projectId: 'p1', type: ItemType.TASK, title: 'Open card', status: Status.IN_PROGRESS, ...at },
+    { id: 'done1', projectId: 'p1', type: ItemType.TASK, title: 'Closed card', status: Status.DONE, ...at },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    queryClient.clear();
+    vi.mocked(api.getProjectFlow).mockResolvedValue(DEFAULT_FLOW_MOCK as any);
+    vi.mocked(api.listProjects).mockResolvedValue([project as any]);
+    vi.mocked(api.listItems).mockResolvedValue(items as any);
+    localStorage.setItem('agenfk_project_id', 'p1');
+  });
+  afterEach(() => cleanup());
+  guardTokens();
+
+  for (const [id, title] of [['open1', 'Open card'], ['done1', 'Closed card']] as const) {
+    it(`shows when "${title}" was created and last updated, with the full times on hover`, async () => {
+      render(<KanbanBoard />, { wrapper });
+      await screen.findByText(title);
+      const dates = await screen.findByTestId(`card-dates-${id}`);
+      // Exact face text, so the two dates cannot swap labels unnoticed.
+      expect(dates.textContent).toBe(`Created ${cardShortDate(created)} · Updated ${cardAgo(updated)}`);
+      const hover = dates.getAttribute('title') ?? '';
+      expect(hover).toContain(`Created ${new Date(created).toLocaleString()}`);
+      expect(hover).toContain(`Updated ${new Date(updated).toLocaleString()}`);
+    });
+  }
+});
+
+
+/**
+ * One type grammar, everywhere a card is drawn (CGLAB-164).
+ *
+ * The create form taught story=green / task=blue — JIRA's grammar, asked for
+ * by name — while this board said story=`story-blue` / task=`brand` teal, and
+ * the Subitems table said something third. The screen that TEACHES the mapping
+ * taught the reverse of the screen the card lands on: pick STORY, see green,
+ * press Create, and the card appears blue among green TASKs.
+ */
+describe('the type badge on a board card', () => {
+  // Its own reset: this describe is a sibling of `KanbanBoard`, so that
+  // block's beforeEach does not reach here, and a cached items query from the
+  // previous case renders the previous type's card.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    queryClient.clear();
+    vi.mocked(api.getProjectFlow).mockResolvedValue(DEFAULT_FLOW_MOCK as any);
+  });
+
+  const boardWith = async (type: string) => {
+    const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+    vi.mocked(api.listProjects).mockResolvedValue([project] as any);
+    vi.mocked(api.listItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p1', title: 'Wire the thing', type, status: 'TODO', createdAt: new Date(), updatedAt: new Date() },
+    ] as any);
+    localStorage.setItem('agenfk_project_id', 'p1');
+    render(<KanbanBoard />, { wrapper });
+    await screen.findByText('Wire the thing');
+    return screen.getAllByTestId('item-type-badge')[0];
+  };
+
+  afterEach(() => cleanup());
+
+  it('wears the same colour the create form taught, for every type', async () => {
+    for (const type of Object.values(ItemType)) {
+      const badge = await boardWith(type);
+      expect(badge.textContent).toContain(type);
+      expect((badge.firstElementChild as HTMLElement).className, `board disagrees with the grammar for ${type}`)
+        .toContain(ITEM_TYPE_VISUAL[type].fill);
+      cleanup();
+      queryClient.clear();
+    }
+  });
+
+  it('paints the drill-down breadcrumb from the same grammar', async () => {
+    /*
+     * The fifth site, and the one the first sweep missed: the breadcrumb dot
+     * was `nav.type === EPIC ? brand-light : story-blue`, so drilling into an
+     * epic put a blue dot directly above the emerald STORY badge it had just
+     * revealed — two answers to "what colour is a story" on one screen.
+     *
+     * The blanket version of this check now lives in ItemTypeSquare.test.tsx,
+     * which reads the components directory; this one proves the rendered
+     * result on the screen that had the defect.
+     */
+    const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+    vi.mocked(api.listProjects).mockResolvedValue([project] as any);
+    vi.mocked(api.listItems).mockResolvedValue([
+      { id: 'e1', projectId: 'p1', title: 'The epic', type: 'EPIC', status: 'TODO', createdAt: new Date(), updatedAt: new Date() },
+      { id: 's1', projectId: 'p1', parentId: 'e1', title: 'The story', type: 'STORY', status: 'TODO', createdAt: new Date(), updatedAt: new Date() },
+    ] as any);
+    localStorage.setItem('agenfk_project_id', 'p1');
+    render(<KanbanBoard />, { wrapper });
+    fireEvent.click(await screen.findByRole('button', { name: /1 child items/i }));
+    const dot = await screen.findByTestId('breadcrumb-type-dot');
+    expect(dot.className).toContain(ITEM_TYPE_VISUAL[ItemType.EPIC].fill);
+    expect(dot.className).not.toMatch(/story-blue|brand-light/);
+  });
+});
+
+// BUG ec325925 (task 2b943048): bugs are split into tasks too, and the board
+// hid them - the child-count drill-down and the progress bar were EPIC/STORY
+// only. Any card with children gets both; the server lets any card be a parent.
+describe('a card of any type with children', () => {
+  const at = { createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-01-01'), history: [] };
+  const bug = { id: 'b1', projectId: 'p1', type: ItemType.BUG, title: 'The Bug', status: Status.IN_PROGRESS, ...at };
+  const fix = { id: 't1', projectId: 'p1', type: ItemType.TASK, title: 'Fix it', status: Status.DONE, parentId: 'b1', ...at };
+  const test = { id: 't2', projectId: 'p1', type: ItemType.TASK, title: 'Test it', status: Status.TODO, parentId: 'b1', ...at };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    queryClient.clear();
+    vi.mocked(api.getProjectFlow).mockResolvedValue(DEFAULT_FLOW_MOCK as any);
+    vi.mocked(api.listProjects).mockResolvedValue([{ id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() }] as any);
+    localStorage.setItem('agenfk_project_id', 'p1');
+  });
+  afterEach(() => cleanup());
+
+  const cardOf = async (title: string) => (await screen.findByText(title)).closest('[draggable="true"]') as HTMLElement;
+
+  it('a bug with tasks offers the drill-down, and drilling in shows its tasks', async () => {
+    vi.mocked(api.listItems).mockResolvedValue([bug, fix, test] as any);
+    render(<KanbanBoard />, { wrapper });
+    fireEvent.click(within(await cardOf('The Bug')).getByRole('button', { name: /Show 2 child items/i }));
+    expect(await screen.findByText('Fix it')).toBeDefined();
+    expect(screen.getByText('Test it')).toBeDefined();
+  });
+
+  it('a bug with tasks shows how far along they are', async () => {
+    vi.mocked(api.listItems).mockResolvedValue([bug, fix, test] as any);
+    render(<KanbanBoard />, { wrapper });
+    const card = await cardOf('The Bug');
+    expect(within(card).getByText('Progress')).toBeDefined();
+    expect(within(card).getByText('50%')).toBeDefined();
+  });
+
+  it('a task with children offers the drill-down too', async () => {
+    const parent = { ...fix, id: 't9', title: 'Parent Task', parentId: undefined, status: Status.TODO };
+    const child = { ...test, id: 't10', title: 'Sub Task', parentId: 't9' };
+    vi.mocked(api.listItems).mockResolvedValue([parent, child] as any);
+    render(<KanbanBoard />, { wrapper });
+    expect(within(await cardOf('Parent Task')).getByRole('button', { name: /Show 1 child items/i })).toBeDefined();
+  });
+
+  it('a bug with no tasks shows neither', async () => {
+    vi.mocked(api.listItems).mockResolvedValue([bug] as any);
+    render(<KanbanBoard />, { wrapper });
+    const card = await cardOf('The Bug');
+    expect(within(card).queryByRole('button', { name: /child items/i })).toBeNull();
+    expect(within(card).queryByText('Progress')).toBeNull();
   });
 });

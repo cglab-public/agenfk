@@ -32,6 +32,6 @@ You are executing the `/agenfk-code <id>` command as a **Coding Agent**. Follow 
 - Run `agenfk comment <id> "IMPLEMENTATION COMPLETE: ..."` to log the final summary of code changes.
 - Run `agenfk comment <id> "Implementation complete: code and self-verification finished."` to log the step completion.
 - Run `agenfk gatekeeper --item-id <id>` — confirms authorization and reports the current step, its exit criteria, and the active flow's steps.
-- Run `agenfk verify <id> --evidence "<describe what was implemented and how it satisfies the step's exit criteria>" "<build_command>"` to advance to the next step (e.g. REVIEW). This is the formal gate — do NOT use `agenfk update --status` for forward transitions.
+- Run `agenfk verify <id> --evidence "<describe what was implemented and how it satisfies the step's exit criteria>" ["<build_command>"]` to advance to the next step (e.g. REVIEW). The command is optional — pass one only when the step's criteria call for it; a non-zero exit refuses the advance and the item stays on this step. This is the formal gate — do NOT use `agenfk update --status` for forward transitions.
 - **STOP IMMEDIATELY** after the above. Do not perform any further actions or provide a final summary. Yield back to the supervisor.
   - PR creation is the developer's responsibility — do NOT create a PR here.

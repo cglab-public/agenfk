@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { actorFromEnv } from './reviewRecords';
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 // @ts-ignore
@@ -18,6 +19,8 @@ import { getApiUrl } from "@agenfk/telemetry";
 import { createApiClient } from "./apiClient.js";
 import { execSync, execFileSync, spawnSync, spawn } from "child_process";
 import { getActiveStepItems, resolveStepContract, renderStepContract } from "./gatekeeper-utils";
+import { resolveBranchHint } from './branchHint';
+import { decompositionContract, decompositionRules, dispatchDriftNotice, driftTargets } from '@agenfk/core';
 import { buildUpgradeNotice } from "./mcpUpgradeNotice";
 
 // Load the install-time secret token — must match what the API server loaded.
@@ -130,6 +133,53 @@ export const server = new Server(
 );
 
 // Define Tool Schemas
+/**
+ * One flow step as create_flow / update_flow take it. zod strips the keys a
+ * schema does not name, so every field the REST route persists must be here or
+ * an MCP caller silently loses it (roles and checks did, CGLAB-385). The
+ * server whitelists and validates what arrives; this only has to not drop it.
+ * Never add `command`: a flow must not be able to supply one.
+ */
+const FlowStepToolSchema = z.object({
+  // Accept an id so it round-trips: without it an update regenerated every
+  // step id on every call.
+  id: z.string().optional(),
+  name: z.string(),
+  label: z.string().optional(),
+  exitCriteria: z.string().optional(),
+  order: z.number(),
+  isSpecial: z.boolean().optional(),
+  isAnchor: z.boolean().optional(),
+  // null / [] clear a stored value; leaving the key out keeps it.
+  role: z.string().nullable().optional(),
+  checks: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
+  autoCommit: z.boolean().nullable().optional(),
+  requireCommit: z.boolean().nullable().optional(),
+  color: z.string().optional(),
+  icon: z.string().optional(),
+});
+
+/** The advertised JSON schema of the same step. */
+const FLOW_STEP_TOOL_PROPERTIES = {
+  id: { type: "string" },
+  name: { type: "string" },
+  label: { type: "string" },
+  exitCriteria: { type: "string" },
+  order: { type: "number" },
+  isSpecial: { type: "boolean" },
+  isAnchor: { type: "boolean" },
+  role: { type: ["string", "null"], description: "What the step IS (e.g. coding, review, closing). null clears it; omit to keep the stored value." },
+  checks: {
+    type: ["array", "null"],
+    description: "Checks the step adds, each { id, params? }. [] or null clears them; omit to keep the stored value.",
+    items: { type: "object", properties: { id: { type: "string" }, params: { type: "object" } }, required: ["id"] },
+  },
+  autoCommit: { type: ["boolean", "null"], description: "Commit the card's work when it leaves this step." },
+  requireCommit: { type: ["boolean", "null"], description: "With autoCommit: refuse to leave the step when that commit does not happen." },
+  color: { type: "string" },
+  icon: { type: "string" },
+};
+
 const CreateProjectSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
@@ -158,6 +208,8 @@ const UpdateItemSchema = z.object({
   // match and cycles.
   parentId: z.string().nullable().optional(),
   implementationPlan: z.string().optional(),
+  // 686fdbf6: where the card runs - an absolute checkout path, 'none' or 'inherit'.
+  worktree: z.string().optional(),
   // JIRA issue key to link, or "none" to unlink. zod strips unknown keys, so
   // without this the MCP surface silently could not link at all — and this repo
   // documents the CLI and MCP surfaces as interchangeable.
@@ -175,6 +227,7 @@ const ListItemsSchema = z.object({
 
 const GetItemSchema = z.object({
   id: z.string(),
+  includeRecords: z.boolean().optional(),
 });
 
 const QueryTokenEventsSchema = z.object({
@@ -279,7 +332,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "update_item",
-        description: "Update an existing item's status, title, description, or parent. IMPORTANT: Cannot set status to DONE directly — use test_changes. For custom flows, call get_flow(projectId) for valid step names. Pass parentId to re-parent (null detaches to top level); the parent must be in the same project and cannot be the item itself or one of its descendants.",
+        description: "Update an existing item's status, title, description, or parent. IMPORTANT: status moves only BACKWARD or to a platform status (PAUSED, BLOCKED); a forward move is refused (409) — advance with validate_progress, the only route to the next step and to DONE. For custom flows, call get_flow(projectId) for valid step names. Pass parentId to re-parent (null detaches to top level); the parent must be in the same project and cannot be the item itself or one of its descendants.",
         inputSchema: {
           type: "object",
           properties: {
@@ -290,6 +343,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             type: { type: "string", enum: ["EPIC", "STORY", "TASK", "BUG"] },
             parentId: { type: ["string", "null"], description: "Re-parent the item under this id; null detaches it to top level." },
             implementationPlan: { type: "string" },
+            worktree: { type: "string", description: "Where the card runs: an ABSOLUTE path to a checkout of the project's repository, 'none' (the project root, whatever its parents have) or 'inherit' (clear the choice). Use this, never parentId, to move a card to another tree." },
             jiraItem: { type: "string", description: "JIRA issue key to link this card to, e.g. 'CGLAB-163'; pass 'none' to unlink. Reference only: the card keeps its own title and description. Omit to leave any existing link untouched." },
           },
           required: ["id"],
@@ -312,10 +366,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "get_item",
-        description: "Get details of a specific item by ID.",
+        description: "Get details of a specific item by ID. Its step records (per-step checks and whole-suite test results, often megabytes) are left out unless includeRecords is true.",
         inputSchema: {
           type: "object",
-          properties: { id: { type: "string" } },
+          properties: {
+            id: { type: "string" },
+            includeRecords: { type: "boolean", description: "Also return stepRecords and supersededRecords. Large: ask only when you need them." },
+          },
           required: ["id"],
         },
       },
@@ -395,6 +452,28 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "record_review",
+        description: "Record an independent review of a card (CGLAB-381). The server reads the reviewer's identity from `transcript` (the REVIEWER's session log, e.g. a Claude Code sub-agent's <session>/subagents/agent-<id>.jsonl), so the reviewer must not be the author. CLI: agenfk review record.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            itemId: { type: "string" },
+            transcript: { type: "string", description: "Path of the reviewer's session log, under ~/.claude/projects, ~/.pi/agent/sessions or ~/.codex/sessions." },
+            range: { type: "string", description: "<from>..<to>: the commits the review covered." },
+            findings: {
+              type: "array",
+              description: "Each finding and its fate: fixed, or rejected with a reason. [] when nothing was found.",
+              items: {
+                type: "object",
+                properties: { title: { type: "string" }, state: { type: "string", enum: ["fixed", "rejected"] }, reason: { type: "string" } },
+                required: ["title", "state"],
+              },
+            },
+          },
+          required: ["itemId", "transcript", "range", "findings"],
+        },
+      },
+      {
         name: "add_comment",
         description: "Add a comment to an item to log progress or steps.",
         inputSchema: {
@@ -439,7 +518,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "workflow_gatekeeper",
-        description: "Mandatory pre-flight check before any code change. Verifies that an active task exists in any working flow step and returns context (exit criteria, flow steps, branch). role= is accepted for backward compatibility but is no longer enforced.",
+        description: "Mandatory pre-flight check before any code change. Verifies that an active task exists in any working flow step and returns context (exit criteria, flow steps, branch, and what leaving the step will run: when it says the suite or the verify command runs, do not run it yourself first - verify does; when it says nothing runs, the tests the exit criteria ask for are yours). role= is accepted for backward compatibility but is no longer enforced.",
         inputSchema: {
           type: "object",
           properties: {
@@ -452,29 +531,46 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "analyze_request",
-        description: "Analyze a user request to suggest the appropriate AgEnFK item type.",
+        // The description is the only text a host shows a model BEFORE it
+        // decides to call, so it has to say what actually comes back.
+        description: "Return AgEnFK's decomposition rules for a request (mode 'guidance', the default, which is what the standard flow uses), or the contract for proposing a decomposition as a reviewable tree without creating anything (mode 'proposal').",
         inputSchema: {
           type: "object",
-          properties: { request: { type: "string" } },
+          properties: {
+            request: { type: "string" },
+            mode: { type: "string", enum: ["guidance", "proposal"], description: "guidance (default) or proposal" },
+          },
           required: ["request"],
         },
       },
       {
         name: "validate_progress",
-        description: "Step-completion gate: you MUST describe how you satisfied the current step's exit criteria before the step advances. Provide your evidence in the 'evidence' field — it will be logged as a comment tagged with the current step name, creating an audit trail. Optionally run a build/test command. On success, advances to the next flow step and returns the next step's exit criteria — treat those as your new mandatory work definition. On failure, moves back to the coding step.",
+        description: "Step-completion gate: you MUST describe how you satisfied the current step's exit criteria before the step advances. Provide your evidence in the 'evidence' field — it will be logged as a comment tagged with the current step name, creating an audit trail. Optionally run a command; on intermediate steps it is not required — pass one only when the current step's exit criteria call for it, and only a command those criteria expect to succeed. On success, advances to the next flow step and returns the next step's exit criteria — treat those as your new mandatory work definition — and what leaving THAT step will run (leavePlan): when it runs the suite, do not run the full suite yourself before calling this again. If the command exits non-zero the advance is refused and the item stays on its current step (on the final step this is the hard gate that keeps a red suite out of DONE); nothing is rolled back. On the final step (and any boundary step) the server runs the project's verifyCommand and ignores the 'command' field, with a warning in the reply.",
         inputSchema: {
           type: "object",
           properties: {
             itemId: { type: "string" },
             evidence: { type: "string", description: "REQUIRED: Describe how you satisfied the current step's exit criteria (e.g. 'Wrote failing tests in foo.test.ts covering cases X and Y'). This is logged as a comment and serves as your confirmation." },
-            command: { type: "string", description: "Optional command to run (e.g. 'npm run build'). If omitted, the project verifyCommand is used on the final step." },
+            command: { type: "string", description: "Optional command to run on an INTERMEDIATE step (e.g. 'npm run build'). Ignored on the final step and on any boundary step, where the server always runs the project verifyCommand." },
+            plan: { type: "boolean", description: "Dry run: answer what leaving the current step would run on this tree (reuse, only the changed or affected tests, the whole suite, a sibling's green, or nothing) without running anything or moving the card." },
+            agentChecks: {
+              type: "array",
+              description: "Your report of the current step's agent checks: for each, what its instruction asked you to do or check. A refused verify names them and their instructions. Recorded as agent-reported.",
+              items: { type: "object", properties: { name: { type: "string" }, outcome: { type: "string", enum: ["pass", "fail"] }, note: { type: "string" } }, required: ["name", "outcome"] },
+            },
+            checkAnswers: {
+              type: "array",
+              description: "Your answer to a failing warning of the step (e.g. new-tests-born-green): why it is fine, or what you changed. On the step that writes tests a failing new-tests-born-green holds the card until it is answered; answers go on the record for the reviewer and the PR.",
+              items: { type: "object", properties: { id: { type: "string" }, note: { type: "string" } }, required: ["id", "note"] },
+            },
           },
-          required: ["itemId", "evidence"],
+          // evidence is checked in the handler: required to advance, not for a dry run (plan).
+          required: ["itemId"],
         },
       },
       {
         name: "review_changes",
-        description: "DEPRECATED: Use validate_progress instead. Runs a build command and advances to the next flow step.",
+        description: "DEPRECATED: Use validate_progress instead. Optionally runs a command and advances to the next flow step; a non-zero exit refuses the advance and the item stays on its current step.",
         inputSchema: {
           type: "object",
           properties: {
@@ -562,21 +658,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             description: { type: "string", description: "Optional description." },
             steps: {
               type: "array",
-              description: "Ordered list of steps. Each step: { id?, name, label?, exitCriteria?, order, isSpecial?, isAnchor? }. Omit id and the server generates one; pass back the id you read to keep it stable across updates.",
+              description: "Ordered list of steps. Each step: { id?, name, label?, exitCriteria?, order, isSpecial?, isAnchor?, role?, checks?, autoCommit?, requireCommit?, color?, icon? }. Omit id and the server generates one; pass back the id you read to keep it stable across updates.",
               items: {
                 type: "object",
-                properties: {
-                  id: { type: "string" },
-                  name: { type: "string" },
-                  label: { type: "string" },
-                  exitCriteria: { type: "string" },
-                  order: { type: "number" },
-                  isSpecial: { type: "boolean" },
-                  isAnchor: { type: "boolean" },
-                },
+                properties: FLOW_STEP_TOOL_PROPERTIES,
                 required: ["name", "order"],
               },
             },
+            verifyAt: { type: "string", enum: ["leaf", "parent"], description: "Where the project's suite runs: 'leaf' (default) on every card's final step, or 'parent' once at the top-level card - a card with an open parent then closes without its own run." },
             projectId: { type: "string", description: "Optional: if provided, immediately activate the new flow for this project." },
           },
           required: ["name", "steps"],
@@ -591,18 +680,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             id: { type: "string", description: "The flow ID to update." },
             name: { type: "string" },
             description: { type: "string" },
+            verifyAt: { type: "string", enum: ["leaf", "parent"], description: "Where the project's suite runs: 'leaf' (default) on every card's final step, or 'parent' once at the top-level card - a card with an open parent then closes without its own run." },
             steps: {
               type: "array",
               items: {
                 type: "object",
-                properties: {
-                  name: { type: "string" },
-                  label: { type: "string" },
-                  exitCriteria: { type: "string" },
-                  order: { type: "number" },
-                  isSpecial: { type: "boolean" },
-                  isAnchor: { type: "boolean" },
-                },
+                properties: FLOW_STEP_TOOL_PROPERTIES,
                 required: ["name", "order"],
               },
             },
@@ -709,8 +792,25 @@ async function callToolHandler(request: any): Promise<any> {
         }
       }
       case "validate_progress": {
-        const { itemId, evidence, command } = z.object({ itemId: z.string(), evidence: z.string(), command: z.string().optional() }).parse(request.params.arguments);
-        const result = await validateViaApi(itemId, { evidence, command, cwd: process.cwd() });
+        const { itemId, evidence, command, agentChecks, checkAnswers, plan } = z.object({
+          // evidence is required to advance; a dry run (plan) needs none, as the CLI's --plan.
+          itemId: z.string(), evidence: z.string().optional(), command: z.string().optional(), plan: z.boolean().optional(),
+          agentChecks: z.array(z.object({ name: z.string(), outcome: z.enum(['pass', 'fail']), note: z.string().optional() })).optional(),
+          checkAnswers: z.array(z.object({ id: z.string(), note: z.string() })).optional(),
+        }).parse(request.params.arguments);
+        // 2ebacb23: a dry run - what leaving the step would run on this tree. Nothing runs, nothing moves.
+        if (plan) {
+          try {
+            const { data } = await api.get(`/items/${itemId}/leave-plan?predict=1`);
+            return { content: [{ type: "text", text: `${data.advice}${data.prediction?.advice ? `\n${data.prediction.advice}` : ''}\n\n(Dry run: nothing ran and the card did not move. Call again without plan to advance.)` }] };
+          } catch (error: any) {
+            return { isError: true, content: [{ type: "text", text: error.response?.data?.error || error.message }] };
+          }
+        }
+        if (evidence === undefined) return { isError: true, content: [{ type: "text", text: "evidence is required: describe how you satisfied the current step's exit criteria (or pass plan: true for a dry run)." }] };
+        // The author, as the harness that launched this MCP server names it (CGLAB-381).
+        const actor = actorFromEnv(process.env);
+        const result = await validateViaApi(itemId, { evidence, command, cwd: process.cwd(), ...(actor ? { actor } : {}), ...(agentChecks ? { agentChecks } : {}), ...(checkAnswers ? { checkAnswers } : {}) });
         if (!result.ok) return { isError: true, content: [{ type: "text", text: result.text }] };
         return { content: [{ type: "text", text: result.text }] };
       }
@@ -751,9 +851,11 @@ async function callToolHandler(request: any): Promise<any> {
           return { isError: true, content: [{ type: "text", text: `❌ CONFIG ERROR: No AgEnFK project found in the current directory, and no itemId was provided.` }] };
         }
 
-        // Validate that the project exists in the database
+        // Validate that the project exists in the database. The record is
+        // KEPT: its projectRoot is where base drift is measured from.
+        let project: any;
         try {
-          await api.get(`/projects/${effectiveProjectId}`);
+          project = (await api.get(`/projects/${effectiveProjectId}`)).data;
         } catch (error: any) {
           return { isError: true, content: [{ type: "text", text: `❌ CONFIG ERROR: Project ID [${effectiveProjectId}] does not exist in the database.` }] };
         }
@@ -814,37 +916,66 @@ async function callToolHandler(request: any): Promise<any> {
           'call validate_progress(itemId, evidence)',
         );
 
-        // Branch hint
-        let branchHint = '';
-        if (task.branchName) {
-          try {
-            // execFileSync with an argument array, never a template literal in a
-            // shell: branchName is stored data, and this runs implicitly on every
-            // gatekeeper call, so a name like `main; rm -rf ~` must not be able to
-            // break out of the command. `--` stops it being read as an option.
-            execFileSync('git', ['rev-parse', '--verify', '--', task.branchName], { stdio: 'ignore' });
-            const currentBranch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' }).trim();
-            if (currentBranch !== task.branchName) {
-              execFileSync('git', ['checkout', '--', task.branchName], { stdio: 'ignore' });
-              branchHint = `\n🔀 Switched to branch '${task.branchName}'.`;
-            } else {
-              branchHint = `\n🔀 Already on branch '${task.branchName}'.`;
-            }
-          } catch {
-            branchHint = `\n⚠️ Branch '${task.branchName}' does not exist locally. Work on the current branch or ask the user to create it.`;
-          }
-        }
+        /*
+         * In the ITEM'S tree, never the server's own cwd.
+         *
+         * These three git commands used to run with no cwd and no -C, so the
+         * gatekeeper read the branch of one repository and checked out in
+         * another - whichever the server process was started in. Extracted to
+         * branchHint.ts, where the cwd can be asserted rather than assumed;
+         * see the header there for why a write in the wrong tree is worse than
+         * a read in one.
+         */
+        // 686fdbf6: never switch branches in a tree the card chose - it may be
+        // a person's checkout or another card's worktree.
+        const branchHint = task?.worktreeChoice
+          ? `\nℹ️ This card runs in a tree it chose (${task.worktreeChoice === 'root' ? 'the project root' : task.worktreeChoice}); its branch is not switched there.`
+          : resolveBranchHint(task, {
+            run: args => execFileSync('git', args, { encoding: 'utf8' }),
+          });
 
-        return { content: [{ type: "text", text: `✅ AUTHORIZED.\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${branchHint}${exitCriteriaHint}` }] };
+        /*
+         * The base moved underneath the agent (CGLAB-197).
+         *
+         * The gatekeeper is where this lands because it is the one piece of
+         * server-authored text that reaches the agent's context before it
+         * starts editing - Orca injects the same block into the worker's
+         * prompt preamble at dispatch, and we have no worker-prompt builder.
+         *
+         * ADVISORY ONLY. `measureBaseDrift` also returns `shouldWait`, and
+         * that threshold belongs to the DISPATCHER (the fan-out sheet), not
+         * here: a gate that refused every edit on a stale base would stop work
+         * for a condition the module itself calls mostly harmless.
+         */
+        const driftTarget = driftTargets(task, allItems, project?.projectRoot);
+        const driftNotice = driftTarget
+          ? dispatchDriftNotice({ ...driftTarget, deps: { run: args => execFileSync('git', args, { encoding: 'utf8' }) } })
+          : '';
+
+        // 37a292a7: what leaving this step will run - advice, so a failed read never stops the authorization.
+        const leavePlan = await api.get(`/items/${task.id}/leave-plan`).then((r: any) => r.data).catch(() => null);
+        const leaveNote = typeof leavePlan?.advice === 'string' ? `\n\n${leavePlan.advice}` : '';
+        return { content: [{ type: "text", text: `✅ AUTHORIZED.\n\n${task.type}: [${task.id.substring(0,8)}] ${task.title}\nCurrent step: ${task.status}\nIntent: "${intent}"${branchHint}${exitCriteriaHint}${leaveNote}${driftNotice}` }] };
       }
       case "analyze_request": {
-        const { request: userRequest } = z.object({ request: z.string() }).parse(request.params.arguments);
-        return { 
-          content: [{ 
-            type: "text", 
-            text: `Complexity analysis for: "${userRequest}"\n\nREMINDER: All work MUST follow these decomposition and inspection rules:\n1. Minimum Decomposition: An EPIC must be decomposed into child STORIES before any of them starts — an EPIC is never worked directly. A STORY is decomposed into TASKs only when it is large (multiple deliverables, several packages, or more than one focused implementation pass) — the agent's judgement.\n2. Backlog Inspection: Only items in TODO status should be inspected when starting new work; IDEAs (drafts) must be ignored.\n3. When decomposing, create ALL sub-items (Stories/Tasks) in TODO status.\n4. PAUSE and ask the user for approval of a decomposition before moving any item to IN_PROGRESS.` 
-          }] 
-        };
+        const { request: userRequest, mode } = z.object({
+          request: z.string(),
+          mode: z.enum(["guidance", "proposal"]).optional(),
+        }).parse(request.params.arguments);
+        /*
+         * DEFAULT IS UNCHANGED, deliberately. SKILL.md step 2 sends the
+         * standard flow through this tool and then has the agent CREATE the
+         * items; a contract ending "do not create any item" would either break
+         * that flow or train agents to ignore the line it exists for. The
+         * proposal contract is for the Ask AgEnFK surface, which asks for it.
+         *
+         * No inner catch: the outer handler already formats a throw with the
+         * ❌ marker every other error return in this file carries.
+         */
+        const text = mode === "proposal"
+          ? decompositionContract(userRequest)
+          : decompositionRules(userRequest);
+        return { content: [{ type: "text", text }] };
       }
       case "get_flow": {
         const { projectId } = z.object({ projectId: z.string() }).parse(request.params.arguments);
@@ -937,7 +1068,7 @@ async function callToolHandler(request: any): Promise<any> {
       }
       case "get_item": {
         const args = GetItemSchema.parse(request.params.arguments);
-        const { data } = await api.get(`/items/${args.id}`);
+        const { data } = await api.get(`/items/${args.id}${args.includeRecords ? '?records=1' : ''}`);
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
       case "delete_item": {
@@ -970,6 +1101,17 @@ async function callToolHandler(request: any): Promise<any> {
         if (args.limit) params.limit = args.limit;
         const { data } = await api.get('/token-events', { params });
         return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+      }
+      case "record_review": {
+        const { itemId, transcript, range, findings } = z.object({
+          itemId: z.string(), transcript: z.string(), range: z.string(), findings: z.array(z.any()),
+        }).parse(request.params.arguments);
+        try {
+          const { data } = await api.post(`/items/${itemId}/review-records`, { transcript, range, findings }, { headers: { 'x-agenfk-internal': VERIFY_TOKEN } });
+          return { content: [{ type: "text", text: `✅ Review recorded by ${data.reviewer.client} session ${data.reviewer.sessionId}${data.reviewer.agentId ? `, agent ${data.reviewer.agentId}` : ''}: ${data.findings.length} finding(s).` }] };
+        } catch (error: any) {
+          return { isError: true, content: [{ type: "text", text: error.response?.data?.error || error.message }] };
+        }
       }
       case "add_comment": {
         const args = AddCommentSchema.parse(request.params.arguments);
@@ -1051,17 +1193,8 @@ async function callToolHandler(request: any): Promise<any> {
         const args = z.object({
           name: z.string(),
           description: z.string().optional(),
-          steps: z.array(z.object({
-            // Accept an id so it round-trips: zod strips unknown keys, so
-            // without this an update regenerated every step id on every call.
-            id: z.string().optional(),
-            name: z.string(),
-            label: z.string().optional(),
-            exitCriteria: z.string().optional(),
-            order: z.number(),
-            isSpecial: z.boolean().optional(),
-            isAnchor: z.boolean().optional(),
-          })),
+          steps: z.array(FlowStepToolSchema),
+          verifyAt: z.enum(['leaf', 'parent']).optional(),
           projectId: z.string().optional(),
         }).parse(request.params.arguments);
         const { projectId, ...flowBody } = args;
@@ -1077,17 +1210,8 @@ async function callToolHandler(request: any): Promise<any> {
           id: z.string(),
           name: z.string().optional(),
           description: z.string().optional(),
-          steps: z.array(z.object({
-            // Accept an id so it round-trips: zod strips unknown keys, so
-            // without this an update regenerated every step id on every call.
-            id: z.string().optional(),
-            name: z.string(),
-            label: z.string().optional(),
-            exitCriteria: z.string().optional(),
-            order: z.number(),
-            isSpecial: z.boolean().optional(),
-            isAnchor: z.boolean().optional(),
-          })).optional(),
+          steps: z.array(FlowStepToolSchema).optional(),
+          verifyAt: z.enum(['leaf', 'parent']).optional(),
         }).parse(request.params.arguments);
         const { id, ...updates } = args;
         try {

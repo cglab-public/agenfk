@@ -643,6 +643,7 @@ function makeDeps(overrides: any = {}) {
   return {
     gatekeeperVerdict: vi.fn().mockReturnValue(null),
     enforcerVerdict: vi.fn().mockReturnValue(null),
+    readVerdict: vi.fn().mockReturnValue(null),
     prReminder: vi.fn().mockReturnValue(null),
     // Stubbed so activate() tests never read the real ~/.pi/agent/settings.json.
     readDefaultModel: () => null,
@@ -850,5 +851,29 @@ describe("buildDirective 'pi' case", () => {
     // @ts-ignore — .mjs has no .d.ts
     const { buildDirective } = await import('../../../../bin/agenfk-pr-hook.mjs');
     expect(buildDirective('pi', 'hello')).toEqual({ message: 'hello' });
+  });
+});
+
+// ── BUG ec325925: pi's read tool goes through the enforcer too ───────────────
+//
+// pi delegated only bash to agenfk-mcp-enforcer, so its `read` tool could open
+// .agenfk/db.sqlite directly - the one bypass the hook exists to stop.
+
+describe('activate(): pi read tool and the database files', () => {
+  it('blocks a read the enforcer refuses', async () => {
+    const { pi, fire } = makeFakePi();
+    const readVerdict = vi.fn().mockReturnValue({ decision: 'block', reason: 'Direct reads of AgenFK database files are forbidden.' });
+    activate(pi as any, makeDeps({ readVerdict }));
+
+    const result = await fire('tool_call', { toolName: 'read', input: { path: '/repo/.agenfk/db.sqlite' } }, {});
+
+    expect(readVerdict).toHaveBeenCalledWith('/repo/.agenfk/db.sqlite');
+    expect(result).toEqual({ block: true, reason: 'Direct reads of AgenFK database files are forbidden.' });
+  });
+
+  it('lets an ordinary read through', async () => {
+    const { pi, fire } = makeFakePi();
+    activate(pi as any, makeDeps({ readVerdict: vi.fn().mockReturnValue(null) }));
+    expect(await fire('tool_call', { toolName: 'read', input: { path: '/repo/src/index.ts' } }, {})).toBeUndefined();
   });
 });

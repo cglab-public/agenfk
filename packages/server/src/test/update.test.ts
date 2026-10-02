@@ -1,6 +1,23 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import { app, setReleasesUpdateExecImpl, resetReleasesUpdateExecImpl } from '../server';
+
+/**
+ * ONE listening server for the whole file (BUG 9de0c99c).
+ *
+ * `agent()` starts and tears down an ephemeral server for EVERY call. That
+ * churn produced `Error: Parse Error: Expected HTTP/, RTSP/ or ICE/` — a
+ * transport failure, not an assertion about anything under test. It hands the
+ * test an empty body, so `res.body.id` is undefined and the next call goes to
+ * `/items/undefined`; one bad socket then surfaces as `expected 404 to be 400`
+ * in whichever test happened to be running. Different test every run, green
+ * when run alone.
+ */
+let __server: import('http').Server;
+const agent = () => request(__server);
+beforeAll(() => { __server = app.listen(0); });
+afterAll(async () => { await new Promise<void>(r => __server.close(() => r())); });
+
 
 // We use the dedicated setReleasesUpdateExecImpl injection rather than
 // vi.mock('child_process', ...). The latter persists across test files in the
@@ -21,7 +38,7 @@ describe('Server Release Update API', () => {
   });
 
   it('should trigger update with the correct npx command', async () => {
-    const res = await request(app).post('/releases/update').set('x-agenfk-ui', '1');
+    const res = await agent().post('/releases/update').set('x-agenfk-ui', '1');
     expect(res.status).toBe(202);
     expect(res.body).toHaveProperty('jobId');
 
@@ -32,7 +49,7 @@ describe('Server Release Update API', () => {
   });
 
   it('uses the injected exec implementation when one is set (defense in depth)', async () => {
-    const res = await request(app).post('/releases/update').set('x-agenfk-ui', '1');
+    const res = await agent().post('/releases/update').set('x-agenfk-ui', '1');
     expect(res.status).toBe(202);
 
     expect(stubExec).toHaveBeenCalledTimes(1);

@@ -5,6 +5,7 @@ import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/re
 import { KanbanBoard } from '../components/KanbanBoard';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '../ThemeContext';
+import { ActiveProjectProvider } from '../ActiveProject';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api } from '../api';
 import { io } from 'socket.io-client';
@@ -12,6 +13,7 @@ import { io } from 'socket.io-client';
 // Mock socket.io-client
 vi.mock('socket.io-client', () => ({
   io: vi.fn(() => ({
+    connect: vi.fn(),
     on: vi.fn(),
     off: vi.fn(),
     emit: vi.fn(),
@@ -101,9 +103,11 @@ describe('ProjectSelection', () => {
     });
     const wrapper = ({ children }: { children: React.ReactNode }) => (
       <QueryClientProvider client={queryClient}>
+    <ActiveProjectProvider>
         <ThemeProvider>
           {children}
         </ThemeProvider>
+        </ActiveProjectProvider>
       </QueryClientProvider>
     );
     render(<KanbanBoard />, { wrapper });
@@ -280,7 +284,8 @@ describe('ProjectSelection', () => {
     // clickable, or it advertises a click the guard deliberately ignores.
     const armed = rowOf('Delete "Zebra"?');
     expect(armed.className).not.toContain('cursor-pointer');
-    expect(armed.className).not.toContain('hover:bg-chip');
+    // No hover fill of any colour: the armed row is not a click target.
+    expect(armed.className).not.toMatch(/(?:^|\s)hover:bg-/);
   });
 
   it('the trash button arms the delete confirm and does NOT select the project', async () => {
