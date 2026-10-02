@@ -5,6 +5,7 @@
   "description": "AgEnFK Desktop — run agent orchestration as a native app",
   "main": "dist/main/index.js",
   "scripts": {
+    "prebuild": "node ../../scripts/clean-dist.mjs",
     "build": "tsc && npm run bundle:preload",
     "dev": "npm run build && electron dist/main/index.js",
     "start": "electron dist/main/index.js",

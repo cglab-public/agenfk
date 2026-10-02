@@ -8,6 +8,7 @@
   },
   "types": "dist/index.d.ts",
   "scripts": {
+    "prebuild": "node ../../scripts/clean-dist.mjs",
     "build": "tsc",
     "start": "node dist/index.js"
   },

@@ -38,6 +38,8 @@ COPY packages/telemetry packages/telemetry
 COPY packages/server packages/server
 COPY packages/cli packages/cli
 COPY bin bin
+# Each tsc package's prebuild cleans its dist/ with this script (d781db05).
+COPY scripts/clean-dist.mjs scripts/
 RUN npm run build -w packages/core -w packages/storage-sqlite -w packages/telemetry \
  && npm run build -w packages/server -w packages/cli
 # Restore the .NET sample's packages once, here, so no scenario downloads.

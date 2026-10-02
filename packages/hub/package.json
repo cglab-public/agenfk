@@ -16,6 +16,7 @@
     "access": "public"
   },
   "scripts": {
+    "prebuild": "node ../../scripts/clean-dist.mjs",
     "build": "tsc",
     "start": "node dist/bin.js"
   },
