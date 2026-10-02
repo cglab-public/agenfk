@@ -15,6 +15,7 @@ import { DEFAULT_REUSE_IGNORE, namedByTests, reuseIgnoreMatcher } from './reuseI
 import { capturedGreen, countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, describeCapture, TEST_FILE_PATTERN, ANY_TEST_FILE_PATTERN, needsCapture, needsEntryRecord, parseAgentReports, parseCheckAnswers, describeTreeWarnings, MAX_UNREVIEWED_LINES, type AgentReport, type CheckResult, type TreeWarning } from './checkEngine';
 import { retainSuperseded, withRecordRetention } from './recordRetention';
 import { compactAuthored, expandAuthored } from './authoredRecord';
+import { pruneStepRecords } from './pruneRecords';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, foreignClaimsFor, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
@@ -1411,6 +1412,7 @@ const initStorage = async () => {
   await storage.init({ path: dbPath });
   // f8d0a752: the server-wide suite-run limit, read from the settings it lives in.
   await loadSuiteRunSetting();
+  await pruneRecordsOnStart();
 
   // Apply pending migration (written by install/upgrade when a db.json was detected)
   const migrationPath = path.join(os.homedir(), '.agenfk', 'migration.json');
@@ -1723,6 +1725,37 @@ type TransitionFlow = { steps: Array<{ name: string; order: number; isSpecial?: 
  * only `isSpecial` - which is how `agenfk flow create` marks its entry and
  * exit - and so does a step held mid-flow.
  */
+/**
+ * ec325925: the upgrade's prune of the step records cards carried before the
+ * retention rule. Runs on every start (the restart after `agenfk upgrade` is
+ * the one that finds work) and is idempotent. Closed means the card is on its
+ * flow's last step, or archived/trashed: the anchors are not assumed to be
+ * called DONE.
+ */
+async function pruneRecordsOnStart(): Promise<void> {
+  try {
+    const flows = await storage.listFlows();
+    const lastStepOf = new Map<string, string | undefined>();
+    const isClosed = async (item: any): Promise<boolean> => {
+      if (item.status === Status.ARCHIVED || item.status === Status.TRASHED) return true;
+      const key = item.projectId ?? '';
+      if (!lastStepOf.has(key)) {
+        const project: any = item.projectId ? await storage.getProject(item.projectId) : null;
+        const steps = flowProgression(getActiveFlow(project?.flowId ?? undefined, flows) as TransitionFlow);
+        lastStepOf.set(key, steps[steps.length - 1]?.name);
+      }
+      return item.status === lastStepOf.get(key);
+    };
+    const r = await pruneStepRecords(storage, isClosed);
+    if (r.cards || r.blobs) {
+      console.log(`[MIGRATION] step records: pruned ${r.records} record(s) on ${r.cards} card(s), ${r.authored} authoredTests list(s) now by reference, ${r.blobs} results blob(s) freed`);
+    }
+  } catch (e: any) {
+    // Housekeeping: a failure leaves the records as they were, and says so.
+    console.error(`[MIGRATION] step-record prune failed, records left as they were: ${e?.message ?? e}`);
+  }
+}
+
 function flowProgression(flow: TransitionFlow) {
   return [...flow.steps]
     .sort((a, b) => a.order - b.order)
