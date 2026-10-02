@@ -112,6 +112,18 @@ describe('Org user rows say what each person got done', () => {
     expect(alice['PRs']).toHaveTextContent('3');
   });
 
+  it('reads out what the pass rate and Last active only showed on hover (story f17f36a5)', async () => {
+    mount();
+    const bob = await rowFor(/bob@acme\.com/);
+    expect(within(bob['Check pass rate']).getByText('1 passed, 3 failed')).toHaveClass('sr-only');
+    const quiet = await rowFor(/quiet@acme\.com/);
+    expect(within(quiet['Check pass rate']).getByText('no checks ran')).toHaveClass('sr-only');
+    // The relative time on screen; the absolute one read out. (This view is
+    // filtered by event type, so the column reads "Last match".)
+    const last = within(bob['Last match']).getAllByText((_, el) => !!el?.classList.contains('sr-only') && /\d/.test(el.textContent ?? ''));
+    expect(last.length).toBeGreaterThan(0);
+  });
+
   it('reads the rows from the users answer, not the metrics the tiles use', async () => {
     metricsFails = true;
     mount();

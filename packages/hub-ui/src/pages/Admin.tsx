@@ -742,16 +742,18 @@ export function AdminInstallations() {
               {showRetired ? `Hide retired (${retiredCount})` : 'Show retired'}
             </button>
             {attributedByUsername > 0 && (
-              <span
-                className="text-[11px] font-semibold text-status-warn-text cursor-help"
-                title="These installs have no git email, so their work is filed under an OS username instead of a person."
-              >
+              <span className="text-[11px] font-semibold text-status-warn-text">
                 {attributedByUsername} attributed by username
               </span>
             )}
             <span className="text-[11px] text-ink-tertiary">{showHidden ? rows.length : visible.length} total</span>
           </div>
         </header>
+        {attributedByUsername > 0 && (
+          <p className="mt-1 text-[11px] text-ink-tertiary">
+            {attributedByUsername === 1 ? 'One install has' : `${attributedByUsername} installs have`} no git email, so their work is filed under an OS username instead of a person.
+          </p>
+        )}
         <InlineError error={hide.error} className="mt-2" />
         <InlineError error={retire.error} className="mt-2" />
         <InlineError error={unretire.error} className="mt-2" />
@@ -777,12 +779,10 @@ export function AdminInstallations() {
                       : (
                         // Their whole history is filed under an OS username, and
                         // fixing it later splits them into two identities.
-                        <div
-                          className="text-[11px] font-semibold text-status-warn-text cursor-help"
-                          title={attributionWarning(r.osUser)}
-                        >
-                          no git email — attributed by username
-                        </div>
+                        <details className="text-[11px] text-status-warn-text">
+                          <summary className="font-semibold cursor-pointer">no git email — attributed by username</summary>
+                          <p className="mt-0.5 max-w-prose text-ink-secondary">{attributionWarning(r.osUser)}</p>
+                        </details>
                       )}
                   </td>
                   <td className="px-2 py-2.5">
@@ -795,11 +795,9 @@ export function AdminInstallations() {
                       <span className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-status-warn-text">hidden</span>
                     )}
                     {r.retired && (
-                      <span
-                        className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-ink-tertiary"
-                        title={r.retiredByEmail ? `Retired by ${r.retiredByEmail}` : 'Retired'}
-                      >
+                      <span className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-ink-tertiary">
                         retired
+                        {r.retiredByEmail && <span className="ml-1 normal-case tracking-normal font-normal">by {r.retiredByEmail}</span>}
                       </span>
                     )}
                   </td>

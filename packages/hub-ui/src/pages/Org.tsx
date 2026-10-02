@@ -12,7 +12,7 @@ import { ChipRow, DataTable, Page, PageHeader, PeriodControl, QueryState } from 
 import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
 import { EventTypeChips } from '../components/EventTypeChips';
-import { browserTimezone, fmtRelative, utcTitle } from '../dates';
+import { browserTimezone, fmtDateTime, fmtRelative, utcTitle } from '../dates';
 import { checkPassRate } from '../checkPassRate';
 import { buildDayAxis } from '../prOverview';
 import { Sparkline, sharedPeak } from '../components/Sparkline';
@@ -350,8 +350,8 @@ export function OrgPage() {
                     render: u => {
                       const pct = checkPassRate(u.validate_passes, u.validate_fails);
                       return pct === null
-                        ? <span className="text-ink-tertiary" title="no checks ran">—</span>
-                        : <span className="font-mono tabular-nums text-ink" title={`${u.validate_passes} passed · ${u.validate_fails} failed`}>{pct}%</span>;
+                        ? <span className="text-ink-tertiary" title="no checks ran"><span aria-hidden="true">—</span><span className="sr-only">no checks ran</span></span>
+                        : <span className="font-mono tabular-nums text-ink" title={`${u.validate_passes} passed · ${u.validate_fails} failed`}>{pct}%<span className="sr-only">{`${u.validate_passes} passed, ${u.validate_fails} failed`}</span></span>;
                     },
                   },
                   {
@@ -381,7 +381,13 @@ export function OrgPage() {
                     align: 'right',
                     firstDir: 'desc',
                     sortValue: u => Date.parse(u.last_seen) || 0,
-                    render: u => <span className="text-[12px] text-ink-tertiary" title={utcTitle(u.last_seen)}>{formatLastSeen(u.last_seen)}</span>,
+                    render: u => (
+                      <span className="text-[12px] text-ink-tertiary" title={utcTitle(u.last_seen)}>
+                        {formatLastSeen(u.last_seen)}
+                        {/* The absolute time behind "3h ago", read out rather than hover-only. */}
+                        <span className="sr-only">{` (${fmtDateTime(u.last_seen)})`}</span>
+                      </span>
+                    ),
                   },
                 ]}
               />

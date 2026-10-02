@@ -165,21 +165,21 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
         </div>
 
         <div className="flex items-center gap-3 shrink-0">
-          <label className="flex items-center gap-2 text-[11px] text-ink-tertiary cursor-pointer">
-            <input
-              type="checkbox"
-              checked={scope === 'all'}
-              onChange={e => setScope(e.target.checked ? 'all' : 'observed')}
-              className="accent-brand"
-            />
-            Show all classification rules
-            <span
-              title="Off: only models actually reported. On: also the seeded rules that matched nothing, so family rules like 'glm-' can be edited."
-              className="cursor-help"
-            >
-              ⓘ
-            </span>
-          </label>
+          <div>
+            <label className="flex items-center gap-2 text-[11px] text-ink-tertiary cursor-pointer">
+              <input
+                type="checkbox"
+                checked={scope === 'all'}
+                onChange={e => setScope(e.target.checked ? 'all' : 'observed')}
+                aria-describedby="models-scope-hint"
+                className="accent-brand"
+              />
+              Show all classification rules
+            </label>
+            <p id="models-scope-hint" className="mt-0.5 text-[10px] text-ink-tertiary">
+              Off: only models actually reported. On: also the seeded rules that matched nothing, so family rules like 'glm-' can be edited.
+            </p>
+          </div>
         </div>
       </header>
 

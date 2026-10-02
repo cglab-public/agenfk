@@ -212,12 +212,16 @@ function PrDrilldownModal({ dev, day, prs, onClose }: {
                     #{p.prNumber}
                   </span>
                 ) : (
-                  <span
-                    className="font-mono text-[13px] font-bold text-ink-secondary shrink-0"
-                    title={`${p.repo} — no GitHub link (non-GitHub host)`}
-                  >
-                    #{p.prNumber}
-                  </span>
+                  <>
+                    <span
+                      className="font-mono text-[13px] font-bold text-ink-secondary shrink-0"
+                      title={`${p.repo} — no GitHub link (non-GitHub host)`}
+                    >
+                      #{p.prNumber}
+                    </span>
+                    {/* Why this row is not a link, read out rather than hover-only. */}
+                    <span className="sr-only">no GitHub link (non-GitHub host)</span>
+                  </>
                 )}
                 <div className="min-w-0 flex-1">
                   <div className="truncate font-mono text-[12px] text-ink-secondary">{p.repo}</div>

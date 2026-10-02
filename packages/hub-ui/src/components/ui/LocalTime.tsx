@@ -2,7 +2,8 @@ import { fmtDate, fmtDateTime, parseAsUtc, utcTitle } from '../../dates';
 
 /**
  * A timestamp shown by the hub's one rule: in the viewer's local zone, with the
- * UTC instant on hover. `format="date"` drops the time of day. Something that is
+ * UTC instant on hover and read out (sr-only, beside the <time>, so its own
+ * text stays the visible time). `format="date"` drops the time of day. Something that is
  * not a time renders as plain text rather than "Invalid Date".
  */
 export function LocalTime({ value, format = 'datetime', className }: {
@@ -13,8 +14,11 @@ export function LocalTime({ value, format = 'datetime', className }: {
   const d = parseAsUtc(value);
   if (Number.isNaN(d.getTime())) return <span className={className}>{String(value)}</span>;
   return (
-    <time dateTime={d.toISOString()} title={utcTitle(d)} className={className}>
-      {format === 'date' ? fmtDate(d) : fmtDateTime(d)}
-    </time>
+    <>
+      <time dateTime={d.toISOString()} title={utcTitle(d)} className={className}>
+        {format === 'date' ? fmtDate(d) : fmtDateTime(d)}
+      </time>
+      <span className="sr-only"> ({utcTitle(d)})</span>
+    </>
   );
 }

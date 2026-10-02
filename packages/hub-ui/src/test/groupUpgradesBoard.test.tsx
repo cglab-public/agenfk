@@ -79,9 +79,8 @@ describe('Admin → Upgrades: the group-upgrade board', () => {
   it('surfaces the skip reasons rather than only a number', async () => {
     renderBoard();
     await waitFor(() => screen.getByTestId('group-target-skips-d-1-ch-a'));
-    expect(screen.getByTestId('group-target-skips-d-1-ch-a')).toHaveAttribute(
-      'title', expect.stringContaining('i9'),
-    );
+    // Listed in a disclosure anyone can open, not only in a hover title.
+    expect(screen.getByTestId('group-target-skips-d-1-ch-a')).toHaveTextContent('i9: retired');
   });
 
   it('cancels a dispatch through the admin endpoint', async () => {

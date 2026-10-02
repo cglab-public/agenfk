@@ -11,7 +11,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
 import { api } from '../api';
 import { LocalTime, useConfirm } from '../components/ui';
-import { issuedAt } from '../dates';
+import { fmtDateTime, issuedAt } from '../dates';
 import { groupUpgradeBody, groupUpgradeRow, groupUpgradesLive, type GroupUpgradeRequest } from './groupUpgradeState';
 import { ChildHubPicker, toggledSet } from './childHubPicker';
 import { NO_CHILD_HUBS_REASON, dispatchRefusalMessage, liveChildHubs, type ChildHubRow, type DispatchScopeMode } from './flowDispatch';
@@ -479,6 +479,7 @@ export function AdminUpgrades() {
                         {t.agenfkVersion && (
                           <span className="font-mono text-ink-tertiary" title={`last seen ${t.agenfkVersionUpdatedAt ?? '?'}`}>
                             v{t.agenfkVersion}
+                            {t.agenfkVersionUpdatedAt && <span className="sr-only">{`last seen ${fmtDateTime(t.agenfkVersionUpdatedAt)}`}</span>}
                           </span>
                         )}
                         <StatePill state={t.state} />
@@ -690,13 +691,13 @@ export function GroupUpgrades() {
                         </span>
                       )}
                       {(t.detail?.skipped?.length ?? 0) > 0 && (
-                        <span
-                          className="text-ink-tertiary"
-                          title={t.detail!.skipped!.map(sk => `${sk.installationId}: ${sk.reason}`).join('\n')}
-                          data-testid={`group-target-skips-${d.id}-${t.childHubId}`}
-                        >
-                          ({t.detail!.skipped!.length} skipped — hover for why)
-                        </span>
+                        // A disclosure anyone can open, not "hover for why".
+                        <details className="text-ink-tertiary" data-testid={`group-target-skips-${d.id}-${t.childHubId}`}>
+                          <summary className="cursor-pointer">{t.detail!.skipped!.length} skipped</summary>
+                          <ul className="mt-1 space-y-0.5 font-mono text-[11px]">
+                            {t.detail!.skipped!.map(sk => <li key={sk.installationId} className="break-all">{`${sk.installationId}: ${sk.reason}`}</li>)}
+                          </ul>
+                        </details>
                       )}
                     </div>
                   );

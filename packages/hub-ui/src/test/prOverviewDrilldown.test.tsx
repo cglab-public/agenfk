@@ -175,6 +175,14 @@ describe('PrOverviewPage drill-down modal (CGLAB-131)', () => {
     expect(t!.textContent).not.toMatch(/UTC/);
   });
 
+  it('says why a PR has no link, without hover (story f17f36a5)', async () => {
+    const dialog = await openModal();
+    const row203 = Array.from(dialog.querySelectorAll('li')).find(li => li.textContent?.includes('#203'))!;
+    expect(within(row203).getByText(/no GitHub link/)).toHaveClass('sr-only');
+    const row202 = Array.from(dialog.querySelectorAll('li')).find(li => li.textContent?.includes('#202'))!;
+    expect(within(row202).queryByText(/no GitHub link/)).toBeNull();
+  });
+
   it('opens from a non-zero cell and lists that developer’s PRs for that day', async () => {
     const dialog = await openModal();
     const scope = within(dialog);
