@@ -3544,8 +3544,9 @@ rulesCommand
 
 program
   .command('get <id>')
-  .description('Get details of a specific item (MCP fallback: get_item)')
+  .description('Get details of a specific item (MCP: get_item)')
   .option('--json', 'Output as JSON')
+  .option('--records', 'Also return its step records (per-step checks and whole-suite test results; large)')
   .action(async (id, options) => {
     try {
       let targetId = id;
@@ -3556,7 +3557,7 @@ program
         if (found.length > 1) { console.error(chalk.red(`Ambiguous ID ${id}, matches multiple items`)); process.exit(1); }
         targetId = found[0].id;
       }
-      const { data: item } = await axios.get(`${API_URL}/items/${targetId}`);
+      const { data: item } = await axios.get(`${API_URL}/items/${targetId}${options.records ? '?records=1' : ''}`);
       if (program.opts().toon || options.json) {
         console.log(structuredOutput(item));
       } else {

@@ -155,7 +155,7 @@ async function card(projectId: string, status: string, extra: Record<string, unk
 }
 const validate = (id: string, body: Record<string, unknown> = {}) =>
   agent().post(`/items/${id}/validate`).set(internal()).send({ evidence: 'ok', ...body });
-const item = async (id: string) => (await agent().get(`/items/${id}`)).body;
+const item = async (id: string) => (await agent().get(`/items/${id}?records=1`)).body;
 const byId = (checks: any[], id: string) => checks.find((c: any) => c.id === id);
 
 const s = (name: string, order: number, extra: Record<string, unknown> = {}) => ({ id: `${name}-${order}`, name, label: name, order, ...extra });

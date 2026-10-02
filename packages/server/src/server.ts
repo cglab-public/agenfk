@@ -6017,12 +6017,17 @@ app.post("/items/trash-archived", asyncHandler(async (req: any, res: any) => {
   res.json({ count: archivedItems.length });
 }));
 
+/*
+ * ec325925: without its step records unless asked (?records=1). Every capture's
+ * whole-suite results came back on every read - 11 MB for one card, past what
+ * MCP get_item can return - and nothing outside the server reads them here.
+ */
 app.get("/items/:id", asyncHandler(async (req: any, res: any) => {
   const item = await storage.getItem(req.params.id);
   if (!item) {
     return res.status(404).json({ error: "Item not found" });
   }
-  res.json(withActiveRun(item));
+  res.json(withActiveRun(req.query.records === '1' ? item : listShape(item)));
 }));
 
 /**

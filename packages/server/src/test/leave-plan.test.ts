@@ -86,7 +86,7 @@ const plan = async (id: string) => {
 };
 const validate = (id: string) => agent().post(`/items/${id}/validate`).set(internal()).send({ evidence: 'ok' });
 const capturesOf = async (id: string, step: string) =>
-  (((await agent().get(`/items/${id}`)).body.stepRecords ?? []) as any[]).filter(r => r?.kind === 'capture' && r.step === step);
+  (((await agent().get(`/items/${id}?records=1`)).body.stepRecords ?? []) as any[]).filter(r => r?.kind === 'capture' && r.step === step);
 
 const s = (name: string, order: number, extra: Record<string, unknown> = {}) => ({ id: `${name}-${order}`, name, label: name, order, ...extra });
 
@@ -202,7 +202,7 @@ describe('GET /items/:id/leave-plan', () => {
     expect(res.body.status).toBe('END');
     expect(suite.runs(), 'the same suite ran twice on one move').toHaveLength(1);
     expect(await capturesOf(id, 'TEST')).toHaveLength(1);
-    const tests = (await agent().get(`/items/${id}`)).body.tests ?? [];
+    const tests = (await agent().get(`/items/${id}?records=1`)).body.tests ?? [];
     expect(tests.some((t: any) => t.command === suite.command && t.status === 'PASSED' && t.commit), 'the close recorded no green tied to its commit').toBe(true);
   });
 
@@ -325,7 +325,7 @@ describe('GET /items/:id/leave-plan', () => {
       { projectRoot: dir, verifyCommand: suite.command, testReport: { format: 'junit-xml', reportPath: 'report.xml' } });
     const id = await card(pid, 'TEST');
     await validate(id);
-    expect((await agent().get(`/items/${id}`)).body.status).toBe('TEST');
+    expect((await agent().get(`/items/${id}?records=1`)).body.status).toBe('TEST');
     expect(suite.runs()).toHaveLength(1);
   });
 

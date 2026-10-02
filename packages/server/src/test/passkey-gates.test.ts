@@ -95,7 +95,7 @@ async function signedApproval(a: SoftAuthenticator, id: string, step: string, no
 }
 const approve = (id: string, body: Record<string, unknown>) => agent().post(`/items/${id}/approvals`).set(board()).send(body);
 const override = (id: string, body: Record<string, unknown>) => agent().post(`/items/${id}/overrides`).set(board()).send(body);
-const item = async (id: string) => (await agent().get(`/items/${id}`)).body;
+const item = async (id: string) => (await agent().get(`/items/${id}?records=1`)).body;
 
 describe('CGLAB-383: enrolling a passkey', () => {
   it('starts with none enrolled', async () => {

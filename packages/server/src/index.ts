@@ -227,6 +227,7 @@ const ListItemsSchema = z.object({
 
 const GetItemSchema = z.object({
   id: z.string(),
+  includeRecords: z.boolean().optional(),
 });
 
 const QueryTokenEventsSchema = z.object({
@@ -365,10 +366,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "get_item",
-        description: "Get details of a specific item by ID.",
+        description: "Get details of a specific item by ID. Its step records (per-step checks and whole-suite test results, often megabytes) are left out unless includeRecords is true.",
         inputSchema: {
           type: "object",
-          properties: { id: { type: "string" } },
+          properties: {
+            id: { type: "string" },
+            includeRecords: { type: "boolean", description: "Also return stepRecords and supersededRecords. Large: ask only when you need them." },
+          },
           required: ["id"],
         },
       },
@@ -1048,7 +1052,7 @@ async function callToolHandler(request: any): Promise<any> {
       }
       case "get_item": {
         const args = GetItemSchema.parse(request.params.arguments);
-        const { data } = await api.get(`/items/${args.id}`);
+        const { data } = await api.get(`/items/${args.id}${args.includeRecords ? '?records=1' : ''}`);
         return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
       }
       case "delete_item": {
