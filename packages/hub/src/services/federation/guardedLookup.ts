@@ -1,7 +1,8 @@
 import * as dns from 'dns';
 import * as http from 'http';
 import * as https from 'https';
-import { isPrivateAddress } from './parentBinding.js';
+import * as net from 'net';
+import { isPrivateAddress, isNeverParentAddress, NEVER_PARENT_MESSAGE } from './parentBinding.js';
 
 /**
  * A DNS lookup for the sockets that dial a federation parent (CGLAB-371).
@@ -19,7 +20,9 @@ import { isPrivateAddress } from './parentBinding.js';
  *
  * Two things this does NOT cover, by design, and what does:
  *  - an IP-LITERAL parent URL never reaches a lookup at all (net connects to a
- *    literal directly). assertHttpUrl judges literals, with the same ranges.
+ *    literal directly). assertHttpUrl judges it at join time, and the agents'
+ *    createConnection judges it again on every connection, with the same
+ *    rules (BUG 9afde47e) - so a binding stored earlier cannot outlive them.
  *  - an HTTP(S)_PROXY would make the socket's lookup resolve the PROXY, and
  *    the proxy would resolve the parent itself. The federation clients
  *    therefore always dial directly (`proxy: false`).
@@ -48,6 +51,13 @@ export function guardedLookup(opts: { allowPrivate?: () => boolean; resolve?: Re
         callback(Object.assign(new Error(`could not resolve ${hostname}`), { code: 'ENOTFOUND' }));
         return;
       }
+      // Never a parent, opt-in or not (BUG 9afde47e). ANY such answer refuses.
+      const never = addrs.find((a) => isNeverParentAddress(a.address));
+      if (never) {
+        console.warn(`[FEDERATION] refused ${hostname}: it resolves to ${never.address}, a link-local or cloud-metadata address`);
+        callback(refusal(`refusing to connect to ${hostname}: it ${NEVER_PARENT_MESSAGE}`));
+        return;
+      }
       if (!allowPrivate()) {
         // ANY private answer refuses: the socket may pick any of them.
         const bad = addrs.find((a) => isPrivateAddress(a.address));
@@ -74,7 +84,37 @@ export function guardedLookup(opts: { allowPrivate?: () => boolean; resolve?: Re
 /** http/https agents whose every connection resolves through the guard. */
 export type ParentResolve = Resolve;
 
+const refusal = (message: string) => Object.assign(new Error(message), { code: 'EPRIVATEADDR' });
+
+/**
+ * An IP-literal host never reaches the lookup (net connects to it directly),
+ * and a binding stored earlier keeps its URL. So a literal is judged here,
+ * before the socket opens, by the lookup's own rules: never a link-local or
+ * metadata address (BUG 9afde47e), and a private one only while the operator
+ * opts in, re-read on every connection exactly as the lookup reads it for a
+ * name. The bearer token never reaches a refused address.
+ */
+function judgeLiterals<A extends http.Agent>(agent: A, allowPrivate: () => boolean): A {
+  const open = (agent as any).createConnection.bind(agent);
+  (agent as any).createConnection = (options: any, cb?: any) => {
+    const host = String(options?.host ?? options?.hostname ?? '').replace(/^\[|\]$/g, '');
+    if (net.isIP(host.replace(/%.*$/, ''))) {
+      if (isNeverParentAddress(host)) throw refusal(`refusing to connect to ${host}: it ${NEVER_PARENT_MESSAGE}`);
+      if (!allowPrivate() && isPrivateAddress(host)) {
+        throw refusal(`refusing to connect to ${host}: it is a private or loopback address. `
+          + 'Set AGENFK_HUB_ALLOW_PRIVATE_PARENT=1 if the parent hub really is on this network.');
+      }
+    }
+    return open(options, cb);
+  };
+  return agent;
+}
+
 export function parentHttpAgents(opts: { allowPrivate?: () => boolean; resolve?: Resolve } = {}) {
   const lookup = guardedLookup(opts) as any;
-  return { httpAgent: new http.Agent({ lookup }), httpsAgent: new https.Agent({ lookup }) };
+  const allowPrivate = opts.allowPrivate ?? allowPrivateParentFromEnv;
+  return {
+    httpAgent: judgeLiterals(new http.Agent({ lookup }), allowPrivate),
+    httpsAgent: judgeLiterals(new https.Agent({ lookup }), allowPrivate),
+  };
 }

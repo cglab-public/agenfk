@@ -2979,7 +2979,11 @@ export function adminRouter(ctx: HubServerContext): Router {
       // hostnames is the same hub under either, whichever one
       // AGENFK_HUB_PUBLIC_URL calls canonical.
       try {
-        const selves = [publicHubUrl(req), requestOrigin(req)].map(u => assertHttpUrl(u, { allowPrivate: true }));
+        // Each name judged on its own: one that assertHttpUrl refuses (a
+        // link-local browse address, BUG 9afde47e) must not skip the other.
+        const selves = [publicHubUrl(req), requestOrigin(req)].map((u) => {
+          try { return assertHttpUrl(u, { allowPrivate: true }); } catch { return null; }
+        });
         if (selves.includes(parentUrl)) {
           res.status(400).json({ error: 'a hub cannot enrol with itself as its own parent' });
           return;

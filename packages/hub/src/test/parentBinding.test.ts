@@ -114,11 +114,37 @@ describe('assertHttpUrl', () => {
     // status, so without a guard the form is a probe for internal services.
     for (const host of [
       'http://localhost:4000', 'http://127.0.0.1:4000', 'http://10.1.2.3',
-      'http://192.168.0.5', 'http://169.254.169.254', 'http://172.20.0.1',
+      'http://192.168.0.5', 'http://172.20.0.1',
       'http://hub.internal', 'http://hub.local',
     ]) {
       expect(() => assertHttpUrl(host)).toThrow(/private or loopback/i);
       expect(assertHttpUrl(host, { allowPrivate: true })).toBe(host.replace(/\/$/, ''));
+    }
+    // Refused without the opt-in too, but NOT admitted by it: see below.
+    expect(() => assertHttpUrl('http://169.254.169.254')).toThrow(/private or loopback/i);
+  });
+
+  // BUG 9afde47e: this used to pin the opposite - with the opt-in, the metadata
+  // service and link-local were accepted as a parent. The opt-in exists for a
+  // parent on the LAN; no parent hub lives at a link-local or metadata address,
+  // and the one thing such a URL reaches is the cloud's credential service.
+  it('keeps link-local and cloud-metadata addresses refused even when the operator opts in', () => {
+    for (const host of [
+      'http://169.254.169.254', 'http://169.254.10.20:4000',   // link-local, incl. AWS/GCP/Azure metadata
+      'http://[fe80::1]', 'http://[fe80::1234:5678]',          // IPv6 link-local
+      'http://[fd00:ec2::254]',                                // AWS IMDS over IPv6
+      'http://[fd20:ce::254]',                                 // GCP metadata over IPv6
+      'http://100.100.100.200',                                // Alibaba Cloud metadata
+      'http://[::ffff:169.254.169.254]',                       // the same, in embedded-IPv4 spellings
+      'http://[64:ff9b::a9fe:a9fe]', 'http://[2002:a9fe:a9fe::1]',
+    ]) {
+      expect(() => assertHttpUrl(host, { allowPrivate: true }), host).toThrow(/link-local or cloud-metadata/i);
+    }
+  });
+
+  it('still admits the LAN parents the opt-in is for', () => {
+    for (const host of ['http://10.0.0.5', 'http://[fd12:3456::1]', 'http://[fc00::1]', 'http://100.64.0.1', 'http://hub.lan:4000']) {
+      expect(() => assertHttpUrl(host, { allowPrivate: true }), host).not.toThrow();
     }
   });
 
@@ -138,6 +164,8 @@ describe('assertHttpUrl', () => {
       'http://[::]',
     ]) {
       expect(() => assertHttpUrl(host), host).toThrow(/private or loopback/i);
+      // Link-local stays refused with the opt-in (BUG 9afde47e, test above).
+      if (/169\.254|fe80/.test(host)) continue;
       expect(() => assertHttpUrl(host, { allowPrivate: true }), host).not.toThrow();
     }
   });

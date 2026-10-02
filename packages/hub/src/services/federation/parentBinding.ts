@@ -126,6 +126,35 @@ function embeddedIPv4(g: number[]): string | null {
   return null;
 }
 
+/**
+ * Addresses that are never a federation parent, opt-in or not (BUG 9afde47e).
+ * AGENFK_HUB_ALLOW_PRIVATE_PARENT exists for a parent on the LAN; what these
+ * reach instead is the cloud's metadata (credential) service or a link-local
+ * neighbour. Every one is also in the private ranges above, so without the
+ * opt-in they were already refused.
+ */
+const NEVER_PARENT_V4 = new net.BlockList();
+NEVER_PARENT_V4.addSubnet('169.254.0.0', 16, 'ipv4');        // link-local, incl. AWS/GCP/Azure/OCI metadata at .169.254
+NEVER_PARENT_V4.addAddress('100.100.100.200', 'ipv4');       // Alibaba Cloud metadata
+const NEVER_PARENT_V6 = new net.BlockList();
+NEVER_PARENT_V6.addSubnet('fe80::', 10, 'ipv6');              // link-local
+NEVER_PARENT_V6.addAddress('fd00:ec2::254', 'ipv6');         // AWS IMDS over IPv6
+NEVER_PARENT_V6.addAddress('fd20:ce::254', 'ipv6');          // GCP metadata over IPv6
+
+/** Is this IP address (any spelling) one that is never a federation parent? */
+export function isNeverParentAddress(ip: string): boolean {
+  const bare = ip.replace(/^\[|\]$/g, '');
+  if (net.isIPv4(bare)) return NEVER_PARENT_V4.check(bare, 'ipv4');
+  const g = ipv6Groups(bare);
+  if (!g) return false; // isPrivateAddress already refuses it without the opt-in
+  const v4 = embeddedIPv4(g);
+  if (v4 !== null) return NEVER_PARENT_V4.check(v4, 'ipv4');
+  return NEVER_PARENT_V6.check(g.map((x) => x.toString(16)).join(':'), 'ipv6');
+}
+
+export const NEVER_PARENT_MESSAGE =
+  'points at a link-local or cloud-metadata address. No federation parent lives there, so it is refused even with AGENFK_HUB_ALLOW_PRIVATE_PARENT=1.';
+
 /** Is this IP address (v4 or v6, any spelling) in a range that is never a public host? */
 export function isPrivateAddress(ip: string): boolean {
   const bare = ip.replace(/^\[|\]$/g, '');
@@ -158,6 +187,10 @@ export function assertHttpUrl(raw: string, opts: { allowPrivate?: boolean } = {}
     throw new Error(
       'parentUrl points at a private or loopback address. Set AGENFK_HUB_ALLOW_PRIVATE_PARENT=1 if the parent hub really is on this network.',
     );
+  }
+  const literal = u.hostname.replace(/^\[|\]$/g, '');
+  if (net.isIP(literal.replace(/%.*$/, '')) && isNeverParentAddress(literal)) {
+    throw new Error(`parentUrl ${NEVER_PARENT_MESSAGE}`);
   }
   // One definition of the final form, shared with the invite-token decoder
   // so what an admin is shown is what gets dialled.
