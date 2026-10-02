@@ -72,7 +72,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
   /** The on/off switch for one check, by its resolved id. */
   const switchFor = (id: string, label: string) => canSwitch && !NO_SWITCH.has(id) && (
     <button type="button" onClick={() => toggle(id)} aria-label={`${off.has(id) ? 'Switch on' : 'Switch off'}: ${label}`}
-      className="shrink-0 text-xs font-semibold px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700">
+      className="shrink-0 text-small font-semibold px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700">
       {off.has(id) ? 'Switch on' : 'Switch off'}
     </button>
   );
@@ -135,11 +135,11 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
       + (commits === 'required' ? ', and refuses to move on without that commit' : ''));
   }
 
-  const section = 'text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest';
+  const section = 'text-small font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest';
   const chip = 'rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2';
 
   return (
-    <div data-testid="step-contract" className="space-y-4 text-sm text-slate-700 dark:text-slate-200">
+    <div data-testid="step-contract" className="space-y-4 text-body text-slate-700 dark:text-slate-200">
       {/* Role */}
       <div data-testid="contract-role" className="space-y-1">
         <div className={section}>Role</div>
@@ -147,13 +147,13 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
           <span className="mt-1 w-3 h-3 rounded shrink-0" style={{ background: roleText?.color ?? 'transparent', border: roleText ? 'none' : '1px dashed var(--text-tertiary)' }} />
           <div className="flex-1">
             <div className="font-semibold">{roleText?.name ?? 'No role'}</div>
-            <div className="text-xs text-slate-500 dark:text-slate-400">
+            <div className="text-small text-slate-500 dark:text-slate-400">
               {roleText?.desc ?? 'Only the basic checks run (clean tree, right branch). Good for docs-only or custom steps.'}
             </div>
           </div>
           {!disabled && (
             <button type="button" onClick={() => setPickingRole(v => !v)} aria-label="Change role"
-              className="text-xs font-semibold px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700">
+              className="text-small font-semibold px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700">
               Change
             </button>
           )}
@@ -166,15 +166,15 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
                 <button key={r.id} type="button" onClick={() => { onChange({ role: r.id }); setPickingRole(false); }}
                   className={clsx('text-left', chip, role === r.id ? 'border-accent dark:border-accent bg-accent-fill' : 'hover:bg-slate-50 dark:hover:bg-slate-700')}>
                   <span className="font-semibold">{t?.name ?? r.id}</span>
-                  <span className="block text-xs text-slate-500 dark:text-slate-400">{t?.desc}</span>
-                  <span className="block text-xs text-slate-400 mt-1">Brings: {r.builtins.map(b => titleOf(b.id)).join(', ') || 'no checks'}</span>
+                  <span className="block text-small text-slate-500 dark:text-slate-400">{t?.desc}</span>
+                  <span className="block text-small text-slate-400 mt-1">Brings: {r.builtins.map(b => titleOf(b.id)).join(', ') || 'no checks'}</span>
                 </button>
               );
             })}
             <button type="button" onClick={() => { onChange({ role: null }); setPickingRole(false); }}
               className={clsx('text-left border-dashed', chip)}>
               <span className="font-semibold">No role</span>
-              <span className="block text-xs text-slate-500 dark:text-slate-400">Only the basic checks run.</span>
+              <span className="block text-small text-slate-500 dark:text-slate-400">Only the basic checks run.</span>
             </button>
           </div>
         )}
@@ -192,11 +192,11 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
                 {isOff ? <BellOff size={13} className="mt-0.5 shrink-0 text-status-warn-text" aria-hidden /> : !canSwitch && <Lock size={13} className="mt-0.5 shrink-0 text-slate-400" aria-hidden />}
                 <div className="flex-1">
                   <div className={clsx('font-medium', isOff && 'line-through')}>{t.title}</div>
-                  <div className="text-xs text-slate-500 dark:text-slate-400">
+                  <div className="text-small text-slate-500 dark:text-slate-400">
                     {isOff ? offNote : c.applicable ? `Stops: ${t.stops}` : `Nothing to check here: it needs the ${recordWords(c.missing)}, which no earlier step makes.`}
                   </div>
                 </div>
-                {!isOff && <span className="text-xs font-semibold text-slate-500">{c.severity === 'block' ? 'Block' : 'Warn'}</span>}
+                {!isOff && <span className="text-small font-semibold text-slate-500">{c.severity === 'block' ? 'Block' : 'Warn'}</span>}
                 {switchFor(c.id, t.title)}
               </div>
             );
@@ -212,10 +212,10 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
             <div key={id} className={clsx('flex items-start gap-2', chip)}>
               <div className="flex-1">
                 <div className="font-medium">{titleOf(id.split(':')[0])}{id.includes(':') ? ` (${id.split(':').slice(1).join(':')})` : ''}</div>
-                <div className="text-xs text-slate-500 dark:text-slate-400">The step no longer runs this check, so the setting cannot be saved. Remove it.</div>
+                <div className="text-small text-slate-500 dark:text-slate-400">The step no longer runs this check, so the setting cannot be saved. Remove it.</div>
               </div>
               <button type="button" aria-label={`Remove the switched-off setting: ${id}`} onClick={() => onChange({ disabledChecks: offIds.filter(x => x !== id) })}
-                className="shrink-0 text-xs font-semibold px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700">
+                className="shrink-0 text-small font-semibold px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700">
                 Remove
               </button>
             </div>
@@ -235,7 +235,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
                 {isOff && <BellOff size={13} className="mt-0.5 shrink-0 text-status-warn-text" aria-hidden />}
                 <div className="flex-1">
                   <div className={clsx('font-medium', isOff && 'line-through')}>{t.title}</div>
-                  <div className="text-xs text-slate-500 dark:text-slate-400">{isOff ? offNote : `Stops: ${t.stops}`}</div>
+                  <div className="text-small text-slate-500 dark:text-slate-400">{isOff ? offNote : `Stops: ${t.stops}`}</div>
                 </div>
                 {switchFor(c.id, t.title)}
               </div>
@@ -247,7 +247,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
       {/* Added by the flow */}
       <div data-testid="contract-extras" className="space-y-1">
         <div className={section}>Added by this flow</div>
-        {extras.length === 0 && <div className="text-xs text-slate-400">None.</div>}
+        {extras.length === 0 && <div className="text-small text-slate-400">None.</div>}
         {extras.map(ref => {
           const d = catalogue.get(ref.id);
           const t = checkText(ref.id, d?.description);
@@ -267,7 +267,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
                 {isOff && <BellOff size={13} className="mt-0.5 shrink-0 text-status-warn-text" aria-hidden />}
                 <div className="flex-1">
                   <div className={clsx('font-medium', isOff && 'line-through')}>{t.title}</div>
-                  <div className="text-xs text-slate-500 dark:text-slate-400">{isOff ? offNote : `Stops: ${t.stops}`}</div>
+                  <div className="text-small text-slate-500 dark:text-slate-400">{isOff ? offNote : `Stops: ${t.stops}`}</div>
                 </div>
                 {switchFor(keyOf(ref), isCustom(ref.id) ? `${t.title} (${name})` : t.title)}
                 {!disabled && (
@@ -283,13 +283,13 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
                 const set = (v: string | string[]) => replace(keyOf(ref), withParam(ref, k, v));
                 // Controls by what the param holds (efcacdeb): a name, a command as a list, a text.
                 if (p.kind === 'name') return (
-                  <label key={k} className="block text-xs">
+                  <label key={k} className="block text-small">
                     <span className="text-slate-500 dark:text-slate-400">{p.description}</span>
                     <input aria-label={`Name (${name})`} disabled={disabled} value={String(value ?? '')} onChange={e => set(e.target.value)} className={field} />
                   </label>
                 );
                 if (p.kind === 'argv') return (
-                  <label key={k} className="block text-xs">
+                  <label key={k} className="block text-small">
                     <span className="text-slate-500 dark:text-slate-400">{p.description} One argument per line.</span>
                     <textarea aria-label={`Command (${name}), one argument per line`} disabled={disabled} rows={3}
                       value={Array.isArray(value) ? value.join('\n') : ''}
@@ -298,13 +298,13 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
                   </label>
                 );
                 if (p.kind === 'text') return (
-                  <label key={k} className="block text-xs">
+                  <label key={k} className="block text-small">
                     <span className="text-slate-500 dark:text-slate-400">{p.description}</span>
                     <textarea aria-label={`Instruction (${name})`} disabled={disabled} rows={3} value={String(value ?? '')} onChange={e => set(e.target.value)} className={field} />
                   </label>
                 );
                 return (
-                  <label key={k} className="block text-xs">
+                  <label key={k} className="block text-small">
                     <span className="text-slate-500 dark:text-slate-400">{p.description}</span>
                     <select aria-label={p.description} disabled={disabled} value={String(value ?? p.default)} onChange={e => set(e.target.value)} className={field}>
                       {p.values.map(v => <option key={v} value={v}>{v}</option>)}
@@ -312,7 +312,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
                   </label>
                 );
               })}
-              <div className="flex gap-1 text-xs" role="group" aria-label={`If ${t.title} fails`}>
+              <div className="flex gap-1 text-small" role="group" aria-label={`If ${t.title} fails`}>
                 <button type="button" disabled={disabled} aria-pressed={!warn} aria-label={`Block the step: ${t.title}`}
                   onClick={() => setSeverity('block')}
                   className={clsx('px-2 py-1 rounded-md border', !warn ? 'bg-accent-fill text-accent-ink border-accent' : 'border-slate-200 dark:border-slate-600')}>
@@ -329,7 +329,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
         })}
         {!disabled && (
           <button type="button" onClick={() => setBrowsing(v => !v)}
-            className="flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-md border border-dashed border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700">
+            className="flex items-center gap-1 text-small font-semibold px-2 py-1 rounded-md border border-dashed border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700">
             <Plus size={13} /> Add a check
           </button>
         )}
@@ -339,25 +339,25 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
               <label className="flex items-center gap-1 flex-1 min-w-[12rem] rounded-md border border-slate-200 dark:border-slate-600 px-2">
                 <Search size={13} className="text-slate-400" aria-hidden />
                 <input aria-label="Search checks" value={query} onChange={e => setQuery(e.target.value)}
-                  placeholder='e.g. "deleted test" or "JIRA"' className="flex-1 bg-transparent py-1 text-xs outline-none" />
+                  placeholder='e.g. "deleted test" or "JIRA"' className="flex-1 bg-transparent py-1 text-small outline-none" />
               </label>
               <select aria-label="Group" value={group} onChange={e => setGroup(e.target.value)}
-                className="text-xs rounded-md border border-slate-200 dark:border-slate-600 bg-canvas px-2 py-1">
+                className="text-small rounded-md border border-slate-200 dark:border-slate-600 bg-canvas px-2 py-1">
                 <option value="all">All</option>
                 {Object.entries(GROUP_TEXTS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
               </select>
             </div>
-            {gallery.length === 0 && <div className="text-xs text-slate-400">No check matches.</div>}
+            {gallery.length === 0 && <div className="text-small text-slate-400">No check matches.</div>}
             {gallery.map(c => {
               const t = checkText(c.id, c.description);
               return (
                 <div key={c.id} className={clsx('flex items-start gap-2', chip)}>
                   <div className="flex-1">
-                    <div className="font-medium">{t.title} <span className="text-xs font-normal text-slate-400">· {GROUP_TEXTS[c.group] ?? c.group}</span></div>
-                    <div className="text-xs text-slate-500 dark:text-slate-400">Stops: {t.stops}</div>
+                    <div className="font-medium">{t.title} <span className="text-small font-normal text-slate-400">· {GROUP_TEXTS[c.group] ?? c.group}</span></div>
+                    <div className="text-small text-slate-500 dark:text-slate-400">Stops: {t.stops}</div>
                   </div>
                   <button type="button" aria-label={`Add ${t.title}`} onClick={() => { setChecks([...added, c.group === 'custom' ? draft(c.id) : { id: c.id }]); setBrowsing(false); setQuery(''); }}
-                    className="text-xs font-semibold px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700">
+                    className="text-small font-semibold px-2 py-1 rounded-md border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700">
                     Add
                   </button>
                 </div>
@@ -375,12 +375,12 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
             className="mt-1" />
           <span>
             <span className="flex items-center gap-1 font-medium"><UserCheck size={14} aria-hidden /> A person must approve before a card leaves this step</span>
-            <span className="block text-xs text-slate-500 dark:text-slate-400">They approve on the board. Agents can't.</span>
+            <span className="block text-small text-slate-500 dark:text-slate-400">They approve on the board. Agents can't.</span>
           </span>
         </label>
         {approval && (
           <div className="pl-6 space-y-2">
-            <label className="block text-xs">
+            <label className="block text-small">
               <span className="text-slate-500 dark:text-slate-400">Who needs a go-ahead</span>
               <select aria-label="Who needs a go-ahead" disabled={disabled} value={approval.params?.appliesTo ?? 'parent'}
                 onChange={e => replace('human-approval', withParam(approval, 'appliesTo', e.target.value))}
@@ -389,7 +389,7 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
                 <option value="every-card">Every card, each on its own</option>
               </select>
             </label>
-            <label className="flex items-start gap-2 text-xs">
+            <label className="flex items-start gap-2 text-small">
               <input type="checkbox" disabled={disabled} checked={approval.params?.signature === 'passkey'}
                 onChange={e => replace('human-approval', withParam(approval, 'signature', e.target.checked ? 'passkey' : 'none'))}
                 className="mt-0.5" />
@@ -410,11 +410,11 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
             className="mt-1" />
           <span>
             <span className="font-medium">Commit the card's work when it leaves this step</span>
-            <span className="block text-xs text-slate-500 dark:text-slate-400">Only what the agent staged, and only the card's own files. One commit per step makes each step's work reviewable on its own.</span>
+            <span className="block text-small text-slate-500 dark:text-slate-400">Only what the agent staged, and only the card's own files. One commit per step makes each step's work reviewable on its own.</span>
           </span>
         </label>
         {step.autoCommit && (
-          <label className="flex items-start gap-2 pl-6 text-xs">
+          <label className="flex items-start gap-2 pl-6 text-small">
             <input type="checkbox" checked={!!step.requireCommit} disabled={disabled}
               onChange={e => onChange({ requireCommit: e.target.checked ? true : null })}
               className="mt-0.5" />
@@ -429,14 +429,14 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
       {/* What an agent must do */}
       <div data-testid="contract-preview" className="space-y-1 rounded-lg bg-slate-50 dark:bg-slate-900 px-3 py-2">
         <div className={section}>What an agent must do to leave this step</div>
-        {terminal && <div className="text-xs text-slate-500 dark:text-slate-400">Cards never leave this step: its checks are checked when a card moves into this step, and listed on the step before it.</div>}
-        {!terminal && musts.length === 0 && warns.length === 0 && <div className="text-xs text-slate-400">Nothing is checked here.</div>}
-        <ul className="list-disc pl-5 text-xs space-y-0.5">
+        {terminal && <div className="text-small text-slate-500 dark:text-slate-400">Cards never leave this step: its checks are checked when a card moves into this step, and listed on the step before it.</div>}
+        {!terminal && musts.length === 0 && warns.length === 0 && <div className="text-small text-slate-400">Nothing is checked here.</div>}
+        <ul className="list-disc pl-5 text-small space-y-0.5">
           {musts.map((m, i) => <li key={`m${i}`}>{m}</li>)}
           {warns.map((w, i) => <li key={`w${i}`} className="text-slate-500">Warning only: {w}</li>)}
         </ul>
         {notRun.length > 0 && (
-          <div className="text-xs text-status-warn-text">Not run, switched off by your org's hub: {notRun.join(', ')}</div>
+          <div className="text-small text-status-warn-text">Not run, switched off by your org's hub: {notRun.join(', ')}</div>
         )}
       </div>
     </div>

@@ -7,6 +7,8 @@
 /* CG/lab shared design tokens — single source of truth, also consumed by
  * packages/ui/src/index.css. Edit values only in packages/brand/tokens.css. */
 @import "../../brand/tokens.css";
+/* The shared type scale (caption … display, eyebrow, max-w-form/data). */
+@import "../../brand/type-scale.css";
 
 /* @import statements must precede all other statements (besides @charset or
  * an empty @layer) per the CSS spec — @plugin/@source below silently broke
@@ -29,34 +31,6 @@
  * packages/ui/src/index.css (asserted by darkVariantWiring.test.ts) and must
  * sit after all @import statements, per the CSS spec. */
 @variant dark (&:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));
-
-/* The hub's type scale and content widths (story 7073be87): five sizes and
- * two widths, so pages stop drifting between eight arbitrary px sizes and a
- * different max-width per admin tab. Guarded on every rendered page by
- * test/helpers/typeScale.ts. */
-@theme {
-  --text-caption: 11px;
-  --text-caption--line-height: 1.45;
-  --text-small: 12px;
-  --text-small--line-height: 1.3333; /* 16px, as text-xs was */
-  --text-body: 14px;
-  --text-body--line-height: 1.4286; /* 20px, as text-sm was */
-  --text-title: 18px;
-  --text-title--line-height: 1.35;
-  --text-display: 24px;
-  --text-display--line-height: 1.25;
-  --container-form: 42rem;
-  --container-data: 1200px;
-}
-
-/* The one style for small uppercase labels. No colour: callers keep theirs. */
-@utility eyebrow {
-  font-size: var(--text-caption);
-  line-height: var(--text-caption--line-height);
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
-  font-weight: 600;
-}
 
 /* color-scheme is set imperatively on <html> by ThemeProvider so native
  * controls follow the user's explicit choice rather than the OS. */
