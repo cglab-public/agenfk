@@ -1476,3 +1476,57 @@ describe('card dates on the card face', () => {
   }
 });
 
+
+// BUG ec325925 (task 2b943048): bugs are split into tasks too, and the board
+// hid them - the child-count drill-down and the progress bar were EPIC/STORY
+// only. Any card with children gets both; the server lets any card be a parent.
+describe('a card of any type with children', () => {
+  const at = { createdAt: new Date('2026-01-01'), updatedAt: new Date('2026-01-01'), history: [] };
+  const bug = { id: 'b1', projectId: 'p1', type: ItemType.BUG, title: 'The Bug', status: Status.IN_PROGRESS, ...at };
+  const fix = { id: 't1', projectId: 'p1', type: ItemType.TASK, title: 'Fix it', status: Status.DONE, parentId: 'b1', ...at };
+  const test = { id: 't2', projectId: 'p1', type: ItemType.TASK, title: 'Test it', status: Status.TODO, parentId: 'b1', ...at };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    queryClient.clear();
+    vi.mocked(api.getProjectFlow).mockResolvedValue(DEFAULT_FLOW_MOCK as any);
+    vi.mocked(api.listProjects).mockResolvedValue([{ id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() }] as any);
+    localStorage.setItem('agenfk_project_id', 'p1');
+  });
+  afterEach(() => cleanup());
+
+  const cardOf = async (title: string) => (await screen.findByText(title)).closest('[draggable="true"]') as HTMLElement;
+
+  it('a bug with tasks offers the drill-down, and drilling in shows its tasks', async () => {
+    vi.mocked(api.listItems).mockResolvedValue([bug, fix, test] as any);
+    render(<KanbanBoard />, { wrapper });
+    fireEvent.click(within(await cardOf('The Bug')).getByRole('button', { name: /Show 2 child items/i }));
+    expect(await screen.findByText('Fix it')).toBeDefined();
+    expect(screen.getByText('Test it')).toBeDefined();
+  });
+
+  it('a bug with tasks shows how far along they are', async () => {
+    vi.mocked(api.listItems).mockResolvedValue([bug, fix, test] as any);
+    render(<KanbanBoard />, { wrapper });
+    const card = await cardOf('The Bug');
+    expect(within(card).getByText('Progress')).toBeDefined();
+    expect(within(card).getByText('50%')).toBeDefined();
+  });
+
+  it('a task with children offers the drill-down too', async () => {
+    const parent = { ...fix, id: 't9', title: 'Parent Task', parentId: undefined, status: Status.TODO };
+    const child = { ...test, id: 't10', title: 'Sub Task', parentId: 't9' };
+    vi.mocked(api.listItems).mockResolvedValue([parent, child] as any);
+    render(<KanbanBoard />, { wrapper });
+    expect(within(await cardOf('Parent Task')).getByRole('button', { name: /Show 1 child items/i })).toBeDefined();
+  });
+
+  it('a bug with no tasks shows neither', async () => {
+    vi.mocked(api.listItems).mockResolvedValue([bug] as any);
+    render(<KanbanBoard />, { wrapper });
+    const card = await cardOf('The Bug');
+    expect(within(card).queryByRole('button', { name: /child items/i })).toBeNull();
+    expect(within(card).queryByText('Progress')).toBeNull();
+  });
+});

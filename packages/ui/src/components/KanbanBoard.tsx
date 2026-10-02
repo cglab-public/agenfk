@@ -291,7 +291,8 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
           <span className={clsx("text-[9px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider flex items-center gap-1", itemTypeClass(item.type))}>
             {item.type}
           </span>
-          {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && items?.some((i: AgEnFKItem) => i.parentId === item.id) && (
+          {/* Any card with children (ec325925): bugs are split into tasks too, and the server lets any card be a parent. */}
+          {items?.some((i: AgEnFKItem) => i.parentId === item.id) && (
             <button onClick={(e) => { e.stopPropagation(); onDrillDown(item); }} className="bg-accent-fill hover:bg-accent-fill/70 text-accent-ink px-1.5 py-0.5 rounded text-[9px] font-bold flex items-center gap-1 transition-colors" aria-label={`Show ${items?.filter((i: AgEnFKItem) => i.parentId === item.id).length} child items`}>
               <Search size={9} /> {items?.filter((i: AgEnFKItem) => i.parentId === item.id).length}
             </button>
@@ -383,7 +384,7 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
       )}
       {item.description && <p className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2 mb-2">{item.description}</p>}
       
-      {(item.type === ItemType.EPIC || item.type === ItemType.STORY) && (
+      {items?.some((i: AgEnFKItem) => i.parentId === item.id) && (
         <div className="mb-2">
           {(() => {
             const subitems = items?.filter((i: AgEnFKItem) => i.parentId === item.id) || [];
