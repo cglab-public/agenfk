@@ -20,6 +20,8 @@
  * fails rather than silently drifting.
  */
 
+import { platform } from './platform.js';
+
 export interface AgentCommand {
   /** Executable name. Resolved against PATH by the caller, never a path from the renderer. */
   readonly file: string;
@@ -195,15 +197,12 @@ export const HERDR_AGENT_ID = 'herdr';
 export const SHELL_AGENT_ID = 'shell';
 
 /**
- * The command that opens the user's own shell.
- *
- * `$SHELL` is what the person's terminal already is; no per-platform table of
- * guesses. `/bin/sh` is the fallback for the environments that do not export
- * it (a GUI launch on some setups), which is a shell on every Unix we ship to.
- * No arguments: an interactive login shell is what a terminal window is.
+ * The command that opens the user's own shell - the platform profile's answer
+ * (./platform.ts), which on Windows is PowerShell and on a Unix is `$SHELL`.
  */
 export function resolveShellCommand(): { file: string; args: string[] } {
-  return { file: process.env.SHELL || '/bin/sh', args: [] };
+  const { file, args } = platform.shell(process.env);
+  return { file, args: [...args] };
 }
 
 const AGENTS: ReadonlyArray<AgentEntry> = [
@@ -338,7 +337,7 @@ const AGENTS: ReadonlyArray<AgentEntry> = [
   // nobody has run. It resolves to "cannot resume" until someone checks.
   { id: 'gemini', label: 'Gemini CLI', command: { file: 'gemini', args: [] } },
   // A login shell has no conversation to resume. Out by nature.
-  { id: 'shell', label: 'Shell', command: { file: process.platform === 'win32' ? 'powershell.exe' : 'bash', args: ['-l'] } },
+  { id: 'shell', label: 'Shell', command: platform.shellAgent },
 ];
 
 export const AGENT_IDS: readonly string[] = AGENTS.map(a => a.id);
