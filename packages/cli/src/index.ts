@@ -246,7 +246,18 @@ function isDevCheckout(root: string): boolean {
 
 async function resolveReleaseTag(repo: string, opts: { version?: string; beta?: boolean }): Promise<string> {
   if (opts.version) return fetchReleaseTagByVersion(repo, opts.version);
-  return fetchLatestReleaseTag(repo, !!opts.beta);
+  if (!opts.beta) return fetchLatestReleaseTag(repo, false);
+  // --beta INCLUDES pre-releases, it does not exclude stable: on 2.0.0-beta.23
+  // once 2.0.0 ships, the newest beta is older than the stable that graduates
+  // it, and the update notice already points there (3a261573 review).
+  let beta: string | null = null;
+  let stable: string | null = null;
+  let betaError: unknown = null;
+  try { beta = await fetchLatestReleaseTag(repo, true); } catch (e) { betaError = e; }
+  try { stable = await fetchLatestReleaseTag(repo, false); } catch { /* the beta alone decides */ }
+  if (beta && stable) return compareSemver(stable, beta) > 0 ? stable : beta;
+  if (beta ?? stable) return (beta ?? stable)!;
+  throw betaError;
 }
 
 /**
@@ -276,7 +287,10 @@ function newestChannelRelease(refs: ReleaseRef[], beta: boolean): string | null 
   // 2.0.0-beta.13 would otherwise be "the latest beta" - and `upgrade --beta`
   // would downgrade to it. An unparseable tag sorts below any parseable one.
   const match = refs
-    .filter((r) => r.tag && !isHubRelease(r.tag) && r.prerelease === beta)
+    // A beta published without --prerelease still names itself one: stable
+    // never takes a tag with a prerelease part (3a261573 review).
+    .filter((r) => r.tag && !isHubRelease(r.tag) && r.prerelease === beta
+      && (beta || !(parseSemver(r.tag)?.pre.length)))
     .sort((a, b) => {
       const pa = parseSemver(a.tag), pb = parseSemver(b.tag);
       if (pa && pb) {
@@ -310,7 +324,9 @@ const GH_KEYS = { tag: 'tagName', date: 'createdAt', pre: 'isPrerelease' };
 const GH_API_HEADERS = { 'Accept': 'application/vnd.github+json', 'User-Agent': 'agenfk-cli' };
 
 export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promise<string> {
-  const listUrl = `https://api.github.com/repos/${repo}/releases?per_page=20`;
+  // 100, GitHub's page maximum: a long beta run (23 betas since the last
+  // stable, at 2.0.0-beta.23) would push every stable out of a page of 20.
+  const listUrl = `https://api.github.com/repos/${repo}/releases?per_page=100`;
   // Try GitHub REST API first — no auth required for public repos
   try {
     if (beta) {
@@ -322,13 +338,19 @@ export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promis
         headers: GH_API_HEADERS,
         timeout: 10000,
       });
-      const tag = resp.data?.tag_name;
-      if (tag && !isHubRelease(tag)) return tag;
-      // The single-object endpoint cannot be trusted on its own: a hub release
+      // The single-object endpoint cannot be trusted on its own. A hub release
       // published without --prerelease IS "the latest stable" as far as it is
-      // concerned (observed in production). Re-query the list and pick from it.
-      const listResp = await axios.get(listUrl, { headers: GH_API_HEADERS, timeout: 10000 });
-      const stable = newestChannelRelease(toReleaseRefs(listResp.data, REST_KEYS), false);
+      // concerned (observed in production), and it picks by DATE: a 1.1.21
+      // hotfix published after 2.0.0 is "latest" (BUG 3a261573). So it is one
+      // candidate among the list's stables, and the newest by version wins.
+      const latest = typeof resp.data?.tag_name === 'string'
+        ? [{ tag: resp.data.tag_name as string, publishedAt: 0, prerelease: false }] : [];
+      // A failed list (rate limit, timeout) must not throw away a good latest.
+      let listed: ReleaseRef[] = [];
+      try {
+        listed = toReleaseRefs((await axios.get(listUrl, { headers: GH_API_HEADERS, timeout: 10000 })).data, REST_KEYS);
+      } catch { /* latest alone decides */ }
+      const stable = newestChannelRelease([...latest, ...listed], false);
       if (stable) return stable;
     }
   } catch {
@@ -346,7 +368,7 @@ export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promis
     // config file a shell.
     const out = execFileSync(
       'gh',
-      ['release', 'list', '--repo', repo, '--limit', '30', '--json', 'tagName,isPrerelease,createdAt'],
+      ['release', 'list', '--repo', repo, '--limit', '100', '--json', 'tagName,isPrerelease,createdAt'],
       // A bounded wait: this also runs from bare `agenfk`, which must not hang on a stalled gh.
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000 },
     ).trim();
@@ -356,7 +378,7 @@ export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promis
   if (beta) {
     const tag = newestChannelRelease(ghReleases(), true);
     if (tag) return tag;
-    throw new Error(`No pre-release found for ${repo} (checked the 30 most recent releases).`);
+    throw new Error(`No pre-release found for ${repo} (checked the 100 most recent releases).`);
   }
 
   const viewTag = execFileSync(
@@ -364,10 +386,13 @@ export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promis
     ['release', 'view', '--repo', repo, '--json', 'tagName', '--template', '{{.tagName}}'],
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000 },
   ).trim();
-  if (viewTag && !isHubRelease(viewTag)) return viewTag;
-  // Same recovery as the REST path — `gh release view` reports the newest
-  // release, hub or not.
-  const stable = newestChannelRelease(ghReleases(), false);
+  // Same rule as the REST path: `gh release view` reports the newest release by
+  // date, hub or not, so it is one candidate and the newest stable by version
+  // wins (BUG 3a261573).
+  const viewed = viewTag ? [{ tag: viewTag, publishedAt: 0, prerelease: false }] : [];
+  let listed: ReleaseRef[] = [];
+  try { listed = ghReleases(); } catch { /* the viewed tag alone decides */ }
+  const stable = newestChannelRelease([...viewed, ...listed], false);
   // Deliberately NOT `return viewTag` as a last resort: handing back the hub tag
   // would reintroduce exactly the bug this function exists to prevent, and the
   // caller would try to install a Docker image as the framework.
@@ -700,7 +725,7 @@ program
 program
   .command('upgrade')
   .description('Check for updates and upgrade to the latest version if available')
-  .option('-f, --force', 'Force upgrade even if versions match')
+  .option('-f, --force', 'Reinstall even if already on the target version (never downgrades: use --version)')
   .option('-b, --beta', 'Include beta/pre-release versions')
   .option('--version <ver>', 'Pin to a specific release version instead of latest (e.g. 0.3.0-beta.22)')
   .option('--json', 'Emit a single JSON line {status, fromVersion, toVersion, error?} on stdout (status: noop|upgraded|failed)')
@@ -763,6 +788,21 @@ program
       if (targetVersion === CURRENT_VERSION && !options.force) {
         emitResult({ status: 'noop', fromVersion: CURRENT_VERSION, toVersion: targetVersion });
         log(chalk.green(`AgEnFK is already on ${CURRENT_VERSION} (use --force to reinstall)`));
+        return;
+      }
+
+      // Never a silent downgrade (BUG 3a261573): on a beta, the stable channel's
+      // answer is older, and plain `upgrade` used to install it. Only --version,
+      // which names the release on purpose, goes backwards.
+      // --force stays "reinstall the same version": the shipped /agenfk-upgrade
+      // command passed it on every run, so letting it also mean "downgrade"
+      // brought the bug straight back (3a261573 review).
+      if (!options.version && targetVersion !== CURRENT_VERSION && !isUpgrade(targetVersion, CURRENT_VERSION)) {
+        emitResult({ status: 'noop', fromVersion: CURRENT_VERSION, toVersion: targetVersion });
+        log(chalk.yellow(`AgEnFK ${CURRENT_VERSION} is newer than the latest ${options.beta ? '' : 'stable '}release (${targetVersion}); not downgrading.`));
+        const onBeta = (parseSemver(CURRENT_VERSION)?.pre.length ?? 0) > 0;
+        if (!options.beta && onBeta) log(chalk.gray('  This install is on the beta line: agenfk upgrade --beta'));
+        log(chalk.gray(`  To install ${targetVersion} anyway: agenfk upgrade --version ${targetVersion}`));
         return;
       }
 
