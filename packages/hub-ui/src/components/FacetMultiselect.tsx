@@ -55,9 +55,10 @@ export function FacetMultiselect({
     function onKey(e: KeyboardEvent) {
       if (e.key !== 'Escape') return;
       setOpen(false);
-      // Escape is a keyboard user leaving the panel: put them back where they
-      // opened it. An outside click already moved focus where it wanted.
-      triggerRef.current?.focus();
+      // Escape from inside the panel puts the keyboard user back where they
+      // opened it. Focus that has already left (an outside click, or Tab into
+      // another control with its own Escape) stays where it went.
+      if (rootRef.current?.contains(document.activeElement)) triggerRef.current?.focus();
     }
     document.addEventListener('mousedown', onDoc);
     document.addEventListener('keydown', onKey);
@@ -197,7 +198,9 @@ export function FacetMultiselect({
                   <label
                     key={v}
                     title={v}
-                    className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-[12px] font-mono transition-colors cursor-pointer has-[:disabled]:cursor-not-allowed has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:-outline-offset-2 has-[:focus-visible]:outline-accent ${on
+                    // relative: the sr-only checkbox is absolutely positioned, and
+                    // must scroll with the list or a focused option stays hidden.
+                    className={`relative w-full flex items-center gap-2 px-3 py-1.5 text-left text-[12px] font-mono transition-colors cursor-pointer has-[:disabled]:cursor-not-allowed has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:-outline-offset-2 has-[:focus-visible]:outline-accent ${on
                       ? 'bg-accent-fill text-accent-ink'
                       : 'text-ink hover:bg-accent-fill/50'}`}
                   >

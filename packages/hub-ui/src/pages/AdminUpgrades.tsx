@@ -11,6 +11,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
 import { api } from '../api';
 import { LocalTime, useConfirm } from '../components/ui';
+import { issuedAt } from '../dates';
 import { groupUpgradeBody, groupUpgradeRow, groupUpgradesLive, type GroupUpgradeRequest } from './groupUpgradeState';
 import { ChildHubPicker, toggledSet } from './childHubPicker';
 import { NO_CHILD_HUBS_REASON, dispatchRefusalMessage, liveChildHubs, type ChildHubRow, type DispatchScopeMode } from './flowDispatch';
@@ -68,6 +69,7 @@ interface GroupDispatch {
   id: string;
   targetVersion: string;
   scope: string;
+  createdAt?: string | null;
   cancelledAt: string | null;
   targets: GroupTarget[];
 }
@@ -443,7 +445,7 @@ export function AdminUpgrades() {
                       onClick={(e) => { e.stopPropagation(); onCancel(d); }}
                       disabled={cancelMut.isPending}
                       // Two upgrades to one version differ only by when they were issued.
-                      aria-label={`${d.progress.pending > 0 ? 'Cancel waiting' : 'Clear stuck'} upgrade to v${d.targetVersion} (${new Date(d.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })})`}
+                      aria-label={`${d.progress.pending > 0 ? 'Cancel waiting' : 'Clear stuck'} upgrade to v${d.targetVersion}${issuedAt(d.createdAt)}`}
                       className="ml-1 px-1.5 py-0.5 rounded border border-status-danger-text/40 text-status-danger-text hover:bg-status-danger-bg disabled:opacity-50"
                       title={d.progress.pending > 0
                         ? "Cancel this upgrade where it hasn't started; offers to clear stuck running ones too"
@@ -649,7 +651,7 @@ export function GroupUpgrades() {
                   disabled={cancelMut.isPending && cancelMut.variables === d.id}
                   className="text-[11px] text-status-danger-text hover:underline"
                   data-testid={`group-dispatch-cancel-${d.id}`}
-                  aria-label={`Cancel group upgrade to v${d.targetVersion}`}
+                  aria-label={`Cancel group upgrade to v${d.targetVersion}${issuedAt(d.createdAt)}`}
                 >
                   Cancel
                 </button>

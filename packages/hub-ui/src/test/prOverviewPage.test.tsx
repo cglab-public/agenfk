@@ -115,7 +115,7 @@ describe('PrOverviewPage model multi-select', () => {
 
     // The Model facet is present (label) and reports two selected values.
     await screen.findByRole('heading', { name: 'Model' });
-    await screen.findByRole('button', { name: 'Clear Model filter (2)' });
+    await screen.findByRole('button', { name: 'Clear (2) Model filter' });
 
     // The URL write-back must preserve the CSV (join separator), not collapse it.
     // (URLSearchParams percent-encodes the comma in the written-back URL, so
@@ -134,17 +134,17 @@ describe('PrOverviewPage model multi-select', () => {
   it('still honours a legacy single-value ?model= link as one selection', async () => {
     renderPage('/prs?model=glm-5.2');
     await screen.findByRole('heading', { name: 'Model' });
-    await screen.findByRole('button', { name: 'Clear Model filter (1)' });
+    await screen.findByRole('button', { name: 'Clear (1) Model filter' });
     expect(qs(overviewUrls()[0]).get('model')).toBe('glm-5.2');
   });
 
   it('toggling a selected model off updates the URL and refetches with the reduced filter', async () => {
     renderPage('/prs?model=claude-opus-4-8,glm-5.2');
-    await screen.findByRole('button', { name: 'Clear Model filter (2)' });
+    await screen.findByRole('button', { name: 'Clear (2) Model filter' });
 
     fireEvent.click(screen.getByRole('button', { name: 'glm-5.2' }));
 
-    await screen.findByRole('button', { name: 'Clear Model filter (1)' });
+    await screen.findByRole('button', { name: 'Clear (1) Model filter' });
     await waitFor(() => expect(urlNow()).toBe('model=claude-opus-4-8'));
     // The refetched data query carries only the remaining model.
     expect(

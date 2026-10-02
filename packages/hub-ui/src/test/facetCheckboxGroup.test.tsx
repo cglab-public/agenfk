@@ -94,6 +94,32 @@ describe('the open popover', () => {
     await waitFor(() => expect(document.activeElement).toBe(trigger()));
   });
 
+  it('does not pull focus back on Escape once focus has left the panel', () => {
+    // Another control that handles Escape (a dialog, another facet) must keep
+    // its focus: this panel only returns focus it held.
+    facet();
+    fireEvent.click(trigger());
+    const elsewhere = document.createElement('button');
+    document.body.appendChild(elsewhere);
+    elsewhere.focus();
+
+    fireEvent.keyDown(elsewhere, { key: 'Escape' });
+
+    expect(document.activeElement).toBe(elsewhere);
+    elsewhere.remove();
+  });
+
+  it('positions each option so a focused one scrolls into view', () => {
+    // The checkbox is sr-only (position:absolute). Without a positioned label
+    // its containing block is the panel, not the scrolling list, so tabbing
+    // to an option below the fold left the list unscrolled. Measured in Chrome;
+    // jsdom has no layout, so the class that fixes it is pinned.
+    facet();
+    fireEvent.click(trigger());
+    const box = screen.getByRole('checkbox', { name: 'acme/web' });
+    expect(box.closest('label')!.className.split(/\s+/)).toContain('relative');
+  });
+
   it('leaves focus alone when an outside click closes it', () => {
     facet();
     fireEvent.click(trigger());

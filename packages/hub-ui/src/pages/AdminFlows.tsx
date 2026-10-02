@@ -18,6 +18,7 @@ import { ChildHubPicker, toggledSet } from './childHubPicker';
 import { FlowEditorModal, type FlowClient, type RegistryClient, type Flow } from '@agenfk/flow-editor';
 import { api } from '../api';
 import { QueryError, InlineError, useConfirm } from '../components/ui';
+import { issuedAt } from '../dates';
 import { RegistryPullsPanel } from './RegistryPullsPanel';
 import { flattenAdminFlow } from './adminFlowShape';
 import { repoOverrideOptions } from './repoOverrideOptions';
@@ -831,7 +832,7 @@ function FlowDispatches({
                   disabled={cancel.isPending && cancel.variables === d.id}
                   className="text-[11px] text-status-danger-text hover:underline"
                   data-testid={`flow-dispatch-cancel-${d.id}`}
-                  aria-label={`Cancel dispatch of ${nameOf(d.flowId)} v${d.flowVersion}`}
+                  aria-label={`Cancel dispatch of ${nameOf(d.flowId)} v${d.flowVersion}${issuedAt(d.createdAt)}`}
                 >
                   Cancel
                 </button>

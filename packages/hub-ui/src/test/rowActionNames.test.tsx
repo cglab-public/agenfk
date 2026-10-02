@@ -145,14 +145,17 @@ describe('Upgrades', () => {
     expect(new Set(removes).size).toBe(2);
   });
 
-  it('each group upgrade\'s Cancel names its version', async () => {
+  it('each group upgrade\'s Cancel names its version and when it was issued', async () => {
+    // Same version twice (to different child hubs): only the time tells them apart.
     get.mockImplementation(async () => ({ data: { dispatches: [
-      { id: 'd-1', targetVersion: '1.2.3', scope: 'all', cancelledAt: null, targets: [] },
-      { id: 'd-2', targetVersion: '1.3.0', scope: 'all', cancelledAt: null, targets: [] },
+      { id: 'd-1', targetVersion: '1.2.3', scope: 'all', createdAt: '2026-09-29T10:00:00.000Z', cancelledAt: null, targets: [] },
+      { id: 'd-2', targetVersion: '1.2.3', scope: 'selected', createdAt: '2026-09-30T15:00:00.000Z', cancelledAt: null, targets: [] },
     ] } }));
     mount(<GroupUpgrades />);
-    expect(await screen.findByRole('button', { name: 'Cancel group upgrade to v1.2.3' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Cancel group upgrade to v1.3.0' })).toBeInTheDocument();
+    await screen.findAllByRole('button', { name: /^Cancel group upgrade to v1\.2\.3 \(.+\)$/ });
+    const cancels = names(/^Cancel group upgrade to v1\.2\.3 \(.+\)$/);
+    expect(cancels).toHaveLength(2);
+    expect(new Set(cancels).size).toBe(2);
   });
 });
 
@@ -177,17 +180,21 @@ describe('Flows', () => {
   });
   const expand = async () => fireEvent.click(await screen.findByTestId('admin-flow-row-f-local'));
 
-  it('each dispatch\'s Cancel names the flow and version', async () => {
+  it('each dispatch\'s Cancel names the flow, version and when it was sent', async () => {
     table = flowRoutes({
       '/v1/admin/child-hubs': { isParent: true, childHubs: [] },
       '/v1/admin/flow-dispatches': { dispatches: [
         { id: 'd-1', flowId: 'f-local', flowVersion: 4, scope: 'all', createdByEmail: null, createdAt: '2026-09-22T10:00:00.000Z', cancelledAt: null, targets: [] },
         { id: 'd-2', flowId: 'f-two', flowVersion: 2, scope: 'all', createdByEmail: null, createdAt: '2026-09-23T10:00:00.000Z', cancelledAt: null, targets: [] },
+        { id: 'd-3', flowId: 'f-local', flowVersion: 4, scope: 'selected', createdByEmail: null, createdAt: '2026-09-25T16:00:00.000Z', cancelledAt: null, targets: [] },
       ] },
     });
     mount(<AdminFlows />);
-    expect(await screen.findByRole('button', { name: 'Cancel dispatch of Group TDD v4' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Cancel dispatch of Lean v2' })).toBeInTheDocument();
+    await screen.findAllByRole('button', { name: /^Cancel dispatch of Group TDD v4 \(.+\)$/ });
+    const groupTdd = names(/^Cancel dispatch of Group TDD v4 \(.+\)$/);
+    expect(groupTdd).toHaveLength(2);
+    expect(new Set(groupTdd).size).toBe(2);
+    expect(names(/^Cancel dispatch of Lean v2 \(.+\)$/)).toHaveLength(1);
   });
 
   it('each override\'s remove names what it overrides, and each Add says what it adds', async () => {
@@ -243,8 +250,8 @@ describe('filter Clear buttons', () => {
         <ChipRow label="Model" options={['m']} selected={new Set(['m'])} onToggle={() => {}} onClear={() => {}} />
       </>,
     );
-    expect(screen.getByRole('button', { name: 'Clear Project filter (1)' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Clear Model filter (1)' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Clear (1) Project filter' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Clear (1) Model filter' })).toBeInTheDocument();
   });
 
   it.each([
@@ -257,7 +264,7 @@ describe('filter Clear buttons', () => {
         <FacetMultiselect label="Child hub" options={options} selected={new Set(['a'])} onToggle={() => {}} onClear={() => {}} inlineThreshold={6} />
       </>,
     );
-    expect(screen.getByRole('button', { name: 'Clear Developer filter (2)' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Clear Child hub filter (1)' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Clear (2) Developer filter' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Clear (1) Child hub filter' })).toBeInTheDocument();
   });
 });
