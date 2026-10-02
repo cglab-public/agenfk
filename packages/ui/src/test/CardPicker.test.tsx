@@ -236,3 +236,217 @@ describe('the picker with only a handful', () => {
     expect(screen.queryByRole('searchbox')).toBeNull();
   });
 });
+
+/**
+ * The empty state gets a way out (CGLAB-164).
+ *
+ * Both empty branches are a sentence and nothing else. "No work in flight.
+ * Start a card on the board, then open a terminal on it" tells someone to
+ * leave this dialog, find the board, find the project, hover it and press a
+ * `+` they have to already know about — which is the exact question that
+ * opened this card: "I'm starting a task from nothing, where do I write it?"
+ *
+ * Two doors, because there are two people here: the one who knows what the
+ * card says and the one holding an objective they have not decomposed yet.
+ * Only the first door is built. The second is drawn, disabled, and says why —
+ * the decomposer does not exist (`analyze_request` echoes the request and
+ * prints four static rules), and it belongs to another card.
+ */
+/*
+ * The door kept its job and changed its word. It was "Create a card" beside
+ * "Ask AgEnFK"; there is one door now, called New task, because describing the
+ * objective already covers the single-card case — the contract tells the agent
+ * to propose one item when the objective is one unit of work.
+ */
+describe('the way out of an empty picker', () => {
+  it('offers to create a card when nothing is in flight', () => {
+    const onCreateCard = vi.fn();
+    render(<CardPicker items={[]} onPick={vi.fn()} onClose={vi.fn()} onCreateCard={onCreateCard} />);
+    fireEvent.click(screen.getByRole('button', { name: /new task/i }));
+    expect(onCreateCard).toHaveBeenCalled();
+  });
+
+  it('hands the words already typed to the card being created', () => {
+    /*
+     * Someone types "fix the picker dismiss", nothing matches, and they press
+     * Create a card — the phrase they just wrote is the title of the card they
+     * want. Dropping it and opening an empty Title makes them type it twice,
+     * in a dialog whose entire reason for existing is that writing cards is
+     * too much friction.
+     */
+    const onCreateCard = vi.fn();
+    const MANY = Array.from({ length: 8 }, (_, i) => card(`i${i}`, `Card number ${i}`));
+    render(<CardPicker items={MANY} onPick={vi.fn()} onClose={vi.fn()} onCreateCard={onCreateCard} />);
+    fireEvent.change(screen.getByRole('searchbox', { name: /search cards/i }), { target: { value: '  fix the picker dismiss  ' } });
+    fireEvent.click(screen.getByRole('button', { name: /new task/i }));
+    expect(onCreateCard).toHaveBeenCalledWith('fix the picker dismiss');
+  });
+
+  it('hands over no seed at all on the branch where nothing could have been typed', () => {
+    /*
+     * The empty board draws no search box (`items.length > 6 ||
+     * projectOptions.length > 1`), so this branch structurally cannot carry a
+     * phrase — and it must pass NOTHING rather than `''`, or the draft opens
+     * with a blank title that reads as "already filled in".
+     *
+     * Renamed after review, which was right that the old name — "passes
+     * nothing when there was nothing typed" — claimed to prove the trimming
+     * and proved the default. The trimming is proved by the sibling above,
+     * which types a padded phrase and asserts the trimmed one comes out; typing
+     * only spaces cannot be used for it, since a whitespace query matches every
+     * card and never reaches an empty branch at all.
+     */
+    const onCreateCard = vi.fn();
+    render(<CardPicker items={[]} onPick={vi.fn()} onClose={vi.fn()} onCreateCard={onCreateCard} />);
+    fireEvent.click(screen.getByRole('button', { name: /new task/i }));
+    expect(onCreateCard).toHaveBeenCalled();
+    // The ARGUMENT, not the arity: "called with no seed" and "called with an
+    // explicit undefined" are the same fact to the caller, and the thing that
+    // must never happen is a seed that is a blank string — or, as an earlier
+    // version of this branch managed, React's mouse event.
+    expect(onCreateCard.mock.calls[0][0]).toBeUndefined();
+  });
+
+  it('offers the same door when a search found nothing', () => {
+    // A mistyped search and an empty board are different facts — the picker
+    // already refuses to conflate them — but the way out is the same.
+    const MANY = Array.from({ length: 8 }, (_, i) => card(`i${i}`, `Card number ${i}`));
+    render(<CardPicker items={MANY} onPick={vi.fn()} onClose={vi.fn()} onCreateCard={vi.fn()} />);
+    fireEvent.change(screen.getByRole('searchbox', { name: /search cards/i }), { target: { value: 'zzzz' } });
+    expect(screen.getByText(/no card matches that/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /new task/i })).toBeTruthy();
+  });
+
+  it('offers to clear the search before it offers to create anything', () => {
+    /*
+     * Order matters here and it is not cosmetic. After a failed search the
+     * overwhelmingly likely fix is a typo, not a missing card — putting
+     * "create" first invites someone to make a duplicate of the card they
+     * were looking for.
+     */
+    const MANY = Array.from({ length: 8 }, (_, i) => card(`i${i}`, `Card number ${i}`));
+    render(<CardPicker items={MANY} onPick={vi.fn()} onClose={vi.fn()} onCreateCard={vi.fn()} />);
+    fireEvent.change(screen.getByRole('searchbox', { name: /search cards/i }), { target: { value: 'zzzz' } });
+    const buttons = screen.getAllByRole('button').map(b => b.textContent ?? '');
+    const clear = buttons.findIndex(t => /clear the search/i.test(t));
+    const create = buttons.findIndex(t => /new task/i.test(t));
+    expect(clear).toBeGreaterThanOrEqual(0);
+    expect(create).toBeGreaterThan(clear);
+  });
+
+  it('puts the cards back when the search is cleared', () => {
+    const MANY = Array.from({ length: 8 }, (_, i) => card(`i${i}`, `Card number ${i}`));
+    render(<CardPicker items={MANY} onPick={vi.fn()} onClose={vi.fn()} onCreateCard={vi.fn()} />);
+    fireEvent.change(screen.getByRole('searchbox', { name: /search cards/i }), { target: { value: 'zzzz' } });
+    fireEvent.click(screen.getByRole('button', { name: /clear the search/i }));
+    expect(screen.getByTitle('Card number 0')).toBeTruthy();
+    expect(screen.queryByText(/no card matches that/i)).toBeNull();
+  });
+
+  it('draws no create door when the caller has nowhere to create into', () => {
+    // No active project means no project to put the card in. A door onto
+    // nothing is the defect this card exists to fix, not a smaller version
+    // of it.
+    render(<CardPicker items={[]} onPick={vi.fn()} onClose={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: /new task/i })).toBeNull();
+    expect(screen.getByText(/no work in flight/i)).toBeTruthy();
+  });
+
+  it('cannot be activated, which is the whole point of drawing it', () => {
+    /*
+     * `disabled` is the load-bearing assertion and it is now alone with it.
+     *
+     * The test that stood here — click it, assert no callback fired — could
+     * not fail: there is no handler on this button to begin with, and jsdom
+     * does not deliver a click to a disabled control anyway. Deleting
+     * `disabled` from the production code left it green, which is precisely
+     * the state it existed to forbid.
+     */
+    render(<CardPicker items={[]} onPick={vi.fn()} onClose={vi.fn()} onCreateCard={vi.fn()} />);
+    const ask = screen.getByRole('button', { name: /ask agenfk/i }) as HTMLButtonElement;
+    expect(ask.disabled).toBe(true);
+  });
+
+  it('says WHY it is inert, in visible words, without promising it works', () => {
+    /*
+     * The assertion this card turns on, and the one that was weakest.
+     *
+     * `/not built|not here yet|coming/i` accepted "Coming soon — describe your
+     * objective and we will decompose it for you", which is exactly the lie
+     * the card exists to prevent: soothing future tense over a thing that does
+     * not exist, read by a user as "it works, just not yet for me".
+     *
+     * So: the reason must state the ABSENCE, must not be phrased as a promise,
+     * and must actually be visible rather than shipped in a hidden node.
+     */
+    render(<CardPicker items={[]} onPick={vi.fn()} onClose={vi.fn()} onCreateCard={vi.fn()} />);
+    const reason = screen.getByTestId('ask-agenfk-reason');
+    expect(reason).toBeVisible();
+    expect(reason.textContent).toMatch(/not built|does not exist|nothing .*decompos/i);
+    expect(reason.textContent).not.toMatch(/coming soon|we will|shortly|any day now/i);
+    // And not painted in the faintest ink the theme has, at a size that makes
+    // "visible" a technicality. The reason is the control's only content.
+    expect(reason.className).not.toMatch(/ink-tertiary/);
+    expect(reason.className).not.toMatch(/text-\[10px\]/);
+  });
+
+  it('keeps the doors out of the way when there are cards to pick', () => {
+    // The picker's job is picking. The doors belong to the state where there
+    // is nothing to pick.
+    render(<CardPicker items={THREE} onPick={vi.fn()} onClose={vi.fn()} onCreateCard={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: /new task/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /ask agenfk/i })).toBeNull();
+  });
+});
+
+// ── What the dialog was missing, found by using it ─────────────────────────
+describe('CardPicker — reading the list, and the door under it', () => {
+  const items = [
+    { id: 'a', projectId: 'p1', type: 'TASK', title: 'A task', status: 'IN_PROGRESS' },
+    { id: 'b', projectId: 'p1', type: 'BUG', title: 'A bug', status: 'REVIEW' },
+    { id: 'c', projectId: 'p1', type: 'EPIC', title: 'An epic', status: 'TODO' },
+  ] as never as AgEnFKItem[];
+
+  const open = (props: Partial<React.ComponentProps<typeof CardPicker>> = {}) => render(
+    <CardPicker items={items} onPick={() => {}} onClose={() => {}} {...props} />,
+  );
+
+  it('is opaque, because it sits over a terminal', () => {
+    // `bg-nav-surface` is rgba(…,.72) by definition, so the pane behind read
+    // through the list.
+    open();
+    expect(screen.getByRole('dialog').className).toContain('bg-surface');
+    expect(screen.getByRole('dialog').className).not.toContain('nav-surface');
+  });
+
+  it('shows what kind of work each row is', async () => {
+    open();
+    // One square per row: twenty titles say nothing about which is an epic to
+    // fan out and which is a bug to fix.
+    for (const id of ['a', 'b', 'c']) {
+      expect(await screen.findByTestId(`picker-row-type-${id}`)).toBeDefined();
+    }
+  });
+
+  it('filters by type', async () => {
+    open();
+    fireEvent.change(screen.getByTestId('picker-type-filter'), { target: { value: 'BUG' } });
+    expect(screen.getByText('A bug')).toBeDefined();
+    expect(screen.queryByText('A task')).toBeNull();
+  });
+
+  it('offers only the types that are actually there', () => {
+    render(<CardPicker items={[items[0]]} onPick={() => {}} onClose={() => {}} />);
+    // One type present means the filter can only ever empty the list.
+    expect(screen.queryByTestId('picker-type-filter')).toBeNull();
+  });
+
+  it('makes the whole Ask row clickable, not just the three words', () => {
+    // The sentence beside the label was inert text, and it is most of the
+    // target — so a click on it did nothing at all.
+    const onAsk = vi.fn();
+    open({ onAsk });
+    fireEvent.click(screen.getByText(/No card for this yet/i));
+    expect(onAsk).toHaveBeenCalled();
+  });
+});

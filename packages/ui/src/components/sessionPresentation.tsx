@@ -15,6 +15,7 @@
  * a hollow ring into a filled dot.
  */
 import React from 'react';
+import { clsx } from 'clsx';
 import { subscribeToFrames, SPINNER_FRAMES } from '../sharedTick';
 import type { SessionState } from '../sessionRow';
 
@@ -98,5 +99,44 @@ export function Spinner(): React.ReactElement {
       <span className="motion-reduce:hidden">{SPINNER_FRAMES[frame]}</span>
       <span className="hidden motion-reduce:inline">{SPINNER_FRAMES[0]}</span>
     </span>
+  );
+}
+
+/**
+ * The dot, or the spinner when it is running.
+ *
+ * Extracted because this was about to be its THIRD copy: the rail has one, the
+ * card process row says in its own comment that it copied the rail, and the
+ * herdr rows in the tree went without - which is how a running agent from
+ * herdr sat perfectly still next to an animated one of ours that was doing the
+ * same thing.
+ *
+ * The state stays on a STATIC node in both branches. A running state readable
+ * only by watching an animation is unreadable to assistive tech and untestable
+ * without depending on the animation frame.
+ */
+export function SessionStateIndicator({ state }: { state: SessionState }): React.ReactElement {
+  if (state === 'running') {
+    return (
+      <>
+        <Spinner />
+        <span
+          data-testid="session-dot"
+          data-state="running"
+          aria-label={STATE_LABEL.running}
+          role="img"
+          className="sr-only"
+        />
+      </>
+    );
+  }
+  return (
+    <span
+      data-testid="session-dot"
+      data-state={state}
+      aria-label={STATE_LABEL[state]}
+      role="img"
+      className={clsx('mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full', DOT[state])}
+    />
   );
 }

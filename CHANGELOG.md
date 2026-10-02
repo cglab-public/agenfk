@@ -4,29 +4,127 @@ All notable changes to AgEnFK are documented here.
 
 ## [2.0.0-beta.21] — 2026-10-02
 
-Beta, cumulative over `2.0.0-beta.20`: everything in beta.20, plus the work below.
+Pre-release. Beta, cumulative over `2.0.0-beta.20`: everything in beta.20 (and the `1.1.20` stable under
+it), plus the Electron desktop line (CGLAB-164) below.
 
-- **Cards stay small.** A card's step records no longer carry every suite run it ever took: each card keeps the
-  latest capture of each step and its latest green (rolled-back runs: greens only, newest 20), and the authoredTests
-  record points at its capture instead of copying every test name. On the first start after upgrading, the server
-  prunes existing cards the same way, keeps their `updatedAt`, frees the unreferenced results, and logs what it did;
-  later starts find nothing to do. In this repo a card's read went from 11 MB to under 20 KB.
-- **Reading a card leaves its step records out unless asked.** `GET /items/:id?records=1`, MCP `get_item` with
-  `includeRecords: true`, `agenfk get --records`. A test-count check whose recorded tests can no longer be read now
-  holds the card instead of passing it.
-- **The enforcer hook is CLI-first.** With the agenfk MCP server registered it no longer blocks `agenfk get`/`list`
-  (the CLI and MCP are interchangeable); direct database reads and `curl` to the local server stay blocked, and the
-  `mcp-fallback-approved` bypass is gone. pi's `read` tool now goes through the enforcer too.
-- **Board:** a bug split into tasks shows them - child-count drill-down, progress bar and the Subitems tab now work
-  for any card with children; drilling in shows a ← Back button that returns you to the card you came from.
-- **Hub admin safety:** the last admin cannot be demoted, deactivated or deleted; the admin guard re-reads the role
-  instead of trusting the session token; password sign-in is really off when "Email + password" is switched off;
-  destructive and fleet-wide actions ask for confirmation; failed admin actions say what went wrong where they happened.
-- **Hub mobile and accessibility:** phone layout with a drawer; every control named and stating its state; labelled
-  sign-in and setup forms; no information reachable only by hover; one type scale and two content widths; charts,
-  the heatmap and the timeline usable from the keyboard.
-- **Hub data fixes:** org tiles agree with the per-person rows; day and hour keys no longer depend on the Postgres
-  session time zone.
+### New in this beta
+
+- **Project page, Cards tab.** Finished cards no longer offer Start: they say when they closed ("Done 4w ago",
+  read from the card's own history). Cards part-way through say Resume. Filters are two multi-select menus —
+  State (presets Open / In flight / Done / All above a tick per state, each counted) and Type — plus a search on
+  title or id. Open is the default, so finished cards are hidden until asked for. Long lists page 25 at a time.
+- **A card no longer closes while anything under it is unfinished.** The move that ends a card's flow is refused
+  (`CHILDREN_OPEN`, naming every open card) while a child or deeper descendant is open, judged by each card's own
+  project flow and checked again right before the write. The parent roll-up no longer closes a parent over a
+  paused or blocked child, and is released again when the last open descendant finishes.
+- **Commands a repository declares need a person's approval on the board.** A `verifyCommand` from
+  `.agenfk/project.json` runs only once approved on the project's Settings tab; approvals are pinned to a SHA-256
+  fingerprint of the exact command, and a command carrying hidden characters (bidi overrides, zero-width) is
+  refused and shown with them made visible. The CLI no longer approves. Existing approvals made before this beta
+  need approving again.
+- **Upgrades and the installer never overwrite a development checkout.** `agenfk upgrade`, the hub's
+  self-update and `install.mjs` refuse to extract a published build over a git checkout, comparing directories by
+  identity rather than by path spelling.
+- **Board date filter** (from the CGLAB-164 branch): choose Created or Updated, then a range.
+- **Settings:** the per-project "A worktree per card" setting is a real switch again.
+- **Merged onto the visual system (CGLAB-434).** The type square, the type badges, the project and card forms
+  and the board's date filter use the shared tokens; item types take their `--type-*` colours everywhere.
+
+### Earlier on this line (CGLAB-164)
+
+### ⚠️ BREAKING — one origin: the API and the Kanban UI share a port (CGLAB-165)
+
+The server serves the built UI itself, and `agenfk up` no longer starts `vite preview`
+beside it. **The dashboard is on the API's port — `http://localhost:3000` by default — and
+nothing listens on `5173` any more.**
+
+What this breaks, and what to do:
+
+- **Bookmarks, scripts and `open http://localhost:5173`.** Use `agenfk ui`, which resolves
+  the port rather than assuming one: the vite log wins when a dev server IS running, and
+  otherwise it reads `~/.agenfk/server-port`. A hard-coded 5173 opens a dead URL.
+- **Anything that assumed two origins.** The browser now talks to one, so a reverse proxy,
+  a CSP, or a CORS allowlist written for `5173` → `3000` describes a topology that no longer
+  exists. This is the point of the change: the desktop shell loads REST, Socket.io and the
+  assets from a single origin.
+- **`AGENFK_SERVE_UI`** selects the bundle. Unset, the server probes the shipped layout;
+  set it to a path and that path must be a BUILD OUTPUT — a directory containing `src/` or
+  `node_modules/` is refused, because `packages/ui/index.html` exists and the near-miss typo
+  would otherwise publish the source tree.
+- **`agenfk down` / `agenfk kill` still free 5173**, so a dev server someone starts by hand
+  is still cleaned up.
+
+Development note, found the hard way: the server reads `index.html` ONCE into memory
+(deliberately — serving it from disk risks a 500 when the directory is swapped underneath a
+running process), while assets are read per request. So rebuilding the UI with the server up
+leaves it serving a shell that points at hashed files Vite has just deleted, and the page
+renders black. `agenfk restart` after a UI build. Tracked as `2c8e4b64`.
+
+### Add Project: three doors, and none of them decides for you
+
+A dialog with tabs that TRADE the fields — **Pick a folder**, **Clone**, **Create on
+GitHub** — with the project name above them, because all three end in a project.
+
+- Picking a folder is two steps: choosing fills the folder and suggests a name from it, and
+  a separate press creates. The picker used to BE the decision, so a project existed the
+  moment it closed, under a name nobody was offered. That one-shot door is now gone from the
+  IPC surface entirely rather than left reachable.
+- Clone names its destination before it runs and remembers it, and refuses a "URL" that is
+  not an address: a leading dash is an argument to git, `ext::` is a transport that runs
+  commands (and the clone passes `-c protocol.ext.allow=never`, so the guarantee is ours
+  rather than the user's gitconfig), and a name carrying a path separator would land the
+  checkout outside the chosen folder.
+- Create on GitHub goes **remote first, then clone, then the project row** — any other order
+  leaves rubbish behind when the far end refuses — names the account it is acting as, and
+  defaults to private with both states visible. Owner and repository name are validated
+  before they reach `gh`: an owner is the START of an argv element, and `--source=/path`
+  would turn "create my repository" into "publish that local checkout".
+- Where clones land defaults to `~/agenfk`, shown in the field and changeable. It is created
+  when a clone actually runs, and the proposal is never written to preferences — otherwise
+  "remembered" and "suggested" stop being different things.
+
+### The project page, and starting work from it
+
+The page lists **the project's own cards** — it was reading the "which card?" list, which
+excludes TODO by design, so a project whose cards had just been created looked empty — and
+each row can start the agent on that card: `Start`, or `Open` when this app already has a
+terminal for it.
+
+Creating cards or adding a project now lands you on that page instead of closing onto the
+screen you started from.
+
+### Terminals begin on their card
+
+Pressing Start hands the agent the card — id, title, description — as a positional
+ARGUMENT at launch (`claude [prompt]`, `codex [PROMPT]`, `pi -- <message>`, each verified
+against the real CLI). Typing it into the terminal afterwards was a race nobody wins: these
+CLIs paint, load their servers, and only then take the terminal into raw mode.
+
+A project that is not a git repository opens the terminal in the project root instead of
+refusing, and the server's own sentence survives the trip — "HTTP 400" used to replace
+"fatal: not a git repository". Whether a directory IS a repository is now `git rev-parse
+--git-dir`, the same question the server asks: looking for a `.git` entry calls a project
+root nested inside a checkout "not a repository", and would have opened the card's terminal
+on whatever branch you had out, with no worktree.
+
+### Fixes found by using it, and by three independent reviews
+
+- The project dropdown did nothing: a `mousedown` guard closed the portal list before the
+  click could complete. Every test passed, because `fireEvent.click` sends only the click.
+- The terminal never showed its input line. The region holding it was a flex ITEM and not a
+  flex CONTAINER, so the pane grew to its content and xterm measured 64 rows where ~36 were
+  visible — the agent drew its box thirty rows below the window's edge, with nothing
+  overflowing to scroll.
+- A BLOCKED row was skipped at creation while its children were created anyway, with no
+  parent: a story with a missing title turned its tasks into loose cards at the board root.
+- The project page never refetched, so the flow that lands you on it landed you on a stale
+  list.
+- `Cancel`, the X and Escape did not stop the creation loop they appeared to stop.
+- The agent and project menus became portals and needed real dismissal: two dropdowns could
+  be open at once, over the modal.
+- What an agent prints while it is asked for a decomposition is now on screen, stderr
+  marked — "out of tokens" arrived on a stream nobody displayed — and its stdin is closed at
+  launch, which is why `pi` appeared to hang forever.
 
 ## [2.0.0-beta.20] — 2026-10-01
 

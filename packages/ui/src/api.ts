@@ -86,6 +86,10 @@ export interface AppSettingsDto {
   attentionSound: boolean;
   soundTiming: SoundTimingDto;
   osNotifications: boolean;
+  /** Projects pinned to the top of the sidebar, in pin order (server-side, SQLite). */
+  pinnedProjects: string[];
+  /** Keep the board on the chosen project instead of following project_switched. */
+  boardPinned: boolean;
   /** f8d0a752: suite runs the server runs at once, across every project; 0 is automatic (half the CPUs). */
   maxConcurrentSuiteRuns: number;
 }
@@ -109,8 +113,15 @@ export const api = {
    * Distinct from listAgentRuns, which is per card. The Sessions rail asks
    * "what is running anywhere", and asking that per project from here would be
    * one request per project on every socket event.
+   *
+   * `projectId` narrows it SERVER-SIDE, which matters more than it looks:
+   * the route caps the answer (25 by default, 200 max) and the cap is applied
+   * after the sort but before any filtering the client does. Fetching the
+   * newest 25 across every project and then keeping one project's rows can
+   * return almost nothing for a project that is busy but not the busiest — so
+   * a caller that shows ONE project must say so here rather than filter later.
    */
-  listRuns: async (params: { status?: string; limit?: number } = {}) => {
+  listRuns: async (params: { status?: string; limit?: number; projectId?: string } = {}) => {
     try {
       const { data } = await axios.get(`${API_URL}/agent-runs`, { params });
       return data;
@@ -196,6 +207,73 @@ export const api = {
       return data;
     } catch (e) {
       console.error('API Error getting item', id, e);
+      throw e;
+    }
+  },
+  /**
+   * Read a proposed decomposition back, with its problems attached.
+   *
+   * WRITES NOTHING — that is the whole point of the route, and the reason the
+   * screen can show a tree before anything exists. Creation is a separate act,
+   * one `createItem` per accepted row.
+   */
+  /**
+   * The contract for one objective, as text.
+   *
+   * Fetched rather than rendered here: the words live in core, and a second
+   * copy in the browser bundle is the exact defect the core module exists to
+   * end.
+   */
+  decompositionContract: async (objective: string): Promise<string> => {
+    const { data } = await axios.get(`${API_URL}/decompositions/contract`, {
+      params: { objective },
+      responseType: 'text',
+    });
+    return String(data);
+  },
+  /**
+   * A project's configuration with the origin of every value. Read only —
+   * several of these fields are deliberately unreachable from a browser, and
+   * the answer says which, with the command that changes them.
+   */
+  projectSettings: async (projectId: string) => {
+    const { data } = await axios.get(`${API_URL}/projects/${projectId}/settings`);
+    return data as { projectId: string;
+      /*
+       * What the repository's own `.agenfk/project.json` asked for and could
+       * not have — a key that does nothing has to say so on screen, or
+       * somebody spends an afternoon on it.
+       */
+      fileProblems?: string[];
+      rows: Array<{
+      key: string; label: string; description: string; value: string | null;
+      /* `from-file` is the strongest: declared by the repository, identical
+         for everyone who clones, and therefore not editable here. */
+      origin: 'set-here' | 'inherited' | 'inferred' | 'cli-only' | 'main-only' | 'from-file';
+      from: string; how?: string; warning?: string;
+    }>;
+      /* What the repository asks this machine to run, and whether a person here approved it (34ee6b8a). */
+      fileCommands?: Array<{ key: string; command: string; fingerprint: string; approved: boolean; hidden?: string[] }>;
+    };
+  },
+  /**
+   * A person approving a command the repository declares - the board's act,
+   * never the agent's: the server refuses the internal token here (34ee6b8a).
+   */
+  approveFileCommand: async (projectId: string, command: string) => {
+    const { data } = await axios.post(
+      `${API_URL}/projects/${projectId}/approve-file-command`,
+      { command },
+      { headers: { 'x-agenfk-ui': '1' } },
+    );
+    return data as { approved: boolean; fingerprint: string; authority: string };
+  },
+  reviewProposal: async (proposal: unknown) => {
+    try {
+      const { data } = await axios.post(`${API_URL}/decompositions/review`, proposal);
+      return data;
+    } catch (e) {
+      console.error("API Error reviewing a proposal:", e);
       throw e;
     }
   },
@@ -602,6 +680,27 @@ export const api = {
       throw e;
     }
   },
+  /**
+   * The mutable half of a project.
+   *
+   * `autoWorktree` is on the server's allowlist because it is a boolean with
+   * no execution semantics; `projectRoot` (a cwd) and `verifyCommand` (a shell
+   * string this machine later runs) are deliberately NOT, and this client must
+   * not pretend otherwise. See bug e60e20aa.
+   */
+  updateProject: async (
+    id: string,
+    updates: { name?: string; description?: string; autoWorktree?: boolean },
+  ): Promise<unknown> => {
+    try {
+      const { data } = await axios.put(`${API_URL}/projects/${id}`, updates);
+      return data;
+    } catch (e) {
+      console.error('API Error updating project', id, e);
+      throw e;
+    }
+  },
+
   setProjectFlow: async (projectId: string, flowId: string | null): Promise<void> => {
     try {
       await axios.post(`${API_URL}/projects/${projectId}/flow`, { flowId });

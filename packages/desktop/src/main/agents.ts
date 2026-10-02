@@ -41,6 +41,13 @@ export interface AgentChoice {
 
 export interface SpawnOptions {
   /**
+   * What the session should start on: the card, in its own words.
+   *
+   * A positional argument rather than keystrokes — see `promptArgs`. Absent
+   * for a terminal opened with nothing in particular to do.
+   */
+  readonly prompt?: string;
+  /**
    * Run the agent with its own safety prompts disabled.
    *
    * Off unless explicitly requested. An agent in this mode edits, deletes and
@@ -98,10 +105,106 @@ interface AgentEntry {
    * something else entirely.
    */
   readonly autoApproveArgs?: readonly string[];
+  /**
+   * How to ask this agent ONE question and get the answer on stdout.
+   *
+   * Ask AgEnFK does not need a terminal: it needs a decomposition. Spawning an
+   * interactive REPL and reading the answer out of a terminal scroll means
+   * parsing ANSI, prompts and whatever the agent says around it — for a
+   * question that has exactly one answer and no follow-up.
+   *
+   * VERIFIED AGAINST THE REAL CLIs, not read off a help page and hoped for:
+   *   claude --help  ->  -p, --print
+   *   codex --help   ->  exec   Run Codex non-interactively
+   *   pi --help      ->  --print, -p  Non-interactive mode
+   * Gemini is absent from this machine, so it has none here rather than a
+   * guess — the same rule `autoApproveArgs` states: a wrong flag either fails
+   * the launch or means something else entirely.
+   */
+  readonly printArgs?: (prompt: string) => string[];
+  /**
+   * How to hand this agent its FIRST prompt while staying interactive.
+   *
+   * Different from `printArgs`, which asks a question and exits. This starts
+   * an ordinary session that happens to begin with something to do — which is
+   * what pressing Start on a card means.
+   *
+   * Typed into the terminal instead, this was a race nobody wins: every one of
+   * these CLIs paints a splash, loads MCP servers and only then takes the
+   * terminal into raw mode, and keystrokes arriving in that window are simply
+   * gone. As argv there is no window to miss.
+   *
+   * VERIFIED AGAINST THE REAL CLIs, like every other argv in this file:
+   *   claude --help  ->  Usage: claude [options] [command] [prompt]
+   *   codex --help   ->  Usage: codex [OPTIONS] [PROMPT]
+   *   pi --help      ->  Usage: pi [options] [--] [@files...] [messages...]
+   * Absent for anything not checked here: a guessed positional is worse than
+   * none, because it launches and means something else.
+   */
+  readonly promptArgs?: (prompt: string) => string[];
+}
+
+/** A one-shot question for an agent: the binary, and the argv that asks it. */
+export interface AgentPrintCommand {
+  readonly file: string;
+  readonly args: readonly string[];
+}
+
+/**
+ * How to ask this agent one question, or null when it has no way to be asked.
+ *
+ * Null rather than a guessed flag: an agent with no verified non-interactive
+ * mode must be reported as such, so the screen can name it and offer another,
+ * instead of launching something that means a different thing.
+ */
+export function printCommandFor(agentId: string, prompt: string): AgentPrintCommand | null {
+  const entry = AGENTS.find(a => a.id === agentId);
+  if (!entry?.printArgs) return null;
+  return { file: entry.command.file, args: [...entry.command.args, ...entry.printArgs(prompt)] };
 }
 
 /** The shape of a conversation id we are willing to put in argv. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Attaching to a herdr session that is already running.
+ *
+ * DELIBERATELY NOT IN `AGENTS`. That table is the picker's contents, and an
+ * attach is not something to start on a card - a test in this package refuses
+ * any entry there without a rules bundle, and it was right to: offering herdr
+ * beside Claude Code and codex would invite somebody to pick it for a card and
+ * get a multiplexer instead of an agent.
+ *
+ * So the id is a closed set of one, checked by equality at the spawn path,
+ * which skips the worktree, the tmux wrapper and the run registration for it.
+ * Named rather than spelled inline because four literals drifting apart is how
+ * one of those branches quietly stops matching.
+ */
+export const HERDR_AGENT_ID = 'herdr';
+
+/**
+ * A plain shell, in the user's home directory.
+ *
+ * The third target, and the one with no card and no project: a terminal is a
+ * useful thing to open before any repository is chosen. Like `herdr` it is
+ * DELIBERATELY NOT IN `AGENTS` — it is not something to start on a card, and
+ * offering it beside Claude Code would invite somebody to pick a shell where
+ * they meant an agent. The spawn path checks this id by equality and skips the
+ * worktree, the card prompt, tmux and the run registration.
+ */
+export const SHELL_AGENT_ID = 'shell';
+
+/**
+ * The command that opens the user's own shell.
+ *
+ * `$SHELL` is what the person's terminal already is; no per-platform table of
+ * guesses. `/bin/sh` is the fallback for the environments that do not export
+ * it (a GUI launch on some setups), which is a shell on every Unix we ship to.
+ * No arguments: an interactive login shell is what a terminal window is.
+ */
+export function resolveShellCommand(): { file: string; args: string[] } {
+  return { file: process.env.SHELL || '/bin/sh', args: [] };
+}
 
 const AGENTS: ReadonlyArray<AgentEntry> = [
   {
@@ -114,6 +217,10 @@ const AGENTS: ReadonlyArray<AgentEntry> = [
     id: 'claude-code',
     label: 'Claude Code',
     command: { file: 'claude', args: [] },
+    printArgs: prompt => ['-p', prompt],
+    // `claude [options] [prompt]` — the positional, so the session stays
+    // interactive and simply begins with something to do.
+    promptArgs: prompt => [prompt],
     autoApproveArgs: ['--dangerously-skip-permissions'],
     /*
      * Create by id, resume by DIRECTORY. Both halves verified by running the
@@ -148,6 +255,10 @@ const AGENTS: ReadonlyArray<AgentEntry> = [
   },
   {
     id: 'codex',
+    printArgs: prompt => ['exec', prompt],
+    // `codex [OPTIONS] [PROMPT]`. NOT `exec`, which is the non-interactive
+    // one: this is the interactive session, started on a card.
+    promptArgs: prompt => [prompt],
     label: 'Codex',
     command: { file: 'codex', args: [] },
     autoApproveArgs: [
@@ -182,6 +293,11 @@ const AGENTS: ReadonlyArray<AgentEntry> = [
   // truth is what left pi out of the first cut of this file.
   {
     id: 'pi',
+    printArgs: prompt => ['--print', prompt],
+    // `pi [options] [--] [@files...] [messages...]` — `--` first, because the
+    // message is the last thing pi parses and a bare positional after flags
+    // is where an option-looking string would be read as an option.
+    promptArgs: prompt => ['--', prompt],
     label: 'Pi',
     command: { file: 'pi', args: [] },
     /*
@@ -267,8 +383,17 @@ export function resolveAgentCommand(agentId: string, opts: SpawnOptions = {}): A
   }
 
   const approveArgs = opts.autoApprove && found.autoApproveArgs?.length ? found.autoApproveArgs : [];
-  if (!sessionArgs.length && !approveArgs.length) return found.command;
-  return { file: found.command.file, args: [...sessionArgs, ...found.command.args, ...approveArgs] };
+  /*
+   * The first prompt goes LAST, because it is a positional: every flag has to
+   * be parsed before the thing that is not a flag. Absent for an agent with no
+   * verified positional — the session still opens, it just opens empty.
+   */
+  const promptArgs = opts.prompt && found.promptArgs ? found.promptArgs(opts.prompt) : [];
+  if (!sessionArgs.length && !approveArgs.length && !promptArgs.length) return found.command;
+  return {
+    file: found.command.file,
+    args: [...sessionArgs, ...found.command.args, ...approveArgs, ...promptArgs],
+  };
 }
 
 /** Whether this agent can resume a conversation at all. */

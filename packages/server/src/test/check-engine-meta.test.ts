@@ -166,7 +166,9 @@ describe('CGLAB-380: git/meta checks', () => {
     it('passes an EPIC once it has a child', async () => {
       const pid = await setup();
       const id = await card(pid, 'WORK', {}, 'EPIC');
-      await card(pid, 'TODO', { parentId: id }, 'STORY');
+      // Finished: leaving WORK here closes the epic, which waits on open children (8024f6c4).
+      // has-children only asks that one exists.
+      await card(pid, 'END', { parentId: id }, 'STORY');
       expect((await validate(id)).status).toBe(200);
     });
 

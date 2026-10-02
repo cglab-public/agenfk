@@ -17,7 +17,7 @@ import { retainSuperseded, withRecordRetention } from './recordRetention';
 import { compactAuthored, expandAuthored } from './authoredRecord';
 import { pruneStepRecords } from './pruneRecords';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, foreignClaimsFor, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
+import { readProjectFile, approvalFor, commandFingerprint, hiddenCharacters, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, foreignClaimsFor, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -52,8 +52,12 @@ export const VERIFY_TOKEN = (() => {
 })();
 import { exec, execFile, execSync, execFileSync, spawn } from "child_process";
 import { createServer } from "http";
+import * as net from "net";
 import { Server } from "socket.io";
 import { readGitStatus } from './gitStatus.js';
+import { buildHerdrSnapshot, realHerdrDeps } from './herdrRoutes.js';
+import { sendPaneText, sendPaneKeys, focusPane } from './herdrWrite.js';
+import { readPane } from './herdr.js';
 import { openHubJiraSession, fetchHubJiraStatus, clearHubJiraStatusCache, startHubJiraOAuth, completeHubJiraOAuth, disconnectHubJira, ASK_HUB_ADMIN, CONNECT_FROM_BOARD, type JiraSession, type HubTarget } from './jira/hubJira.js';
 
 // The local API server is for this machine only. It binds to loopback by
@@ -747,13 +751,137 @@ async function applyMigrationPlan(
   return refused;
 }
 
-const syncParentStatus = async (parentId: string) => {
+/**
+ * Where a card of this flow is finished (8024f6c4): the status its
+ * flow-ending move lands on - DONE, or a last step that is a boundary - or out
+ * of play (trashed, archived, parked as an idea). A last step that is an
+ * ordinary working step is NOT finished: leaving it is what closes the card.
+ */
+function finishedStatusesOf(flow: { steps: any[] }): Set<string> {
+  const sorted = sortedFlowSteps(flow as any);
+  const last = sorted[sorted.length - 1];
+  const finished = new Set<string>([Status.DONE, Status.TRASHED, Status.ARCHIVED, Status.IDEAS].map(String));
+  if (last && isBoundaryStep(last as any)) finished.add(String(last.name));
+  return finished;
+}
+
+/** How far openDescendants looks before it stops and says it could not see. */
+const OPEN_SCAN_DEPTH = 32;
+const OPEN_SCAN_CARDS = 5000;
+
+/** What openDescendants found: the open cards, and whether it saw the whole tree. */
+interface OpenScan {
+  open: Array<{ id: string; title: string; status: string }>;
+  /** False when a bound stopped the walk with cards left unexamined. */
+  complete: boolean;
+}
+
+/**
+ * Every unfinished card under this one (8024f6c4) - the whole subtree, not
+ * only direct children: a child closed before this rule existed, or one a new
+ * card was attached to, can hold open work. Each card is judged by ITS OWN
+ * project's flow, since a moved child keeps its parent.
+ *
+ * Every subtree is walked, a trashed, archived or parked one included. Trash
+ * and archive cascade on their own routes, but parking a card as an idea does
+ * not, and a card can be attached under a trashed or archived one afterwards -
+ * so what is under a finished card is judged on its own. Bounded and
+ * cycle-safe - and a bound that stops the walk with cards left unexamined says
+ * so (`complete: false`), because an unexamined card is not a finished one.
+ */
+async function openDescendants(rootId: string): Promise<OpenScan> {
+  const flows = await storage.listFlows();
+  const finishedByProject = new Map<string, Set<string>>();
+  const finishedFor = async (projectId: string): Promise<Set<string>> => {
+    let f = finishedByProject.get(projectId);
+    if (!f) {
+      const project: any = await storage.getProject(projectId);
+      f = finishedStatusesOf(getActiveFlow(project?.flowId, flows));
+      finishedByProject.set(projectId, f);
+    }
+    return f;
+  };
+  const open: OpenScan['open'] = [];
+  const seen = new Set<string>([rootId]);
+  let frontier = [rootId];
+  for (let depth = 0; frontier.length; depth++) {
+    if (depth >= OPEN_SCAN_DEPTH) {
+      // At the bound: incomplete only if there IS something further down.
+      for (const id of frontier) {
+        const kids = (await storage.listItems({ parentId: id, hydrate: false } as any)) as any[];
+        if (kids.some(k => !seen.has(k.id))) return { open, complete: false };
+      }
+      return { open, complete: true };
+    }
+    const next: string[] = [];
+    for (const id of frontier) {
+      const kids = (await storage.listItems({ parentId: id, hydrate: false } as any)) as any[];
+      for (const k of kids) {
+        if (seen.has(k.id)) continue;
+        if (seen.size >= OPEN_SCAN_CARDS) return { open, complete: false };
+        seen.add(k.id);
+        const status = String(k.status);
+        if (!(await finishedFor(k.projectId)).has(status)) open.push({ id: k.id, title: k.title, status });
+        next.push(k.id);
+      }
+    }
+    frontier = next;
+  }
+  return { open, complete: true };
+}
+
+/** Whether anything under the card holds its close: open work, or a tree too big to see. */
+const holdsClose = (scan: OpenScan): boolean => scan.open.length > 0 || !scan.complete;
+
+/** The refusal a close owes while work under the card is open (8024f6c4). */
+function childrenOpenRefusal(item: any, scan: OpenScan) {
+  const { open } = scan;
+  const SHOWN = 10;
+  const list = open.slice(0, SHOWN).map(c => `  [${c.id.slice(0, 8)}] ${c.title} (${c.status})`).join('\n')
+    + (open.length > SHOWN ? `\n  and ${open.length - SHOWN} more` : '');
+  /*
+   * Finishing cards does not shrink the tree - every subtree is walked - so the
+   * remedy for a scan that hit its bound is the only one that does: take part
+   * of the tree out from under this card.
+   */
+  const unseen = scan.complete ? ''
+    : `The tree under it goes more than ${OPEN_SCAN_DEPTH} levels deep or holds more than ${OPEN_SCAN_CARDS} cards, so not all of it could be checked - and an unchecked card is not a finished one. Move part of that tree out from under this card (\`agenfk update <id> --parent none\` on a subtree's top card), then close it.`;
+  const what = open.length
+    ? `${open.length === 1 ? 'a card under it is' : `${open.length} cards under it are`} not finished.\n\n${list}\n\nFinish, trash or archive ${open.length === 1 ? 'it' : 'them'} first.${unseen ? `\n\n${unseen}` : ''}`
+    : unseen;
+  return {
+    status: item.status,
+    error: 'CHILDREN_OPEN',
+    message: `❌ ${item.title} cannot close: ${what}${staysOn(item.status)}`,
+    children: open.map(c => ({ id: c.id, title: c.title, status: c.status })),
+    ...(scan.complete ? {} : { incomplete: true }),
+  };
+}
+
+/**
+ * How a roll-up was set off. `released`: a card under this parent just finished,
+ * or left it (trashed, archived, parked, moved away) - the only kind of change
+ * that can free an ancestor whose close was held for open work below
+ * (8024f6c4). `seen`: the parents this walk has visited, so a parent cycle in
+ * old data ends it.
+ */
+interface RollUp { released?: boolean; seen?: Set<string> }
+
+/** Whether a card now sits on a finished status of its own project's flow. */
+async function landedFinished(item: any): Promise<boolean> {
+  const project: any = await storage.getProject(item.projectId);
+  return finishedStatusesOf(getActiveFlow(project?.flowId, await storage.listFlows())).has(String(item.status));
+}
+
+const syncParentStatus = async (parentId: string, how: RollUp = {}) => {
+  const seen = how.seen ?? new Set<string>();
+  if (seen.has(parentId) || seen.size >= OPEN_SCAN_DEPTH) return;
+  seen.add(parentId);
   const parent = await storage.getItem(parentId);
   if (!parent) return;
 
   const allChildren = await storage.listItems({ parentId });
   const children = allChildren.filter(c => c.status !== Status.TRASHED && c.status !== Status.ARCHIVED);
-  if (children.length === 0) return;
 
   // Compare children by their ORDER in the active flow, not by hardcoded step
   // names. The previous version tested Status.IN_PROGRESS/REVIEW/TEST/DONE
@@ -762,6 +890,7 @@ const syncParentStatus = async (parentId: string) => {
   // allDone -> DONE case worked, because DONE is an anchor every flow has.
   const parentProject = await storage.getProject(parent.projectId);
   const parentFlow = getActiveFlow((parentProject as any)?.flowId, await storage.listFlows());
+  const parentFinished = finishedStatusesOf(parentFlow);
   // Real workflow steps only. Nothing here may write a platform status onto a
   // parent: a flow is free to name a step BLOCKED, and driving a parent there
   // would archive or block it outside the routes that record previousStatus.
@@ -775,6 +904,8 @@ const syncParentStatus = async (parentId: string) => {
 
   // A child on a platform status has no position in the flow, so it neither
   // holds the parent back nor pushes it forward — it is simply skipped.
+  // No children left (the last one trashed or moved away): nothing to derive
+  // here, but the walk up below may still be owed.
   const positioned = children
     .map(c => orderOf(c.status))
     .filter((n): n is number => n !== null);
@@ -816,16 +947,34 @@ const syncParentStatus = async (parentId: string) => {
     }
   }
 
+  /*
+   * 8024f6c4: never onto a finished status while anything under the parent is
+   * open. Children on a platform status (PAUSED, BLOCKED) have no position, so
+   * the laggard above skips them - and a parent already past its review rolled
+   * straight to DONE over a paused child.
+   */
+  if (newStatus && parentFinished.has(String(newStatus)) && holdsClose(await openDescendants(parent.id))) {
+    newStatus = null;
+  }
+
   if (newStatus) {
     const timestamp = new Date().toISOString();
     console.log(`[${timestamp}] [AUTO_SYNC] Updating parent ${parent.id} (${parent.title}) to ${newStatus}`);
     await storage.updateItem(parent.id, { status: newStatus });
     io.emit('items_updated');
     recordMoveEvents(parent, parent.status, newStatus, parentFlow);
-
-    if (parent.parentId) {
-      await syncParentStatus(parent.parentId);
-    }
+  }
+  /*
+   * Up the tree when this parent moved - and, when something under it was
+   * RELEASED, also when it is already finished (8024f6c4): an ancestor's close
+   * can be held only by open work deep below, and the grandchild that finishes
+   * it changes nothing on its finished parent, so the walk stopped one level
+   * short and left the ancestor held. Only on a release: a rename deep down
+   * must not re-close an ancestor somebody reopened on purpose.
+   */
+  const released = Boolean(newStatus && parentFinished.has(String(newStatus))) || (how.released === true && parentFinished.has(String(parent.status)));
+  if (parent.parentId && (newStatus || released)) {
+    await syncParentStatus(parent.parentId, { released, seen });
   }
 };
 
@@ -2272,6 +2421,400 @@ const limitExpensive = rateLimit({
   },
 });
 
+/**
+ * The herdr sessions already open on this machine (CGLAB-266 / CGLAB-267).
+ *
+ * READ ONLY. The protocol can also type into a pane and move the operator's
+ * real screen; none of that is reachable from here.
+ *
+ * NEVER 500s ON ABSENCE. A machine with no herdr answers 200 with an empty list
+ * and a printable reason, because the setting that consumes this ships enabled
+ * and "not installed" is an ordinary answer, not a failure. Likewise a socket
+ * left behind by a crash: it is reported unreachable per session so one stale
+ * file cannot hide the sessions that are running.
+ * RATE LIMITED, and it had to move below the limiter to be: this walks a
+ * directory and then opens one unix socket per session. Written above the
+ * `const`, naming it throws ReferenceError at module load - and the suite
+ * imports `app` rather than booting it, so that would have been green too.
+ */
+app.get("/herdr/sessions", limitExpensive, asyncHandler(async (_req: any, res: any) => {
+  /*
+   * The cards and projects are what lets a pane be told apart from a session
+   * AgEnFK started. Handed in rather than read inside `buildHerdrSnapshot`, so
+   * the whole listing stays testable without a database - and so a caller that
+   * does not ask the ownership question cannot be given a guess.
+   */
+  const [projects, items] = await Promise.all([
+    storage.listProjects(),
+    storage.listItems({ limit: 1_000_000 }),
+  ]);
+  res.json(await buildHerdrSnapshot({
+    ...realHerdrDeps,
+    cards: (items as any[]).map(i => ({
+      id: i.id, title: i.title, status: i.status,
+      branchName: i.branchName, worktreePath: i.worktreePath, projectId: i.projectId,
+    })),
+    projects: (projects as any[]).map(p => ({ id: p.id, name: p.name, projectRoot: p.projectRoot })),
+  }));
+}));
+
+/**
+ * One pane's content, on demand.
+ *
+ * NOT part of the listing: dragging every pane's text into a directory view is
+ * a different amount of data and a different decision. This is what "open one"
+ * asks for.
+ */
+app.get("/herdr/panes/:paneId/content", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const socketPath = String(req.query.socket ?? '');
+  if (!socketPath) return res.status(400).json({ error: 'socket (query) required' });
+  const r = await readPane(socketPath, {
+    paneId: String(req.params.paneId),
+    source: (req.query.source as any) ?? 'recent',
+    lines: Number(req.query.lines ?? 200),
+  });
+  // A pane that is gone is 404, not empty text: empty would read as a live,
+  // blank terminal, which is the opposite of the truth.
+  if (!r.ok) return res.status(r.error.code === 'pane_not_found' ? 404 : 502).json(r.error);
+  return res.json(r.read);
+}));
+
+/**
+ * Typing into somebody else's terminal.
+ *
+ * THREE ROUTES, THREE ACTS, and none of them folds into another. `focus` in
+ * particular moves the operator's real screen - pane, tab and workspace at once
+ * - so it is its own call that a person has to choose, never a side effect of
+ * sending text.
+ */
+app.post("/herdr/panes/:paneId/text", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const { socket, text } = req.body ?? {};
+  if (typeof socket !== 'string' || !socket) return res.status(400).json({ error: 'socket (string) required' });
+  if (typeof text !== 'string') return res.status(400).json({ error: 'text (string) required' });
+  try {
+    const r = await sendPaneText(socket, String(req.params.paneId), text);
+    return r.ok ? res.json({ ok: true }) : res.status(502).json(r.error);
+  } catch (e: any) {
+    // A refusal from our own guards is the caller's mistake, not the server's.
+    return res.status(400).json({ error: e.message });
+  }
+}));
+
+app.post("/herdr/panes/:paneId/keys", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const { socket, keys } = req.body ?? {};
+  if (typeof socket !== 'string' || !socket) return res.status(400).json({ error: 'socket (string) required' });
+  if (!Array.isArray(keys)) return res.status(400).json({ error: 'keys (array) required' });
+  try {
+    const r = await sendPaneKeys(socket, String(req.params.paneId), keys.map(String));
+    return r.ok ? res.json({ ok: true }) : res.status(502).json(r.error);
+  } catch (e: any) {
+    return res.status(400).json({ error: e.message });
+  }
+}));
+
+/**
+ * Read a proposed decomposition back, with its problems attached. WRITES NOTHING.
+ *
+ * This is the half that makes "proposes, does not create" real (artifact
+ * aca414c7 §06). Without it the only path from an agent's answer to the board
+ * is POST /items, so the cards would exist before anybody reviewed them — and
+ * a screen that reviews things which already exist is a confirmation dialog,
+ * not a gate.
+ *
+ * No storage call in this handler, deliberately and permanently: creation
+ * happens afterwards, item by item, through the route that already exists and
+ * already enforces the flow. A future edit that reaches for `storage` here has
+ * moved the design, not extended it.
+ *
+ * Rate-limited like the other expensive routes: the body is a tree from a
+ * model, so it arrives large and often.
+ */
+/**
+ * The contract for one objective, as text.
+ *
+ * The UI cannot render this itself: the words live in core, which is a Node
+ * package, and the browser bundle must not grow a copy — two hand-written
+ * copies of this contract is the defect the core module was written to end.
+ * So the screen asks for it and seeds the agent with what it gets.
+ *
+ * GET, because it computes nothing and stores nothing: the same objective
+ * always produces the same text.
+ */
+app.get("/decompositions/contract", asyncHandler(async (req: any, res: any) => {
+  try {
+    res.type('text/plain').send(decompositionContract(String(req.query.objective ?? '')));
+  } catch (e: any) {
+    res.status(400).json({ error: e.message });
+  }
+}));
+
+/**
+ * A project's configuration, with the origin of every value. READ ONLY.
+ *
+ * It exists because an inferred value that is wrong is invisible: four
+ * projects on this machine have `projectRoot` pointing at $HOME. No write path
+ * changes here — several of these fields are deliberately unreachable from a
+ * browser, and the answer says so, with the command that does change them.
+ */
+
+/**
+ * What a project's own checkout declares about itself.
+ *
+ * `.agenfk/project.json` is checked into the repository, so what it says is
+ * the same for everyone who clones it — which is why it outranks the stored
+ * row. Reading it is deliberately forgiving: the file is hand-edited, an
+ * unreadable one is "no opinion" rather than an error, and what was ignored
+ * travels back to the screen instead of into a log nobody opens.
+ *
+ * `name` and `description` are NOT applied here. They are the project's
+ * identity on the board, several projects can share a checkout across
+ * machines, and renaming somebody's row from a file they pulled is a surprise
+ * this has no reason to spring.
+ */
+/** A project file is a few hundred bytes of JSON; anything near this is not one. */
+const PROJECT_FILE_MAX_BYTES = 64 * 1024;
+
+/**
+ * A file the REPOSITORY controls, read on a request path: bounded, and only
+ * if it is a regular file (Codex review of 2a181a8d). A symlink to /dev/zero
+ * never ends and a FIFO blocks open() itself - either one hangs the event
+ * loop. Opened without blocking, judged by the descriptor that was opened (no
+ * stat-then-read window). Null when there is no such file; a problem when it
+ * exists but is not one to read.
+ */
+function readSmallRegularFile(full: string, maxBytes: number): string | { problem: string } | null {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(full, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) return { problem: 'is not a regular file' };
+    if (st.size > maxBytes) return { problem: `is larger than ${Math.round(maxBytes / 1024)} KB` };
+    const buf = Buffer.alloc(st.size);
+    const read = fs.readSync(fd, buf, 0, st.size, 0);
+    return buf.subarray(0, read).toString('utf8');
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* already closed */ } }
+  }
+}
+
+function readDeclaredSettings(projectRoot?: string | null): {
+  settings: Record<string, unknown>;
+  keys: string[];
+  path?: string;
+  problems: string[];
+} {
+  if (!projectRoot) return { settings: {}, keys: [], problems: [] };
+  const rel = path.join('.agenfk', 'project.json');
+  const full = path.join(projectRoot, rel);
+  /*
+   * Bounded, and a REGULAR file only (Codex review of 2a181a8d). The file
+   * arrives with a clone, and this read sits on the request path of settings
+   * and of every verify: a symlink to /dev/zero never ends, and a FIFO blocks
+   * open() itself - either one hangs the server's event loop. So: open without
+   * blocking, judge the descriptor that was opened (no stat-then-read window),
+   * and read at most PROJECT_FILE_MAX_BYTES.
+   */
+  const file = readSmallRegularFile(full, PROJECT_FILE_MAX_BYTES);
+  // No file is the ordinary case, not a fault.
+  if (file === null) return { settings: {}, keys: [], problems: [] };
+  if (typeof file !== 'string') {
+    return { settings: {}, keys: [], problems: [`${rel} ${file.problem}, so it was ignored.`] };
+  }
+  const raw = file;
+  const { value, problems } = readProjectFile(raw);
+  const { flow, name, description, ...applies } = value.settings;
+  void name; void description;
+  const settings: Record<string, unknown> = { ...applies };
+  const keys = Object.keys(applies);
+  // The flow is declared by NAME or by hub id, and resolving it needs the
+  // store — done by the caller, which is why it is reported but not applied.
+  if (flow) problems.push(`This repository asks for the flow "${flow}".`);
+  return { settings, keys, path: rel, problems };
+}
+
+/**
+ * "I have read this command and I am willing to run it here."
+ *
+ * A PERSON'S act, on the board - like a step approval or an override. This is
+ * the decision to execute a shell string that arrived with a repository. It
+ * used to sit behind the internal token, which kept browsers out but let the
+ * agent in: that token is the one the agent's own CLI holds, so an agent
+ * refused COMMAND_NEEDS_APPROVAL could approve the command and run it
+ * (34ee6b8a). The board's word is recorded as 'unverified' unless a passkey
+ * signs it, exactly as a step approval without `signature: passkey`.
+ *
+ * Stored per exact command. A pull that edits it asks again, because what was
+ * read and approved is the string, not the field.
+ */
+/**
+ * Did a page this server served send the request? (reviews of 34ee6b8a)
+ *
+ * CORS lets any loopback origin talk to this server, so the board header
+ * alone would let a page on ANOTHER local port - any dev server, any local
+ * web app - approve a repository command for this machine; the internal
+ * token this route used to need kept browsers out. A browser stamps Origin
+ * on every POST and a page cannot forge it. So the page must be:
+ *
+ * - the very address the request was sent to (Origin host = Host): a page
+ *   squatting `[::1]:<this port>` - this server binds 127.0.0.1 - names
+ *   itself, not the address it is calling;
+ * - the literal address this server binds, which neither a DNS-rebinding
+ *   page nor an IPv6 squatter on `localhost` can claim;
+ * - on the port the request arrived on.
+ *
+ * Or an origin configured explicitly in AGENFK_BOARD_ORIGINS (the vite dev
+ * board). Not the implicit localhost:5173 boardOrigins() falls back to with no
+ * UI served: whatever happens to listen there would be trusted unasked.
+ */
+function fromOwnBoardPage(req: any): boolean {
+  const origin = typeof req.headers.origin === 'string' ? req.headers.origin : '';
+  if (!origin) return false;
+  const configured = (process.env.AGENFK_BOARD_ORIGINS ?? '').split(',').map(o => o.trim()).filter(Boolean);
+  if (configured.includes(origin)) return true;
+  let page: URL;
+  try { page = new URL(origin); } catch { return false; }
+  /*
+   * The LITERAL address this server binds - 127.0.0.1 by default - never the
+   * name `localhost`: localhost resolves to [::1] too, so a page served from
+   * [::1]:<this port> by something else can drop its listener and have its
+   * next request fall back to this IPv4 one, same Origin, same Host. The
+   * desktop shell, the only place the approval is offered, loads 127.0.0.1.
+   */
+  const bound = approvalPageHost(BIND_HOST);
+  return bound !== null && page.hostname === bound && page.protocol === 'http:' && page.host === String(req.headers.host ?? '')
+    && Number(page.port || 80) === req.socket?.localPort;
+}
+
+/**
+ * The hostname a board page approving a command must have, given what the
+ * server binds - canonical and NUMERIC, or null for "none implicitly".
+ *
+ * - An IPv4 literal is itself; an IPv6 literal is canonicalised the way the
+ *   URL parser writes an Origin (`[::1]`), so an expanded form still matches.
+ * - A wildcard (0.0.0.0, ::) is reached by the desktop on 127.0.0.1.
+ * - A NAME - `localhost` above all - is null: it may resolve to an address
+ *   somebody else holds, which is the IPv6-to-IPv4 handoff this route closes.
+ *   Such a setup approves only from an origin set in AGENFK_BOARD_ORIGINS.
+ */
+export function approvalPageHost(bindHost: string): string | null {
+  const host = bindHost.trim();
+  const kind = net.isIP(host);
+  if (kind === 4) return host === '0.0.0.0' ? '127.0.0.1' : host;
+  if (kind === 6) {
+    let canonical: string;
+    try { canonical = new URL(`http://[${host}]`).hostname; } catch { return null; }
+    return canonical === '[::]' ? '127.0.0.1' : canonical;
+  }
+  return null;
+}
+
+app.post("/projects/:id/approve-file-command", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  if (refuseUnlessBoard(req, res)) return;
+  if (!fromOwnBoardPage(req)) {
+    return res.status(403).json({ error: "Approve it from the board this server serves: open it at http://127.0.0.1:<port> (the desktop app does); a page from another origin cannot approve a command for this machine (a dev board needs its origin in AGENFK_BOARD_ORIGINS)." });
+  }
+  const project: any = await storage.getProject(req.params.id);
+  if (!project) return res.status(404).json({ error: "Project not found" });
+  const command = typeof req.body?.command === 'string' ? req.body.command : '';
+  if (!command.trim()) return res.status(400).json({ error: "command is required" });
+  // Not approvable at all while it holds characters a screen cannot show: what a person read
+  // would not be what runs (review of 34ee6b8a). The fix is in the file, not here.
+  const hidden = hiddenCharacters(command);
+  if (hidden.length) {
+    return res.status(400).json({ error: `This command holds characters that cannot be shown faithfully (${hidden.join(', ')}), so it cannot be approved as read. Remove them from .agenfk/project.json.` });
+  }
+
+  const fingerprint = commandFingerprint(command);
+  const authority = gateAuthority(req, res, { purpose: 'file-command', itemId: project.id, checkId: fingerprint }, false);
+  if (!authority) return;
+  const approved: string[] = Array.isArray(project.approvedFileCommands)
+    ? project.approvedFileCommands
+    : [];
+  // Who said yes, and how sure we are of it - the fingerprint list alone could not say.
+  const rec = { fingerprint, command: command.trim(), at: new Date().toISOString(), by: 'board', ...authority };
+  const records: any[] = Array.isArray(project.fileCommandApprovals) ? project.fileCommandApprovals : [];
+  await storage.updateProject(project.id, {
+    approvedFileCommands: approved.includes(fingerprint) ? approved : [...approved, fingerprint],
+    fileCommandApprovals: [...records.filter(r => r?.fingerprint !== fingerprint), rec],
+  } as any);
+  recordHubEvent({ type: 'command.approved', projectId: project.id, payload: { source: 'project-file', fingerprint, command: rec.command, by: 'board', authority: authority.authority } });
+  res.json({ approved: true, fingerprint, authority: authority.authority });
+}));
+
+app.get("/projects/:id/settings", asyncHandler(async (req: any, res: any) => {
+  const project = await storage.getProject(req.params.id);
+  if (!project) return res.status(404).json({ error: "Project not found" });
+  const flow = project.flowId ? await storage.getFlow(project.flowId) : null;
+  /*
+   * What the REPOSITORY declares about itself, read from its own checkout.
+   *
+   * The server stays the single owner of state — this is an input it reads,
+   * not a second writer. A file that cannot be read at all is simply no
+   * opinion: the stored settings stand, exactly as before this existed.
+   */
+  const declared = readDeclaredSettings(project.projectRoot);
+  res.json({
+    projectId: project.id,
+    /* The problems belong in the answer, not in a log nobody opens: a typo in
+       a hand-edited file is only fixable by the person who wrote it. */
+    fileProblems: declared.problems,
+    rows: describeProjectSettings({ ...project, ...declared.settings } as any, {
+      fromFile: declared.keys,
+      filePath: declared.path,
+      // The name of the flow actually in force — the default's name when the
+      // project has not chosen one, so the row reads as a value rather than as
+      // a blank with a badge.
+      flowName: flow?.name ?? DEFAULT_FLOW.name,
+      worktreeRoot: defaultWorktreeRoot(),
+      homeDir: os.homedir(),
+    }),
+    /*
+     * The commands the repository asks this machine to run, and whether a
+     * person here has approved each - what the screen offers to approve
+     * (34ee6b8a). Judged by the same approvalFor the verify uses, so the
+     * screen and the refusal can never disagree about one command.
+     */
+    // verifyCommand only: it is the one this machine runs from the file. A file's setupCommand is
+    // never run (worktree setup reads the stored row), so approving it would approve nothing.
+    fileCommands: (['verifyCommand'] as const)
+      .filter(key => typeof declared.settings[key] === 'string' && String(declared.settings[key]).trim())
+      .map(key => {
+        const command = String(declared.settings[key]);
+        const verdict = approvalFor({ key, command }, ((project as any).approvedFileCommands ?? []) as string[]);
+        return { key, command, fingerprint: verdict.fingerprint ?? commandFingerprint(command), approved: verdict.allowed, hidden: hiddenCharacters(command) };
+      }),
+  });
+}));
+
+app.post("/decompositions/review", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const body = req.body ?? {};
+  // Reachable for an ARRAY only: express's strict JSON parser rejects a bare
+  // string, number or null with its own 400 before this handler runs, and
+  // `?? {}` covers a missing body. Kept because an array IS valid JSON and
+  // would otherwise be reviewed as an object with no fields at all.
+  if (Array.isArray(body) || typeof body !== 'object') {
+    return res.status(400).json({ error: 'Body must be a proposal object: { objective, items }.' });
+  }
+  const reviewed = reviewProposal({ objective: body.objective, items: Array.isArray(body.items) ? body.items : [] });
+  // A 200 WITH ISSUES, not a 4xx. The issues are what the screen draws beside
+  // each row; a 4xx would render a reviewable proposal as a failed request and
+  // leave the UI nothing to show but an error toast.
+  //
+  // `contractVersion` is echoed, not trusted: the contract asks the agent to
+  // stamp one, and a consumer that drops it makes the versioning dead on
+  // arrival for whoever has to parse an old answer later.
+  res.json({ ...reviewed, contractVersion: body.contractVersion ?? null });
+}));
+
+app.post("/herdr/panes/:paneId/focus", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const { socket } = req.body ?? {};
+  if (typeof socket !== 'string' || !socket) return res.status(400).json({ error: 'socket (string) required' });
+  const r = await focusPane(socket, String(req.params.paneId));
+  return r.ok ? res.json({ ok: true }) : res.status(502).json(r.error);
+}));
+
 app.get("/items/:id/git-status", limitExpensive, asyncHandler(async (req: any, res: any) => {
   const item: any = await storage.getItem(req.params.id);
   if (!item) return res.status(404).json({ error: "Item not found" });
@@ -3673,7 +4216,41 @@ const stateOfRecord = (r: any): string | null => (currentStates(r) && typeof r?.
  * Used by the endpoint below and by the check engine. Resolves to the stored
  * record, or to a refusal.
  */
-type CaptureOutcome = { record: any } | { status: number; error: string; message: string };
+type CaptureOutcome =
+  | { record: any }
+  | { status: number; error: string; message: string; fingerprint?: string; command?: string };
+
+/**
+ * The command a project's steps and final verify actually run, and whether it
+ * came from the repository's own file.
+ *
+ * The file wins over the stored row, the same precedence the settings screen
+ * and the final verify use, so a project that travels with its `verifyCommand`
+ * is verifiable without anybody re-setting it by hand. The stored
+ * `testReport.command` is more specific and stays first.
+ *
+ * `fromFile` is what the approval gate keys on: only a command that arrived
+ * with a clone needs reading before it runs.
+ */
+function effectiveVerifyCommand(project: any): { command: string | null; fromFile: boolean } {
+  const report = typeof project?.testReport?.command === 'string' ? project.testReport.command : null;
+  if (report) return { command: report, fromFile: false };
+  const declared = readDeclaredSettings(project?.projectRoot).settings.verifyCommand;
+  if (typeof declared === 'string' && declared.trim()) return { command: declared, fromFile: true };
+  const stored = typeof project?.verifyCommand === 'string' ? project.verifyCommand : null;
+  return { command: stored, fromFile: false };
+}
+
+/**
+ * The command the FINAL verify runs: the repository's file, else the stored
+ * row - resolved exactly as the final step resolves it, so what the leave plan
+ * says is what runs. Unlike `effectiveVerifyCommand`, a test report's command
+ * does not stand in for it: the final gate runs the project's own command.
+ */
+function finalVerifyCommandOf(project: any): string | undefined {
+  const declared = readDeclaredSettings(project?.projectRoot).settings.verifyCommand;
+  return (typeof declared === 'string' ? declared : project?.verifyCommand) || undefined;
+}
 async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) => void; lazyOver?: any; onPhase?: (phase: VerifyPhase) => void }): Promise<CaptureOutcome> {
   const project: any = await storage.getProject(item.projectId);
   const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
@@ -3681,9 +4258,28 @@ async function captureStepRecord(item: any, opts?: { onOutput?: (chunk: string) 
     return { status: 400, error: 'NO_TREE', message: 'This card has no tree to run in: set the project root (agenfk verify from the repository sets it) or give the card a worktree.' };
   }
   const setting: TestReportSetting | undefined = project?.testReport;
-  const command = setting?.command ?? project?.verifyCommand;
+  const resolved = effectiveVerifyCommand(project);
+  const command = resolved.command;
   if (!command) {
     return { status: 400, error: 'NO_REPORT_COMMAND', message: 'Nothing to run: set a test report (agenfk update-project <id> --test-report-...) or a verifyCommand.' };
+  }
+  /*
+   * A command that arrived with the repository does not run until somebody on
+   * this machine has read it. Checked HERE, not only on the final verify: the
+   * step checks run the same command on an intermediate step, and running it
+   * there without approval would be the hole the approval exists to close.
+   */
+  if (resolved.fromFile) {
+    const verdict = approvalFor(
+      { key: 'verifyCommand', command },
+      ((project as any)?.approvedFileCommands ?? []) as string[],
+    );
+    if (!verdict.allowed) {
+      return {
+        status: 400, error: 'COMMAND_NEEDS_APPROVAL', message: verdict.reason ?? '',
+        fingerprint: verdict.fingerprint, command,
+      };
+    }
   }
 
   /*
@@ -4273,7 +4869,8 @@ function ranAsSetNow(r: any, setting: TestReportSetting): boolean {
 async function reusableCapture(item: any, project: any, root: string, sha: string | null, state: string | null = null, suite: string | null = null): Promise<any | null> {
   if (!sha && !state && !suite) return null;
   const setting: TestReportSetting | undefined = project?.testReport;
-  const command = setting?.command ?? project?.verifyCommand;
+  // As the capture resolves it (captureStepRecord), the repository's file included.
+  const command = effectiveVerifyCommand(project).command;
   if (!command) return null;
   await indexProjectGreens(item.projectId);
   const candidates: any[] = [];
@@ -4307,7 +4904,12 @@ app.post("/items/:id/step-records/capture", asyncHandler(async (req: any, res: a
   const item: any = await storage.getItem(req.params.id);
   if (!item) return res.status(404).json({ error: "Item not found" });
   const outcome = await captureStepRecord(item);
-  if ('error' in outcome) return res.status(outcome.status).json({ error: outcome.error, message: outcome.message });
+  if ('error' in outcome) {
+    return res.status(outcome.status).json({
+      error: outcome.error, message: outcome.message,
+      ...(outcome.fingerprint ? { fingerprint: outcome.fingerprint } : {}),
+    });
+  }
   res.json(outcome.record);
 }));
 
@@ -6511,7 +7113,9 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
   const skipped: Array<{ id: string; error: string }> = [];
   // Separate from `skipped`: these entries DID apply, with a caveat.
   const warnings: Array<{ id: string; warning: string }> = [];
-  const parentIdsToSync = new Set<string>();
+  // parent -> whether something under it was released (see RollUp)
+  const parentIdsToSync = new Map<string, boolean>();
+  const syncLater = (id: string, released: boolean) => parentIdsToSync.set(id, (parentIdsToSync.get(id) ?? false) || released);
   const projectIds = new Set<string>();
 
   for (const { id, updates: bodyUpdates } of items) {
@@ -6584,7 +7188,7 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
       await archiveRecursively(id);
       if (hasBulkRef) await storage.updateItem(id, bulkRefUpdates);
       noteUnverifiedLink();
-      if (currentItem.parentId) parentIdsToSync.add(currentItem.parentId);
+      if (currentItem.parentId) syncLater(currentItem.parentId, true);
       continue;
     }
 
@@ -6633,13 +7237,13 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
       projectIds.add(updated.projectId);
 
       if (updated.parentId) {
-        parentIdsToSync.add(updated.parentId);
+        syncLater(updated.parentId, updated.status !== currentItem.status && await landedFinished(updated));
       }
       // A re-parent changes the child set of the old parent too, so it needs
       // re-deriving as well — otherwise it keeps a status computed from a child
       // it no longer has.
       if (currentItem.parentId && currentItem.parentId !== updated.parentId) {
-        parentIdsToSync.add(currentItem.parentId);
+        syncLater(currentItem.parentId, true);
       }
     } catch (e) {
       // Previously swallowed entirely, so a failed write looked like a success
@@ -6656,8 +7260,8 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
   io.emit('items_updated');
   projectIds.forEach(projectId => io.emit('project_switched', { projectId }));
 
-  for (const parentId of parentIdsToSync) {
-    await syncParentStatus(parentId);
+  for (const [parentId, released] of parentIdsToSync) {
+    await syncParentStatus(parentId, { released });
   }
 
   // `skipped` and `warnings` are both additive — existing callers read `results`
@@ -6849,7 +7453,7 @@ app.put("/items/:id", limitBoardRoutes, asyncHandler(async (req: any, res: any) 
     await archiveRecursively(req.params.id);
     if (hasExternalRefUpdate || Object.keys(worktreeUpdates).length) await storage.updateItem(req.params.id, { ...(externalRef.updates as any), ...worktreeUpdates } as any);
     io.emit('items_updated');
-    if (currentItem.parentId) await syncParentStatus(currentItem.parentId);
+    if (currentItem.parentId) await syncParentStatus(currentItem.parentId, { released: true });
     return respondWithStoredItem();
   }
 
@@ -6946,14 +7550,14 @@ app.put("/items/:id", limitBoardRoutes, asyncHandler(async (req: any, res: any) 
     io.emit('project_switched', { projectId: updated.projectId });
 
     if (updated.parentId) {
-      await syncParentStatus(updated.parentId);
+      await syncParentStatus(updated.parentId, { released: statusChanged && await landedFinished(updated) });
     }
     // A re-parent changes the child set of BOTH parents. Without this the old
     // parent keeps a status derived from a child it no longer has — e.g. it sat
     // at IN_PROGRESS only because of the child that just moved away, and should
     // now roll up to DONE.
     if (currentItem.parentId && currentItem.parentId !== updated.parentId) {
-      await syncParentStatus(currentItem.parentId);
+      await syncParentStatus(currentItem.parentId, { released: true });
     }
 
     if (status !== undefined && status !== currentItem.status) {
@@ -7010,7 +7614,7 @@ app.delete("/items/:id", limitBoardRoutes, asyncHandler(async (req: any, res: an
     io.emit('items_updated');
 
     if (itemToDelete.parentId) {
-      await syncParentStatus(itemToDelete.parentId);
+      await syncParentStatus(itemToDelete.parentId, { released: true });
     }
 
     res.status(204).send();
@@ -7314,6 +7918,12 @@ const staysOn = (status: string) => `\n\nThe advance was refused. Item stays on 
 interface StepGate {
   results: CheckResult[];
   blocked: boolean;
+  /**
+   * Set when the gate refused because a command from the repository has not
+   * been approved: the caller answers with `COMMAND_NEEDS_APPROVAL`, the shape
+   * the CLI already renders, rather than a generic failed-check reply.
+   */
+  approval?: { message: string; fingerprint?: string; command?: string };
   /** CGLAB-428: the checks leaving this step would run, switched off by the org's hub. */
   disabled: Array<{ id: string; source: string }>;
   /** The capture this verify ran or reused, for saying which (d26832d6 #15). */
@@ -7533,7 +8143,10 @@ function deferredToCommand(flow: { steps: any[] }, status: string, project: any,
   const sorted = sortedFlowSteps(flow as any);
   const next = sorted[sorted.findIndex(st => st.name === status) + 1];
   const final = !next || next.name === Status.DONE || isBoundaryStep(next);
-  return final && !project?.testReport && project?.verifyCommand ? ['suite-green'] : [];
+  // The EFFECTIVE command, not only the stored row: a project that declares
+  // its verifyCommand in `.agenfk/project.json` must defer the suite to it too.
+  const { command } = effectiveVerifyCommand(project);
+  return final && !project?.testReport && command ? ['suite-green'] : [];
 }
 
 /**
@@ -7789,7 +8402,7 @@ export interface LeavePlan {
   /** Why the card will be held instead of advancing, when it will be. */
   held?: string;
   /** Why verify will refuse before running anything: no verify command on the final step, or no tree to run in. */
-  refuses?: 'NO_VERIFY_COMMAND' | 'NO_TREE';
+  refuses?: 'NO_VERIFY_COMMAND' | 'COMMAND_NEEDS_APPROVAL' | 'NO_TREE';
   /** How a run may be smaller than the whole suite: 'affected-tests' (a related-tests command), 'reuse' (an unchanged tree's green). */
   narrowing: string[];
   /** One line for the agent. */
@@ -7811,7 +8424,7 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown 
   const cap = midAnchor ? { ...judged, runs: false, checks: [] as string[], entryBaseline: null, entryHeld: false } : judged;
   // A mid-flow anchor skips the whole gate block - the person-first wait included.
   const waiting = midAnchor ? false : await waitsOnPerson(item, flow, project);
-  const verifyCommand: string | undefined = project?.verifyCommand || undefined;
+  const verifyCommand: string | undefined = finalVerifyCommandOf(project);
   // As the capture resolves it (captureStepRecord): the report's command, else the verify command.
   const captureCommand: string | undefined = project?.testReport?.command ?? verifyCommand;
   // On the move a verify command gates (the final step, a boundary), it runs unless the suite is deferred to the parent.
@@ -7827,7 +8440,12 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown 
   // NO_TREE refuses when something needs the capture: a check of THIS step, or the next step's BLOCKING
   // checks reading its entry baseline (the gate's entry-baseline hold). An entry only non-blocking checks
   // read lets the card move without one, and a verify command alone runs wherever it is spawned.
+  // 2a181a8d: an unapproved repository command is refused before it runs - at the close (before the gate),
+  // and in a capture whose suite IS the file's command - so ahead of NO_TREE, and nothing runs.
+  const effective = effectiveVerifyCommand(project);
+  const captureNeedsApproval = cap.runs && effective.fromFile && !!effective.command && !!unapprovedFileVerify(project, effective.command);
   const refuses: LeavePlan['refuses'] = final && !toParent && !verifyCommand ? 'NO_VERIFY_COMMAND'
+    : (final && !toParent && unapprovedFileVerify(project)) || captureNeedsApproval ? 'COMMAND_NEEDS_APPROVAL'
     : !root && (cap.checks.length > 0 || (!!cap.entryBaseline && cap.nextNeedsPerTestEntry)) ? 'NO_TREE' : undefined;
   const role = (sorted[index] as any)?.role;
   const narrowing = runs === 'nothing' ? [] : [
@@ -7841,15 +8459,22 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown 
   const smaller = narrowing.includes('affected-tests') ? ' The suite part may run only the tests the change affects, or reuse the last green run of an unchanged tree.'
     : runs === 'suite' ? ' The suite part may reuse the last green run of an unchanged tree.' : '';
   const dontPreRun = ` Don't run the full suite yourself first - run only the tests you are iterating on, then verify.`;
+  // Offered to run BY HAND only when running it needs nobody's say-so: the stored command, or the
+  // repository's once approved. Named here unapproved, it would walk past the approval gate.
+  const handRunnable = verifyCommand && (verifyCommand === project?.verifyCommand
+    || approvalFor({ key: 'verifyCommand', command: verifyCommand }, (project?.approvedFileCommands ?? []) as string[]).allowed)
+    ? verifyCommand : undefined;
   const parts: string[] = [];
-  if (refuses === 'NO_VERIFY_COMMAND') parts.push(`Leaving ${step} needs the project's verify command, and none is set: verify will refuse until one is (\`agenfk update-project <id> --verify-command "<cmd>"\`).`);
+  // Not the command itself: the plan says it is refused, not what to run instead (34ee6b8a).
+  if (refuses === 'COMMAND_NEEDS_APPROVAL') parts.push(`Leaving ${step} runs the repository's own verify command, which nobody on this machine has approved: verify will refuse, and run nothing, until a person approves it on the board (the project's Settings in \`agenfk ui\`). An agent cannot approve it.`);
+  else if (refuses === 'NO_VERIFY_COMMAND') parts.push(`Leaving ${step} needs the project's verify command, and none is set: verify will refuse until one is (\`agenfk update-project <id> --verify-command "<cmd>"\`).`);
   else if (refuses === 'NO_TREE') parts.push(`Leaving ${step} runs the suite, but this card has no tree to run it in: verify will refuse until the project root is set or the card has a worktree.`);
   else if (runs === 'suite') {
     parts.push(`Leaving ${step} runs the project's suite${q(captureCommand)} for you${why}${entry}${thenCommand ? `, then the project's verify command${q(thenCommand)}, which gates the close` : ''}${closesOnCapture ? '; it is the verify command, so its green closes the card (after a partial run, a reused green, or a tree that moved, the whole command runs too)' : ''}.${dontPreRun}${smaller}`);
     if (toParent) parts.push(`The suite's green itself is deferred to the parent [${String(toParent.id).slice(0, 8)}] "${toParent.title}", whose final verify runs it.`);
   } else if (runs === 'verify-command') parts.push(`Leaving ${step} runs the project's verify command${q(gateCommand)} for you, and the card moves only if it passes.${dontPreRun}`);
   else if (toParent) parts.push(`Leaving ${step} runs no tests on this card: the project's suite is deferred to the parent [${String(toParent.id).slice(0, 8)}] "${toParent.title}", whose final verify runs it.`);
-  else parts.push(`Leaving ${step} runs no tests. If its exit criteria ask for passing tests, running them is yours${verifyCommand ? ` (\`${verifyCommand}\`, or only the tests your change affects)` : ''}.`);
+  else parts.push(`Leaving ${step} runs no tests. If its exit criteria ask for passing tests, running them is yours${handRunnable ? ` (\`${handRunnable}\`, or only the tests your change affects)` : ''}.`);
   if (held) parts.push(`${runs === 'suite' ? 'After that, verify' : 'Verify'} will hold the card: ${held}.`);
   if (waiting && runs !== 'nothing') parts.push('It first waits for a person\'s approval on the board; the suite runs on the verify after it.');
   return {
@@ -7888,7 +8513,7 @@ export interface LeavePrediction {
  */
 async function predictLeave(item: any, plan: LeavePlan, flow: { steps: any[] }, project: any): Promise<LeavePrediction> {
   // The step's checks run before the final gate's refusal: a capture is still spent on a verify that then refuses.
-  if (plan.refuses === 'NO_TREE' || (plan.refuses && plan.runs !== 'suite')) return { mode: 'none', advice: `On this tree it would run nothing: verify refuses (${plan.refuses}).` };
+  if (plan.refuses === 'NO_TREE' || plan.refuses === 'COMMAND_NEEDS_APPROVAL' || (plan.refuses && plan.runs !== 'suite')) return { mode: 'none', advice: `On this tree it would run nothing: verify refuses (${plan.refuses}).` };
   if (plan.runs === 'nothing') return { mode: 'none', advice: 'On this tree it would run nothing.' };
   const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
   const sorted = sortedFlowSteps(flow as any);
@@ -7984,6 +8609,7 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const disabled = disabledChecksOf(flow.steps, item.status);
   let capture: any = null;
   let captureError: string | undefined;
+  let approval: { message: string; fingerprint?: string; command?: string } | undefined;
   // 961f301d: waiting on a person, the slow checks wait too (see waitsOnPerson).
   const waitingOn = opts?.personFirst ? awaitingPersonCommands(resolved, flow, project) : [];
   const deferToApproval = opts?.personFirst
@@ -8003,7 +8629,11 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     const run = opts?.run;
     const lazyOver = await entryCaptureOf(item, sorted, index);
     const out = await captureStepRecord(item, { ...(run ? { onOutput: (chunk: string) => appendRunOutput(run, chunk), onPhase: (phase: VerifyPhase) => setRunPhase(run, phase) } : {}), lazyOver });
-    if ('error' in out) captureError = out.message; else capture = out.record;
+    if ('error' in out) {
+      if (out.error === 'COMMAND_NEEDS_APPROVAL') {
+        approval = { message: out.message, fingerprint: out.fingerprint, command: out.command };
+      } else captureError = out.message;
+    } else capture = out.record;
     // beae41a0: the suite is done; what follows (command checks, fetches) is the step's checks again.
     setRunPhase(run, { state: 'checking' });
     // a36047ea: a whole run that only code changes caused, in a project that could have run fewer.
@@ -8012,6 +8642,9 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
       if (hint) capture = { ...capture, relatedHint: hint };
     }
   }
+  // Refused before anything else runs: an unapproved repository command is not
+  // a failed check, it is a question for the person.
+  if (approval) return { results: [], blocked: true, approval, disabled, step: item.status };
   const records: any[] = ((await storage.getItem(item.id)) as any)?.stepRecords ?? [];
   const lastOf = (pred: (r: any) => boolean) => [...records].reverse().find(pred) ?? null;
   const prev = sorted[index - 1];
@@ -8192,7 +8825,12 @@ async function noTestReportFix(item: any, gate: StepGate): Promise<{ line: strin
   const project: any = await storage.getProject(item.projectId);
   const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
   let scripts: Record<string, string> = {};
-  try { if (root) scripts = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).scripts ?? {}; } catch { /* not a node project */ }
+  // The repository's package.json, bounded like the project file: it arrives with the clone.
+  const pkg = root ? readSmallRegularFile(path.join(root, 'package.json'), 1024 * 1024) : null;
+  try { if (typeof pkg === 'string') scripts = JSON.parse(pkg).scripts ?? {}; } catch { /* not a node project */ }
+  // The STORED command only, never the repository's file: the fix is for the agent to run by
+  // itself, and a stored test report runs as trusted - built from the file, it would carry a
+  // command nobody approved past the approval gate.
   const s = suggestTestReport(String(project?.verifyCommand ?? ''), scripts);
   const fix = s ? `agenfk update-project ${item.projectId} --test-report-format ${s.format} --test-report-command "${s.command.replace(/(["\\$`])/g, '\\$1')}" --test-report-path ${s.reportPath}` : null;
   // check-ignore exits 1 for "not ignored"; anything else (not a repository, git failed) says nothing.
@@ -8242,6 +8880,23 @@ async function refuseOnChecks(res: any, item: any, gate: StepGate) {
   });
 }
 
+/**
+ * The refusal a close owes when it would run the repository's own
+ * verifyCommand (.agenfk/project.json) unapproved, or null (2a181a8d). One
+ * definition for the check before the gate and the one at the close, so the
+ * two cannot disagree about one command.
+ */
+export function unapprovedFileVerify(
+  project: any,
+  // The exact string the caller selected to run, when it has one: judged as it will run, never re-read -
+  // a file edited between selecting and checking must not pass one command and run another (Codex review).
+  declared: unknown = readDeclaredSettings(project?.projectRoot).settings.verifyCommand,
+): { error: 'COMMAND_NEEDS_APPROVAL'; message: string; fingerprint?: string; command: string } | null {
+  if (typeof declared !== 'string') return null;
+  const verdict = approvalFor({ key: 'verifyCommand', command: declared }, ((project?.approvedFileCommands ?? []) as string[]));
+  return verdict.allowed ? null : { error: 'COMMAND_NEEDS_APPROVAL', message: verdict.reason ?? '', fingerprint: verdict.fingerprint, command: declared };
+}
+
 /** A response stand-in that writes a verify reply into a background run. */
 function runRecorder(run: ValidateRun) {
   return {
@@ -8255,6 +8910,12 @@ function runRecorder(run: ValidateRun) {
       // 5a8d22e6: a named cause and its fix reach whoever follows the run, not only a sync caller.
       if (typeof payload?.error === 'string') (run as any).error = payload.error;
       if (payload && 'fix' in payload) (run as any).fix = payload.fix;
+      // 2a181a8d: a COMMAND_NEEDS_APPROVAL refusal names what to approve - the background caller needs it too.
+      if (typeof payload?.fingerprint === 'string') (run as any).fingerprint = payload.fingerprint;
+      if (typeof payload?.command === 'string') (run as any).command = payload.command;
+      // 8024f6c4: a CHILDREN_OPEN refusal lists every open card, not only the ten its message shows.
+      if (Array.isArray(payload?.children)) (run as any).children = payload.children;
+      if (payload?.incomplete === true) (run as any).incomplete = true;
       // Keep the live full output when we have it; fall back to the preview.
       if (!run.output && payload?.output) run.output = payload.output;
       run.finishedAt = new Date();
@@ -8354,9 +9015,25 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   const anchorNames = new Set(sorted.filter((st: any) => st.isAnchor).map((st: any) => String(st.name)));
   const isWorkingStatus = (st: string) => !anchorNames.has(st);
   const endsFlowHere = leavingEndsFlow(sorted as any, currentFlowStep.index);
-  const checkStrays = async (r0: any): Promise<{ refused: true } | { refused: false; res: any }> => {
-    if (!endsFlowHere) return { refused: false, res: r0 };
+  const checkStrays = async (r0: any, ends: boolean = endsFlowHere): Promise<{ refused: true } | { refused: false; res: any }> => {
+    if (!ends) return { refused: false, res: r0 };
+    /*
+     * 8024f6c4: a card does not close while anything under it is unfinished.
+     * BUG 759b606c reached DONE with two children in TODO - accepted as done
+     * while its work did not exist. Asked here because every route that ends
+     * the flow asks this, at its last step before writing: the entry (before
+     * any check or suite), a close on a green, a close deferred to the parent,
+     * the first anchor's advance, and after the command ran - so work that
+     * appears or reopens DURING the verify is seen too.
+     */
     const { strays, claimless } = await strayStagedFor(item, (project as any)?.projectRoot, isWorkingStatus);
+    // After the git read, not before it: a child created while that awaited
+    // would otherwise go unseen by the very check meant to catch it.
+    const scan = await openDescendants(item.id);
+    if (holdsClose(scan)) {
+      r0.status(400).json(childrenOpenRefusal(item, scan));
+      return { refused: true };
+    }
     if (!strays.length) return { refused: false, res: r0 };
     if (claimless.length) return { refused: false, res: withNote(r0, `⚠️ ${describeUnowned(strays, claimless)}`) };
     r0.status(422).json({ status: item.status, message: `❌ The card cannot close yet. ${describeStrays(item, strays)}${staysOn(item.status)}` });
@@ -8370,6 +9047,23 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const early = await checkStrays(res);
     if (early.refused) return;
     res = early.res;
+  }
+
+  /*
+   * 2a181a8d: a close that would run the repository's own unapproved
+   * verifyCommand is refused HERE, before the gate - otherwise its capture can
+   * run a stored test report's whole suite only for the final check to throw
+   * the run away. Not when the close is deferred to an open parent (verifyAt
+   * 'parent'): that close runs no command, so there is nothing to approve. The
+   * final check below still stands for a gate handed in from the background.
+   */
+  if (!opts?.gate) {
+    const upcoming = sorted[currentFlowStep.index + 1];
+    const finalMove = !upcoming || upcoming.name === Status.DONE || isBoundaryStep(upcoming);
+    if (finalMove) {
+      const refusal = unapprovedFileVerify(project);
+      if (refusal && !(await parentToDeferTo(item, activeFlow))) return res.status(400).json(refusal);
+    }
   }
 
   let gate = opts?.gate;
@@ -8402,6 +9096,12 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         const fresh: any = await storage.getItem(itemId);
         if (!fresh) return recorder.status(404).json({ status: item.status, message: '❌ Item was deleted while the checks ran.' });
         const g = await runStepGate(fresh, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { run, answers: opts?.answers });
+        if (g.approval) {
+          return recorder.status(400).json({
+            error: 'COMMAND_NEEDS_APPROVAL', message: g.approval.message,
+            fingerprint: g.approval.fingerprint, command: g.approval.command,
+          });
+        }
         if (g.blocked) return refuseOnChecks(recorder, fresh, g);
         return handleValidateProgress(itemId, command, recorder, undefined, undefined, { gate: g, run, actor: opts?.actor, agentReports: opts?.agentReports, answers: opts?.answers });
       })()
@@ -8418,6 +9118,12 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       return;
     }
     gate = await runStepGate(item, activeFlow, effectiveRoot ?? null, opts?.actor, opts?.agentReports, { answers: opts?.answers });
+    if (gate.approval) {
+      return res.status(400).json({
+        error: 'COMMAND_NEEDS_APPROVAL', message: gate.approval.message,
+        fingerprint: gate.approval.fingerprint, command: gate.approval.command,
+      });
+    }
     if (gate.blocked) return refuseOnChecks(res, item, gate);
     // The gate may have written a capture and produced records: build the
     // exit record on top of what is stored now, not on the copy read above.
@@ -8491,6 +9197,15 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const exitCriteria = (currentFlowStep.step as any).exitCriteria as string | undefined;
     const exitNote = exitCriteria ? `\n**Exit criteria acknowledged**: ${exitCriteria}` : '';
     const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED\n\n**Step**: ${item.status} → ${codingStep.name}${exitNote}${passedChecks ? `\n\n${passedChecks}` : ''}`, timestamp: new Date() };
+    /*
+     * A flow whose coding step is its end closes here - judged on the step
+     * this branch WRITES, which need not be the next one (START -> WAIT
+     * (special) -> DONE picks DONE) - and a re-entry from a background gate
+     * skipped the entry check. Ask before the write.
+     */
+    const closing = await checkStrays(res, finishedStatusesOf(activeFlow).has(String(codingStep.name)));
+    if (closing.refused) return;
+    res = closing.res;
     const leftTodo = await commitOnLeave(res);
     if (leftTodo.refused) return;
     res = leftTodo.res;
@@ -8602,15 +9317,25 @@ async function handleValidateProgress(itemId: string, command: string | undefine
    * reply, never a 400, because older skills still pass one - and it cannot
    * stand in for a missing project command either. Intermediate steps keep
    * the optional caller command: there it can only add a check.
+   *
+   * THE COMMAND MAY HAVE ARRIVED WITH THE REPOSITORY.
+   *
+   * `.agenfk/project.json` is what makes a project's configuration travel, and
+   * it is also a way for a clone to hand this machine a string it will run. So
+   * a verifyCommand that came from the file runs only after somebody on this
+   * machine has read it — once per exact command, because a pull that edits it
+   * is a new thing to read.
+   *
+   * The file wins over the stored row, here as on the settings screen. A
+   * command passed in the call is ignored on the final step (CGLAB-378) and
+   * kept on intermediate steps, where it can only add a check.
    */
   const projectVerifyCommand = (project as any)?.verifyCommand as string | undefined;
-  const resolvedCommand = isFinalStep ? projectVerifyCommand : command;
-  const ignoredCommand = isFinalStep && command && command !== projectVerifyCommand ? command : undefined;
-  const commandNote = ignoredCommand ? ignoredCommandNote(ignoredCommand, projectVerifyCommand) : undefined;
-  // The async 202 is sent on the bare response: the run's outcome carries the
-  // note, and the CLI prints both.
-  const bareRes = res;
-  if (commandNote) res = withNote(res, commandNote);
+  const declaredHere = readDeclaredSettings((project as any)?.projectRoot);
+  const fileVerify = typeof declaredHere.settings.verifyCommand === 'string'
+    ? String(declaredHere.settings.verifyCommand)
+    : null;
+  const projectVerify = fileVerify ?? projectVerifyCommand;
   /*
    * 281adef0: a flow with verifyAt 'parent' runs the project's suite once, at
    * the top-level card. A card whose parent is still OPEN closes here without
@@ -8622,6 +9347,25 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   // The gate's decision stands: if it judged the suite as the card's own, the close runs it.
   // Asked again even when it deferred - the parent may have started its own verify since.
   const deferTo = isFinalStep && (!gate || gate.deferredTo) ? await parentToDeferTo(item, activeFlow) : null;
+  /*
+   * Gated on the command that would ACTUALLY RUN, not on "the caller passed
+   * none": CGLAB-378 ignores a caller command on the final step, so a call
+   * carrying one still ends up running the file's command — and that is
+   * exactly the command that needs approval. Not on a close deferred to its
+   * parent: that close runs no command (2a181a8d).
+   */
+  if (isFinalStep && !deferTo && fileVerify !== null) {
+    // The string selected above - the one that runs - not the file as it reads now.
+    const refusal = unapprovedFileVerify(project, fileVerify);
+    if (refusal) return res.status(400).json(refusal);
+  }
+  const resolvedCommand = isFinalStep ? projectVerify : command;
+  const ignoredCommand = isFinalStep && command && command !== projectVerify ? command : undefined;
+  const commandNote = ignoredCommand ? ignoredCommandNote(ignoredCommand, projectVerify) : undefined;
+  // The async 202 is sent on the bare response: the run's outcome carries the
+  // note, and the CLI prints both.
+  const bareRes = res;
+  if (commandNote) res = withNote(res, commandNote);
   if (deferTo) {
     // The re-entry from a background gate skipped the early stray check: ask here too.
     const strays = await checkStrays(res);
@@ -8636,7 +9380,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const updated = await storage.updateItem(itemId, { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment], suiteDeferredTo: deferTo.id, ...(isExitStep ? { failureCount: 0 } : {}) } as any);
     recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
     io.emit('items_updated');
-    if (updated.parentId) await syncParentStatus(updated.parentId);
+    if (updated.parentId) await syncParentStatus(updated.parentId, { released: await landedFinished(updated) });
     const gitResult = process.env.NODE_ENV !== 'test' && !process.env.VITEST
       ? await autoGitCommit(updated, (project as any)?.projectRoot)
       : undefined;
@@ -8668,7 +9412,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const updated = await storage.updateItem(itemId, updates);
     io.emit('items_updated');
     recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
-    if (updated.parentId) await syncParentStatus(updated.parentId);
+    if (updated.parentId) await syncParentStatus(updated.parentId, { released: await landedFinished(updated) });
     // Awaited, unlike before: the response describes what the commit did,
     // so it cannot be written before the commit has been attempted. No
     // `|| findProjectRoot(process.cwd())`: that made a long-lived daemon
@@ -8778,7 +9522,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         // a verify does. It is the same transition; only the reason differs.
         await ensureWorktreeForItem(updated, true);
         io.emit('items_updated');
-        if (updated.parentId) await syncParentStatus(updated.parentId);
+        if (updated.parentId) await syncParentStatus(updated.parentId, { released: await landedFinished(updated) });
         const leave = await nextLeaveNote(itemId);
         return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}. ${ahead}${mandatoryInstructions}${leave.text}${nowOn(nextStatus)}`, output: 'Sibling propagation', ...leave.field });
       }
@@ -8796,7 +9540,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
     await ensureWorktreeForItem(updated, true);
     io.emit('items_updated');
-    if (updated.parentId) await syncParentStatus(updated.parentId);
+    if (updated.parentId) await syncParentStatus(updated.parentId, { released: await landedFinished(updated) });
     const leave = await nextLeaveNote(itemId);
     return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}.${mandatoryInstructions}${leave.text}${nowOn(nextStatus)}`, ...leave.field });
   }
@@ -8975,7 +9719,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       io.emit('items_updated');
       // Before the roll-up: the child's move is recorded ahead of the parent's.
       recordMoveEvents({ id: itemId, projectId: item.projectId, type: item.type }, item.status, nextStatus, activeFlow);
-      if (updated.parentId) await syncParentStatus(updated.parentId);
+      if (updated.parentId) await syncParentStatus(updated.parentId, { released: await landedFinished(updated) });
       // HEAD just before our own close commit. If it moved during the run,
       // another agent landed work this green never covered, so no commit is
       // recorded and no card may inherit it.
@@ -11151,9 +11895,18 @@ export function resolveUiDir(explicit?: string | null): string | null {
  * Exported so a test can assert it still covers every registered route.
  */
 export const API_PATH_PREFIXES = [
+  // `/herdr` lists the sessions open in the multiplexer. Without it here, the
+  // desktop - which serves the UI from this same origin - answers the API call
+  // with index.html and a 200, so `r.ok` is true and the JSON parse is what
+  // fails. A guard test in serve-ui.test.ts catches exactly this.
+  '/herdr',
   '/api', '/version', '/db', '/backup', '/projects', '/flows', '/prs',
   '/token-events', '/registry', '/items', '/internal', '/jira', '/github',
-  '/releases', '/agent-runs', '/settings', '/terminal-sessions', '/socket.io', '/webauthn', '/webauthn', '/verify-runs',
+  '/releases', '/agent-runs', '/settings', '/terminal-sessions', '/socket.io', '/webauthn', '/verify-runs',
+  // `/decompositions` reviews a proposed tree and writes nothing. Same trap as
+  // `/herdr`: without the prefix the desktop answers it with index.html and a
+  // 200, so the caller's `r.ok` is true and the JSON parse is what fails.
+  '/decompositions',
 ];
 
 /**

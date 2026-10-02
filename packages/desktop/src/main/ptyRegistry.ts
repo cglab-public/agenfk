@@ -16,9 +16,11 @@
  * nor the reaping need real processes to test.
  */
 import { randomUUID } from 'crypto';
-import { resolveAgentCommand, canDictateSessionId } from './agents.js';
+import { resolveAgentCommand, canDictateSessionId, HERDR_AGENT_ID, resolveShellCommand } from './agents.js';
 import { TitleReader, activityFromTitle } from './agentState.js';
 import { buildPtyEnv } from './ptyEnv.js';
+import { envWithoutHerdr, herdrAttachCommand } from './herdrAttach.js';
+import { homedir } from 'node:os';
 import { buildTmuxShellCommand, tmuxSessionName } from './tmux.js';
 import { FlowControl } from './flowControl.js';
 import { killProcessTree } from './processTree.js';
@@ -55,6 +57,15 @@ export interface PtyRegistryDeps {
   /** Resolves the worktree for a card. Throws rather than falling back. */
   readonly resolveCwd: (itemId: string) => Promise<{ cwd: string; branchName: string | null }>;
   /**
+   * Where a session that belongs to no card runs.
+   *
+   * Ask AgEnFK opens an agent on an OBJECTIVE — there is no item yet, and
+   * producing one first is exactly what that screen exists to avoid. The
+   * renderer still sends an id and never a path: this resolves the project's
+   * own checkout, the way `resolveCwd` resolves a card's worktree.
+   */
+  readonly resolveProjectCwd?: (projectId: string) => Promise<{ cwd: string }>;
+  /**
    * An agent is being dispatched (BUG 53ed7163).
    *
    * Called when a PTY ACTUALLY STARTS, because that is the moment an agent
@@ -64,6 +75,21 @@ export interface PtyRegistryDeps {
    * middle.
    */
   readonly registerRun?: (info: { itemId: string; agentId: string; agentSessionId?: string }) => void;
+  /**
+   * The first thing the agent is told: the card, in its own words.
+   *
+   * Handed to the CLI as an ARGUMENT at launch (agents.ts `promptArgs`), not
+   * typed afterwards. Typing was a race nobody wins — these CLIs paint, load
+   * their servers and only then take the terminal into raw mode, and anything
+   * sent in that window is gone.
+   *
+   * Optional, and null-returning where there is nothing to say: a terminal
+   * that opens empty is the old behaviour, not a failure. Resolved HERE rather
+   * than sent by the renderer, so what starts the agent is the CARD's text and
+   * not whatever a caller decided to put in somebody else's terminal.
+   */
+  readonly promptFor?: (itemId: string) => Promise<string | null>;
+
   /** Sends a message to one window only. */
   readonly emit: (windowId: number, channel: string, payload: unknown) => void;
   /**
@@ -124,7 +150,16 @@ export interface SpawnResult {
 }
 
 export interface SpawnRequest {
+  /** The card this session belongs to. Empty when it belongs to an objective. */
   readonly itemId: string;
+  /**
+   * The project a card-less session runs in.
+   *
+   * Exactly one of `itemId` and `projectId` carries the session's identity. A
+   * session on an objective has no card to take a worktree, a branch or a run
+   * from, so it gets the project's checkout and registers nothing.
+   */
+  readonly projectId?: string;
   readonly agentId: string;
   readonly windowId: number;
   readonly cols: number;
@@ -272,15 +307,76 @@ export class PtyRegistry {
     const agentSessionId = req.agentSessionId
       ?? (canDictateSessionId(req.agentId) ? randomUUID() : undefined);
 
-    const command = resolveAgentCommand(req.agentId, {
-      autoApprove: req.autoApprove === true,
-      agentSessionId,
-      resume: req.resume === true,
-    });
+    const attaching = req.agentId === HERDR_AGENT_ID;
+    /*
+     * The user's own shell: no card, no project, runs in `$HOME`.
+     *
+     * Decided by the ABSENCE of a target, not by the agent id — `shell` is
+     * also a picker choice, and picking it for a card must keep the card's
+     * worktree and its `bash -l`. A `shell` with nowhere to point IS the home
+     * shell.
+     */
+    const isShell = !req.itemId && !req.projectId;
+
+    /*
+     * Two sources, one variable. An attach cannot come from `resolveAgentCommand`
+     * because its id is deliberately absent from the agent table; it gets its
+     * own closed set of one, gated by the equality above.
+     */
+    /*
+     * The card's own words, resolved BEFORE the command is built, because they
+     * become part of it. Never for an attach: that joins a session somebody
+     * else started, possibly mid-edit, and a fresh prompt would interrupt work
+     * already happening.
+     */
+    const prompt = !attaching && !isShell && req.resume !== true && req.itemId && this.deps.promptFor
+      // A card that cannot be read still gets a terminal. Failing the spawn
+      // over the convenience would be the worse trade.
+      ? await this.deps.promptFor(req.itemId).catch(() => null)
+      : null;
+
+    const command = isShell
+      ? resolveShellCommand()
+      : attaching
+        ? herdrAttachCommand()
+        : resolveAgentCommand(req.agentId, {
+            // Only on a FIRST launch. Resuming means the conversation already
+            // exists — handing it the card again would start it over.
+            prompt: req.resume === true ? undefined : (prompt ?? undefined),
+            autoApprove: req.autoApprove === true,
+            agentSessionId,
+            resume: req.resume === true,
+          });
+    /*
+     * An ATTACH resolves nothing.
+     *
+     * herdr is already running and already owns the panes; opening a view onto
+     * it needs no card, no branch and no worktree - which is the whole reason
+     * an adopted session works in its own directory rather than being dragged
+     * into one of ours. The cwd below is only what a NEW pane would inherit if
+     * somebody made one from inside; the session itself is unaffected by it.
+     */
     // Resolve BEFORE spawning: a failure here must leave no half-registered
     // session behind, or later write/kill calls report an ownership problem
     // when the real problem was that the worktree could not be made.
-    const { cwd } = await this.deps.resolveCwd(req.itemId);
+    /*
+     * Three origins for a working directory, and only one of them is a card.
+     * The herdr attach runs from home because it is attaching to somebody
+     * else's pane; an objective session runs in the project's own checkout,
+     * because there is no card to cut a worktree from and cutting one would
+     * mean creating the card this screen is trying to propose.
+     */
+    const onObjective = !req.itemId && !!req.projectId;
+    if (onObjective && !this.deps.resolveProjectCwd) {
+      throw new Error('This build cannot open a session on an objective.');
+    }
+    const { cwd } = isShell
+      ? { cwd: homedir() }
+      : attaching
+        ? { cwd: homedir() }
+        : onObjective
+          ? await this.deps.resolveProjectCwd!(req.projectId!)
+          : await this.deps.resolveCwd(req.itemId);
 
     // Inside tmux when we can. The session name is derived from the card and
     // the agent, so reopening ATTACHES to the one still running rather than
@@ -293,19 +389,52 @@ export class PtyRegistry {
      * the modes are argv TEMPLATES, not a base plus a switch — codex's resume
      * is a SUBCOMMAND (`codex resume <id>`), so there is no flag to remove.
      */
-    const freshCommand = resolveAgentCommand(req.agentId, {
-      autoApprove: req.autoApprove === true,
-      agentSessionId,
-      resume: false,
-    });
+    const freshCommand = isShell
+      ? command
+      : attaching
+        // There is no "fresh" attach. The session exists or it does not, and a
+        // retry that started something new would be the opposite of attaching.
+        ? command
+        : resolveAgentCommand(req.agentId, {
+          // The prompt belongs to the FIRST launch. A retry that is really a
+          // resume must not start the conversation over with it.
+          prompt: prompt ?? undefined,
+          autoApprove: req.autoApprove === true,
+          agentSessionId,
+          resume: false,
+        });
 
-    const useTmux = this.deps.tmux?.available === true && req.persist === true;
+    // Never for an attach: herdr IS the multiplexer that makes the session
+    // outlive this app, so wrapping it in tmux would nest one inside the other
+    // to buy something it already provides.
+    /*
+     * `!onObjective`, because the tmux session name is derived from the CARD:
+     * two objectives would resolve to the same name and the second would
+     * attach to the first's agent instead of starting its own.
+     */
+    const useTmux = !attaching && !isShell && !onObjective
+      && this.deps.tmux?.available === true && req.persist === true;
+    /*
+     * Under tmux the agent line only appears inside `new-session`, which
+     * `has-session` short-circuits — so pressing Start on a card whose session
+     * is STILL ALIVE reattaches to it and the card prompt is never delivered.
+     * That is the right thing to do (the conversation is mid-flight; typing
+     * into it would interrupt work), but doing it silently is not: the person
+     * pressed a button that promised to hand the agent this card. Said once,
+     * in the log, where the geometry lines already are.
+     */
+    if (useTmux && prompt) {
+      console.log(`[PTY] tmux: an existing session for ${req.itemId} keeps its own prompt; the card was not re-sent`);
+    }
     const file = useTmux ? '/bin/sh' : command.file;
     const args = useTmux
       ? ['-c', buildTmuxShellCommand(
           // The decision is part of the session's identity: a session created
           // with prompts disabled must not be silently reattached to after the
           // user turns that back off. See tmuxSessionName.
+          // Named after the card, which an objective session does not have —
+          // and two objectives must not collide into one tmux session, so this
+          // path simply does not persist.
           tmuxSessionName(req.itemId, req.agentId, { autoApprove: req.autoApprove === true }),
           req.agentId,
           // The agent is nested a level deeper now; losing this here would
@@ -314,7 +443,17 @@ export class PtyRegistry {
         )]
       : command.args;
 
-    const env = buildPtyEnv(process.env, (await this.deps.loginPath?.()) ?? null);
+    /*
+     * Stripped AFTER the login-PATH capture, not instead of it: the capture is
+     * what lets `herdr` be found at all.
+     *
+     * MEASURED: herdr launched from inside a herdr pane answers "nested herdr
+     * is disabled by default" and exits. If this app was itself started from
+     * such a terminal it inherits HERDR_PANE_ID, and every attach would die on
+     * startup with a message nobody would trace back to here.
+     */
+    const baseEnv = buildPtyEnv(process.env, (await this.deps.loginPath?.()) ?? null);
+    const env = attaching ? envWithoutHerdr(baseEnv) : baseEnv;
 
     // Opaque and unguessable, and deliberately not derived from the item id:
     // a session id travels to the renderer, and one built from a card id would
@@ -352,6 +491,11 @@ export class PtyRegistry {
         throw new Error('This window was closed while the terminal was opening.');
       }
       const pty = this.deps.spawn(file, launchArgs, { cwd, cols: req.cols, rows: req.rows, env });
+      // The geometry a session was born with, and every correction after it.
+      // A terminal whose agent draws its input box somewhere the person cannot
+      // see is a size disagreement, and this is the only place both numbers
+      // are known.
+      console.log(`[PTY] ${sessionId} spawned ${req.cols}x${req.rows} in ${cwd}`);
       /*
        * Backpressure, per session.
        *
@@ -364,7 +508,22 @@ export class PtyRegistry {
       // The run exists from the moment the process does, so the tailer has
       // something to follow. The AGENT's id, not this registry's handle: the
       // transcript is named after the id the agent was given.
-      this.deps.registerRun?.({ itemId: req.itemId, agentId: req.agentId, agentSessionId });
+      /*
+       * An attach registers NOTHING.
+       *
+       * `registerRun` means "this app dispatched an agent", and it did not -
+       * the pane was already running, started by somebody else, possibly before
+       * this app was open. Recording it would put a run in the feed that no
+       * transcript backs, which is the same lie the tree rows refuse when they
+       * carry a `herdr:` id instead of a real one.
+       */
+      if (!attaching && !isShell) {
+        // A run belongs to a card. An objective has none yet — that is the
+        // whole point — so there is nothing to register against.
+        if (req.itemId) {
+          this.deps.registerRun?.({ itemId: req.itemId, agentId: req.agentId, agentSessionId });
+        }
+      }
       const startedAt = Date.now();
 
       /*
@@ -385,6 +544,7 @@ export class PtyRegistry {
         // Only to the owner. Broadcasting would put one card's shell output —
         // including whatever the agent prints — into every open window.
         this.deps.emit(req.windowId, 'pty:data', { sessionId, data });
+
 
         /*
          * Counted in the same unit the renderer will ack in — the length of
@@ -502,7 +662,11 @@ export class PtyRegistry {
   }
 
   resize(sessionId: string, windowId: number, cols: number, rows: number): void {
-    this.own(sessionId, windowId).pty.resize(cols, rows);
+    // Ownership FIRST: a session id this window does not own is refused, and
+    // logging it before the check reports a resize that never happened.
+    const session = this.own(sessionId, windowId);
+    console.log(`[PTY] ${sessionId} resized ${cols}x${rows}`);
+    session.pty.resize(cols, rows);
   }
 
   /**

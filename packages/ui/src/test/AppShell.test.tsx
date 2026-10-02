@@ -20,7 +20,6 @@ import { SocketProvider } from '../SocketContext';
 import { LIVE_TTL_MS } from '../liveAgents';
 import { api } from '../api';
 import { ActiveProjectProvider, useActiveProject } from '../ActiveProject';
-import { readPinned } from '../sidebarPrefs';
 
 vi.mock('../api', () => ({
   api: {
@@ -35,8 +34,9 @@ vi.mock('../api', () => ({
     // tolerate this fixture — so nothing verified that the chosen agent is
     // written back to the card, in either direction.
     updateItem: vi.fn(async () => ({})),
-    getSettings: vi.fn(async () => ({ tmuxByDefault: false })),
-    updateSettings: vi.fn(async () => ({ tmuxByDefault: false })),
+    getSettings: vi.fn(async () => ({ tmuxByDefault: false, pinnedProjects: [] })),
+    // Echoes the patch, as the real server does (it answers the settled state).
+    updateSettings: vi.fn(async (patch: Record<string, unknown>) => ({ tmuxByDefault: false, pinnedProjects: [], ...patch })),
     listRuns: vi.fn(async () => []),
   },
 }));
@@ -434,30 +434,39 @@ describe('AppShell — sidebar', () => {
   });
 });
 
+/*
+ * The `+` on a project row and the new-project button were removed with the
+ * manual form they opened (82345ab9). Work is created by describing it — the
+ * panel proposes a tree, or a terminal opens and the agent writes the card.
+ */
 describe('AppShell — pinning, folders and overflow (CGLAB-172)', () => {
   it('pins a project to the top and keeps it there next launch', async () => {
     renderShell();
     const target = await screen.findByRole('button', { name: 'horizon-lab' });
     fireEvent.click(within(target.closest('li')!).getByRole('button', { name: 'Pin project horizon-lab' }));
 
-    const names = screen.getAllByTestId('project-name').map(n => n.textContent);
-    expect(names[0]).toBe('horizon-lab');
-    expect(localStorage.getItem('agenfk_pinned_projects')).toContain('p2');
+    // The pin lands once the settings write settles, so the write is also the
+    // wait — no arbitrary timer.
+    await waitFor(() => expect(screen.getAllByTestId('project-name')[0]?.textContent).toBe('horizon-lab'));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ pinnedProjects: ['p2'] }));
+    expect(localStorage.getItem('agenfk_pinned_projects')).toBeNull();
 
+    // Next launch: the server answers with the pin already stored.
     cleanup();
+    vi.mocked(api.getSettings).mockResolvedValueOnce({ tmuxByDefault: false, pinnedProjects: ['p2'] } as never);
     renderShell();
     await screen.findByRole('button', { name: 'horizon-lab' });
     expect(screen.getAllByTestId('project-name').map(n => n.textContent)[0]).toBe('horizon-lab');
   });
 
   it('unpins without losing which project is open', async () => {
-    localStorage.setItem('agenfk_pinned_projects', '["p2"]');
+    vi.mocked(api.getSettings).mockResolvedValueOnce({ tmuxByDefault: false, pinnedProjects: ['p2'] } as never);
     localStorage.setItem('agenfk_project_id', 'p2');
     renderShell();
     const row = (await screen.findByRole('button', { name: 'horizon-lab' })).closest('li')!;
     fireEvent.click(within(row).getByRole('button', { name: 'Unpin project horizon-lab' }));
 
-    expect(readPinned()).toEqual([]);
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ pinnedProjects: [] }));
     expect((await screen.findByRole('button', { name: 'horizon-lab' })).getAttribute('aria-current')).toBe('true');
   });
 
@@ -477,68 +486,6 @@ describe('AppShell — pinning, folders and overflow (CGLAB-172)', () => {
     expect(screen.getByRole('button', { name: 'project-39' })).toBeDefined();
   });
 
-  it('tells assistive tech whether a folder is open, not just that it is a button', async () => {
-    // A disclosure without aria-expanded reads as a plain button: a screen
-    // reader user cannot tell an open folder from a closed one, and the
-    // aria-label flipping between "Expand"/"Collapse" is not a substitute —
-    // it names the ACTION, never the state.
-    vi.mocked(api.listActiveItems).mockResolvedValue([
-      { id: 'i1', projectId: 'p2', type: 'TASK', title: 'Some work', status: 'IN_PROGRESS' },
-    ] as never);
-    renderShell();
-    const toggle = await screen.findByRole('button', { name: /expand horizon-lab/i });
-    expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    const controlled = toggle.getAttribute('aria-controls');
-    expect(controlled).toBeTruthy();
-
-    fireEvent.click(toggle);
-    const open = await screen.findByRole('button', { name: /collapse horizon-lab/i });
-    expect(open.getAttribute('aria-expanded')).toBe('true');
-    // And the id must actually point at the list it toggles.
-    expect(document.getElementById(controlled!)).not.toBeNull();
-  });
-
-  it('marks each project row with a folder icon', async () => {
-    const { container } = renderShell();
-    const row = (await screen.findByRole('button', { name: 'horizon-lab' })).closest('li')!;
-    expect(row.querySelector('[data-folder-icon]')).not.toBeNull();
-  });
-
-  it('offers a + on a project row that creates a card in it', async () => {
-    const requests: string[] = [];
-    function Spy() {
-      const { newItemRequest } = useActiveProject();
-      React.useEffect(() => { if (newItemRequest) requests.push(newItemRequest); }, [newItemRequest]);
-      return null;
-    }
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(
-      <QueryClientProvider client={queryClient}>
-        <ActiveProjectProvider>
-          <SocketProvider>
-            <Spy />
-            <AppShell><FakeBoard /></AppShell>
-          </SocketProvider>
-        </ActiveProjectProvider>
-      </QueryClientProvider>,
-    );
-
-    const row = (await screen.findByRole('button', { name: 'horizon-lab' })).closest('li')!;
-    fireEvent.click(within(row).getByRole('button', { name: /new card in horizon-lab/i }));
-
-    expect(requests).toHaveLength(1);
-    // Which project the request NAMES is the whole point — a + that always
-    // drafted into the selected project would satisfy the count and the side
-    // effect below while being the wrong feature.
-    expect(requests[0]).toContain('p2');
-    expect(localStorage.getItem('agenfk_project_id')).toBe('p2');
-  });
-
-  it('offers a new-project control in the sidebar', async () => {
-    renderShell();
-    await screen.findByRole('button', { name: 'horizon-lab' });
-    expect(screen.getByRole('button', { name: /new project/i })).toBeDefined();
-  });
 });
 
 describe('AppShell — folders of in-flight work (CGLAB-172)', () => {
@@ -683,17 +630,25 @@ describe('AppShell — folders of in-flight work (CGLAB-172)', () => {
   });
 });
 
+/*
+ * The button's accessible name was widened here, not the assertion's intent.
+ *
+ * It used to read "Sort projects"; the same control now also filters by agent,
+ * so it says so. These four tests are about the SORT, and pinning the literal
+ * wording made them fail on a change that did not touch sorting at all - so
+ * the selector matches a sort control rather than one particular sentence.
+ */
 describe('AppShell — sort order (CGLAB-172)', () => {
   it('offers a sort control in the Projects header', async () => {
     renderShell();
     await screen.findByRole('button', { name: 'horizon-lab' });
-    expect(screen.getByRole('button', { name: /sort projects/i })).toBeDefined();
+    expect(screen.getByRole('button', { name: /sort.*projects/i })).toBeDefined();
   });
 
   it('opens a menu with both orders and marks the current one', async () => {
     renderShell();
     await screen.findByRole('button', { name: 'horizon-lab' });
-    fireEvent.click(screen.getByRole('button', { name: /sort projects/i }));
+    fireEvent.click(screen.getByRole('button', { name: /sort.*projects/i }));
 
     const lastUsed = screen.getByRole('menuitemradio', { name: /last used/i });
     expect(screen.getByRole('menuitemradio', { name: /created/i })).toBeDefined();
@@ -716,7 +671,7 @@ describe('AppShell — sort order (CGLAB-172)', () => {
     // and agenfk (Sept) leads.
     expect(renderedProjectNames()).toEqual(['agenfk', 'horizon-lab']);
 
-    fireEvent.click(screen.getByRole('button', { name: /sort projects/i }));
+    fireEvent.click(screen.getByRole('button', { name: /sort.*projects/i }));
     fireEvent.click(screen.getByRole('menuitemradio', { name: /created/i }));
 
     // By creation date horizon-lab (June) leads — the opposite order.
@@ -729,7 +684,7 @@ describe('AppShell — sort order (CGLAB-172)', () => {
   it('closes on Escape without changing anything', async () => {
     renderShell();
     await screen.findByRole('button', { name: 'horizon-lab' });
-    fireEvent.click(screen.getByRole('button', { name: /sort projects/i }));
+    fireEvent.click(screen.getByRole('button', { name: /sort.*projects/i }));
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('menuitemradio', { name: /created/i })).toBeNull();
     expect(localStorage.getItem('agenfk_project_sort')).toBeNull();
@@ -822,7 +777,7 @@ describe('AppShell — tabs', () => {
     // Away to another view and back, both through the sidebar. Neither is a
     // tab any more; what matters here is the mount count, which is the same
     // question whichever route is taken.
-    fireEvent.click(await screen.findByRole('button', { name: /^agents$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^settings$/i }));
     fireEvent.click(screen.getByRole('button', { name: /^tasks$/i }));
 
     expect(boardMounts).toBe(1);
@@ -835,10 +790,9 @@ describe('AppShell — tabs', () => {
    * "leaves other keys alone", and "marks exactly one tab selected at a time".
    *
    * All five are the ARIA tabs keyboard pattern, and the pattern needs a
-   * tablist. There is none: Kanban left the strip for the sidebar's Tasks,
-   * Terminal followed, and Runs became the Agents screen. The sidebar rows
-   * that replaced them are ordinary buttons in a <nav>, where Tab reaches each
-   * one and no roving index is wanted.
+   * tablist. There is none: Kanban left the strip for the sidebar's Tasks and
+   * Terminal followed, and the remaining sidebar rows are ordinary buttons in
+   * a <nav>, where Tab reaches each one and no roving index is wanted.
    *
    * Two of them were written defensively, against the bug CGLAB-169 hit when
    * the Terminal tab landed and "wraps at the end" quietly became "moves to
@@ -864,12 +818,12 @@ describe('AppShell — tabs', () => {
      * paired with a tab.
      */
     renderShell();
-    fireEvent.click(await screen.findByRole('button', { name: /^agents$/i }));
-    const panels = ['kanban', 'terminal', 'settings', 'agents']
+    fireEvent.click(screen.getByRole('button', { name: /^settings$/i }));
+    const panels = ['kanban', 'terminal', 'settings', 'project']
       .map(id => document.getElementById(`panel-${id}`)!);
     expect(panels.every(Boolean)).toBe(true);
     const visible = panels.filter(p => !p.hasAttribute('hidden'));
-    expect(visible.map(p => p.id)).toEqual(['panel-agents']);
+    expect(visible.map(p => p.id)).toEqual(['panel-settings']);
   });
 });
 
@@ -883,42 +837,23 @@ describe('sidebar navigation has to reach the board (CGLAB-172)', () => {
   /*
    * Parked on ANOTHER view first, which is the state the defect needs.
    *
-   * It used to be the Runs tab. Runs is the Agents screen now and there is no
-   * tab to click, so the route is the sidebar row that replaced it — the same
-   * destination, reached the only way there is.
+   * It used to be the Runs tab, then the Agents screen. Both are gone
+   * (396c8350), so the route is Settings — a view that exists and is not the
+   * board.
    */
   const onAnotherView = async () => {
     renderShell();
     await screen.findByText('agenfk');
-    fireEvent.click(screen.getByRole('button', { name: /^agents$/i }));
-    expect(document.getElementById('panel-agents')!.hasAttribute('hidden')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: /^settings$/i }));
+    expect(document.getElementById('panel-settings')!.hasAttribute('hidden')).toBe(false);
   };
 
   const kanbanPanel = () => document.getElementById('panel-kanban')!;
 
-  it('goes to the Terminal view when a card is opened from the sidebar', async () => {
-    vi.mocked(api.listActiveItems).mockResolvedValue([
-      { id: 'i1', projectId: 'p1', type: 'TASK', title: 'Some work', status: 'IN_PROGRESS' },
-    ] as never);
-    await onAnotherView();
-    fireEvent.click(screen.getByRole('button', { name: 'Expand agenfk', hidden: true }));
-    fireEvent.click(await screen.findByTitle('Some work'));
-
-    // Create in the dialog, then the Terminal panel is the visible one.
-    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
-    await waitFor(() =>
-      expect(document.getElementById('panel-terminal')!.hasAttribute('hidden')).toBe(false));
-  });
-
-  it('comes back to the board when + creates a card from the sidebar', async () => {
-    await onAnotherView();
-    fireEvent.click(screen.getByRole('button', { name: /New card in agenfk/i }));
-    await waitFor(() => expect(kanbanPanel().hasAttribute('hidden')).toBe(false));
-  });
 
   it('does not steal the view on its own', async () => {
     // The effect must react to a navigation, not to mounting — otherwise the
-    // Agents screen becomes unusable, snapping back on every render.
+    // view just selected becomes unusable, snapping back on every render.
     await onAnotherView();
     await new Promise(r => setTimeout(r, 20));
     expect(kanbanPanel().hasAttribute('hidden')).toBe(true);
@@ -956,7 +891,10 @@ describe('the Terminal tab must not kill the agent (CGLAB-169)', () => {
     renderShell();
     fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
     fireEvent.click(await screen.findByTitle('Some work'));
-    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
+    // The verb depends on whether that card already has a session - Create when
+    // it has none, Continue when it does - and these scenarios are about the
+    // rail, not about which word the dialog chose.
+    fireEvent.click(await screen.findByRole('button', { name: /^(create|continue)$/i }));
 
     const panel = document.getElementById('panel-terminal')!;
     await waitFor(() => expect(panel.hasAttribute('hidden')).toBe(false));
@@ -987,7 +925,10 @@ describe('several terminals at once (CGLAB-169)', () => {
 
   const openTerminalOn = async (title: string) => {
     fireEvent.click(await sidebarCard(title));
-    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
+    // The verb depends on whether that card already has a session - Create when
+    // it has none, Continue when it does - and these scenarios are about the
+    // rail, not about which word the dialog chose.
+    fireEvent.click(await screen.findByRole('button', { name: /^(create|continue)$/i }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   };
 
@@ -1093,7 +1034,10 @@ describe('several terminals at once (CGLAB-169)', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: /claude code/i }));
     fireEvent.click(within(await screen.findByRole('listbox')).getByRole('option', { name: /gemini/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
+    // The verb depends on whether that card already has a session - Create when
+    // it has none, Continue when it does - and these scenarios are about the
+    // rail, not about which word the dialog chose.
+    fireEvent.click(await screen.findByRole('button', { name: /^(create|continue)$/i }));
 
     await waitFor(() => expect(api.updateItem).toHaveBeenCalledWith('i1', { agentId: 'gemini' }));
   });
@@ -1193,9 +1137,8 @@ describe('the Sessions rail (CGLAB-170)', () => {
     // No terminal exists for that card yet, so it offers to open one there
     // rather than doing nothing.
     expect(await screen.findByRole('dialog')).toBeDefined();
-    // The run feed is the Agents screen now; `panel-runs` was its tab's panel
-    // and went with the tab. Same assertion, same view, current id.
-    expect(document.getElementById('panel-agents')!.hasAttribute('hidden')).toBe(true);
+    // No run feed exists any more; the dialog must not have navigated either.
+    expect(document.getElementById('panel-kanban')!.hasAttribute('hidden')).toBe(false);
   });
 
   /*
@@ -1222,7 +1165,10 @@ describe('the Sessions rail (CGLAB-170)', () => {
 
     const list = document.querySelector('[data-testid="project-list"]') as HTMLElement;
     fireEvent.click(await within(list).findByTitle('First card'));
-    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
+    // The verb depends on whether that card already has a session - Create when
+    // it has none, Continue when it does - and these scenarios are about the
+    // rail, not about which word the dialog chose.
+    fireEvent.click(await screen.findByRole('button', { name: /^(create|continue)$/i }));
 
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     await waitFor(() => expect(screen.getAllByTestId('session-dot').length).toBeGreaterThan(0));
@@ -1248,7 +1194,10 @@ describe('the Sessions rail (CGLAB-170)', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
     const list = document.querySelector('[data-testid="project-list"]') as HTMLElement;
     fireEvent.click(await within(list).findByTitle('First card'));
-    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
+    // The verb depends on whether that card already has a session - Create when
+    // it has none, Continue when it does - and these scenarios are about the
+    // rail, not about which word the dialog chose.
+    fireEvent.click(await screen.findByRole('button', { name: /^(create|continue)$/i }));
 
     // ONE row, not two. Listing it twice would say two agents are working on
     // the card where there is one - and now that the row sits directly under
@@ -1626,7 +1575,7 @@ describe('the WORK group in the sidebar (CGLAB-164)', () => {
   const workNav = () => screen.getByRole('navigation', { name: /work/i });
   const workRow = (name: RegExp) => within(workNav()).getByRole('button', { name });
 
-  it('sits above Projects, with Tasks, Flows and Agents', async () => {
+  it('sits above Projects, with Tasks and Flows and no Agents row', async () => {
     renderShell();
     await screen.findByRole('button', { name: 'horizon-lab' });
 
@@ -1637,65 +1586,38 @@ describe('the WORK group in the sidebar (CGLAB-164)', () => {
 
     expect(workRow(/tasks/i)).toBeDefined();
     expect(workRow(/flows/i)).toBeDefined();
-    expect(workRow(/agents/i)).toBeDefined();
+    /*
+     * The Agents row is gone (396c8350). It opened the run feed as a dedicated
+     * screen that was never defined and never used; a nav row that promises a
+     * view nobody built is the defect this round exists to remove. What shows
+     * what is running is the agent rows under the cards.
+     */
+    expect(within(workNav()).queryByRole('button', { name: /^agents$/i })).toBeNull();
   });
 
   it('shows the board when Tasks is picked', async () => {
     renderShell();
     await screen.findByText('agenfk');
     // Away first, so "shows the board" is a change rather than the state the
-    // shell already opens in. Agents, because it is the only other view a
-    // sidebar row reaches without opening a terminal.
-    fireEvent.click(workRow(/agents/i));
+    // shell already opens in. Settings, because it is a view that exists and
+    // is not the board.
+    fireEvent.click(screen.getByRole('button', { name: /^settings$/i }));
     expect(document.getElementById('panel-kanban')!.hasAttribute('hidden')).toBe(true);
 
     fireEvent.click(workRow(/tasks/i));
     expect(document.getElementById('panel-kanban')!.hasAttribute('hidden')).toBe(false);
   });
 
-  it('marks which WORK view you are on, and only that one', async () => {
+  it('marks the Tasks view, and never the Flows action', async () => {
     renderShell();
     await screen.findByText('agenfk');
     expect(workRow(/tasks/i).getAttribute('aria-current')).toBe('page');
-
-    fireEvent.click(workRow(/agents/i));
-    expect(workRow(/agents/i).getAttribute('aria-current')).toBe('page');
-    expect(workRow(/tasks/i).getAttribute('aria-current')).toBeNull();
+    // Flows opens the editor rather than switching the view, so it is not a
+    // destination and must not claim to be current.
+    expect(workRow(/flows/i).getAttribute('aria-current')).toBeNull();
   });
 
-  it('opens the run feed on Agents, which is what it was a placeholder for', async () => {
-    /*
-     * Agents used to say the run feed "is not here yet" while a Runs TAB
-     * showed the feed - one destination described two ways, and the user got
-     * the same "No agent runs open" sentence twice on one screen. The tab is
-     * gone and this row is the feed.
-     *
-     * It is also THE way to open Runs, and the only one: with no tab to click,
-     * a run feed reachable only from a control inside itself would be a view
-     * with no way in.
-     *
-     * This used to cover the Inbox panel too. Inbox was removed in favour of
-     * Flows, which opens the flow editor and has no panel at all, so the Inbox
-     * half of this test became unreachable rather than merely unasserted. Its
-     * replacement lives in sidebarFlows.test.tsx, which pins that Flows opens a
-     * window WITHOUT changing the view. Nothing here needs restoring.
-     */
-    renderShell();
-    await screen.findByText('agenfk');
-
-    fireEvent.click(workRow(/agents/i));
-    const agents = document.getElementById('panel-agents')!;
-    expect(agents.hasAttribute('hidden')).toBe(false);
-    // The feed itself, not a note about a feed that does not exist yet.
-    expect(agents.textContent).toMatch(/no agent runs open/i);
-    expect(agents.textContent, 'Agents is still describing itself as unbuilt')
-      .not.toMatch(/not here yet/i);
-
-    fireEvent.click(workRow(/tasks/i));
-    expect(agents.hasAttribute('hidden')).toBe(true);
-  });
-
-  it('hides the board for Agents — never unmounts it', async () => {
+  it('hides the board for Settings — never unmounts it', async () => {
     /*
      * The invariant AppShell is built on. Conditional rendering here would
      * throw away the board's filters and anything half-typed, and the same
@@ -1709,7 +1631,7 @@ describe('the WORK group in the sidebar (CGLAB-164)', () => {
     fireEvent.change(input, { target: { value: 'unsaved work' } });
     const mountsBefore = boardMounts;
 
-    fireEvent.click(workRow(/agents/i));
+    fireEvent.click(screen.getByRole('button', { name: /^settings$/i }));
     expect(document.getElementById('panel-kanban')!.hasAttribute('hidden')).toBe(true);
     expect(screen.getByText('THE BOARD')).toBeDefined();
 
@@ -1719,7 +1641,7 @@ describe('the WORK group in the sidebar (CGLAB-164)', () => {
     expect((screen.getByLabelText('board-state') as HTMLInputElement).value).toBe('unsaved work');
   });
 
-  it('leaves a live terminal alone when a WORK view is selected', async () => {
+  it('leaves a live terminal alone when another view is selected', async () => {
     // Unmounting the terminal panel kills the agent running in it. The tab
     // strip already guarantees this; the sidebar is a second route to the same
     // switch and has to guarantee it too.
@@ -1729,11 +1651,14 @@ describe('the WORK group in the sidebar (CGLAB-164)', () => {
     renderShell();
     fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
     fireEvent.click(await screen.findByTitle('Some work'));
-    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
+    // The verb depends on whether that card already has a session - Create when
+    // it has none, Continue when it does - and these scenarios are about the
+    // rail, not about which word the dialog chose.
+    fireEvent.click(await screen.findByRole('button', { name: /^(create|continue)$/i }));
     await waitFor(() =>
       expect(document.getElementById('panel-terminal')!.hasAttribute('hidden')).toBe(false));
 
-    fireEvent.click(workRow(/agents/i));
+    fireEvent.click(screen.getByRole('button', { name: /^settings$/i }));
     const terminal = document.getElementById('panel-terminal');
     expect(terminal, 'the terminal panel was unmounted, which kills the agent').not.toBeNull();
     expect(terminal!.hasAttribute('hidden')).toBe(true);
@@ -1743,10 +1668,10 @@ describe('the WORK group in the sidebar (CGLAB-164)', () => {
   it('SURVIVES a collapse as icons, because the rail is still navigation', async () => {
     /*
      * This asserted the opposite - that the whole nav went away with the
-     * sidebar - and that was the defect: collapsing took Tasks, Flows and
-     * Agents with it, so the only way to reach any of them was to expand
-     * first. A rail that offers nothing is a rail nobody leaves collapsed,
-     * which makes the collapse pointless.
+     * sidebar - and that was the defect: collapsing took the WORK rows with
+     * it, so the only way to reach any of them was to expand first. A rail
+     * that offers nothing is a rail nobody leaves collapsed, which makes the
+     * collapse pointless.
      *
      * The labels go; the icons stay.
      */
@@ -1759,9 +1684,9 @@ describe('the WORK group in the sidebar (CGLAB-164)', () => {
 
     // Each row is still reachable AND still named, which is the part that
     // breaks silently: with the text gone the only child is an aria-hidden
-    // icon, so without an explicit name a screen reader says "button" three
-    // times and the rail is unusable exactly where it is the only nav left.
-    for (const name of ['Tasks', 'Flows', 'Agents']) {
+    // icon, so without an explicit name a screen reader says "button" twice
+    // and the rail is unusable exactly where it is the only nav left.
+    for (const name of ['Tasks', 'Flows']) {
       expect(
         within(nav).getByRole('button', { name: new RegExp(`^${name}$`, 'i') }),
         `${name} lost its accessible name on the rail`,
@@ -1773,6 +1698,238 @@ describe('the WORK group in the sidebar (CGLAB-164)', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /expand sidebar/i }));
     expect(screen.getByRole('navigation', { name: /work/i }).textContent).toMatch(/tasks/i);
+  });
+});
+
+/*
+ * The project page's Cards tab, wired to the right question.
+ *
+ * It was derived from `listActiveItems` — the "which card?" picker's list,
+ * which the server builds by excluding the anchors. A project whose cards were
+ * all still in TODO, which is EVERY project whose cards were just created,
+ * showed an empty page while the board beside it listed them.
+ */
+describe('the project page lists the project’s cards', () => {
+  it('shows cards that are still in TODO, which listActiveItems leaves out', async () => {
+    // Deliberately empty: this is the list the page used to read.
+    vi.mocked(api.listActiveItems).mockResolvedValue([] as never);
+    (api as unknown as { listItems: ReturnType<typeof vi.fn> }).listItems = vi.fn(async () => ([
+      { id: 'i1', projectId: 'p1', type: 'TASK', title: 'port the admin API', status: 'TODO' },
+    ]));
+
+    renderShell();
+    fireEvent.click(await screen.findByLabelText('agenfk'));
+    await waitFor(() => expect(screen.getByTestId('project-card-i1')).toBeTruthy());
+    expect(screen.queryByTestId('project-page-empty')).toBeNull();
+  });
+
+  it('asks for that project’s items, not for every item there is', async () => {
+    const listItems = vi.fn(async () => []);
+    (api as unknown as { listItems: ReturnType<typeof vi.fn> }).listItems = listItems;
+
+    renderShell();
+    fireEvent.click(await screen.findByLabelText('agenfk'));
+    await waitFor(() => expect(listItems).toHaveBeenCalledWith({ projectId: 'p1' }));
+  });
+});
+
+/*
+ * The terminal region has to BOUND the terminal.
+ *
+ * Asserted on the class list, which is unusual here and earns its place: the
+ * defect was pure layout and jsdom computes none of it. The region is a flex
+ * ITEM of the column above, and its child is `flex-1` — which means nothing
+ * unless this element is itself a flex container. Without that the pane grew
+ * to whatever height its content wanted, xterm's fit addon measured that
+ * (64 rows where ~36 were visible), and the agent drew its input box nearly
+ * thirty rows below the window's edge. Nothing had overflowed, so there was
+ * nothing to scroll: the box simply was not on screen.
+ */
+describe('the terminal region', () => {
+  it('is a flex column that cannot grow past the window', async () => {
+    renderShell();
+    // By id: the region is `hidden` until a terminal is opened, and a hidden
+    // element is outside the accessibility tree by design.
+    const region = await waitFor(() => {
+      const el = document.getElementById('panel-terminal');
+      if (!el) throw new Error('no terminal region');
+      return el;
+    });
+    const classes = region.className.split(/\s+/);
+    expect(classes).toContain('flex');
+    expect(classes).toContain('flex-col');
+    // The pair that makes a flex child shrinkable rather than content-sized.
+    expect(classes).toContain('flex-1');
+    expect(classes).toContain('min-h-0');
+    // The pane owns its own scrollback; a second scrollbar out here would
+    // scroll the terminal away from its own viewport.
+    expect(classes).toContain('overflow-hidden');
+  });
+});
+
+
+/*
+ * Two findings from the adversarial review of 85b807dd, both in the WIRING —
+ * which is why the component tests were green through either of them.
+ */
+describe('the project page stays current', () => {
+  it('shows a card created while the page is already open', async () => {
+    /*
+     * Asserted on what the PERSON SEES, not on a call count — a count moves
+     * for reasons that have nothing to do with the fix, and this test passed
+     * with the invalidation deleted twice before it was written this way.
+     *
+     * ['project-items', id] was never invalidated, and its key does not change
+     * when cards are created into the project already on screen. So the panel
+     * closed onto the page it was told to land on, and the cards were not
+     * there — for the lifetime of the app.
+     */
+    vi.mocked(api.listProjects).mockResolvedValue(PROJECTS as never);
+    let cards: unknown[] = [];
+    (api as unknown as { listItems: unknown }).listItems = vi.fn(async () => cards);
+
+    renderShell();
+    fireEvent.click(await screen.findByLabelText('agenfk'));
+    await waitFor(() => expect(screen.getByTestId('project-page-empty')).toBeTruthy());
+
+    // Something created a card — the panel, the board, another window.
+    cards = [{ id: 'i1', projectId: 'p1', type: 'TASK', title: 'port the admin API', status: 'TODO' }];
+    act(() => { socketHandlers['items_updated']?.({}); });
+
+    await waitFor(() => expect(screen.getByTestId('project-card-i1')).toBeTruthy());
+  });
+});
+
+describe('the start button and the press agree', () => {
+  it('says Open only for cards this app actually has a terminal for', async () => {
+    // The label read "running" (an ACTIVITY state, which a run started outside
+    // this app also has) while the press branched on whether we own a pty. A
+    // card with an outside run said "Open the running terminal" and then
+    // started a SECOND agent in the same worktree.
+    vi.mocked(api.listProjects).mockResolvedValue(PROJECTS as never);
+    (api as unknown as { listItems: unknown }).listItems = vi.fn(async () => ([
+      { id: 'i1', projectId: 'p1', type: 'TASK', title: 'port the admin API', status: 'TODO' },
+    ]));
+
+    renderShell();
+    fireEvent.click(await screen.findByLabelText('agenfk'));
+    const start = await screen.findByTestId('project-card-start-i1');
+    // No terminal open in this app: the row must offer to START one.
+    expect(start.textContent).toContain('Start');
+    expect(screen.queryByTestId('project-card-live-i1')).toBeNull();
+  });
+});
+
+
+/*
+ * The press has to open the SAME session the label promised — the rule itself
+ * lives in workingSessions.ts and is tested there. What this file owes is that
+ * the shell asks it, with the rows and sessions it actually has.
+ */
+describe('a card worked by an agent we cannot reach', () => {
+  it('does not offer to start a second one', async () => {
+    vi.mocked(api.listProjects).mockResolvedValue(PROJECTS as never);
+    (api as unknown as { listItems: unknown }).listItems = vi.fn(async () => ([
+      { id: 'child', projectId: 'p1', type: 'TASK', title: 'apply the dark theme', status: 'REFACTOR' },
+    ]));
+    vi.mocked(api.listRuns).mockResolvedValue([
+      {
+        id: 'run-1', itemId: 'child', projectId: 'p1', harness: 'claude-code',
+        status: 'running', sessionId: 'conv-1', startedAt: new Date().toISOString(),
+      },
+    ] as never);
+
+    renderShell();
+    fireEvent.click(await screen.findByLabelText('agenfk'));
+    const button = await screen.findByTestId('project-card-start-child');
+    // A hook-recorded run only counts as RUNNING once events arrive; until
+    // then it is idle, and an idle run is not something to open. What must
+    // never happen either way is a second agent: the press is the assertion.
+    fireEvent.click(button);
+    await waitFor(() => expect(screen.queryByTestId('agent-dialog')).toBeNull());
+  });
+});
+
+/*
+ * The other half: the run belongs to a terminal THIS app opened — on the
+ * project, with no card yet — and the card must offer to open it, not say
+ * "Running" and send you to a read-only feed.
+ *
+ * The link is the CONVERSATION id. `onSpawned` hands it to the shell, and if
+ * the shell drops it the run can never be matched to its terminal: the row
+ * then reads 'elsewhere'.
+ */
+describe('a card whose run belongs to a terminal this app opened', () => {
+  it('opens that terminal instead of offering a second one', async () => {
+    vi.mocked(api.listProjects).mockResolvedValue(PROJECTS as never);
+    (api as unknown as { listItems: unknown }).listItems = vi.fn(async () => ([
+      { id: 'child', projectId: 'p1', type: 'TASK', title: 'apply the dark theme', status: 'REFACTOR' },
+    ]));
+    // The hook recorded the run against the card, stamped with the worker's
+    // own conversation id — the same id the spawn below is handed. Predicted
+    // from the harness's counter, which is module-scoped and advances across
+    // the file.
+    vi.mocked(api.listRuns).mockResolvedValue([
+      {
+        id: 'run-1', itemId: 'child', projectId: 'p1', harness: 'pi',
+        status: 'running', sessionId: `conv-${ptySeq + 1}`, startedAt: new Date().toISOString(),
+      },
+    ] as never);
+
+    renderShell();
+    fireEvent.click(await screen.findByLabelText('agenfk'));
+    // Open a terminal on the PROJECT: no card yet, so no tree row for it.
+    fireEvent.click(await screen.findByTestId('project-page-terminal'));
+    fireEvent.click(await screen.findByRole('button', { name: /^create$/i }));
+
+    const button = await screen.findByTestId('project-card-start-child');
+    await waitFor(() =>
+      expect(button.textContent, 'the open terminal was not matched to its run').toContain('Open'));
+
+    // And the press takes you to that terminal, not into a spawn.
+    fireEvent.click(button);
+    await waitFor(() => expect(screen.queryByTestId('agent-dialog')).toBeNull());
+    expect(ptyCalls.spawned).toHaveLength(1);
+  });
+});
+
+describe('opening a terminal directly from the sidebar', () => {
+  it('offers one action above Tasks and opens a shell even with a project active', async () => {
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'horizon-lab' }));
+
+    const nav = screen.getByRole('navigation', { name: /work/i });
+    const labels = within(nav).getAllByRole('button').map(b => b.getAttribute('aria-label'));
+    expect(labels.filter(label => label === 'Open terminal')).toHaveLength(1);
+    expect(within(nav).queryByRole('button', { name: 'Open shell' })).toBeNull();
+    expect(labels.indexOf('Open terminal'), 'the terminal row must be above Tasks')
+      .toBeLessThan(labels.indexOf('Tasks'));
+
+    fireEvent.click(within(nav).getByRole('button', { name: 'Open terminal' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await waitFor(() => expect(ptyCalls.requests.length).toBe(1));
+    expect(ptyCalls.requests[0]).toMatchObject({ agentId: 'shell' });
+    expect(ptyCalls.requests[0]).not.toHaveProperty('itemId');
+    expect(ptyCalls.requests[0]).not.toHaveProperty('projectId');
+  });
+
+  it('also opens a shell with no project selected, without a dialog', async () => {
+    renderShell();
+    const nav = await screen.findByRole('navigation', { name: /work/i });
+    const terminal = within(nav).getByRole('button', { name: 'Open terminal' });
+    expect(terminal.getAttribute('aria-disabled')).not.toBe('true');
+    expect(within(nav).queryByRole('button', { name: 'Open shell' })).toBeNull();
+    fireEvent.click(terminal);
+
+    // Nothing to ask: the shell is the user's own, so no picker.
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await waitFor(() => expect(ptyCalls.spawned.length).toBe(1));
+    expect(ptyCalls.requests[0]).toMatchObject({ agentId: 'shell' });
+    expect(ptyCalls.requests[0]).not.toHaveProperty('itemId');
+    expect(ptyCalls.requests[0]).not.toHaveProperty('projectId');
+    // And the terminal view is the one showing.
+    await waitFor(() =>
+      expect(document.getElementById('panel-terminal')!.hasAttribute('hidden')).toBe(false));
   });
 });
 

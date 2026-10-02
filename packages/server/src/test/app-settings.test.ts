@@ -267,3 +267,36 @@ describe('the project route no longer carries the tmux preference', () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe('pinned projects, stored server-side', () => {
+  beforeEach(async () => { await initStorage(); });
+
+  it('round-trips a list and keeps its order', async () => {
+    // The order IS the data: it is the pin order in the sidebar.
+    const res = await agent().put('/settings').send({ pinnedProjects: ['p2', 'p1'] });
+    expect(res.status).toBe(200);
+    expect(res.body.pinnedProjects).toEqual(['p2', 'p1']);
+    expect((await agent().get('/settings')).body.pinnedProjects).toEqual(['p2', 'p1']);
+  });
+
+  it('refuses an object where the list belongs', async () => {
+    // `typeof {}` and `typeof []` are both 'object', so the generic check
+    // waves this through; only the array rule stops it.
+    await agent().put('/settings').send({ pinnedProjects: ['p1'] });
+    const res = await agent().put('/settings').send({ pinnedProjects: { p1: true } });
+    expect(res.status).toBe(400);
+    expect((await agent().get('/settings')).body.pinnedProjects).toEqual(['p1']);
+  });
+
+  it('refuses a list holding anything but strings', async () => {
+    const res = await agent().put('/settings').send({ pinnedProjects: ['p1', 42] });
+    expect(res.status).toBe(400);
+  });
+
+  it('round-trips the board pin, the same way', async () => {
+    await agent().put('/settings').send({ boardPinned: true });
+    expect((await agent().get('/settings')).body.boardPinned).toBe(true);
+    await agent().put('/settings').send({ boardPinned: false });
+    expect((await agent().get('/settings')).body.boardPinned).toBe(false);
+  });
+});

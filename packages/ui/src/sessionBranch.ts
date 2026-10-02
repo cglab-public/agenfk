@@ -16,7 +16,12 @@
  */
 
 export interface BranchCarrier {
-  readonly itemId: string;
+  /**
+   * Absent for a session opened on a PROJECT rather than a card. There is no
+   * item to read a branch from, and inventing one would put a branch name on a
+   * terminal whose whole point is that no card exists yet.
+   */
+  readonly itemId?: string;
   readonly branchName?: string | null;
 }
 
@@ -31,7 +36,7 @@ export function withItemBranches<T extends BranchCarrier>(
   const byId = new Map(items.map(i => [i.id, i.branchName ?? null]));
   let changed = false;
   const next = sessions.map(s => {
-    if (!byId.has(s.itemId)) return s;
+    if (!s.itemId || !byId.has(s.itemId)) return s;
     const branch = byId.get(s.itemId) ?? null;
     if ((s.branchName ?? null) === branch) return s;
     changed = true;

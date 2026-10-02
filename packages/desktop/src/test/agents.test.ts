@@ -353,3 +353,48 @@ describe('resuming a conversation', () => {
     expect(cmd.args).toContain('--dangerously-skip-permissions');
   });
 });
+
+
+/*
+ * The first prompt, as argv.
+ *
+ * Same rule as every other argument in agents.ts: verified against the real
+ * CLI, never read off a help page and hoped for. A guessed positional is worse
+ * than none — it launches, and means something else.
+ *   claude --help  ->  Usage: claude [options] [command] [prompt]
+ *   codex --help   ->  Usage: codex [OPTIONS] [PROMPT]
+ *   pi --help      ->  Usage: pi [options] [--] [@files...] [messages...]
+ */
+describe('starting a session on a prompt', () => {
+  it('passes it as the trailing positional for claude', () => {
+    const { file, args } = resolveAgentCommand('claude-code', { prompt: 'Work on AgEnFK task a1' });
+    expect(file).toBe('claude');
+    expect(args[args.length - 1]).toBe('Work on AgEnFK task a1');
+  });
+
+  it('uses the INTERACTIVE form for codex, not exec', () => {
+    // `codex exec` is the non-interactive one. Starting a card there would run
+    // once and exit, leaving a terminal with nothing in it.
+    const { args } = resolveAgentCommand('codex', { prompt: 'Work on AgEnFK task a1' });
+    expect(args).not.toContain('exec');
+    expect(args[args.length - 1]).toBe('Work on AgEnFK task a1');
+  });
+
+  it('separates the message with -- for pi, which takes it last', () => {
+    const { args } = resolveAgentCommand('pi', { prompt: 'Work on AgEnFK task a1' });
+    expect(args.slice(-2)).toEqual(['--', 'Work on AgEnFK task a1']);
+  });
+
+  it('keeps the prompt after the flags, wherever they came from', () => {
+    const { args } = resolveAgentCommand('claude-code', {
+      prompt: 'Work on AgEnFK task a1',
+      autoApprove: true,
+    });
+    expect(args.indexOf('--dangerously-skip-permissions')).toBeLessThan(args.length - 1);
+    expect(args[args.length - 1]).toBe('Work on AgEnFK task a1');
+  });
+
+  it('changes nothing when there is no prompt', () => {
+    expect(resolveAgentCommand('claude-code')).toEqual(resolveAgentCommand('claude-code', {}));
+  });
+});

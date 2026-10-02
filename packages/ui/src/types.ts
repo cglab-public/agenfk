@@ -36,6 +36,14 @@ export interface Project {
   id: string;
   name: string;
   description?: string;
+  /**
+   * The checkout this project lives in.
+   *
+   * Optional because a project can exist without one — and that is exactly the
+   * state worth showing: with no folder an agent has nowhere to run and no
+   * worktree can be cut. The server sets it; the browser cannot.
+   */
+  projectRoot?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -96,9 +104,17 @@ export interface Flow {
   steps: FlowStep[];
   createdAt: string;
   updatedAt: string;
-  // Ownership. The server sets 'hub' for flows synced from the org's Hub and
-  // refuses local mutation of them; the UI must present those as read-only
-  // (BUG 269eeec8 (b)). Absent on older payloads, so treat undefined as local.
+  /*
+   * Ownership. The server sets 'hub' for flows synced from the org's Hub and
+   * refuses local mutation of them; the UI must present those as read-only
+   * (BUG 269eeec8 (b)). Absent on older payloads, so treat undefined as local.
+   *
+   * `parent` — a flow a parent hub dispatched to this hub, read-only here —
+   * belongs to the SHARED type in packages/flow-editor, which this copy has to
+   * accept: the UI's FlowEditorModal is a thin re-export of that component and
+   * hands it these values. The two lists drifting apart is what broke the
+   * build, and it will drift again while the type is written twice.
+   */
   source?: 'local' | 'hub' | 'community' | 'parent';
   hubFlowId?: string;
 }

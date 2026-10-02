@@ -41,6 +41,30 @@ export interface NewTerminalDialogProps {
    * on a PR.
    */
   readonly defaultAgentId?: string;
+  /**
+   * A session already running for this card, when there is one.
+   *
+   * THE WORD ON THE BUTTON IS THE WHOLE FEATURE. Opening a terminal was always
+   * making one, so the button always said Create - and once herdr is in the
+   * picture that is no longer true. A card whose work is already running in a
+   * pane does not need a second terminal, and offering to make one is how two
+   * agents end up in one worktree without anyone meaning it, which is the
+   * situation the claims mechanism exists to survive.
+   *
+   * Absent means nothing is running, which is the ordinary case and still says
+   * Create.
+   */
+  /**
+   * Where the agent already working on this card is, when there is one.
+   *
+   * THREE PLACES, not two. `agenfk` means a terminal THIS app holds — the only
+   * case where "continue" can take you to it. `outside` is an agent running in
+   * a session we do not host (a CLI somebody started in their own terminal,
+   * another machine): the card is busy, and opening here starts a SECOND agent
+   * in the same worktree. Saying "already open in an AgEnFK terminal" there
+   * was false, and it is the sentence that made the dialog read as a bug.
+   */
+  readonly existing?: { readonly agentId: string; readonly where: 'herdr' | 'agenfk' | 'outside' };
   readonly onCreate: (req: NewTerminalRequest) => Promise<void>;
   readonly onClose: () => void;
   readonly listAgents: () => Promise<AgentInfo[]>;
@@ -49,6 +73,7 @@ export interface NewTerminalDialogProps {
 export function NewTerminalDialog({
   cardTitle,
   defaultAgentId,
+  existing,
   onCreate,
   onClose,
   listAgents,
@@ -109,6 +134,12 @@ export function NewTerminalDialog({
         aria-modal="true"
         aria-label={`Open a terminal on ${cardTitle}`}
         onKeyDown={onKeyDown}
+        /*
+         * `bg-surface`, opaque. `bg-nav-surface` is a 72%-alpha token for the
+         * bars and rails, which sit over a blurred backdrop — a DIALOG floats
+         * over a terminal, so the agent's output showed through the sentence
+         * asking which agent to open. Same mistake the fleet sheet had.
+         */
         className="w-full max-w-md animate-[popIn_140ms_cubic-bezier(0.2,0,0,1)] rounded-2xl border border-border-soft bg-surface shadow-2xl motion-reduce:animate-none"
       >
         <div className="flex items-start gap-3 border-b border-border-soft px-5 py-4">
@@ -119,6 +150,20 @@ export function NewTerminalDialog({
             <p className="mt-1 truncate text-sm font-semibold text-ink" title={cardTitle}>
               {cardTitle}
             </p>
+            {existing && (
+              /*
+               * WHY THE BUTTON CHANGED WORD. "Continue" with nothing explaining
+               * it is a mystery verb; the person has to know where the session
+               * already is to decide whether continuing is what they want.
+               */
+              <p data-testid="existing-session" className="mt-1 text-[11px] text-ink-tertiary">
+                {existing.where === 'herdr'
+                  ? `Already running in herdr as ${existing.agentId}.`
+                  : existing.where === 'outside'
+                    ? `${existing.agentId} is already working on this card, in a session outside AgEnFK. Opening here starts a second agent in the same worktree.`
+                    : `Already open in an AgEnFK terminal as ${existing.agentId}.`}
+              </p>
+            )}
           </div>
           <button
             type="button"
@@ -157,9 +202,9 @@ export function NewTerminalDialog({
             disabled={busy}
             className="flex items-center gap-2 rounded-lg bg-brand px-4 py-1.5 text-xs font-semibold text-navy hover:opacity-90 transition-opacity disabled:opacity-60"
           >
-            {busy ? 'Opening…' : 'Create'}
-            {/* aria-hidden so the button's accessible name stays "Create".
-                A screen reader announcing "Create command return" is noise —
+            {busy ? 'Opening…' : existing ? 'Continue' : 'Create'}
+            {/* aria-hidden so the button's accessible name stays the verb alone.
+                A screen reader announcing "Continue command return" is noise —
                 the shortcut is a visual affordance, not part of the label. */}
             {!busy && <span aria-hidden="true" className="font-mono text-[10px] opacity-70">⌘↵</span>}
           </button>

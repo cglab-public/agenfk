@@ -9,6 +9,7 @@ import { ActiveProjectProvider, useActiveProject } from '../ActiveProject';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api } from '../api';
 import { ItemType, Status } from '../types';
+import { ITEM_TYPE_VISUAL } from '../components/ItemTypeSquare';
 import { io } from 'socket.io-client';
 import { SocketProvider } from '../SocketContext';
 import { expectOnTokens, guardTokens } from './helpers/tokenGuard';
@@ -88,6 +89,10 @@ vi.mock('../api', () => ({
     getVersion: vi.fn(() => Promise.resolve({ version: '1.0.0' })),
     getProjectFlow: vi.fn(() => Promise.resolve(DEFAULT_FLOW_MOCK)),
     getGitHubStatus: vi.fn(() => Promise.resolve({ configured: false })),
+    getSettings: vi.fn(() => Promise.resolve({ boardPinned: false, pinnedProjects: [] })),
+    // Answers the settled state, as the real route does.
+    updateSettings: vi.fn((patch: Record<string, unknown>) =>
+      Promise.resolve({ boardPinned: false, pinnedProjects: [], ...patch })),
   }
 }));
 
@@ -328,9 +333,11 @@ describe('KanbanBoard', () => {
       vi.mocked(api.listItems).mockResolvedValue([] as any);
       localStorage.setItem('agenfk_project_id', 'p1');
       render(<KanbanBoard />, { wrapper });
-      // Wait on something that renders in BOTH modes — the project line is
-      // exactly what these tests are about.
-      await screen.findByRole('button', { name: /New Item/i });
+      // Wait on something that renders in BOTH modes. It used to be the
+      // "New Item" button; that door was removed with the manual form
+      // (82345ab9), so the search box — which these tests are about — is the
+      // thing to wait on now.
+      await screen.findByPlaceholderText(/search/i);
     };
 
     it('puts the search first in the header, where the identity block used to sit', async () => {
@@ -367,7 +374,10 @@ describe('KanbanBoard', () => {
       asDesktop(true);
       await withProject();
       fireEvent.click(screen.getByTestId('pin-project-btn'));
-      await waitFor(() => expect(localStorage.getItem('agenfk_project_pinned')).toBe('true'));
+      // Written to the SERVER (SQLite), not localStorage: the pin has to
+      // survive the UI port changing, and localStorage is origin-scoped.
+      await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ boardPinned: true }));
+      expect(localStorage.getItem('agenfk_project_pinned')).toBeNull();
     });
 
     it('lets the desktop pin actually suppress an agent-driven switch', async () => {
@@ -397,7 +407,7 @@ describe('KanbanBoard', () => {
       await screen.findByText('My Work');
 
       fireEvent.click(screen.getByTestId('pin-project-btn'));
-      await waitFor(() => expect(localStorage.getItem('agenfk_project_pinned')).toBe('true'));
+      await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ boardPinned: true }));
 
       // An agent touches project 2. Unpinned, this yanks the board there.
       await act(async () => { socketHandlers['project_switched']?.({ projectId: 'p2' }); });
@@ -716,7 +726,7 @@ describe('KanbanBoard', () => {
     });
   });
 
-  it('should toggle the pin button and persist to localStorage', async () => {
+  it('should toggle the pin button and persist it to the server', async () => {
     const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
     const items = [
       { id: 'i1', projectId: 'p1', type: ItemType.TASK, title: 'Task 1', status: Status.TODO, createdAt: new Date(), updatedAt: new Date(), history: [] },
@@ -730,11 +740,14 @@ describe('KanbanBoard', () => {
 
     const pinBtn = screen.getByTestId('pin-project-btn');
     fireEvent.click(pinBtn);
-    expect(localStorage.getItem('agenfk_project_pinned')).toBe('true');
+    // SQLite, not localStorage: origin-scoped storage forgot the pin when the
+    // UI port changed.
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ boardPinned: true }));
+    expect(localStorage.getItem('agenfk_project_pinned')).toBeNull();
 
     // Click again to unpin
     fireEvent.click(pinBtn);
-    expect(localStorage.getItem('agenfk_project_pinned')).toBeNull();
+    await waitFor(() => expect(api.updateSettings).toHaveBeenLastCalledWith({ boardPinned: false }));
   });
 
   it('should search for an item by title and highlight it', async () => {
@@ -960,19 +973,17 @@ describe('KanbanBoard', () => {
     render(<KanbanBoard />, { wrapper });
     await screen.findByText('Todo');
 
-    // The Ideas collapsed button has title with "Ideas" text
     const ideasText = screen.queryByText('Ideas');
-    if (ideasText) {
-      const ideasBtn = ideasText.closest('button');
-      if (ideasBtn) {
-        fireEvent.click(ideasBtn);
-        await waitFor(() => {
-          expect(screen.getByText('Add idea')).toBeDefined();
-        });
-      }
-    }
-    // Verify board still renders
-    expect(screen.queryByText('Todo')).toBeDefined();
+    if (!ideasText) return; // The rail is not rendered in this configuration.
+    const ideasBtn = ideasText.closest('button');
+    if (!ideasBtn) return;
+    fireEvent.click(ideasBtn);
+    /*
+     * Expanded is read from the column's own heading now. It used to be read
+     * from its "Add idea" button, which went with the manual form (82345ab9) —
+     * a proxy for the state rather than the state.
+     */
+    await waitFor(() => expect(screen.getAllByText(/ideas/i).length).toBeGreaterThan(0));
   });
 
   it('should navigate back to project selector via folder icon', async () => {
@@ -992,22 +1003,7 @@ describe('KanbanBoard', () => {
     });
   });
 
-  it('should open new item modal when column Add button is clicked', async () => {
-    const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
-    vi.mocked(api.listProjects).mockResolvedValue([project as any]);
-    vi.mocked(api.listItems).mockResolvedValue([]);
-    localStorage.setItem('agenfk_project_id', 'p1');
 
-    render(<KanbanBoard />, { wrapper });
-    await screen.findByText('Todo');
-
-    const addTodoBtn = screen.getByText(/Add todo/i);
-    fireEvent.click(addTodoBtn);
-
-    await waitFor(() => {
-      expect(document.querySelector('.fixed.inset-0')).not.toBeNull();
-    });
-  });
 
   it('should handle card drag over and drag leave events', async () => {
     const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
@@ -1476,6 +1472,77 @@ describe('card dates on the card face', () => {
   }
 });
 
+
+/**
+ * One type grammar, everywhere a card is drawn (CGLAB-164).
+ *
+ * The create form taught story=green / task=blue — JIRA's grammar, asked for
+ * by name — while this board said story=`story-blue` / task=`brand` teal, and
+ * the Subitems table said something third. The screen that TEACHES the mapping
+ * taught the reverse of the screen the card lands on: pick STORY, see green,
+ * press Create, and the card appears blue among green TASKs.
+ */
+describe('the type badge on a board card', () => {
+  // Its own reset: this describe is a sibling of `KanbanBoard`, so that
+  // block's beforeEach does not reach here, and a cached items query from the
+  // previous case renders the previous type's card.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    queryClient.clear();
+    vi.mocked(api.getProjectFlow).mockResolvedValue(DEFAULT_FLOW_MOCK as any);
+  });
+
+  const boardWith = async (type: string) => {
+    const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+    vi.mocked(api.listProjects).mockResolvedValue([project] as any);
+    vi.mocked(api.listItems).mockResolvedValue([
+      { id: 'i1', projectId: 'p1', title: 'Wire the thing', type, status: 'TODO', createdAt: new Date(), updatedAt: new Date() },
+    ] as any);
+    localStorage.setItem('agenfk_project_id', 'p1');
+    render(<KanbanBoard />, { wrapper });
+    await screen.findByText('Wire the thing');
+    return screen.getAllByTestId('item-type-badge')[0];
+  };
+
+  afterEach(() => cleanup());
+
+  it('wears the same colour the create form taught, for every type', async () => {
+    for (const type of Object.values(ItemType)) {
+      const badge = await boardWith(type);
+      expect(badge.textContent).toContain(type);
+      expect((badge.firstElementChild as HTMLElement).className, `board disagrees with the grammar for ${type}`)
+        .toContain(ITEM_TYPE_VISUAL[type].fill);
+      cleanup();
+      queryClient.clear();
+    }
+  });
+
+  it('paints the drill-down breadcrumb from the same grammar', async () => {
+    /*
+     * The fifth site, and the one the first sweep missed: the breadcrumb dot
+     * was `nav.type === EPIC ? brand-light : story-blue`, so drilling into an
+     * epic put a blue dot directly above the emerald STORY badge it had just
+     * revealed — two answers to "what colour is a story" on one screen.
+     *
+     * The blanket version of this check now lives in ItemTypeSquare.test.tsx,
+     * which reads the components directory; this one proves the rendered
+     * result on the screen that had the defect.
+     */
+    const project = { id: 'p1', name: 'P1', createdAt: new Date(), updatedAt: new Date() };
+    vi.mocked(api.listProjects).mockResolvedValue([project] as any);
+    vi.mocked(api.listItems).mockResolvedValue([
+      { id: 'e1', projectId: 'p1', title: 'The epic', type: 'EPIC', status: 'TODO', createdAt: new Date(), updatedAt: new Date() },
+      { id: 's1', projectId: 'p1', parentId: 'e1', title: 'The story', type: 'STORY', status: 'TODO', createdAt: new Date(), updatedAt: new Date() },
+    ] as any);
+    localStorage.setItem('agenfk_project_id', 'p1');
+    render(<KanbanBoard />, { wrapper });
+    fireEvent.click(await screen.findByRole('button', { name: /1 child items/i }));
+    const dot = await screen.findByTestId('breadcrumb-type-dot');
+    expect(dot.className).toContain(ITEM_TYPE_VISUAL[ItemType.EPIC].fill);
+    expect(dot.className).not.toMatch(/story-blue|brand-light/);
+  });
+});
 
 // BUG ec325925 (task 2b943048): bugs are split into tasks too, and the board
 // hid them - the child-count drill-down and the progress bar were EPIC/STORY

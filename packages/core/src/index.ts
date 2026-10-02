@@ -23,3 +23,8 @@ export * from './flowContract';
 export * from './registryFlow';
 
 export * from './requestBudget.js';
+export * from './decompositionContract';
+export * from './reviewProposal';
+export * from './projectSettings';
+export * from './projectFile';
+export * from './commandApproval';

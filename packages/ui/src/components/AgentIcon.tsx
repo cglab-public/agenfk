@@ -19,6 +19,8 @@
  * colour vision deficiency.
  */
 import React from 'react';
+import { HerdrMark } from './HerdrMark';
+import { HERDR_AGENT_ID } from '../herdrTreeRows';
 
 interface Mark {
   /**
@@ -90,6 +92,30 @@ export interface AgentIconProps {
 }
 
 export function AgentIcon({ agentId, size = 16 }: AgentIconProps): React.ReactElement {
+  /*
+   * herdr is not in MARKS, and deliberately: its mark comes from herdr's own
+   * assets under AGPL-3.0-or-later, not from the icon set the rest of this
+   * file lifts from, and copying the path here would be a second copy of it
+   * under a licence note that does not cover it.
+   *
+   * Without this branch an attached herdr session fell through to the grey
+   * fallback dot, so the one tab that is not an agent was also the one with no
+   * mark - exactly the tab a person most needs to pick out of a row.
+   */
+  if (agentId === HERDR_AGENT_ID) {
+    return (
+      <HerdrMark
+        width={size}
+        height={size}
+        data-agent-mark={HERDR_AGENT_ID}
+        // Decorative here, unlike in the tree: every tab has the word beside it.
+        aria-hidden="true"
+        role={undefined}
+        aria-label={undefined}
+        className="shrink-0"
+      />
+    );
+  }
   const mark = MARKS[agentId];
   if (!mark) {
     // A dot, so an agent added without a mark still lines up with the rest

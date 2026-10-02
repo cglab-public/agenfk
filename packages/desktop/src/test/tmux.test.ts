@@ -212,3 +212,42 @@ describe('the agent line is built once, not twice', () => {
     expect(line.match(/'-l'/g) ?? []).toHaveLength(1);
   });
 });
+
+
+/*
+ * The first prompt, through tmux.
+ *
+ * Here the argv stops being argv: it is spliced into a SHELL LINE, and then
+ * that line is spliced into another one (tmux new-session takes the agent
+ * command as an argument of its own). A card whose title carries an
+ * apostrophe — "don't ship this" — would end a quoted string and hand the rest
+ * of the sentence to sh as commands, so the quoting has to survive BOTH
+ * levels.
+ */
+describe('a card prompt inside the tmux line', () => {
+  /** POSIX single-quoting, spelled out here so the nesting is visible. */
+  const q = (v: string): string => `'${v.replace(/'/g, `'\\''`)}'`;
+  /**
+   * What the prompt looks like inside the finished line.
+   *
+   * Quoted once as an argument to the agent, and then escaped again because
+   * the WHOLE agent command is itself one argument to `tmux new-session`. The
+   * outer quotes belong to that whole command, not to the prompt, which is why
+   * this is not simply q(q(prompt)).
+   */
+  const nested = (v: string): string => q(v).replace(/'/g, `'\\''`);
+
+  it("survives an apostrophe in the card's own words, at both levels", () => {
+    const prompt = "Work on AgEnFK task a1: don't ship this";
+    const line = buildTmuxShellCommand('agenfk-a1-claude-code', 'claude-code', [prompt]);
+    // Quoted once as an argument to the agent, and again as an argument to
+    // tmux. Asserted as a round trip rather than as a literal, because the
+    // literal is unreadable and proves less.
+    expect(line).toContain(nested(prompt));
+  });
+
+  it('keeps a prompt with spaces as ONE argument', () => {
+    const line = buildTmuxShellCommand('agenfk-a1-claude-code', 'claude-code', ['port the admin API']);
+    expect(line).toContain(nested('port the admin API'));
+  });
+});

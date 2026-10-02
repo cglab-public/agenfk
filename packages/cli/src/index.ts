@@ -2,7 +2,7 @@ import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { harnessActor, resolveFromOptions } from './harnessModel.js';
 import axios from 'axios';
-import { ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
+import { readProjectFile, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
 import { findUpdateNotice } from './updateNotice.js';
 import { writeActiveWork } from './activeWork.js';
 import { resolveItemIdPrefix } from './resolveItemId.js';
@@ -219,6 +219,28 @@ async function fetchReleaseTagByVersion(repo: string, version: string): Promise<
     }).trim();
   } catch {
     throw new Error(`Release ${tag} not found in ${repo}`);
+  }
+}
+
+/**
+ * A developer's working tree, not an installed copy (658ef023): it holds .git.
+ * Except ~/.agenfk-system, which IS a clone in real installs (packages/create's
+ * rebuild and download-failure fallbacks) - the same carve-out install.mjs
+ * step 1a and the hub's defaultSelfExtract make.
+ */
+function isDevCheckout(root: string): boolean {
+  if (!fs.existsSync(path.join(root, '.git'))) return false;
+  // Same directory by (dev, inode), not by spelling: a symlinked ~/.agenfk-system, or a path cased
+  // differently on APFS, is still that install (Codex review of 658ef023).
+  // BigInt, so distinct 64-bit inodes cannot round to one value; an inode of 0 is no identity, and
+  // never proves the two the same - in doubt, it is a checkout (Codex review of 658ef023).
+  try {
+    const here = fs.statSync(root, { bigint: true });
+    const install = fs.statSync(path.join(os.homedir(), '.agenfk-system'), { bigint: true });
+    if (!here.ino || !install.ino) return true;
+    return !(here.dev === install.dev && here.ino === install.ino);
+  } catch {
+    return true;
   }
 }
 
@@ -693,6 +715,24 @@ program
       if (result.status === 'failed') process.exit(1);
     };
 
+    /*
+     * Never over a development checkout (658ef023). The published build is
+     * extracted into the directory this CLI runs from, and when `agenfk` is a
+     * symlink into a checkout that directory IS the checkout: an upgrade to
+     * 2.0.0-beta.10 once rewrote 28 tracked files and every dist, and the
+     * server came back as a different version from the branch being worked
+     * on. Refused before any network, `down` or extract; --json says
+     * 'failed', which the fleet reconciler records and never self-extracts
+     * over.
+     */
+    const installRoot = path.resolve(__dirname, '../../..');
+    if (isDevCheckout(installRoot)) {
+      const msg = `This agenfk runs from a development checkout (${installRoot}): it is a git repository, and upgrading would write the published build over its tracked files and dist. `
+        + 'Update it as a checkout instead - git pull, npm run build, agenfk restart - or install a separate copy (npx agenfk@latest installs one under ~/.agenfk-system).';
+      errLog(chalk.red(msg));
+      emitResult({ status: 'failed', fromVersion: CURRENT_VERSION, toVersion: options.version ?? '', error: msg });
+      return;
+    }
 
     let resolvedTag = '';
     let targetVersion = '';
@@ -1937,6 +1977,69 @@ program
   });
 
 program
+  .command('approve-file-command <projectId>')
+  .description('Show the commands this project declares in .agenfk/project.json, and where a person approves them (the board)')
+  // Kept so a script passing it gets the explanation below instead of an unknown-option error.
+  .option('-y, --yes', 'no longer approves: approving is done by a person on the board')
+  .action(async (projectId: string, options: { yes?: boolean }) => {
+    /*
+     * The way OUT of the refusal - for a person.
+     *
+     * A project may declare its own verifyCommand in the repository, which is
+     * what lets configuration travel - and is also how cloning a repo could
+     * hand this machine a command it runs. So the server refuses to run one
+     * until somebody here has read it.
+     *
+     * This command used to do the approving, with ~/.agenfk/verify-token: the
+     * token the agent's own CLI holds, so the agent the refusal was addressed
+     * to could approve and run the command itself (34ee6b8a). Approving is now
+     * a person's act on the board; this prints what there is to read and
+     * where to approve it.
+     */
+    try {
+      const { data: project } = await axios.get(`${API_URL}/projects/${projectId}`);
+      const root = project?.projectRoot;
+      if (!root) {
+        console.error(chalk.red('This project has no folder, so it declares nothing.'));
+        process.exit(1);
+        return;
+      }
+      const filePath = path.join(root, '.agenfk', 'project.json');
+      if (!fs.existsSync(filePath)) {
+        console.error(chalk.red(`No project file at ${filePath}.`));
+        process.exit(1);
+        return;
+      }
+      const { value, problems } = readProjectFile(fs.readFileSync(filePath, 'utf8'));
+      for (const problem of problems) console.log(chalk.gray(`  ${problem}`));
+      const commands = (['verifyCommand', 'setupCommand'] as const)
+        .map(key => ({ key, command: value.settings[key] }))
+        .filter((c): c is { key: 'verifyCommand' | 'setupCommand'; command: string } => Boolean(c.command));
+      if (commands.length === 0) {
+        console.log(chalk.gray('This repository declares no commands, so there is nothing to approve.'));
+        return;
+      }
+
+      console.log(chalk.bold(`\n${filePath} declares:`));
+      for (const { key, command } of commands) console.log(`  ${chalk.cyan(key)}: ${command}`);
+      if (options.yes) console.log(chalk.yellow('\n--yes no longer approves anything.'));
+      if (commands.some(c => c.key === 'verifyCommand')) {
+        console.log(chalk.yellow(
+          '\nA person approves the verifyCommand on the board: open the project\'s Settings in `agenfk ui`, read it, and press Approve. '
+          + 'An agent cannot approve it.',
+        ));
+      }
+      // Said, so nobody goes looking for an approval that would change nothing.
+      if (commands.some(c => c.key === 'setupCommand')) {
+        console.log(chalk.gray('The file\'s setupCommand is not run on this machine: worktree setup uses the project\'s stored setupCommand.'));
+      }
+    } catch (error) {
+      console.error(chalk.red('Error reading the project\'s commands:'), (error as Error).message);
+      process.exit(1);
+    }
+  });
+
+program
   .command('update-project <id>')
   .description('Update a project\'s name, description, verify command, or project root (MCP fallback: update_project)')
   .option('--name <name>', 'New project name')
@@ -2120,17 +2223,20 @@ program
 program
   .command('analyze <request>')
   .description('Get AgEnFK decomposition guidance for a user request (MCP fallback: analyze_request)')
-  .action((request) => {
-    console.log(chalk.blue(`\nComplexity analysis for: "${request}"\n`));
-    console.log('REMINDER: All work MUST follow these decomposition and inspection rules:');
-    console.log('  1. Minimum Decomposition: An EPIC must be decomposed into child STORIES before');
-    console.log('     any of them starts - an EPIC is never worked directly. A STORY is decomposed');
-    console.log('     into TASKs only when it is large (multiple deliverables, several packages, or');
-    console.log('     more than one focused implementation pass) - the agent\'s judgement.');
-    console.log('  2. Backlog Inspection: Only items in TODO status should be inspected when starting new');
-    console.log('     work; IDEAs (drafts) must be ignored.');
-    console.log('  3. Create ALL sub-items (Stories/Tasks) in TODO status.');
-    console.log('  4. PAUSE and ask the user for approval of the plan before moving any item to IN_PROGRESS.');
+  .option('--proposal', 'print the contract for proposing a decomposition as a reviewable tree, instead of the guidance')
+  .action((request, options) => {
+    // The text comes from core. It used to be ten console.log lines here and a
+    // template literal in the MCP tool — two hand-written copies of the same
+    // rules, free to disagree. The default output is unchanged.
+    try {
+      const text = options.proposal ? decompositionContract(request) : decompositionRules(request);
+      const [header, ...rest] = text.split('\n');
+      console.log('\n' + chalk.blue(header));
+      console.log(rest.join('\n') + '\n');
+    } catch (e: any) {
+      console.error(chalk.red(e.message));
+      process.exit(1);
+    }
   });
 
 program

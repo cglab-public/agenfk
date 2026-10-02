@@ -35,7 +35,7 @@
 import React from 'react';
 import { clsx } from 'clsx';
 import { AgentIcon } from './AgentIcon';
-import { DOT, STATE_LABEL, Spinner } from './sessionPresentation';
+import { STATE_LABEL, SessionStateIndicator } from './sessionPresentation';
 import type { SessionRow } from '../sessionRow';
 import { nextAction, nextActionCommand } from '../nextAction';
 import { stallWarning } from '../stallWarning';
@@ -56,30 +56,7 @@ export function CardProcessRow({ row, onOpen }: CardProcessRowProps): React.Reac
       data-state={row.state}
       className="flex items-center gap-1.5 py-0.5 pl-1 pr-1 text-[12px]"
     >
-      {row.state === 'running' ? (
-        <>
-          <Spinner />
-          {/* The state still lives on a STATIC node, so assistive tech and any
-              test can read it without depending on the animation frame. Copied
-              from the rail deliberately: dropping it here would have made the
-              running state readable only by watching. */}
-          <span
-            data-testid="session-dot"
-            data-state="running"
-            aria-label={STATE_LABEL.running}
-            role="img"
-            className="sr-only"
-          />
-        </>
-      ) : (
-        <span
-          data-testid="session-dot"
-          data-state={row.state}
-          aria-label={STATE_LABEL[row.state]}
-          role="img"
-          className={clsx('mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full', DOT[row.state])}
-        />
-      )}
+      <SessionStateIndicator state={row.state} />
 
       <AgentIcon agentId={row.agentId} size={11} />
 

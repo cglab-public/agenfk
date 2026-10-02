@@ -17,6 +17,10 @@ const LABELS: Record<string, string> = {
   gemini: 'Gemini CLI',
   pi: 'Pi',
   shell: 'Shell',
+  // Lowercase deliberately: it is how herdr writes its own name. Not an agent
+  // this app starts - it is the attach - but it is rendered beside them and a
+  // second map is how the rail and the picker once disagreed.
+  herdr: 'herdr',
 };
 
 export function agentLabel(agentId: string): string {

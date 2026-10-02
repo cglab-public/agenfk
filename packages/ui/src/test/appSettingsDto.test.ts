@@ -45,6 +45,8 @@ const SAMPLE: AppSettingsDto = {
   attentionSound: true,
   soundTiming: 'unfocused',
   osNotifications: true,
+  pinnedProjects: [],
+  boardPinned: false,
   maxConcurrentSuiteRuns: 0,
 };
 

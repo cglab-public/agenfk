@@ -2,7 +2,7 @@ import React from 'react';
 import { cardFullTimestamp } from '../cardDates';
 import { AgEnFKItem, ItemType, Status } from '../types';
 import {
-  X, Layout, Tag, AlignLeft, AlertCircle, Zap,
+  X, Layout, Tag, AlignLeft, Zap,
   Clock, Calendar, FileText, ArrowLeft, Plus,
   Loader2, ShieldCheck, FlaskConical, ListChecks, Copy, Check, Pencil, Trash2, ExternalLink
 } from 'lucide-react';
@@ -16,9 +16,10 @@ import { stripAnsi, calculateCost, formatCost, calculateCycleTimeMs, formatDurat
 import { api } from '../api';
 import { VerifyRunBadge, VerifyRunOutput } from './VerifyRunBadge';
 import { RunsPanel, type AgentRun } from './RunsPanel';
+import { ItemTypeSquare, ItemTypeBadge, itemTypeHint } from './ItemTypeSquare';
+import { ItemTypePicker } from './ItemTypePicker';
 import { StepChecksPanel } from './StepChecksPanel';
 import { CheckHistoryTab } from './CheckHistoryTab';
-import { itemTypeClass } from '../itemTypeStyle';
 
 interface CardDetailModalProps {
   item: AgEnFKItem;
@@ -150,6 +151,25 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
     }
   }, [item.id]);
 
+  /**
+   * Put focus inside the dialog when it opens.
+   *
+   * `aria-modal="true"` promises assistive tech that everything behind this is
+   * inert, and opening with focus still out on the board contradicts that on
+   * the very first Tab. The draft aims focus at its first field (`autoFocus`
+   * on the title), so this only has to cover the detail view, which has no
+   * field to aim at — the panel itself takes it, the same shape `CardPicker`
+   * already uses.
+   *
+   * On mount only, deliberately: re-running it per render would drag focus
+   * back off whatever the user had just clicked.
+   */
+  const panelRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (!isNew) panelRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -236,15 +256,41 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 dark:bg-black/70 backdrop-blur-sm">
-      <div className="bg-surface rounded-2xl shadow-2xl w-full max-w-6xl h-[calc(100vh-2rem)] overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200 border border-slate-200 dark:border-slate-800">
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        // Focusable so the effect above can aim focus here; -1 keeps it out
+        // of the Tab order itself.
+        tabIndex={-1}
+        // Announced as SOMETHING when it opens. It was an unnamed <div> over
+        // the app, so a screen reader had nothing to say about it at all.
+        aria-label={isNew ? 'New item' : item.title}
+        className={clsx(
+          "bg-surface rounded-2xl shadow-2xl w-full overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200 border border-border-soft",
+          /*
+           * A draft is sized to what a draft has (CGLAB-164).
+           *
+           * Both branches used `max-w-6xl h-[calc(100vh-2rem)]`: 72rem wide and
+           * the full window height, for a title, a description and a type. It
+           * made a small decision look like a large one and left Create a
+           * screen away from the field just typed into. The DETAIL view keeps
+           * that size — it has tabs, a run panel and a progress log, and it
+           * earns the room.
+           */
+          isNew
+            ? "max-w-xl max-h-[calc(100vh-2rem)]"
+            : "max-w-6xl h-[calc(100vh-2rem)]",
+        )}
+      >
         {/* Modal Header */}
-        <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50 relative z-20 shrink-0">
+        <div className="px-6 py-4 border-b border-border-soft bg-canvas relative z-20 shrink-0">
           <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             {parentItem && (
               <button 
                 onClick={() => { onSelectItem(parentItem); setActiveTab('subitems'); }}
-                className="mr-2 p-1.5 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-md text-accent-ink transition-colors flex items-center gap-1 text-xs font-bold uppercase"
+                className="mr-2 p-1.5 hover:bg-accent-fill rounded-md text-accent-ink transition-colors flex items-center gap-1 text-xs font-bold uppercase"
                 title={`Back to ${parentItem.title}`}
               >
                 <ArrowLeft size={14} />
@@ -252,26 +298,33 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               </button>
             )}
             {!isNew ? (
-              <span className={clsx(
-                "text-xs font-bold px-2.5 py-1 rounded-md border uppercase tracking-wider flex items-center gap-1.5",
-                itemTypeClass(item.type)
-              )}>
-                {item.type === ItemType.EPIC && <Layout size={12} />}
-                {item.type === ItemType.STORY && <Tag size={12} />}
-                {item.type === ItemType.TASK && <AlignLeft size={12} />}
-                {item.type === ItemType.BUG && <AlertCircle size={12} />}
-                {item.type}
-              </span>
+              /* The same badge the board and the create form use (CGLAB-164).
+                 This chip had its own tint ladder and its own four icons, and
+                 it disagreed with the square in the draft one panel away. */
+              <ItemTypeBadge type={item.type} size="md" />
             ) : (
-              <select 
-                value={type}
-                onChange={(e) => setType(e.target.value as ItemType)}
-                className="text-xs font-bold px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700 bg-surface text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-focus-ring uppercase tracking-wider"
-              >
-                {Object.values(ItemType).map(t => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
+              /*
+               * The dropdown stays; the grammar changes (CGLAB-164).
+               *
+               * Asked for twice, in these words: "we can keep the dropdown we
+               * have today, task etc, but use the same icons as JIRA". So the
+               * <select> is untouched — same element, same options, same
+               * handler — and what it sits in is a small filled square in the
+               * type's colour, which is what every tracker uses to say "issue
+               * type" and what gets read before the word does.
+               */
+              <span className="flex items-center gap-1.5">
+                {/*
+                 * A picker, not a <select>. The options were four bare words:
+                 * an <option> cannot draw the coloured square that says "issue
+                 * type" before the word is read, and cannot carry the sentence
+                 * saying what choosing that type MEANS — so the difference
+                 * between an EPIC and a TASK was invisible at the moment of
+                 * choosing and visible only afterwards, for the one already
+                 * picked.
+                 */}
+                <ItemTypePicker value={type} onChange={setType} testId="new-item-type" describedBy="new-item-type-hint" />
+              </span>
             )}
             {!isNew && (
               <span className={clsx(
@@ -284,12 +337,12 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               </span>
             )}
             {!isNew && (
-              <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/50 group">
-                <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500 uppercase tracking-tighter">ID:</span>
-                <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">{item.id.substring(0, 8)}</span>
+              <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-canvas border border-border-soft group">
+                <span className="text-[10px] font-mono text-ink-tertiary uppercase tracking-tighter">ID:</span>
+                <span className="text-[11px] font-mono text-ink-secondary">{item.id.substring(0, 8)}</span>
                 <button 
                   onClick={() => handleCopyId(item.id)}
-                  className="p-1 -mr-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded transition-colors text-slate-400 hover:text-accent-ink"
+                  className="p-1 -mr-1 hover:bg-accent-fill rounded transition-colors text-ink-tertiary hover:text-accent-ink"
                   title="Copy full ID"
                 >
                   {copiedId === item.id ? <Check size={10} className="text-status-ok-text" /> : <Copy size={10} />}
@@ -313,7 +366,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 since there is nothing to open. */}
             {!item.externalUrl && item.externalId && (
               <span
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 text-[10px] font-bold uppercase tracking-wider"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-canvas border border-border-soft text-ink-secondary text-[10px] font-bold uppercase tracking-wider"
                 title={`JIRA ${item.externalId} — no link stored (JIRA was not connected when this reference was set)`}
               >
                 <span>{item.externalId}</span>
@@ -330,7 +383,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                   "p-2 rounded-full transition-colors",
                   isEditing
                     ? "bg-accent-fill text-accent-ink"
-                    : "hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300"
+                    : "hover:bg-accent-fill text-ink-tertiary hover:text-ink"
                 )}
               >
                 <Pencil size={16} />
@@ -338,24 +391,36 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
             )}
             <button
               onClick={onClose}
-              className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition-colors"
+              className="p-2 hover:bg-accent-fill rounded-full text-ink-tertiary hover:text-ink transition-colors"
             >
               <X size={20} />
             </button>
           </div>
           </div>
           {!isNew && (
-            <div className="mt-2 font-mono text-[11px] text-slate-400 dark:text-slate-500 flex flex-wrap items-center gap-x-2 gap-y-1">
+            <div className="mt-2 font-mono text-[11px] text-ink-tertiary flex flex-wrap items-center gap-x-2 gap-y-1">
               <span>{item.type}</span>
               {projectName && <><span className="opacity-40">·</span><span>{projectName}</span></>}
               {flowName && <><span className="opacity-40">·</span><span>{flowName}</span></>}
               {item.branchName && <><span className="opacity-40">·</span><span className="truncate max-w-[280px]" title={item.branchName}>{item.branchName}</span></>}
             </div>
           )}
+          {/* What the chosen type MEANS, under the control that chooses it —
+              the same slot the meta line occupies on a real card. Every
+              sentence in it is the server's own decomposition rule
+              (analyze_request), not a promise this screen invented. */}
+          {isNew && (
+            <p id="new-item-type-hint" data-testid="new-item-type-hint" className="mt-2 text-[11px] text-ink-secondary">
+              {itemTypeHint(type)}
+            </p>
+          )}
         </div>
 
-        {/* Tab Navigation */}
-        <div className="flex px-6 border-b border-slate-100 dark:border-slate-800 bg-surface overflow-x-auto relative z-30 shrink-0">
+        {/* Tab Navigation — hidden on a draft, where every other tab is
+            hidden anyway and what is left is a one-tab tab bar: a control
+            that cannot be used for anything. */}
+        {tabs.length > 1 && (
+        <div className="flex px-6 border-b border-border-soft bg-surface overflow-x-auto relative z-30 shrink-0">
           {tabs.map(tab => (
             <button
               key={tab.id}
@@ -364,14 +429,14 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 "flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-all whitespace-nowrap outline-none",
                 activeTab === tab.id
                   ? "border-accent text-accent-ink"
-                  : "border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                  : "border-transparent text-ink-secondary hover:text-ink"
               )}
             >
               {tab.label}
               {tab.badge !== undefined && (
                 <span className={clsx(
                   "ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold",
-                  activeTab === tab.id ? "bg-accent-fill text-accent-ink" : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400"
+                  activeTab === tab.id ? "bg-accent-fill text-accent-ink" : "bg-canvas text-ink-secondary"
                 )}>
                   {tab.badge}
                 </span>
@@ -379,9 +444,10 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
             </button>
           ))}
         </div>
+        )}
 
         {/* Modal Body */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto p-8 space-y-8">
+        <div ref={scrollRef} className={clsx("flex-1 overflow-y-auto", isNew ? "p-6 space-y-5" : "p-8 space-y-8")}>
           {activeTab === 'overview' && (
             <>
               {item.activeRun && (
@@ -393,14 +459,15 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               <div>
                 {isNew ? (
                   <div className="space-y-2">
-                    <label className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Title</label>
+                    <label htmlFor="new-item-title" className="block text-xs font-bold text-ink-tertiary uppercase tracking-widest">Title</label>
                     <input
                       autoFocus
+                      id="new-item-title"
                       type="text"
                       value={title}
                       onChange={(e) => setTitle(e.target.value)}
                       placeholder="Title of your new task..."
-                      className="w-full text-lg font-bold bg-canvas border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2 focus:outline-none focus:ring-2 focus:ring-focus-ring"
+                      className="w-full text-lg font-bold bg-canvas border border-border-soft rounded-xl px-4 py-2 text-ink focus:outline-none focus:ring-2 focus:ring-focus-ring"
                     />
                   </div>
                 ) : isEditing ? (
@@ -410,15 +477,15 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                     value={editTitle}
                     onChange={(e) => setEditTitle(e.target.value)}
                     data-testid="edit-title"
-                    className="w-full text-2xl font-bold bg-canvas border border-accent/60 rounded-xl px-4 py-2 focus:outline-none focus:ring-2 focus:ring-focus-ring text-slate-900 dark:text-slate-100 mb-2"
+                    className="w-full text-2xl font-bold bg-canvas border border-accent/60 rounded-xl px-4 py-2 focus:outline-none focus:ring-2 focus:ring-focus-ring text-ink mb-2"
                   />
                 ) : (
-                  <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100 leading-tight mb-2">
+                  <h2 className="text-2xl font-bold text-ink leading-tight mb-2">
                     {item.title}
                   </h2>
                 )}
                 {!isNew && !isEditing && (
-                  <div className="flex flex-wrap gap-4 text-sm text-slate-500 dark:text-slate-400">
+                  <div className="flex flex-wrap gap-4 text-sm text-ink-secondary">
                     <div className="flex items-center gap-1.5">
                       <Calendar size={14} />
                       <span>Created: {cardFullTimestamp(item.createdAt)}</span>
@@ -432,12 +499,12 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 {isEditing && (
                   <div className="flex flex-wrap gap-4 mt-2">
                     <div className="flex flex-col gap-1">
-                      <label className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Type</label>
+                      <label className="text-xs font-bold text-ink-tertiary uppercase tracking-widest">Type</label>
                       <select
                         value={editType}
                         onChange={(e) => setEditType(e.target.value as ItemType)}
                         data-testid="edit-type"
-                        className="text-xs font-bold px-2 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-surface text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-focus-ring uppercase"
+                        className="text-xs font-bold px-2 py-1.5 rounded-md border border-border-soft bg-surface text-ink focus:outline-none focus:ring-1 focus:ring-focus-ring uppercase"
                       >
                         {Object.values(ItemType).map(t => (
                           <option key={t} value={t}>{t}</option>
@@ -445,12 +512,12 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                       </select>
                     </div>
                     <div className="flex flex-col gap-1">
-                      <label className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Status</label>
+                      <label className="text-xs font-bold text-ink-tertiary uppercase tracking-widest">Status</label>
                       <select
                         value={editStatus}
                         onChange={(e) => setEditStatus(e.target.value as Status)}
                         data-testid="edit-status"
-                        className="text-xs font-bold px-2 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-surface text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-focus-ring uppercase"
+                        className="text-xs font-bold px-2 py-1.5 rounded-md border border-border-soft bg-surface text-ink focus:outline-none focus:ring-1 focus:ring-focus-ring uppercase"
                       >
                         {Object.values(Status).map(s => (
                           <option key={s} value={s}>{s}</option>
@@ -464,26 +531,34 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               {!isNew && <StepChecksPanel itemId={item.id} projectId={item.projectId} />}
 
               <div>
-                <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3">Description</h4>
+                {/* A <label> when there is a field to label, a heading when
+                    there is prose to head. It was a heading in both cases, so
+                    the textarea was announced as an unnamed textbox. */}
+                {isNew ? (
+                  <label htmlFor="new-item-description" className="block text-xs font-bold text-ink-tertiary uppercase tracking-widest mb-3">Description</label>
+                ) : (
+                  <h4 className="text-xs font-bold text-ink-tertiary uppercase tracking-widest mb-3">Description</h4>
+                )}
                 {isNew ? (
                   <textarea
+                    id="new-item-description"
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
                     placeholder="Describe what needs to be done..."
-                    className="w-full bg-canvas border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-focus-ring min-h-[150px]"
+                    className="w-full bg-canvas border border-border-soft rounded-xl px-4 py-3 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-focus-ring min-h-[120px]"
                   />
                 ) : isEditing ? (
                   <textarea
                     value={editDescription}
                     onChange={(e) => setEditDescription(e.target.value)}
                     data-testid="edit-description"
-                    className="w-full bg-canvas border border-accent/60 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-focus-ring min-h-[150px] text-slate-700 dark:text-slate-300"
+                    className="w-full bg-canvas border border-accent/60 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-focus-ring min-h-[150px] text-ink"
                   />
                 ) : (
-                  <div className="prose prose-slate dark:prose-invert prose-sm max-w-none bg-slate-50 dark:bg-slate-950 rounded-xl p-4 min-h-[100px] border border-slate-100 dark:border-slate-800 overflow-x-auto break-words">
+                  <div className="prose prose-slate dark:prose-invert prose-sm max-w-none bg-canvas rounded-xl p-4 min-h-[100px] border border-border-soft overflow-x-auto break-words">
                     {item.description
                       ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{stripAnsi(item.description)}</ReactMarkdown>
-                      : <span className="italic text-slate-400 dark:text-slate-500 not-prose">No description provided.</span>
+                      : <span className="italic text-ink-tertiary not-prose">No description provided.</span>
                     }
                   </div>
                 )}
@@ -492,12 +567,12 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               {!isNew && subitems.length > 0 && (
                 <div>
                   <div className="flex items-center justify-between mb-2">
-                    <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">Progress</h4>
+                    <h4 className="text-xs font-bold text-ink-tertiary uppercase tracking-widest">Progress</h4>
                     <span className="text-xs font-bold text-accent-ink">
                       {Math.round((subitems.filter(i => i.status === Status.DONE).length / subitems.length) * 100)}%
                     </span>
                   </div>
-                  <div className="h-2 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                  <div className="h-2 bg-canvas rounded-full overflow-hidden">
                     <div 
                       className="h-full bg-accent rounded-full transition-all duration-500" 
                       style={{ width: `${(subitems.filter(i => i.status === Status.DONE).length / subitems.length) * 100}%` }}
@@ -506,17 +581,22 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 </div>
               )}
 
+              {/* Not on a draft (CGLAB-164). A cycle time of zero on a card
+                  created zero seconds ago, and a parent of "None" on a card
+                  that cannot have one yet — two panels answering questions
+                  nobody asked of a blank form. */}
+              {!isNew && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="flex flex-col">
-                  <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3">Metrics</h4>
-                  <div className="flex-1 bg-surface border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex items-center justify-between shadow-sm">
+                  <h4 className="text-xs font-bold text-ink-tertiary uppercase tracking-widest mb-3">Metrics</h4>
+                  <div className="flex-1 bg-surface border border-border-soft rounded-xl p-4 flex items-center justify-between shadow-sm">
                     <div className="flex items-center gap-3">
                       <div className="w-9 h-9 flex items-center justify-center bg-canvas rounded-lg text-ink-secondary shrink-0">
                         <Clock size={18} />
                       </div>
                       <div>
-                        <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-tight leading-none mb-1">Cycle Time</div>
-                        <div className="text-lg font-bold text-slate-900 dark:text-slate-100 leading-none">
+                        <div className="text-[10px] font-bold text-ink-secondary uppercase tracking-tight leading-none mb-1">Cycle Time</div>
+                        <div className="text-lg font-bold text-ink leading-none">
                           {formatDuration(calculateCycleTimeMs(item))}
                         </div>
                       </div>
@@ -525,18 +605,18 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 </div>
 
                 <div className="flex flex-col">
-                  <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3">Hierarchy</h4>
-                  <div className="flex-1 bg-surface border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex items-center justify-between shadow-sm">
+                  <h4 className="text-xs font-bold text-ink-tertiary uppercase tracking-widest mb-3">Hierarchy</h4>
+                  <div className="flex-1 bg-surface border border-border-soft rounded-xl p-4 flex items-center justify-between shadow-sm">
                     <div className="flex items-center gap-3">
-                      <div className="w-9 h-9 flex items-center justify-center bg-slate-100 dark:bg-slate-800 rounded-lg text-slate-600 dark:text-slate-400 font-mono text-sm shrink-0">
+                      <div className="w-9 h-9 flex items-center justify-center bg-canvas rounded-lg text-ink-secondary font-mono text-sm shrink-0">
                         #
                       </div>
                       <div>
-                        <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-tight leading-none mb-1">Parent</div>
+                        <div className="text-[10px] font-bold text-ink-secondary uppercase tracking-tight leading-none mb-1">Parent</div>
                         <div 
                           className={clsx(
                             "text-sm font-mono truncate max-w-[150px] cursor-pointer hover:text-accent-ink transition-colors leading-none",
-                            parentItem ? "text-accent-ink font-bold" : "text-slate-400"
+                            parentItem ? "text-accent-ink font-bold" : "text-ink-tertiary"
                           )} 
                           title={item.parentId}
                           /* v8 ignore next */
@@ -549,10 +629,13 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                   </div>
                 </div>
               </div>
+              )}
 
-              {/* Progress Comments Section */}
-              <div className="pt-4 border-t border-slate-100 dark:border-slate-800">
-                <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-4 flex items-center gap-2">
+              {/* Progress Comments Section — a log of what happened to a card
+                  that has not happened yet is an empty box with a heading. */}
+              {!isNew && (
+              <div className="pt-4 border-t border-border-soft">
+                <h4 className="text-xs font-bold text-ink-tertiary uppercase tracking-widest mb-4 flex items-center gap-2">
                   <Tag size={14} />
                   Progress Log ({item.comments?.length || 0})
                 </h4>
@@ -560,18 +643,18 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 {item.comments && item.comments.length > 0 ? (
                   <div className="space-y-3">
                     {[...item.comments].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).map((comment) => (
-                      <div key={comment.id} className="bg-slate-50/50 dark:bg-slate-950/30 rounded-xl p-4 border border-slate-100 dark:border-slate-800/50 group hover:border-accent transition-colors">
+                      <div key={comment.id} className="bg-canvas rounded-xl p-4 border border-border-soft group hover:border-accent transition-colors">
                         <div className="flex items-center justify-between mb-2">
                           <span className="text-xs font-bold text-accent-ink flex items-center gap-1.5">
                             <div className="w-1.5 h-1.5 rounded-full bg-accent"></div>
                             @{comment.author}
                             {comment.step && (
-                              <span data-testid="comment-step-badge" className="text-[10px] font-mono font-normal px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
+                              <span data-testid="comment-step-badge" className="text-[10px] font-mono font-normal px-1.5 py-0.5 rounded bg-canvas text-ink-secondary">
                                 {comment.step}
                               </span>
                             )}
                           </span>
-                          <span className="text-[10px] text-slate-400 dark:text-slate-500 font-mono">
+                          <span className="text-[10px] text-ink-tertiary font-mono">
                             {new Date(comment.timestamp).toLocaleString()}
                           </span>
                         </div>
@@ -582,21 +665,22 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                     ))}
                   </div>
                 ) : (
-                  <div className="text-center py-8 bg-slate-50/50 dark:bg-slate-950/20 rounded-xl border border-dashed border-slate-200 dark:border-slate-800">
-                    <p className="text-slate-400 text-xs italic">No progress steps logged yet.</p>
+                  <div className="text-center py-8 bg-canvas rounded-xl border border-dashed border-border-soft">
+                    <p className="text-ink-tertiary text-xs italic">No progress steps logged yet.</p>
                   </div>
                 )}
               </div>
+              )}
             </>
           )}
 
           {activeTab === 'plan' && item.implementationPlan && (
             <div className="animate-in slide-in-from-bottom-2 duration-300">
-              <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3 flex items-center gap-2">
+              <h4 className="text-xs font-bold text-ink-tertiary uppercase tracking-widest mb-3 flex items-center gap-2">
                 <FileText size={14} />
                 Implementation Plan
               </h4>
-              <div className="prose prose-slate dark:prose-invert prose-sm max-w-none bg-slate-50 dark:bg-slate-950 rounded-xl p-6 border border-slate-100 dark:border-slate-800 overflow-x-auto break-words">
+              <div className="prose prose-slate dark:prose-invert prose-sm max-w-none bg-canvas rounded-xl p-6 border border-border-soft overflow-x-auto break-words">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>
                   {stripAnsi(item.implementationPlan)}
                 </ReactMarkdown>
@@ -607,7 +691,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
           {activeTab === 'subitems' && (
             <div className="animate-in slide-in-from-bottom-2 duration-300">
               <div className="flex items-center justify-between mb-3">
-                <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">
+                <h4 className="text-xs font-bold text-ink-tertiary uppercase tracking-widest">
                   Child Items ({subitems.length})
                 </h4>
                 
@@ -617,13 +701,13 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                     placeholder={`Quick add ${item.type === ItemType.EPIC ? 'Story' : 'Task'}...`}
                     value={newSubitemTitle}
                     onChange={(e) => setNewSubitemTitle(e.target.value)}
-                    className="text-xs bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-focus-ring min-w-[200px]"
+                    className="text-xs bg-canvas border border-border-soft rounded px-3 py-1.5 focus:outline-none focus:ring-1 focus:ring-focus-ring min-w-[200px]"
                     disabled={isSubmitting}
                   />
                   <button 
                     type="submit"
                     disabled={!newSubitemTitle.trim() || isSubmitting}
-                    className="p-1.5 bg-brand text-navy hover:opacity-90 disabled:opacity-50 disabled:bg-[image:none] disabled:bg-slate-400 rounded transition-colors"
+                    className="p-1.5 bg-brand text-navy hover:opacity-90 disabled:opacity-50 disabled:bg-[image:none] disabled:bg-ink-tertiary rounded transition-colors"
                   >
                     {isSubmitting ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
                   </button>
@@ -631,38 +715,37 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               </div>
 
               {subitems.length > 0 ? (
-                <div className="overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800">
+                <div className="overflow-hidden rounded-xl border border-border-soft">
                   <table className="w-full text-sm text-left">
-                    <thead className="bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-medium">
+                    <thead className="bg-canvas text-ink-secondary font-medium">
                       <tr>
-                        <th className="px-4 py-2 border-b border-slate-200 dark:border-slate-700 text-[10px] uppercase">Type</th>
-                        <th className="px-4 py-2 border-b border-slate-200 dark:border-slate-700 text-[10px] uppercase">Title</th>
-                        <th className="px-4 py-2 border-b border-slate-200 dark:border-slate-700 text-[10px] uppercase text-right">Status</th>
-                        <th className="px-4 py-2 border-b border-slate-200 dark:border-slate-700 text-[10px] uppercase w-10"></th>
+                        <th className="px-4 py-2 border-b border-border-soft text-[10px] uppercase">Type</th>
+                        <th className="px-4 py-2 border-b border-border-soft text-[10px] uppercase">Title</th>
+                        <th className="px-4 py-2 border-b border-border-soft text-[10px] uppercase text-right">Status</th>
+                        <th className="px-4 py-2 border-b border-border-soft text-[10px] uppercase w-10"></th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    <tbody className="divide-y divide-border-soft">
                       {subitems.map((sub) => (
                         <tr
                           key={sub.id}
-                          className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors cursor-pointer"
+                          className="hover:bg-accent-fill transition-colors cursor-pointer"
                           onClick={() => { onSelectItem(sub); setActiveTab('overview'); }}
                         >
                           <td className="px-4 py-3">
-                            <span className={clsx(
-                              "text-[10px] font-bold px-1.5 py-0.5 rounded border uppercase",
-                              itemTypeClass(sub.type)
-                            )}>
-                              {sub.type}
-                            </span>
+                            {/* The THIRD mapping this product carried: STORY
+                                blue and TASK green here, the opposite of the
+                                header one panel up — on the one screen where a
+                                parent and its children are read together. */}
+                            <ItemTypeBadge type={sub.type} />
                           </td>
-                          <td className="px-4 py-3 font-medium text-slate-900 dark:text-slate-100">{sub.title}</td>
+                          <td className="px-4 py-3 font-medium text-ink">{sub.title}</td>
                           <td className="px-4 py-3 text-right">
                             <span className={clsx(
                               "text-[10px] font-bold px-2 py-0.5 rounded-full uppercase",
                               sub.status === Status.DONE ? "bg-status-ok-bg text-status-ok-text" :
                               sub.status === Status.IN_PROGRESS ? "bg-status-info-bg text-status-info-text" :
-                              "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400"
+                              "bg-canvas text-ink-secondary"
                             )}>
                               {sub.status}
                             </span>
@@ -679,7 +762,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                                 "p-1 rounded transition-colors text-xs font-medium flex items-center gap-1",
                                 confirmDeleteId === sub.id
                                   ? "bg-status-danger-bg text-status-danger-text hover:border-status-danger-text"
-                                  : "text-slate-300 dark:text-slate-500 hover:text-status-danger-text hover:bg-status-danger-bg"
+                                  : "text-ink-tertiary hover:text-status-danger-text hover:bg-status-danger-bg"
                               )}
                             >
                               <Trash2 size={13} />
@@ -692,8 +775,8 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                   </table>
                 </div>
               ) : (
-                <div className="text-center py-12 bg-slate-50 dark:bg-slate-950 rounded-xl border border-dashed border-slate-200 dark:border-slate-800">
-                  <p className="text-slate-400 text-sm italic">No subitems found.</p>
+                <div className="text-center py-12 bg-canvas rounded-xl border border-dashed border-border-soft">
+                  <p className="text-ink-tertiary text-sm italic">No subitems found.</p>
                 </div>
               )}
             </div>
@@ -701,7 +784,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
 
           {activeTab === 'tests' && (
             <div className="animate-in slide-in-from-bottom-2 duration-300 space-y-6">
-              <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">
+              <h4 className="text-xs font-bold text-ink-tertiary uppercase tracking-widest">
                 Test History ({item.tests?.length || 0})
               </h4>
               
@@ -709,7 +792,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               {item.tests && item.tests.length > 0 ? (
                 <div className="space-y-4">
                   {[...item.tests].sort((a, b) => new Date(b.executedAt).getTime() - new Date(a.executedAt).getTime()).map((test) => (
-                    <div key={test.id} className="bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-100 dark:border-slate-800 overflow-hidden">
+                    <div key={test.id} className="bg-canvas rounded-xl border border-border-soft overflow-hidden">
                       <div className={clsx(
                         "px-4 py-2 border-b flex items-center justify-between",
                         test.status === 'PASSED' 
@@ -725,14 +808,14 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                           )}>
                             {test.status}
                           </span>
-                          <code className="text-xs font-mono text-slate-600 dark:text-slate-400">{test.command}</code>
+                          <code className="text-xs font-mono text-ink-secondary">{test.command}</code>
                         </div>
-                        <span className="text-[10px] text-slate-400 dark:text-slate-500">
+                        <span className="text-[10px] text-ink-tertiary">
                           {new Date(test.executedAt).toLocaleString()}
                         </span>
                       </div>
-                      <div className="p-4 overflow-auto bg-slate-900/5 dark:bg-black/20 max-h-[400px] rounded-b-xl border-t border-slate-100 dark:border-slate-800">
-                        <pre className="text-[11px] font-mono text-slate-700 dark:text-slate-300 whitespace-pre-wrap leading-relaxed">
+                      <div className="p-4 overflow-auto bg-canvas max-h-[400px] rounded-b-xl border-t border-border-soft">
+                        <pre className="text-[11px] font-mono text-ink whitespace-pre-wrap leading-relaxed">
                           {stripAnsi(test.output)}
                         </pre>
                       </div>
@@ -740,8 +823,8 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                   ))}
                 </div>
               ) : (
-                <div className="text-center py-12 bg-slate-50 dark:bg-slate-950 rounded-xl border border-dashed border-slate-200 dark:border-slate-800">
-                  <p className="text-slate-400 text-sm italic">No test results found. Move item to TEST to log results.</p>
+                <div className="text-center py-12 bg-canvas rounded-xl border border-dashed border-border-soft">
+                  <p className="text-ink-tertiary text-sm italic">No test results found. Move item to TEST to log results.</p>
                 </div>
               )}
               {/* v8 ignore stop */}
@@ -750,23 +833,23 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
 
           {activeTab === 'history' && (
             <div className="animate-in slide-in-from-bottom-2 duration-300 space-y-4">
-              <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest">
+              <h4 className="text-xs font-bold text-ink-tertiary uppercase tracking-widest">
                 State Transitions ({item.history?.length || 0})
               </h4>
               
               {/* v8 ignore start */}
               {item.history && item.history.length > 0 ? (
-                <div className="relative space-y-4 before:absolute before:left-3.5 before:top-1.5 before:bottom-1.5 before:w-0.5 before:bg-slate-100 dark:before:bg-slate-800">
+                <div className="relative space-y-4 before:absolute before:left-3.5 before:top-1.5 before:bottom-1.5 before:w-0.5 before:bg-border-soft">
                   {[...item.history].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()).map((record) => (
                     <div key={record.id} className="relative pl-10">
                       <div className="absolute left-1.5 top-1.5 w-4 h-4 rounded-full bg-surface border-2 border-accent z-10" />
-                      <div className="bg-slate-50 dark:bg-slate-950/50 rounded-xl p-3 border border-slate-100 dark:border-slate-800/50">
+                      <div className="bg-canvas rounded-xl p-3 border border-border-soft">
                         <div className="flex items-center justify-between mb-1">
                           <div className="flex items-center gap-2">
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400 uppercase">
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-accent-fill text-ink-secondary uppercase">
                               {record.fromStatus}
                             </span>
-                            <span className="text-slate-400">→</span>
+                            <span className="text-ink-tertiary">→</span>
                             <span className={clsx(
                               "text-[10px] font-bold px-1.5 py-0.5 rounded uppercase",
                               record.toStatus === Status.DONE ? "bg-status-ok-bg text-status-ok-text" :
@@ -776,7 +859,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                               {record.toStatus}
                             </span>
                           </div>
-                          <span className="text-[10px] text-slate-400 dark:text-slate-500">
+                          <span className="text-[10px] text-ink-tertiary">
                             {new Date(record.timestamp).toLocaleString()}
                           </span>
                         </div>
@@ -785,8 +868,8 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                   ))}
                 </div>
               ) : (
-                <div className="text-center py-12 bg-slate-50 dark:bg-slate-950 rounded-xl border border-dashed border-slate-200 dark:border-slate-800">
-                  <p className="text-slate-400 text-sm italic">No state transitions recorded.</p>
+                <div className="text-center py-12 bg-canvas rounded-xl border border-dashed border-border-soft">
+                  <p className="text-ink-tertiary text-sm italic">No state transitions recorded.</p>
                 </div>
               )}
               {/* v8 ignore stop */}
@@ -797,24 +880,24 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
 
           {activeTab === 'usage' && item.tokenUsage && (
             <div className="animate-in slide-in-from-bottom-2 duration-300">
-              <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-widest mb-3">Usage History</h4>
-              <div className="overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800">
+              <h4 className="text-xs font-bold text-ink-tertiary uppercase tracking-widest mb-3">Usage History</h4>
+              <div className="overflow-hidden rounded-xl border border-border-soft">
                 <table className="w-full text-sm text-left">
-                  <thead className="bg-slate-50 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-medium">
+                  <thead className="bg-canvas text-ink-secondary font-medium">
                     <tr>
-                      <th className="px-4 py-2 border-b border-slate-200 dark:border-slate-700 text-[10px] uppercase">Model</th>
-                      <th className="px-4 py-2 border-b border-slate-200 dark:border-slate-700 text-[10px] uppercase">Input</th>
-                      <th className="px-4 py-2 border-b border-slate-200 dark:border-slate-700 text-[10px] uppercase">Output</th>
-                      {pricesData && <th className="px-4 py-2 border-b border-slate-200 dark:border-slate-700 text-[10px] uppercase">Cost</th>}
+                      <th className="px-4 py-2 border-b border-border-soft text-[10px] uppercase">Model</th>
+                      <th className="px-4 py-2 border-b border-border-soft text-[10px] uppercase">Input</th>
+                      <th className="px-4 py-2 border-b border-border-soft text-[10px] uppercase">Output</th>
+                      {pricesData && <th className="px-4 py-2 border-b border-border-soft text-[10px] uppercase">Cost</th>}
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  <tbody className="divide-y divide-border-soft">
                     {item.tokenUsage.map((u, i) => (
-                      <tr key={i} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+                      <tr key={i} className="hover:bg-accent-fill transition-colors">
                         <td className="px-4 py-3 font-mono text-xs text-accent-ink">{u.model}</td>
-                        <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{u.input.toLocaleString()}</td>
-                        <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{u.output.toLocaleString()}</td>
-                        {pricesData && <td className="px-4 py-3 text-slate-600 dark:text-slate-400">{formatCost(calculateCost([u], pricesData))}</td>}
+                        <td className="px-4 py-3 text-ink-secondary">{u.input.toLocaleString()}</td>
+                        <td className="px-4 py-3 text-ink-secondary">{u.output.toLocaleString()}</td>
+                        {pricesData && <td className="px-4 py-3 text-ink-secondary">{formatCost(calculateCost([u], pricesData))}</td>}
                       </tr>
                     ))}
                   </tbody>
@@ -830,8 +913,27 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
         </div>
 
         {/* Modal Footer */}
-        <div className="px-6 py-4 border-t border-slate-100 dark:border-slate-800 flex justify-between bg-slate-50/50 dark:bg-slate-800/50">
+        <div className="px-6 py-4 border-t border-border-soft flex items-center justify-between gap-3 bg-canvas">
           <div>
+            {/*
+              * Where this draft lands, said out loud rather than left to be
+              * known by heart.
+              *
+              * It reports the status the draft ACTUALLY carries, which is not
+              * always the project's first step: the per-column `+` passes that
+              * column's step, while the header button and the `newItemRequest`
+              * route — the one the card picker's new door goes through — both
+              * hardcode `Status.TODO` (KanbanBoard.tsx), and the server falls
+              * back to `TODO` for a name its flow does not contain. So on a
+              * project whose first step is named something else, this line is
+              * honest about the value being sent and that value is the thing
+              * worth fixing, upstream of this modal.
+              */}
+            {isNew && (
+              <p className="text-xs text-ink-secondary">
+                Lands in <span className="font-mono font-bold text-accent-ink">{item.status}</span>.
+              </p>
+            )}
             {!isNew && !isEditing && (
               <button
                 onClick={handleDelete}
@@ -848,7 +950,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                 <button
                   onClick={handleCancelEdit}
                   disabled={isSubmitting}
-                  className="bg-surface hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 px-4 py-2 rounded-lg font-medium text-sm transition-all shadow-sm active:scale-95"
+                  className="bg-surface hover:bg-accent-fill text-ink border border-border-soft px-4 py-2 rounded-lg font-medium text-sm transition-all shadow-sm active:scale-95"
                   data-testid="cancel-edit"
                 >
                   Cancel
@@ -867,7 +969,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
               <>
                 <button
                   onClick={onClose}
-                  className="bg-surface hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 px-4 py-2 rounded-lg font-medium text-sm transition-all shadow-sm active:scale-95"
+                  className="bg-surface hover:bg-accent-fill text-ink border border-border-soft px-4 py-2 rounded-lg font-medium text-sm transition-all shadow-sm active:scale-95"
                 >
                   {isNew ? 'Cancel' : 'Close'}
                 </button>

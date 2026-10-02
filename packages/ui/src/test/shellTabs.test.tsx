@@ -118,142 +118,15 @@ const renderShell = () => render(
  * position, open menus and any edit in flight. So the board stays where it is
  * and the strip appears beneath it, in the same column.
  */
-const agentsRow = async () => screen.findByRole('button', { name: /^agents$/i });
-const runsScreen = () => document.getElementById('panel-agents')!;
-
-describe('the Runs view', () => {
-  it('is opened by a button in the sidebar, the only way in there is', async () => {
-    // The tab that used to open it is gone, so this row IS the route. A run
-    // feed reachable only from a control inside itself is a view with no way
-    // in, which is the same trap as a dock with no way back.
-    renderShell();
-    fireEvent.click(await agentsRow());
-    expect(runsScreen().hasAttribute('hidden')).toBe(false);
-    expect(runsScreen().textContent).toMatch(/no agent runs open/i);
-  });
-
-  it('starts on its own screen, which is where the tab used to put it', async () => {
-    renderShell();
-    fireEvent.click(await agentsRow());
-    expect(screen.queryByTestId('runs-dock')).toBeNull();
-  });
-
-  it('moves to a strip under the board, and leaves its screen', async () => {
-    renderShell();
-    fireEvent.click(await agentsRow());
-    fireEvent.click(screen.getByRole('button', { name: /dock runs below/i }));
-    await waitFor(() => expect(screen.getByTestId('runs-dock')).toBeInTheDocument());
-  });
-
-  it('does not leave you looking at the screen it just emptied', async () => {
-    // The rule `moveRunsTo` has always had, now that the screen it applies to
-    // is Agents rather than a tab: docking the feed away while its own screen
-    // is the one showing would leave the main area blank. The board is the
-    // only view that is always there.
-    renderShell();
-    fireEvent.click(await agentsRow());
-    fireEvent.click(screen.getByRole('button', { name: /dock runs below/i }));
-    await waitFor(() => expect(runsScreen().hasAttribute('hidden')).toBe(true));
-    expect(document.getElementById('panel-kanban')!.hasAttribute('hidden')).toBe(false);
-  });
-
-  it('does not remount the board when it moves', async () => {
-    // The one thing this must not cost. The board is `children`; moving a
-    // subtree to a different DOM parent unmounts and remounts it, losing
-    // scroll position, open menus and anything half-typed.
-    renderShell();
-    const before = await screen.findByText('board');
-    fireEvent.click(await agentsRow());
-    fireEvent.click(screen.getByRole('button', { name: /dock runs below/i }));
-    await waitFor(() => expect(screen.getByTestId('runs-dock')).toBeInTheDocument());
-    // The SAME node, not an equal one: a remount produces a new element.
-    expect(screen.getByText('board')).toBe(before);
-  });
-
-  it('remembers where it was put', async () => {
-    localStorage.setItem('agenfk_runs_dock', '"bottom"');
-    renderShell();
-    await waitFor(() => expect(screen.getByTestId('runs-dock')).toBeInTheDocument());
-  });
-
-  it('opens on its screen for the position name it had as a tab', async () => {
-    /*
-     * `"tab"` is what every build with a tab strip wrote, so it is in the
-     * storage of everyone upgrading. It always meant "the whole main column",
-     * and that is where it still has to land.
-     *
-     * There is no special case for it in `readRunsDock`, and this test does
-     * not pretend there is: `"tab"` is simply not a zone this build has, and
-     * the fallback for an unrecognised zone is the screen. What this pins is
-     * that the fallback stays the SCREEN - flipping it to `bottom` would move
-     * the feed under the board for every upgrading user at once, silently.
-     */
-    localStorage.setItem('agenfk_runs_dock', '"tab"');
-    renderShell();
-    fireEvent.click(await agentsRow());
-    expect(screen.queryByTestId('runs-dock')).toBeNull();
-    expect(runsScreen().hasAttribute('hidden')).toBe(false);
-  });
-
-  it('ignores a stored position it does not recognise', async () => {
-    // Written by another version, or edited by hand. An unknown zone must not
-    // put the view nowhere.
-    localStorage.setItem('agenfk_runs_dock', '"floating-over-everything"');
-    renderShell();
-    fireEvent.click(await agentsRow());
-    expect(screen.queryByTestId('runs-dock')).toBeNull();
-    expect(runsScreen().hasAttribute('hidden')).toBe(false);
-  });
-
-  it('says where it went, rather than showing an empty screen', async () => {
-    // Clicking Agents with the feed docked below used to be able to land on
-    // nothing. A nav row that lands on nothing reads as a broken app, and this
-    // is also where the way back is announced.
-    localStorage.setItem('agenfk_runs_dock', '"bottom"');
-    renderShell();
-    fireEvent.click(await agentsRow());
-    expect(runsScreen().textContent).toMatch(/docked below the board/i);
-  });
-
-  it('can be put back, without hunting for how', async () => {
-    // A move with no way back is a trap, and the way back has to be visible
-    // from the state it left you in - which is the strip itself, because the
-    // board is what you are looking at.
-    localStorage.setItem('agenfk_runs_dock', '"bottom"');
-    renderShell();
-    fireEvent.click(await screen.findByRole('button', { name: /back to its own screen/i }));
-    await waitFor(() => expect(screen.queryByTestId('runs-dock')).toBeNull());
-  });
-
-  it('takes you to the feed when it is put back, not just to where it was', async () => {
-    // Returning it while the board is showing used to report success and
-    // change nothing the user could see: the strip vanished and the screen it
-    // moved to was not the one selected.
-    localStorage.setItem('agenfk_runs_dock', '"bottom"');
-    renderShell();
-    fireEvent.click(await screen.findByRole('button', { name: /back to its own screen/i }));
-    await waitFor(() => expect(runsScreen().hasAttribute('hidden')).toBe(false));
-  });
-
-  it('is moved by a button, not only by dragging', async () => {
-    // Keyboard parity is in the card, and it is the reason this is a control
-    // rather than a drag target: a drag-only affordance is unreachable without
-    // a pointer.
-    renderShell();
-    fireEvent.click(await agentsRow());
-    const control = screen.getByRole('button', { name: /dock runs below/i });
-    expect(control.tagName).toBe('BUTTON');
-  });
-
-  it('leaves the board alone above it', async () => {
-    // The strip is a SIBLING of the board in the same column, never a wrapper
-    // around it. Re-parenting `children` would unmount and remount the board.
-    localStorage.setItem('agenfk_runs_dock', '"bottom"');
-    renderShell();
-    const board = await screen.findByText('board');
-    expect(screen.getByTestId('runs-dock').contains(board)).toBe(false);
-  });
-});
+/*
+ * DELETED: "the Runs view" - twelve tests (396c8350).
+ *
+ * They held that the run feed could be opened on its own screen from the
+ * sidebar's Agents row and docked under the board, and that the stored
+ * position (`agenfk_runs_dock`) survived. The screen, the dock and the row
+ * are gone: they promised a defined view that never existed. The runs
+ * themselves stay, read by the card detail modal.
+ */
 
 /*
  * DELETED: "dragging a tab" - seven tests.
@@ -391,7 +264,7 @@ describe('the board is reached from the sidebar, not a tab', () => {
      * tab and covered nothing.
      */
     renderShell();
-    fireEvent.click(await screen.findByRole('button', { name: /^agents$/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^settings$/i }));
     await waitFor(() =>
       expect(document.getElementById('panel-kanban')!.hasAttribute('hidden')).toBe(true));
 
@@ -408,7 +281,7 @@ describe('the board is reached from the sidebar, not a tab', () => {
      * must not become an excuse to render conditionally.
      */
     renderShell();
-    fireEvent.click(await screen.findByRole('button', { name: /agents/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^settings$/i }));
     const board = document.getElementById('panel-kanban');
     expect(board, 'the board unmounted when another view was selected').not.toBeNull();
     expect(board?.hasAttribute('hidden')).toBe(true);
@@ -430,5 +303,37 @@ describe('the board is reached from the sidebar, not a tab', () => {
     });
     expect(panel.getAttribute('aria-labelledby')).toBeNull();
     expect(panel.getAttribute('aria-label')).toBe('Terminal');
+  });
+});
+
+/*
+ * The Agents row and the Runs dock are gone (396c8350).
+ *
+ * They promised a dedicated screen that was never defined and never used. The
+ * runs themselves stay - AgentRun is still written and read by the card detail
+ * modal - so what these assert is the ABSENCE of the doors, not of the data.
+ */
+describe('the Agents row and the Runs dock are gone (396c8350)', () => {
+  it('draws no Agents row anywhere in the sidebar', async () => {
+    renderShell();
+    await screen.findByText('agenfk');
+    const nav = screen.getByRole('navigation', { name: /work/i });
+    expect(within(nav).queryByRole('button', { name: /agents/i })).toBeNull();
+    expect(document.getElementById('panel-agents')).toBeNull();
+  });
+
+  it('ignores a stored Runs position left by an older build', async () => {
+    // The preference is no longer read, so a `"bottom"` written before this
+    // build must not conjure a strip.
+    localStorage.setItem('agenfk_runs_dock', JSON.stringify('bottom'));
+    renderShell();
+    await screen.findByText('agenfk');
+    expect(screen.queryByTestId('runs-dock')).toBeNull();
+  });
+
+  it('never writes the Runs preference again', async () => {
+    renderShell();
+    await screen.findByText('agenfk');
+    expect(localStorage.getItem('agenfk_runs_dock')).toBeNull();
   });
 });

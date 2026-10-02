@@ -93,9 +93,18 @@ function LaunchRow({ child }: { readonly child: FleetChild }): React.ReactElemen
         </span>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm text-ink">{child.title}</span>
-          <span className="mt-1 block truncate font-mono text-[10px] text-ink-tertiary">
-            {child.claims?.length ? child.claims.join(' · ') : 'claims nothing'}
-          </span>
+          {/*
+            * ONLY WHEN THERE IS SOMETHING TO SAY. "claims nothing" was printed
+            * in the same grey monospace as a real claim, so the SAFEST case —
+            * a card that touches no claimed file and therefore cannot collide
+            * — read as a warning. The module's own rule is that held rows are
+            * not errors; this was the mirror of that mistake.
+            */}
+          {child.claims?.length ? (
+            <span className="mt-1 block truncate font-mono text-[10px] text-ink-tertiary">
+              {child.claims.join(' · ')}
+            </span>
+          ) : null}
         </span>
       </div>
     </li>
@@ -121,13 +130,25 @@ export function FleetSheet({ parent, all, depth, running, terminalStatuses, onLa
   const launchable = plan.children.filter(c => c.launch).map(c => c.id);
 
   return (
-    <div data-testid="fleet-sheet" className="flex max-h-[70vh] w-[520px] flex-col rounded-lg border border-border-soft bg-surface shadow-xl">
+    /*
+     * `bg-surface`, opaque. It was `bg-nav-surface` — a 72%-alpha token made
+     * for the nav bar, which sits over a blurred backdrop. With no blur behind
+     * it the board showed straight through the text, and a sheet you read
+     * before spending money is the last place to make someone squint.
+     */
+    <div data-testid="fleet-sheet" className="flex max-h-[70vh] w-[520px] flex-col rounded-lg border border-border-soft bg-surface shadow-2xl">
       <div className="flex items-start gap-3 border-b border-border-soft px-4 py-3">
         <span className="min-w-0 flex-1">
           <span className="block font-mono text-[10px] uppercase tracking-widest text-ink-tertiary">
             Launch fleet
           </span>
           <span className="mt-0.5 block truncate text-sm text-ink">{parent.title}</span>
+          {/* WHAT THIS DOES, said once. The sheet decides how many agents will
+              be opened and where, and the header named neither — so the answer
+              to "what is this screen" was the button at the bottom. */}
+          <span data-testid="fleet-what" className="mt-1 block text-[11px] text-ink-tertiary">
+            One agent per child card, each in its own worktree. Nothing runs until you launch.
+          </span>
         </span>
         <button type="button" onClick={onClose} aria-label="Close" className="shrink-0 rounded p-1 text-ink-tertiary hover:text-ink">
           <X size={14} />

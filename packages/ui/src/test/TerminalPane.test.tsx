@@ -150,10 +150,24 @@ describe('opening a terminal for a card', () => {
   it('never sends a directory or a command', async () => {
     // The renderer has no business naming either. If it ever did, the closed
     // list and the worktree resolution in the main process would be decoration.
+    //
+    // EXACTLY ONE TARGET, and for a card that is `itemId`. Sending both broke
+    // every ordinary terminal — `projectId` was already on a session, scoping
+    // the remembered row on restore — against main's own exclusivity check.
     renderPane();
     await waitFor(() => expect(bridge.spawn).toHaveBeenCalled());
     const req = bridge.spawn.mock.calls[0][0];
-    expect(Object.keys(req).sort()).toEqual(['agentId', 'autoApprove', 'cols', 'itemId', 'persist', 'rows']);
+    expect(Object.keys(req).sort())
+      .toEqual(['agentId', 'autoApprove', 'cols', 'itemId', 'persist', 'rows']);
+  });
+
+  it('never sends both targets, whatever the session carries', async () => {
+    // The regression this pins: a card session that also knows its project.
+    renderPane({ projectId: 'p1' });
+    await waitFor(() => expect(bridge.spawn).toHaveBeenCalled());
+    const req = bridge.spawn.mock.calls[0][0] as Record<string, unknown>;
+    expect(req.itemId).toBe('i1');
+    expect('projectId' in req).toBe(false);
   });
 
   it('leaves exactly one live shell under StrictMode double-mount', async () => {
@@ -519,5 +533,97 @@ describe('the session id it routes on', () => {
     const keys = [bridge.onData, bridge.onExit, bridge.onActivity]
       .flatMap(fn => fn.mock.calls.map((c: unknown[]) => c[0]));
     expect(keys).not.toContain('conversation-9');
+  });
+});
+
+
+/*
+ * The size the pty is actually told.
+ *
+ * The pane spawns with whatever `fit()` could measure before the pane had been
+ * laid out — often the 80×24 fallback. The RIGHT measurement arrives almost
+ * immediately, because ResizeObserver fires as soon as it observes; but that
+ * is before the spawn promise resolves, and the resize is dropped when there
+ * is no session yet. So the correct number was computed and thrown away, and
+ * nothing measured again until somebody dragged a split.
+ *
+ * What the person sees: the agent draws into a 24-row terminal while the view
+ * shows fifty, so its input box sits in the middle of the pane with a black
+ * rectangle underneath — "I can read the agent, I cannot see where to type".
+ */
+describe('the size the session is told', () => {
+  it('sends the real geometry once the session exists', async () => {
+    /*
+     * FAKE TIMERS, deliberately. The debounce has a trailing edge, and in real
+     * time that edge fires while a test is still awaiting — so this passed
+     * with the defect present, which is the only thing worse than failing.
+     * A real spawn (worktree lookup, HTTP, git) takes far longer than 60ms, so
+     * both edges land before the session exists and both are dropped.
+     */
+    vi.useFakeTimers();
+    try {
+      let resolveSpawn: (v: { sessionId: string; agentSessionId?: string }) => void = () => {};
+      bridge.spawn = vi.fn(() => new Promise(r => { resolveSpawn = r; }));
+
+      renderPane();
+      await act(async () => {});
+      expect(bridge.spawn).toHaveBeenCalled();
+
+      // Measured while the spawn is still in flight, which is what actually
+      // happens: ResizeObserver fires as soon as it observes.
+      terms[0].cols = 143;
+      terms[0].rows = 46;
+      act(() => { fireResize(); });
+      // Both edges of the debounce, spent with no session to tell.
+      await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+      expect(bridge.resize).not.toHaveBeenCalled();
+
+      await act(async () => { resolveSpawn({ sessionId: 'sess-1', agentSessionId: undefined }); });
+      expect(bridge.resize).toHaveBeenCalledWith('sess-1', 143, 46);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not tell a session that was torn down while spawning', async () => {
+    // The pane is gone and the shell is being killed; a resize on the way out
+    // is noise at best.
+    let resolveSpawn: (v: { sessionId: string; agentSessionId?: string }) => void = () => {};
+    bridge.spawn = vi.fn(() => new Promise(r => { resolveSpawn = r; }));
+    const { unmount } = renderPane();
+    await waitFor(() => expect(bridge.spawn).toHaveBeenCalled());
+    unmount();
+    await act(async () => { resolveSpawn({ sessionId: 'sess-1', agentSessionId: undefined }); });
+    expect(bridge.resize).not.toHaveBeenCalled();
+  });
+});
+
+
+/*
+ * A terminal with no card.
+ *
+ * The challenge this answers: create a task by opening an ordinary terminal —
+ * no form, no proposal screen. The agent creates the card itself with the CLI,
+ * which is what the rules already tell it to do, and the board hears about it
+ * over the socket.
+ *
+ * The main process has handled this since 07923f92 (`onObjective`); what was
+ * missing was any way to ask for it, so the path was built and unreachable.
+ */
+describe('a session on a project, with no card', () => {
+  it('spawns with the project and no item', async () => {
+    renderPane({ itemId: undefined, projectId: 'p1' });
+    await waitFor(() => expect(bridge.spawn).toHaveBeenCalled());
+    const req = bridge.spawn.mock.calls[0][0] as Record<string, unknown>;
+    expect(req.projectId).toBe('p1');
+    expect(req.itemId).toBeUndefined();
+  });
+
+  it('still refuses to open with neither', async () => {
+    // A session belongs to a card or to a project. Neither is a terminal
+    // nobody can attribute — and main would resolve no directory for it.
+    renderPane({ itemId: undefined, projectId: undefined });
+    await waitFor(() => screen.getByRole('alert'));
+    expect(bridge.spawn).not.toHaveBeenCalled();
   });
 });

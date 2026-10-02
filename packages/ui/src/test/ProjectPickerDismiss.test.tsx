@@ -267,3 +267,4 @@ describe('ProjectPickerDismiss', () => {
     expect(screen.getByText(/Delete "Beta"\?/i)).toBeDefined();
   });
 });
+

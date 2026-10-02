@@ -16,6 +16,7 @@
  */
 import React from 'react';
 import { activityFromScreen, SCREEN_RULES, TAIL_LINES, type ScreenActivity } from '../screenActivity';
+import { SHELL_AGENT_ID } from '../agentIds';
 import { Terminal as XTerm, type ITerminalAddon, type Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
@@ -25,7 +26,7 @@ import type { ITerminalOptions } from '@xterm/xterm';
 /** The slice of the preload surface this component uses. */
 export interface TerminalBridge {
   spawn(req: {
-    itemId: string; agentId: string; cols: number; rows: number;
+    itemId?: string; projectId?: string; agentId: string; cols: number; rows: number;
     autoApprove?: boolean; persist?: boolean;
     agentSessionId?: string; resume?: boolean;
   }): Promise<{ sessionId: string; agentSessionId?: string }>;
@@ -57,7 +58,17 @@ interface FitLike extends ITerminalAddon {
 }
 
 export interface TerminalPaneProps {
-  readonly itemId: string;
+  /**
+   * The card this terminal belongs to — or the project, when there is no card
+   * yet. EXACTLY ONE of the two: a session with neither cannot be attributed
+   * and main would have no directory to resolve for it.
+   *
+   * A session on a project is how a task gets created by opening an ordinary
+   * terminal: the agent runs in the project's checkout and writes the card
+   * itself, which is what the workflow rules already tell it to do.
+   */
+  readonly itemId?: string;
+  readonly projectId?: string;
   readonly agentId: string;
   /** Run the agent with its own permission prompts disabled. */
   readonly autoApprove?: boolean;
@@ -129,6 +140,7 @@ const OUTPUT_REPORT_MS = 2000;
 
 export function TerminalPane({
   itemId,
+  projectId,
   agentId,
   autoApprove,
   persist,
@@ -377,8 +389,26 @@ export function TerminalPane({
 
     // The renderer sends an item and an agent, never a path and never a
     // command. Keep it that way.
+    if (!itemId && !projectId && agentId !== SHELL_AGENT_ID) {
+      // Refused here rather than sent: main would answer "no directory", and
+      // the pane would report a worktree problem for a caller that named
+      // nothing to open. The shell is the one caller that names no target on
+      // purpose — it runs in the user's home directory.
+      setError('This terminal has no card and no project, so there is nowhere to open it.');
+      return;
+    }
     api.spawn({
-      itemId, agentId,
+      /*
+       * EXACTLY ONE, and the card wins.
+       *
+       * `projectId` was already on a session before this pane could open one —
+       * it scopes a REMEMBERED row on restore — so sending both fields
+       * unconditionally made every ordinary card terminal fail the main
+       * process's exclusivity check ("itemId and projectId are exclusive").
+       * The field is only a target when there is no card.
+       */
+      ...(itemId ? { itemId } : projectId ? { projectId } : {}),
+      agentId,
       autoApprove: autoApprove === true,
       persist: persist === true,
       // Only when there is one AND we mean to resume it. Asking to resume
@@ -394,6 +424,24 @@ export function TerminalPane({
           return;
         }
         sessionRef.current = result.sessionId;
+        /*
+         * THE SIZE, NOW THAT THERE IS SOMEBODY TO TELL.
+         *
+         * The pty is spawned with whatever `fit()` could measure before the
+         * pane had been laid out — often the 80×24 fallback. The correct
+         * measurement DID arrive: ResizeObserver fires as soon as it observes.
+         * But that is before this promise resolves, and `applyResize` drops
+         * the call when there is no session yet — so the right number was
+         * computed and thrown away, and nothing measured again until somebody
+         * dragged a split.
+         *
+         * What that looks like: the agent draws into a terminal of 24 rows
+         * while the view shows fifty. Claude Code anchors its input box to the
+         * bottom of the terminal IT believes it has, so the box lands in the
+         * middle of the pane with a black rectangle underneath — and the
+         * person reports, correctly, that they cannot see where to type.
+         */
+        applyResize();
         // Now that the session has a name, start listening for its events.
         for (const subscribe of pending) cleanups.push(subscribe(result.sessionId));
         // After the handle is stored, so a throw in the shell's bookkeeping
@@ -424,7 +472,14 @@ export function TerminalPane({
     // onSpawned is deliberately NOT a dependency: it is a reporting channel,
     // and an unstable identity would tear the terminal down and start a second
     // agent in the same worktree.
-  }, [itemId, agentId, autoApprove, persist, agentSessionId, resume, bridge, createTerminal, createFitAddon]);
+    //
+    // `itemId`, `projectId` and `agentSessionId` are deliberately NOT here
+    // either, for the same reason. A pane's TARGET is fixed when it spawns:
+    // adopting a card (itemId going project -> card) or learning the
+    // conversation id after the fact must not kill the agent and start a
+    // second one in the worktree. The pane is keyed by session id in
+    // TerminalTab, so a different session still mounts its own pane and spawns.
+  }, [agentId, autoApprove, persist, resume, bridge, createTerminal, createFitAddon]);
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-black/95">

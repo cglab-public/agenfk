@@ -6,7 +6,7 @@ import { spawn, spawnSync, execSync } from 'child_process';
 import crypto from 'crypto';
 import { fileURLToPath, pathToFileURL } from 'url';
 import readline from 'readline';
-import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, buildPosixWrapper, applyClaudeHooks } from './install-helpers.mjs';
+import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, buildPosixWrapper, applyClaudeHooks, isDevCheckout } from './install-helpers.mjs';
 
 const GREEN = '\x1b[32m';
 const BLUE = '\x1b[34m';
@@ -322,6 +322,13 @@ async function run() {
     let healedArchive = null;
 
     async function autoHealRedownload() {
+        // Never a release over a developer's working tree (658ef023): it would
+        // rewrite tracked files and dist with another version. The caller has
+        // already said how to build it; this is the backstop.
+        if (isDevCheckout(rootDir)) {
+            warn('Pre-built artifacts missing in a development checkout: not downloading a release over it.');
+            return false;
+        }
         let pkgVersion = '0.0.0';
         try {
             const pkg = JSON.parse(readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
@@ -393,6 +400,14 @@ async function run() {
             debugLog('staleSrcDirs present:', presentStaleSrc.length > 0 ? presentStaleSrc.join(', ') : '(none)');
         }
 
+        if (missingDists.length > 0 && isDevCheckout(rootDir)) {
+            // A checkout builds its own dists; downloading a release over it is
+            // how one came back as a different version from its branch (658ef023).
+            console.error(`${YELLOW}Installation stopped: this is a development checkout (${rootDir}) and its build output is missing.`);
+            console.error(`  Missing: ${missingDists.join(', ')}`);
+            console.error(`  Build it first: npm run build${NC}`);
+            process.exit(1);
+        }
         if (missingDists.length > 0) {
             debugLog('trigger: missing dists → attempting auto-heal re-download');
             const healed = await autoHealRedownload();
@@ -476,9 +491,7 @@ async function run() {
         // checkouts silently disabled the prune for exactly the users who
         // cannot self-diagnose it. The install dir has a known path, so it is
         // the discriminator a developer's working tree cannot accidentally match.
-        const installDir = path.join(os.homedir(), '.agenfk-system');
-        const isInstallDir = path.resolve(rootDir) === path.resolve(installDir);
-        if (existsSync(path.join(rootDir, '.git')) && !isInstallDir) {
+        if (isDevCheckout(rootDir)) {
             detail('  Skipping (dev checkout detected: .git present).');
         } else if (!existsSync(tarball)) {
             warn(`Not pruning the install dir: ${tarball} not found`);

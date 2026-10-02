@@ -17,6 +17,7 @@ import { useSocketEvent } from '../SocketContext';
 import { isDesktop } from '../desktop';
 import { useActiveProject } from '../ActiveProject';
 import { CardDetailModal } from './CardDetailModal';
+import { ItemTypeBadge, ITEM_TYPE_VISUAL } from './ItemTypeSquare';
 import { VerifyRunBadge } from './VerifyRunBadge';
 import { VerifyRunsChip } from './VerifyRunsChip';
 import { ColumnContractBadges, ColumnRole } from './ColumnContractBadges';
@@ -40,8 +41,9 @@ import { useTheme } from '../ThemeContext';
 import { Logo } from './Logo';
 import { capture } from '../posthog';
 import { calculateCost, formatCost, calculateCycleTimeMs, formatDuration } from '../utils';
-import { itemTypeClass, itemTypeDot } from '../itemTypeStyle';
 import { cardShortDate, cardAgo, cardFullTimestamp } from '../cardDates';
+import { BoardDateFilter } from './BoardDateFilter';
+import { type DateFilter, emptyColumnMessage, isDateFilterActive, loadDateFilter, matchesDateFilter, saveDateFilter } from '../boardDateFilter';
 
 // Fallback column list used when the flow fetch fails or is loading
 const FALLBACK_STATUSES = [
@@ -288,9 +290,11 @@ const KanbanCard: React.FC<KanbanCardProps> = ({
       )}
       <div className="flex justify-between items-start mb-2">
         <div className="flex items-center gap-1.5">
-          <span className={clsx("text-[9px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider flex items-center gap-1", itemTypeClass(item.type))}>
-            {item.type}
-          </span>
+          {/* One grammar, decided in one place (CGLAB-164). This ladder used
+              to paint STORY with `story-blue` and TASK with the brand teal —
+              the exact reverse of what the create form teaches, so a card
+              changed colour between being written and being seen. */}
+          <ItemTypeBadge type={item.type} size="sm" />
           {/* Any card with children (ec325925): bugs are split into tasks too, and the server lets any card be a parent. */}
           {items?.some((i: AgEnFKItem) => i.parentId === item.id) && (
             <button onClick={(e) => { e.stopPropagation(); onDrillDown(item); }} className="bg-accent-fill hover:bg-accent-fill/70 text-accent-ink px-1.5 py-0.5 rounded text-[9px] font-bold flex items-center gap-1 transition-colors" aria-label={`Show ${items?.filter((i: AgEnFKItem) => i.parentId === item.id).length} child items`}>
@@ -494,19 +498,6 @@ const stripDeepLinkParams = () => {
 };
 
 /**
- * The blank card every "add an item" entry point opens.
- *
- * There are five of them — the header button, three per-column placeholders and
- * the sidebar's per-project + — and they were five copies of the same object
- * literal, each with its own cast. Drift between them means the modal opens
- * differently depending on where you clicked. The cast lives here and nowhere
- * else: a draft genuinely has no id or timestamps until it is saved, so it is
- * not an AgEnFKItem yet and no honest type says otherwise.
- */
-const blankDraft = (projectId: string, status: Status): AgEnFKItem =>
-  ({ type: ItemType.TASK, status, title: '', description: '', projectId } as unknown as AgEnFKItem);
-
-/**
  * A step label as the column shows it: one written in capitals ('IN PROGRESS',
  * or a status name with its underscores turned to spaces) in title case, and
  * one the flow already wrote in mixed case left alone - which is how a flow
@@ -530,12 +521,28 @@ export const KanbanBoard: React.FC = () => {
   // Shared with the desktop sidebar (CGLAB-168). Same rules as before — a
   // ?project= deep link beats the remembered choice — they just live in
   // ActiveProject now so the sidebar and the board cannot disagree.
-  const { activeProjectId: selectedProjectId, setActiveProjectId: setSelectedProjectId, focusedItemId, focusOpens, newItemRequest, markProjectWorked, requestTerminalFor } = useActiveProject();
+  const { activeProjectId: selectedProjectId, setActiveProjectId: setSelectedProjectId, focusedItemId, focusOpens, newItemRequest, newItemTitle, markProjectWorked, requestTerminalFor } = useActiveProject();
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [projectSearch, setProjectSearch] = useState('');
   const [highlightedProjectIndex, setHighlightedProjectIndex] = useState(-1);
   const [newProjectName, setNewProjectName] = useState('');
-  const [isPinned, setIsPinned] = useState<boolean>(() => localStorage.getItem('agenfk_project_pinned') === 'true');
+  // The card form has always been Title + Description; this one was Name alone,
+  // so a project made from the UI could never have a description — while
+  // `POST /projects` accepted one the whole time (CGLAB-164).
+  const [newProjectDescription, setNewProjectDescription] = useState('');
+  /*
+   * The board pin lives in the SERVER (SQLite), not localStorage.
+   *
+   * Same reason the sidebar pins moved: the UI is served on
+   * http://127.0.0.1:<port>, localStorage is origin-scoped, and the pin
+   * vanished when the port changed.
+   */
+  const { data: boardSettings } = useQuery({ queryKey: ['settings'], queryFn: api.getSettings });
+  const isPinned = boardSettings?.boardPinned === true;
+  const setBoardPin = useMutation({
+    mutationFn: (next: boolean) => api.updateSettings({ boardPinned: next }),
+    onSuccess: settled => { queryClient.setQueryData(['settings'], settled); },
+  });
   const [confirmDeleteProjectId, setConfirmDeleteProjectId] = useState<string | null>(null);
   const [isPickerOpen, setIsPickerOpen] = useState(false);
 
@@ -560,15 +567,7 @@ export const KanbanBoard: React.FC = () => {
   }, []);
 
   const togglePin = () => {
-    setIsPinned(prev => {
-      const next = !prev;
-      if (next) {
-        localStorage.setItem('agenfk_project_pinned', 'true');
-      } else {
-        localStorage.removeItem('agenfk_project_pinned');
-      }
-      return next;
-    });
+    setBoardPin.mutate(!isPinned);
   };
   const [isJiraImportOpen, setIsJiraImportOpen] = useState(false);
   const [isGitHubImportOpen, setIsGitHubImportOpen] = useState(false);
@@ -728,6 +727,34 @@ export const KanbanBoard: React.FC = () => {
     // correcting itself, and counting those as user intent inflates the metric.
     if (selectedProjectId && previous) capture('project_switched');
   }, [selectedProjectId]);
+
+  // Date filter (CGLAB-444), remembered per project. Keyed by the project it
+  // was loaded for, so switching project swaps in that project's own filter
+  // during the same render instead of applying the old one for a frame.
+  const [dateFilterState, setDateFilterState] = useState(() => ({
+    projectId: selectedProjectId,
+    filter: loadDateFilter(selectedProjectId),
+  }));
+  if (dateFilterState.projectId !== selectedProjectId) {
+    setDateFilterState({ projectId: selectedProjectId, filter: loadDateFilter(selectedProjectId) });
+  }
+  const dateFilter = dateFilterState.filter;
+  const dateFilterActive = isDateFilterActive(dateFilter);
+  const setDateFilter = (filter: DateFilter) => {
+    setDateFilterState({ projectId: selectedProjectId, filter });
+    if (selectedProjectId) saveDateFilter(selectedProjectId, filter);
+  };
+  const passesDateFilter = (i: AgEnFKItem) => matchesDateFilter(i, dateFilter);
+  // Side-column badges count every card of the status, as before, minus the
+  // ones the date filter hides.
+  const sideCount = (status: Status) =>
+    items?.filter((i: AgEnFKItem) => i.status === status && passesDateFilter(i)).length || 0;
+  // ARCHIVED lists every archived card (no drill-down filter), as before.
+  const archivedShown = items?.filter((i: AgEnFKItem) => i.status === Status.ARCHIVED && passesDateFilter(i)) ?? [];
+  const dateFilterEmptyState = (shown: AgEnFKItem[]) =>
+    dateFilterActive && shown.length === 0 ? (
+      <p className="text-center text-xs text-slate-400 dark:text-slate-500 py-4">{emptyColumnMessage(dateFilter)}</p>
+    ) : null;
 
   const [searchQuery, setSearchTerm] = useState('');
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
@@ -898,14 +925,28 @@ export const KanbanBoard: React.FC = () => {
   });
 
   const createProjectMutation = useMutation({
-    mutationFn: (name: string) => api.createProject({ name }),
+    mutationFn: (project: { name: string; description?: string }) => api.createProject(project),
     onSuccess: (newProject) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
       handleSelectProject(newProject.id);
       setIsCreatingProject(false);
       setNewProjectName('');
+      setNewProjectDescription('');
     }
   });
+
+  /*
+   * What the form actually submits. Trimmed like the card form (`!title.trim()`)
+   * — `!"   "` is false, so a bare truthiness check let whitespace through and
+   * `POST /projects` agreed with it (`if (!name)`), leaving the picker a row
+   * nobody could name. A blank description is OMITTED rather than sent as "",
+   * because the server already defaults the field and an empty string is a
+   * value somebody typed.
+   */
+  const draftProject = (): { name: string; description?: string } => {
+    const description = newProjectDescription.trim();
+    return description ? { name: newProjectName.trim(), description } : { name: newProjectName.trim() };
+  };
 
   const deleteProjectMutation = useMutation({
     mutationFn: (id: string) => api.deleteProject(id),
@@ -1076,7 +1117,10 @@ export const KanbanBoard: React.FC = () => {
     searchInputRef.current?.focus();
   }, [selectedProjectId, isPickerOpen, isCreatingProject, pickerHasProjects]);
 
-  const getItemsByStatus = (status: Status) => {
+  // `includeHidden` returns the cards the date filter hides as well. Anything
+  // that renumbers sortOrder needs it: computed from the visible subset, a
+  // hidden card would be left sharing a slot with a moved one.
+  const getItemsByStatus = (status: Status, { includeHidden = false } = {}) => {
     if (!items) return [];
 
     let filtered = items.filter((i: AgEnFKItem) => i.status === status);
@@ -1088,6 +1132,8 @@ export const KanbanBoard: React.FC = () => {
       const currentParent = navPath[navPath.length - 1];
       filtered = filtered.filter((i: AgEnFKItem) => i.parentId === currentParent.id);
     }
+
+    if (!includeHidden) filtered = filtered.filter(passesDateFilter);
 
     // Sort by sortOrder, then by createdAt for stable ordering
     filtered.sort((a: AgEnFKItem, b: AgEnFKItem) => {
@@ -1193,7 +1239,7 @@ export const KanbanBoard: React.FC = () => {
 
     // Reorder within same column or move to specific position in another column
     if (currentDropTargetId && currentDropTargetId !== id) {
-      const columnItemsBefore = getItemsByStatus(status);
+      const columnItemsBefore = getItemsByStatus(status, { includeHidden: true });
       const columnItems = columnItemsBefore.filter((i: AgEnFKItem) => i.id !== id);
       const targetIndex = columnItems.findIndex((i: AgEnFKItem) => i.id === currentDropTargetId);
       
@@ -1234,7 +1280,7 @@ export const KanbanBoard: React.FC = () => {
 
     // Cross-column or drop on empty space: update status (append to end of target column)
     if (draggedItem.status !== status) {
-      const targetColumnItems = getItemsByStatus(status);
+      const targetColumnItems = getItemsByStatus(status, { includeHidden: true });
       const newSortOrder = targetColumnItems.length;
 
       // Optimistic local UI update
@@ -1291,7 +1337,10 @@ export const KanbanBoard: React.FC = () => {
         i.id.toLowerCase().includes(lower) ||
         i.title.toLowerCase().includes(lower)
       )
+      // Matches the date filter shows come first, so a search only lifts the
+      // filter (navigateToMatch) when every match is one it hides.
       .sort((a: AgEnFKItem, b: AgEnFKItem) =>
+        (Number(!passesDateFilter(a)) - Number(!passesDateFilter(b))) ||
         (statusPriority[a.status] ?? 99) - (statusPriority[b.status] ?? 99)
       );
 
@@ -1310,6 +1359,9 @@ export const KanbanBoard: React.FC = () => {
   // Opens the section a card lives in, rings it for 3s and scrolls it into
   // view. `viewChanged` gives the new view's cards time to mount first.
   const revealAndHighlight = (item: AgEnFKItem, viewChanged: boolean) => {
+    // A match the date filter hides could never be shown or highlighted, so
+    // reaching it lifts the range (the chosen field is kept).
+    if (!passesDateFilter(item)) setDateFilter({ ...dateFilter, range: { kind: 'any' } });
     if (item.status === Status.IDEAS) setIsIdeasCollapsed(false);
     if (item.status === Status.ARCHIVED) setIsArchiveCollapsed(false);
     if (item.status === Status.BLOCKED) setIsBlockedCollapsed(false);
@@ -1321,7 +1373,14 @@ export const KanbanBoard: React.FC = () => {
     scrollTimerRef.current = setTimeout(() => {
       const element = document.getElementById(`card-${item.id}`);
       if (element) {
-        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        /*
+         * `nearest`, and never `center`, and never smooth (CGLAB-164): `center`
+         * moves EVERY scrollable ancestor, the document included, and a smooth
+         * run outlasts the pin App.tsx uses to snap the document back - the
+         * window stayed moved with no scrollbar to return it. `nearest` scrolls
+         * only what has to move: for a card in a scrolling column, the column.
+         */
+        element.scrollIntoView({ block: 'nearest', inline: 'nearest' });
       }
     }, item.status === Status.ARCHIVED || viewChanged ? 400 : 100);
 
@@ -1418,13 +1477,10 @@ export const KanbanBoard: React.FC = () => {
   }, [focusedItemId, items, isFetchingItems, isLoadingFlow, activeFlow]);
 
   // A new card asked for from outside the board — the sidebar's per-project +.
-  // Opens the very same blank draft the header's New Item button does, so
-  // there is one create flow rather than two that can drift apart.
-  useEffect(() => {
-    if (!newItemRequest) return;
-    const projectId = newItemRequest.slice(0, newItemRequest.lastIndexOf('#'));
-    setSelectedItem(blankDraft(projectId, Status.TODO));
-  }, [newItemRequest]);
+  /*
+   * The blank draft is gone (82345ab9). `newItemRequest` no longer opens
+   * anything here, and the callers that used to raise it were removed with it.
+   */
 
   const handleSearchNav = (direction: 'prev' | 'next') => {
     if (searchMatches.length === 0) return;
@@ -1556,32 +1612,101 @@ export const KanbanBoard: React.FC = () => {
             )}
 
             {isCreatingProject ? (
-              <div className="space-y-4 text-left">
+              /*
+               * NAMING A NEW THING, in the same language the card form uses to
+               * name one (CGLAB-164, §03). Nothing here is a redesign: the label
+               * typography, the field surface, the button shapes and the
+               * cancel-before-confirm order are lifted off the new-item form in
+               * CardDetailModal, which is the screen this one kept looking
+               * unrelated to. NewProjectForm.test.tsx asserts each of those
+               * against BOTH forms, so the pair cannot drift apart again in
+               * silence.
+               */
+              <div data-testid="create-project-form" className="space-y-6 text-left">
                 <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-400 uppercase tracking-widest block mb-2">Project Name</label>
-                  <input 
+                  <label htmlFor="new-project-name" className="text-xs font-bold text-ink-tertiary uppercase tracking-widest block">Project Name</label>
+                  <input
+                    id="new-project-name"
                     autoFocus
                     type="text"
                     value={newProjectName}
                     onChange={(e) => setNewProjectName(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && newProjectName && createProjectMutation.mutate(newProjectName)}
+                    onKeyDown={(e) => e.key === 'Enter' && newProjectName.trim() && createProjectMutation.mutate(draftProject())}
                     placeholder="e.g. My Awesome App"
-                    className="w-full p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-ink focus:outline-none focus:ring-2 focus:ring-focus-ring"
+                    className="w-full text-lg font-bold bg-canvas border border-border-soft rounded-xl px-4 py-2 text-ink focus:outline-none focus:ring-2 focus:ring-focus-ring"
                   />
                 </div>
-                <div className="flex gap-3 pt-2">
-                  <button 
-                    disabled={!newProjectName || createProjectMutation.isPending}
-                    onClick={() => createProjectMutation.mutate(newProjectName)}
-                    className="flex-1 bg-brand text-navy hover:opacity-90 disabled:opacity-50 font-bold py-3 rounded-xl transition-all"
+
+                <div className="space-y-2">
+                  <label htmlFor="new-project-description" className="text-xs font-bold text-ink-tertiary uppercase tracking-widest block">Description</label>
+                  <textarea
+                    id="new-project-description"
+                    value={newProjectDescription}
+                    onChange={(e) => setNewProjectDescription(e.target.value)}
+                    placeholder="What this project is for..."
+                    className="w-full bg-canvas border border-border-soft rounded-xl px-4 py-3 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-focus-ring min-h-[120px]"
+                  />
+                </div>
+
+                {/*
+                 * THE TWO COMMANDS, SAID RATHER THAN OFFERED.
+                 *
+                 * `verifyCommand` and `setupCommand` are shell strings this
+                 * machine later runs, so `PUT /projects/:id` refuses them — its
+                 * allowlist is name/description/autoWorktree — and only the
+                 * `x-agenfk-internal` routes may write them. A browser holds no
+                 * such token, so an input here could not save: it would take the
+                 * text, fail, and look to the person typing exactly like a saved
+                 * setting. What was missing was never the field; it was anybody
+                 * saying what LEAVING them unset does, which is this.
+                 */}
+                <div className="space-y-2 rounded-xl border border-border-soft bg-canvas p-4">
+                  <h4 className="text-xs font-bold text-ink-tertiary uppercase tracking-widest">Commands · set from the CLI, later</h4>
+                  <p className="text-xs leading-relaxed text-ink-secondary">
+                    With no <span className="font-semibold text-ink-secondary">verify command</span>, the move into the last step of
+                    the flow is refused with <code className="rounded bg-accent-fill px-1 py-0.5 font-mono text-[11px] text-ink-secondary">NO_VERIFY_COMMAND</code> unless
+                    one is passed to that call. With no <span className="font-semibold text-ink-secondary">setup command</span>, a
+                    worktree cut for a repo that declares a dependency manifest arrives with those dependencies not installed and says
+                    so — nothing is guessed from a lockfile, because a wrong install running for minutes costs more than none at all.
+                  </p>
+                  <p className="text-xs leading-relaxed text-ink-secondary">
+                    Both run a shell on this machine, so they are set from a terminal rather than a browser:
+                  </p>
+                  {/* tabIndex, because this scrolls sideways inside a max-w-md panel
+                      and a scrollable region no keyboard can reach is a dead end. */}
+                  <pre
+                    tabIndex={0}
+                    role="region"
+                    aria-label="Commands that set the verify and setup commands"
+                    className="overflow-x-auto rounded-lg bg-canvas p-3 font-mono text-[11px] leading-relaxed text-ink-secondary"
                   >
-                    {createProjectMutation.isPending ? <Loader2 className="animate-spin mx-auto" size={20} /> : 'Create Project'}
-                  </button>
-                  <button 
+{`agenfk update-project <id> --verify-command "npm test"
+agenfk update-project <id> --setup-command "npm ci"`}
+                  </pre>
+                </div>
+
+                <div className="flex justify-end gap-3 border-t border-border-soft pt-4">
+                  <button
                     onClick={() => setIsCreatingProject(false)}
-                    className="px-6 py-3 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-500 font-bold hover:bg-slate-50 dark:hover:bg-slate-800 transition-all"
+                    className="bg-surface hover:bg-accent-fill text-ink border border-border-soft px-4 py-2 rounded-lg font-medium text-sm transition-all shadow-sm active:scale-95"
                   >
                     Cancel
+                  </button>
+                  <button
+                    /*
+                     * TRIMMED, like the card form (`!title.trim()`) and like the
+                     * sidebar's own create field. `!"   "` is false, so the bare
+                     * truthiness check enabled this button on whitespace and the
+                     * server took it — `POST /projects` guards with `if (!name)`,
+                     * which agrees with the bug rather than catching it — and the
+                     * picker grew a row nothing could tell from the next one.
+                     */
+                    disabled={!newProjectName.trim() || createProjectMutation.isPending}
+                    onClick={() => createProjectMutation.mutate(draftProject())}
+                    className="bg-brand text-navy hover:opacity-90 disabled:opacity-50 px-6 py-2 rounded-lg font-bold text-sm transition-all active:scale-95 flex items-center gap-2"
+                  >
+                    {createProjectMutation.isPending ? <Loader2 className="animate-spin" size={16} /> : <Plus size={16} />}
+                    Create project
                   </button>
                 </div>
               </div>
@@ -1895,13 +2020,17 @@ export const KanbanBoard: React.FC = () => {
               </button>
             </div>
 
-            <button 
-              onClick={() => setSelectedItem(blankDraft(selectedProjectId!, Status.TODO))}
-              className="bg-brand text-navy hover:opacity-90 px-4 py-2 rounded-xl font-bold text-sm flex items-center gap-2 transition-all active:scale-95 whitespace-nowrap"
-            >
-              <Plus size={18} />
-              <span>New Item</span>
-            </button>
+            {/*
+              * NEW ITEM IS GONE, and with it every other way into the blank
+              * draft: the column placeholders, the sidebar's `+`, and the form
+              * itself. Work is created by describing it — the panel proposes a
+              * tree you approve, or you open a terminal and the agent writes
+              * the card with the CLI.
+              *
+              * The cost, stated because it is real: on a machine with no agent
+              * installed there is no longer a way to create a card from this
+              * interface. The CLI is that way.
+              */}
           </div>
         </div>
 
@@ -1929,7 +2058,11 @@ export const KanbanBoard: React.FC = () => {
                 <button
                   onClick={() => navigateTo(index)}
                   className={clsx("flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all whitespace-nowrap", index === navPath.length - 1 ? "bg-accent-fill text-accent-ink font-bold" : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800")}>
-                  <span className={clsx("w-2 h-2 rounded-full", itemTypeDot(nav.type))}></span>
+                  {/* The breadcrumb dot is a type colour too (CGLAB-164): it used to be
+                      `EPIC ? brand-light : story-blue`, which put a blue dot
+                      directly above the emerald STORY badge it had just
+                      revealed. Same grammar, same source. */}
+                  <span data-testid="breadcrumb-type-dot" className={clsx("w-2 h-2 rounded-full", ITEM_TYPE_VISUAL[nav.type]?.fill ?? "bg-slate-400")}></span>
                   <span>{nav.title}</span>
                 </button>
               </React.Fragment>
@@ -1937,6 +2070,8 @@ export const KanbanBoard: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-4 shrink-0 pl-4 border-l border-slate-100 dark:border-slate-800/50 ml-2">
+            <BoardDateFilter value={dateFilter} onChange={setDateFilter} />
+
             {/* Tokens/Cost section hidden temporarily for algorithm enhancements
             <div className="flex flex-col items-end">
               <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5 leading-none mb-1">
@@ -1987,7 +2122,7 @@ export const KanbanBoard: React.FC = () => {
                 <button data-testid="ideas-collapsed-button" onClick={() => setIsIdeasCollapsed(false)} className="h-full w-full bg-surface rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-accent-fill transition-colors group border border-dashed border-border-soft">
                   <Lightbulb size={16} className="text-accent-ink/70 group-hover:text-accent-ink shrink-0" />
                   <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-accent-ink shrink-0 mt-2">Ideas</span>
-                  <span className="bg-surface text-accent-ink text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-accent mt-auto">{items?.filter((i: AgEnFKItem) => i.status === Status.IDEAS).length || 0}</span>
+                  <span className="bg-surface text-accent-ink text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-accent mt-auto" data-testid="side-count-IDEAS">{sideCount(Status.IDEAS)}</span>
                 </button>
               ) : (
                 /* v8 ignore start */
@@ -2001,7 +2136,7 @@ export const KanbanBoard: React.FC = () => {
                       <Lightbulb size={14} className="text-accent-ink" />
                       <h2 className="font-bold text-slate-700 dark:text-slate-300 text-sm uppercase tracking-wider text-xs">Ideas</h2>
                     </div>
-                    <span className="bg-surface text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgEnFKItem) => i.status === Status.IDEAS).length || 0}</span>
+                    <span className="bg-surface text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700" data-testid="side-count-IDEAS">{sideCount(Status.IDEAS)}</span>
                   </div>
                   <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                     <AnimatePresence mode="popLayout" initial={false}>
@@ -2031,10 +2166,8 @@ export const KanbanBoard: React.FC = () => {
                           />
                         ))}
                       </AnimatePresence>
+                    {dateFilterEmptyState(getItemsByStatus(Status.IDEAS))}
                     {/* v8 ignore start */}
-                    <button onClick={() => setSelectedItem(blankDraft(selectedProjectId!, Status.IDEAS))} className="w-full py-1.5 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-lg text-slate-400 dark:text-slate-500 text-xs font-medium hover:border-accent hover:text-accent-ink transition-all flex items-center justify-center gap-1.5">
-                      <Plus size={14} /> Add idea
-                    </button>
                     {/* v8 ignore stop */}
                   </div>
                 </div>
@@ -2069,7 +2202,7 @@ export const KanbanBoard: React.FC = () => {
                   <button onClick={() => handleArchiveColumn(status as Status)} className="p-1 shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 dark:text-slate-500 transition-opacity" title="Archive Column">
                     <Archive size={12} />
                   </button>
-                  <span className="shrink-0 bg-accent-fill text-accent-ink text-xs font-mono font-bold px-2 py-1 rounded-full shadow-sm border border-border-soft">
+                  <span data-testid={`column-count-${status}`} className="shrink-0 bg-accent-fill text-accent-ink text-xs font-mono font-bold px-2 py-1 rounded-full shadow-sm border border-border-soft">
                     {getItemsByStatus(status as Status).length}
                   </span>
                 </div>
@@ -2113,9 +2246,7 @@ export const KanbanBoard: React.FC = () => {
                       </CardAnimationWrapper>
                     ))}
                   </AnimatePresence>
-                <button onClick={() => setSelectedItem(blankDraft(selectedProjectId!, status as Status))} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-sm font-medium hover:border-accent hover:text-accent-ink hover:bg-accent-fill transition-all flex items-center justify-center gap-2">
-                  <Plus size={16} /> Add {columnLabel.toLowerCase()}
-                </button>
+                {dateFilterEmptyState(getItemsByStatus(status as Status))}
               </div>
             </div>
             );
@@ -2133,7 +2264,7 @@ export const KanbanBoard: React.FC = () => {
                       <Pause size={14} className="text-status-warn-text" />
                       <h2 className="font-bold text-slate-700 dark:text-slate-300 text-xs uppercase tracking-wider">Paused</h2>
                     </div>
-                    <span className="bg-surface text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgEnFKItem) => i.status === Status.PAUSED).length || 0}</span>
+                    <span className="bg-surface text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700" data-testid="side-count-PAUSED">{sideCount(Status.PAUSED)}</span>
                   </div>
                   <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                     <AnimatePresence mode="popLayout" initial={false}>
@@ -2164,6 +2295,7 @@ export const KanbanBoard: React.FC = () => {
                           />
                         ))}
                       </AnimatePresence>
+                    {dateFilterEmptyState(getItemsByStatus(Status.PAUSED))}
                   </div>
                 </div>
               )}
@@ -2176,7 +2308,7 @@ export const KanbanBoard: React.FC = () => {
                       <AlertCircle size={14} className="text-status-danger-text" />
                       <h2 className="font-bold text-slate-700 dark:text-slate-300 text-xs uppercase tracking-wider">Blocked</h2>
                     </div>
-                    <span className="bg-surface text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgEnFKItem) => i.status === Status.BLOCKED).length || 0}</span>
+                    <span className="bg-surface text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700" data-testid="side-count-BLOCKED">{sideCount(Status.BLOCKED)}</span>
                   </div>
                   <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                     <AnimatePresence mode="popLayout" initial={false}>
@@ -2207,9 +2339,7 @@ export const KanbanBoard: React.FC = () => {
                           />
                         ))}
                       </AnimatePresence>
-                    <button onClick={() => setSelectedItem(blankDraft(selectedProjectId!, Status.BLOCKED))} className="w-full py-2 border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl text-slate-400 dark:text-slate-500 text-xs font-medium hover:border-status-danger-text/40 hover:text-status-danger-text transition-all flex items-center justify-center gap-2 mt-2">
-                      <Plus size={16} /> Add blocked
-                    </button>
+                    {dateFilterEmptyState(getItemsByStatus(Status.BLOCKED))}
                   </div>
                 </div>
               )}
@@ -2224,7 +2354,13 @@ export const KanbanBoard: React.FC = () => {
                       {items?.some((i: AgEnFKItem) => i.status === Status.ARCHIVED) && (
                         <button
                           onClick={() => {
-                            if (window.confirm('Move all archived items to trash?')) {
+                            const all = items?.filter((i: AgEnFKItem) => i.status === Status.ARCHIVED).length ?? 0;
+                            const hidden = all - archivedShown.length;
+                            // The column may show only part of what this trashes.
+                            const message = hidden > 0
+                              ? `Move all ${all} archived ${all === 1 ? 'item' : 'items'} to trash? ${hidden} of them ${hidden === 1 ? 'is' : 'are'} hidden by the date filter.`
+                              : 'Move all archived items to trash?';
+                            if (window.confirm(message)) {
                               trashArchivedMutation.mutate(selectedProjectId!);
                             }
                           }}
@@ -2235,11 +2371,11 @@ export const KanbanBoard: React.FC = () => {
                         </button>
                       )}
                     </div>
-                    <span className="bg-surface text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700">{items?.filter((i: AgEnFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
+                    <span className="bg-surface text-slate-500 dark:text-slate-400 text-xs font-bold px-2 py-1 rounded-full shadow-sm border border-slate-100 dark:border-slate-700" data-testid="side-count-ARCHIVED">{sideCount(Status.ARCHIVED)}</span>
                   </div>
                   <div className={clsx("flex-1 pr-2 pb-2 flex flex-col gap-3 relative scrollbar-thin scrollbar-thumb-slate-200 dark:scrollbar-thumb-slate-800 overflow-y-auto overflow-x-hidden")} style={{ scrollbarGutter: 'stable' }}>
                     <AnimatePresence mode="popLayout" initial={false}>
-                      {items?.filter((i: AgEnFKItem) => i.status === Status.ARCHIVED).map((item: AgEnFKItem) => (
+                      {archivedShown.map((item: AgEnFKItem) => (
                         <KanbanCard
                           key={item.id}
                           item={item}
@@ -2266,6 +2402,7 @@ export const KanbanBoard: React.FC = () => {
                         />
                       ))}
                     </AnimatePresence>
+                    {dateFilterEmptyState(archivedShown)}
                   </div>
                 </div>
               )}
@@ -2280,7 +2417,7 @@ export const KanbanBoard: React.FC = () => {
                     >
                       <Pause size={16} className="text-status-warn-text group-hover:text-status-warn-text shrink-0" />
                       <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-status-warn-text shrink-0 mt-2">Paused</span>
-                      <span className="bg-surface text-status-warn-text text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-status-warn-text/40 mt-auto">{items?.filter((i: AgEnFKItem) => i.status === Status.PAUSED).length || 0}</span>
+                      <span className="bg-surface text-status-warn-text text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-status-warn-text/40 mt-auto" data-testid="side-count-PAUSED">{sideCount(Status.PAUSED)}</span>
                     </button>
                   )}
                   {isBlockedCollapsed && (
@@ -2290,14 +2427,14 @@ export const KanbanBoard: React.FC = () => {
                     >
                       <AlertCircle size={16} className="text-status-danger-text group-hover:text-status-danger-text shrink-0" />
                       <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-status-danger-text shrink-0 mt-2">Blocked</span>
-                      <span className="bg-surface text-status-danger-text text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-status-danger-text/40 mt-auto">{items?.filter((i: AgEnFKItem) => i.status === Status.BLOCKED).length || 0}</span>
+                      <span className="bg-surface text-status-danger-text text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-status-danger-text/40 mt-auto" data-testid="side-count-BLOCKED">{sideCount(Status.BLOCKED)}</span>
                     </button>
                   )}
                   {isArchiveCollapsed && (
                     <button onClick={() => setIsArchiveCollapsed(false)} className="flex-1 w-full bg-slate-200/50 dark:bg-slate-900/50 rounded-xl flex flex-col items-center justify-center py-4 gap-3 hover:bg-slate-300 dark:hover:bg-slate-800 transition-colors group border border-dashed border-slate-300 dark:border-slate-800">
                       <Archive size={16} className="text-slate-500 group-hover:text-accent-ink shrink-0" />
                       <span className="[writing-mode:vertical-lr] font-bold text-[10px] uppercase tracking-widest text-slate-500 shrink-0 mt-2">Archived</span>
-                      <span className="bg-surface text-slate-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-slate-100 dark:border-slate-700 mt-auto">{items?.filter((i: AgEnFKItem) => i.status === Status.ARCHIVED).length || 0}</span>
+                      <span className="bg-surface text-slate-500 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-slate-100 dark:border-slate-700 mt-auto" data-testid="side-count-ARCHIVED">{sideCount(Status.ARCHIVED)}</span>
                     </button>
                   )}
                 </div>

@@ -150,9 +150,11 @@ describe("verifyAt: 'parent'", () => {
   it("a child does not defer to a parent whose own verify is running: that run may not see the child's work", async () => {
     const { pid } = await project('parent', { cmd: marker => `sleep 1 && touch ${marker}` });
     const parent = await card(pid);
-    const child = await card(pid, 'WORK', { parentId: parent });
+    // The parent's close starts only with its children finished (8024f6c4), so the child this
+    // guards is one that appears while that run is going - and must not lean on it.
     const started = await agent().post(`/items/${parent}/validate`).set({ 'x-agenfk-internal': VERIFY_TOKEN! }).send({ evidence: 'ok', async: true });
     expect(started.status, JSON.stringify(started.body)).toBe(202);
+    const child = await card(pid, 'WORK', { parentId: parent });
     const res = await validate(child);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.message).not.toMatch(/deferred/);

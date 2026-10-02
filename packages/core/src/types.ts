@@ -195,6 +195,30 @@ export interface AppSettings {
    * says so rather than the setting disappearing.
    */
   osNotifications: boolean;
+
+  /**
+   * Projects pinned to the top of the sidebar, in pin order.
+   *
+   * SERVER-SIDE, and that is a bug fix rather than a preference. The UI is
+   * served on `http://127.0.0.1:<port>`, and the port moves when it is taken —
+   * localStorage is origin-scoped, so a pinned project silently vanished the
+   * moment the port changed. The store is SQLite, so the pin survives the
+   * port, the window and the machine.
+   *
+   * Order is the array's, not a timestamp: pinning is a small reordering of a
+   * short list, and "when" is not a fact anyone reads back.
+   */
+  pinnedProjects: string[];
+
+  /**
+   * Keep the board on the project you chose, instead of following a
+   * `project_switched` event an agent's work emits.
+   *
+   * Server-side for the same reason as `pinnedProjects`: localStorage is
+   * origin-scoped and the UI's port moves. Which project you were looking at
+   * must not be forgotten because 3000 was busy.
+   */
+  boardPinned: boolean;
   /**
    * f8d0a752: how many suite runs (step captures and the final step's verify
    * command) the server runs at once, across every project - one value for
@@ -240,6 +264,14 @@ export function isLegalSettingValue(key: keyof AppSettings, value: unknown): boo
   // hasOwnProperty through Object.prototype: `'constructor' in DEFAULT_APP_SETTINGS`
   // is true, and the keys arrive from parsed JSON.
   if (!Object.prototype.hasOwnProperty.call(DEFAULT_APP_SETTINGS, key)) return false;
+  /*
+   * An ARRAY setting needs its own rule. `typeof []` is 'object', so the
+   * comparison below would accept any object — `{}`, a number keyed by
+   * accident — and the sidebar would then iterate a non-array during render.
+   */
+  if (key === 'pinnedProjects') {
+    return Array.isArray(value) && value.every(v => typeof v === 'string');
+  }
   if (typeof value !== typeof DEFAULT_APP_SETTINGS[key]) return false;
   const allowed = APP_SETTING_VALUES[key];
   if (allowed) return allowed.includes(value);
@@ -288,6 +320,13 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   // with no information is what trains a user to switch the feature off.
   soundTiming: 'unfocused',
   osNotifications: true,
+  // Nothing pinned until the user pins something; the sidebar's own order
+  // stands. Also the upgrade contract: an install that never had this key
+  // reads back as empty rather than as a broken value.
+  pinnedProjects: [],
+  // Off by default: following the work an agent switches to is the behaviour
+  // every install had before this existed. The setting is an opt-in override.
+  boardPinned: false,
   maxConcurrentSuiteRuns: 0,
 };
 

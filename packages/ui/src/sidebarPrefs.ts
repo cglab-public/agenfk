@@ -1,17 +1,21 @@
 /**
- * Sidebar preferences: pinned projects, expanded folders (CGLAB-172).
+ * Sidebar preferences: expanded folders (CGLAB-172).
  *
- * These belong to the person sitting at this machine, not to the work, so they
- * stay in localStorage and never reach the server — pinning a project on your
- * laptop should not rearrange a teammate's sidebar.
+ * Expanded folders belong to the person sitting at this machine, not to the
+ * work, so they stay in localStorage and never reach the server — opening a
+ * folder on your laptop should not rearrange a teammate's sidebar.
+ *
+ * Pinned projects USED to live here too. They moved to SQLite (396c8350-era
+ * follow-up): the UI is served on `http://127.0.0.1:<port>`, the port moves
+ * when it is taken, and localStorage is origin-scoped — so a pin made on one
+ * port was silently gone on the next. Pins are now `AppSettings.pinnedProjects`.
  *
  * That makes storage the entire risk surface. Every read is defensive: a value
  * that is corrupt, hand-edited, or written by an older version degrades to
- * "nothing pinned" rather than throwing, because the alternative is a blank
+ * "nothing expanded" rather than throwing, because the alternative is a blank
  * sidebar with no way for the user to understand why.
  */
 
-const PINNED_KEY = 'agenfk_pinned_projects';
 const EXPANDED_KEY = 'agenfk_expanded_projects';
 
 /** Read a stored array of ids, tolerating anything that is not one. */
@@ -44,10 +48,6 @@ function toggleId(key: string, id: string): string[] {
   return next;
 }
 
-export const readPinned = (): string[] => readIds(PINNED_KEY);
-export const togglePinned = (id: string): string[] => toggleId(PINNED_KEY, id);
-export const isPinned = (id: string): boolean => readPinned().includes(id);
-
 export const readExpanded = (): string[] => readIds(EXPANDED_KEY);
 export const toggleExpanded = (id: string): string[] => toggleId(EXPANDED_KEY, id);
 /**
@@ -65,6 +65,8 @@ export const isExpanded = (id: string): boolean => readExpanded().includes(id);
  * Pinned projects first, in the order they were pinned; everything else keeps
  * its original order. Pins for projects that no longer exist are skipped
  * rather than producing an empty row, and the input array is never mutated.
+ *
+ * The pinned list comes from the SERVER (`AppSettings.pinnedProjects`) now.
  */
 export function sortProjectsByPin<T extends { id: string }>(projects: T[], pinned: string[]): T[] {
   const byId = new Map(projects.map(p => [p.id, p]));
@@ -79,6 +81,7 @@ export function sortProjectsByPin<T extends { id: string }>(projects: T[], pinne
 }
 
 const SORT_KEY = 'agenfk_project_sort';
+const AGENT_FILTER_KEY = 'agenfk.sidebar.agentFilter';
 
 /** How the project list is ordered before pinning is applied. */
 export type ProjectSort = 'last-used' | 'created';
@@ -97,6 +100,37 @@ export function readProjectSort(): ProjectSort {
   } catch {
     return 'last-used';
   }
+}
+
+/**
+ * Which agents the tree is narrowed to. Empty is "all", not "none".
+ *
+ * Stored as a list rather than a single value because the useful question is
+ * often about two of them at once - the two that are blocked, say - and a
+ * radio would make answering it two passes.
+ */
+export function readAgentFilter(): string[] {
+  try {
+    const raw = localStorage.getItem(AGENT_FILTER_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    // Shape-checked, not trusted. This value is JSON in storage a user can
+    // edit, and a non-array here would throw inside a render.
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
+  } catch {
+    // Unparseable is the same as unset: show everything.
+    return [];
+  }
+}
+
+export function writeAgentFilter(ids: readonly string[]): string[] {
+  const next = [...ids];
+  try {
+    localStorage.setItem(AGENT_FILTER_KEY, JSON.stringify(next));
+  } catch {
+    // Losing the preference is a papercut; throwing would blank the sidebar.
+  }
+  return next;
 }
 
 export function writeProjectSort(sort: ProjectSort): ProjectSort {

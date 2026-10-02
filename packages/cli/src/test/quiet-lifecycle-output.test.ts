@@ -9,6 +9,8 @@
  * reports what it killed and what it could not, and `down`/`kill` say which.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'fs';
+import * as path from 'path';
 
 const { mockExecSync, mockSpawn, mockSpawnSync } = vi.hoisted(() => ({
   mockExecSync: vi.fn(),
@@ -215,14 +217,25 @@ describe('agenfk up', () => {
 
 describe('agenfk upgrade', () => {
   const CURRENT = program.version() as string;
+  let gitSpy: { mockRestore: () => void } | undefined;
 
   beforeEach(() => {
+    /*
+     * As an INSTALLED copy. These run from this repository, which is a git
+     * checkout, and an upgrade refuses one (658ef023, pinned in
+     * upgradeDevCheckout.test.ts). Here the install root's .git is hidden so
+     * the installed-copy path - the one these lines describe - is what runs.
+     */
+    const realExists = fs.existsSync;
+    const repoGit = path.resolve(__dirname, '../../../../.git');
+    gitSpy = vi.spyOn(fs, 'existsSync').mockImplementation((p: fs.PathLike) => (path.resolve(String(p)) === repoGit ? false : realExists(p)));
     mockedAxios.get.mockImplementation(async (url: string) => {
       if (/releases\/tags\/v9\.9\.9$/.test(url)) return { status: 200, data: { tag_name: 'v9.9.9' } } as any;
       throw new Error('ECONNREFUSED'); // the local server is not running
     });
     mockExecSync.mockImplementation(() => '');
   });
+  afterEach(() => { gitSpy?.mockRestore(); });
 
   it('prints two lines: what it is doing, and that it is done', async () => {
     await program.parseAsync(['node', 'agenfk', 'upgrade', '--version', '9.9.9']);

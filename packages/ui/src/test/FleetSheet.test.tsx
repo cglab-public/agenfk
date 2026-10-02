@@ -175,3 +175,41 @@ describe('a child that already has a terminal', () => {
     expect(onLaunch).toHaveBeenCalledWith(['a']);
   });
 });
+
+
+/*
+ * Reading the sheet before spending anything.
+ *
+ * Reported as "I did not understand what it is for, it is transparent, and
+ * sometimes there is a warning". All three were legibility, not logic.
+ */
+describe('what the sheet says about itself', () => {
+  it('names what pressing launch will do', () => {
+    // The header carried "LAUNCH FLEET" and a card title; the only answer to
+    // "what is this screen" was the button at the bottom.
+    show([kid('a')]);
+    expect(screen.getByTestId('fleet-what').textContent)
+      .toMatch(/one agent per child card.*own worktree.*nothing runs until you launch/i);
+  });
+
+  it('is opaque, because it is read over the board', () => {
+    // `bg-nav-surface` is a 72%-alpha token for the nav bar, which sits over a
+    // blur. With no blur behind it, the board showed through the text.
+    show([kid('a')]);
+    const classes = screen.getByTestId('fleet-sheet').className;
+    expect(classes).toContain('bg-surface');
+    expect(classes).not.toContain('bg-nav-surface');
+  });
+
+  it('says nothing at all when a card claims no files', () => {
+    // The SAFEST case — nothing to collide with — was printed in the same grey
+    // monospace as a real claim, so it read as a complaint.
+    show([kid('a')]);
+    expect(screen.queryByText(/claims nothing/i)).toBeNull();
+  });
+
+  it('still shows the claims a card does hold', () => {
+    show([kid('a', ['src/api.ts'])]);
+    expect(screen.getByText('src/api.ts')).toBeTruthy();
+  });
+});
