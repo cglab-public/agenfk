@@ -2,6 +2,16 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.23] — 2026-10-02
+
+Beta, cumulative over `2.0.0-beta.22`.
+
+- **The flow editor is on the shared type scale.** The five sizes (caption 11 / small 12 / body 14 / title 18 /
+  display 24), the two content widths and `eyebrow` moved from the hub's stylesheet into
+  `packages/brand/type-scale.css`, imported by both the hub and the local board, so the flow editor looks the same in
+  both. Visible changes: flow-name headings are 18px (were 20px) and the exit-criteria token estimate is 11px (was
+  10px).
+
 ## [2.0.0-beta.22] — 2026-10-02
 
 Beta, cumulative over `2.0.0-beta.21`: everything in beta.21 (the CGLAB-164 desktop line), plus the CGLAB-434 work below.
