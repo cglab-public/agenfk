@@ -86,11 +86,40 @@ describe('a model row being edited', () => {
       </QueryClientProvider>,
     );
     fireEvent.click(screen.getByRole('button', { name: /edit classification for glm-5\.2/i }));
-    expect(screen.queryByText('Fix the highlighted value first')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
 
     fireEvent.change(screen.getByRole('textbox', { name: 'Provider' }), { target: { value: '' } });
 
-    expect(screen.getByText('Fix the highlighted value first')).toBeVisible();
+    // The actual problem, said once, in the row's alert: not a pointer at a
+    // highlight that does not exist, and not a second copy beside Save.
+    const alert = screen.getByRole('alert');
+    expect(alert).toBeVisible();
+    expect(alert.textContent).not.toMatch(/highlighted/i);
+    expect(alert.textContent!.length).toBeGreaterThan(5);
+    expect(screen.getAllByText(alert.textContent!)).toHaveLength(1);
+  });
+});
+
+describe('a model with no classification yet', () => {
+  const unknown: ModelGroup = {
+    canonicalModel: 'mystery-9000', prs: 3,
+    aliases: [{ model: 'mystery-9000', prs: 3, canonicalModel: 'mystery-9000', isMapped: false }],
+    canonicalSeen: true, unusedMappings: [], createdBy: null,
+  };
+
+  it('opens for editing without an error, since nothing has been typed yet', () => {
+    render(
+      <QueryClientProvider client={qc()}>
+        <ModelTable groups={[unknown]} metaRows={[] as never} loading={false} onError={() => {}} invalidate={vi.fn()}
+          onUnmap={() => {}} unmapping={false} unmappedCount={0} unusedCount={0} />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /edit classification for mystery-9000/i }));
+    expect(screen.queryByRole('alert')).toBeNull();
+    const save = screen.getByRole('button', { name: 'Save' });
+    expect(save).toBeDisabled();
+    // Untouched is "nothing to save", not a complaint about empty fields.
+    expect(save).toHaveAccessibleDescription('No changes to save');
   });
 });
 
@@ -99,6 +128,11 @@ describe('model filter chips with nothing left to add', () => {
     { model: 'claude-opus-4-8', provider: 'Anthropic', licenseClass: 'commercial', license: 'Proprietary (API only)' },
     { model: 'glm-5.2', provider: 'Z.ai', licenseClass: 'open_weights', license: 'MIT' },
   ];
+
+  it('do not claim "all already selected" while a PR search supersedes the filter', () => {
+    render(<ModelMetaFilter rows={ROWS} selected={new Set(['glm-5.2'])} onApply={vi.fn()} disabled />);
+    expect(screen.getByRole('button', { name: /^Z\.ai/ })).not.toHaveAccessibleName(/all already selected/);
+  });
 
   it('say so in their name, not only in a title', () => {
     render(<ModelMetaFilter rows={ROWS} selected={new Set(['glm-5.2'])} onApply={vi.fn()} disabled={false} />);

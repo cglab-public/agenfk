@@ -89,6 +89,65 @@ describe('the activity timeline', () => {
     expect(screen.getByTestId('timeline-tooltip')).toHaveAttribute('aria-hidden', 'true');
   });
 
+  it('keeps the axes and the EVENTS title out of the list, as decoration', async () => {
+    await mount();
+    expect(screen.getByText('EVENTS').closest('[aria-hidden="true"]')).not.toBeNull();
+    const tick = document.querySelector('svg[role="listbox"] line')!;
+    expect(tick.closest('[aria-hidden="true"]')).not.toBeNull();
+  });
+
+  it('keeps a bar chosen by tap when the chart then takes focus', async () => {
+    const chart = await mount();
+    const options = screen.getAllByRole('option');
+    fireEvent.click(options[1]);
+    fireEvent.focus(chart);
+    expect(active(chart)).toBe(options[1]);
+  });
+
+  it('leaves Escape alone when no bar is chosen, and modified arrows to the browser', async () => {
+    const chart = await mount();
+    // fireEvent returns false when the handler called preventDefault.
+    expect(fireEvent.keyDown(chart, { key: 'Escape' })).toBe(true);
+    fireEvent.focus(chart);
+    const before = active(chart);
+    expect(fireEvent.keyDown(chart, { key: 'ArrowLeft', altKey: true })).toBe(true);
+    expect(active(chart)).toBe(before);
+  });
+
+  it('keeps the keyboard\'s place when the pointer drifts off that bar', async () => {
+    const chart = await mount();
+    chart.focus();
+    fireEvent.focus(chart);
+    fireEvent.keyDown(chart, { key: 'ArrowLeft' });
+    const place = active(chart)!;
+    expect(place).not.toBeNull();
+    fireEvent.mouseLeave(place);
+    expect(active(chart)).toBe(place);
+  });
+
+  it('lets go of a bar that a shorter range no longer has', async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { rerender } = render(<QueryClientProvider client={qc}><TimelineBar range="30d" /></QueryClientProvider>);
+    const chart = await screen.findByRole('listbox', { name: /event timeline/i });
+    await waitFor(() => expect(screen.getAllByRole('option').length).toBeGreaterThan(20));
+    fireEvent.click(screen.getAllByRole('option')[20]);
+    rerender(<QueryClientProvider client={qc}><TimelineBar range="7d" /></QueryClientProvider>);
+    await waitFor(() => expect(screen.getAllByRole('option').length).toBeLessThan(10));
+    expect(chart.getAttribute('aria-activedescendant')).toBeNull();
+  });
+
+  it('does not pin the tooltip after a mouse click when the pointer leaves', async () => {
+    // A click focuses the chart too; only a keyboard place survives the pointer.
+    const chart = await mount();
+    const bar = screen.getAllByRole('option').at(-2)!;
+    fireEvent.pointerDown(bar);
+    fireEvent.click(bar);
+    chart.focus();
+    fireEvent.focus(chart);
+    fireEvent.mouseLeave(bar);
+    expect(active(chart)).toBeNull();
+  });
+
   it('drops the selection when focus leaves', async () => {
     const chart = await mount();
     fireEvent.focus(chart);

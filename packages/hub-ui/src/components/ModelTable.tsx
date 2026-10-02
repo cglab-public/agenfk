@@ -240,6 +240,7 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
                   draft={draft}
                   dirty={isDirty(row, draft)}
                   invalid={!!rowProblem(row.canonicalModel, draft)}
+                  problem={rowProblem(row.canonicalModel, draft)}
                   busy={save.isPending || remove.isPending}
                   onEdit={() => beginEdit(row)}
                   onCancel={() => { setEditing(null); setRowError(null); }}
@@ -269,12 +270,14 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
   );
 }
 
-function ModelRow({ row, editing, draft, dirty, invalid, busy, onEdit, onCancel, onChange, onSave, onDelete, onUnmap, unmapping }: {
+function ModelRow({ row, editing, draft, dirty, invalid, problem, busy, onEdit, onCancel, onChange, onSave, onDelete, onUnmap, unmapping }: {
   row: UnifiedRow;
   editing: boolean;
   draft: Draft;
   dirty: boolean;
   invalid: boolean;
+  /** What is wrong with the draft, in words; null when nothing is. */
+  problem: string | null;
   busy: boolean;
   onEdit: () => void;
   onCancel: () => void;
@@ -285,7 +288,9 @@ function ModelRow({ row, editing, draft, dirty, invalid, busy, onEdit, onCancel,
   unmapping: boolean;
 }) {
   const inherited = row.meta && !row.meta.exact;
-  const saveBlocked = invalid ? 'Fix the highlighted value first' : !dirty ? 'No changes to save' : null;
+  // An untouched row (a brand-new model starts empty) is not an error yet:
+  // say what is wrong only once the admin has changed something.
+  const saveBlocked = !dirty ? 'No changes to save' : invalid ? problem : null;
 
   return (
     <>
@@ -343,9 +348,6 @@ function ModelRow({ row, editing, draft, dirty, invalid, busy, onEdit, onCancel,
               />
             </td>
             <td className="px-3 py-2 text-right whitespace-nowrap">
-              {/* Something to fix is said on screen: a disabled button's title
-                  reaches a mouse and a screen reader, not a sighted keyboard user. */}
-              {invalid && <span className="mr-1 text-[11px] text-status-danger-text">{saveBlocked}</span>}
               <button
                 onClick={onSave}
                 disabled={!dirty || invalid || busy}

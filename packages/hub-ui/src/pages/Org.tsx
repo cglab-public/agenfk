@@ -350,8 +350,10 @@ export function OrgPage() {
                     render: u => {
                       const pct = checkPassRate(u.validate_passes, u.validate_fails);
                       return pct === null
-                        ? <span className="text-ink-tertiary" title="no checks ran"><span aria-hidden="true">—</span><span className="sr-only">no checks ran</span></span>
-                        : <span className="font-mono tabular-nums text-ink" title={`${u.validate_passes} passed · ${u.validate_fails} failed`}>{pct}%<span className="sr-only">{`${u.validate_passes} passed, ${u.validate_fails} failed`}</span></span>;
+                        // The hover title rides on the aria-hidden visual; the
+                        // sr-only text says it once to a screen reader.
+                        ? <span className="text-ink-tertiary"><span aria-hidden="true" title="no checks ran">—</span><span className="sr-only">no checks ran</span></span>
+                        : <span className="font-mono tabular-nums text-ink"><span aria-hidden="true" title={`${u.validate_passes} passed · ${u.validate_fails} failed`}>{pct}%</span><span className="sr-only">{`${pct}%, ${u.validate_passes} passed, ${u.validate_fails} failed`}</span></span>;
                     },
                   },
                   {

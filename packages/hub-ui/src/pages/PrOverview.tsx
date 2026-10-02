@@ -96,7 +96,7 @@ const prKey = (p: { repo: string; prNumber: number; childHubId?: string }) =>
 const colorOf = (k: SizeKey) => SIZE_META.find(s => s.key === k)!.color;
 
 /** Horizontal stacked size-mix bar for one row of size counts. */
-function MixBar({ sizes, total }: { sizes: SizeDist; total: number }) {
+export function MixBar({ sizes, total }: { sizes: SizeDist; total: number }) {
   // The segments are empty spans: the counts go in the bar's own name, not in
   // a per-segment title that only a mouse can read.
   const present = SIZE_META.filter(s => sizes[s.key] > 0);

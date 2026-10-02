@@ -1,4 +1,4 @@
-import { useId, useMemo, useState, type KeyboardEvent } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { eventTypeLabel } from '../eventTypes';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api';
@@ -171,6 +171,20 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
   // End walk it. The hover tooltip stays for the mouse, aria-hidden: the
   // option names carry everything it shows.
   const chartId = useId();
+  // Whether the last input was the keyboard: only then does a pointer leaving
+  // the focused chart keep its place (a click focuses it too, and must not pin
+  // the tooltip). As in PrVolumeChart.
+  const byKeyboard = useRef(false);
+  useEffect(() => {
+    const key = () => { byKeyboard.current = true; };
+    const pointer = () => { byKeyboard.current = false; };
+    document.addEventListener('keydown', key, true);
+    document.addEventListener('pointerdown', pointer, true);
+    return () => {
+      document.removeEventListener('keydown', key, true);
+      document.removeEventListener('pointerdown', pointer, true);
+    };
+  }, []);
   const optionId = (i: number) => `${chartId}-bucket-${i}`;
   const last = axis.length - 1;
   const optionLabel = (t: string) => {
@@ -319,7 +333,11 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
                  aria-label={optionLabel(t)}
                  onClick={() => setHoverIdx(i)}
                  onMouseEnter={() => setHoverIdx(i)}
-                 onMouseLeave={() => setHoverIdx(prev => prev === i ? null : prev)}>
+                 // A pointer leaving must not drop the keyboard's place.
+                 onMouseLeave={(e) => {
+                   if (byKeyboard.current && e.currentTarget.ownerSVGElement === document.activeElement) return;
+                   setHoverIdx(prev => prev === i ? null : prev);
+                 }}>
                 {/* invisible full-height hit target for easier hover on tiny bars */}
                 <rect x={x} y={m.top} width={barW + barGap} height={innerH} fill="transparent" />
                 {segs.map(s => {

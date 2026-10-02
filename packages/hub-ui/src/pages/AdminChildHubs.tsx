@@ -184,8 +184,9 @@ export function AdminChildHubs() {
                         // The reason can be long: behind a disclosure anyone can
                         // open, not cut off with the rest in a mouse-only title.
                         <details className="ml-2 inline-block align-middle text-[11px] text-status-warn-text">
-                          <summary className="inline-flex items-center gap-1 cursor-pointer">
-                            <AlertTriangle className="w-3 h-3" /> release requested
+                          {/* Left as a list item, so the browser draws its disclosure marker. */}
+                          <summary className="cursor-pointer">
+                            <AlertTriangle className="inline w-3 h-3 align-[-2px]" /> release requested: {c.releaseReason.slice(0, 60)}…
                           </summary>
                           <p className="mt-1 max-w-prose whitespace-pre-wrap break-words text-ink-secondary">{c.releaseReason}</p>
                         </details>

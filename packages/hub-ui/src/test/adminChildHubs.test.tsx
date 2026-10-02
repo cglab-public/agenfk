@@ -304,7 +304,12 @@ describe('Admin → Child hubs', () => {
     // Short on the row: the reason sits behind a disclosure, closed by default.
     const disclosure = emea.querySelector('details')!;
     expect(disclosure.open).toBe(false);
-    expect(disclosure.querySelector('summary')!.textContent!.length).toBeLessThan(200);
+    const summary = disclosure.querySelector('summary')!;
+    expect(summary.textContent!.length).toBeLessThan(200);
+    // A preview of the reason, and the browser's own disclosure marker: a
+    // summary styled flex/inline-flex loses it and reads as plain text.
+    expect(summary.textContent).toContain('x'.repeat(20));
+    expect(summary.className).not.toMatch(/\b(inline-)?flex\b/);
     // The whole sentence is reachable without a mouse: in the disclosure, not a title.
     expect(within(emea).queryByTitle(long)).toBeNull();
     expect(disclosure.textContent).toContain(long);

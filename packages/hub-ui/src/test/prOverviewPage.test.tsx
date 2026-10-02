@@ -13,6 +13,7 @@
  *  - no selection → no model param sent, and the legacy single <select> is gone.
  */
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
+import { MixBar } from '../pages/PrOverview';
 import '@testing-library/jest-dom/vitest';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
@@ -201,6 +202,14 @@ describe('size mix without hover (story f17f36a5)', () => {
     const bars = await screen.findAllByRole('img', { name: /^Size mix: / });
     expect(bars.length).toBeGreaterThan(0);
     for (const b of bars) expect(b.getAttribute('aria-label')).toMatch(/^Size mix: (no PRs|(XS|S|M|L|XL) \d+(, (XS|S|M|L|XL) \d+)*)$/);
+  });
+
+  it('a mix bar names its sizes, or says there are no PRs', () => {
+    const { unmount } = render(<MixBar sizes={{ xs: 2, s: 0, m: 3, l: 0, xl: 1 }} total={6} />);
+    expect(screen.getByRole('img')).toHaveAccessibleName('Size mix: XS 2, M 3, XL 1');
+    unmount();
+    render(<MixBar sizes={{ xs: 0, s: 0, m: 0, l: 0, xl: 0 }} total={0} />);
+    expect(screen.getByRole('img')).toHaveAccessibleName('Size mix: no PRs');
   });
 
   it('the By model table shows the size counts the developer table does', async () => {
