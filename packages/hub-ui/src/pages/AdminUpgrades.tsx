@@ -473,6 +473,7 @@ export function AdminUpgrades() {
                           gitEmail: t.gitEmail ?? null,
                           osUser: t.osUser ?? null,
                         })}
+                        {' '}<span className="sr-only">installation {t.installationId}</span>
                       </span>
                       <span className="flex items-center gap-2 shrink-0">
                         {t.agenfkVersion && (

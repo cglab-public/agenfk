@@ -64,6 +64,10 @@ export function eventFields(e: EventRowLike): EventField[] {
   if (e.item_title || e.item_id) {
     out.push({ label: 'Item', value: e.item_title && e.item_id ? `${e.item_title} (${e.item_id})` : (e.item_title ?? e.item_id)! });
   }
+  // The row shows a friendly badge and a shortened repo (hidden on phones);
+  // their raw values were only in titles.
+  out.push({ label: 'Type', value: e.type });
+  if (e.remote_url) out.push({ label: 'Repository', value: e.remote_url });
   if (e.external_id) {
     const href = httpsUrl(e.payload?.externalUrl);
     out.push(href ? { label: 'Tracker', value: e.external_id, href } : { label: 'Tracker', value: e.external_id });

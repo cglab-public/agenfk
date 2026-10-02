@@ -80,8 +80,9 @@ describe('Installations table', () => {
     const cells = within(row).getAllByRole('cell');
     expect(cells[0]).toHaveTextContent('Carol Diaz');
     expect(cells[0]).toHaveTextContent('carol@acme.dev');
-    expect(within(cells[1]).getByText(CAROL.slice(0, 8))).toHaveAttribute('title', CAROL);
-    expect(row).not.toHaveTextContent(CAROL); // the full id is on hover, not in the row
+    // On screen, the short prefix; the full id is read out (sr-only), not hover-only.
+    expect(within(cells[1]).getByText(CAROL.slice(0, 8))).toHaveAttribute('aria-hidden', 'true');
+    expect(within(cells[1]).getByText(`installation ${CAROL}`)).toHaveClass('sr-only');
   });
 
   it('marks an install that has been silent for 14+ days, and only that one', async () => {

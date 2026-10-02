@@ -367,11 +367,17 @@ export function AdminKeys() {
                       <span className="font-mono" title={k.installationId ? `installation: ${k.installationId}` : undefined}>
                         {ident}
                         {k.installationId && (
-                          <span className="ml-1 text-ink-tertiary">· {k.installationId.slice(0, 8)}…</span>
+                          <span className="ml-1 text-ink-tertiary">
+                            <span aria-hidden="true">· {k.installationId.slice(0, 8)}…</span>
+                            <span className="sr-only">installation {k.installationId}</span>
+                          </span>
                         )}
                       </span>
                     ) : k.installationId ? (
-                      <span className="font-mono text-ink-tertiary" title={k.installationId}>{k.installationId.slice(0, 8)}…</span>
+                      <span className="font-mono text-ink-tertiary" title={k.installationId}>
+                        <span aria-hidden="true">{k.installationId.slice(0, 8)}…</span>
+                        <span className="sr-only">installation {k.installationId}</span>
+                      </span>
                     ) : (
                       <span className="text-ink-tertiary">—</span>
                     )}
@@ -780,7 +786,10 @@ export function AdminInstallations() {
                       )}
                   </td>
                   <td className="px-2 py-2.5">
-                    <span className="font-mono text-[11px] text-ink-secondary" title={r.id}>{r.id.slice(0, 8)}</span>
+                    <span className="font-mono text-[11px] text-ink-secondary" title={r.id}>
+                      <span aria-hidden="true">{r.id.slice(0, 8)}</span>
+                      <span className="sr-only">installation {r.id}</span>
+                    </span>
                     <CopyButton value={r.id} iconOnly label={`Copy installation id for ${personLabel(r)}`} copiedLabel={`Copied installation id for ${personLabel(r)}`} className="ml-1.5 align-middle" />
                     {r.hidden && (
                       <span className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-status-warn-text">hidden</span>
