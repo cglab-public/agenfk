@@ -300,7 +300,7 @@ export function AdminKeys() {
                     </button>
                   </div>
                 </div>
-                <pre className="mt-2 px-3 py-2.5 rounded-lg bg-canvas text-ink text-small font-mono overflow-x-auto select-all">{inv.joinCommand}</pre>
+                <pre className="mt-2 px-3 py-2.5 rounded-lg bg-canvas text-ink text-small font-mono relative overflow-x-auto select-all">{inv.joinCommand}</pre>
                 <CopyButton value={inv.joinCommand} label={`Copy invite ${idx + 1} command`} className="mt-2" />
               </div>
             ))}
@@ -328,7 +328,7 @@ export function AdminKeys() {
         {issued && (
           <div className="mt-3 rounded-xl border border-status-warn-text/40 bg-status-warn-bg p-4">
             <div className="eyebrow text-status-warn-text">Save this token now — it won't be shown again</div>
-            <pre className="mt-2 px-3 py-2.5 rounded-lg bg-canvas text-ink text-small font-mono break-all overflow-x-auto select-all">{issued}</pre>
+            <pre className="mt-2 px-3 py-2.5 rounded-lg bg-canvas text-ink text-small font-mono break-all relative overflow-x-auto select-all">{issued}</pre>
             <div className="mt-2 flex items-center gap-3">
               <CopyButton value={issued} label="Copy" />
               <button onClick={() => setIssued(null)} className="text-small font-medium text-ink-tertiary hover:text-ink">I've saved it</button>
@@ -343,7 +343,7 @@ export function AdminKeys() {
           <span className="text-caption text-ink-tertiary">{(keys.data ?? []).filter(k => !k.revokedAt).length} active · {(keys.data ?? []).length} total</span>
         </header>
         <InlineError error={revoke.error} className="mt-2" />
-        <div className="mt-3 -mx-5 overflow-x-auto">
+        <div className="mt-3 -mx-5 relative overflow-x-auto">
           <table className="w-full text-body">
             <thead>
               <tr className="eyebrow text-ink-tertiary">
@@ -535,7 +535,7 @@ export function AdminUsers() {
         </header>
         <InlineError error={update.error} className="mt-2" />
         <InlineError error={remove.error} className="mt-2" />
-        <div className="mt-3 -mx-5 overflow-x-auto">
+        <div className="mt-3 -mx-5 relative overflow-x-auto">
           <table className="w-full text-body">
             <thead>
               <tr className="eyebrow text-ink-tertiary">
@@ -757,7 +757,7 @@ export function AdminInstallations() {
         <InlineError error={hide.error} className="mt-2" />
         <InlineError error={retire.error} className="mt-2" />
         <InlineError error={unretire.error} className="mt-2" />
-        <div className="mt-3 -mx-5 overflow-x-auto">
+        <div className="mt-3 -mx-5 relative overflow-x-auto">
           <table className="w-full text-body">
             <thead>
               <tr className="eyebrow text-ink-tertiary">

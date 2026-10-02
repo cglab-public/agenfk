@@ -136,7 +136,7 @@ export function PrVolumeChart({ series, unit }: { series: VolumeSeries; unit: st
             <span key={t} data-y-tick className="absolute right-0 translate-y-1/2 leading-none" style={{ bottom: at(t) }}>{t}</span>
           ))}
         </div>
-        <div className="flex-1 min-w-0 overflow-x-auto">
+        <div className="flex-1 min-w-0 relative overflow-x-auto">
           <div className="min-w-[420px]">
             <div ref={plotRef} className="relative h-44">
               {ticks.map(t => (

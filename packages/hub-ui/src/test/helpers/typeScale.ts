@@ -34,3 +34,18 @@ export function expectOnTypeScale(root: HTMLElement): void {
     expect(SCALE_PX.has(size) ? null : size, `inline font-size outside the scale on <${el.tagName.toLowerCase()}>`).toBeNull();
   }
 }
+
+/**
+ * Every scroller contains its absolutely positioned children (sr-only text, a
+ * toggle's knob): unpositioned, they take an outer box as their containing
+ * block and widen the page or the pane past the screen (epic review, 390px).
+ */
+export function expectScrollersContain(root: HTMLElement): void {
+  const scrollers = Array.from(root.querySelectorAll('[class*="overflow-"]')).filter(el =>
+    /(?:^|\s)overflow-(?:x-)?auto(?:\s|$)/.test(el.getAttribute('class') ?? ''));
+  for (const el of scrollers) {
+    const c = el.getAttribute('class') ?? '';
+    const positioned = /(?:^|\s)(?:relative|absolute|fixed|sticky)(?:\s|$)/.test(c);
+    expect(positioned ? null : c, `scroller without a positioned box on <${el.tagName.toLowerCase()}>`).toBeNull();
+  }
+}

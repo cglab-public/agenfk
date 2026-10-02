@@ -145,7 +145,7 @@ function OrgIdentity() {
               Send this command to anyone running an <code className="font-mono">agenfk</code> installation against this hub (or run it on every machine via your fleet tool):
             </p>
           </header>
-          <pre className="mt-3 px-3 py-2.5 rounded-lg bg-canvas text-ink text-small font-mono overflow-x-auto select-all">{spokeCmd}</pre>
+          <pre className="mt-3 px-3 py-2.5 rounded-lg bg-canvas text-ink text-small font-mono relative overflow-x-auto select-all">{spokeCmd}</pre>
           <div className="mt-2 flex items-center gap-3">
             <CopyButton value={spokeCmd} label="Copy command" copiedLabel="Copied command" />
             <button onClick={() => setSuccess(null)} className="text-small font-medium text-ink-tertiary hover:text-ink">Dismiss</button>

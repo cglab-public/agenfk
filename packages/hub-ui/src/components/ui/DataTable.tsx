@@ -84,7 +84,7 @@ export function DataTable<T>({ caption, columns, rows, rowKey, defaultSort, sear
           </div>
         </div>
       )}
-      <div className="overflow-x-auto">
+      <div className="relative overflow-x-auto">
         <table aria-label={caption} className="w-full text-body" style={minWidth ? { minWidth } : undefined}>
           <thead>
             <tr className="eyebrow text-left font-mono text-ink-tertiary">

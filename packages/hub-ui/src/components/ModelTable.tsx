@@ -219,7 +219,7 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
       )}
 
       {visible.length > 0 && (
-        <div className="mt-3 -mx-5 overflow-x-auto">
+        <div className="mt-3 -mx-5 relative overflow-x-auto">
           <table className="w-full text-body">
             <thead>
               <tr className="eyebrow text-ink-tertiary">

@@ -185,7 +185,7 @@ export function AdminRepoint() {
       {campaign && (
         <section className={cardCls}>
           <h3 className="text-body font-semibold text-ink">Fleet</h3>
-          <div className="mt-3 -mx-5 overflow-x-auto">
+          <div className="mt-3 -mx-5 relative overflow-x-auto">
             <table className="w-full text-body">
               <thead>
                 <tr className="eyebrow text-ink-tertiary">

@@ -23,7 +23,7 @@ import { AdminJira } from '../pages/AdminJira';
 import { AdminOrg } from '../pages/AdminOrg';
 import { ThemeProvider } from '../ThemeContext';
 import { api } from '../api';
-import { expectOnTypeScale } from './helpers/typeScale';
+import { expectOnTypeScale, expectScrollersContain } from './helpers/typeScale';
 
 vi.mock('../api', () => ({ api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() } }));
 const get = api.get as unknown as ReturnType<typeof vi.fn>;
@@ -143,6 +143,7 @@ function expectOnTokens(root: HTMLElement) {
   // Story 7073be87: the type scale and the two content widths too.
   // The whole document: dialogs, menus and an open facet panel render in portals.
   expectOnTypeScale(root.ownerDocument.body);
+  expectScrollersContain(root.ownerDocument.body);
   // A destructive control must not hover in the selection colour.
   for (const el of Array.from(root.querySelectorAll('button, a'))) {
     const c = el.getAttribute('class') ?? '';

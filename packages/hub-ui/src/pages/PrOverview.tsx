@@ -1080,7 +1080,7 @@ export function PrOverviewPage() {
             {/* scroll-padding: a cell focused into view must land clear of the
                 sticky name column (at most 190px plus the 4px gap), not under
                 it. A scroll moves the cells out from under the tooltip. */}
-            <div className="overflow-x-auto scroll-pl-[194px]" onScroll={() => setHeatTip(null)}>
+            <div className="relative overflow-x-auto scroll-pl-[194px]" onScroll={() => setHeatTip(null)}>
               <div
                 ref={heatGridRef}
                 role="grid"

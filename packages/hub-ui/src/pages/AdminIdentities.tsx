@@ -256,7 +256,7 @@ export function AdminIdentities() {
         {(mergesQ.data ?? []).length === 0 ? (
           <p className="mt-3 text-body text-ink-tertiary">Nothing merged yet.</p>
         ) : (
-          <div className="mt-3 -mx-5 overflow-x-auto">
+          <div className="mt-3 -mx-5 relative overflow-x-auto">
             <table className="w-full text-body">
               <thead>
                 <tr className="eyebrow text-ink-tertiary">
