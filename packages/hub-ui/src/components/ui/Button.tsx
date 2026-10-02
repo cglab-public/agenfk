@@ -8,7 +8,9 @@ export type ButtonSize = 'sm' | 'md';
 // order, not class order, and the lighter one won.
 const VARIANT: Record<ButtonVariant, string> = {
   // Solid brand teal, no gradient or glow: the page's one main action.
-  primary: 'bg-brand text-navy font-bold enabled:hover:bg-brand-light',
+  // Disabled goes neutral: faded teal still read as a live main action. Full
+  // opacity and a visible edge keep it a button, not grey text on the card.
+  primary: 'bg-brand text-navy font-bold enabled:hover:bg-brand-light disabled:opacity-100 disabled:bg-canvas disabled:text-ink-tertiary disabled:border-ink-tertiary/40',
   secondary: 'bg-surface text-ink font-medium border-border-soft enabled:hover:border-accent enabled:hover:text-accent-ink',
   ghost: 'bg-transparent text-ink-secondary font-medium enabled:hover:bg-accent-fill enabled:hover:text-accent-ink',
   danger: 'bg-status-danger-bg text-status-danger-text font-semibold enabled:hover:border-status-danger-text',

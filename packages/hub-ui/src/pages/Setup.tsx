@@ -1,8 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, ProvidersResponse } from '../api';
 import { buildSetupPayload, canSubmitSetup } from './setupSubmit';
+import { Logo } from '../components/Logo';
+import { Button, Field, Input } from '../components/ui';
+import type { LoginNotice } from './Login';
 
 export function SetupPage() {
   const providers = useQuery<ProvidersResponse>({
@@ -10,44 +13,58 @@ export function SetupPage() {
     queryFn: async () => (await api.get('/auth/providers')).data,
   });
   const nav = useNavigate();
+  const qc = useQueryClient();
   const [token, setToken] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const setup = useMutation({
     mutationFn: () => api.post('/setup/initial-admin', buildSetupPayload({ token, email, password })),
-    onSuccess: () => nav('/login'),
+    onSuccess: () => {
+      // The cached providers still say setup is required; left alone, the
+      // sign-in page would bounce straight back here and lose the notice.
+      qc.setQueryData<ProvidersResponse>(['providers'], (d) => d && { ...d, requiresSetup: false });
+      nav('/login', { replace: true, state: { notice: 'admin-created' satisfies LoginNotice } });
+    },
     onError: (e: any) => setErr(e?.response?.data?.error ?? 'Setup failed'),
   });
 
-  if (providers.data && !providers.data.requiresSetup) { nav('/login'); return null; }
+  const setupDone = !!providers.data && !providers.data.requiresSetup;
+  useEffect(() => { if (setupDone && !setup.isSuccess) nav('/login'); }, [setupDone, setup.isSuccess, nav]);
+  if (setupDone) return null;
 
   const submittable = canSubmitSetup({ token, email, password, isPending: setup.isPending });
 
   return (
     <div className="min-h-screen flex items-center justify-center p-6 bg-canvas text-ink">
       <div className="w-full max-w-sm space-y-6 bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-6">
+        <Logo />
         <h1 className="text-xl font-semibold">First-run setup</h1>
         <p className="text-sm text-ink-tertiary">
           Paste the bootstrap token printed in the hub's startup logs, then create the initial admin account.
           After this, sign-in is gated by the providers you enable.
         </p>
         <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); setErr(null); setup.mutate(); }}>
-          <input
-            type="text"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            placeholder="bootstrap token (from hub startup logs)"
-            autoComplete="off"
-            spellCheck={false}
-            className="w-full px-3 py-2 border border-border-soft rounded-lg bg-canvas text-ink font-mono text-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring"
-          />
-          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="admin email" className="w-full px-3 py-2 border border-border-soft rounded-lg bg-canvas text-ink focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring" />
-          <input type="password" minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="password (≥8 chars)" className="w-full px-3 py-2 border border-border-soft rounded-lg bg-canvas text-ink focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring" />
-          <button type="submit" className="w-full px-3 py-2 bg-brand text-navy rounded-lg font-bold disabled:opacity-50" disabled={!submittable}>
+          <Field label="Bootstrap token" hint="Printed in the hub's startup logs.">
+            <Input
+              type="text"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+              className="font-mono"
+            />
+          </Field>
+          <Field label="Admin email">
+            <Input type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} />
+          </Field>
+          <Field label="Password" hint="At least 8 characters.">
+            <Input type="password" autoComplete="new-password" minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} />
+          </Field>
+          <Button type="submit" variant="primary" className="w-full" disabled={!submittable}>
             {setup.isPending ? 'Creating…' : 'Create admin'}
-          </button>
-          {err && <div className="text-sm text-danger-text">{err}</div>}
+          </Button>
+          {err && <div role="alert" className="text-sm text-danger-text">{err}</div>}
         </form>
       </div>
     </div>
