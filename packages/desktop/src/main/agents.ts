@@ -20,7 +20,7 @@
  * fails rather than silently drifting.
  */
 
-import { platform } from './platform.js';
+import { platform, accountShell } from './platform.js';
 
 export interface AgentCommand {
   /** Executable name. Resolved against PATH by the caller, never a path from the renderer. */
@@ -198,10 +198,10 @@ export const SHELL_AGENT_ID = 'shell';
 
 /**
  * The command that opens the user's own shell - the platform profile's answer
- * (./platform.ts), which on Windows is PowerShell and on a Unix is `$SHELL`.
+ * (./platform.ts): PowerShell on Windows, the user's own shell on a Unix.
  */
 export function resolveShellCommand(): { file: string; args: string[] } {
-  const { file, args } = platform.shell(process.env);
+  const { file, args } = platform.shell(process.env, accountShell());
   return { file, args: [...args] };
 }
 
@@ -337,7 +337,7 @@ const AGENTS: ReadonlyArray<AgentEntry> = [
   // nobody has run. It resolves to "cannot resume" until someone checks.
   { id: 'gemini', label: 'Gemini CLI', command: { file: 'gemini', args: [] } },
   // A login shell has no conversation to resume. Out by nature.
-  { id: 'shell', label: 'Shell', command: platform.shellAgent },
+  { id: 'shell', label: 'Shell', command: platform.shellAgent(process.env, accountShell()) },
 ];
 
 export const AGENT_IDS: readonly string[] = AGENTS.map(a => a.id);

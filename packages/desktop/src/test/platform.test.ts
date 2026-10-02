@@ -10,11 +10,12 @@
  * places, each with its own guess. A profile per OS is chosen once, and the
  * rest of the main process reads the profile.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
-import { profileFor, platform } from '../main/platform';
-import { resolveShellCommand } from '../main/agents';
+import { profileFor, platform, accountShell } from '../main/platform';
+import { resolveShellCommand, resolveAgentCommand } from '../main/agents';
+import { loginShell } from '../main/ptyEnv';
 
 const MAIN_DIR = path.resolve(__dirname, '../main');
 
@@ -37,8 +38,7 @@ describe('the Windows profile', () => {
   });
 
   it('starts the Shell agent without -l, which powershell.exe does not accept', () => {
-    expect(win.shellAgent.file).toMatch(/\\powershell\.exe$/);
-    expect(win.shellAgent.args).toEqual([]);
+    expect(win.shellAgent({}, null)).toEqual({ file: POWERSHELL, args: [] });
   });
 
   it('has no login shell to capture a PATH from, and looks commands up with where', () => {
@@ -56,13 +56,32 @@ describe('the Windows profile', () => {
 describe('the macOS profile', () => {
   const mac = profileFor('darwin');
 
-  it('opens the user\'s $SHELL, /bin/sh when a GUI launch exported none', () => {
-    expect(mac.shell({ SHELL: '/bin/zsh' })).toEqual({ file: '/bin/zsh', args: [] });
-    expect(mac.shell({})).toEqual({ file: '/bin/sh', args: [] });
+  it('opens the user\'s $SHELL, then the account\'s shell, then /bin/sh', () => {
+    expect(mac.shell({ SHELL: '/bin/zsh' }, '/bin/bash')).toEqual({ file: '/bin/zsh', args: [] });
+    // A GUI launch that exported no SHELL still knows the account's shell.
+    expect(mac.shell({}, '/opt/homebrew/bin/fish')).toEqual({ file: '/opt/homebrew/bin/fish', args: [] });
+    expect(mac.shell({}, null)).toEqual({ file: '/bin/sh', args: [] });
   });
 
-  it('starts the Shell agent as a bash login shell', () => {
-    expect(mac.shellAgent).toEqual({ file: 'bash', args: ['-l'] });
+  // card df675f82: it was `bash -l` whatever the user ran - nothing at all
+  // where there is no bash, and a bash for everyone on zsh or fish.
+  it('starts the Shell agent as the user\'s own shell, as a login shell', () => {
+    expect(mac.shellAgent({ SHELL: '/bin/zsh' }, null)).toEqual({ file: '/bin/zsh', args: ['-l'] });
+    expect(mac.shellAgent({ SHELL: '/opt/homebrew/bin/fish' }, '/bin/zsh')).toEqual({ file: '/opt/homebrew/bin/fish', args: ['-l'] });
+    expect(mac.shellAgent({}, null)).toEqual({ file: '/bin/sh', args: ['-l'] });
+  });
+
+  it('passes -l only to a shell known to take it: elvish refuses it, an unknown shell opens without', () => {
+    expect(mac.shellAgent({ SHELL: '/usr/local/bin/elvish' }, null)).toEqual({ file: '/usr/local/bin/elvish', args: [] });
+    expect(mac.shellAgent({ SHELL: '/opt/bin/someshell' }, null).args).toEqual([]);
+  });
+
+  it('skips an account shell that is a refusal - nologin or false - for /bin/sh', () => {
+    // A service account in a container: no SHELL exported, passwd says nologin.
+    for (const account of ['/usr/sbin/nologin', '/sbin/nologin', '/bin/false', '/usr/bin/false']) {
+      expect(mac.shell({}, account)).toEqual({ file: '/bin/sh', args: [] });
+      expect(mac.shellAgent({}, account)).toEqual({ file: '/bin/sh', args: ['-l'] });
+    }
   });
 
   it('captures the login PATH and looks commands up with which', () => {
@@ -80,10 +99,12 @@ describe('the macOS profile', () => {
 describe('the Linux profile', () => {
   const linux = profileFor('linux');
 
-  it('is a Unix: $SHELL or /bin/sh, bash -l, login PATH, which', () => {
-    expect(linux.shell({ SHELL: '/usr/bin/fish' })).toEqual({ file: '/usr/bin/fish', args: [] });
-    expect(linux.shell({})).toEqual({ file: '/bin/sh', args: [] });
-    expect(linux.shellAgent).toEqual({ file: 'bash', args: ['-l'] });
+  it('is a Unix: the user\'s shell, as a login shell for the Shell agent, login PATH, which', () => {
+    expect(linux.shell({ SHELL: '/usr/bin/fish' }, null)).toEqual({ file: '/usr/bin/fish', args: [] });
+    expect(linux.shell({}, null)).toEqual({ file: '/bin/sh', args: [] });
+    // Alpine and other minimal systems ship no bash; /bin/sh is always there.
+    expect(linux.shellAgent({}, null)).toEqual({ file: '/bin/sh', args: ['-l'] });
+    expect(linux.shellAgent({}, '/bin/ash')).toEqual({ file: '/bin/ash', args: ['-l'] });
     expect(linux.capturesLoginPath).toBe(true);
     expect(linux.pathLookup).toBe('which');
   });
@@ -105,7 +126,29 @@ describe('the profile in use', () => {
   });
 
   it('is what opens the shell', () => {
-    expect(resolveShellCommand()).toEqual(platform.shell(process.env));
+    expect(resolveShellCommand()).toEqual(platform.shell(process.env, accountShell()));
+  });
+
+  it('gives the terminal, the Shell agent and the login PATH capture the same shell', () => {
+    // Three places used to choose a shell three ways (/bin/sh, bash, /bin/bash).
+    expect(resolveAgentCommand('shell', {}).file).toBe(resolveShellCommand().file);
+    expect(loginShell()).toBe(resolveShellCommand().file);
+  });
+
+  it('reads the account\'s shell as null where there is no passwd entry', async () => {
+    // os.userInfo() throws for a uid with no entry (some containers).
+    vi.resetModules();
+    vi.doMock('os', async importOriginal => ({
+      ...(await importOriginal<typeof import('os')>()),
+      userInfo: () => { throw new Error('uid 1001 has no passwd entry'); },
+    }));
+    try {
+      const fresh = await import('../main/platform');
+      expect(fresh.accountShell()).toBeNull();
+    } finally {
+      vi.doUnmock('os');
+      vi.resetModules();
+    }
   });
 
   it('is the only thing in the main process that asks which OS this is', () => {

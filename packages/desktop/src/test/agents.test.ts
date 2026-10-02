@@ -20,8 +20,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import {
-  AGENT_IDS, resolveAgentCommand, listAgents, canResume, canDictateSessionId,
+  AGENT_IDS, resolveAgentCommand, listAgents, canResume, canDictateSessionId, resolveShellCommand,
 } from '../main/agents';
+import { platform, accountShell } from '../main/platform';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 
@@ -92,10 +93,24 @@ describe('what belongs in the agent list', () => {
     // carrying a path would defeat the closed-set indirection this file exists
     // for, by writing the path down on OUR side instead of theirs.
     for (const id of AGENT_IDS) {
+      // The Shell is the user's own shell, and a shell is a path by nature -
+      // $SHELL, the account's passwd entry, or PowerShell under SystemRoot
+      // (card df675f82). It comes from the user's environment, never from the
+      // renderer, so the closed set still holds; it is pinned just below.
+      if (id === 'shell') continue;
       const { file } = resolveAgentCommand(id);
       expect(file, `"${id}" resolves to a path rather than a bare name`).not.toMatch(/[/\\]/);
       expect(file.length).toBeGreaterThan(0);
     }
+  });
+
+  it('opens the Shell entry as the user\'s own shell, a login shell, never a fixed bash', () => {
+    const shell = resolveAgentCommand('shell');
+    expect(shell).toEqual(platform.shellAgent(process.env, accountShell()));
+    expect(shell.file).toBe(resolveShellCommand().file);
+    // The profile pins the rules per shell (platform.test.ts); here, that the
+    // agent list reads it rather than writing a shell down of its own.
+    expect(shell.file).not.toBe('bash');
   });
 
   it('defaults to Claude Code', () => {

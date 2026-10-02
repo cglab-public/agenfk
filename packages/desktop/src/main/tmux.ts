@@ -123,7 +123,7 @@ export function buildTmuxShellCommand(
   const command = resolveAgentCommand(agentId);
   // `extraArgs` is the caller's ALREADY-RESOLVED argument list, so
   // command.args must not be added again: doing so emitted every base argument
-  // twice (`bash -l -l` today, and silently doubling for whichever agent gains
+  // twice (`<shell> -l -l` for the Shell, and silently doubling for whichever agent gains
   // a base argument next). resolveAgentCommand is still called above, for the
   // closed-set gate and for the executable name.
   const agentLine = [command.file, ...extraArgs].map(quote).join(' ');
