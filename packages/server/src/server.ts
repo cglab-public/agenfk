@@ -14,6 +14,7 @@ import { SuiteSlots, suiteRunLimit, waitingLine } from './suiteSlots';
 import { DEFAULT_REUSE_IGNORE, namedByTests, reuseIgnoreMatcher } from './reuseIgnore';
 import { capturedGreen, countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, describeCapture, TEST_FILE_PATTERN, ANY_TEST_FILE_PATTERN, needsCapture, needsEntryRecord, parseAgentReports, parseCheckAnswers, describeTreeWarnings, MAX_UNREVIEWED_LINES, type AgentReport, type CheckResult, type TreeWarning } from './checkEngine';
 import { retainSuperseded, withRecordRetention } from './recordRetention';
+import { compactAuthored, expandAuthored } from './authoredRecord';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, foreignClaimsFor, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
@@ -7991,7 +7992,8 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const prev = sorted[index - 1];
   const earlier = new Set(sorted.slice(0, Math.max(index, 0)).map(st => st.name));
   const produced: Record<string, unknown> = {};
-  for (const r of records) if (r?.kind === 'record' && earlier.has(r.step) && typeof r.name === 'string') produced[r.name] = r.value;
+  // ec325925: authoredTests is stored by reference to its capture; the engine reads names.
+  for (const r of records) if (r?.kind === 'record' && earlier.has(r.step) && typeof r.name === 'string') produced[r.name] = r.name === 'authoredTests' ? expandAuthored(r) : r.value;
 
   // In a shared worktree the tree holds other cards' work too (MULTI_AGENT.md):
   // what another active card has claimed is theirs, not this card's change.
@@ -8138,7 +8140,8 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   }
   const at = new Date().toISOString();
   const latest: any = await storage.getItem(item.id);
-  const made = outcome.blocked ? [] : Object.entries(outcome.produced).map(([name, value]) => ({ step: item.status, kind: 'record', name, value, at, head: null, clean: false }));
+  // ec325925: authoredTests names every test in the suite; it is stored as its capture's results, shared with the capture's blob.
+  const made = outcome.blocked ? [] : Object.entries(outcome.produced).map(([name, value]) => ({ step: item.status, kind: 'record', name, at, head: null, clean: false, ...(name === 'authoredTests' ? compactAuthored(value, capture) : { value }) }));
   await storage.updateItem(item.id, {
     lastChecks: { step: item.status, at, blocked: outcome.blocked, results: outcome.results, ...(disabled.length ? { disabled } : {}) },
     checkHistory: withHistory(latest, {
