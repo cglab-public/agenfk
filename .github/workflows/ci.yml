@@ -16,6 +16,11 @@ on:
 permissions:
   contents: read
 
+# Supersede in-flight PR runs of the same ref (notably the pricier Windows minutes); never cancel runs on main.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-and-test:
     name: Build & Test
@@ -48,4 +53,51 @@ jobs:
         run: npm test
 
       - name: Home-integrity verify (item 9c297075)
+        run: node scripts/home-integrity.mjs verify
+
+  # Issue #201 — Windows coverage without paying for it in wall-clock time.
+  #
+  # Independent of `build-and-test` (no `needs:`), so both start together and the
+  # workflow takes as long as the slower one. It builds only the packages whose
+  # code touches paths / child processes / installers (no vite UI builds) and runs
+  # the curated subset in vitest.windows.config.ts, under a HOME sandbox with a
+  # space and accents so the characters that broke real Windows users are hit on
+  # every run. `*.xplat.test.ts` specs are shared with the Linux job.
+  #
+  # Advisory (`continue-on-error`) while the subset proves stable; remove that
+  # line, then mark this job as a required check, once it has.
+  windows-compat:
+    name: Windows compat
+    runs-on: windows-latest
+    continue-on-error: true
+    defaults:
+      run:
+        # Git Bash, which is what Claude Code uses to run hooks on Windows.
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js 22.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (platform-sensitive packages only)
+        run: npm run build -w packages/core -w packages/storage-sqlite -w packages/telemetry && npm run build -w packages/cli -w packages/server
+
+      - name: Home-integrity snapshot
+        run: node scripts/home-integrity.mjs snapshot
+
+      - name: Test (Windows subset)
+        run: npm run test:windows
+        env:
+          AGENFK_TEST_UNICODE_HOME: '1'
+
+      - name: Home-integrity verify
         run: node scripts/home-integrity.mjs verify
