@@ -18,8 +18,8 @@ guardTokens();
 
 const OK: FleetSheetProps['depth'] = { allowed: true, reason: null };
 const epic: FleetSheetItem = { id: 'epic', title: 'The epic', status: 'IN_PROGRESS' };
-const kid = (id: string, claims?: string[]): FleetSheetItem =>
-  ({ id, title: `Card ${id}`, status: 'TODO', parentId: 'epic', claims });
+const kid = (id: string): FleetSheetItem =>
+  ({ id, title: `Card ${id}`, status: 'TODO', parentId: 'epic' });
 
 const show = (
   all: FleetSheetItem[],
@@ -37,18 +37,6 @@ const show = (
 };
 
 describe('the button', () => {
-  it('counts what will run, not how many children exist', () => {
-    /*
-     * THE test. Two children want packages/ui, so one is held: the button must
-     * say 3. A button that says four and launches three is a lie told by the
-     * interface, and the count is the part a person trusts without checking.
-     */
-    show([kid('a', ['packages/ui/']), kid('b', ['packages/ui/x.ts']), kid('c', ['s/']), kid('d', ['t/'])]);
-    expect(screen.getAllByTestId('fleet-row')).toHaveLength(4);
-    expect(screen.getByTestId('fleet-launch'), 'the button promised a launch it cannot make')
-      .toHaveTextContent('Launch 3');
-  });
-
   it('holds a child the breaker has stopped, and does not count it', () => {
     /*
      * The dead wire (BUG b0bccf90): planFleet knew how to hold a stopped card,
@@ -62,13 +50,6 @@ describe('the button', () => {
       .toMatch(/3 consecutive failures/i);
   });
 
-  it('launches exactly the ids the plan cleared, never the held one', () => {
-    const onLaunch = show([kid('a', ['shared/']), kid('b', ['shared/x.ts']), kid('c', ['other/'])]);
-    fireEvent.click(screen.getByTestId('fleet-launch'));
-    const ids = onLaunch.mock.calls[0][0];
-    expect(ids, 'a held child was launched anyway').toEqual(['a', 'c']);
-  });
-
   it('cannot be pressed when nothing can start', () => {
     // "Launch 0" is a button somebody presses by mistake. This one refuses.
     const onLaunch = show([kid('a')], { allowed: false, reason: 'Two levels deep already.' });
@@ -76,37 +57,6 @@ describe('the button', () => {
     expect(button).toBeDisabled();
     fireEvent.click(button);
     expect(onLaunch).not.toHaveBeenCalled();
-  });
-});
-
-describe('what the held rows say', () => {
-  it('shows them rather than hiding them, because waiting is the design working', () => {
-    /*
-     * Hiding a held child turns a visible wait into an invisible one: the
-     * count drops and nothing says why, which is the exact confusion this
-     * sheet exists to prevent.
-     */
-    show([kid('a', ['shared/']), kid('b', ['shared/x.ts'])]);
-    const rows = screen.getAllByTestId('fleet-row');
-    expect(rows).toHaveLength(2);
-    expect(rows.filter(r => r.dataset.launch === 'false')).toHaveLength(1);
-  });
-
-  it('names the move for a sibling hold, which is to wait', () => {
-    show([kid('a', ['shared/']), kid('b', ['shared/x.ts'])]);
-    expect(screen.getByTestId('fleet-hold-reason')).toHaveTextContent(/waits for that one/i);
-  });
-
-  it('names the outside holder, since nobody will release on their own', () => {
-    const outsider: FleetSheetItem = { id: 'outsider-99', title: 'Elsewhere', status: 'IN_PROGRESS', claims: ['shared/'] };
-    show([outsider, kid('b', ['shared/x.ts'])]);
-    expect(screen.getByTestId('fleet-hold-reason')).toHaveTextContent(/outsider/i);
-  });
-
-  it('says a claim it cannot read protects nothing', () => {
-    show([kid('a', ['packages/**']), kid('b', ['x/'])]);
-    expect(screen.getByTestId('fleet-hold-reason')).toHaveTextContent(/packages\/\*\*/);
-    expect(screen.getByTestId('fleet-launch')).toHaveTextContent('Launch 1');
   });
 });
 
@@ -120,21 +70,21 @@ describe('the ceiling', () => {
 });
 
 describe('the summary line', () => {
-  it('reports the waiting ones, so the gap between rows and count is explained', () => {
-    show([kid('a', ['shared/']), kid('b', ['shared/x.ts'])]);
-    expect(screen.getByTestId('fleet-summary')).toHaveTextContent('1 ready · 1 waiting on a path');
+  it('reports the held ones, so the gap between rows and count is explained', () => {
+    show([kid('a'), kid('b')], OK, vi.fn(), new Set(['b']));
+    expect(screen.getByTestId('fleet-summary')).toHaveTextContent('1 ready · 1 held');
   });
 
-  it('does not mention waiting when nobody is', () => {
-    show([kid('a', ['x/']), kid('b', ['y/'])]);
-    expect(screen.getByTestId('fleet-summary').textContent).not.toMatch(/waiting/i);
+  it('does not mention held when nobody is', () => {
+    show([kid('a'), kid('b')]);
+    expect(screen.getByTestId('fleet-summary').textContent).not.toMatch(/held/i);
   });
 });
 
 describe('an epic with nothing under it', () => {
   it('says so, and blames nobody', () => {
-    // A blocked banner here would send somebody hunting a collision that does
-    // not exist.
+    // A blocked banner here would send somebody hunting a cause that does not
+    // exist.
     show([]);
     expect(screen.getByText(/no children to dispatch/i)).toBeInTheDocument();
     expect(screen.queryByTestId('fleet-blocked')).toBeNull();
@@ -199,17 +149,5 @@ describe('what the sheet says about itself', () => {
     const classes = screen.getByTestId('fleet-sheet').className;
     expect(classes).toContain('bg-surface');
     expect(classes).not.toContain('bg-nav-surface');
-  });
-
-  it('says nothing at all when a card claims no files', () => {
-    // The SAFEST case — nothing to collide with — was printed in the same grey
-    // monospace as a real claim, so it read as a complaint.
-    show([kid('a')]);
-    expect(screen.queryByText(/claims nothing/i)).toBeNull();
-  });
-
-  it('still shows the claims a card does hold', () => {
-    show([kid('a', ['src/api.ts'])]);
-    expect(screen.getByText('src/api.ts')).toBeTruthy();
   });
 });

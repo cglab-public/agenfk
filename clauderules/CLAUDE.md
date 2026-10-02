@@ -89,48 +89,19 @@ The server commits **what you staged**, and nothing else. It used to run `git ad
 - **Never `git add -A`.** That is precisely the behaviour this replaced, and in a shared worktree it takes other agents' work with it.
 - `git status` first if you are unsure what you touched.
 
-### Declaring what your card owns — MANDATORY when agents work in parallel
-
-Staging says what you touched, after the fact. A **claim** says what is yours
-*before* anyone touches it, and it is the only thing that stops two agents
-editing one file in a shared worktree — which is a **race, not a merge
-conflict**: nobody is told, and the loser's edit is simply gone.
-
-Declare before your first edit:
-
-```bash
-agenfk update <id> --claims "packages/ui/,packages/server/src/server.ts"
-```
-
-- A claim is a **directory or an exact file**, repository-relative. **Globs are
-  refused** — `packages/**` returns 400. Whether two patterns can ever match one
-  path is a different and much harder question than whether a path matches one,
-  and a claim that cannot be checked reports safety it has not established.
-- A path another active card already holds is **refused with 409, naming the
-  holder**. That is the mechanism working, not a bug: narrow your claim, or take
-  the work to the card that already owns it. Never work around it by editing
-  anyway.
-- Claims also **limit the close commit to your own files**. `.git/index` belongs
-  to the worktree rather than to an agent, so without them a close still takes
-  whatever any agent staged.
-- **No claims authorizes everything.** A card that declares nothing is refused
-  nothing, which is why declaring is what makes the mechanism real.
-- A **paused** card keeps its claims. Its files are half-edited in the shared
-  tree, and handing them to somebody else is exactly the race this prevents.
-
 ### When you have no news — MANDATORY
 
 Two rules about the moment a supervising agent has to decide with nothing in
 front of it. They are the same failure twice: deciding anyway.
 
-**Absence never authorises stop, abandon, retry, or release.** Not hearing from
+**Absence never authorises stop, abandon, retry, or reassign.** Not hearing from
 an agent is not news that it died. A silent terminal, a run with no recent
 output, a session you cannot reach — every one of those is a *checkpoint*, not
 a verdict. Keep waiting, or go and look. Only positive proof that something
 exited authorises acting as though it did.
 
-The two tempting moves are both wrong for the same reason. **Releasing** its
-claims hands its files to another agent while it may still be writing them.
+The two tempting moves are both wrong for the same reason. **Reassigning** its
+work hands its files to another agent while it may still be writing them.
 **Relaunching** duplicates work that may still be running, and the second run
 usually fails on the state the first one left. Neither is recoverable by
 noticing later.
@@ -172,7 +143,7 @@ After running `gh pr create`, you MUST run `agenfk pr-register --item <id> --num
 
 Two PreToolUse hooks enforce the workflow:
 - `agenfk-gatekeeper` — blocks Edit/Write/NotebookEdit when no active task.
-  A shell write (`printf >>`, a heredoc, a script) does not pass through it: that edit is still the card's change, and only the server-side checks (claims, a tests-only step) see it.
+  A shell write (`printf >>`, a heredoc, a script) does not pass through it: that edit is still the card's change, and only the server-side checks (a tests-only step) see it.
 - `agenfk-mcp-enforcer` — blocks the direct-DB and `curl localhost:3000` bypass routes above. (In CLI-only mode it permits the `agenfk` CLI; when MCP is registered it steers state queries to the MCP tools instead.)
 
 ### Command Reference — the `agenfk` CLI
@@ -195,7 +166,7 @@ This is the full workflow surface. Each row notes the equivalent MCP tool (avail
 | Link a card to a JIRA item | `agenfk update <id> --jira-item <KEY>` — attach a JIRA reference to an EXISTING card (e.g. `CGLAB-163`); `--jira-item none` unlinks. Also available at creation time as `agenfk create ... --jira-item <KEY>`. | `update_item` (`jiraItem`) |
 | Re-parent an item | `agenfk update <id> --parent <parentId>` — move it under another item; `--parent none` detaches it to top level. The parent must be in the same project, and cannot be the item itself or one of its descendants. | `update_item` (`parentId`) |
 | Choose where a card runs | `agenfk update <id> --worktree <path>` — run it in that checkout of the project's repository; `--worktree none` — the project root, whatever worktree its parents have; `--worktree inherit` — clear the choice. **Never re-parent or detach a card to change where it runs**: that rewrites the card tree to work around a location, and the card loses its parent's review and propagation. | `update_item` (`worktree`) |
-| Declare owned paths / link an external issue | `agenfk update <id> --claims "<path>,<path>"` — declare the paths this card owns before editing (a directory or an exact file; a glob is refused, and a path another card holds is refused naming the holder); `agenfk update <id> --external-id <key> [--external-url <url>]` — pair the card with an issue in another tracker. | `update_item` |
+| Link an external issue | `agenfk update <id> --external-id <key> [--external-url <url>]` — pair the card with an issue in another tracker. | `update_item` |
 | Advance a step (forward) | `agenfk verify <id> --evidence "<text>" ["<command>"] [--check <name>=pass\|fail] [--check-note <name>=<text>]` — `--check`/`--check-note` (repeatable) report the step's agent checks | `validate_progress` (`agentChecks`) |
 | Add a comment | `agenfk comment <id> "<text>" [--author <name>]` | `add_comment` |
 | Record an independent review | `agenfk review record <id> --transcript <path> --range <from>..<to> --findings '<json>'` | `record_review` |

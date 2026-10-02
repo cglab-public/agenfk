@@ -8,9 +8,8 @@
  *
  * TWO FAILURES, opposite directions. Painting nothing is the one that costs a
  * person time. Painting everything is the one that makes the strip useless: a
- * dot on every tab announcing that a quiet agent is quiet is the same noise as
- * a chip on every card announcing an absence, and it buries the two states
- * that actually need somebody.
+ * dot on every tab announcing that a quiet agent is quiet is noise, and it
+ * buries the two states that actually need somebody.
  */
 import { describe, it, expect } from 'vitest';
 import { tabIndicator, tabDotClass, tabsNeedingAPerson } from '../tabState';

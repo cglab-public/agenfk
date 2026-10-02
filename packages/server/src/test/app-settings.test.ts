@@ -131,7 +131,7 @@ describe('installation-wide settings', () => {
  * A field added to `AppSettings` and not to whatever the route destructures is
  * accepted, dropped, and answered with a 200 — the user flips a switch, the
  * screen says it saved, and nothing was written. `PUT /items` did exactly that
- * to `claims` and `externalId` on this repo and nobody noticed for weeks. The
+ * to `externalId` on this repo and nobody noticed for weeks. The
  * route here derives its allowlist from `DEFAULT_APP_SETTINGS`, so it SHOULD be
  * impossible; this is the test that says so out loud, for each field, by
  * writing a non-default value and reading it back through a separate request.

@@ -69,10 +69,13 @@ export type SoundTimingDto = 'always' | 'unfocused';
  * The installation's settings, as the wire sees them.
  *
  * A COPY of core's `AppSettings`, and it has to be one: `@agenfk/core` compiles
- * to CommonJS, and importing it from the browser bundle is the mistake
- * `claimState.ts` documents at length — a named import fails the build, a
- * namespace import ships a black window that throws `exports is not defined`
- * while every test and the build itself report success.
+ * to CommonJS, and the browser bundle cannot import it. A named import fails
+ * the BUILD (rollup cannot trace a name through `export *` of a CJS module)
+ * while vitest, which aliases the package to source, stays green. A namespace
+ * import passes the build and ships a bundle that throws `ReferenceError:
+ * exports is not defined` on load: a black window, with every test and the
+ * build itself reporting success. So the browser cannot have core until core
+ * emits ESM.
  *
  * A copy that DRIFTS is worse than either sharing or not, and the drift here
  * has a specific shape: a setting added to core and not to this type is one the

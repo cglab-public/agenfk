@@ -335,7 +335,7 @@ describe('tests-added-late: test files added after the tests were frozen, flagge
   }
   const judge = (root: string, head: string, over: Record<string, any> = {}, files: Record<string, string> = { 'tests/a.test.js': 'h' }) =>
     EVALUATORS['tests-added-late']({ root, git: gitIn(root), item: { id: '11111111-1111-4111-8111-111111111111', type: 'TASK' }, cardBranch: null, cardKeys: [], testPaths: [], ignoredPaths: ['.reports'],
-      foreignClaims: [], deferToCommand: [], children: [], capture: null, entry: null, entryHead: null, records: { testSurface: { files, scope: 'declared', complete: true, declared: [], head } }, ...over } as any, {});
+      deferToCommand: [], children: [], capture: null, entry: null, entryHead: null, records: { testSurface: { files, scope: 'declared', complete: true, declared: [], head } }, ...over } as any, {});
 
   it('flags test files added since the freeze - committed, staged or untracked - and nothing else', () => {
     const { repo, root, head } = frozenRepo();

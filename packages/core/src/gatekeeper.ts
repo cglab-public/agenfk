@@ -9,8 +9,6 @@
  * CREATE_UNIT_TESTS). Centralising the logic here kills that drift.
  */
 
-import { gateOnClaims, claimTreeOf } from './claimGate';
-
 export interface GatekeeperFlow {
   /** Flow name, echoed back so the caller can see which flow is governing. */
   name?: string;
@@ -23,12 +21,6 @@ export interface GatekeeperItem {
   type: string;
   title?: string;
   branchName?: string;
-  /** Paths this item owns while worked. See claimGate.ts. */
-  claims?: string[];
-  /** Tree resolution for claims (aaa01834): own worktree, else an ancestor's. */
-  parentId?: string | null;
-  worktreePath?: string | null;
-  worktreeChoice?: string | null;
 }
 
 /** Statuses that are never considered "active working" steps regardless of flow. */
@@ -162,7 +154,7 @@ export interface StepContract {
  */
 export function commitOnLeaveNote(step: string, mode: 'auto' | 'required' | undefined): string {
   if (!mode) return '';
-  return `📌 ${step} commits the card's staged, claimed files when it leaves: stage your work before you advance the card.`
+  return `📌 ${step} commits the card's staged files when it leaves: stage your work before you advance the card.`
     + (mode === 'required' ? ' It refuses to move on without that commit.' : '');
 }
 
@@ -296,8 +288,6 @@ export interface GatekeeperDecisionOptions {
   intent?: string;
   /** Advisory role label (coding/review/testing/...). Echoed, NOT used as a status gate. */
   role?: string;
-  /** The project's root: the tree of a card with no worktree (aaa01834). */
-  projectRoot?: string | null;
 }
 
 /**
@@ -361,34 +351,6 @@ export function decideGatekeeperAuthorization(
     };
   } else {
     task = actionable[0];
-  }
-
-  /*
-   * The claim gate (819e7192), and it runs LAST: being on an active step is
-   * the question of whether this card may work at all, and colliding with
-   * somebody else is the question of whether it may work HERE. Answering the
-   * second first would refuse a card for a file conflict when its real problem
-   * is that it never started.
-   *
-   * Holders come from `items`, NOT `workingItems`. getActiveStepItems drops
-   * PAUSED and BLOCKED, and a paused card is exactly the one whose half-edited
-   * files must not be handed to somebody else - it finds out on resume, which
-   * is the worst moment. claimGate decides release by terminal status instead.
-   */
-  // Claims are per worktree (aaa01834): each card carries the tree it works
-  // in, and an unknown tree stays strict. See sameClaimTree.
-  const byId = new Map(items.map(i => [i.id, i]));
-  const treeOf = (i: GatekeeperItem) => claimTreeOf(i, id => byId.get(id), opts.projectRoot);
-  const gate = gateOnClaims(
-    { id: task.id, claims: task.claims, tree: treeOf(task) },
-    items.map(i => ({ id: i.id, status: i.status, claims: i.claims, tree: treeOf(i) })),
-  );
-  if (!gate.authorized) {
-    return {
-      authorized: false,
-      task: null,
-      message: `❌ CLAIM CONFLICT on [${task.id.substring(0, 8)}] "${task.title}".\n\n${gate.message}`,
-    };
   }
 
   // Surface the step contract via the shared resolver, so this and the MCP

@@ -38,7 +38,7 @@ export interface StorageQuery {
   /**
    * e248239d: false leaves each capture record's per-test results as a
    * `testsBlob` reference instead of reading them back - for a caller that
-   * never reads them (the item list, claim scans). Default true.
+   * never reads them (the item list). Default true.
    */
   hydrate?: boolean;
 }

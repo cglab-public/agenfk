@@ -48,8 +48,7 @@ export interface NewTerminalDialogProps {
    * making one, so the button always said Create - and once herdr is in the
    * picture that is no longer true. A card whose work is already running in a
    * pane does not need a second terminal, and offering to make one is how two
-   * agents end up in one worktree without anyone meaning it, which is the
-   * situation the claims mechanism exists to survive.
+   * agents end up in one worktree without anyone meaning it.
    *
    * Absent means nothing is running, which is the ordinary case and still says
    * Create.

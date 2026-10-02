@@ -46,7 +46,7 @@ describe('when something is already running for this card', () => {
     /*
      * A card with a live pane does not need a second terminal. The button
      * saying "Create" there is an invitation to end up with two agents in one
-     * worktree - which this repository has a whole claims mechanism to survive.
+     * worktree without anyone meaning it.
      */
     mount({ existing: { agentId: 'claude-code', where: 'herdr' } });
     expect(await screen.findByRole('button', { name: /^continue$/i })).toBeTruthy();

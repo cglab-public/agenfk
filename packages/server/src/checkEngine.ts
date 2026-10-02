@@ -19,7 +19,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { insideRoot, isTestPath, loadFailureFileOf } from './stepRecords';
-import { CHECK_CATALOGUE, checkDef, claimsCollide, type CheckSeverity, type RecordName, type ResolvedCheck } from '@agenfk/core';
+import { CHECK_CATALOGUE, checkDef, type CheckSeverity, type RecordName, type ResolvedCheck } from '@agenfk/core';
 
 export type CheckOutcome = 'pass' | 'fail' | 'unavailable' | 'n/a' | 'deferred';
 
@@ -149,8 +149,6 @@ export interface EngineContext {
   testPaths: string[];
   /** Paths the checks never count as the card's changes (the test report the capture writes). */
   ignoredPaths: string[];
-  /** Paths other active cards claim: their changes are theirs, in a shared tree. */
-  foreignClaims: string[];
   /** Checks enforced by the project verify command on this transition, not judged here. */
   deferToCommand: string[];
   /**
@@ -280,106 +278,27 @@ function authoredTests(ctx: EngineContext): ReportedTest[] | Verdict {
 
 const JIRA_KEY = /^[A-Z][A-Z0-9]+-\d+$/;
 
-/**
- * The tests this step added: named now, not at the step's entry, and in no
- * file another active card claims (5b48b96b) - a sibling's new test in the
- * shared tree is its own, and must not count as this card's.
- */
+/** The tests this step added: named now, not at the step's entry. */
 function newTests(ctx: EngineContext): { added: ReportedTest[]; now: ReportedTest[]; was: Set<string>; capture: CaptureRecord } | Verdict {
   const now = currentTests(ctx);
   if (isVerdict(now)) return now;
   const before = entryTests(ctx);
   if (isVerdict(before)) return before;
   const was = new Set(before.map(t => t.name));
-  return { added: now.tests.filter(t => !was.has(t.name) && !foreignFile(ctx, t.file)), now: now.tests, was, capture: now.capture };
+  return { added: now.tests.filter(t => !was.has(t.name)), now: now.tests, was, capture: now.capture };
 }
 
-/** A path inside a claim (a directory or an exact file), at a segment boundary. */
-const within = (file: string, claim: string) => {
-  const c = claim.replace(/^\.\//, '').replace(/\/+$/, '');
+/** A path inside an ignored path (a directory or an exact file), at a segment boundary. */
+const within = (file: string, dir: string) => {
+  const c = dir.replace(/^\.\//, '').replace(/\/+$/, '');
   return file === c || file.startsWith(`${c}/`);
 };
 /**
- * Changes that are this card's: not the test report the capture writes, and
- * not files another active card has claimed. Unclaimed files stay the card's,
- * so a card cannot hide an edit by claiming narrowly.
+ * Changes that are this card's: everything changed in its tree except the test
+ * report the capture writes.
  */
 function cardsOwn(ctx: EngineContext, files: string[]): string[] {
-  return files.filter(f => !ctx.ignoredPaths.some(p => within(f, p)) && !ctx.foreignClaims.some(c => within(f, c)));
-}
-
-/**
- * Where the report's paths sit in the repository: a report names files relative
- * to the tree the suite ran in, which can be a subdirectory of the repository,
- * while claims are repository-relative. Read once per verify.
- */
-const reportPrefixes = new WeakMap<EngineContext, string>();
-function reportPrefix(ctx: EngineContext): string {
-  let p = reportPrefixes.get(ctx);
-  if (p === undefined) {
-    try { p = ctx.root ? ctx.git(['-C', ctx.root, 'rev-parse', '--show-prefix']).trim() : ''; } catch { p = ''; }
-    reportPrefixes.set(ctx, p);
-  }
-  return p;
-}
-
-/**
- * A file another active card claims (5b48b96b), the report's path rebased to
- * the repository and compared the way claims are - at a segment boundary,
- * separators normalised (claimsCollide).
- */
-function foreignFile(ctx: EngineContext, file: string | undefined): boolean {
-  if (!file) return false;
-  const repoPath = `${reportPrefix(ctx)}${file}`;
-  return ctx.foreignClaims.some(c => claimsCollide(repoPath, c));
-}
-
-/**
- * A test that is another card's, for the checks that compare sets and counts:
- * in a file another card claims, and never passing as this step began. A test
- * that was green here and is gone or failing is a regression, whoever claims
- * its file - a claim is free to make, so it must not excuse a deletion.
- */
-function othersNotRegression(ctx: EngineContext, name: string, file: string | undefined): boolean {
-  if (!foreignFile(ctx, file)) return false;
-  const was = passedAtEntry(ctx);
-  return !!was && !was.has(name);
-}
-
-/** The names that passed as the card entered this step, or null with no per-test entry record. Read once per verify. */
-const entryPasses = new WeakMap<EngineContext, Set<string> | null>();
-function passedAtEntry(ctx: EngineContext): Set<string> | null {
-  if (entryPasses.has(ctx)) return entryPasses.get(ctx)!;
-  const e = ctx.entry;
-  const set = e?.available && Array.isArray(e.tests) ? new Set(e.tests.filter(t => t.status === 'passed').map(t => t.name)) : null;
-  entryPasses.set(ctx, set);
-  return set;
-}
-
-/**
- * 5b48b96b — a failing test that is another card's to finish, not this card's:
- * it lives in a file another active card claims, AND it was not passing as this
- * card entered the step. One that was green then and is not now is a
- * regression this card may have caused, and it still counts. With no entry
- * record nothing can be told a regression, so nothing is left out.
- */
-function othersUnfinished(ctx: EngineContext, t: ReportedTest): boolean {
-  return othersNotRegression(ctx, t.name, t.file);
-}
-
-/**
- * The same for a test file that fails to load: another card's, unless it had a
- * passing test as this step began. Only when EVERY passing test at entry can be
- * tied to a file of the surface: a runner that names tests by class (pytest's
- * JUnit: tests.test_b, the file tests/test_b.py) cannot say which file a test
- * came from, so a green module that stopped loading may be this one.
- */
-function othersBrokenFile(ctx: EngineContext, file: string): boolean {
-  if (!foreignFile(ctx, file) || !passedAtEntry(ctx)) return false;
-  const known = ctx.entry?.surface?.files ?? {};
-  const passing = (ctx.entry?.tests ?? []).filter(t => t.status === 'passed');
-  if (passing.some(t => !(t.file in known))) return false;
-  return !passing.some(t => t.file === file);
+  return files.filter(f => !ctx.ignoredPaths.some(p => within(f, p)));
 }
 
 const isVerdict = (x: unknown): x is Verdict => !!x && typeof x === 'object' && 'outcome' in (x as any);
@@ -539,7 +458,7 @@ export const EVALUATORS: Record<string, Evaluator> = {
   'no-broken-test-files': ctx => {
     const now = currentTests(ctx);
     if (isVerdict(now)) return now;
-    const broken = (now.capture.brokenFiles ?? []).filter(b => !othersBrokenFile(ctx, b.file));
+    const broken = now.capture.brokenFiles ?? [];
     return broken.length
       // CGLAB-418: most often a test importing code not written yet - which a tests-only step cannot write.
       ? { outcome: 'fail', detail: `${broken.length} test file(s) failed to load, so their tests have no names: ${list(broken.map(b => `${b.file}: ${b.message}`))}. If a file imports code that does not exist yet, import it inside the test instead (in JavaScript, \`await import(...)\`), so a missing module fails that test rather than the whole file; red-is-assertion then warns that it is red on an error, which is expected until the code exists.` }
@@ -560,8 +479,7 @@ export const EVALUATORS: Record<string, Evaluator> = {
     return {
       outcome: 'pass',
       detail: `${red.length} of ${d.added.length} new test(s) red: ${list(red)}`,
-      // The tests as written: a sibling's new ones are its own, not part of this card's count (5b48b96b).
-      produces: { redSet: red, testSurface: { files: d.capture.surface?.files ?? {}, scope: d.capture.surfaceScope ?? null, complete: d.capture.surfaceComplete !== false, declared: d.capture.surfaceDeclared ?? [], head: d.capture.head ?? null }, authoredTests: d.now.filter(t => d.was.has(t.name) || !foreignFile(ctx, t.file)).map(t => t.name) },
+      produces: { redSet: red, testSurface: { files: d.capture.surface?.files ?? {}, scope: d.capture.surfaceScope ?? null, complete: d.capture.surfaceComplete !== false, declared: d.capture.surfaceDeclared ?? [], head: d.capture.head ?? null }, authoredTests: d.now.map(t => t.name) },
     };
   },
 
@@ -660,10 +578,9 @@ export const EVALUATORS: Record<string, Evaluator> = {
     }
     const cur = now.capture.surface?.files ?? {};
     const changes: string[] = [];
-    // Only the report the capture writes is left out. Other cards' claims are
-    // not: a claim on the tests would otherwise hide an edit to them, and a NEW
-    // file under a claim can load on its own (a conftest.py, an init()) and mask
-    // them, where the final verify would not see it (5b48b96b re-review).
+    // Only the report the capture writes is left out: a NEW file can load on
+    // its own (a conftest.py, an init()) and mask the tests, where the final
+    // verify would not see it (5b48b96b re-review).
     for (const f of [...new Set([...Object.keys(base), ...Object.keys(cur)])].filter(f => !ctx.ignoredPaths.some(ig => within(f, ig)))) {
       if (!(f in cur)) changes.push(`deleted ${f}`);
       else if (!(f in base)) { if (p.mode === 'strict') changes.push(`added ${f}`); }
@@ -709,8 +626,8 @@ export const EVALUATORS: Record<string, Evaluator> = {
       // DEFAULT branch - main's work, however it came in (merge, fast-forward,
       // rebase) - and the server's own close/step commits for ANOTHER card. The
       // card's own branch being pushed hides nothing. Known limits: another
-      // agent's untagged commit fast-forwarded from a LOCAL branch, and an
-      // unclaimed file in a shared tree, still count; so does a default branch not
+      // agent's untagged commit fast-forwarded from a LOCAL branch, and another
+      // agent's file in a shared tree, still count; so does a default branch not
       // named main/master when refs/remotes/<r>/HEAD is absent (a clone sets it,
       // `git remote add` does not); a hand-written close() subject naming another
       // real card would hide a test (a warning, not a gate).
@@ -728,11 +645,10 @@ export const EVALUATORS: Record<string, Evaluator> = {
     } catch (e: any) {
       return { outcome: 'unavailable', soft: true, detail: `git could not list what was added since ${frozen.head.slice(0, 12)}: ${e?.message ?? e}` };
     }
-    const prefix = reportPrefix(ctx);
     const late = [...own]
       // Still there: added then deleted is no late test.
       .filter(f => fs.existsSync(path.join(ctx.root!, f)))
-      .filter(f => !ctx.ignoredPaths.some(p => within(f, p)) && !ctx.foreignClaims.some(c => within(`${prefix}${f}`, c)))
+      .filter(f => !ctx.ignoredPaths.some(p => within(f, p)))
       .filter(f => ANY_TEST_FILE_PATTERN.test(f) && (addedBy.has(f) ? !(f in (freezeOf.get(addedBy.get(f)!) ?? {})) : !(f in base)));
     return late.length
       ? { outcome: 'fail', detail: `test file(s) added after the tests were frozen: ${list(late)}. Nothing has shown they do anything: show each one fails without the change it covers.` }
@@ -751,9 +667,8 @@ export const EVALUATORS: Record<string, Evaluator> = {
     if (e && (e.command !== c.command || e.format !== c.format || reportsDiffer)) {
       return { outcome: 'fail', detail: "the project's test report setting changed since this step's baseline was taken (its command or format), (its command, format or reports), so the test names cannot be compared. Re-enter the step to take a baseline under the new setting: the change is on the card's record." };
     }
-    // A sibling's tests being written in the files it claims are its own work (5b48b96b); a green test gone is not.
-    const was = new Set(before.filter(t => !othersNotRegression(ctx, t.name, t.file)).map(t => t.name));
-    const is = new Set(now.tests.filter(t => !othersNotRegression(ctx, t.name, t.file)).map(t => t.name));
+    const was = new Set(before.map(t => t.name));
+    const is = new Set(now.tests.map(t => t.name));
     const diff = [...[...was].filter(n => !is.has(n)).map(n => `-${n}`), ...[...is].filter(n => !was.has(n)).map(n => `+${n}`)];
     return diff.length ? { outcome: 'fail', detail: `the tests changed: ${list(diff)}` } : { outcome: 'pass', detail: `${is.size} tests, identical` };
   },
@@ -825,18 +740,10 @@ export const EVALUATORS: Record<string, Evaluator> = {
         ? { outcome: 'pass', detail: 'exit code 0 (no per-test report is set, so only the exit code was read)' }
         : { outcome: 'fail', detail: `the test command exited ${c.exitCode ?? 'without a code (killed)'}` };
     }
-    // 5b48b96b: a sibling's unfinished test in the shared tree is its own; a regression is not.
-    const failing = (c.tests ?? []).filter(t => t.status === 'failed');
-    const theirs = failing.filter(t => othersUnfinished(ctx, t)).map(t => t.name);
-    const failed = failing.filter(t => !othersUnfinished(ctx, t)).map(t => t.name);
-    const theirsBroken = (c.brokenFiles ?? []).filter(b => othersBrokenFile(ctx, b.file)).map(b => b.file);
-    const broken = (c.brokenFiles ?? []).filter(b => !othersBrokenFile(ctx, b.file)).map(b => `${b.file}: ${b.message}`);
-    // A non-zero exit is explained only when there is something failing, and all of it is another card's.
-    // Never a run with no exit code (killed, timed out): the report cannot say what it missed.
-    const exitOk = c.exitCode === 0 || (typeof c.exitCode === 'number' && !failed.length && !broken.length && (theirs.length + theirsBroken.length) > 0);
-    if (exitOk && !failed.length && !broken.length) {
-      const left = [...theirs, ...theirsBroken];
-      return { outcome: 'pass', detail: `${(c.tests ?? []).length} tests, exit code ${c.exitCode}${left.length ? `; left to the cards that claim them: ${list(left)}` : ''}` };
+    const failed = (c.tests ?? []).filter(t => t.status === 'failed').map(t => t.name);
+    const broken = (c.brokenFiles ?? []).map(b => `${b.file}: ${b.message}`);
+    if (c.exitCode === 0 && !failed.length && !broken.length) {
+      return { outcome: 'pass', detail: `${(c.tests ?? []).length} tests, exit code ${c.exitCode}` };
     }
     const why = [
       c.exitCode !== 0 ? `exit code ${c.exitCode ?? 'none (killed)'}` : '',
@@ -849,18 +756,13 @@ export const EVALUATORS: Record<string, Evaluator> = {
   'test-count-not-lower': (ctx, p) => {
     const now = currentTests(ctx);
     if (isVerdict(now)) return now;
-    const all = p.since === 'test-authoring' ? authoredTests(ctx) : entryTests(ctx);
-    if (isVerdict(all)) return all;
-    // Counted over this card's tests (5b48b96b): a sibling's tests that were never green here are its own work.
-    // A test that passed here and is gone counts, whoever claims its file. Authored tests are names only, so their
-    // file is looked up where the tests were reported; one found nowhere counts as this card's.
-    const fileOf = new Map<string, string>([...(ctx.entry?.tests ?? []), ...now.tests].map(t => [t.name, t.file]));
-    const before = all.filter(t => !othersNotRegression(ctx, t.name, t.file || fileOf.get(t.name)));
-    const mine = now.tests.filter(t => !othersNotRegression(ctx, t.name, t.file));
-    const n = mine.length;
+    const before = p.since === 'test-authoring' ? authoredTests(ctx) : entryTests(ctx);
+    if (isVerdict(before)) return before;
+    const n = now.tests.length;
+    const present = new Set(now.tests.map(t => t.name));
     return n >= before.length
       ? { outcome: 'pass', detail: `${before.length} → ${n} tests` }
-      : { outcome: 'fail', detail: `${before.length} → ${n} tests: fewer than when the step began. Missing: ${list(before.map(t => t.name).filter(x => !mine.some(t => t.name === x)))}` };
+      : { outcome: 'fail', detail: `${before.length} → ${n} tests: fewer than when the step began. Missing: ${list(before.map(t => t.name).filter(x => !present.has(x)))}` };
   },
 };
 

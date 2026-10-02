@@ -266,14 +266,6 @@ describe('9afdba7d: a junit report that names no file: the project declares its 
     expect(c.detail).toMatch(/edited checks\/a\.js/);
   });
 
-  it("another card's claim does not hide an edit to the tests", async () => {
-    const dir = makeRepo();
-    const { id } = await onWork(dir, 'node junit.cjs tests', { surface: ['tests'], before: async pid => { await card(pid, 'START', { claims: ['tests/'] }); } });
-    write(dir, 'tests/a.test.js', 'T add_works add=ok\n// edited\n');
-    const c = await refused(id, 'test-surface-frozen');
-    expect(c.outcome).toBe('fail');
-  });
-
   it('never counts the report the capture writes inside a declared test directory', async () => {
     const dir = makeRepo();
     const { id } = await onWork(dir, 'node junit.cjs tests tests/junit.xml', { reportPath: 'tests/junit.xml', surface: ['tests'] });
@@ -666,35 +658,16 @@ describe('CGLAB-380: test checks', () => {
       expect(r.status, JSON.stringify(r.body)).toBe(200);
     });
 
-    it('in a shared tree, files another active card claims are not this card\'s change', async () => {
+    it('a source change in the shared tree is this card\'s change, whatever another card once claimed', async () => {
+      // 26c059f6: claims are gone, so no file is handed to another card. A
+      // claim stored on an old sibling excuses nothing.
       const { dir, id } = await atSpecs();
       const pid = (await item(id)).projectId;
-      // A sibling that got to BUILD the way cards do: through verify, which leaves an exit record.
       await card(pid, 'BUILD', { claims: ['src/sibling.js'], stepRecords: [{ kind: 'exit', step: 'SPECS', at: new Date().toISOString() }] });
-      honestTests(dir);
-      write(dir, 'src/sibling.js', 'theirs');
-      const r = await validate(id, NOT_WRITTEN_YET);
-      expect(r.status, JSON.stringify(r.body)).toBe(200);
-    });
-
-    // 5b48b96b re-review: TODO -> BLOCKED needs no verify, so a claim made there is free and must excuse nothing.
-    it('a claim held by a card that never left a step through verify does not make the change another card\'s', async () => {
-      const { dir, id } = await atSpecs();
-      const pid = (await item(id)).projectId;
-      await card(pid, 'BLOCKED', { claims: ['src/sibling.js'] });
       honestTests(dir);
       write(dir, 'src/sibling.js', 'theirs');
       const c = await refused(id, 'only-test-files-changed');
       expect(c.detail).toMatch(/src\/sibling\.js/);
-    });
-
-    it('an unclaimed source change is still refused', async () => {
-      const { dir, id } = await atSpecs();
-      await agent().put(`/items/${id}`).send({ claims: ['tests'] });
-      honestTests(dir);
-      write(dir, 'src/sneaky.js', 'code');
-      const c = await refused(id, 'only-test-files-changed');
-      expect(c.detail).toMatch(/src\/sneaky\.js/);
     });
 
     it('a card already in the coding step when the flow gained roles warns and advances', async () => {

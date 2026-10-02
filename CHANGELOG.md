@@ -2,6 +2,25 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [Unreleased]
+
+### ⚠️ BREAKING — claims are removed (26c059f6)
+
+Claims (a card's declared list of owned paths) locked the parallel work they were meant to protect: two agents
+could not change different regions of one file, and the refusals fired on the very work they guarded. They are
+gone end to end:
+
+- `agenfk update` has no `--claims` option, and `PUT /items/:id` no longer knows the field (an old client that
+  still sends it is not refused, and nothing is stored).
+- No claim gate anywhere: the gatekeeper, the PreToolUse hook (no more `CLAIM CONFLICT`), the worktree choice
+  and the check engine no longer read claims. Every file changed in a card's tree is that card's change.
+- The close commit and a step's `autoCommit` take the whole index, exactly what was staged. Staging only your
+  own card's files is each agent's job; nothing is ever staged for you.
+- The board shows no claim chip, and the fleet sheet launches every child that is not running or stopped by the
+  circuit breaker.
+- The rule bundles no longer tell agents to declare claims. The `claims` field old cards carry is dropped from
+  the database once, when the server starts.
+
 ## [2.0.0-beta.21] — 2026-10-02
 
 Pre-release. Beta, cumulative over `2.0.0-beta.20`: everything in beta.20 (and the `1.1.20` stable under

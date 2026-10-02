@@ -14,7 +14,7 @@ import { SuiteSlots, suiteRunLimit, waitingLine } from './suiteSlots';
 import { DEFAULT_REUSE_IGNORE, namedByTests, reuseIgnoreMatcher } from './reuseIgnore';
 import { capturedGreen, countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, describeCapture, TEST_FILE_PATTERN, ANY_TEST_FILE_PATTERN, needsCapture, needsEntryRecord, parseAgentReports, parseCheckAnswers, describeTreeWarnings, MAX_UNREVIEWED_LINES, type AgentReport, type CheckResult, type TreeWarning } from './checkEngine';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { readProjectFile, approvalFor, commandFingerprint, hiddenCharacters, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, isWellFormedClaim, gateOnClaims, claimTreeOf, sameClaimTree, foreignClaimsFor, strayStaged, claimlessNeighbours, leavingEndsFlow, type ClaimHolder, canTransition, isTerminal, recordFailure, stillHolds, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
+import { readProjectFile, approvalFor, commandFingerprint, hiddenCharacters, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -1080,12 +1080,9 @@ export const findProjectRoot = (startDir: string): string | null => {
  * author expected to land is the same defect as silently adding one they did
  * not.
  *
- * THE ITEM'S OWN ROOT, and its CLAIMS. Two things this branch adds to the
- * upstream result: the commit runs in `resolveCommitRoot` (a linked worktree
- * has its OWN index, so committing from the primary checkout reads a different
- * one), and when the card has declared claims the pathspec limits the commit to
- * them — `.git/index` belongs to the WORKTREE, not to an agent, and several
- * agents share one by design.
+ * THE ITEM'S OWN ROOT: the commit runs in `resolveCommitRoot` (a linked
+ * worktree has its OWN index, so committing from the primary checkout reads a
+ * different one).
  *
  * Exported for the test; nothing else outside this module should call it.
  */
@@ -1100,8 +1097,6 @@ export interface AutoGitCommitResult {
   output: string;
   /** Paths git can see changes in that the author did not stage. */
   unstaged: string[];
-  /** Staged paths this card never claimed, when it declared claims. */
-  outsideClaims?: string[];
   /** Why, for every outcome but 'committed'. */
   detail?: string;
   /** The commit it made, for 'committed' (see CloseCommitResult.sha). */
@@ -1227,12 +1222,6 @@ async function resolveWorktreeChoice(raw: unknown, item: any): Promise<{ updates
   return { updates: { worktreeChoice: match } };
 }
 
-/** The card as it will be after a PUT's re-parent and tree choice: what claims are judged against. */
-function movingTo(item: any, parentId: unknown, worktreeUpdates: Record<string, unknown>): any {
-  const moved = parentId !== undefined ? { ...item, parentId: parentId === '' || parentId === null ? null : parentId } : item;
-  return { ...moved, ...worktreeUpdates };
-}
-
 /**
  * The tree a card itself says it runs in, for routes that show that tree: its
  * chosen checkout, else the worktree agenfk created for it. A card that chose
@@ -1242,85 +1231,6 @@ function ownTreeOf(item: any): string | undefined {
   const chosen = typeof item?.worktreeChoice === 'string' ? item.worktreeChoice : '';
   if (chosen === 'root') return undefined;
   return chosen || item?.worktreePath || undefined;
-}
-
-/**
- * Every card in a project as a claim holder, carrying the tree it works in
- * (aaa01834). Claims are per worktree: `gateOnClaims` compares a card only
- * with holders in its own tree, and an unknown tree stays strict. One listing,
- * resolved in memory, rather than a storage round-trip per ancestor.
- */
-async function claimHoldersIn(projectId: string, projectRoot: string | null | undefined): Promise<{ holders: ClaimHolder[]; treeOf: (item: any) => string | null }> {
-  // e248239d: claims only - no per-test results to read back.
-  const all: any[] = (await storage.listItems({ projectId, limit: 1_000_000, hydrate: false } as any)) as any;
-  const byId = new Map<string, any>(all.map(i => [i.id, i]));
-  /*
-   * A card moved to another project keeps its parentId (move takes only
-   * descendants), and verify commits in THAT parent's worktree
-   * (effectiveWorktreePath reads any project). Resolve the same way, or claims
-   * and strays would be judged against a tree the commit never touches.
-   */
-  for (let round = 0; round < 32; round++) {
-    const missing = [...new Set([...byId.values()].map(i => i.parentId).filter((id: any) => id && !byId.has(id)))] as string[];
-    if (!missing.length) break;
-    for (const id of missing) {
-      const parent = await storage.getItem(id);
-      byId.set(id, parent ?? { id });
-    }
-  }
-  const treeOf = (item: any) => claimTreeOf(item, id => byId.get(id), projectRoot ?? null);
-  const started = (i: any) => Array.isArray(i.stepRecords) && i.stepRecords.some((r: any) => r?.kind === 'exit');
-  return { holders: all.map(i => ({ id: i.id, status: String(i.status), claims: i.claims, tree: treeOf(i), started: started(i) })), treeOf };
-}
-
-/**
- * Staged files this card's close would leave behind with no owner (aaa01834).
- *
- * The close commit (and a step commit) takes only the card's claimed files.
- * What else is staged is either another card's in the same tree - theirs, left
- * alone - or nobody's, and a nobody's file sitting in the index after DONE is
- * how a dirty tree reaches the next agent. Empty for a card that claims
- * nothing, and when the index cannot be read: the commit then reports that.
- */
-async function strayStagedFor(
-  item: any,
-  projectRoot: string | null | undefined,
-  isWorking: (status: string) => boolean,
-): Promise<{ strays: string[]; claimless: string[] }> {
-  const none = { strays: [], claimless: [] };
-  if (!Array.isArray(item?.claims) || !item.claims.length) return none;
-  const root = resolveCommitRoot(await withEffectiveWorktree(item), projectRoot).root;
-  if (!root) return none;
-  // --no-renames: with rename detection `--name-only` prints only a rename's
-  // DESTINATION, and the staged deletion of its source would be left behind
-  // unseen - exactly the ownerless file this looks for.
-  const listed = await git(['diff', '--cached', '--name-only', '--no-renames', '-z'], root);
-  if (!listed.ok) return none;
-  const staged = listed.out.split('\0').filter(Boolean);
-  if (!staged.length) return none;
-  const { holders, treeOf } = await claimHoldersIn(item.projectId, projectRoot);
-  const me = { id: item.id, claims: item.claims, tree: treeOf(item) };
-  const strays = strayStaged(staged, me, holders);
-  return { strays, claimless: strays.length ? claimlessNeighbours(me, holders, isWorking) : [] };
-}
-
-/** What an agent reads when strays stop it, and how to get past them. */
-function describeStrays(item: any, strays: readonly string[]): string {
-  const SHOWN = 20;
-  const list = strays.slice(0, SHOWN).map(f => `\`${f}\``).join(', ') + (strays.length > SHOWN ? ` and ${strays.length - SHOWN} more` : '');
-  // Every stray, not the ones listed: a partial command would be refused again.
-  const widened = [...(item.claims ?? []), ...strays].join(',');
-  return `Staged, but outside this card's claims and claimed by no other active card in this worktree: ${list}. `
-    + `The commit takes only claimed files, so these would stay staged with no owner. `
-    + `Claim them (\`agenfk update ${String(item.id).slice(0, 8)} --claims "${widened}"\`) or unstage them (\`git restore --staged <file>\`).`;
-}
-
-/** The note when a stray may belong to a card that claims nothing. */
-function describeUnowned(strays: readonly string[], claimless: readonly string[]): string {
-  const SHOWN = 20;
-  const list = strays.slice(0, SHOWN).map(f => `\`${f}\``).join(', ') + (strays.length > SHOWN ? ` and ${strays.length - SHOWN} more` : '');
-  return `Staged outside this card's claims, and not committed with it: ${list}. `
-    + `They may belong to ${claimless.map(id => String(id).slice(0, 8)).join(', ')}, which ${claimless.length === 1 ? 'works in this tree and claims' : 'work in this tree and claim'} nothing, so they are left staged for ${claimless.length === 1 ? 'it' : 'them'}.`;
 }
 
 /** realpath that canonicalises case on macOS; the input unchanged when it fails. */
@@ -1492,36 +1402,26 @@ export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null
 
   /*
    * THE COMMIT ITSELF IS `commitStagedForCard`'s decision, not a second copy of
-   * it. That module owns "commit the INDEX", the claims pathspec, the
-   * staged-then-changed refusal and the reason strings; reimplementing any of
-   * it here is how the two would drift.
+   * it. That module owns "commit the INDEX" and the reason strings;
+   * reimplementing either here is how the two would drift.
    */
   const result = commitStagedForCard(
     item as any,
     root,
     { run: args => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) },
-    (item as any).claims,
     { message },
   );
   if (result.committed) {
     return done({
       outcome: 'committed', success: true, committed: true,
-      output: result.output ?? '', unstaged, outsideClaims: result.outsideClaims ? [...result.outsideClaims] : undefined,
+      output: result.output ?? '', unstaged,
       ...(result.sha ? { sha: result.sha } : {}),
     });
   }
   const reason = result.reason ?? 'the close commit did not run';
-  /*
-   * An EMPTY index is a normal, well-behaved close (the author committed their
-   * own work first). Staged files that are not OURS is a different fact - the
-   * card's work is not in the index - and a refusal the agent must act on.
-   * `commitStagedForCard` reports both under the same "nothing was staged"
-   * wording, so `outsideClaims` is what tells them apart.
-   */
-  const nothingOfOurs = (result.outsideClaims?.length ?? 0) > 0;
-  const outcome: AutoGitCommitOutcome =
-    !nothingOfOurs && /nothing was staged/i.test(reason) ? 'nothing-staged' : 'failed';
-  return stop(outcome, reason, { unstaged, outsideClaims: result.outsideClaims ? [...result.outsideClaims] : undefined });
+  // An EMPTY index is a normal, well-behaved close (the author committed their own work first).
+  const outcome: AutoGitCommitOutcome = /nothing was staged/i.test(reason) ? 'nothing-staged' : 'failed';
+  return stop(outcome, reason, { unstaged });
 };
 
 // ── Storage initialisation ───────────────────────────────────────────────────
@@ -3867,16 +3767,12 @@ app.post("/items/:id/review-records", asyncHandler(async (req: any, res: any) =>
     return res.status(400).json({ error: `The transcript was last written ${reviewer.lastAt ?? 'at no recorded time'} (file: ${reviewer.mtime}), before the range's tip commit (${tipAt}): it cannot have reviewed it.` });
   }
   const recId = uuidv4();
-  // What in the tree is not this card's: the reports a run writes, and files other active cards claim.
+  // What in the tree is not this card's: the reports a run writes.
   const under = (f: string, p: string) => { const q = p.replace(/^\.\//, '').replace(/\/+$/, ''); return f === q || f.startsWith(`${q}/`); };
   let prefix = '';
   try { prefix = git(['rev-parse', '--show-prefix']); } catch { /* the root is the top */ }
   const reports = reportOwnedOf(root, project).map(r => `${prefix}${r}`);
-  const ancestorIds = new Set<string>();
-  for (let p = item.parentId, hops = 0; p && hops < 64 && !ancestorIds.has(p); hops++) { ancestorIds.add(p); p = ((await storage.getItem(p)) as any)?.parentId ?? null; }
-  const { holders, treeOf } = await claimHoldersIn(item.projectId, project?.projectRoot);
-  const claimed = foreignClaimsFor(item, holders, { itemTree: treeOf(item), ancestorIds });
-  const notOurs = (f: string) => reports.some(r => under(f, r)) || claimed.some(c => under(f, c));
+  const notOurs = (f: string) => reports.some(r => under(f, r));
   // The card's own work: itself and its descendants (reviews happen at the parent).
   const mine = new Set<string>([item.id, ...(await descendantsOf(item)).map((d: any) => d.id)]);
   const rec = {
@@ -7249,7 +7145,7 @@ app.post("/items/bulk", asyncHandler(async (req: any, res: any) => {
 
 app.put("/items/:id", limitBoardRoutes, asyncHandler(async (req: any, res: any) => {
   console.log(`[API_DEBUG] PUT /items/${req.params.id} body keys: ${Object.keys(req.body).join(', ')}`);
-  const { title, description, status, type, parentId, context, implementationPlan, reviews, tests, comments, sortOrder, branchName, prUrl, prNumber, prStatus, claims, externalId, externalUrl, worktree } = req.body;
+  const { title, description, status, type, parentId, context, implementationPlan, reviews, tests, comments, sortOrder, branchName, prUrl, prNumber, prStatus, externalId, externalUrl, worktree } = req.body;
   // BUG 93d9fbd0: a card's tests are a list of records; anything else is refused
   // before it is stored, where the verify path would trip over it.
   if (tests !== undefined && !Array.isArray(tests)) return res.status(400).json({ error: 'tests must be an array of test records' });
@@ -7265,68 +7161,6 @@ app.put("/items/:id", limitBoardRoutes, asyncHandler(async (req: any, res: any) 
     const choice = await resolveWorktreeChoice(worktree, currentItem);
     if ('error' in choice) return res.status(400).json({ error: choice.error });
     worktreeUpdates = choice.updates;
-  }
-
-  /*
-   * What this card says it owns (819e7192), checked BEFORE it is stored.
-   *
-   * A claim that cannot be checked is worse than none: claims.ts compares a
-   * glob as a literal, so a card believing it holds `packages/**` holds a file
-   * with that name, and every collision check it takes part in comes back
-   * clear. Storing one would hand out a guarantee nothing keeps.
-   *
-   * Refusing at DECLARATION rather than at every later edit is the point. A
-   * lead cutting a fan-out finds out while it can still re-cut the split;
-   * refusing later means each agent discovers the same overlap separately, one
-   * gatekeeper call at a time, after the work is already assigned.
-   */
-  if (claims !== undefined) {
-    if (!Array.isArray(claims)) {
-      return res.status(400).json({ error: "claims must be an array of paths." });
-    }
-    const malformed = claims.filter((c: unknown) => !isWellFormedClaim(c));
-    if (malformed.length) {
-      return res.status(400).json({
-        error: `Refusing these claims: ${malformed.map((c: unknown) => JSON.stringify(c)).join(', ')}. `
-          + `A claim is a directory or an exact file, repository-relative. Globs are refused rather than `
-          + `approximated, because whether two PATTERNS can ever match one path is a different and much `
-          + `harder question than whether a path matches one - and a claim that cannot be checked reports `
-          + `safety it has not established.`,
-      });
-    }
-    // Per worktree (aaa01834): only cards in this card's tree can collide with it.
-    const claimProject = await storage.getProject(currentItem.projectId);
-    const { holders, treeOf } = await claimHoldersIn(currentItem.projectId, (claimProject as any)?.projectRoot);
-    // A PUT that also re-parents, or chooses a tree, is judged in the tree the card is moving TO.
-    const gate = gateOnClaims({ id: currentItem.id, claims, tree: treeOf(movingTo(currentItem, parentId, worktreeUpdates)) }, holders);
-    if (!gate.authorized) {
-      return res.status(409).json({ error: gate.message });
-    }
-  }
-  // 686fdbf6: moving to another tree must not land a card - or a descendant
-  // that follows it there - on files a card in that tree already holds.
-  if (worktree !== undefined) {
-    const claimProject = await storage.getProject(currentItem.projectId);
-    const { holders, treeOf } = await claimHoldersIn(currentItem.projectId, (claimProject as any)?.projectRoot);
-    const target = treeOf(movingTo(currentItem, parentId, worktreeUpdates));
-    const all: any[] = (await storage.listItems({ projectId: currentItem.projectId, limit: 1_000_000 } as any)) as any[];
-    // The card itself (unless this PUT sets its claims: judged above), then every
-    // descendant with no tree of its own, which follows it.
-    const movers: Array<{ id: string; claims: unknown }> = claims === undefined ? [{ id: currentItem.id, claims: (currentItem as any).claims }] : [];
-    const queue = [currentItem.id];
-    const seen = new Set(queue);
-    while (queue.length) {
-      const pid = queue.shift()!;
-      for (const c of all) {
-        if (c.parentId !== pid || seen.has(c.id) || c.worktreeChoice || c.worktreePath) continue;
-        seen.add(c.id); queue.push(c.id); movers.push({ id: c.id, claims: c.claims });
-      }
-    }
-    for (const m of movers) {
-      if (!Array.isArray(m.claims) || !m.claims.length) continue;
-      const gate = gateOnClaims({ id: m.id, claims: m.claims as string[], tree: target }, holders.filter(h => !seen.has(h.id) || h.id === m.id));
-      if (!gate.authorized) return res.status(409).json({ error: m.id === currentItem.id ? gate.message : `Card ${m.id}, which follows this one to the new tree: ${gate.message}` });
-    }
   }
 
   // The internal token no longer exempts a status change from anything below
@@ -7477,16 +7311,14 @@ app.put("/items/:id", limitBoardRoutes, asyncHandler(async (req: any, res: any) 
   if (prUrl !== undefined) updates.prUrl = prUrl;
   if (prNumber !== undefined) updates.prNumber = prNumber;
   if (prStatus !== undefined) updates.prStatus = prStatus;
-  if (claims !== undefined) updates.claims = claims;
   // The JIRA link (main's mechanism, and it is the newer one).
   Object.assign(updates, externalRef.updates);
   /*
    * The link to an issue in another tracker (af47b248).
    *
    * Declared in types.ts since before this route existed and dropped by the
-   * destructure ever since, so not one item in the database carried one - the
-   * same shape as `claims`: a field complete at both ends with nothing joining
-   * them. Absence of a mention leaves it alone, because renaming a card must
+   * destructure ever since, so not one item in the database carried one: a
+   * field complete at both ends with nothing joining them. Absence of a mention leaves it alone, because renaming a card must
    * not unpair it.
    */
   if (externalId !== undefined) updates.externalId = externalId;
@@ -8129,7 +7961,8 @@ function deferredToCommand(flow: { steps: any[] }, status: string, project: any,
  *    boundary still runs the command it requires);
  *  - the parent is in the SAME project (a moved card keeps a parentId into its
  *    old project, whose verify runs a different command in a different tree);
- *  - the parent is still open: not released, not on its flow's exit step;
+ *  - the parent is still open and worked: not DONE, paused, blocked or shelved,
+ *    and not on its flow's exit step;
  *  - and no verify of the parent is running now: that run may not see this
  *    card's close commit, so the card runs its own.
  * The roll-up never walks such a parent onto its exit step (syncParentStatus),
@@ -8143,7 +7976,8 @@ async function parentToDeferTo(item: any, flow: { steps: any[]; verifyAt?: unkno
   const parent: any = await storage.getItem(item.parentId);
   if (!parent || parent.projectId !== item.projectId) return null;
   // Open AND being worked: a paused or blocked parent may never come back to run it.
-  if (!stillHolds(String(parent.status)) || INACTIVE_STATUSES.has(String(parent.status).toUpperCase()) || parent.status === sorted[sorted.length - 1]?.name) return null;
+  const parentStatus = String(parent.status).toUpperCase();
+  if (parentStatus === 'DONE' || INACTIVE_STATUSES.has(parentStatus) || parent.status === sorted[sorted.length - 1]?.name) return null;
   if (activeValidateRunByItem.has(parent.id)) return null;
   // The parent's verify tests the PARENT's tree: a child whose work lives in another one runs its own.
   const project: any = await storage.getProject(item.projectId);
@@ -8625,18 +8459,6 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const produced: Record<string, unknown> = {};
   for (const r of records) if (r?.kind === 'record' && earlier.has(r.step) && typeof r.name === 'string') produced[r.name] = r.value;
 
-  // In a shared worktree the tree holds other cards' work too (MULTI_AGENT.md):
-  // what another active card has claimed is theirs, not this card's change.
-  // Only cards in THIS tree (aaa01834): a claim in another worktree says nothing about files here.
-  const { holders: claimHolders, treeOf: claimTree } = await claimHoldersIn(item.projectId, (project as any)?.projectRoot);
-  const hereTree = claimTree(item);
-  // 5b48b96b review: not the card's ancestors, and not a card that never left a step (foreignClaimsFor).
-  const ancestorIds = new Set<string>();
-  for (let p = item.parentId, hops = 0; p && hops < 64 && !ancestorIds.has(p); hops++) {
-    ancestorIds.add(p);
-    p = ((await storage.getItem(p)) as any)?.parentId ?? null;
-  }
-  const foreignClaims = foreignClaimsFor(item, claimHolders, { itemTree: hereTree, ancestorIds });
   const reportPath = reportPathsOf(project?.testReport)[0] ?? null;
   // People's approvals and overrides of THIS step (CGLAB-382); a rollback over it dropped older ones.
   const here = records.filter(r => r?.step === item.status);
@@ -8673,7 +8495,6 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     cardKeys: await keysOfCard(item),
     testPaths: Array.isArray(project?.testReport?.surface) ? project.testReport.surface : [],
     ignoredPaths: reportPath && root ? reportsOwned(root, project?.testReport) : [],
-    foreignClaims,
     deferToCommand,
     ...(deferToApproval.length ? { deferToApproval } : {}),
     ...(upstream ? { upstream } : {}),
@@ -8967,23 +8788,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
    * and then the transition - in the background run, exactly as it does the
    * command; a check that needs no capture only reads git and runs inline.
    */
-  /*
-   * aaa01834: the move that ENDS the flow is refused while staged files lie
-   * outside the card's claims and no other card in this tree claims them. The
-   * close commit takes only claimed files, so they would stay staged after
-   * DONE with nobody owning them. Refused with the card where it is.
-   *
-   * Unless a WORKING card in the same tree claims nothing (review): it is
-   * authorized everywhere, so the file may be its work, and both remedies the
-   * refusal offers would take that work from it. Then it is a note.
-   *
-   * Checked first - before the step's checks, which may run a whole suite -
-   * and again just before the move, because the index can change meanwhile.
-   */
-  const anchorNames = new Set(sorted.filter((st: any) => st.isAnchor).map((st: any) => String(st.name)));
-  const isWorkingStatus = (st: string) => !anchorNames.has(st);
   const endsFlowHere = leavingEndsFlow(sorted as any, currentFlowStep.index);
-  const checkStrays = async (r0: any, ends: boolean = endsFlowHere): Promise<{ refused: true } | { refused: false; res: any }> => {
+  const checkClose = async (r0: any, ends: boolean = endsFlowHere): Promise<{ refused: true } | { refused: false; res: any }> => {
     if (!ends) return { refused: false, res: r0 };
     /*
      * 8024f6c4: a card does not close while anything under it is unfinished.
@@ -8994,25 +8800,19 @@ async function handleValidateProgress(itemId: string, command: string | undefine
      * the first anchor's advance, and after the command ran - so work that
      * appears or reopens DURING the verify is seen too.
      */
-    const { strays, claimless } = await strayStagedFor(item, (project as any)?.projectRoot, isWorkingStatus);
-    // After the git read, not before it: a child created while that awaited
-    // would otherwise go unseen by the very check meant to catch it.
     const scan = await openDescendants(item.id);
     if (holdsClose(scan)) {
       r0.status(400).json(childrenOpenRefusal(item, scan));
       return { refused: true };
     }
-    if (!strays.length) return { refused: false, res: r0 };
-    if (claimless.length) return { refused: false, res: withNote(r0, `⚠️ ${describeUnowned(strays, claimless)}`) };
-    r0.status(422).json({ status: item.status, message: `❌ The card cannot close yet. ${describeStrays(item, strays)}${staysOn(item.status)}` });
-    return { refused: true };
+    return { refused: false, res: r0 };
   };
   // A gate judged on another step answers nothing here: the card moved (a rollback onto a step a person approves, say).
   if (opts?.gate && opts.gate.step !== item.status) {
     return res.status(409).json({ status: item.status, error: 'CARD_MOVED', message: `⚠️ The card moved (${opts.gate.step} → ${item.status}) while its verify waited; nothing was applied. Run verify again from ${item.status}.${nowOn(item.status)}` });
   }
   if (!opts?.gate) {
-    const early = await checkStrays(res);
+    const early = await checkClose(res);
     if (early.refused) return;
     res = early.res;
   }
@@ -9114,8 +8914,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
 
   /*
    * CGLAB-388: a step with autoCommit commits the card's work as the card
-   * leaves it - only what is staged, only the card's claimed files, the same
-   * commit the close makes, named for the step. Called on each path that
+   * leaves it - only what is staged, the same commit the close makes, named
+   * for the step. Called on each path that
    * ADVANCES the card, just before it moves, never before: a refused advance
    * (a failing command, a stale step) must leave the work staged, or a
    * requireCommit step could never be left again. Not on the move that ends
@@ -9126,13 +8926,6 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     const mode = stepCommitsOnLeave(sorted as any, item.status);
     if (!mode) return { res: r0 };
     const stepMessage = `step(${item.status}): ${item.title} [${item.id}]`;
-    // Read before the commit: afterwards the claimed files are gone from the index.
-    const { strays, claimless } = await strayStagedFor(item, (project as any)?.projectRoot, isWorkingStatus);
-    if (strays.length && !claimless.length && mode === 'required') {
-      r0.status(422).json({ status: item.status, message: `❌ This step requires a commit of the card's work when it leaves. ${describeStrays(item, strays)}${staysOn(item.status)}` });
-      return { refused: true };
-    }
-    const strayNote = strays.length ? `\n⚠️ ${claimless.length ? describeUnowned(strays, claimless) : describeStrays(item, strays)}` : '';
     const r = await autoGitCommit(item as any, (project as any)?.projectRoot, { message: stepMessage });
     const SHOWN = 20;
     const loose = r.unstaged.length
@@ -9140,7 +8933,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       : '';
     if (r.committed) {
       (exitRecord as any).commit = r.sha ?? null;
-      return { res: withNote(r0, `📌 Step commit ${r.sha ? r.sha.slice(0, 12) : ''}: "${stepMessage}".${loose}${strayNote}`) };
+      return { res: withNote(r0, `📌 Step commit ${r.sha ? r.sha.slice(0, 12) : ''}: "${stepMessage}".${loose}`) };
     }
     // Worded like the close commit's outcomes, about the step.
     const why = r.outcome === 'nothing-staged'
@@ -9151,7 +8944,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
       r0.status(422).json({ status: item.status, message: `❌ This step requires a commit of the card's work when it leaves, and none was made: ${why}${loose}${staysOn(item.status)}` });
       return { refused: true };
     }
-    return { res: withNote(r0, `${r.outcome === 'failed' ? '❌' : '⚠️'} No step commit: ${why}${loose}${strayNote}`) };
+    return { res: withNote(r0, `${r.outcome === 'failed' ? '❌' : '⚠️'} No step commit: ${why}${loose}`) };
   };
 
   if (currentFlowStep.step.isAnchor) {
@@ -9171,7 +8964,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
      * (special) -> DONE picks DONE) - and a re-entry from a background gate
      * skipped the entry check. Ask before the write.
      */
-    const closing = await checkStrays(res, finishedStatusesOf(activeFlow).has(String(codingStep.name)));
+    const closing = await checkClose(res, finishedStatusesOf(activeFlow).has(String(codingStep.name)));
     if (closing.refused) return;
     res = closing.res;
     const leftTodo = await commitOnLeave(res);
@@ -9335,10 +9128,10 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   const bareRes = res;
   if (commandNote) res = withNote(res, commandNote);
   if (deferTo) {
-    // The re-entry from a background gate skipped the early stray check: ask here too.
-    const strays = await checkStrays(res);
-    if (strays.refused) return;
-    res = strays.res;
+    // The re-entry from a background gate skipped the early open-children check: ask here too.
+    const closing = await checkClose(res);
+    if (closing.refused) return;
+    res = closing.res;
     const note = `The project's suite was not run for this card: the flow runs it once, at the top-level card, and [${deferTo.id.substring(0, 8)}] "${deferTo.title}" is still open. Its verify runs the suite over everything its children did, or defers it again to its own parent.`;
     const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (suite deferred to the parent)\n\n**Step**: ${item.status} → ${nextStatus}\n\n${note}`, timestamp: new Date() };
     const left = await commitOnLeave(res);
@@ -9366,14 +9159,14 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   /*
    * A close on a green already in hand - a sibling's of this tree, or this
    * move's own capture of the same command (36c5ca25) - without spawning the
-   * command again. The same move a passing run makes: strays asked again (a
-   * re-entry skipped the early check, and a close may have happened since),
+   * command again. The same move a passing run makes: open children asked
+   * again (a re-entry skipped the early check, and one may have reopened since),
    * the green recorded against the tree it belongs to, the close commit.
    */
   const closeOnGreen = async (r0: any, how: { how: string; output: string; recordOutput: string; note: string; green: Record<string, unknown>; stampAt?: string | null }) => {
-    const strays = await checkStrays(r0);
-    if (strays.refused) return;
-    const r1 = strays.res;
+    const closing = await checkClose(r0);
+    if (closing.refused) return;
+    const r1 = closing.res;
     const comment = { id: uuidv4(), author: 'ValidateTool', content: `### Validation PASSED (${how.how})\n\n${how.note}`, timestamp: new Date() };
     const testId = uuidv4();
     const updates: any = { status: nextStatus, stepRecords: withExitRecord(), comments: [...(item.comments || []), comment], tests: [...testRecords(item.tests), { id: testId, command: resolvedCommand, output: how.recordOutput, status: 'PASSED', executedAt: new Date(), ...how.green }], ...(isExitStep ? { failureCount: 0 } : {}) };
@@ -9663,8 +9456,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   }];
 
     if (passed) {
-      // The index may have changed while the command ran: ask again.
-      if ((await checkStrays(res2)).refused) return;
+      // Work under the card may have appeared or reopened while the command ran: ask again.
+      if ((await checkClose(res2)).refused) return;
       const left = await commitOnLeave(res2);
       if (left.refused) return;
       res2 = left.res;

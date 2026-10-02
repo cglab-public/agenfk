@@ -53,6 +53,8 @@ export class SQLiteStorageProvider implements StorageProvider {
     // e248239d: rows written before per-test results moved out, then what nothing references any more.
     this.moveInlineResults();
     this.dropUnreferencedBlobs();
+    // 26c059f6: claims were removed; the field old cards carry goes with them.
+    this.dropClaimsField();
   }
 
   // ── Per-test results (e248239d) ──────────────────────────────────────────
@@ -134,6 +136,28 @@ export class SQLiteStorageProvider implements StorageProvider {
         try { item = JSON.parse(row.data); } catch { continue; }
         const next = this.rowOf(item);
         if (next !== row.data) this.database.prepare('UPDATE items SET data = ? WHERE id = ?').run(next, row.id);
+      }
+      this.database.exec('COMMIT');
+    } catch (e) {
+      this.database.exec('ROLLBACK');
+      throw e;
+    }
+  }
+
+  /** Once per database: the `claims` field rows kept after claims were removed. */
+  private dropClaimsField(): void {
+    const rows = this.database.prepare(`SELECT id, data FROM items WHERE data LIKE '%"claims":%'`).all() as { id: string; data: string }[];
+    if (!rows.length) return;
+    this.database.exec('BEGIN');
+    try {
+      const update = this.database.prepare('UPDATE items SET data = ? WHERE id = ?');
+      for (const row of rows) {
+        let item: any;
+        try { item = JSON.parse(row.data); } catch { continue; }
+        // The LIKE also matches text that merely mentions the word; only a top-level field goes.
+        if (!item || typeof item !== 'object' || !Object.prototype.hasOwnProperty.call(item, 'claims')) continue;
+        const { claims: _claims, ...rest } = item;
+        update.run(JSON.stringify(rest), row.id);
       }
       this.database.exec('COMMIT');
     } catch (e) {

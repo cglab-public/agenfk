@@ -1,6 +1,6 @@
 /**
  * @file CGLAB-388 (S10) — a step with autoCommit commits the card's work as
- * the card leaves it: only what is staged, limited to the card's claims, with
+ * the card leaves it: only what is staged, with
  * `step(<STEP>): <title> [<id>]`, the sha on the exit record, and a reply that
  * says what happened. requireCommit turns a missing commit into a refusal.
  */
@@ -60,16 +60,6 @@ describe('CGLAB-388: commit when the card leaves the step', () => {
     expect(sh('git log -1 --format=%s', dir)).toBe(`step(PLAN): ${title} [${id}]`);
     expect((await exitOf(id, 'PLAN')).commit).toBe(sh('git rev-parse HEAD', dir));
     expect(res.body.message).toMatch(/step commit/i);
-  });
-
-  it("commits only the card's claimed files, leaving another card's staged work alone", async () => {
-    const { id, dir } = await setup({ autoCommit: true });
-    await agent().put(`/items/${id}`).send({ claims: ['mine.txt'] });
-    fs.writeFileSync(path.join(dir, 'mine.txt'), 'm'); fs.writeFileSync(path.join(dir, 'theirs.txt'), 't');
-    sh('git add mine.txt theirs.txt', dir);
-    expect((await validate(id)).status).toBe(200);
-    expect(sh('git show --name-only --format= HEAD', dir)).toBe('mine.txt');
-    expect(sh('git diff --cached --name-only', dir)).toBe('theirs.txt');
   });
 
   it('says so when nothing was staged, and still moves on', async () => {
@@ -221,7 +211,7 @@ describe('S10 review: the step commit happens only when the card really leaves',
     await storage.updateItem(id, { status: 'PLAN' } as any);
     const res = await validate(id);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(res.body.message).toMatch(/WORK commits the card's staged, claimed files when it leaves/);
+    expect(res.body.message).toMatch(/WORK commits the card's staged files when it leaves/);
   });
 
   it('the TODO move into a first step that commits on leave says so, and says when it insists', async () => {
@@ -234,7 +224,7 @@ describe('S10 review: the step commit happens only when the card really leaves',
     const id = (await agent().post('/items').send({ type: 'TASK', title: `Card ${++seq}`, projectId: p.body.id })).body.id;
     const res = await validate(id);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(res.body.message).toMatch(/PLAN commits the card's staged, claimed files when it leaves/);
+    expect(res.body.message).toMatch(/PLAN commits the card's staged files when it leaves/);
     expect(res.body.message).toMatch(/refuses to move on without that commit/);
   });
 });

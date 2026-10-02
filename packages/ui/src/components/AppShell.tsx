@@ -26,7 +26,6 @@ import { Book, Check, ChevronDown, ChevronRight, Folder, FolderOpen, GitBranch, 
 import { useSocketEvent, useSocket } from '../SocketContext';
 import { AgenfkWordmark } from './AgenfkWordmark';
 import { desktopInfo } from '../desktop';
-import { claimStateOf, claimChipLabel, claimChipTitle } from '../claimState';
 import { FleetSheet } from './FleetSheet';
 import { workingByItem, sessionForItem, adoptions } from '../workingSessions';
 import { SHELL_AGENT_ID } from '../agentIds';
@@ -371,12 +370,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
    */
   const [fleetParentId, setFleetParentId] = React.useState<string | null>(null);
   /*
-   * Every item, for the sheet. Cached and socket-refreshed for the same reason
-   * the claim chips are: GET /items returns full records, and re-pulling them
-   * on every window focus costs megabytes to read one field.
+   * Every item, for the sheet. Cached and socket-refreshed, never refetched on
+   * focus: GET /items returns full records, and re-pulling them on every window
+   * focus costs megabytes to read one field.
    */
   const { data: allItemsForFleet = [] } = useQuery<AgEnFKItem[]>({
-    queryKey: ['items-claims'],
+    queryKey: ['items-all'],
     queryFn: () => api.listItems(),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
@@ -2224,28 +2223,21 @@ interface SidebarProps {
 
 function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResizeStart, onNudge, requestTerminal, sessionRows, herdrProject, openPane, onOpenPane, liveItems, openSession, openSettings, revealOnBoard, activeView, onSelectView, onOpenProject, onOpenFlows, onOpenTerminal, onOpenFleet }: SidebarProps) {
   /*
-   * EVERY item, only for the claim chips (CGLAB-190).
-   *
-   * Not the in-flight list the rows are drawn from: a PAUSED card still owns
-   * the files it claimed - that is the whole point of RELEASED_STATUSES
-   * differing from the gatekeeper's INACTIVE set - and computing holders from
-   * the active list would quietly report a held card as free. A UI that fails
-   * open about a collision is the same defect as a gate that does, wearing a
-   * chip.
+   * EVERY item, to tell which cards have children (the fleet launcher). Not the
+   * in-flight list the rows are drawn from: a parent's children are anywhere.
    */
-  const { data: allItemsForClaims = [] } = useQuery<AgEnFKItem[]>({
-    queryKey: ['items-claims'],
+  const { data: allItems = [] } = useQuery<AgEnFKItem[]>({
+    queryKey: ['items-all'],
     queryFn: () => api.listItems(),
     /*
      * Measured after review: `GET /items` returns FULL records - description,
-     * comments, history - and on this machine that is 582 items and 8.1 MB,
-     * for a field 0 of them carry. With the default staleTime of 0 and
-     * refetch-on-focus, every alt-tab back into the window re-fetched and
-     * re-parsed all of it, in a renderer that is also driving xterm.
+     * comments, history - and on this machine that is 582 items and 8.1 MB.
+     * With the default staleTime of 0 and refetch-on-focus, every alt-tab back
+     * into the window re-fetched and re-parsed all of it, in a renderer that is
+     * also driving xterm.
      *
      * Freshness comes from the socket instead, which is also strictly BETTER
-     * than focus: the chip appeared only after an alt-tab before, i.e. it was
-     * stale at exactly the moment a claim was declared.
+     * than focus: a new child shows up when it is created, not on an alt-tab.
      *
      * The key is its own rather than ['items'], because invalidateQueries
      * matches by PREFIX and eight board and import mutations already
@@ -2368,10 +2360,8 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
      * the result"). The result was not there.
      */
     queryClient.invalidateQueries({ queryKey: ['project-items'] });
-    // The claim chips too: declaring a claim IS an item update, and without
-    // this the chip waited for a window focus - stale at exactly the moment
-    // the feature is for.
-    queryClient.invalidateQueries({ queryKey: ['items-claims'] });
+    // Every item too, or a new child waited for a window focus to show.
+    queryClient.invalidateQueries({ queryKey: ['items-all'] });
   });
   // Anything that changed while the socket was down produced no event, so the
   // counts stay wrong until the next unrelated item change. The board already
@@ -3175,7 +3165,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                              * disappoint, and there are more leaves than
                              * parents in any board.
                              */
-                            const hasKids = allItemsForClaims.some(i => i.parentId === item.id);
+                            const hasKids = allItems.some(i => i.parentId === item.id);
                             if (!hasKids) return null;
                             return (
                               <button
@@ -3188,45 +3178,6 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
                               >
                                 fleet
                               </button>
-                            );
-                          })()}
-                          {(() => {
-                            /*
-                             * What this card owns, and whether somebody else
-                             * owns it too (CGLAB-190). Rendered only when there
-                             * is something to say: every card in the database
-                             * declares nothing, and a chip on all of them would
-                             * be thirty rows announcing an absence.
-                             *
-                             * `held` is amber rather than red because it is not
-                             * a failure - it is the mechanism working, and the
-                             * card is waiting rather than broken.
-                             */
-                            const state = claimStateOf(item.id, allItemsForClaims as never, pid => (projects as Array<{ id: string; projectRoot?: string }>).find(p => p.id === pid)?.projectRoot);
-                            const label = claimChipLabel(state);
-                            if (!label) return null;
-                            return (
-                              <span
-                                data-testid="card-claims"
-                                title={claimChipTitle(state) ?? undefined}
-                                className={clsx(
-                                  'shrink-0 rounded-sm px-1 font-mono text-[10px] uppercase leading-[16px] tracking-wide',
-                                  /*
-                                   * Two-tone, the way every other amber TEXT
-                                   * in this repo is (WorktreePanel, Settings).
-                                   * Flat amber-500 as text is ~2:1 on the
-                                   * light canvas at 8px - near invisible - and
-                                   * tokens.css says so in as many words: the
-                                   * muted tint is for decorative chips, not
-                                   * for words somebody has to read.
-                                   */
-                                  state.rejected.length || state.heldBy.length
-                                    ? 'bg-status-warn-bg text-status-warn-text'
-                                    : 'text-ink-tertiary opacity-70',
-                                )}
-                              >
-                                {label}
-                              </span>
                             );
                           })()}
                           </span>
