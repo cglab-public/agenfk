@@ -183,6 +183,17 @@ describe('PrOverviewPage drill-down modal (CGLAB-131)', () => {
     expect(within(row202).queryByText(/no GitHub link/)).toBeNull();
   });
 
+  it('labels heatmap weekdays with one letter, so 11px fits a 10px column (story 7073be87)', async () => {
+    renderPage();
+    const days = await screen.findAllByTestId('heatmap-day');
+    for (const d of days) {
+      const weekday = d.querySelector('span')!.textContent!;
+      expect(weekday).toHaveLength(1);
+      // The full day stays in the column's name.
+      expect(d.getAttribute('aria-label')!.length).toBeGreaterThan(1);
+    }
+  });
+
   it('opens from a non-zero cell and lists that developer’s PRs for that day', async () => {
     const dialog = await openModal();
     const scope = within(dialog);

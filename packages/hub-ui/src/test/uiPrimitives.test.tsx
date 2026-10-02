@@ -35,6 +35,13 @@ describe('Button', () => {
     expect(screen.getByRole('button').getAttribute('type')).toBe('submit');
   });
 
+  it('keeps its text colour beside a type-scale size (cn knows the scale is not a colour)', () => {
+    render(<Button variant="primary" size="md">Create</Button>);
+    const cls = screen.getByRole('button').className;
+    expect(cls).toMatch(/\btext-navy\b/);
+    expect(cls).toMatch(/\btext-body\b/);
+  });
+
   it('primary is solid brand teal with navy text: no gradient, no glow', () => {
     render(<Button variant="primary">Create</Button>);
     const cls = screen.getByRole('button').className;
@@ -419,7 +426,7 @@ describe('the primitives only use colours the tokens define', () => {
     const dir = path.resolve(__dirname, '../components/ui');
     const PREFIX = /(?:^|[\s'"`:])(?:bg|text|border|ring|outline|fill|stroke|divide|caret)-([a-z][\w-]*?)(?:\/\d+)?(?=[\s'"`]|$)/g;
     // Non-colour utilities sharing those prefixes.
-    const NOT_COLOUR = /^(xs|sm|base|lg|xl|\d?xl|\d+|\[.*\]|left|right|center|justify|wrap|nowrap|balance|ellipsis|clip|x|y|t|b|l|r|none|hidden|solid|dashed|dotted|double|offset.*|inset|collapse|separate|spacing.*|opacity.*|image.*|fixed|local|scroll|cover|contain|auto|repeat.*|no-repeat|origin.*|clip.*|blend.*)$/;
+    const NOT_COLOUR = /^(caption|small|body|title|display|xs|sm|base|lg|xl|\d?xl|\d+|\[.*\]|left|right|center|justify|wrap|nowrap|balance|ellipsis|clip|x|y|t|b|l|r|none|hidden|solid|dashed|dotted|double|offset.*|inset|collapse|separate|spacing.*|opacity.*|image.*|fixed|local|scroll|cover|contain|auto|repeat.*|no-repeat|origin.*|clip.*|blend.*)$/;
     const bad: string[] = [];
     for (const f of fs.readdirSync(dir).filter(n => n.endsWith('.tsx'))) {
       const src = fs.readFileSync(path.join(dir, f), 'utf8');

@@ -23,6 +23,7 @@ import { AdminJira } from '../pages/AdminJira';
 import { AdminOrg } from '../pages/AdminOrg';
 import { ThemeProvider } from '../ThemeContext';
 import { api } from '../api';
+import { expectOnTypeScale } from './helpers/typeScale';
 
 vi.mock('../api', () => ({ api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() } }));
 const get = api.get as unknown as ReturnType<typeof vi.fn>;
@@ -139,6 +140,8 @@ function mount(element: React.ReactNode, entry = '/admin/x') {
 }
 
 function expectOnTokens(root: HTMLElement) {
+  // Story 7073be87: the type scale and the two content widths too.
+  expectOnTypeScale(root);
   // A destructive control must not hover in the selection colour.
   for (const el of Array.from(root.querySelectorAll('button, a'))) {
     const c = el.getAttribute('class') ?? '';

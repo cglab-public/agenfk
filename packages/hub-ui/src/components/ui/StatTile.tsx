@@ -41,7 +41,7 @@ export function StatTile({ label, value, delta, higherIsBetter = true, series, h
       <span
         data-testid="stat-delta"
         className={cn(
-          'justify-self-start px-1.5 py-0.5 rounded font-mono text-[11px] font-semibold',
+          'justify-self-start px-1.5 py-0.5 rounded font-mono text-caption font-semibold',
           good === null ? 'text-ink-tertiary bg-canvas' : good ? 'text-status-ok-text bg-status-ok-bg' : 'text-status-danger-text bg-status-danger-bg',
         )}
       >
@@ -73,13 +73,13 @@ export function StatTile({ label, value, delta, higherIsBetter = true, series, h
       )}
     >
       {/* Spans, not divs: as a button the tile may only hold phrasing content. */}
-      <span className="flex items-center gap-1.5 text-xs font-semibold text-ink-tertiary">
+      <span className="flex items-center gap-1.5 text-small font-semibold text-ink-tertiary">
         {series && <span data-testid="stat-swatch" aria-hidden="true" className={cn('w-2 h-2 rounded-sm', SWATCH[series])} />}
         {label}
       </span>
-      <span className={cn('block font-extrabold tabular-nums text-ink truncate', size === 'sm' ? 'text-[15px]' : 'text-2xl')} title={onClick ? undefined : shown}>{shown}</span>
+      <span className={cn('block font-extrabold tabular-nums text-ink truncate', size === 'sm' ? 'text-body' : 'text-display')} title={onClick ? undefined : shown}>{shown}</span>
       {deltaEl}
-      {hint != null && hint !== '' && hint !== false && <span data-stat-hint className="block text-[11px] text-ink-tertiary">{hint}</span>}
+      {hint != null && hint !== '' && hint !== false && <span data-stat-hint className="block text-caption text-ink-tertiary">{hint}</span>}
     </Root>
   );
 }

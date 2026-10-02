@@ -5,11 +5,11 @@
 export function PersonName({ name, userKey, className = '' }: { name?: string; userKey: string; className?: string }) {
   // Wrapped, not truncated: the key is what tells two people apart, and a
   // cut-off key's rest lived only in a mouse-only title.
-  if (!name) return <span className={`font-mono text-[12px] text-ink break-all ${className}`}>{userKey}</span>;
+  if (!name) return <span className={`font-mono text-small text-ink break-all ${className}`}>{userKey}</span>;
   return (
     <span className={`min-w-0 flex flex-col ${className}`}>
-      <span className="text-[13px] text-ink break-words">{name}</span>
-      <span className="font-mono text-[11px] text-ink-tertiary break-all">{userKey}</span>
+      <span className="text-body text-ink break-words">{name}</span>
+      <span className="font-mono text-caption text-ink-tertiary break-all">{userKey}</span>
     </span>
   );
 }
@@ -22,9 +22,9 @@ export function initialsOf(name: string | undefined, userKey: string): string {
 }
 
 const AVATAR = {
-  sm: 'w-7 h-7 rounded-lg text-[10px]',
-  md: 'w-8 h-8 rounded-full text-[11px]',
-  lg: 'w-12 h-12 rounded-2xl text-base',
+  sm: 'w-7 h-7 rounded-lg text-caption',
+  md: 'w-8 h-8 rounded-full text-caption',
+  lg: 'w-12 h-12 rounded-2xl text-title',
 } as const;
 
 /** The initials badge beside a person: small in tables, large on their page. */

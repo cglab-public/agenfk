@@ -62,7 +62,7 @@ function EventBody({ e }: { e: TimelineRow }) {
   return (
     <div className="px-5 pb-3 pt-2 bg-canvas/60 border-t border-border-soft -mt-0.5 space-y-2">
       {fields.length > 0 && (
-        <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-[12px]">
+        <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-small">
           {fields.map((f, i) => (
             // By position: labels come from untrusted payload keys and can repeat.
             <Fragment key={i}>
@@ -87,11 +87,11 @@ function EventBody({ e }: { e: TimelineRow }) {
         // Several events can be open at once: name whose JSON this is.
         aria-label={`${raw ? 'Hide' : 'Show'} raw JSON for ${eventTypeLabel(e.type)}${e.item_title ? ` ${e.item_title}` : ''}`}
         onClick={() => setRaw(v => !v)}
-        className="text-[11px] font-medium text-ink-tertiary hover:text-ink"
+        className="text-caption font-medium text-ink-tertiary hover:text-ink"
       >
         {raw ? 'Hide raw JSON' : 'Show raw JSON'}
       </button>
-      {raw && <pre className="text-[11px] font-mono text-ink-secondary whitespace-pre-wrap break-words">{JSON.stringify(e.payload, null, 2)}</pre>}
+      {raw && <pre className="text-caption font-mono text-ink-secondary whitespace-pre-wrap break-words">{JSON.stringify(e.payload, null, 2)}</pre>}
     </div>
   );
 }
@@ -280,24 +280,24 @@ export function UserDetailPage() {
           deliberately not stored, so without this the trip out and back
           silently widens to every hub — the same drop, in the other direction. */}
       <Link to={`/${hubCsv ? `?${new URLSearchParams({ childHubId: hubCsv })}` : ''}`}
-        className="inline-flex items-center gap-1.5 text-[12px] text-ink-tertiary hover:text-accent-ink">
+        className="inline-flex items-center gap-1.5 text-small text-ink-tertiary hover:text-accent-ink">
         <ArrowLeft className="w-3.5 h-3.5" /> Back to org
       </Link>
 
       <header className="flex items-center gap-4">
         <PersonAvatar name={personName} userKey={decoded} size="lg" />
         <div className="min-w-0">
-          <p className="text-[11px] uppercase tracking-[0.18em] text-accent-ink font-semibold">User</p>
+          <p className="eyebrow text-accent-ink">User</p>
           {personName ? (
             <>
-              <h1 className="mt-0.5 text-xl font-bold tracking-tight text-ink truncate">{personName}</h1>
-              <p className="font-mono text-[12px] text-ink-tertiary truncate">{decoded}</p>
+              <h1 className="mt-0.5 text-title font-bold tracking-tight text-ink truncate">{personName}</h1>
+              <p className="font-mono text-small text-ink-tertiary truncate">{decoded}</p>
             </>
           ) : (
-            <h1 className="mt-0.5 text-xl font-bold tracking-tight font-mono text-ink truncate">{decoded}</h1>
+            <h1 className="mt-0.5 text-title font-bold tracking-tight font-mono text-ink truncate">{decoded}</h1>
           )}
           {childHubs.length > 0 && (
-            <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-ink-tertiary">
+            <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-caption text-ink-tertiary">
               <Server className="w-3 h-3" />
               <span>Scoped to</span>
               {childHubs.map(id => (
@@ -378,14 +378,14 @@ export function UserDetailPage() {
 
       <section className="space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-ink-secondary">Recent events</h2>
-          <span className="text-[11px] text-ink-tertiary" title={`All times in ${browserTimezone() ?? 'your local time'}`}>{tl.data && tl.data.events.length > 0 && `${shownLine(tl.data.events.length, tl.data.total)} · `}times in {browserTimezone() ?? 'local time'}</span>
+          <h2 className="text-body font-semibold text-ink-secondary">Recent events</h2>
+          <span className="text-caption text-ink-tertiary" title={`All times in ${browserTimezone() ?? 'your local time'}`}>{tl.data && tl.data.events.length > 0 && `${shownLine(tl.data.events.length, tl.data.total)} · `}times in {browserTimezone() ?? 'local time'}</span>
         </div>
         <QueryState
           query={tl}
           label="events"
           isEmpty={data => data.events.length === 0}
-          empty={<div className="bg-card-glass border border-border-soft rounded-2xl px-5 py-8 text-center text-sm text-ink-tertiary">No events match the current filters.</div>}
+          empty={<div className="bg-card-glass border border-border-soft rounded-2xl px-5 py-8 text-center text-body text-ink-tertiary">No events match the current filters.</div>}
         >
           {data => (
             <div className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl divide-y divide-border-soft overflow-hidden">
@@ -394,30 +394,30 @@ export function UserDetailPage() {
                   <details key={e.event_id} className="group">
                     <summary className="flex items-center gap-3 px-5 py-2.5 cursor-pointer list-none hover:bg-canvas transition-colors">
                       <ChevronDown className="w-3.5 h-3.5 text-ink-tertiary group-open:rotate-180 transition-transform shrink-0" />
-                      <Badge tone={eventTone(e.type)} className="text-[10px] font-medium" title={e.type}>{eventTypeLabel(e.type)}</Badge>
-                      {e.item_type && <span className={`px-2 py-0.5 rounded-md text-[10px] font-mono font-semibold border ${itemTypeClass(e.item_type)}`}>{e.item_type}</span>}
+                      <Badge tone={eventTone(e.type)} className="text-caption font-medium" title={e.type}>{eventTypeLabel(e.type)}</Badge>
+                      {e.item_type && <span className={`px-2 py-0.5 rounded-md text-caption font-mono font-semibold border ${itemTypeClass(e.item_type)}`}>{e.item_type}</span>}
                       {e.external_id && (
-                        <span title={`External tracker: ${e.external_id}`} className="px-2 py-0.5 rounded-md text-[10px] font-mono border border-transparent bg-accent-fill text-accent-ink">
+                        <span title={`External tracker: ${e.external_id}`} className="px-2 py-0.5 rounded-md text-caption font-mono border border-transparent bg-accent-fill text-accent-ink">
                           {e.external_id}
                         </span>
                       )}
                       {e.remote_url && (
-                        <span title={e.remote_url} className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono bg-canvas text-ink-tertiary border border-border-soft max-w-[180px] truncate">
+                        <span title={e.remote_url} className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-caption font-mono bg-canvas text-ink-tertiary border border-border-soft max-w-[180px] truncate">
                           <GitBranch className="w-2.5 h-2.5 shrink-0" /> {shortRemote(e.remote_url)}
                         </span>
                       )}
-                      <span className="text-[12px] text-ink truncate flex-1" title={e.item_id ?? undefined}>
+                      <span className="text-small text-ink truncate flex-1" title={e.item_id ?? undefined}>
                         {e.item_title ?? <span className="text-ink-tertiary font-mono">{e.item_id ?? e.project_id ?? '—'}</span>}
                       </span>
                       {e.reporting_version && (
                         <span
                           title={`Emitted by AgenFK ${e.reporting_version} (X-Agenfk-Version header)`}
-                          className="hidden md:inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-mono bg-canvas text-ink-tertiary border border-border-soft shrink-0"
+                          className="hidden md:inline-flex items-center px-2 py-0.5 rounded-md text-caption font-mono bg-canvas text-ink-tertiary border border-border-soft shrink-0"
                         >
                           v{e.reporting_version}
                         </span>
                       )}
-                      <LocalTime value={e.occurred_at} className="text-[11px] text-ink-tertiary tabular-nums shrink-0" />
+                      <LocalTime value={e.occurred_at} className="text-caption text-ink-tertiary tabular-nums shrink-0" />
                     </summary>
                     <EventBody e={e} />
                   </details>

@@ -11,11 +11,11 @@ export function FilterHeading({ id, label, count, onClear, disabled }: {
 }) {
   return (
     <div className="flex items-center justify-between gap-3 flex-wrap">
-      <h3 id={id} className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{label}</h3>
+      <h3 id={id} className="eyebrow text-ink-tertiary">{label}</h3>
       {count > 0 && (
         // Each facet has a Clear: the name says which filter it empties, and
         // starts with the visible "Clear (n)" so voice control can still say it.
-        <button type="button" onClick={onClear} disabled={disabled} aria-label={`Clear (${count}) ${label} filter`} className="text-xs font-medium text-ink-tertiary hover:text-ink disabled:opacity-50">
+        <button type="button" onClick={onClear} disabled={disabled} aria-label={`Clear (${count}) ${label} filter`} className="text-small font-medium text-ink-tertiary hover:text-ink disabled:opacity-50">
           Clear ({count})
         </button>
       )}
@@ -40,7 +40,7 @@ export function Chip({ on, onClick, title, mono = false, disabled, children }: {
       title={title}
       disabled={disabled}
       className={cn(
-        'px-2.5 py-1 rounded-full text-[11px] border transition-colors max-w-[260px] truncate disabled:opacity-50 disabled:cursor-not-allowed',
+        'px-2.5 py-1 rounded-full text-caption border transition-colors max-w-[260px] truncate disabled:opacity-50 disabled:cursor-not-allowed',
         mono && 'font-mono',
         on ? 'text-accent-ink border-accent bg-accent-fill'
           : 'bg-surface border-border-soft text-ink-secondary hover:border-accent hover:text-accent-ink',

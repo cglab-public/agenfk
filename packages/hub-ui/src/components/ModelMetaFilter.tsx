@@ -84,12 +84,12 @@ export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: P
 
   return (
     <div className="space-y-2">
-      <p className="text-[11px] text-ink-tertiary">
+      <p className="text-caption text-ink-tertiary">
         Select by vendor or license — adds the matching models to the selection.
       </p>
 
       <div>
-        <h4 className="text-[10px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">Provider</h4>
+        <h4 className="eyebrow text-ink-tertiary">Provider</h4>
         <div className="mt-1.5 flex flex-wrap gap-1.5">
           {providers.map(p => {
             const n = counts.byProvider.get(p) ?? 0;
@@ -109,7 +109,7 @@ export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: P
                   : p === UNCLASSIFIED
                     ? 'Models the hub could not classify — configure them in Admin → Models'
                     : `Add ${n} more ${p} model${n === 1 ? '' : 's'}`}
-                className={`px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors ${
+                className={`px-2.5 py-1 rounded-full font-mono text-caption border transition-colors ${
                   off
                     ? 'text-ink-tertiary border-border-soft opacity-50 cursor-not-allowed'
                     : 'text-ink-secondary border-border-soft hover:text-accent-ink hover:border-accent'}`}
@@ -124,7 +124,7 @@ export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: P
       </div>
 
       <div>
-        <h4 className="text-[10px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">Weights</h4>
+        <h4 className="eyebrow text-ink-tertiary">Weights</h4>
         <div className="mt-1.5 flex flex-wrap gap-1.5">
           {classes.map(c => {
             const n = counts.byClass.get(c) ?? 0;
@@ -139,7 +139,7 @@ export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: P
                   : c === 'open_weights'
                     ? 'Weights are publicly downloadable. Includes bespoke licences with commercial-use gates — this is open WEIGHTS, not open source.'
                     : 'No downloadable weights — hosted API only.'}
-                className={`px-2.5 py-1 rounded-full font-mono text-[11px] border transition-colors ${
+                className={`px-2.5 py-1 rounded-full font-mono text-caption border transition-colors ${
                   off
                     ? 'text-ink-tertiary border-border-soft opacity-50 cursor-not-allowed'
                     : 'text-ink-secondary border-border-soft hover:text-accent-ink hover:border-accent'}`}
@@ -160,7 +160,7 @@ export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: P
           apply, so it is made inert too: the accordion says these filters "do not
           apply", and a still-clickable control inside it contradicts that. */}
       {selected.size > 0 && (
-        <details className="text-[11px]" aria-disabled={disabled || undefined} title={disabled ? SUPERSEDED_TITLE : undefined}>
+        <details className="text-caption" aria-disabled={disabled || undefined} title={disabled ? SUPERSEDED_TITLE : undefined}>
           <summary className={`text-ink-tertiary ${disabled ? 'opacity-60 pointer-events-none' : 'cursor-pointer hover:text-ink-secondary'}`}>
             License of {selected.size} selected model{selected.size === 1 ? '' : 's'}
           </summary>
@@ -168,7 +168,7 @@ export function ModelMetaFilter({ rows, selected, onApply, disabled = false }: P
             {[...selected].sort().map(m => {
               const meta = modelMeta(m, rows);
               return (
-                <li key={m} className="font-mono text-[10.5px] text-ink-tertiary truncate">
+                <li key={m} className="font-mono text-caption text-ink-tertiary truncate">
                   <span className="text-ink-secondary">{m}</span>
                   {' — '}
                   {meta.provider === UNCLASSIFIED ? 'unclassified' : meta.provider}

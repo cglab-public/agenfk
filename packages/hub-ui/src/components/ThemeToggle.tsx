@@ -7,7 +7,7 @@ import { useTheme } from '../ThemeContext';
  * hover accent.
  */
 export const sidebarButtonClass =
-  'flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-[11px] font-semibold border border-border-soft text-ink-secondary transition-colors';
+  'flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md text-caption font-semibold border border-border-soft text-ink-secondary transition-colors';
 
 /**
  * Sidebar light/dark switch.

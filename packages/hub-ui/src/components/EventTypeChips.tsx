@@ -23,7 +23,7 @@ export function EventTypeChips({ options, selected, onToggle, onClear }: {
           // Ids by position: a heading such as "Work items" has a space, and
           // aria-labelledby reads a space as two ids.
           <div key={g.group} role="group" aria-labelledby={`${id}-g${i}`} className="flex flex-wrap items-center gap-1.5">
-            <span id={`${id}-g${i}`} className="w-24 shrink-0 text-[11px] font-medium text-ink-tertiary">{g.group}</span>
+            <span id={`${id}-g${i}`} className="w-24 shrink-0 text-caption font-medium text-ink-tertiary">{g.group}</span>
             {g.types.map(t => (
               <Chip key={t} on={selected.has(t)} onClick={() => onToggle(t)} title={t}>{eventTypeLabel(t)}</Chip>
             ))}

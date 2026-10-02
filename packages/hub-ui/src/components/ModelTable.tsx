@@ -27,7 +27,7 @@ import type { ModelGroup } from '../pages/modelMappings';
 import { cardClass, cn, controlClass, useConfirm } from './ui';
 
 const cardCls = cardClass;
-const inputCls = cn(controlClass, 'px-2 py-1 rounded-md text-[12px]');
+const inputCls = cn(controlClass, 'px-2 py-1 rounded-md text-small');
 const filterCls = controlClass;
 
 interface Props {
@@ -143,16 +143,16 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
       {dialog}
       <header className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h3 className="text-sm font-semibold text-ink">
+          <h3 className="text-body font-semibold text-ink">
             Models <span className="text-ink-tertiary font-normal">({visible.length})</span>
           </h3>
-          <p className="mt-0.5 text-xs text-ink-tertiary">
+          <p className="mt-0.5 text-small text-ink-tertiary">
             One row per model name. Aliases fold into it; provider and licence are what the PR
             Overview filters by. Click a value to edit it inline. “Open weights” means the
             weights are downloadable — not that the licence is open source.
           </p>
           {(unknownCount > 0 || adminCount > 0) && (
-            <p className="mt-1 text-[11px] text-ink-tertiary">
+            <p className="mt-1 text-caption text-ink-tertiary">
               {unknownCount > 0 && (
                 <span className="text-status-warn-text font-semibold">
                   {unknownCount} unknown
@@ -166,7 +166,7 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
 
         <div className="flex items-center gap-3 shrink-0">
           <div>
-            <label className="flex items-center gap-2 text-[11px] text-ink-tertiary cursor-pointer">
+            <label className="flex items-center gap-2 text-caption text-ink-tertiary cursor-pointer">
               <input
                 type="checkbox"
                 checked={scope === 'all'}
@@ -176,7 +176,7 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
               />
               Show all classification rules
             </label>
-            <p id="models-scope-hint" className="mt-0.5 text-[10px] text-ink-tertiary">
+            <p id="models-scope-hint" className="mt-0.5 text-caption text-ink-tertiary">
               Off: only models actually reported. On: also the seeded rules that matched nothing, so family rules like 'glm-' can be edited.
             </p>
           </div>
@@ -184,7 +184,7 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
       </header>
 
       {unmappedCount > 0 && (
-        <p className="mt-2 text-[11px] font-semibold text-status-warn-text">
+        <p className="mt-2 text-caption font-semibold text-status-warn-text">
           <AlertTriangle className="w-3.5 h-3.5 inline -mt-0.5 mr-1" />
           {unmappedCount} unmapped — these names are each their own group. Use “add a mapping”
           above to fold spellings of the same model together.
@@ -192,7 +192,7 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
       )}
 
       {unusedCount > 0 && (
-        <p className="mt-2 text-[11px] text-ink-tertiary">
+        <p className="mt-2 text-caption text-ink-tertiary">
           {unusedCount} {unusedCount === 1 ? 'mapping is' : 'mappings are'} listed below but that
           spelling has not been reported yet — the mapping is waiting, not broken.
         </p>
@@ -207,22 +207,22 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
       />
 
       {rowError && (
-        <p role="alert" className="mt-2 text-[12px] text-status-danger-text">{rowError}</p>
+        <p role="alert" className="mt-2 text-small text-status-danger-text">{rowError}</p>
       )}
 
-      {loading && <p className="mt-3 text-sm text-ink-tertiary">Loading…</p>}
+      {loading && <p className="mt-3 text-body text-ink-tertiary">Loading…</p>}
 
       {!loading && visible.length === 0 && (
-        <p className="mt-3 text-sm text-ink-tertiary">
+        <p className="mt-3 text-body text-ink-tertiary">
           {query ? `No models match “${query}”.` : 'No models reported yet.'}
         </p>
       )}
 
       {visible.length > 0 && (
         <div className="mt-3 -mx-5 overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-body">
             <thead>
-              <tr className="text-[10px] uppercase tracking-[0.14em] text-ink-tertiary font-semibold">
+              <tr className="eyebrow text-ink-tertiary">
                 <th className="px-5 py-2 text-left font-semibold">Model</th>
                 <th className="px-3 py-2 text-right font-semibold">PRs</th>
                 <th className="px-3 py-2 text-left font-semibold">Provider</th>
@@ -262,7 +262,7 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
         </div>
       )}
 
-      <p className="mt-3 text-[11px] text-ink-tertiary">
+      <p className="mt-3 text-caption text-ink-tertiary">
         Rules match by prefix, longest first, so a specific model beats its family. Editing a row
         that inherited a family rule narrows that rule to this model.
       </p>
@@ -296,8 +296,8 @@ function ModelRow({ row, editing, draft, dirty, invalid, problem, busy, onEdit, 
     <>
       <tr className={`border-t border-border-soft ${row.unknown ? 'bg-status-warn-bg' : ''}`}>
         <td className="px-5 py-2 align-top">
-          <div className="font-mono text-[12px] font-semibold text-ink">{row.canonicalModel}</div>
-          <div className="mt-0.5 flex items-center gap-2 text-[10px] text-ink-tertiary">
+          <div className="font-mono text-small font-semibold text-ink">{row.canonicalModel}</div>
+          <div className="mt-0.5 flex items-center gap-2 text-caption text-ink-tertiary">
             {row.aliasCount > 0 && <span>{row.aliasCount} alias{row.aliasCount === 1 ? '' : 'es'}</span>}
             {row.meta?.source === 'admin' && <span className="text-accent-ink">edited</span>}
             {inherited && (
@@ -308,7 +308,7 @@ function ModelRow({ row, editing, draft, dirty, invalid, problem, busy, onEdit, 
             {row.familyCovers != null && <span>covers {row.familyCovers}</span>}
           </div>
         </td>
-        <td className="px-3 py-2 text-right align-top font-mono text-[12px] text-ink-secondary">
+        <td className="px-3 py-2 text-right align-top font-mono text-small text-ink-secondary">
           {row.prs}
         </td>
 
@@ -368,13 +368,13 @@ function ModelRow({ row, editing, draft, dirty, invalid, problem, busy, onEdit, 
           </>
         ) : (
           <>
-            <td className="px-3 py-2 text-[12px] text-ink">
+            <td className="px-3 py-2 text-small text-ink">
               {row.meta?.provider ?? <span className="text-status-warn-text font-semibold">{UNKNOWN_LABEL}</span>}
             </td>
-            <td className="px-3 py-2 text-[12px] text-ink-secondary">
+            <td className="px-3 py-2 text-small text-ink-secondary">
               {row.meta ? licenseClassLabel(row.meta.licenseClass) : '—'}
             </td>
-            <td className="px-3 py-2 text-[12px] text-ink-tertiary">
+            <td className="px-3 py-2 text-small text-ink-tertiary">
               {row.meta?.license || '—'}
             </td>
             <td className="px-3 py-2 text-right whitespace-nowrap">
@@ -406,13 +406,13 @@ function ModelRow({ row, editing, draft, dirty, invalid, problem, busy, onEdit, 
           unmap control, since unmapping is about a spelling, not the model. */}
       {!editing && row.aliases.map(a => (
         <tr key={a.model} className="border-t border-border-soft/50">
-          <td className="px-5 py-1 pl-9 text-[11px] text-ink-tertiary font-mono">
+          <td className="px-5 py-1 pl-9 text-caption text-ink-tertiary font-mono">
             <span className="text-ink-tertiary/70">↳</span> {a.model}
             {a.reported
               ? a.prs > 0 && <span className="ml-1">({a.prs})</span>
               : <span className="ml-1 italic">not reported yet</span>}
           </td>
-          <td className="px-3 py-1 text-[10px] text-ink-tertiary italic">maps to {row.canonicalModel}</td>
+          <td className="px-3 py-1 text-caption text-ink-tertiary italic">maps to {row.canonicalModel}</td>
           <td className="px-3 py-1" colSpan={2} />
           <td className="px-3 py-1 text-right whitespace-nowrap">
             <button

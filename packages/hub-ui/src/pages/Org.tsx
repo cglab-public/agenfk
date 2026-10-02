@@ -211,7 +211,7 @@ export function OrgPage() {
       />
 
       <div className="space-y-1.5">
-        <p className="text-[11px] text-ink-tertiary">Totals apply every filter except event type.</p>
+        <p className="text-caption text-ink-tertiary">Totals apply every filter except event type.</p>
         <QueryState query={metrics} label="activity totals">{() => <MetricsTilesRow totals={totals} selectedTypes={eventTypeSel.set} onFilterTypes={eventTypeSel.replace} />}</QueryState>
       </div>
 
@@ -275,21 +275,21 @@ export function OrgPage() {
 
       <section className="space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-ink-secondary">Users</h2>
+          <h2 className="text-body font-semibold text-ink-secondary">Users</h2>
           {/* Scoped to the event types when some are picked: say so, or a person
               active a minute ago drops out of "reporting" for no visible reason. */}
-          {users.data && <span className="text-[11px] text-ink-tertiary">{users.data.length} {typeScoped ? 'with matching events' : 'reporting'}</span>}
+          {users.data && <span className="text-caption text-ink-tertiary">{users.data.length} {typeScoped ? 'with matching events' : 'reporting'}</span>}
         </div>
         <QueryState
           query={users}
           label="users"
           isEmpty={list => list.length === 0}
-          empty={<div className="bg-card-glass border border-border-soft rounded-2xl px-5 py-8 text-center text-sm text-ink-tertiary">No users match the current filters.</div>}
+          empty={<div className="bg-card-glass border border-border-soft rounded-2xl px-5 py-8 text-center text-body text-ink-tertiary">No users match the current filters.</div>}
         >
           {list => (
             <div className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl overflow-hidden">
               {typeScoped && (
-                <p className="px-5 pt-3 text-[11px] text-ink-tertiary">
+                <p className="px-5 pt-3 text-caption text-ink-tertiary">
                   Listed by matching events. Items closed, check pass rate and PRs count every event type.
                 </p>
               )}
@@ -321,11 +321,11 @@ export function OrgPage() {
                         <div className="min-w-0">
                           {nameOf(u.user_key) ? (
                             <>
-                              <div className="text-[13px] text-ink truncate group-hover:text-accent-ink transition-colors">{nameOf(u.user_key)}</div>
-                              <div className="font-mono text-[11px] text-ink-tertiary truncate">{u.user_key}</div>
+                              <div className="text-body text-ink truncate group-hover:text-accent-ink transition-colors">{nameOf(u.user_key)}</div>
+                              <div className="font-mono text-caption text-ink-tertiary truncate">{u.user_key}</div>
                             </>
                           ) : (
-                            <div className="font-mono text-[13px] text-ink truncate group-hover:text-accent-ink transition-colors">{u.user_key}</div>
+                            <div className="font-mono text-body text-ink truncate group-hover:text-accent-ink transition-colors">{u.user_key}</div>
                           )}
                         </div>
                         <ChevronRight className="w-4 h-4 text-ink-tertiary group-hover:text-accent-ink transition-colors shrink-0 ml-auto" />
@@ -384,7 +384,7 @@ export function OrgPage() {
                     firstDir: 'desc',
                     sortValue: u => Date.parse(u.last_seen) || 0,
                     render: u => (
-                      <span className="text-[12px] text-ink-tertiary" title={utcTitle(u.last_seen)}>
+                      <span className="text-small text-ink-tertiary" title={utcTitle(u.last_seen)}>
                         {formatLastSeen(u.last_seen)}
                         {/* The absolute time behind "3h ago", read out rather than hover-only. */}
                         <span className="sr-only">{` (${fmtDateTime(u.last_seen)})`}</span>

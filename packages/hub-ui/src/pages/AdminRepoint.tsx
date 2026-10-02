@@ -95,10 +95,10 @@ export function AdminRepoint() {
       {dialog}
       <section className={cardCls}>
         <header>
-          <h3 className="text-sm font-semibold text-ink inline-flex items-center gap-1.5">
+          <h3 className="text-body font-semibold text-ink inline-flex items-center gap-1.5">
             <ArrowRightLeft className="w-4 h-4" /> Move this hub to a new address
           </h3>
-          <p className="mt-0.5 text-xs text-ink-tertiary">
+          <p className="mt-0.5 text-small text-ink-tertiary">
             Serve both DNS names while this runs. Each installation verifies the new address
             before it switches, and reports back on the new name — that confirmation is the
             only evidence that it really moved.
@@ -115,7 +115,7 @@ export function AdminRepoint() {
               aria-label="New hub address"
               aria-invalid={!!urlError}
               aria-describedby={urlError ? 'address-change-url-error' : undefined}
-              className="flex-1 rounded-lg border border-border-soft bg-surface px-3 py-2 text-sm text-ink"
+              className="flex-1 rounded-lg border border-border-soft bg-surface px-3 py-2 text-body text-ink"
             />
             <button
               onClick={async () => {
@@ -128,25 +128,25 @@ export function AdminRepoint() {
                 })) open.mutate();
               }}
               disabled={!targetUrl.trim() || !!urlProblem || open.isPending}
-              className="rounded-lg border border-accent bg-accent-fill px-3 py-2 text-xs font-semibold text-accent-ink disabled:opacity-50"
+              className="rounded-lg border border-accent bg-accent-fill px-3 py-2 text-small font-semibold text-accent-ink disabled:opacity-50"
             >
               Start the address change
             </button>
           </div>
         )}
         {!campaign && urlError && (
-          <p id="address-change-url-error" className="mt-2 text-xs text-status-danger-text">{urlError}</p>
+          <p id="address-change-url-error" className="mt-2 text-small text-status-danger-text">{urlError}</p>
         )}
         {openError && (
-          <p className="mt-2 text-xs text-status-danger-text">{String(openError)}</p>
+          <p className="mt-2 text-small text-status-danger-text">{String(openError)}</p>
         )}
 
         {campaign && (
           <div className="mt-4 rounded-lg border border-border-soft bg-surface p-4">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <div className="text-xs text-ink-tertiary">Moving to</div>
-                <div className="font-mono text-sm text-ink">{campaign.targetUrl}</div>
+                <div className="text-small text-ink-tertiary">Moving to</div>
+                <div className="font-mono text-body text-ink">{campaign.targetUrl}</div>
               </div>
               <button
                 onClick={async () => {
@@ -158,14 +158,14 @@ export function AdminRepoint() {
                   })) close.mutate(campaign.id);
                 }}
                 disabled={close.isPending}
-                className="text-[11px] font-semibold text-ink-tertiary hover:text-ink"
+                className="text-caption font-semibold text-ink-tertiary hover:text-ink"
               >
                 End the address change
               </button>
             </div>
             <InlineError error={close.error} className="mt-2" />
 
-            <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-ink-tertiary tabular-nums">
+            <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-caption text-ink-tertiary tabular-nums">
               <span>{summary.done}/{summary.total} moved</span>
               {summary.waiting > 0 && <span>{summary.waiting} waiting</span>}
               {summary.stale > 0 && <span className="text-status-warn-text">{summary.stale} not checking in</span>}
@@ -173,7 +173,7 @@ export function AdminRepoint() {
               {summary.failed > 0 && <span className="text-status-danger-text">{summary.failed} failed</span>}
             </div>
 
-            <p className={`mt-3 text-xs ${safe ? 'text-status-ok-text' : 'text-ink-tertiary'}`}>
+            <p className={`mt-3 text-small ${safe ? 'text-status-ok-text' : 'text-ink-tertiary'}`}>
               {safe
                 ? 'Every installation has confirmed on the new address. Delete the old DNS record — do not point it at a proxy that answers 404.'
                 : 'Keep serving the old address. Installations that stopped checking in will never move on their own: retire them under Installations to finish the address change.'}
@@ -184,11 +184,11 @@ export function AdminRepoint() {
 
       {campaign && (
         <section className={cardCls}>
-          <h3 className="text-sm font-semibold text-ink">Fleet</h3>
+          <h3 className="text-body font-semibold text-ink">Fleet</h3>
           <div className="mt-3 -mx-5 overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full text-body">
               <thead>
-                <tr className="text-[10px] uppercase tracking-[0.14em] text-ink-tertiary font-semibold">
+                <tr className="eyebrow text-ink-tertiary">
                   <th className="text-left px-5 py-2">Installation</th>
                   <th className="text-left px-2 py-2">User</th>
                   <th className="text-left px-2 py-2">State</th>
@@ -200,21 +200,21 @@ export function AdminRepoint() {
                   const cls = classifyTarget(t, openedAt);
                   return (
                     <tr key={t.installationId} className="hover:bg-accent-fill transition-colors">
-                      <td className="px-5 py-2.5 font-mono text-[11px] text-ink-secondary">{t.installationId}</td>
-                      <td className="px-2 py-2.5 text-xs text-ink-secondary">
+                      <td className="px-5 py-2.5 font-mono text-caption text-ink-secondary">{t.installationId}</td>
+                      <td className="px-2 py-2.5 text-small text-ink-secondary">
                         {t.gitEmail ?? t.gitName ?? t.osUser ?? <span className="text-ink-tertiary">—</span>}
                       </td>
-                      <td className={`px-2 py-2.5 text-xs font-semibold ${CLASS_STYLE[cls]}`}>
+                      <td className={`px-2 py-2.5 text-small font-semibold ${CLASS_STYLE[cls]}`}>
                         <span className="inline-flex items-center gap-1.5"><ClassIcon cls={cls} /> {CLASS_LABEL[cls]}</span>
                       </td>
-                      <td className="px-2 py-2.5 text-[11px] text-ink-tertiary">
+                      <td className="px-2 py-2.5 text-caption text-ink-tertiary">
                         {t.errorMessage ?? t.reportedUrl ?? '—'}
                       </td>
                     </tr>
                   );
                 })}
                 {targets.length === 0 && (
-                  <tr><td colSpan={4} className="px-5 py-6 text-center text-sm text-ink-tertiary">No live installations are targeted.</td></tr>
+                  <tr><td colSpan={4} className="px-5 py-6 text-center text-body text-ink-tertiary">No live installations are targeted.</td></tr>
                 )}
               </tbody>
             </table>

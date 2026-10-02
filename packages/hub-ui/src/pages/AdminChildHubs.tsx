@@ -96,10 +96,10 @@ export function AdminChildHubs() {
       <section className={cardCls}>
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h2 className="text-sm font-semibold text-ink inline-flex items-center gap-1.5">
+            <h2 className="text-body font-semibold text-ink inline-flex items-center gap-1.5">
               <Network className="w-4 h-4" /> Child hubs
             </h2>
-            <p className="mt-1 text-xs text-ink-tertiary">
+            <p className="mt-1 text-small text-ink-tertiary">
               Hubs enrolled with this one. Hand a join token to a hub you want to add to the group.
             </p>
           </div>
@@ -107,24 +107,24 @@ export function AdminChildHubs() {
             type="button"
             onClick={() => mint.mutate()}
             disabled={mint.isPending}
-            className="shrink-0 rounded-lg border border-border-soft bg-surface px-3 py-1.5 text-xs font-medium text-ink hover:bg-accent-fill disabled:opacity-50"
+            className="shrink-0 rounded-lg border border-border-soft bg-surface px-3 py-1.5 text-small font-medium text-ink hover:bg-accent-fill disabled:opacity-50"
           >
             Generate join token
           </button>
         </div>
 
         {mint.isError && (
-          <p role="alert" className="mt-3 text-xs text-status-danger-text">{errText(mint.error)}</p>
+          <p role="alert" className="mt-3 text-small text-status-danger-text">{errText(mint.error)}</p>
         )}
 
         {invite && (
           <div className="mt-4 rounded-xl border border-status-warn-text/40 bg-status-warn-bg p-3">
-            <p className="text-xs text-ink-tertiary">
+            <p className="text-small text-ink-tertiary">
               Hand this to the child hub — it expires {fmt(invite.expiresAt)} and can be redeemed once.
               This hub&apos;s address travels inside it, so there is nothing else to send.
             </p>
-            <code className="mt-2 block break-all font-mono text-[11px] text-ink select-all">{invite.inviteToken}</code>
-            <p className="mt-1.5 text-[11px] text-ink-tertiary">
+            <code className="mt-2 block break-all font-mono text-caption text-ink select-all">{invite.inviteToken}</code>
+            <p className="mt-1.5 text-caption text-ink-tertiary">
               Points at <span className="font-mono break-all">{invite.parentUrl}</span> — if that is not how
               other hubs reach this one, fix the proxy headers before handing the token out.
             </p>
@@ -135,8 +135,8 @@ export function AdminChildHubs() {
 
       <section className={cardCls}>
         <div className="flex items-center justify-between gap-4">
-          <h3 className="text-sm font-semibold text-ink">Enrolled</h3>
-          <label className="inline-flex items-center gap-1.5 text-xs text-ink-tertiary">
+          <h3 className="text-body font-semibold text-ink">Enrolled</h3>
+          <label className="inline-flex items-center gap-1.5 text-small text-ink-tertiary">
             <input
               type="checkbox"
               aria-label="Show detached"
@@ -148,26 +148,26 @@ export function AdminChildHubs() {
         </div>
 
         {list.isLoading ? (
-          <p className="mt-4 text-xs text-ink-tertiary">Loading…</p>
+          <p className="mt-4 text-small text-ink-tertiary">Loading…</p>
         ) : listError ? (
           // Before the isParent branch on purpose: a failed request leaves
           // `data` undefined, and falling through would tell the admin of a
           // real parent hub that it has no children.
-          <p role="alert" className="mt-4 text-sm text-status-danger-text">
+          <p role="alert" className="mt-4 text-body text-status-danger-text">
             Could not load child hubs: {listError}
           </p>
         ) : !data?.isParent ? (
-          <p className="mt-4 text-sm text-ink-tertiary">
+          <p className="mt-4 text-body text-ink-tertiary">
             This hub has no child hubs. Generate a join token above to add one.
           </p>
         ) : rows.length === 0 ? (
-          <p className="mt-4 text-sm text-ink-tertiary">
+          <p className="mt-4 text-body text-ink-tertiary">
             No child hubs to show. Every child hub of this one has been detached.
           </p>
         ) : (
-          <table className="mt-4 w-full text-sm">
+          <table className="mt-4 w-full text-body">
             <thead>
-              <tr className="text-left text-[11px] uppercase tracking-wider text-ink-tertiary">
+              <tr className="eyebrow text-left text-ink-tertiary">
                 <th className="px-2 py-2">Name</th>
                 <th className="px-2 py-2">Version</th>
                 <th className="px-2 py-2">Last contact</th>
@@ -183,7 +183,7 @@ export function AdminChildHubs() {
                       c.releaseReason && c.releaseReason.length > 60 ? (
                         // The reason can be long: behind a disclosure anyone can
                         // open, not cut off with the rest in a mouse-only title.
-                        <details className="ml-2 inline-block align-middle text-[11px] text-status-warn-text">
+                        <details className="ml-2 inline-block align-middle text-caption text-status-warn-text">
                           {/* Left as a list item, so the browser draws its disclosure marker. */}
                           <summary className="cursor-pointer">
                             <AlertTriangle className="inline w-3 h-3 align-[-2px]" /> release requested: {c.releaseReason.slice(0, 60)}…
@@ -192,19 +192,19 @@ export function AdminChildHubs() {
                         </details>
                       ) : (
                         // A short reason fits on the row as it is.
-                        <span className="ml-2 inline-flex items-center gap-1 text-[11px] text-status-warn-text">
+                        <span className="ml-2 inline-flex items-center gap-1 text-caption text-status-warn-text">
                           <AlertTriangle className="w-3 h-3" /> release requested{c.releaseReason ? `: ${c.releaseReason}` : ''}
                         </span>
                       )
                     )}
                     {c.detached && (
-                      <span className="ml-2 text-[11px] text-ink-tertiary">
+                      <span className="ml-2 text-caption text-ink-tertiary">
                         detached{c.detachedByEmail ? ` by ${c.detachedByEmail}` : ''}
                       </span>
                     )}
                   </td>
-                  <td className="px-2 py-2.5 font-mono text-xs text-ink-tertiary">{c.hubVersion ?? '—'}</td>
-                  <td className="px-2 py-2.5 text-xs text-ink-tertiary tabular-nums">
+                  <td className="px-2 py-2.5 font-mono text-small text-ink-tertiary">{c.hubVersion ?? '—'}</td>
+                  <td className="px-2 py-2.5 text-small text-ink-tertiary tabular-nums">
                     {fmt(c.lastSeen)}
                     {!c.live && !c.detached && (
                       <span className="ml-2 inline-flex items-center gap-1 text-status-warn-text">
@@ -217,7 +217,7 @@ export function AdminChildHubs() {
                       type="button"
                       aria-label={`Rename ${c.name}`}
                       onClick={() => { setRenaming(c); setNewName(c.name); }}
-                      className="rounded-lg border border-border-soft px-2 py-1 text-xs text-ink hover:bg-accent-fill"
+                      className="rounded-lg border border-border-soft px-2 py-1 text-small text-ink hover:bg-accent-fill"
                     >
                       Rename
                     </button>
@@ -226,7 +226,7 @@ export function AdminChildHubs() {
                         type="button"
                         aria-label={`Detach ${c.name}`}
                         onClick={() => setDetaching(c)}
-                        className="ml-2 rounded-lg border border-border-soft px-2 py-1 text-xs text-status-danger-text hover:bg-status-danger-bg"
+                        className="ml-2 rounded-lg border border-border-soft px-2 py-1 text-small text-status-danger-text hover:bg-status-danger-bg"
                       >
                         Detach
                       </button>
@@ -241,32 +241,32 @@ export function AdminChildHubs() {
 
       {renaming && (
         <section className={cardCls}>
-          <h3 className="text-sm font-semibold text-ink">Rename “{renaming.name}”</h3>
+          <h3 className="text-body font-semibold text-ink">Rename “{renaming.name}”</h3>
           <div className="mt-3 flex items-center gap-2">
             <input
               aria-label="New name"
               value={newName}
               onChange={e => setNewName(e.target.value)}
-              className="rounded-lg border border-border-soft bg-surface px-2 py-1.5 text-sm text-ink"
+              className="rounded-lg border border-border-soft bg-surface px-2 py-1.5 text-body text-ink"
             />
             <button
               type="button"
               onClick={() => rename.mutate({ id: renaming.id, name: newName.trim() })}
               disabled={!newName.trim() || rename.isPending}
-              className="rounded-lg border border-border-soft px-3 py-1.5 text-xs font-medium text-ink hover:bg-accent-fill disabled:opacity-50"
+              className="rounded-lg border border-border-soft px-3 py-1.5 text-small font-medium text-ink hover:bg-accent-fill disabled:opacity-50"
             >
               Save
             </button>
             <button
               type="button"
               onClick={() => { setRenaming(null); setNewName(''); }}
-              className="rounded-lg px-3 py-1.5 text-xs text-ink-tertiary hover:bg-accent-fill"
+              className="rounded-lg px-3 py-1.5 text-small text-ink-tertiary hover:bg-accent-fill"
             >
               Cancel
             </button>
           </div>
           {rename.isError && (
-            <p role="alert" className="mt-2 text-xs text-status-danger-text">{errText(rename.error)}</p>
+            <p role="alert" className="mt-2 text-small text-status-danger-text">{errText(rename.error)}</p>
           )}
         </section>
       )}

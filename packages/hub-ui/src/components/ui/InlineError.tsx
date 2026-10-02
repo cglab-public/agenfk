@@ -9,5 +9,5 @@ import { cn } from './cn';
  */
 export function InlineError({ error, className }: { error: unknown; className?: string }) {
   if (!error) return null;
-  return <p role="alert" className={cn('text-xs text-status-danger-text', className)}>{apiErrorText(error)}</p>;
+  return <p role="alert" className={cn('text-small text-status-danger-text', className)}>{apiErrorText(error)}</p>;
 }

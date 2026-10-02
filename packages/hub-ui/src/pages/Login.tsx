@@ -42,9 +42,9 @@ export function LoginPage() {
     <div className="min-h-screen flex items-center justify-center p-6 bg-canvas text-ink">
       <div className="w-full max-w-sm space-y-6 bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-6">
         <Logo />
-        <h1 className="text-xl font-semibold">Sign in to AgEnFK Hub</h1>
+        <h1 className="text-title font-semibold">Sign in to AgEnFK Hub</h1>
         {notice && NOTICES[notice] && (
-          <p role="status" className="text-sm rounded-lg px-3 py-2 bg-status-ok-bg text-status-ok-text">{NOTICES[notice]}</p>
+          <p role="status" className="text-body rounded-lg px-3 py-2 bg-status-ok-bg text-status-ok-text">{NOTICES[notice]}</p>
         )}
         {providers.data?.password && (
           <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); setErr(null); setNotice(undefined); login.mutate(); }}>
@@ -57,7 +57,7 @@ export function LoginPage() {
             <Button type="submit" variant="primary" className="w-full" disabled={login.isPending}>
               {login.isPending ? 'Signing in…' : 'Sign in'}
             </Button>
-            {err && <div role="alert" className="text-sm text-danger-text">{err}</div>}
+            {err && <div role="alert" className="text-body text-danger-text">{err}</div>}
           </form>
         )}
         <div className="space-y-2">

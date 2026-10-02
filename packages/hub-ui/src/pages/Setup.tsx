@@ -39,8 +39,8 @@ export function SetupPage() {
     <div className="min-h-screen flex items-center justify-center p-6 bg-canvas text-ink">
       <div className="w-full max-w-sm space-y-6 bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-6">
         <Logo />
-        <h1 className="text-xl font-semibold">First-run setup</h1>
-        <p className="text-sm text-ink-tertiary">
+        <h1 className="text-title font-semibold">First-run setup</h1>
+        <p className="text-body text-ink-tertiary">
           Paste the bootstrap token printed in the hub's startup logs, then create the initial admin account.
           After this, sign-in is gated by the providers you enable.
         </p>
@@ -64,7 +64,7 @@ export function SetupPage() {
           <Button type="submit" variant="primary" className="w-full" disabled={!submittable}>
             {setup.isPending ? 'Creating…' : 'Create admin'}
           </Button>
-          {err && <div role="alert" className="text-sm text-danger-text">{err}</div>}
+          {err && <div role="alert" className="text-body text-danger-text">{err}</div>}
         </form>
       </div>
     </div>

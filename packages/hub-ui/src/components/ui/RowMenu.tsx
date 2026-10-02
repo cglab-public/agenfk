@@ -120,7 +120,7 @@ export function RowMenu({ label, items }: { label: string; items: RowMenuItem[] 
               disabled={item.disabled}
               onClick={() => { close(); item.onSelect(); }}
               className={cn(
-                'block w-full px-3 py-1.5 text-left text-[13px] text-ink-secondary focus:outline-none disabled:opacity-50',
+                'block w-full px-3 py-1.5 text-left text-body text-ink-secondary focus:outline-none disabled:opacity-50',
                 item.tone === 'danger'
                   ? 'hover:bg-status-danger-bg hover:text-status-danger-text focus:bg-status-danger-bg focus:text-status-danger-text'
                   : 'hover:bg-accent-fill hover:text-ink focus:bg-accent-fill focus:text-ink',

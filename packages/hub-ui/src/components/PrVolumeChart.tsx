@@ -131,7 +131,7 @@ export function PrVolumeChart({ series, unit }: { series: VolumeSeries; unit: st
     <>
       <div className="flex gap-2">
         {/* y-axis labels, level with the gridlines */}
-        <div className="relative w-7 h-44 shrink-0 font-mono text-[11px] text-ink-tertiary" aria-hidden="true">
+        <div className="relative w-7 h-44 shrink-0 font-mono text-caption text-ink-tertiary" aria-hidden="true">
           {ticks.map(t => (
             <span key={t} data-y-tick className="absolute right-0 translate-y-1/2 leading-none" style={{ bottom: at(t) }}>{t}</span>
           ))}
@@ -179,7 +179,7 @@ export function PrVolumeChart({ series, unit }: { series: VolumeSeries; unit: st
             </div>
             <div className="flex gap-1.5 mt-2" aria-hidden="true">
               {buckets.map((b, i) => (
-                <div key={b.key} data-x-label className="flex-1 text-center font-mono text-[11px] text-ink-tertiary">
+                <div key={b.key} data-x-label className="flex-1 text-center font-mono text-caption text-ink-tertiary">
                   {buckets.length <= 16 || i % Math.ceil(buckets.length / 10 || 1) === 0 ? b.label : ''}
                 </div>
               ))}
@@ -191,7 +191,7 @@ export function PrVolumeChart({ series, unit }: { series: VolumeSeries; unit: st
         <div
           data-testid="volume-tooltip"
           aria-hidden="true"
-          className="pointer-events-none fixed z-50 px-3 py-2 rounded-lg shadow-lg border border-border-soft bg-surface text-ink text-[11px] min-w-[150px]"
+          className="pointer-events-none fixed z-50 px-3 py-2 rounded-lg shadow-lg border border-border-soft bg-surface text-ink text-caption min-w-[150px]"
           style={{ left: pos?.x ?? 0, top: pos?.y ?? 0, transform: `translateX(${shift})`, visibility: pos ? 'visible' : 'hidden' }}
         >
           <div className="font-mono text-ink-tertiary">{shown.rangeLabel}</div>

@@ -34,7 +34,7 @@ export function ChildHubPicker({
   groupLabel: string;
 }) {
   const pill = (active: boolean) =>
-    'text-[11px] px-2 py-0.5 rounded-full border transition-colors ' +
+    'text-caption px-2 py-0.5 rounded-full border transition-colors ' +
     (active ? 'border-accent text-accent-ink bg-accent-fill font-semibold' : 'border-border-soft text-ink-tertiary hover:text-ink');
 
   return (
@@ -58,7 +58,7 @@ export function ChildHubPicker({
       {mode === 'selected' && (
         <div className="space-y-1">
           {childHubs.map(c => (
-            <label key={c.id} className="flex items-center gap-2 text-xs text-ink-secondary">
+            <label key={c.id} className="flex items-center gap-2 text-small text-ink-secondary">
               <input
                 type="checkbox"
                 checked={selected.has(c.id)}
@@ -71,7 +71,7 @@ export function ChildHubPicker({
         </div>
       )}
       {mode === 'all' && (
-        <p className="text-[11px] text-ink-tertiary">
+        <p className="text-caption text-ink-tertiary">
           Every current child hub, and any that joins later.
         </p>
       )}

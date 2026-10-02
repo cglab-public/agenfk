@@ -23,7 +23,7 @@ export function Callout({ tone, title, children, action, live = 'off', className
   const Icon = ICON[tone];
   const role = live === 'assertive' ? 'alert' : live === 'polite' ? 'status' : undefined;
   return (
-    <div role={role} className={cn('flex items-start gap-3 rounded-xl p-3 text-sm', TONE_CLASS[tone], className)}>
+    <div role={role} className={cn('flex items-start gap-3 rounded-xl p-3 text-body', TONE_CLASS[tone], className)}>
       <Icon className="w-4 h-4 mt-0.5 shrink-0" aria-hidden="true" />
       <div className="flex-1 min-w-0">
         <span className="sr-only">{WORD[tone]}</span>

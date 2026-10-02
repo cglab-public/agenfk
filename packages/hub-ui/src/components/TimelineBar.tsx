@@ -224,15 +224,15 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
     <section className={`relative bg-card-glass backdrop-blur border border-border-soft rounded-2xl ${className ?? ''}`}>
       <header className="flex items-center justify-between gap-4 px-5 pt-4 pb-3 border-b border-border-soft">
         <div className="min-w-0">
-          <h3 className="text-sm font-semibold text-ink truncate">{title ?? 'Activity'}</h3>
-          <p className="mt-0.5 text-[11px] text-ink-tertiary">
+          <h3 className="text-body font-semibold text-ink truncate">{title ?? 'Activity'}</h3>
+          <p className="mt-0.5 text-caption text-ink-tertiary">
             {q.data && `${totalEvents.toLocaleString()} event${totalEvents === 1 ? '' : 's'} · `}{rangeBlurb}{users?.length ? ` · ${users.length} user${users.length === 1 ? '' : 's'}` : ''}{stackedTypes ? ` · ${stackedTypes.length} type${stackedTypes.length === 1 ? '' : 's'}` : ''}
           </p>
         </div>
         <div className="flex items-center gap-2">
           {/* Range picker only shown when not controlled externally (standalone usage) */}
           {rangeProp == null && (
-            <div role="group" aria-label="Period" className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium">
+            <div role="group" aria-label="Period" className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-caption font-medium">
               {RANGES.map(r => (
                 <button
                   key={r.key}
@@ -248,7 +248,7 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
               ))}
             </div>
           )}
-          <div role="group" aria-label="Bucket size" className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium">
+          <div role="group" aria-label="Bucket size" className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-caption font-medium">
             {(['day', 'hour'] as const).map(b => {
               const active = bucket === b;
               const disabled = isToday && b === 'day';
@@ -306,7 +306,7 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
                 <line x1={m.left} x2={m.left + innerW} y1={y} y2={y}
                       className="stroke-border-soft" strokeDasharray={t === 0 ? '0' : '2 3'} />
                 <text x={m.left - 6} y={y} textAnchor="end" dominantBaseline="middle"
-                      className="fill-ink-tertiary" style={{ fontSize: 10 }}>
+                      className="fill-ink-tertiary" style={{ fontSize: 11 }}>
                   {t}
                 </text>
               </g>
@@ -368,7 +368,7 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
                   <text x={x + barW / 2} y={m.top + innerH - barH - 4}
                         textAnchor="middle"
                         className="fill-ink font-semibold"
-                        style={{ fontSize: 10 }}>
+                        style={{ fontSize: 11 }}>
                     {total}
                   </text>
                 )}
@@ -389,7 +389,7 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
               <text key={t} x={x} y={m.top + innerH + 14}
                     textAnchor="middle"
                     className="fill-ink-tertiary font-mono"
-                    style={{ fontSize: 10 }}>
+                    style={{ fontSize: 11 }}>
                 {shortLabel(t, bucket, range)}
               </text>
             );
@@ -398,7 +398,7 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
           {/* Axis titles */}
           <text x={m.left} y={m.top - 2}
                 className="fill-ink-tertiary"
-                style={{ fontSize: 9, letterSpacing: '0.06em' }}>
+                style={{ fontSize: 11, letterSpacing: '0.14em' }}>
             EVENTS
           </text>
           </g>
@@ -411,7 +411,7 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
           <div
             data-testid="timeline-tooltip"
             aria-hidden="true"
-            className="pointer-events-none absolute z-10 px-3 py-2 rounded-lg shadow-lg border border-border-soft bg-card-glass backdrop-blur text-[11px] min-w-[140px]"
+            className="pointer-events-none absolute z-10 px-3 py-2 rounded-lg shadow-lg border border-border-soft bg-card-glass backdrop-blur text-caption min-w-[140px]"
             style={{
               left: `${12 + hoveredX}px`,
               top: '14px',
@@ -448,7 +448,7 @@ export function TimelineBar({ users, types, projects, itemTypes, childHubs, clas
 
       {/* Legend (only when filtered by type) */}
       {stackedTypes && stackedTypes.length > 0 && (
-        <footer className="flex flex-wrap gap-x-4 gap-y-1.5 px-5 pb-4 pt-1 text-[11px] text-ink-tertiary">
+        <footer className="flex flex-wrap gap-x-4 gap-y-1.5 px-5 pb-4 pt-1 text-caption text-ink-tertiary">
           {stackedTypes.map(tp => (
             <span key={tp} className="flex items-center gap-1.5">
               <span className="inline-block w-2 h-2 rounded-sm" style={{ background: colours[tp] }} />

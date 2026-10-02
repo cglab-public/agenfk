@@ -19,7 +19,7 @@ const BADGE: Record<BadgeTone, string> = {
 export function Badge({ tone = 'neutral', className, ...rest }: HTMLAttributes<HTMLSpanElement> & { tone?: BadgeTone }) {
   return (
     <span
-      className={cn('inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-transparent text-[11px] font-semibold', BADGE[tone], className)}
+      className={cn('inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-transparent text-caption font-semibold', BADGE[tone], className)}
       {...rest}
     />
   );

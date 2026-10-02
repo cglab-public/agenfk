@@ -86,8 +86,8 @@ export function AdminModels() {
       {dialog}
       <section className={cardCls}>
         <header>
-          <h3 className="text-sm font-semibold text-ink">Add a mapping</h3>
-          <p className="mt-0.5 text-xs text-ink-tertiary">
+          <h3 className="text-body font-semibold text-ink">Add a mapping</h3>
+          <p className="mt-0.5 text-small text-ink-tertiary">
             A model name is whatever each install reports, so one model can arrive as several spellings and
             appear as several rows. Map a reported spelling to the single name you want shown.
           </p>
@@ -95,7 +95,7 @@ export function AdminModels() {
 
         <div className="mt-3 grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr_auto] gap-2 items-end">
           <label className="block">
-            <span className="block mb-1 text-[10px] uppercase tracking-[0.14em] text-ink-tertiary font-semibold">
+            <span className="eyebrow block mb-1 text-ink-tertiary">
               Reported today as
             </span>
             <input
@@ -109,7 +109,7 @@ export function AdminModels() {
           </label>
           <span className="hidden sm:block pb-2 text-ink-tertiary">→</span>
           <label className="block">
-            <span className="block mb-1 text-[10px] uppercase tracking-[0.14em] text-ink-tertiary font-semibold">
+            <span className="eyebrow block mb-1 text-ink-tertiary">
               Show as (desired name)
             </span>
             <input
@@ -138,10 +138,10 @@ export function AdminModels() {
         </datalist>
 
         {error && (
-          <p role="alert" className="mt-2 text-xs font-semibold text-status-danger-text">{error}</p>
+          <p role="alert" className="mt-2 text-small font-semibold text-status-danger-text">{error}</p>
         )}
         {suggestions.length > 0 && !error && (
-          <p className="mt-2 text-[11px] text-ink-tertiary">
+          <p className="mt-2 text-caption text-ink-tertiary">
             Pick an existing desired name to add a spelling to a group that already exists, rather than
             starting a second one for the same model.
           </p>

@@ -132,7 +132,7 @@ export function FacetMultiselect({
           // about which filter this is.
           aria-labelledby={`${headingId} ${triggerId}`}
           aria-controls={open ? panelId : undefined}
-          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-mono text-[11px] border text-ink-secondary border-border-soft hover:border-accent hover:text-accent-ink transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-border-soft disabled:hover:text-ink-secondary"
+          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full font-mono text-caption border text-ink-secondary border-border-soft hover:border-accent hover:text-accent-ink transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-border-soft disabled:hover:text-ink-secondary"
           aria-expanded={open}
         >
           {selected.size === 0
@@ -149,7 +149,7 @@ export function FacetMultiselect({
           <span
             key={v}
             title={v}
-            className="inline-flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-full font-mono text-[11px] border text-accent-ink border-accent bg-accent-fill max-w-[260px]"
+            className="inline-flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-full font-mono text-caption border text-accent-ink border-accent bg-accent-fill max-w-[260px]"
           >
             <span className="truncate">{optionLabel ? optionLabel(v) : v}</span>
             <button
@@ -174,7 +174,7 @@ export function FacetMultiselect({
               onChange={(e) => setQuery(e.target.value)}
               placeholder={placeholder}
               aria-label={`Search ${label}`}
-              className="flex-1 bg-transparent outline-none text-[12px] text-ink placeholder:text-ink-tertiary"
+              className="flex-1 bg-transparent outline-none text-small text-ink placeholder:text-ink-tertiary"
             />
             {query && (
               <button
@@ -190,7 +190,7 @@ export function FacetMultiselect({
               announces its own checked state. */}
           <div role="group" aria-labelledby={headingId} className="max-h-64 overflow-y-auto py-1">
             {filtered.length === 0 ? (
-              <p className="px-3 py-4 text-center text-[12px] text-ink-tertiary">No matches.</p>
+              <p className="px-3 py-4 text-center text-small text-ink-tertiary">No matches.</p>
             ) : (
               filtered.map((v) => {
                 const on = selected.has(v);
@@ -200,7 +200,7 @@ export function FacetMultiselect({
                     title={v}
                     // relative: the sr-only checkbox is absolutely positioned, and
                     // must scroll with the list or a focused option stays hidden.
-                    className={`relative w-full flex items-center gap-2 px-3 py-1.5 text-left text-[12px] font-mono transition-colors cursor-pointer has-[:disabled]:cursor-not-allowed has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:-outline-offset-2 has-[:focus-visible]:outline-accent ${on
+                    className={`relative w-full flex items-center gap-2 px-3 py-1.5 text-left text-small font-mono transition-colors cursor-pointer has-[:disabled]:cursor-not-allowed has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:-outline-offset-2 has-[:focus-visible]:outline-accent ${on
                       ? 'bg-accent-fill text-accent-ink'
                       : 'text-ink hover:bg-accent-fill/50'}`}
                   >
@@ -217,7 +217,7 @@ export function FacetMultiselect({
             )}
           </div>
           {selected.size > 0 && (
-            <div className="flex items-center justify-between px-3 py-2 border-t border-border-soft text-[11px]">
+            <div className="flex items-center justify-between px-3 py-2 border-t border-border-soft text-caption">
               <span className="text-ink-tertiary">{selected.size} selected</span>
               <button onClick={onClear} disabled={disabled} className="font-medium text-ink-tertiary hover:text-danger-muted disabled:cursor-not-allowed disabled:opacity-50">
                 Clear all

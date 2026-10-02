@@ -16,8 +16,8 @@ const VARIANT: Record<ButtonVariant, string> = {
   danger: 'bg-status-danger-bg text-status-danger-text font-semibold enabled:hover:border-status-danger-text',
 };
 const SIZE: Record<ButtonSize, string> = {
-  sm: 'px-2.5 py-1 text-xs gap-1',
-  md: 'px-4 py-2 text-sm gap-1.5',
+  sm: 'px-2.5 py-1 text-small gap-1',
+  md: 'px-4 py-2 text-body gap-1.5',
 };
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {

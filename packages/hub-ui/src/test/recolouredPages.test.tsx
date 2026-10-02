@@ -23,6 +23,7 @@ import { ConnectPage } from '../pages/Connect';
 import { ThemeProvider } from '../ThemeContext';
 import { api } from '../api';
 import { withFiltersOpen } from './filtersOpen';
+import { expectOnTypeScale } from './helpers/typeScale';
 
 vi.mock('../api', () => ({ api: { get: vi.fn(), post: vi.fn() } }));
 const get = api.get as unknown as ReturnType<typeof vi.fn>;
@@ -90,6 +91,8 @@ function classesOutsideLogo(root: HTMLElement): string {
 }
 
 function expectOnTokens(root: HTMLElement) {
+  // Story 7073be87: the type scale and the two content widths too.
+  expectOnTypeScale(root);
   const cls = classesOutsideLogo(root);
   expect(cls.match(RAW_PALETTE)?.[0] ?? null, 'raw palette colour').toBeNull();
   expect(cls.match(OLD_ACCENT)?.[0]?.trim() ?? null, 'old teal accent / gradient / glow').toBeNull();

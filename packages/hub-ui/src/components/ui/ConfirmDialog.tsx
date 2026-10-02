@@ -76,12 +76,12 @@ export function ConfirmDialog({ title, body, confirmLabel, tone = 'danger', onCo
         onKeyDown={onKeyDown}
         className={`${cardClass} max-w-md w-full`}
       >
-        <h3 id={`${id}-title`} className="text-sm font-semibold text-ink inline-flex items-center gap-1.5">
+        <h3 id={`${id}-title`} className="text-body font-semibold text-ink inline-flex items-center gap-1.5">
           {tone === 'danger' && <AlertTriangle className="w-4 h-4 shrink-0 text-status-warn-text" aria-hidden="true" />}
           {title}
         </h3>
-        <div id={`${id}-body`} className="mt-2 text-xs text-ink-secondary space-y-2 whitespace-pre-line">{body}</div>
-        {error && <p role="alert" className="mt-2 text-xs text-status-danger-text">{error}</p>}
+        <div id={`${id}-body`} className="mt-2 text-small text-ink-secondary space-y-2 whitespace-pre-line">{body}</div>
+        {error && <p role="alert" className="mt-2 text-small text-status-danger-text">{error}</p>}
         <div className="mt-4 flex items-center justify-end gap-2">
           <Button ref={cancelRef} variant="ghost" size="sm" onClick={onCancel}>Cancel</Button>
           <Button

@@ -20,8 +20,8 @@ export function PeriodControl<K extends string>({ ranges, active, onPick, disabl
   const captionId = useId();
   return (
     <div role="group" aria-labelledby={captionId} title={title} className={cn('flex items-center gap-2 flex-wrap', className)}>
-      <span id={captionId} className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">Period</span>
-      <div className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium">
+      <span id={captionId} className="eyebrow text-ink-tertiary">Period</span>
+      <div className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-caption font-medium">
         {ranges.map(r => (
           <button
             key={r.key}

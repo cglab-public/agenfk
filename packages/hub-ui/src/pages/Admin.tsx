@@ -19,15 +19,15 @@ export function AdminLayout() {
   const { pathname } = useLocation();
   const current = pathname.replace(/^\/admin\/?/, '').split('/')[0];
   const link = ({ isActive }: { isActive: boolean }) =>
-    'flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[13px] font-medium transition-colors ' + (isActive
+    'flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-body font-medium transition-colors ' + (isActive
       ? 'bg-accent-fill text-accent-ink'
       : 'text-ink-secondary hover:bg-nav-surface hover:text-ink');
   return (
     <Page>
       <header>
-        <p className="text-[11px] uppercase tracking-[0.18em] text-accent-ink font-semibold">Settings</p>
-        <h1 className="mt-1 text-2xl font-bold tracking-tight text-ink">Admin</h1>
-        <p className="mt-1 text-sm text-ink-tertiary">People, access, fleet-wide settings and the hub itself.</p>
+        <p className="eyebrow text-accent-ink">Settings</p>
+        <h1 className="mt-1 text-display font-bold tracking-tight text-ink">Admin</h1>
+        <p className="mt-1 text-body text-ink-tertiary">People, access, fleet-wide settings and the hub itself.</p>
       </header>
 
       {/* Narrow screens: one select instead of a rail. */}
@@ -53,7 +53,7 @@ export function AdminLayout() {
           <NavLink to="/admin" end className={link}>Overview</NavLink>
           {ADMIN_GROUPS.map(g => (
             <div key={g.id} role="group" aria-labelledby={`admin-nav-${g.id}`}>
-              <p id={`admin-nav-${g.id}`} className="px-2.5 mb-1 text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{g.label}</p>
+              <p id={`admin-nav-${g.id}`} className="eyebrow px-2.5 mb-1 text-ink-tertiary">{g.label}</p>
               <ul className="space-y-0.5">
                 {g.sections.map(s => (
                   <li key={s.to}>
@@ -105,31 +105,31 @@ export function AdminAuth() {
   // Only a first load that failed replaces the form; a failed background
   // refresh keeps the loaded form (and the admin's edits) on screen.
   if (cfg.isError && !cfg.data) return <QueryError error={cfg.error} onRetry={() => cfg.refetch()} />;
-  if (!cfg.data) return <p role="status" className="text-sm text-ink-tertiary">Loading…</p>;
+  if (!cfg.data) return <p role="status" className="text-body text-ink-tertiary">Loading…</p>;
   const c = { ...cfg.data, ...draft };
   // Blocks only a save that makes things worse, like the hub: an org whose
   // stored config already works for nobody must be able to save a partial fix.
   const lockedOut = noWorkingSignInMethod(c) && !noWorkingSignInMethod(cfg.data);
 
   return (
-    <form className="space-y-4 max-w-2xl" onSubmit={(e) => { e.preventDefault(); save.mutate(draft); }}>
+    <form className="space-y-4 max-w-form" onSubmit={(e) => { e.preventDefault(); save.mutate(draft); }}>
       {cfg.isError && <QueryError error={cfg.error} onRetry={() => cfg.refetch()} />}
       <section className={cardCls}>
         <header className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-ink">Email + password</h3>
+          <h3 className="text-body font-semibold text-ink">Email + password</h3>
           <Toggle label="Email + password sign-in" checked={c.passwordEnabled} onChange={(v) => setDraft({ ...draft, passwordEnabled: v })} />
         </header>
-        <p className="mt-1 text-xs text-ink-tertiary">Allow users to sign in with email and a hashed password stored on this hub.</p>
+        <p className="mt-1 text-small text-ink-tertiary">Allow users to sign in with email and a hashed password stored on this hub.</p>
       </section>
 
       <section className={cardCls}>
         <header className="flex items-center justify-between">
           <div>
             <div className="flex items-center gap-2">
-              <h3 className="text-sm font-semibold text-ink">Google</h3>
+              <h3 className="text-body font-semibold text-ink">Google</h3>
               <ProviderBadge enabled={c.googleEnabled} requires={googleRequires(c.google)} />
             </div>
-            <p className="mt-0.5 text-xs text-ink-tertiary">OAuth 2.0 sign-in with Google Workspace or consumer accounts.</p>
+            <p className="mt-0.5 text-small text-ink-tertiary">OAuth 2.0 sign-in with Google Workspace or consumer accounts.</p>
           </div>
           <Toggle label="Google sign-in" checked={c.googleEnabled} onChange={(v) => setDraft({ ...draft, googleEnabled: v })} />
         </header>
@@ -149,10 +149,10 @@ export function AdminAuth() {
         <header className="flex items-center justify-between">
           <div>
             <div className="flex items-center gap-2">
-              <h3 className="text-sm font-semibold text-ink">Microsoft Entra</h3>
+              <h3 className="text-body font-semibold text-ink">Microsoft Entra</h3>
               <ProviderBadge enabled={c.entraEnabled} requires={entraRequires(c.entra)} />
             </div>
-            <p className="mt-0.5 text-xs text-ink-tertiary">OAuth 2.0 sign-in via Azure AD / Entra ID tenants.</p>
+            <p className="mt-0.5 text-small text-ink-tertiary">OAuth 2.0 sign-in via Azure AD / Entra ID tenants.</p>
           </div>
           <Toggle label="Microsoft Entra sign-in" checked={c.entraEnabled} onChange={(v) => setDraft({ ...draft, entraEnabled: v })} />
         </header>
@@ -172,9 +172,9 @@ export function AdminAuth() {
       </section>
 
       <section className={cardCls}>
-        <h3 id="auth-email-allowlist" className="text-sm font-semibold text-ink">Email allowlist</h3>
-        <p className="mt-1 text-xs text-ink-tertiary">Comma-separated domains. Only addresses ending in these domains may sign in. Leave empty to accept any.</p>
-        <input className={`${inputCls} mt-3 font-mono text-xs`}
+        <h3 id="auth-email-allowlist" className="text-body font-semibold text-ink">Email allowlist</h3>
+        <p className="mt-1 text-small text-ink-tertiary">Comma-separated domains. Only addresses ending in these domains may sign in. Leave empty to accept any.</p>
+        <input className={`${inputCls} mt-3 font-mono text-small`}
                aria-labelledby="auth-email-allowlist"
                placeholder='acme.com, *.subsidiary.com'
                defaultValue={c.emailAllowlist.join(', ')}
@@ -186,11 +186,11 @@ export function AdminAuth() {
           {save.isPending ? 'Saving…' : 'Save changes'}
         </button>
         {lockedOut && (
-          <span id="signin-lockout" role="alert" className="text-xs text-status-danger-text font-medium">
+          <span id="signin-lockout" role="alert" className="text-small text-status-danger-text font-medium">
             This would leave no way to sign in. Keep email + password on, or finish setting up another provider first.
           </span>
         )}
-        {save.isSuccess && <span className="text-xs text-status-ok-text font-medium">✓ Saved</span>}
+        {save.isSuccess && <span className="text-small text-status-ok-text font-medium">✓ Saved</span>}
         <InlineError error={save.error} className="font-medium" />
       </div>
     </form>
@@ -200,10 +200,10 @@ export function AdminAuth() {
 function Field({ label, error, errorId, children, className }: { label: string; error?: string; errorId?: string; children: React.ReactNode; className?: string }) {
   return (
     <label className={`block ${className ?? ''}`}>
-      <span className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{label}</span>
+      <span className="eyebrow text-ink-tertiary">{label}</span>
       <div className="mt-1.5">{children}</div>
       {/* Tied to its input by aria-describedby, not announced as an alert on every keystroke. */}
-      {error && <span id={errorId} className="mt-1 block text-xs text-status-danger-text">{error}</span>}
+      {error && <span id={errorId} className="mt-1 block text-small text-status-danger-text">{error}</span>}
     </label>
   );
 }
@@ -252,14 +252,14 @@ export function AdminKeys() {
   return (
     <div className="space-y-6">
       {dialog}
-      <section className={`${cardCls} max-w-2xl`}>
+      <section className={`${cardCls} max-w-form`}>
         <header className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-xl bg-accent-fill text-accent-ink flex items-center justify-center">
             <KeyRound className="w-4 h-4" />
           </div>
           <div>
-            <h3 className="text-sm font-semibold text-ink">Magic-link invite</h3>
-            <p className="mt-0.5 text-xs text-ink-tertiary">Generate a single-use, signed join command. Developers paste it into their terminal — they never see the token.</p>
+            <h3 className="text-body font-semibold text-ink">Magic-link invite</h3>
+            <p className="mt-0.5 text-small text-ink-tertiary">Generate a single-use, signed join command. Developers paste it into their terminal — they never see the token.</p>
           </div>
         </header>
         <button
@@ -285,11 +285,11 @@ export function AdminKeys() {
             {invites.map((inv, idx) => (
               <div key={inv.id} className="rounded-xl border border-border-soft bg-canvas p-4">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] uppercase tracking-[0.14em] text-accent-ink font-semibold">
+                  <span className="eyebrow text-accent-ink">
                     Share this command{invites.length > 1 ? ` · #${idx + 1}` : ''}
                   </span>
                   <div className="flex items-center gap-3">
-                    <span className="text-[11px] text-ink-tertiary">expires {<LocalTime value={inv.expiresAt} format="date" />}</span>
+                    <span className="text-caption text-ink-tertiary">expires {<LocalTime value={inv.expiresAt} format="date" />}</span>
                     <button
                       onClick={() => setInvites(prev => prev.filter(p => p.id !== inv.id))}
                       aria-label={`Dismiss invite ${idx + 1}`}
@@ -300,7 +300,7 @@ export function AdminKeys() {
                     </button>
                   </div>
                 </div>
-                <pre className="mt-2 px-3 py-2.5 rounded-lg bg-canvas text-ink text-xs font-mono overflow-x-auto select-all">{inv.joinCommand}</pre>
+                <pre className="mt-2 px-3 py-2.5 rounded-lg bg-canvas text-ink text-small font-mono overflow-x-auto select-all">{inv.joinCommand}</pre>
                 <CopyButton value={inv.joinCommand} label={`Copy invite ${idx + 1} command`} className="mt-2" />
               </div>
             ))}
@@ -308,10 +308,10 @@ export function AdminKeys() {
         )}
       </section>
 
-      <section className={`${cardCls} max-w-2xl`}>
+      <section className={`${cardCls} max-w-form`}>
         <header>
-          <h3 className="text-sm font-semibold text-ink">Issue an API key</h3>
-          <p className="mt-0.5 text-xs text-ink-tertiary">Manual installation token for legacy / scripted workflows. Prefer magic-link invites for human onboarding.</p>
+          <h3 className="text-body font-semibold text-ink">Issue an API key</h3>
+          <p className="mt-0.5 text-small text-ink-tertiary">Manual installation token for legacy / scripted workflows. Prefer magic-link invites for human onboarding.</p>
         </header>
         <form className="mt-3 flex flex-col sm:flex-row gap-2" onSubmit={async (e) => {
           e.preventDefault();
@@ -327,11 +327,11 @@ export function AdminKeys() {
         <InlineError error={create.error} className="mt-2" />
         {issued && (
           <div className="mt-3 rounded-xl border border-status-warn-text/40 bg-status-warn-bg p-4">
-            <div className="text-[11px] uppercase tracking-[0.14em] text-status-warn-text font-semibold">Save this token now — it won't be shown again</div>
-            <pre className="mt-2 px-3 py-2.5 rounded-lg bg-canvas text-ink text-xs font-mono break-all overflow-x-auto select-all">{issued}</pre>
+            <div className="eyebrow text-status-warn-text">Save this token now — it won't be shown again</div>
+            <pre className="mt-2 px-3 py-2.5 rounded-lg bg-canvas text-ink text-small font-mono break-all overflow-x-auto select-all">{issued}</pre>
             <div className="mt-2 flex items-center gap-3">
               <CopyButton value={issued} label="Copy" />
-              <button onClick={() => setIssued(null)} className="text-xs font-medium text-ink-tertiary hover:text-ink">I've saved it</button>
+              <button onClick={() => setIssued(null)} className="text-small font-medium text-ink-tertiary hover:text-ink">I've saved it</button>
             </div>
           </div>
         )}
@@ -339,14 +339,14 @@ export function AdminKeys() {
 
       <section className={cardCls}>
         <header className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-ink">Active keys</h3>
-          <span className="text-[11px] text-ink-tertiary">{(keys.data ?? []).filter(k => !k.revokedAt).length} active · {(keys.data ?? []).length} total</span>
+          <h3 className="text-body font-semibold text-ink">Active keys</h3>
+          <span className="text-caption text-ink-tertiary">{(keys.data ?? []).filter(k => !k.revokedAt).length} active · {(keys.data ?? []).length} total</span>
         </header>
         <InlineError error={revoke.error} className="mt-2" />
         <div className="mt-3 -mx-5 overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-body">
             <thead>
-              <tr className="text-[10px] uppercase tracking-[0.14em] text-ink-tertiary font-semibold">
+              <tr className="eyebrow text-ink-tertiary">
                 <th className="text-left px-5 py-2">Preview</th>
                 <th className="text-left px-2 py-2">Label</th>
                 <th className="text-left px-2 py-2">Installation</th>
@@ -360,9 +360,9 @@ export function AdminKeys() {
                 const ident = k.gitEmail ?? k.osUser;
                 return (
                 <tr key={k.tokenHashPreview} className="hover:bg-accent-fill transition-colors">
-                  <td className="px-5 py-2.5 font-mono text-xs text-ink-secondary">{k.tokenHashPreview}…</td>
+                  <td className="px-5 py-2.5 font-mono text-small text-ink-secondary">{k.tokenHashPreview}…</td>
                   <td className="px-2 py-2.5 text-ink-secondary">{k.label ?? <span className="text-ink-tertiary">—</span>}</td>
-                  <td className="px-2 py-2.5 text-xs text-ink-secondary">
+                  <td className="px-2 py-2.5 text-small text-ink-secondary">
                     {ident ? (
                       <span className="font-mono" title={k.installationId ? `installation: ${k.installationId}` : undefined}>
                         {ident}
@@ -382,11 +382,11 @@ export function AdminKeys() {
                       <span className="text-ink-tertiary">—</span>
                     )}
                   </td>
-                  <td className="px-2 py-2.5 text-xs text-ink-tertiary tabular-nums">{<LocalTime value={k.createdAt} format="date" />}</td>
+                  <td className="px-2 py-2.5 text-small text-ink-tertiary tabular-nums">{<LocalTime value={k.createdAt} format="date" />}</td>
                   <td className="px-2 py-2.5">
                     {k.revokedAt
-                      ? <span className="px-2 py-0.5 rounded-md text-[10px] font-mono bg-status-danger-bg text-status-danger-text border border-status-danger-text/40">revoked</span>
-                      : <span className="px-2 py-0.5 rounded-md text-[10px] font-mono bg-status-ok-bg text-status-ok-text border border-status-ok-text/40">active</span>}
+                      ? <span className="px-2 py-0.5 rounded-md text-caption font-mono bg-status-danger-bg text-status-danger-text border border-status-danger-text/40">revoked</span>
+                      : <span className="px-2 py-0.5 rounded-md text-caption font-mono bg-status-ok-bg text-status-ok-text border border-status-ok-text/40">active</span>}
                   </td>
                   <td className="px-5 py-2.5 text-right">
                     {!k.revokedAt && (
@@ -398,7 +398,7 @@ export function AdminKeys() {
                                 })) revoke.mutate(k.tokenHashPreview);
                               }}
                               aria-label={`Revoke key ${k.label ?? k.tokenHashPreview}`}
-                              className="inline-flex items-center gap-1 text-xs font-semibold text-ink-tertiary hover:text-status-danger-text">
+                              className="inline-flex items-center gap-1 text-small font-semibold text-ink-tertiary hover:text-status-danger-text">
                         <Trash2 className="w-3 h-3" /> Revoke
                       </button>
                     )}
@@ -410,10 +410,10 @@ export function AdminKeys() {
                 <tr><td colSpan={6} className="px-5 py-4"><QueryError error={keys.error} onRetry={() => keys.refetch()} /></td></tr>
               )}
               {keys.isPending && (
-                <tr><td colSpan={6} className="px-5 py-6 text-center text-sm text-ink-tertiary" role="status">Loading…</td></tr>
+                <tr><td colSpan={6} className="px-5 py-6 text-center text-body text-ink-tertiary" role="status">Loading…</td></tr>
               )}
               {keys.data?.length === 0 && (
-                <tr><td colSpan={6} className="px-5 py-6 text-center text-sm text-ink-tertiary">No keys yet.</td></tr>
+                <tr><td colSpan={6} className="px-5 py-6 text-center text-body text-ink-tertiary">No keys yet.</td></tr>
               )}
             </tbody>
           </table>
@@ -467,10 +467,10 @@ export function AdminUsers() {
   return (
     <div className="space-y-6">
       {dialog}
-      <section className={`${cardCls} max-w-2xl`}>
+      <section className={`${cardCls} max-w-form`}>
         <header>
-          <h3 className="text-sm font-semibold text-ink">Invite user</h3>
-          <p className="mt-0.5 text-xs text-ink-tertiary">Only invited users can sign in — SSO does not auto-create accounts. Choose <strong>Password</strong> for an email + password login, or <strong>SSO only</strong> to require Google/Entra sign-in for the same email.</p>
+          <h3 className="text-body font-semibold text-ink">Invite user</h3>
+          <p className="mt-0.5 text-small text-ink-tertiary">Only invited users can sign in — SSO does not auto-create accounts. Choose <strong>Password</strong> for an email + password login, or <strong>SSO only</strong> to require Google/Entra sign-in for the same email.</p>
         </header>
         <form
           className="mt-4 grid sm:grid-cols-12 gap-3"
@@ -484,7 +484,7 @@ export function AdminUsers() {
           {/* Not a Field: a <label> around buttons names the first one and
               presses it when the caption is clicked. */}
           <div className="block sm:col-span-12">
-            <span id="invite-auth-method" className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">Auth method</span>
+            <span id="invite-auth-method" className="eyebrow text-ink-tertiary">Auth method</span>
             <div role="group" aria-labelledby="invite-auth-method" className="mt-1.5 inline-flex p-1 rounded-lg border border-border-soft bg-canvas">
               {(['password', 'sso'] as const).map(m => (
                 <button
@@ -492,7 +492,7 @@ export function AdminUsers() {
                   type="button"
                   aria-pressed={draft.authMethod === m}
                   onClick={() => setDraft({ ...draft, authMethod: m, password: m === 'sso' ? '' : draft.password })}
-                  className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${draft.authMethod === m ? 'bg-surface text-accent-ink shadow-sm' : 'text-ink-tertiary hover:text-ink'}`}
+                  className={`px-3 py-1 rounded-md text-small font-semibold transition-colors ${draft.authMethod === m ? 'bg-surface text-accent-ink shadow-sm' : 'text-ink-tertiary hover:text-ink'}`}
                 >
                   {m === 'password' ? 'Password' : 'SSO only'}
                 </button>
@@ -530,15 +530,15 @@ export function AdminUsers() {
 
       <section className={cardCls}>
         <header className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-ink">Users</h3>
-          <span className="text-[11px] text-ink-tertiary">{users.data?.length ?? 0} total</span>
+          <h3 className="text-body font-semibold text-ink">Users</h3>
+          <span className="text-caption text-ink-tertiary">{users.data?.length ?? 0} total</span>
         </header>
         <InlineError error={update.error} className="mt-2" />
         <InlineError error={remove.error} className="mt-2" />
         <div className="mt-3 -mx-5 overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-body">
             <thead>
-              <tr className="text-[10px] uppercase tracking-[0.14em] text-ink-tertiary font-semibold">
+              <tr className="eyebrow text-ink-tertiary">
                 <th className="text-left px-5 py-2">Email</th>
                 <th className="text-left px-2 py-2">Provider</th>
                 <th className="text-left px-2 py-2">Role</th>
@@ -557,17 +557,17 @@ export function AdminUsers() {
                 <tr key={u.id} className="hover:bg-accent-fill transition-colors">
                   <td className="px-5 py-2.5">
                     <div className="flex items-center gap-2.5">
-                      <div className="w-7 h-7 rounded-full bg-accent-fill text-accent-ink text-[10px] font-bold flex items-center justify-center shrink-0">
+                      <div className="w-7 h-7 rounded-full bg-accent-fill text-accent-ink text-caption font-bold flex items-center justify-center shrink-0">
                         {u.email.slice(0, 2).toUpperCase()}
                       </div>
                       <div className="min-w-0">
-                        <span className="font-mono text-xs text-ink-secondary">{u.email}</span>
-                        {lockNote && <p id={lockId} className="text-[11px] text-ink-tertiary">{lockNote}</p>}
+                        <span className="font-mono text-small text-ink-secondary">{u.email}</span>
+                        {lockNote && <p id={lockId} className="text-caption text-ink-tertiary">{lockNote}</p>}
                       </div>
                     </div>
                   </td>
                   <td className="px-2 py-2.5">
-                    <span className={`px-2 py-0.5 rounded-md text-[10px] font-mono border ${PROVIDER_BADGE[u.provider] ?? PROVIDER_BADGE.password}`}>{u.provider}</span>
+                    <span className={`px-2 py-0.5 rounded-md text-caption font-mono border ${PROVIDER_BADGE[u.provider] ?? PROVIDER_BADGE.password}`}>{u.provider}</span>
                   </td>
                   <td className="px-2 py-2.5">
                     <select
@@ -576,13 +576,13 @@ export function AdminUsers() {
                       aria-label={`Role: ${u.email}`}
                       aria-describedby={lockNote ? lockId : undefined}
                       onChange={(e) => update.mutate({ id: u.id, role: e.target.value })}
-                      className="bg-transparent text-xs font-medium text-ink-secondary hover:bg-accent-fill rounded-md px-1.5 py-0.5 disabled:opacity-60 disabled:cursor-not-allowed"
+                      className="bg-transparent text-small font-medium text-ink-secondary hover:bg-accent-fill rounded-md px-1.5 py-0.5 disabled:opacity-60 disabled:cursor-not-allowed"
                     >
                       <option value="viewer">viewer</option>
                       <option value="admin">admin</option>
                     </select>
                   </td>
-                  <td className="px-2 py-2.5 text-xs text-ink-tertiary tabular-nums">{u.last_login_at ? <LocalTime value={u.last_login_at} format="date" /> : <span className="text-ink-tertiary">never</span>}</td>
+                  <td className="px-2 py-2.5 text-small text-ink-tertiary tabular-nums">{u.last_login_at ? <LocalTime value={u.last_login_at} format="date" /> : <span className="text-ink-tertiary">never</span>}</td>
                   <td className="px-2 py-2.5 text-right">
                     <Toggle label={`Active: ${u.email}`} checked={!!u.active} disabled={!!lock} aria-describedby={lockNote ? lockId : undefined} onChange={(v) => update.mutate({ id: u.id, active: v })} />
                   </td>
@@ -599,7 +599,7 @@ export function AdminUsers() {
                         disabled={remove.isPending}
                         aria-label={`Delete ${u.email}`}
                         title="Delete user"
-                        className="inline-flex items-center gap-1 text-xs font-semibold text-ink-tertiary hover:text-status-danger-text disabled:opacity-50"
+                        className="inline-flex items-center gap-1 text-small font-semibold text-ink-tertiary hover:text-status-danger-text disabled:opacity-50"
                       >
                         <Trash2 className="w-3 h-3" /> Delete
                       </button>
@@ -616,10 +616,10 @@ export function AdminUsers() {
                 <tr><td colSpan={6} className="px-5 py-4"><QueryError error={users.error} onRetry={() => users.refetch()} /></td></tr>
               )}
               {users.isPending && (
-                <tr><td colSpan={6} className="px-5 py-6 text-center text-sm text-ink-tertiary" role="status">Loading…</td></tr>
+                <tr><td colSpan={6} className="px-5 py-6 text-center text-body text-ink-tertiary" role="status">Loading…</td></tr>
               )}
               {users.data?.length === 0 && (
-                <tr><td colSpan={6} className="px-5 py-6 text-center text-sm text-ink-tertiary">No users yet.</td></tr>
+                <tr><td colSpan={6} className="px-5 py-6 text-center text-body text-ink-tertiary">No users yet.</td></tr>
               )}
             </tbody>
           </table>
@@ -715,8 +715,8 @@ export function AdminInstallations() {
       <section className={cardCls}>
         <header className="flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-semibold text-ink">Installations</h3>
-            <p className="mt-0.5 text-xs text-ink-tertiary">
+            <h3 className="text-body font-semibold text-ink">Installations</h3>
+            <p className="mt-0.5 text-small text-ink-tertiary">
               Every AgEnFK install that has reported events to this hub. Use this to audit which version is running where.
             </p>
           </div>
@@ -724,7 +724,7 @@ export function AdminInstallations() {
             {hiddenCount > 0 && (
               <button
                 onClick={() => setShowHidden(v => !v)}
-                className="inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-ink"
+                className="inline-flex items-center gap-1 text-caption font-semibold text-ink-tertiary hover:text-ink"
               >
                 {showHidden ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
                 {showHidden ? 'Hide hidden' : `Show hidden (${hiddenCount})`}
@@ -735,22 +735,22 @@ export function AdminInstallations() {
                 is why this label only counts once they are on screen. */}
             <button
               onClick={() => setShowRetired(v => !v)}
-              className="inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-ink"
+              className="inline-flex items-center gap-1 text-caption font-semibold text-ink-tertiary hover:text-ink"
               title="Retired installations are dead endpoints, excluded from upgrades and address changes"
             >
               {showRetired ? <ArchiveRestore className="w-3.5 h-3.5" /> : <Archive className="w-3.5 h-3.5" />}
               {showRetired ? `Hide retired (${retiredCount})` : 'Show retired'}
             </button>
             {attributedByUsername > 0 && (
-              <span className="text-[11px] font-semibold text-status-warn-text">
+              <span className="text-caption font-semibold text-status-warn-text">
                 {attributedByUsername} attributed by username
               </span>
             )}
-            <span className="text-[11px] text-ink-tertiary">{showHidden ? rows.length : visible.length} total</span>
+            <span className="text-caption text-ink-tertiary">{showHidden ? rows.length : visible.length} total</span>
           </div>
         </header>
         {attributedByUsername > 0 && (
-          <p className="mt-1 text-[11px] text-ink-tertiary">
+          <p className="mt-1 text-caption text-ink-tertiary">
             {attributedByUsername === 1 ? 'One install has' : `${attributedByUsername} installs have`} no git email, so their work is filed under an OS username instead of a person.
           </p>
         )}
@@ -758,9 +758,9 @@ export function AdminInstallations() {
         <InlineError error={retire.error} className="mt-2" />
         <InlineError error={unretire.error} className="mt-2" />
         <div className="mt-3 -mx-5 overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-body">
             <thead>
-              <tr className="text-[10px] uppercase tracking-[0.14em] text-ink-tertiary font-semibold">
+              <tr className="eyebrow text-ink-tertiary">
                 <th className="text-left px-5 py-2">Person</th>
                 <th className="text-left px-2 py-2">Installation</th>
                 <th className="text-left px-2 py-2">Version</th>
@@ -773,29 +773,29 @@ export function AdminInstallations() {
               {rows.map(r => (
                 <tr key={r.id} className={`hover:bg-accent-fill transition-colors ${r.hidden || r.retired ? 'opacity-50' : ''}`}>
                   <td className="px-5 py-2.5">
-                    <div className="text-sm font-medium text-ink">{personLabel(r)}</div>
+                    <div className="text-body font-medium text-ink">{personLabel(r)}</div>
                     {r.gitEmail
-                      ? <div className="text-[11px] text-ink-tertiary font-mono">{r.gitEmail}</div>
+                      ? <div className="text-caption text-ink-tertiary font-mono">{r.gitEmail}</div>
                       : (
                         // Their whole history is filed under an OS username, and
                         // fixing it later splits them into two identities.
-                        <details className="text-[11px] text-status-warn-text">
+                        <details className="text-caption text-status-warn-text">
                           <summary className="font-semibold cursor-pointer">no git email — attributed by username</summary>
                           <p className="mt-0.5 max-w-prose text-ink-secondary">{attributionWarning(r.osUser)}</p>
                         </details>
                       )}
                   </td>
                   <td className="px-2 py-2.5">
-                    <span className="font-mono text-[11px] text-ink-secondary" title={r.id}>
+                    <span className="font-mono text-caption text-ink-secondary" title={r.id}>
                       <span aria-hidden="true">{r.id.slice(0, 8)}</span>
                       <span className="sr-only">installation {r.id}</span>
                     </span>
                     <CopyButton value={r.id} iconOnly label={`Copy installation id for ${personLabel(r)}`} copiedLabel={`Copied installation id for ${personLabel(r)}`} className="ml-1.5 align-middle" />
                     {r.hidden && (
-                      <span className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-status-warn-text">hidden</span>
+                      <span className="eyebrow ml-2 text-status-warn-text">hidden</span>
                     )}
                     {r.retired && (
-                      <span className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-ink-tertiary">
+                      <span className="eyebrow ml-2 text-ink-tertiary">
                         retired
                         {r.retiredByEmail && <span className="ml-1 normal-case tracking-normal font-normal">by {r.retiredByEmail}</span>}
                       </span>
@@ -803,16 +803,16 @@ export function AdminInstallations() {
                   </td>
                   <td className="px-2 py-2.5">
                     {r.agenfkVersion
-                      ? <span className="font-mono text-[11px] px-2 py-0.5 rounded-md border border-accent bg-accent-fill text-accent-ink">{r.agenfkVersion}</span>
-                      : <span className="text-[11px] text-ink-tertiary italic">unknown</span>}
+                      ? <span className="font-mono text-caption px-2 py-0.5 rounded-md border border-accent bg-accent-fill text-accent-ink">{r.agenfkVersion}</span>
+                      : <span className="text-caption text-ink-tertiary italic">unknown</span>}
                   </td>
-                  <td className="px-2 py-2.5 text-xs text-ink-tertiary tabular-nums">
+                  <td className="px-2 py-2.5 text-small text-ink-tertiary tabular-nums">
                     {r.agenfkVersionUpdatedAt ? <LocalTime value={r.agenfkVersionUpdatedAt} format="date" /> : <span className="text-ink-tertiary">—</span>}
                   </td>
-                  <td className="px-5 py-2.5 text-right text-xs text-ink-tertiary tabular-nums">
+                  <td className="px-5 py-2.5 text-right text-small text-ink-tertiary tabular-nums">
                     {r.lastSeen ? <LocalTime value={r.lastSeen} format="date" /> : <span className="text-ink-tertiary">—</span>}
                     {silentDays(r.lastSeen) !== null && (
-                      <span className="ml-2 rounded-md border border-status-warn-text/40 bg-status-warn-bg px-1.5 py-0.5 text-[10px] font-semibold text-status-warn-text">
+                      <span className="ml-2 rounded-md border border-status-warn-text/40 bg-status-warn-bg px-1.5 py-0.5 text-caption font-semibold text-status-warn-text">
                         silent {silentDays(r.lastSeen)}d
                       </span>
                     )}
@@ -853,7 +853,7 @@ export function AdminInstallations() {
                 </tr>
               ))}
               {rows.length === 0 && (
-                <tr><td colSpan={6} className="px-5 py-6 text-center text-sm text-ink-tertiary">No installations have reported yet.</td></tr>
+                <tr><td colSpan={6} className="px-5 py-6 text-center text-body text-ink-tertiary">No installations have reported yet.</td></tr>
               )}
             </tbody>
           </table>
@@ -863,8 +863,8 @@ export function AdminInstallations() {
       {(hiddenPeople.data?.length ?? 0) > 0 && (
         <section className={cardCls}>
           <header>
-            <h3 className="text-sm font-semibold text-ink">Hidden people</h3>
-            <p className="mt-0.5 text-xs text-ink-tertiary">
+            <h3 className="text-body font-semibold text-ink">Hidden people</h3>
+            <p className="mt-0.5 text-small text-ink-tertiary">
               Hidden people no longer appear in installation pickers, their API keys are revoked, and new events from them are dropped. Historical dashboards are unaffected. Unhiding restores visibility but does not restore revoked keys.
             </p>
           </header>
@@ -873,8 +873,8 @@ export function AdminInstallations() {
             {hiddenPeople.data!.map(p => (
               <li key={p.userKey} className="flex items-center justify-between py-2">
                 <div>
-                  <div className="font-mono text-xs text-ink-secondary">{p.userKey}</div>
-                  <div className="text-[11px] text-ink-tertiary">
+                  <div className="font-mono text-small text-ink-secondary">{p.userKey}</div>
+                  <div className="text-caption text-ink-tertiary">
                     hidden {<LocalTime value={p.createdAt} format="date" />}{p.hiddenByEmail ? ` by ${p.hiddenByEmail}` : ''}
                   </div>
                 </div>
@@ -882,7 +882,7 @@ export function AdminInstallations() {
                   onClick={() => unhide.mutate(p.userKey)}
                   disabled={unhide.isPending}
                   aria-label={`Unhide ${p.userKey}`}
-                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-accent-ink hover:opacity-80"
+                  className="inline-flex items-center gap-1 text-caption font-semibold text-accent-ink hover:opacity-80"
                 >
                   <Eye className="w-3.5 h-3.5" /> Unhide
                 </button>

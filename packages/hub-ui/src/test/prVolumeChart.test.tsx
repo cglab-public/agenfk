@@ -139,7 +139,8 @@ describe('the x labels', () => {
     const { container } = mount();
     const labels = Array.from(container.querySelectorAll('[data-x-label]'));
     expect(labels.map(l => l.textContent)).toEqual(['09-01', '09-02', '09-03', '09-04']);
-    for (const l of labels) expect(l.className).toMatch(/\btext-\[11px\]/);
+    // The caption step of the type scale (11px), like the rest of the chart text.
+    for (const l of labels) expect(l.className).toMatch(/\btext-caption\b/);
   });
 });
 

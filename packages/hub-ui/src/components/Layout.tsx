@@ -16,7 +16,7 @@ function NavItem({ to, icon, label, onNavigate }: NavItemProps) {
       to={to}
       onClick={onNavigate}
       aria-current={active ? 'page' : undefined}
-      className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-[13px] font-medium transition-colors ${active
+      className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-body font-medium transition-colors ${active
         ? 'text-accent-ink bg-accent-fill'
         : 'text-ink-secondary hover:text-ink hover:bg-accent-fill/50'}`}
     >
@@ -131,14 +131,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <NavItem to="/admin" icon={<Shield className="w-4 h-4" />} label="Admin" onNavigate={followLink} />
         )}
         <div data-testid="sidebar-footer" className="mt-auto px-2 py-2 rounded-lg border border-border-soft bg-card-glass">
-          <div className="text-[10px] uppercase tracking-[0.16em] text-ink-tertiary">Signed in</div>
+          <div className="eyebrow text-ink-tertiary">Signed in</div>
           <div
-            className={`mt-0.5 text-[12px] text-ink truncate ${identity.isOpaqueId ? 'font-mono' : ''}`}
+            className={`mt-0.5 text-small text-ink truncate ${identity.isOpaqueId ? 'font-mono' : ''}`}
             title={identity.label}
           >
             {identity.label}
           </div>
-          <div className="mt-0.5 text-[10px] uppercase tracking-[0.14em] text-accent-ink">{me.data?.role}</div>
+          <div className="eyebrow mt-0.5 text-accent-ink">{me.data?.role}</div>
           <div className="mt-2 grid grid-cols-2 gap-1.5">
             <ThemeToggle />
             <button

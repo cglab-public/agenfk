@@ -119,7 +119,7 @@ function SizeCounts({ sizes }: { sizes: SizeDist }) {
         <span
           key={s.key}
           title={`${s.label} PRs`}
-          className={`min-w-[26px] text-center rounded-md px-1 py-0.5 font-mono text-[11px] tabular-nums ${sizes[s.key] === 0
+          className={`min-w-[26px] text-center rounded-md px-1 py-0.5 font-mono text-caption tabular-nums ${sizes[s.key] === 0
             ? 'text-ink-tertiary bg-canvas'
             : 'text-ink-secondary bg-canvas'}`}
         >
@@ -186,17 +186,17 @@ function PrDrilldownModal({ dev, day, prs, onClose }: {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={`PRs by ${dev} on ${day}`} onKeyDown={trapTab}>
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div ref={panelRef} className="relative z-50 w-full max-w-xl max-h-[70vh] overflow-y-auto rounded-2xl border border-border-soft bg-surface shadow-2xl">
+      <div ref={panelRef} className="relative z-50 w-full max-w-form max-h-[70vh] overflow-y-auto rounded-2xl border border-border-soft bg-surface shadow-2xl">
         <div className="sticky top-0 flex items-center justify-between gap-3 border-b border-border-soft bg-surface px-5 py-3.5">
           <div className="min-w-0">
-            <h3 className="truncate text-sm font-semibold text-ink">{dev}</h3>
-            <p className="font-mono text-[11px] text-ink-tertiary">{weekday} {day} · {prs.length} PR{prs.length === 1 ? '' : 's'}</p>
+            <h3 className="truncate text-body font-semibold text-ink">{dev}</h3>
+            <p className="font-mono text-caption text-ink-tertiary">{weekday} {day} · {prs.length} PR{prs.length === 1 ? '' : 's'}</p>
           </div>
           <button
             ref={closeRef}
             onClick={onClose}
             aria-label="Close"
-            className="rounded-lg border border-border-soft px-2 py-1 text-[12px] text-ink-tertiary hover:text-ink hover:bg-accent-fill transition-colors"
+            className="rounded-lg border border-border-soft px-2 py-1 text-small text-ink-tertiary hover:text-ink hover:bg-accent-fill transition-colors"
           >
             ✕
           </button>
@@ -208,13 +208,13 @@ function PrDrilldownModal({ dev, day, prs, onClose }: {
             const rowBody = (
               <>
                 {p.url ? (
-                  <span className="font-mono text-[13px] font-bold text-accent-ink shrink-0">
+                  <span className="font-mono text-body font-bold text-accent-ink shrink-0">
                     #{p.prNumber}
                   </span>
                 ) : (
                   <>
                     <span
-                      className="font-mono text-[13px] font-bold text-ink-secondary shrink-0"
+                      className="font-mono text-body font-bold text-ink-secondary shrink-0"
                       title={`${p.repo} — no GitHub link (non-GitHub host)`}
                     >
                       #{p.prNumber}
@@ -224,18 +224,18 @@ function PrDrilldownModal({ dev, day, prs, onClose }: {
                   </>
                 )}
                 <div className="min-w-0 flex-1">
-                  <div className="truncate font-mono text-[12px] text-ink-secondary">{p.repo}</div>
-                  <div className="text-[11px] text-ink-tertiary truncate">{p.model}{p.harness ? ` · via ${p.harness}` : ''}</div>
+                  <div className="truncate font-mono text-small text-ink-secondary">{p.repo}</div>
+                  <div className="text-caption text-ink-tertiary truncate">{p.model}{p.harness ? ` · via ${p.harness}` : ''}</div>
                 </div>
                 <div className="text-right shrink-0">
                   {size && (
                     // size.text (not a fixed text-white): the ramp's light end
                     // is near-white, so white-on-XS reads as a blank box.
-                    <span className="inline-block rounded-md px-1.5 py-0.5 font-mono text-[10px] font-bold" style={{ background: size.color, color: size.text }}>
+                    <span className="inline-block rounded-md px-1.5 py-0.5 font-mono text-caption font-bold" style={{ background: size.color, color: size.text }}>
                       {size.label}
                     </span>
                   )}
-                  <div className="mt-0.5 font-mono text-[10px] text-ink-tertiary tabular-nums">
+                  <div className="mt-0.5 font-mono text-caption text-ink-tertiary tabular-nums">
                     {!Number.isNaN(openedAt.getTime()) && <LocalTime value={openedAt} />}
                   </div>
                 </div>
@@ -794,7 +794,7 @@ export function PrOverviewPage() {
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <label
             htmlFor="pr-number-search"
-            className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary"
+            className="eyebrow text-ink-tertiary"
           >
             PR number
           </label>
@@ -802,7 +802,7 @@ export function PrOverviewPage() {
             <button
               onClick={() => setPrQuery('')}
               aria-label="Clear PR search"
-              className="inline-flex items-center gap-1 text-[11px] font-medium text-ink-tertiary hover:text-danger-muted"
+              className="inline-flex items-center gap-1 text-caption font-medium text-ink-tertiary hover:text-danger-muted"
             >
               <X className="w-3 h-3" /> Clear
             </button>
@@ -818,10 +818,10 @@ export function PrOverviewPage() {
             onChange={e => setPrQuery(e.target.value)}
             placeholder="57, #57, or paste a PR URL…"
             aria-describedby="pr-search-note"
-            className="flex-1 min-w-0 bg-transparent outline-none text-[12px] font-mono text-ink placeholder:text-ink-tertiary"
+            className="flex-1 min-w-0 bg-transparent outline-none text-small font-mono text-ink placeholder:text-ink-tertiary"
           />
         </div>
-        <p id="pr-search-note" className="mt-1.5 text-[11px] text-ink-tertiary">
+        <p id="pr-search-note" className="mt-1.5 text-caption text-ink-tertiary">
           {searchActive ? (
             answerMatchesBox ? (
               <>
@@ -924,7 +924,7 @@ export function PrOverviewPage() {
         <QueryError error={overview.error} onRetry={() => { void overview.refetch(); }} live="assertive" retrying={overview.isFetching} />
       )}
       {d && d.totals.prs === 0 && (
-        <div className="rounded-2xl border border-border-soft bg-surface px-5 py-10 text-center text-sm text-ink-tertiary">
+        <div className="rounded-2xl border border-border-soft bg-surface px-5 py-10 text-center text-body text-ink-tertiary">
           {/* A search that misses must say which PR it missed, and whether a
               project filter narrowed it. "No PRs for this project and period"
               would be actively wrong here — the period is not in play.
@@ -968,26 +968,26 @@ export function PrOverviewPage() {
           {d.resized.count > 0 && (
             <div className="flex items-center gap-3 flex-wrap rounded-xl border border-border-soft border-l-[3px] border-l-accent bg-surface px-4 py-3">
               <RefreshCw className="w-4 h-4 text-accent-ink" />
-              <span className="text-[13px] text-ink-secondary">
+              <span className="text-body text-ink-secondary">
                 <b className="text-ink">{d.resized.count} PRs re-sized</b> this period —{' '}
                 <span className="text-ink font-semibold">{d.resized.grew} grew ↑</span>,{' '}
                 <span className="text-ink font-semibold">{d.resized.shrank} shrank ↓</span>.
               </span>
-              <span className="ml-auto text-[11px] text-ink-tertiary">Each PR counts once, at its latest sizing.</span>
+              <span className="ml-auto text-caption text-ink-tertiary">Each PR counts once, at its latest sizing.</span>
             </div>
           )}
 
           {/* Daily stacked bar */}
           <section className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5">
             <div className="flex items-baseline justify-between gap-3 flex-wrap mb-4">
-              <h2 className="text-sm font-semibold text-ink">PR volume by size</h2>
+              <h2 className="text-body font-semibold text-ink">PR volume by size</h2>
               <div className="flex items-center gap-3 flex-wrap">
                 {SIZE_META.map(s => (
-                  <span key={s.key} className="inline-flex items-center gap-1.5 text-[11px] text-ink-tertiary">
+                  <span key={s.key} className="inline-flex items-center gap-1.5 text-caption text-ink-tertiary">
                     <span className="w-3 h-3 rounded-sm" style={{ background: s.color }} /> {s.label}
                   </span>
                 ))}
-                <div className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium" role="group" aria-label="Chart granularity">
+                <div className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-caption font-medium" role="group" aria-label="Chart granularity">
                   {GRANULARITIES.map(g => (
                     <button
                       key={g.key}
@@ -1009,7 +1009,7 @@ export function PrOverviewPage() {
           {/* By developer */}
           <section className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl overflow-hidden">
             <div className="px-5 py-4 border-b border-border-soft">
-              <h2 className="text-sm font-semibold text-ink">By developer</h2>
+              <h2 className="text-body font-semibold text-ink">By developer</h2>
             </div>
             <DataTable
               caption="By developer"
@@ -1029,7 +1029,7 @@ export function PrOverviewPage() {
                     </div>
                   ),
                 },
-                { key: 'prs', header: 'PRs', align: 'right', firstDir: 'desc', sortValue: dev => dev.prs, render: dev => <span className="font-mono tabular-nums text-lg font-bold text-ink">{dev.prs}</span> },
+                { key: 'prs', header: 'PRs', align: 'right', firstDir: 'desc', sortValue: dev => dev.prs, render: dev => <span className="font-mono tabular-nums text-title font-bold text-ink">{dev.prs}</span> },
                 { key: 'pts', header: 'Size points', align: 'right', firstDir: 'desc', sortValue: dev => dev.sizePoints, render: dev => <span className="font-mono tabular-nums text-ink-secondary">{dev.sizePoints.toLocaleString()}</span> },
                 { key: 'mix', header: 'Size mix', className: 'w-[180px]', render: dev => <MixBar sizes={dev.sizes} total={dev.prs} /> },
                 { key: 'counts', header: 'XS · S · M · L · XL', render: dev => <SizeCounts sizes={dev.sizes} /> },
@@ -1041,8 +1041,8 @@ export function PrOverviewPage() {
           {/* By model */}
           <section className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl overflow-hidden">
             <div className="px-5 py-4 border-b border-border-soft">
-              <h2 className="text-sm font-semibold text-ink">By model</h2>
-              <p className="text-[11px] text-ink-tertiary mt-0.5">Which agent runtime opened the PRs.</p>
+              <h2 className="text-body font-semibold text-ink">By model</h2>
+              <p className="text-caption text-ink-tertiary mt-0.5">Which agent runtime opened the PRs.</p>
             </div>
             <DataTable
               caption="By model"
@@ -1057,12 +1057,12 @@ export function PrOverviewPage() {
                   sortValue: m => m.model.toLowerCase(),
                   render: m => (
                     <>
-                      <div className="font-mono text-[12px] text-ink-secondary">{m.model}</div>
-                      {m.harnesses.length > 0 && <div className="text-[10px] text-ink-tertiary">via {m.harnesses.join(', ')}</div>}
+                      <div className="font-mono text-small text-ink-secondary">{m.model}</div>
+                      {m.harnesses.length > 0 && <div className="text-caption text-ink-tertiary">via {m.harnesses.join(', ')}</div>}
                     </>
                   ),
                 },
-                { key: 'prs', header: 'PRs', align: 'right', firstDir: 'desc', sortValue: m => m.prs, render: m => <span className="font-mono tabular-nums text-lg font-bold text-ink">{m.prs}</span> },
+                { key: 'prs', header: 'PRs', align: 'right', firstDir: 'desc', sortValue: m => m.prs, render: m => <span className="font-mono tabular-nums text-title font-bold text-ink">{m.prs}</span> },
                 { key: 'mix', header: 'Size mix', className: 'w-[180px]', render: m => <MixBar sizes={m.sizes} total={m.prs} /> },
                 { key: 'counts', header: 'XS · S · M · L · XL', render: m => <SizeCounts sizes={m.sizes} /> },
                 { key: 'share', header: 'Share', align: 'right', render: m => <span className="font-mono tabular-nums text-ink-secondary">{Math.round((m.prs / d.totals.prs) * 100)}%</span> },
@@ -1075,8 +1075,8 @@ export function PrOverviewPage() {
               tooltip on EVERY cell (the native title alone proved unreliable
               here, and 0-count cells previously lost hover to a nested div). */}
           <section className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5">
-            <h2 className="text-sm font-semibold text-ink mb-1">Per developer, per day</h2>
-            <p className="text-[11px] text-ink-tertiary mb-4">Cell shade = PRs opened that day. Pills: share of PRs · share of size points.</p>
+            <h2 className="text-body font-semibold text-ink mb-1">Per developer, per day</h2>
+            <p className="text-caption text-ink-tertiary mb-4">Cell shade = PRs opened that day. Pills: share of PRs · share of size points.</p>
             {/* scroll-padding: a cell focused into view must land clear of the
                 sticky name column (at most 190px plus the 4px gap), not under
                 it. A scroll moves the cells out from under the tooltip. */}
@@ -1097,7 +1097,7 @@ export function PrOverviewPage() {
                     <div
                       key={`${band.label}-${i}`}
                       style={{ gridColumn: `span ${band.span}` }}
-                      className="text-center font-mono text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-tertiary border-b-2 border-border-soft pb-1"
+                      className="eyebrow text-center font-mono text-ink-tertiary border-b-2 border-border-soft pb-1"
                     >
                       {band.label}
                     </div>
@@ -1119,8 +1119,8 @@ export function PrOverviewPage() {
                         ? 'bg-canvas outline outline-1 outline-accent'
                         : h.isWeekend ? 'bg-canvas' : ''}`}
                     >
-                      <span className={`block font-mono text-[8px] uppercase leading-tight ${h.isWeekend ? 'text-ink-tertiary' : 'text-ink-tertiary'}`}>{h.weekday}</span>
-                      <span className={`block font-mono text-[11px] font-bold tabular-nums leading-tight ${h.isToday
+                      <span className={`block font-mono text-caption uppercase leading-tight ${h.isWeekend ? 'text-ink-tertiary' : 'text-ink-tertiary'}`}>{/* One letter: at 11px a three-letter day overruns a 10px column; the full day is the column's aria-label. */}{h.weekday.charAt(0)}</span>
+                      <span className={`block font-mono text-caption font-bold tabular-nums leading-tight ${h.isToday
                         ? 'text-accent-ink'
                         : h.isWeekend ? 'text-ink-tertiary' : 'text-ink-secondary'}`}>{h.dayNum}</span>
                     </div>
@@ -1137,12 +1137,12 @@ export function PrOverviewPage() {
                       {/* sticky so names + pills stay visible when the day axis scrolls */}
                       <div role="rowheader" className="sticky left-0 z-10 self-stretch flex items-center gap-2 pr-2 min-w-0 bg-surface">
                         {nameOf(dev.user_key)
-                          ? <span title={dev.user_key} className="text-[11px] text-ink-secondary truncate">{labelOf(dev.user_key)}</span>
-                          : <span title={dev.user_key} className="font-mono text-[11px] text-ink-tertiary truncate">{dev.user_key}</span>}
+                          ? <span title={dev.user_key} className="text-caption text-ink-secondary truncate">{labelOf(dev.user_key)}</span>
+                          : <span title={dev.user_key} className="font-mono text-caption text-ink-tertiary truncate">{dev.user_key}</span>}
                         {/* stacked vertically so long dev emails keep the width */}
                         <span className="ml-auto flex flex-col items-end gap-0.5 shrink-0">
-                          <span title={`${pct.prPct}% share of all PRs in the period`} className="text-[11px] font-semibold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-accent-ink bg-accent-fill border border-accent">{pct.prPct}% of PRs</span>
-                          <span title={`${pct.ptsPct}% share of all size points in the period`} className="text-[11px] font-semibold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-ink-secondary bg-canvas border border-border-soft">{pct.ptsPct}% of size</span>
+                          <span title={`${pct.prPct}% share of all PRs in the period`} className="text-caption font-semibold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-accent-ink bg-accent-fill border border-accent">{pct.prPct}% of PRs</span>
+                          <span title={`${pct.ptsPct}% share of all size points in the period`} className="text-caption font-semibold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-ink-secondary bg-canvas border border-border-soft">{pct.ptsPct}% of size</span>
                         </span>
                       </div>
                       {axis.map((day, i) => {
@@ -1204,7 +1204,7 @@ export function PrOverviewPage() {
               defect). Coordinates are viewport-relative, from placeTooltip. */}
           {heatTip && (
             <div
-              className={`pointer-events-none fixed z-50 -translate-x-1/2 whitespace-nowrap rounded-md bg-surface text-ink border border-border-soft font-mono text-[10px] px-2 py-1 shadow-lg ${heatTip.below ? '' : '-translate-y-full'}`}
+              className={`pointer-events-none fixed z-50 -translate-x-1/2 whitespace-nowrap rounded-md bg-surface text-ink border border-border-soft font-mono text-caption px-2 py-1 shadow-lg ${heatTip.below ? '' : '-translate-y-full'}`}
               style={{ left: heatTip.x, top: heatTip.y }}
             >
               {heatTip.text}
@@ -1214,17 +1214,17 @@ export function PrOverviewPage() {
 
           {/* Size model explainer */}
           <section className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5">
-            <h2 id="size-derivation" className="text-sm font-semibold text-ink mb-3 scroll-mt-4">How size is derived</h2>
-            <div className="font-mono text-[13px] rounded-lg bg-canvas border border-border-soft px-4 py-3 text-ink-secondary">
+            <h2 id="size-derivation" className="text-body font-semibold text-ink mb-3 scroll-mt-4">How size is derived</h2>
+            <div className="font-mono text-body rounded-lg bg-canvas border border-border-soft px-4 py-3 text-ink-secondary">
               <span className="text-ink-tertiary">// count leaves — the unit of work in each branch</span><br />
               <span className="text-accent-ink">size_points</span> = leafStory·<b>4</b> + task·<b>2</b> + bug·<b>1</b>
             </div>
-            <p className="text-[12px] text-ink-tertiary mt-3 max-w-2xl">
+            <p className="text-small text-ink-tertiary mt-3 max-w-prose">
               An Epic rolls up its Stories, and a Story rolls up its Tasks &amp; Bugs — so summing all four tiers
               double-counts. We size by the atomic deliverables; a Story with no subtasks is itself a leaf and scores ×4.
               A later re-size re-buckets the same PR (it never adds a second one), and the PR is attributed to its opener.
             </p>
-            <div className="flex gap-2 flex-wrap mt-3 text-[11px] font-mono">
+            <div className="flex gap-2 flex-wrap mt-3 text-caption font-mono">
               {[{ b: 'XS', r: '0–2' }, { b: 'S', r: '3–6' }, { b: 'M', r: '7–14' }, { b: 'L', r: '15–30' }, { b: 'XL', r: '31+' }].map((x, i) => (
                 <span key={x.b} className="inline-flex items-center gap-1.5 rounded-md border border-border-soft px-2 py-1">
                   <span className="w-2.5 h-2.5 rounded-sm" style={{ background: colorOf(SIZE_META[i].key) }} />

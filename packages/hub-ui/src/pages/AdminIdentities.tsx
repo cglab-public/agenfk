@@ -120,17 +120,17 @@ export function AdminIdentities() {
       <section className={cardCls}>
         <header className="flex items-start justify-between gap-3">
           <div>
-            <h3 className="text-sm font-semibold text-ink inline-flex items-center gap-1.5">
+            <h3 className="text-body font-semibold text-ink inline-flex items-center gap-1.5">
               <Users className="w-4 h-4" /> Identity suggestions
             </h3>
-            <p className="mt-0.5 text-xs text-ink-tertiary">
+            <p className="mt-0.5 text-small text-ink-tertiary">
               An installation whose history was recorded under one identity but which now reports a
               different one. Merging rewrites history, so only unambiguous cases are offered as a
               single action. {MERGE_UNDO}
             </p>
           </div>
           {summary.total > 0 && (
-            <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] tabular-nums text-ink-tertiary shrink-0">
+            <div className="flex flex-wrap gap-x-3 gap-y-1 text-caption tabular-nums text-ink-tertiary shrink-0">
               <span>{summary.ready} ready</span>
               {summary.conflated > 0 && <span className="text-status-warn-text">{summary.conflated} need review</span>}
               {summary.blocked > 0 && <span className="text-status-warn-text">{summary.blocked} blocked</span>}
@@ -139,7 +139,7 @@ export function AdminIdentities() {
         </header>
 
         {suggestions.length === 0 && (
-          <p className="mt-4 text-sm text-ink-tertiary">
+          <p className="mt-4 text-body text-ink-tertiary">
             {suggestionQLoading(suggestionsQ) ? 'Loading…' : 'No split identities detected.'}
           </p>
         )}
@@ -152,10 +152,10 @@ export function AdminIdentities() {
               <div key={`${sug.from}->${sug.to}`} className="rounded-lg border border-border-soft bg-surface p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="text-sm text-ink font-mono break-all">
+                    <div className="text-body text-ink font-mono break-all">
                       {sug.from} <span className="text-ink-tertiary">→</span> {sug.to}
                     </div>
-                    <div className="mt-1 text-[11px] text-ink-tertiary tabular-nums">
+                    <div className="mt-1 text-caption text-ink-tertiary tabular-nums">
                       {sug.events} event{sug.events === 1 ? '' : 's'} · {fmtDay(sug.firstSeen)} → {fmtDay(sug.lastSeen)}
                       {' · '}
                       {sug.sourceInstallationCount} installation{sug.sourceInstallationCount === 1 ? '' : 's'}
@@ -166,20 +166,20 @@ export function AdminIdentities() {
                     disabled={!canMergeInOneClick(sug) || merge.isPending}
                     aria-label={`Merge ${sug.from} into ${sug.to}`}
                     title={blocked ?? 'Merge this identity'}
-                    className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-accent bg-accent-fill px-2.5 py-1.5 text-[11px] font-semibold text-accent-ink disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="shrink-0 inline-flex items-center gap-1 rounded-lg border border-accent bg-accent-fill px-2.5 py-1.5 text-caption font-semibold text-accent-ink disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     <Merge className="w-3.5 h-3.5" /> Merge
                   </button>
                 </div>
                 {blocked && (
-                  <p className="mt-2 inline-flex items-start gap-1.5 text-[11px] text-status-warn-text">
+                  <p className="mt-2 inline-flex items-start gap-1.5 text-caption text-status-warn-text">
                     <ShieldAlert className="w-3.5 h-3.5 shrink-0 mt-px" /> {blocked}
                   </p>
                 )}
                 {sug.confidence === 'conflated' && (
                   <ul className="mt-2 space-y-0.5">
                     {sug.installations.map(id => (
-                      <li key={id} className="font-mono text-[11px] text-ink-tertiary">{id}</li>
+                      <li key={id} className="font-mono text-caption text-ink-tertiary">{id}</li>
                     ))}
                   </ul>
                 )}
@@ -190,8 +190,8 @@ export function AdminIdentities() {
       </section>
 
       <section className={cardCls}>
-        <h3 className="text-sm font-semibold text-ink">Merge manually</h3>
-        <p className="mt-0.5 text-xs text-ink-tertiary">
+        <h3 className="text-body font-semibold text-ink">Merge manually</h3>
+        <p className="mt-0.5 text-small text-ink-tertiary">
           For cases detection cannot infer — a changed employer domain, say. The source must have no
           live API key, or the hub will refuse.
         </p>
@@ -201,7 +201,7 @@ export function AdminIdentities() {
             onChange={e => setFrom(e.target.value)}
             placeholder="from (old identity)"
             aria-label="From (old identity)"
-            className="flex-1 min-w-[12rem] rounded-lg border border-border-soft bg-surface px-3 py-2 text-sm text-ink font-mono"
+            className="flex-1 min-w-[12rem] rounded-lg border border-border-soft bg-surface px-3 py-2 text-body text-ink font-mono"
           />
           <span className="text-ink-tertiary">→</span>
           <input
@@ -209,12 +209,12 @@ export function AdminIdentities() {
             onChange={e => setTo(e.target.value)}
             placeholder="to (kept identity)"
             aria-label="To (kept identity)"
-            className="flex-1 min-w-[12rem] rounded-lg border border-border-soft bg-surface px-3 py-2 text-sm text-ink font-mono"
+            className="flex-1 min-w-[12rem] rounded-lg border border-border-soft bg-surface px-3 py-2 text-body text-ink font-mono"
           />
           <button
             onClick={() => confirmMerge({ from: from.trim(), to: to.trim() })}
             disabled={!isValidManualMerge(from, to) || merge.isPending}
-            className="rounded-lg border border-accent bg-accent-fill px-3 py-2 text-xs font-semibold text-accent-ink disabled:opacity-40 disabled:cursor-not-allowed"
+            className="rounded-lg border border-accent bg-accent-fill px-3 py-2 text-small font-semibold text-accent-ink disabled:opacity-40 disabled:cursor-not-allowed"
           >
             Merge
           </button>
@@ -224,17 +224,17 @@ export function AdminIdentities() {
 
       {misattributed.length > 0 && (
         <section className={cardCls}>
-          <h3 className="text-sm font-semibold text-ink inline-flex items-center gap-1.5">
+          <h3 className="text-body font-semibold text-ink inline-flex items-center gap-1.5">
             <AlertTriangle className="w-4 h-4" /> Attributed by username
           </h3>
-          <p className="mt-0.5 text-xs text-ink-tertiary">
+          <p className="mt-0.5 text-small text-ink-tertiary">
             These installs have no git email, so their work is filed under an OS username. Each one
             becomes a future merge the day its owner sets <code>user.email</code> — fixing it at the
             source is cheaper than repairing it here.
           </p>
           <ul className="mt-3 space-y-1">
             {misattributed.map(i => (
-              <li key={i.id} className="text-[11px] text-ink-tertiary">
+              <li key={i.id} className="text-caption text-ink-tertiary">
                 <span className="font-mono">{i.id.slice(0, 8)}…</span>
                 {' · '}
                 <span className="text-ink-secondary">{i.gitName ?? i.osUser ?? 'unknown'}</span>
@@ -245,21 +245,21 @@ export function AdminIdentities() {
       )}
 
       <section className={cardCls}>
-        <h3 className="text-sm font-semibold text-ink inline-flex items-center gap-1.5">
+        <h3 className="text-body font-semibold text-ink inline-flex items-center gap-1.5">
           <History className="w-4 h-4" /> Merge history
         </h3>
-        <p className="mt-0.5 text-xs text-ink-tertiary">
+        <p className="mt-0.5 text-small text-ink-tertiary">
           Reverting a merge moves exactly the events it touched back. {MERGE_UNDO}
         </p>
         <InlineError error={revert.error} className="mt-2" />
-        {revertNote && <p className="mt-2 text-xs text-ink-tertiary">{revertNote}</p>}
+        {revertNote && <p className="mt-2 text-small text-ink-tertiary">{revertNote}</p>}
         {(mergesQ.data ?? []).length === 0 ? (
-          <p className="mt-3 text-sm text-ink-tertiary">Nothing merged yet.</p>
+          <p className="mt-3 text-body text-ink-tertiary">Nothing merged yet.</p>
         ) : (
           <div className="mt-3 -mx-5 overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full text-body">
               <thead>
-                <tr className="text-[10px] uppercase tracking-[0.14em] text-ink-tertiary font-semibold">
+                <tr className="eyebrow text-ink-tertiary">
                   <th className="text-left px-5 py-2">Merge</th>
                   <th className="text-right px-2 py-2">Events</th>
                   <th className="text-left px-2 py-2">By</th>
@@ -270,15 +270,15 @@ export function AdminIdentities() {
               <tbody className="divide-y divide-border-soft">
                 {mergesQ.data!.map(m => (
                   <tr key={m.id}>
-                    <td className="px-5 py-2 font-mono text-[11px] text-ink-secondary break-all">
+                    <td className="px-5 py-2 font-mono text-caption text-ink-secondary break-all">
                       {m.from} → {m.to}
                     </td>
-                    <td className="px-2 py-2 text-right text-[11px] text-ink-tertiary tabular-nums">{m.eventsMoved}</td>
-                    <td className="px-2 py-2 text-[11px] text-ink-tertiary">{m.mergedByEmail ?? '—'}</td>
-                    <td className="px-2 py-2 text-right text-[11px] text-ink-tertiary tabular-nums">{fmtDay(m.createdAt)}</td>
+                    <td className="px-2 py-2 text-right text-caption text-ink-tertiary tabular-nums">{m.eventsMoved}</td>
+                    <td className="px-2 py-2 text-caption text-ink-tertiary">{m.mergedByEmail ?? '—'}</td>
+                    <td className="px-2 py-2 text-right text-caption text-ink-tertiary tabular-nums">{fmtDay(m.createdAt)}</td>
                     <td className="px-5 py-2 text-right">
                       {m.revertedAt ? (
-                        <span className="text-[11px] text-ink-tertiary">reverted {fmtDay(m.revertedAt)}</span>
+                        <span className="text-caption text-ink-tertiary">reverted {fmtDay(m.revertedAt)}</span>
                       ) : (
                         <button
                           onClick={async () => {
@@ -292,7 +292,7 @@ export function AdminIdentities() {
                           disabled={revert.isPending}
                           aria-label={`Revert merge of ${m.from} into ${m.to}`}
                           title="Move these events back to their original identity"
-                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-status-warn-text"
+                          className="inline-flex items-center gap-1 text-caption font-semibold text-ink-tertiary hover:text-status-warn-text"
                         >
                           <Undo2 className="w-3.5 h-3.5" /> Revert
                         </button>
