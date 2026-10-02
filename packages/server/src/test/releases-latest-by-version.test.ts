@@ -22,8 +22,9 @@ vi.mock('axios', () => {
 
 import axios from 'axios';
 import { app, initStorage, clearReleaseCache } from '../server';
+import { testDbPath } from './helpers/testDb';
 
-const TEST_DB = path.resolve('./releases-latest-by-version-test-db.sqlite');
+const TEST_DB = testDbPath('releases-latest-by-version-test-db.sqlite');
 let server: import('http').Server;
 const agent = () => request(server);
 const get = vi.mocked((axios as any).get);

@@ -2,6 +2,23 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.25] — 2026-10-02
+
+Pre-release. Beta, cumulative over `2.0.0-beta.24`.
+
+- **Desktop terminal on Windows opens again.** Opening a terminal failed with `pty:spawn File not found`, because
+  the shell resolved to `/bin/sh` on every OS. On Windows the terminal and the agent picker's **Shell** entry now
+  start PowerShell by its absolute path (`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`), and
+  `$SHELL` is ignored there (2fd7c65c).
+- **The agent picker's Shell entry uses your own shell on macOS and Linux.** It was fixed to `bash -l`: a machine
+  without bash could not open it, and zsh or fish users got bash. It now opens your shell (`$SHELL`, else your
+  account's shell, else `/bin/sh`) as a login shell where that shell takes `-l`. The plain terminal already used
+  `$SHELL` and is unchanged (df675f82).
+- **Server tests keep their databases out of the repository.** About 60 sqlite files (with their `-wal`/`-shm`
+  sidecars) were left in the repo root by test runs. Each server test now takes its database from `testDbPath()`,
+  in a directory the runner pins inside the HOME sandbox, which is deleted when the run ends; a guard test refuses a
+  server test that builds one with `path.resolve('<name>.sqlite')` (c89e677d).
+
 ## [2.0.0-beta.24] — 2026-10-02
 
 Pre-release. Beta, cumulative over `2.0.0-beta.23`: everything in beta.23 and beta.22 (below) and the CGLAB-164
