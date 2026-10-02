@@ -48,7 +48,7 @@ async function setup(plan: Record<string, unknown>, status = 'PLAN', work: Recor
   return { id: c.body.id as string, dir, title: c.body.title as string };
 }
 const validate = (id: string) => agent().post(`/items/${id}/validate`).set({ 'x-agenfk-internal': VERIFY_TOKEN! }).send({ evidence: 'ok' });
-const item = async (id: string) => (await agent().get(`/items/${id}`)).body;
+const item = async (id: string) => (await agent().get(`/items/${id}?records=1`)).body;
 const exitOf = async (id: string, step: string) => (await item(id)).stepRecords.find((r: any) => r.kind === 'exit' && r.step === step);
 
 describe('CGLAB-388: commit when the card leaves the step', () => {

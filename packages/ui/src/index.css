@@ -7,6 +7,9 @@
 /* CG/lab shared design tokens — single source of truth, also consumed by
  * packages/hub-ui/src/index.css. Edit values only in packages/brand/tokens.css. */
 @import "../../brand/tokens.css";
+/* The shared type scale (caption … display, eyebrow, max-w-form/data), which
+ * the flow editor uses here as it does in the hub. */
+@import "../../brand/type-scale.css";
 
 /* @import statements must precede all other statements (besides @charset or
  * an empty @layer) per the CSS spec — @plugin/@source below silently broke

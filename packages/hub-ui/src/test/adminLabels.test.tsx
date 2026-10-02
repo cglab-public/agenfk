@@ -20,6 +20,7 @@ import { AdminFlows } from '../pages/AdminFlows';
 import { upgradeStateLabel } from '../pages/adminLabels';
 import { ThemeProvider } from '../ThemeContext';
 import { api } from '../api';
+import { answerConfirm, forbidWindowConfirm } from './helpers/confirmDialog';
 
 vi.mock('../api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn() } }));
 const get = api.get as unknown as ReturnType<typeof vi.fn>;
@@ -100,7 +101,7 @@ describe('admin pages speak plainly', () => {
     // The summary chips use the same words as the pills.
     expect(screen.getByText('1 running')).toBeInTheDocument();
     expect(screen.getByText('1 updated')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Clear stuck' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Clear stuck upgrade to v/ })).toBeInTheDocument();
     (await screen.findByRole('button', { name: /issue upgrade/i })).click();
     expect(await screen.findByText(/Oldest version reported/)).toBeInTheDocument();
     expect(visibleText()).not.toMatch(JARGON);
@@ -134,11 +135,11 @@ describe('admin pages speak plainly', () => {
   });
 
   it('Upgrades: the empty list and the stuck-upgrade confirm speak plainly', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const confirmSpy = forbidWindowConfirm();
     mount(<AdminUpgrades />);
     ((await screen.findByText('v2.0.1', { selector: 'span' })).closest('button') as HTMLElement).click();
-    (await screen.findByRole('button', { name: 'Clear stuck' })).click();
-    const asked = String(confirmSpy.mock.calls[0]?.[0] ?? '');
+    (await screen.findByRole('button', { name: /^Clear stuck upgrade to v/ })).click();
+    const asked = await answerConfirm(false);
     expect(asked).toMatch(/still running this upgrade/);
     expect(asked).not.toMatch(/\btoo\b/); // nothing else is being cancelled
     expect(asked).not.toMatch(JARGON);

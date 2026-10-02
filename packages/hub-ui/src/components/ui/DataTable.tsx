@@ -79,15 +79,15 @@ export function DataTable<T>({ caption, columns, rows, rowKey, defaultSort, sear
               value={query}
               onChange={e => setQuery(e.target.value)}
               placeholder={search.placeholder ?? search.label}
-              className="w-full rounded-lg border border-border-soft bg-surface pl-8 pr-2 py-1.5 text-[12px] text-ink placeholder:text-ink-tertiary"
+              className="w-full rounded-lg border border-border-soft bg-surface pl-8 pr-2 py-1.5 text-small text-ink placeholder:text-ink-tertiary"
             />
           </div>
         </div>
       )}
-      <div className="overflow-x-auto">
-        <table aria-label={caption} className="w-full text-sm" style={minWidth ? { minWidth } : undefined}>
+      <div className="relative overflow-x-auto">
+        <table aria-label={caption} className="w-full text-body" style={minWidth ? { minWidth } : undefined}>
           <thead>
-            <tr className="text-left font-mono text-[10px] uppercase tracking-[0.08em] text-ink-tertiary">
+            <tr className="eyebrow text-left font-mono text-ink-tertiary">
               {columns.map(col => {
                 const active = sort?.key === col.key;
                 const ariaSort = col.sortValue ? (active ? (sort!.dir === 'asc' ? 'ascending' : 'descending') : 'none') : undefined;
@@ -104,7 +104,7 @@ export function DataTable<T>({ caption, columns, rows, rowKey, defaultSort, sear
                         type="button"
                         onClick={() => toggle(col)}
                         className={cn(
-                          'inline-flex items-center gap-1 uppercase tracking-[0.08em] hover:text-ink',
+                          'eyebrow inline-flex items-center gap-1 hover:text-ink',
                           active && 'text-ink-secondary',
                           col.align === 'right' && 'flex-row-reverse',
                         )}
@@ -131,7 +131,7 @@ export function DataTable<T>({ caption, columns, rows, rowKey, defaultSort, sear
           </tbody>
         </table>
         {search && query.trim() && shown.length === 0 && (
-          <p className="px-5 py-6 text-center text-sm text-ink-tertiary">No rows match “{query.trim()}”.</p>
+          <p className="px-5 py-6 text-center text-body text-ink-tertiary">No rows match “{query.trim()}”.</p>
         )}
       </div>
     </div>

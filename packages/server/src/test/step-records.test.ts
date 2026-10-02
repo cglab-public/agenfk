@@ -204,7 +204,7 @@ describe('CGLAB-379: step records', () => {
       const proj = (await agent().get(`/projects/${p}`)).body;
       expect(proj.testReport ?? null).toBeNull();
       expect(proj.testReportChanges).toHaveLength(2);
-      const notes = ((await agent().get(`/items/${working}`)).body.comments ?? []).filter((c: any) => /test report/i.test(c.content));
+      const notes = ((await agent().get(`/items/${working}?records=1`)).body.comments ?? []).filter((c: any) => /test report/i.test(c.content));
       expect(notes).toHaveLength(2);
     });
   });

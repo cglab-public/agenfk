@@ -62,6 +62,13 @@ export interface StorageProvider extends AgEnFKPlugin {
    * there. Optional: a provider without it gives no partial runs from a map.
    */
   readBlob?(hash: string): Promise<unknown | null>;
+  /**
+   * ec325925: replace a card's step records as housekeeping - no updatedAt,
+   * no history - and drop the results blobs nothing references any more.
+   * Optional: a provider without them is simply not pruned.
+   */
+  rewriteRecords?(id: string, records: { stepRecords?: unknown[]; supersededRecords?: unknown[] }): Promise<void>;
+  sweepUnreferencedBlobs?(): Promise<number>;
   listItems(query?: StorageQuery): Promise<AgEnFKItem[]>;
   listChildren(parentId: string): Promise<AgEnFKItem[]>;
 

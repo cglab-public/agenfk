@@ -55,10 +55,11 @@ export function FilterAccordion({
       <h2 id={headingId} className="sr-only">Filters</h2>
       <div className="flex items-center gap-2.5 px-5 py-2.5">
         <SlidersHorizontal className="w-4 h-4 text-ink-tertiary shrink-0" aria-hidden="true" />
-        <p data-filter-summary className="min-w-0 flex-1 truncate text-[12px] text-ink-secondary" title={summary}>{summary}</p>
+        {/* Wrapped, not truncated: collapsed, the summary is all there is to read. */}
+        <p data-filter-summary className="min-w-0 flex-1 break-words text-small text-ink-secondary">{summary}</p>
         {activeCount > 0 && (
           <span
-            className="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-mono border text-accent-ink border-accent bg-accent-fill"
+            className="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-caption font-mono border text-accent-ink border-accent bg-accent-fill"
             title={`${activeCount} filter${activeCount === 1 ? '' : 's'} active`}
           >
             {activeCount} active
@@ -69,7 +70,7 @@ export function FilterAccordion({
           onClick={toggle}
           aria-expanded={open}
           aria-controls={bodyId}
-          className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-md text-[12px] font-semibold text-accent-ink hover:bg-accent-fill/40 transition-colors"
+          className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-md text-small font-semibold text-accent-ink hover:bg-accent-fill/40 transition-colors"
         >
           {open ? 'Hide filters' : 'Edit filters'}
           <ChevronDown className={`w-3.5 h-3.5 transition-transform ${open ? 'rotate-180' : ''}`} aria-hidden="true" />

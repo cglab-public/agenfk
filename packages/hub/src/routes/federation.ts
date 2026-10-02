@@ -63,7 +63,7 @@ export function forwardedEventId(childHubId: string, eventId: string): string {
 /** Admin-facing: mint a child-hub invite. Mounted under /hub/federation. */
 export function federationInviteRouter(ctx: HubServerContext): Router {
   const router = Router();
-  const adminGuard = requireAdmin(ctx.config.sessionSecret);
+  const adminGuard = requireAdmin(ctx.config.sessionSecret, ctx.db);
 
   router.post('/invite/create', adminGuard, (req: Request, res: Response) => {
     res.json(mintChildHubInvite(req.session!.orgId, ctx.config.secretKey, publicHubUrl(req)));

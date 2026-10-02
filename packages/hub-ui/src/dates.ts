@@ -84,3 +84,12 @@ export function browserTimezone(): string | null {
   try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; }
   catch { return null; }
 }
+
+/**
+ * " (<date, time>)" for a control's accessible name, or "" when there is no
+ * time. Two actions on the same version (an upgrade, a dispatch) differ only
+ * by when they were issued, so their names need it to be told apart.
+ */
+export function issuedAt(input: string | null | undefined): string {
+  return input ? ` (${fmtDateTime(input)})` : '';
+}

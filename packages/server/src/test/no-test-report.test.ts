@@ -147,7 +147,7 @@ describe('5a8d22e6 review: held where the fix still works', () => {
     await storage.updateProject(t.pid, { testReport: { format: 'junit-xml', command: `node ${runner}`, reportPath: 'report.xml' } } as never);
     const res = await validate(t.id);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    const entry = ((await agent().get(`/items/${t.id}`)).body.stepRecords ?? []).filter((r: any) => r.kind === 'capture' && r.step === 'PLAN').pop();
+    const entry = ((await agent().get(`/items/${t.id}?records=1`)).body.stepRecords ?? []).filter((r: any) => r.kind === 'capture' && r.step === 'PLAN').pop();
     expect(entry).toMatchObject({ available: true });
   });
 
@@ -196,7 +196,7 @@ describe('5a8d22e6 review: held where the fix still works', () => {
     const res = await validate(t.id);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     // Passed on, the card still records the entry capture it can have (8876747c review).
-    expect(((await agent().get(`/items/${t.id}`)).body.stepRecords ?? []).some((r: any) => r.kind === 'capture' && r.step === 'PLAN')).toBe(true);
+    expect(((await agent().get(`/items/${t.id}?records=1`)).body.stepRecords ?? []).some((r: any) => r.kind === 'capture' && r.step === 'PLAN')).toBe(true);
   });
 
   it('carries error and fix through a background run too (the CLI follows those)', async () => {
@@ -221,7 +221,7 @@ describe('5a8d22e6 review: an override given before the wording changed still co
     await storage.updateItem(t.id, { stepRecords: ['new-tests-exist', 'some-new-test-red', 'existing-tests-still-green'].map((check, i) => ({ id: `o${i}`, step: 'TESTS', kind: 'override', check, by: 'board', at, reason: 'no report yet', detail: legacy })) } as any);
     const res = await validate(t.id);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    const card = (await agent().get(`/items/${t.id}`)).body;
+    const card = (await agent().get(`/items/${t.id}?records=1`)).body;
     const exit = (card.stepRecords ?? []).find((r: any) => r.kind === 'exit' && r.step === 'TESTS');
     expect((exit.checks as any[]).filter(c => c.overridden).map(c => c.id).sort()).toEqual(['existing-tests-still-green', 'new-tests-exist', 'some-new-test-red']);
   });

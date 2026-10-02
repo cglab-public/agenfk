@@ -2,17 +2,20 @@ import { ReactNode, useId } from 'react';
 import { cn } from './cn';
 
 /** A filter's heading with its "Clear (n)" action. */
-export function FilterHeading({ id, label, count, onClear }: {
+export function FilterHeading({ id, label, count, onClear, disabled }: {
   id: string;
   label: string;
   count: number;
   onClear: () => void;
+  disabled?: boolean;
 }) {
   return (
     <div className="flex items-center justify-between gap-3 flex-wrap">
-      <h3 id={id} className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{label}</h3>
+      <h3 id={id} className="eyebrow text-ink-tertiary">{label}</h3>
       {count > 0 && (
-        <button type="button" onClick={onClear} className="text-xs font-medium text-ink-tertiary hover:text-ink">
+        // Each facet has a Clear: the name says which filter it empties, and
+        // starts with the visible "Clear (n)" so voice control can still say it.
+        <button type="button" onClick={onClear} disabled={disabled} aria-label={`Clear (${count}) ${label} filter`} className="text-small font-medium text-ink-tertiary hover:text-ink disabled:opacity-50">
           Clear ({count})
         </button>
       )}
@@ -20,28 +23,40 @@ export function FilterHeading({ id, label, count, onClear }: {
   );
 }
 
-/** One toggle chip. `title` is the hover text (the raw value by default). */
-export function Chip({ on, onClick, title, mono = false, children }: {
+/**
+ * One toggle chip. `title` is the hover text. `detail` is the raw value behind
+ * a short label: shown under it, and the chip's description, so it does not
+ * live only in a mouse-only title.
+ */
+export function Chip({ on, onClick, title, detail, mono = false, disabled, children }: {
   on: boolean;
   onClick: () => void;
   title?: string;
+  detail?: string;
   mono?: boolean;
+  disabled?: boolean;
   children: ReactNode;
 }) {
+  const detailId = useId();
   return (
     <button
       type="button"
       aria-pressed={on}
       onClick={onClick}
       title={title}
+      aria-describedby={detail ? detailId : undefined}
+      disabled={disabled}
       className={cn(
-        'px-2.5 py-1 rounded-full text-[11px] border transition-colors max-w-[260px] truncate',
+        // Wrapped, not truncated: a long label's rest lived only in the title.
+        'px-2.5 py-1 rounded-full text-caption border transition-colors max-w-[260px] break-words text-left disabled:opacity-50 disabled:cursor-not-allowed',
         mono && 'font-mono',
         on ? 'text-accent-ink border-accent bg-accent-fill'
           : 'bg-surface border-border-soft text-ink-secondary hover:border-accent hover:text-accent-ink',
       )}
     >
       {children}
+      {/* Out of the name (voice control says the label), in the description. */}
+      {detail && <span id={detailId} aria-hidden="true" className="block font-mono text-ink-tertiary break-all">{detail}</span>}
     </button>
   );
 }

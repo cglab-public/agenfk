@@ -77,7 +77,7 @@ const approve = (id: string, body: Record<string, unknown> = {}, headers: Record
   agent().post(`/items/${id}/approvals`).set(headers).send(body);
 const override = (id: string, body: Record<string, unknown>, headers: Record<string, string> = board()) =>
   agent().post(`/items/${id}/overrides`).set(headers).send(body);
-const item = async (id: string) => (await agent().get(`/items/${id}`)).body;
+const item = async (id: string) => (await agent().get(`/items/${id}?records=1`)).body;
 const byId = (checks: any[], id: string) => (checks ?? []).find((c: any) => c.id === id);
 
 describe('CGLAB-382: human approval', () => {

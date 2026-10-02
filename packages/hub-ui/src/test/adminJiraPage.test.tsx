@@ -20,6 +20,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AdminJira } from '../pages/AdminJira';
 import { AdminLayout } from '../pages/Admin';
 import { api } from '../api';
+import { answerConfirm, forbidWindowConfirm, letMutationsLand } from './helpers/confirmDialog';
 
 vi.mock('../api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn() } }));
 const get = api.get as unknown as ReturnType<typeof vi.fn>;
@@ -49,7 +50,7 @@ beforeEach(() => {
   get.mockReset();
   put.mockReset();
   post.mockReset();
-  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  forbidWindowConfirm();
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
@@ -119,16 +120,17 @@ describe('Admin → JIRA', () => {
     post.mockResolvedValue({ data: { ...CONFIGURED, connectedCount: 0 } });
     renderPage();
     fireEvent.click(await screen.findByRole('button', { name: /disconnect everyone/i }));
-    expect(window.confirm).toHaveBeenCalled();
+    expect(await answerConfirm(true)).toMatch(/connect again/i);
     await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/jira/disconnect-all'));
     expect(await screen.findByTestId('jira-connected-count')).toHaveTextContent('0');
   });
 
   it('a declined confirmation disconnects no one', async () => {
     get.mockResolvedValue({ data: CONFIGURED });
-    vi.mocked(window.confirm).mockReturnValue(false);
     renderPage();
     fireEvent.click(await screen.findByRole('button', { name: /disconnect everyone/i }));
+    await answerConfirm(false);
+    await letMutationsLand();
     expect(post).not.toHaveBeenCalled();
   });
 

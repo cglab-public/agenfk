@@ -76,6 +76,8 @@ interface ReminderResult { message?: string }
 export interface PiExtensionDeps {
   gatekeeperVerdict: (filePath: string | undefined) => BlockVerdict | null;
   enforcerVerdict: (command: string | undefined) => BlockVerdict | null;
+  /** The enforcer's word on pi's `read` tool: the database files stay closed (BUG ec325925). */
+  readVerdict: (filePath: string | undefined) => BlockVerdict | null;
   prReminder: (command: string | undefined) => ReminderResult | null;
   // pi's STARTUP model from ~/.pi/agent/settings.json. LAST resort: it carries no
   // provider and goes stale on a model switch, so the sources below outrank it.
@@ -478,12 +480,15 @@ export function defaultDeps(): PiExtensionDeps {
       filePath
         ? runHookScript('agenfk-gatekeeper.mjs', [], { tool: 'edit', tool_input: { file_path: filePath } })
         : null,
-    // Pass --client pi so the enforcer applies only the client-agnostic blocks
-    // (direct DB reads, curl/wget to localhost) and skips the Claude-Code-specific
-    // CLI-state-query rule — pi is CLI-first, so `agenfk list` is intended there.
+    // The enforcer blocks only the routes around the server (direct DB reads,
+    // curl/wget to localhost); the agenfk CLI is always allowed.
     enforcerVerdict: (command) =>
       command
         ? runHookScript('agenfk-mcp-enforcer.mjs', ['--client', 'pi'], { tool: 'Bash', tool_input: { command } })
+        : null,
+    readVerdict: (filePath) =>
+      filePath
+        ? runHookScript('agenfk-mcp-enforcer.mjs', ['--client', 'pi'], { tool: 'Read', tool_input: { file_path: filePath } })
         : null,
     prReminder: (command) =>
       command
@@ -526,7 +531,7 @@ export default function activate(pi: PiApi, deps: PiExtensionDeps = defaultDeps(
     } catch { /* never break the host */ }
   });
 
-  // #3 — block edits/writes with no active task, and forbidden bash bypass routes.
+  // #3 — block edits/writes with no active task, and the bash/read bypass routes.
   // Synchronous: the verdict comes from a blocking spawnSync, and returning it
   // synchronously avoids any chance of the tool slipping past on a later tick.
   pi.on('tool_call', (event, ctx) => {
@@ -550,6 +555,9 @@ export default function activate(pi: PiApi, deps: PiExtensionDeps = defaultDeps(
           }
         }
         const v = deps.enforcerVerdict(command);
+        if (v && v.decision === 'block') return { block: true, reason: v.reason };
+      } else if (name === 'read') {
+        const v = deps.readVerdict(event?.input?.path ?? event?.input?.file_path);
         if (v && v.decision === 'block') return { block: true, reason: v.reason };
       }
     } catch { /* never break the host */ }

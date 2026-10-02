@@ -22,8 +22,8 @@ export function CardHeader({ title, description, actions, level = 2, id, classNa
   return (
     <div className={cn('flex items-start justify-between gap-3 flex-wrap mb-4', className)}>
       <div className="min-w-0">
-        <H id={id} className="text-sm font-semibold text-ink">{title}</H>
-        {description && <p className="mt-0.5 text-xs text-ink-tertiary">{description}</p>}
+        <H id={id} className="text-body font-semibold text-ink">{title}</H>
+        {description && <p className="mt-0.5 text-small text-ink-tertiary">{description}</p>}
       </div>
       {actions && <div className="flex items-center gap-2 shrink-0">{actions}</div>}
     </div>

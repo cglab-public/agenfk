@@ -19,6 +19,7 @@ import { AdminOrg } from '../pages/AdminOrg';
 import { Layout } from '../components/Layout';
 import { ThemeProvider } from '../ThemeContext';
 import { api } from '../api';
+import { answerConfirm } from './helpers/confirmDialog';
 
 vi.mock('../api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn() } }));
 const get = api.get as unknown as ReturnType<typeof vi.fn>;
@@ -100,7 +101,7 @@ describe('the copies that moved to the shared button still copy the right value'
     mount(<AdminKeys />);
     fireEvent.click(screen.getByRole('button', { name: /generate invite/i }));
     await screen.findByText('agenfk hub join tok-9');
-    fireEvent.click(screen.getByRole('button', { name: 'Copy to clipboard' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy invite 1 command' }));
     expect(writeText).toHaveBeenCalledWith('agenfk hub join tok-9');
   });
 
@@ -148,7 +149,10 @@ describe('"Saved" does not outlive the next edit', () => {
     mount(<AdminJira />);
     const id = await screen.findByDisplayValue('cid-1');
     fireEvent.change(id, { target: { value: 'cid-2' } });
+    // A new client ID needs its own secret, or the form stops the save.
+    fireEvent.change(screen.getByLabelText(/client secret/i), { target: { value: 'secret-2' } });
     fireEvent.click(screen.getByRole('button', { name: /^save/i }));
+    await answerConfirm(true); // a new client ID disconnects everyone, so it asks first
     expect(await screen.findByText('✓ Saved')).toBeInTheDocument();
     fireEvent.change(screen.getByDisplayValue('cid-2'), { target: { value: 'cid-3' } });
     expect(screen.queryByText('✓ Saved')).toBeNull();

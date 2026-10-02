@@ -958,6 +958,21 @@ function registerPgMemPolyfills(memDb: any, DataType: any): void {
     implementation: toChar,
     impure: false,
   });
+  // timezone('UTC', timestamptz) — the dialect wraps every day/hour key in it.
+  // Real Postgres returns the UTC wall-clock `timestamp` (no zone); pg-mem has
+  // no session zone and the to_char above already formats in UTC, so the
+  // instant passes through unchanged. Only right for 'UTC' and only inside
+  // to_char: any other zone is refused rather than silently passed through.
+  memDb.public.registerFunction({
+    name: 'timezone',
+    args: [DataType.text, DataType.timestamptz],
+    returns: DataType.timestamptz,
+    implementation: (zone: string, ts: Date) => {
+      if (zone !== 'UTC') throw new Error(`pg-mem polyfill: timezone('${zone}', ...) is not supported, only 'UTC'`);
+      return ts;
+    },
+    impure: false,
+  });
   // jsonb_extract_path_text(jsonb, VARIADIC text[]) — pg-mem doesn't ship this,
   // so we register one variant per arity the hub actually emits (2 and 4).
   const extractPath = (jb: any, ...keys: string[]): string | null => {

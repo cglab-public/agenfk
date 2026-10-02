@@ -15,7 +15,7 @@
  *  - like every other filter on this page, the search lives in the URL, so a
  *    shared link restores the same single PR.
  */
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
@@ -499,8 +499,11 @@ describe('PR search result state', () => {
     );
 
     await screen.findByText('Weighted size');
-    // The volume chart's own total must agree with the KPI tile above it.
-    expect(screen.getByText('Total').parentElement).toHaveTextContent('2');
+    // The volume chart must draw every PR the KPI tile above it counts: its
+    // bars, read as a screen reader hears them, add up to 2.
+    const bars = within(screen.getByRole('listbox', { name: /PR volume by size/i })).getAllByRole('option');
+    const drawn = bars.reduce((n, o) => n + Number(/: (\d+) PRs?/.exec(o.getAttribute('aria-label') ?? '')?.[1] ?? 0), 0);
+    expect(drawn).toBe(2);
     // And both PRs must be reachable — one drillable cell per matched day.
     expect(screen.getAllByRole('button', { name: /open list/i })).toHaveLength(2);
   });

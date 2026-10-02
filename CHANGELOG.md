@@ -2,7 +2,10 @@
 
 All notable changes to AgEnFK are documented here.
 
-## [Unreleased]
+## [2.0.0-beta.24] — 2026-10-02
+
+Pre-release. Beta, cumulative over `2.0.0-beta.23`: everything in beta.23 and beta.22 (below) and the CGLAB-164
+desktop line under them, plus the two changes in this section.
 
 ### ⚠️ BREAKING — claims are removed (26c059f6)
 
@@ -20,6 +23,40 @@ gone end to end:
   circuit breaker.
 - The rule bundles no longer tell agents to declare claims. The `claims` field old cards carry is dropped from
   the database once, when the server starts.
+
+### Every build starts from an empty `dist/` (d781db05)
+
+`tsc` never deletes the output of a source that was removed, so old files kept shipping - the removed claim gate
+reached the desktop app's bundle that way. Each package that builds with `tsc` (cli, core, desktop, hub, server,
+storage-sqlite, telemetry) now cleans its own `dist/` in a `prebuild`, for the root build and `npm run build -w`
+alike. The hub and e2e-harness Dockerfiles copy the clean script. Your projects and cards are untouched: they live
+in the database and in each repository's `.agenfk/project.json`, never in a package's `dist/`.
+
+## [2.0.0-beta.22] — 2026-10-02
+
+Beta, cumulative over `2.0.0-beta.21`: everything in beta.21 (the CGLAB-164 desktop line), plus the CGLAB-434 work below.
+
+- **Cards stay small.** A card's step records no longer carry every suite run it ever took: each card keeps the
+  latest capture of each step and its latest green (rolled-back runs: greens only, newest 20), and the authoredTests
+  record points at its capture instead of copying every test name. On the first start after upgrading, the server
+  prunes existing cards the same way, keeps their `updatedAt`, frees the unreferenced results, and logs what it did;
+  later starts find nothing to do. In this repo a card's read went from 11 MB to under 20 KB.
+- **Reading a card leaves its step records out unless asked.** `GET /items/:id?records=1`, MCP `get_item` with
+  `includeRecords: true`, `agenfk get --records`. A test-count check whose recorded tests can no longer be read now
+  holds the card instead of passing it.
+- **The enforcer hook is CLI-first.** With the agenfk MCP server registered it no longer blocks `agenfk get`/`list`
+  (the CLI and MCP are interchangeable); direct database reads and `curl` to the local server stay blocked, and the
+  `mcp-fallback-approved` bypass is gone. pi's `read` tool now goes through the enforcer too.
+- **Board:** a bug split into tasks shows them - child-count drill-down, progress bar and the Subitems tab now work
+  for any card with children; drilling in shows a ← Back button that returns you to the card you came from.
+- **Hub admin safety:** the last admin cannot be demoted, deactivated or deleted; the admin guard re-reads the role
+  instead of trusting the session token; password sign-in is really off when "Email + password" is switched off;
+  destructive and fleet-wide actions ask for confirmation; failed admin actions say what went wrong where they happened.
+- **Hub mobile and accessibility:** phone layout with a drawer; every control named and stating its state; labelled
+  sign-in and setup forms; no information reachable only by hover; one type scale and two content widths; charts,
+  the heatmap and the timeline usable from the keyboard.
+- **Hub data fixes:** org tiles agree with the per-person rows; day and hour keys no longer depend on the Postgres
+  session time zone.
 
 ## [2.0.0-beta.21] — 2026-10-02
 

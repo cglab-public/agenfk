@@ -167,7 +167,7 @@ describe('the user page keeps its filters in the URL', () => {
 
   it('does not remember a custom date range for the next bare visit', async () => {
     const { unmount } = renderAt('/users/alice%40acme.com?from=2026-09-01&to=2026-09-10');
-    await waitFor(() => expect(lastCall('/v1/timeline').get('from')).toMatch(/^2026-09-0[01]/));
+    await waitFor(() => expect(lastCall('/v1/timeline').get('from')).toBe(new Date(2026, 8, 1).toISOString()));
     unmount();
     expect(window.localStorage.getItem('agenfk-hub:user:filters') ?? '').not.toMatch(/from=|to=/);
   });
@@ -195,7 +195,9 @@ describe('the user page keeps its filters in the URL', () => {
 
   it('restores a custom date range from the link', async () => {
     renderAt('/users/alice%40acme.com?from=2026-09-01&to=2026-09-10');
-    await waitFor(() => expect(lastCall('/v1/timeline').get('from')).toMatch(/^2026-09-0[01]/));
-    expect(lastCall('/v1/timeline').get('to')).toMatch(/^2026-09-1[01]/);
+    // The bounds are the LOCAL day's first and last instants, so the UTC date
+    // they print as depends on the zone (2026-08-31 at UTC+14).
+    await waitFor(() => expect(lastCall('/v1/timeline').get('from')).toBe(new Date(2026, 8, 1).toISOString()));
+    expect(lastCall('/v1/timeline').get('to')).toBe(new Date(2026, 8, 10, 23, 59, 59, 999).toISOString());
   });
 });

@@ -1,0 +1,36 @@
+/*
+ * CG/lab shared type scale and content widths.
+ *
+ * Five sizes and two widths, so pages stop drifting between arbitrary px sizes
+ * and a different max-width per tab (hub story 7073be87). Shared by
+ * packages/hub-ui and packages/ui (story 12f3921a): the @agenfk/flow-editor
+ * modal opens in both and uses the five sizes, so both apps must compile
+ * them. (The editor does not use eyebrow or the widths yet.) Imported by
+ * each app's index.css next to tokens.css; edit values only here. Guarded
+ * by hub-ui's test/helpers/typeScale.ts on every hub page and by
+ * flow-editor's own, and compiled for both apps by
+ * flow-editor/src/test/typeScaleWiring.test.ts.
+ */
+@theme {
+  --text-caption: 11px;
+  --text-caption--line-height: 1.45;
+  --text-small: 12px;
+  --text-small--line-height: 1.3333; /* 16px, as text-xs was */
+  --text-body: 14px;
+  --text-body--line-height: 1.4286; /* 20px, as text-sm was */
+  --text-title: 18px;
+  --text-title--line-height: 1.35;
+  --text-display: 24px;
+  --text-display--line-height: 1.25;
+  --container-form: 42rem;
+  --container-data: 1200px;
+}
+
+/* The one style for small uppercase labels. No colour: callers keep theirs. */
+@utility eyebrow {
+  font-size: var(--text-caption);
+  line-height: var(--text-caption--line-height);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-weight: 600;
+}

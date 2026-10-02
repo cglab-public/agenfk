@@ -3,7 +3,7 @@ import { cn } from './cn';
 
 // outline-hidden (not outline-none) keeps a transparent outline that
 // forced-colors mode can paint; the box-shadow ring alone vanishes there.
-export const controlClass = 'w-full px-3 py-2 rounded-lg border border-ink-tertiary/75 bg-surface text-ink text-sm placeholder:text-ink-tertiary '
+export const controlClass = 'w-full px-3 py-2 rounded-lg border border-ink-tertiary/75 bg-surface text-ink text-body placeholder:text-ink-tertiary '
   + 'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-focus-ring aria-[invalid=true]:border-status-danger-text';
 
 /** A text input. `icon` draws a leading glyph inside the box; the input stays the labelled control. */
@@ -49,10 +49,10 @@ export function Field({ label, hint, error, children, className }: {
   const control = isValidElement(children) ? cloneElement(children, extra) : children;
   return (
     <div className={cn('flex flex-col gap-1', className)}>
-      <label htmlFor={id} className="text-xs font-semibold text-ink-secondary">{label}</label>
+      <label htmlFor={id} className="text-small font-semibold text-ink-secondary">{label}</label>
       {control}
-      {hint && <p id={hintId} className="text-xs text-ink-tertiary">{hint}</p>}
-      {error && <p id={errorId} className="text-xs text-status-danger-text">{error}</p>}
+      {hint && <p id={hintId} className="text-small text-ink-tertiary">{hint}</p>}
+      {error && <p id={errorId} className="text-small text-status-danger-text">{error}</p>}
     </div>
   );
 }

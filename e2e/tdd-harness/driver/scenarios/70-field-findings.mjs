@@ -364,7 +364,7 @@ export const scenarios = [
       await drive(ctx, 'IN_PROGRESS');
       write(ctx.dir, ctx.k.implement());
       const r = cli(['verify', ctx.id, '--evidence', 'harness: implemented'], { cwd: ctx.dir });
-      const c = await (await import('../lib.mjs')).api('GET', `/items/${ctx.id}`);
+      const c = await (await import('../lib.mjs')).api('GET', `/items/${ctx.id}?records=1`);
       const judged = (c.body?.stepRecords ?? []).filter(x => x?.kind === 'checks').pop()?.results ?? [];
       const ids = judged.length ? judged.map(x => x.id) : ['suite-green', 'red-set-passes-by-name', 'test-count-not-lower', 'on-card-branch'];
       const missing = ids.filter(id => !r.out.includes(id));

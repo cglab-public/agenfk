@@ -10,6 +10,8 @@ import { openPgMemDb, backfillPrEventRemoteUrls } from '../db/postgres';
 import { issueApiKey } from '../auth/apiKey';
 import { createPasswordUser } from '../auth/password';
 import { recomputeRollups } from '../rollup';
+import { raceBehindGuard } from './helpers/raceBehindGuard';
+import { ACTIVE_ADMINS_SQL } from '../routes/admin';
 import type { HubDb } from '../db/types';
 
 /**
@@ -162,6 +164,48 @@ describe('PG parity: admin endpoints', () => {
     const dup = await supertest(fx.app).post('/v1/admin/users/invite').set('Cookie', fx.cookie)
       .send({ email: 'new@x', password: 'longenough1', role: 'viewer' });
     expect(dup.status).toBe(409);
+  });
+
+  // The last-admin guard is a subquery inside the UPDATE, so it is dialect SQL
+  // that a SQLite-only suite would pass and Postgres could reject.
+  it('refuses demoting the last active admin when a cross-demotion lands between guard and write', async () => {
+    await createPasswordUser(fx.db, 'org', 'admin2@x', 'longenough1', 'admin');
+    const login2 = await supertest(__server).post('/auth/login').send({ email: 'admin2@x', password: 'longenough1' });
+    const cookie2 = login2.headers['set-cookie']?.[0] ?? '';
+    const idOf = async (email: string) => (await fx.db.get<any>('SELECT id FROM users WHERE email = ?', [email])).id;
+
+    // admin2 passes the session guard, then admin@x demotes admin2 (allowed:
+    // admin@x remains), then admin2's write runs. The UPDATE's own last-admin
+    // condition must keep admin@x.
+    const demote1 = await raceBehindGuard(fx.db, await idOf('admin2@x'),
+      async () => supertest(fx.app).put(`/v1/admin/users/${await idOf('admin@x')}`).set('Cookie', cookie2).send({ role: 'viewer' }),
+      async () => expect((await supertest(fx.app).put(`/v1/admin/users/${await idOf('admin2@x')}`).set('Cookie', fx.cookie).send({ role: 'viewer' })).status).toBe(200), { method: 'all', sql: ACTIVE_ADMINS_SQL });
+    expect(demote1.status).toBe(409);
+    expect((await fx.db.get<any>('SELECT role FROM users WHERE email = ?', ['admin@x'])).role).toBe('admin');
+  });
+
+  it('refuses deleting the last active admin when a deactivation lands between guard and delete', async () => {
+    await createPasswordUser(fx.db, 'org', 'admin2@x', 'longenough1', 'admin');
+    const login2 = await supertest(__server).post('/auth/login').send({ email: 'admin2@x', password: 'longenough1' });
+    const cookie2 = login2.headers['set-cookie']?.[0] ?? '';
+    const idOf = async (email: string) => (await fx.db.get<any>('SELECT id FROM users WHERE email = ?', [email])).id;
+    const r = await raceBehindGuard(fx.db, await idOf('admin2@x'),
+      async () => supertest(fx.app).delete(`/v1/admin/users/${await idOf('admin@x')}`).set('Cookie', cookie2),
+      async () => expect((await supertest(fx.app).put(`/v1/admin/users/${await idOf('admin2@x')}`).set('Cookie', fx.cookie).send({ active: false })).status).toBe(200), { method: 'all', sql: ACTIVE_ADMINS_SQL });
+    expect(r.status).toBe(409);
+    expect(await fx.db.get<any>('SELECT id FROM users WHERE email = ?', ['admin@x'])).toBeTruthy();
+  });
+
+  it('refuses password sign-in while it is switched off (BUG cdb1b47f)', async () => {
+    await fx.db.run('UPDATE auth_config SET password_enabled = 0 WHERE org_id = ?', ['org']);
+    const r = await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
+    expect(r.status).toBe(403);
+    expect(r.headers['set-cookie']).toBeUndefined();
+  });
+
+  it('refuses an auth-config save that leaves no way to sign in', async () => {
+    const r = await supertest(fx.app).put('/v1/admin/auth-config').set('Cookie', fx.cookie).send({ passwordEnabled: false });
+    expect(r.status).toBe(400);
   });
 
   it('hidden-users: hide lists, revokes installation api_keys, unhide reverses (CGLAB-31)', async () => {
@@ -480,6 +524,18 @@ describe('PG parity: queries + rollup', () => {
     expect(m.body.series.length).toBeGreaterThan(0);
   });
 
+  it('GET /v1/metrics totals are numbers on PG and agree with the live events', async () => {
+    const m = await supertest(fx.app).get('/v1/metrics').set('Cookie', fx.cookie);
+    expect(m.status).toBe(200);
+    const t = m.body.totals;
+    // Postgres answers COUNT/SUM as strings: the tiles would concatenate them.
+    for (const k of ['events_count', 'items_closed', 'validate_passes', 'validate_fails', 'prs_opened']) {
+      expect(typeof t[k]).toBe('number');
+    }
+    const live = await fx.db.get<{ n: number | string }>('SELECT COUNT(*) AS n FROM events');
+    expect(t.events_count).toBe(Number(live?.n));
+  });
+
   it('rollups_daily computes items_closed and leaves token consumption at zero on PG', async () => {
     await recomputeRollups(fx.db);
     const rows = await fx.db.all<any>('SELECT * FROM rollups_daily ORDER BY day, user_key');
@@ -745,6 +801,21 @@ describe('PG parity: hub endpoint lifecycle (CGLAB-62)', () => {
     expect(rows[0].alias_key).toBe('old@acme.com');
     // The reverted merge must not produce a row — that is the WHERE EXISTS.
     expect(rows[0].canonical_key).toBe('new@acme.com');
+  });
+
+  it('refuses an out-of-order revert and leaves the merge unreverted', async () => {
+    await fx.db.run(
+      `INSERT INTO events (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, payload)
+       VALUES ('lifo1', 'org', 'inst-pg', 'a', '2026-02-01T09:00:00Z', '2026-02-01T09:00:00Z', 'item.created', '{}')`,
+    );
+    const post = (path: string, body?: unknown) => supertest(fx.app).post(path).set('Cookie', fx.cookie).send(body ?? {});
+    const first = await post('/v1/admin/user-keys/merge', { from: 'a', to: 'b@acme.com' });
+    const second = await post('/v1/admin/user-keys/merge', { from: 'b@acme.com', to: 'c@acme.com' });
+    expect((await post(`/v1/admin/user-keys/merges/${first.body.mergeId}/revert`)).status).toBe(409);
+    const row = await fx.db.get<any>('SELECT reverted_at FROM user_key_merges WHERE id = ?', [first.body.mergeId]);
+    expect(row.reverted_at).toBeNull();
+    // The successful revert itself is SQLite-tested only (admin-merge-revert):
+    // its UPDATE uses a correlated subquery that pg-mem cannot execute.
   });
 
   it('merge moves events, sums same-day rollups and repairs history', async () => {

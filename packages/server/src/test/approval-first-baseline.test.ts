@@ -90,7 +90,7 @@ async function closedGreen(pid: string, command: string, commit: string, commitR
 
 const validate = (id: string, body: Record<string, unknown> = {}) => agent().post(`/items/${id}/validate`).set(internal()).send({ evidence: 'ok', ...body });
 const approve = (id: string) => agent().post(`/items/${id}/approvals`).set(board()).send({});
-const item = async (id: string) => (await agent().get(`/items/${id}`)).body;
+const item = async (id: string) => (await agent().get(`/items/${id}?records=1`)).body;
 const blockingIds = (checks: any[]) => (checks ?? []).filter((c: any) => c.blocking).map((c: any) => c.id);
 const entryCapture = async (id: string) => ((await item(id)).stepRecords ?? []).filter((r: any) => r.kind === 'capture' && r.step === 'PLAN').pop();
 

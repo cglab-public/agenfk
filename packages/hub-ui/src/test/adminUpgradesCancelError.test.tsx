@@ -13,6 +13,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AdminUpgrades } from '../pages/AdminUpgrades';
 import { api } from '../api';
 import { ThemeProvider } from '../ThemeContext';
+import { answerConfirm, forbidWindowConfirm } from './helpers/confirmDialog';
 
 vi.mock('../api', () => ({ api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() } }));
 const get = api.get as unknown as ReturnType<typeof vi.fn>;
@@ -50,7 +51,7 @@ const renderPage = (directives: unknown[] = [DIRECTIVE]) => {
 let confirmSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   get.mockReset(); post.mockReset();
-  confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  confirmSpy = forbidWindowConfirm();
 });
 afterEach(() => { cleanup(); confirmSpy.mockRestore(); });
 
@@ -58,7 +59,8 @@ describe('AdminUpgrades — a refused cancel', () => {
   it('shows the hub\'s reason without opening the issue form', async () => {
     post.mockRejectedValueOnce({ response: { status: 403, data: { error: 'Admins only' } } });
     renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: 'Cancel waiting' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Cancel waiting upgrade to v/ }));
+    await answerConfirm(true);
     expect(await screen.findByRole('alert')).toHaveTextContent('Admins only');
   });
 
@@ -66,16 +68,19 @@ describe('AdminUpgrades — a refused cancel', () => {
     post.mockRejectedValueOnce({ response: { status: 500, data: { error: 'Database unavailable' } } });
     post.mockResolvedValueOnce({ data: { cancelledCount: 1 } });
     renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: 'Cancel waiting' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Cancel waiting upgrade to v/ }));
+    await answerConfirm(true);
     await screen.findByRole('alert');
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel waiting' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Cancel waiting upgrade to v/ }));
+    await answerConfirm(true);
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
   });
 
   it('does not leak into the issue form', async () => {
     post.mockRejectedValueOnce({ response: { status: 404, data: { error: 'Upgrade not found' } } });
     renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: 'Cancel waiting' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Cancel waiting upgrade to v/ }));
+    await answerConfirm(true);
     await screen.findByRole('alert');
     fireEvent.click(screen.getByRole('button', { name: /Issue upgrade/ }));
     expect(screen.getAllByText('Upgrade not found')).toHaveLength(1);
@@ -87,7 +92,8 @@ describe('AdminUpgrades — a refused cancel', () => {
     renderPage([DIRECTIVE, other]);
     const row = (v: string) => screen.getByText(v).closest('.rounded-md') as HTMLElement;
     await screen.findByText('v1.1.22');
-    fireEvent.click(within(row('v1.1.22')).getByRole('button', { name: 'Cancel waiting' }));
+    fireEvent.click(within(row('v1.1.22')).getByRole('button', { name: /^Cancel waiting upgrade to v/ }));
+    await answerConfirm(true);
     await waitFor(() => expect(within(row('v1.1.22')).getByRole('alert')).toHaveTextContent('Upgrade not found'));
     expect(within(row('v1.1.21')).queryByRole('alert')).not.toBeInTheDocument();
   });
@@ -96,9 +102,11 @@ describe('AdminUpgrades — a refused cancel', () => {
     post.mockRejectedValueOnce({ response: { status: 500, data: { error: 'Database unavailable' } } });
     post.mockReturnValueOnce(new Promise(() => {}));
     renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: 'Cancel waiting' }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Cancel waiting upgrade to v/ }));
+    await answerConfirm(true);
     await screen.findByRole('alert');
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel waiting' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Cancel waiting upgrade to v/ }));
+    await answerConfirm(true);
     await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
   });
 });

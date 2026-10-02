@@ -106,7 +106,7 @@ async function setup(testReport: Record<string, unknown>, gitignore?: string) {
   return { dir, pid: p.body.id as string, id: c.body.id as string };
 }
 const validate = (id: string) => agent().post(`/items/${id}/validate`).set(internal()).send({ evidence: 'ok' });
-const item = async (id: string) => (await agent().get(`/items/${id}`)).body;
+const item = async (id: string) => (await agent().get(`/items/${id}?records=1`)).body;
 async function advanceTo(id: string, step: string, work: Record<string, () => void> = {}) {
   for (let guard = 0; guard < 8; guard++) {
     const on = (await item(id)).status;

@@ -1115,3 +1115,40 @@ describe('CardDetailModal — no hardcoded neutral surface colour (aca414c7 §04
     expect(deadHoverClasses(root)).toEqual([]);
   });
 });
+
+// BUG ec325925 (task 2b943048): a bug's tasks had no Subitems tab to live in.
+describe('CardDetailModal: a bug and its tasks', () => {
+  const bug = { id: 'b1', projectId: 'p1', type: ItemType.BUG, title: 'The Bug', status: Status.IN_PROGRESS, createdAt: new Date(), updatedAt: new Date() };
+  afterEach(() => cleanup());
+  const open = (item: any, allItems: any[], onAddItem = vi.fn().mockResolvedValue(undefined)) => {
+    render(
+      <CardDetailModal item={item} allItems={allItems} onClose={() => {}} onSelectItem={() => {}} onAddItem={onAddItem} onDeleteItem={async () => {}} />,
+      { wrapper },
+    );
+    return onAddItem;
+  };
+
+  it('has a Subitems tab listing its tasks', async () => {
+    open(bug, [{ id: 't1', parentId: 'b1', title: 'Fix it', type: ItemType.TASK, status: Status.TODO }]);
+    fireEvent.click(screen.getByRole('button', { name: /Subitems/i }));
+    expect(await screen.findByText('Fix it')).toBeDefined();
+  });
+
+  it('quick-adds a TASK under a bug', () => {
+    const onAddItem = open(bug, []);
+    fireEvent.click(screen.getByRole('button', { name: /Subitems/i }));
+    const input = screen.getByPlaceholderText(/Quick add Task/i);
+    fireEvent.change(input, { target: { value: 'Reproduce it' } });
+    fireEvent.submit(input.closest('form')!);
+    expect(onAddItem).toHaveBeenCalledWith('Reproduce it', ItemType.TASK, Status.TODO);
+  });
+
+  it('shows the tab on a task that has children, and not on one that has none', () => {
+    const task = { ...bug, id: 'x1', type: ItemType.TASK, title: 'A Task' };
+    open(task, [{ id: 'x2', parentId: 'x1', title: 'Sub', type: ItemType.TASK, status: Status.TODO }]);
+    expect(screen.getByRole('button', { name: /Subitems/i })).toBeDefined();
+    cleanup();
+    open(task, []);
+    expect(screen.queryByRole('button', { name: /Subitems/i })).toBeNull();
+  });
+});

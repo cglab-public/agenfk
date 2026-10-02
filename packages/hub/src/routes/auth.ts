@@ -55,7 +55,7 @@ export function authRouter(ctx: HubServerContext): Router {
       [ctx.config.defaultOrgId],
     );
     res.json({
-      password: !!cfg?.password_enabled,
+      password: !!cfg?.password_enabled || !!ctx.config.forcePasswordLogin,
       google: !!cfg?.google_enabled,
       entra: !!cfg?.entra_enabled,
       requiresSetup: (await countUsers(ctx.db)) === 0,
@@ -66,6 +66,26 @@ export function authRouter(ctx: HubServerContext): Router {
     const { email, password } = req.body ?? {};
     if (typeof email !== 'string' || typeof password !== 'string') {
       return res.status(400).json({ error: 'email and password required' });
+    }
+
+    // "Email + password" switched off in Admin → Sign-in must actually stop
+    // password sign-in, not just hide the form. Checked before the account is
+    // looked up, so the answer is the same for every email and cannot be used
+    // to find accounts, and a refused attempt does not count towards lockout.
+    // A missing row fails closed, as /auth/providers and the SSO routes do:
+    // boot seeds the default org's row with password on, so it goes missing
+    // only when this process's defaultOrgId is stale (an org rename on another
+    // replica), and then nothing should be accepted against the wrong org.
+    // The hub is single-tenant (v1): the default org's setting governs every
+    // password sign-in, like the other sign-in routes.
+    const cfg = await ctx.db.get<Pick<AuthConfigRow, 'password_enabled'>>(
+      'SELECT password_enabled FROM auth_config WHERE org_id = ?',
+      [ctx.config.defaultOrgId],
+    );
+    // AGENFK_HUB_FORCE_PASSWORD_LOGIN is the operator's way back in when SSO
+    // has broken with password switched off (see HubServerConfig).
+    if (!ctx.config.forcePasswordLogin && (!cfg || !Number(cfg.password_enabled))) {
+      return res.status(403).json({ error: 'Password sign-in is not enabled' });
     }
 
     // Account lockout: too many recent failures for this email → refuse without
@@ -80,7 +100,11 @@ export function authRouter(ctx: HubServerContext): Router {
       loginFailures.recordFailure(email);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
-    if (user.provider !== 'password') {
+    // One SSO sign-in moves a password account to google/entra (oauth.ts
+    // findInvitedSsoUser) while keeping its hash. Under the break-glass an
+    // ADMIN's hash is accepted: the operator needs back in precisely when SSO
+    // broke. Everyone else keeps to the provider they moved to.
+    if (user.provider !== 'password' && !(ctx.config.forcePasswordLogin && user.role === 'admin')) {
       return res.status(401).json({ error: `This account signs in with ${user.provider}` });
     }
     if (!verifyPassword(password, user.password_hash)) {
@@ -100,12 +124,12 @@ export function authRouter(ctx: HubServerContext): Router {
     res.json({ ok: true });
   });
 
-  router.get('/me', meRateLimit, requireSession(ctx.config.sessionSecret), asyncRoute(async (req: Request, res: Response) => {
+  router.get('/me', meRateLimit, requireSession(ctx.config.sessionSecret, ctx.db), asyncRoute(async (req: Request, res: Response) => {
     // The session cookie carries ids only. Who the user actually IS — their
     // name and email — lives in the row, and the identity provider can change
     // the name between sign-ins, so read it rather than bake it into the JWT.
-    // A missing row (user deleted while a cookie is still live) degrades to
-    // nulls; the session fields still answer, as every caller expects.
+    // requireSession has already refused a deleted or deactivated user, so the
+    // row is there; the fallbacks only cover a delete landing in between.
     const row = await ctx.db.get<{ email: string; name: string | null }>(
       'SELECT email, name FROM users WHERE id = ?',
       [req.session!.userId],

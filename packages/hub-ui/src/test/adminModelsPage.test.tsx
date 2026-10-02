@@ -20,6 +20,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AdminModels } from '../pages/AdminModels';
 import { api } from '../api';
+import { answerConfirm, forbidWindowConfirm } from './helpers/confirmDialog';
 
 vi.mock('../api', () => ({ api: { get: vi.fn(), post: vi.fn(), delete: vi.fn() } }));
 const get = api.get as unknown as ReturnType<typeof vi.fn>;
@@ -141,20 +142,22 @@ describe('AdminModels', () => {
   });
 
   it('deletes the alias of the row it was clicked on', async () => {
-    vi.spyOn(window, 'confirm').mockImplementation(() => true);
+    forbidWindowConfirm();
     renderPage();
     await waitFor(() => inTable('glm-5.2'));
 
     fireEvent.click(screen.getByRole('button', { name: /unmap qwen38-27b/i }));
+    expect(await answerConfirm(true)).toMatch(/qwen38-27b/);
     await waitFor(() => expect(del).toHaveBeenCalledWith('/v1/admin/models/mappings/qwen38-27b'));
   });
 
   it('does not delete when the confirmation is declined', async () => {
-    vi.spyOn(window, 'confirm').mockImplementation(() => false);
+    forbidWindowConfirm();
     renderPage();
     await waitFor(() => inTable('glm-5.2'));
 
     fireEvent.click(screen.getByRole('button', { name: /unmap qwen38-27b/i }));
+    await answerConfirm(false);
     await new Promise(r => setTimeout(r, 20));
     expect(del).not.toHaveBeenCalled();
   });

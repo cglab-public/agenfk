@@ -44,13 +44,13 @@ export function CopyButton({ value, label = 'Copy', copiedLabel = 'Copied', icon
         onClick={copy}
         aria-label={copied ? copiedLabel : label}
         title={iconOnly ? label : undefined}
-        className="inline-flex items-center gap-1.5 text-xs font-semibold text-accent-ink hover:underline"
+        className="inline-flex items-center gap-1.5 text-small font-semibold text-accent-ink hover:underline"
       >
         {copied ? <Check className="w-3.5 h-3.5" aria-hidden="true" /> : <Copy className="w-3.5 h-3.5" aria-hidden="true" />}
         {!iconOnly && (copied ? copiedLabel : label)}
       </button>
       {state === 'failed' && (
-        <span role="status" className="text-[11px] text-status-warn-text">
+        <span role="status" className="text-caption text-status-warn-text">
           Couldn't copy — select it and copy by hand.
         </span>
       )}

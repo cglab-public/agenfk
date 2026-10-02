@@ -20,7 +20,7 @@ export function QueryError({ error, onRetry, live = 'polite', retrying = false }
         // aria-disabled, not disabled: disabling the focused button drops a
         // keyboard user's focus to <body> mid-retry.
         <button type="button" onClick={() => { if (!retrying) onRetry(); }} aria-disabled={retrying}
-          className="text-xs font-semibold text-accent-ink hover:underline aria-disabled:opacity-60 aria-disabled:no-underline">
+          className="text-small font-semibold text-accent-ink hover:underline aria-disabled:opacity-60 aria-disabled:no-underline">
           {retrying ? 'Retrying…' : 'Retry'}
         </button>
       }

@@ -85,8 +85,8 @@ export function RegistryPullsPanel() {
     >
       <div className="flex items-start justify-between gap-2">
         <div>
-          <h3 className="text-xs font-semibold text-ink uppercase tracking-wide">Open pull requests on the flow registry</h3>
-          <p className="mt-0.5 text-xs text-ink-tertiary">
+          <h3 className="eyebrow text-ink">Open pull requests on the flow registry</h3>
+          <p className="mt-0.5 text-small text-ink-tertiary">
             Including the flows your installations publish, marked below. Review and merge them on GitHub.
           </p>
         </div>
@@ -94,29 +94,29 @@ export function RegistryPullsPanel() {
           type="button"
           onClick={() => q.refetch()}
           disabled={q.isFetching}
-          className="shrink-0 px-2 py-1 rounded-lg bg-canvas border border-border-soft text-xs text-ink disabled:opacity-50"
+          className="shrink-0 px-2 py-1 rounded-lg bg-canvas border border-border-soft text-small text-ink disabled:opacity-50"
         >
           {q.isFetching ? 'Refreshing…' : 'Refresh'}
         </button>
       </div>
 
-      {q.isLoading && <p className="text-xs text-ink-tertiary">Loading…</p>}
+      {q.isLoading && <p className="text-small text-ink-tertiary">Loading…</p>}
 
       {q.isError && (
-        <p data-testid="registry-pulls-error" className="text-xs text-status-danger-text">
+        <p data-testid="registry-pulls-error" className="text-small text-status-danger-text">
           {errorText(q.error)}
         </p>
       )}
 
       {q.data?.isPublic && (
-        <p data-testid="registry-pulls-public" className="text-xs text-ink-tertiary">
+        <p data-testid="registry-pulls-public" className="text-small text-ink-tertiary">
           This org uses the public community registry, so it has no pull requests of its own to review.
           Point it at your own repository above to review what your installations publish.
         </p>
       )}
 
       {q.data && !q.data.isPublic && q.data.pulls.length === 0 && (
-        <p data-testid="registry-pulls-empty" className="text-xs text-ink-tertiary">
+        <p data-testid="registry-pulls-empty" className="text-small text-ink-tertiary">
           No open pull requests on <code className="px-1 rounded bg-canvas text-ink">{q.data.repo}</code>.
         </p>
       )}
@@ -126,7 +126,7 @@ export function RegistryPullsPanel() {
           {q.data.pulls.map((p) => {
             const opened = openedOn(p.createdAt);
             return (
-              <li key={p.number} data-testid="registry-pull" className="py-2 flex items-start gap-2 text-xs">
+              <li key={p.number} data-testid="registry-pull" className="py-2 flex items-start gap-2 text-small">
                 <GitPullRequest size={14} className="mt-0.5 shrink-0 text-ink-tertiary" aria-hidden="true" />
                 <div className="min-w-0 flex-1">
                   {isGitHubLink(p.url) ? (
@@ -143,7 +143,7 @@ export function RegistryPullsPanel() {
                     <span className="font-medium text-ink">{p.title}</span>
                   )}
                   {isPublishedFlow(p) && (
-                    <span className="ml-1.5 px-1.5 py-0.5 rounded bg-canvas text-[10px] text-ink-tertiary align-middle">
+                    <span className="ml-1.5 px-1.5 py-0.5 rounded bg-canvas text-caption text-ink-tertiary align-middle">
                       published flow
                     </span>
                   )}
@@ -161,7 +161,7 @@ export function RegistryPullsPanel() {
       )}
 
       {q.data && !q.data.isPublic && q.data.truncated && (
-        <p data-testid="registry-pulls-truncated" className="text-xs text-ink-tertiary">
+        <p data-testid="registry-pulls-truncated" className="text-small text-ink-tertiary">
           Showing the first {q.data.pulls.length} open pull requests.{' '}
           <a
             href={q.data.allUrl && isGitHubLink(q.data.allUrl) ? q.data.allUrl : `https://github.com/${q.data.repo}/pulls`}

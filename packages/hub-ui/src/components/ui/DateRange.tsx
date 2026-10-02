@@ -19,7 +19,7 @@ export function DateRange({ from, to, onChange, disabled, className }: {
 }) {
   const fromRef = useRef<HTMLInputElement>(null);
   return (
-    <div className={cn('inline-flex flex-wrap items-center gap-1.5 text-[11px] text-ink-tertiary', className)}>
+    <div className={cn('inline-flex flex-wrap items-center gap-1.5 text-caption text-ink-tertiary', className)}>
       <label className="inline-flex items-center gap-1">
         <span>From</span>
         <input

@@ -6,6 +6,13 @@ export interface HubServerConfig {
   sessionSecret: string;      // HMAC key for session JWTs
   defaultOrgId: string;       // single-tenant v1: one org per hub deployment
   /**
+   * AGENFK_HUB_FORCE_PASSWORD_LOGIN=1: break-glass. Password sign-in is
+   * accepted (and offered on the login page) even while Admin → Sign-in has it
+   * switched off, so an operator can get back in after SSO breaks. Meant to be
+   * set briefly; the hub warns on every boot while it is on.
+   */
+  forcePasswordLogin?: boolean;
+  /**
    * Express `trust proxy`: how many reverse proxies stand in front of the hub
    * (a hop count), or which addresses are proxies (a CIDR/`loopback` list).
    * Decides which X-Forwarded-For hop is the client, and so which bucket every

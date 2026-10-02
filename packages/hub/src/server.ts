@@ -165,6 +165,12 @@ export async function createHubApp(
   await db.run('INSERT OR IGNORE INTO orgs (id, name) VALUES (?, ?)', [config.defaultOrgId, config.defaultOrgId]);
   // Default auth_config row for the default org.
   await db.run('INSERT OR IGNORE INTO auth_config (org_id, password_enabled) VALUES (?, 1)', [config.defaultOrgId]);
+  if (config.forcePasswordLogin) {
+    console.warn(
+      '[HUB] AGENFK_HUB_FORCE_PASSWORD_LOGIN=1: password sign-in is accepted even if Admin → Sign-in '
+      + 'has it switched off. Sign in, repair the sign-in settings, then unset it and restart.',
+    );
+  }
 
   // First-run admin bootstrap token. Logged once per boot (re-logged on
   // restart while setup is still pending) so the operator can paste it into
@@ -437,6 +443,7 @@ export function configFromEnv(): HubServerConfig & { backend?: HubBackend; pgUrl
     secretKey,
     sessionSecret,
     defaultOrgId: process.env.AGENFK_HUB_ORG_ID || 'default',
+    forcePasswordLogin: process.env.AGENFK_HUB_FORCE_PASSWORD_LOGIN === '1',
     trustProxy: parseTrustProxy(process.env.AGENFK_HUB_TRUST_PROXY),
     publicUrl: parsePublicUrl(process.env.AGENFK_HUB_PUBLIC_URL),
     backend,

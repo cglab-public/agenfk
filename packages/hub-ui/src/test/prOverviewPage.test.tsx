@@ -13,6 +13,7 @@
  *  - no selection → no model param sent, and the legacy single <select> is gone.
  */
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
+import { MixBar } from '../pages/PrOverview';
 import '@testing-library/jest-dom/vitest';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import React from 'react';
@@ -115,7 +116,7 @@ describe('PrOverviewPage model multi-select', () => {
 
     // The Model facet is present (label) and reports two selected values.
     await screen.findByRole('heading', { name: 'Model' });
-    await screen.findByRole('button', { name: 'Clear (2)' });
+    await screen.findByRole('button', { name: 'Clear (2) Model filter' });
 
     // The URL write-back must preserve the CSV (join separator), not collapse it.
     // (URLSearchParams percent-encodes the comma in the written-back URL, so
@@ -134,17 +135,17 @@ describe('PrOverviewPage model multi-select', () => {
   it('still honours a legacy single-value ?model= link as one selection', async () => {
     renderPage('/prs?model=glm-5.2');
     await screen.findByRole('heading', { name: 'Model' });
-    await screen.findByRole('button', { name: 'Clear (1)' });
+    await screen.findByRole('button', { name: 'Clear (1) Model filter' });
     expect(qs(overviewUrls()[0]).get('model')).toBe('glm-5.2');
   });
 
   it('toggling a selected model off updates the URL and refetches with the reduced filter', async () => {
     renderPage('/prs?model=claude-opus-4-8,glm-5.2');
-    await screen.findByRole('button', { name: 'Clear (2)' });
+    await screen.findByRole('button', { name: 'Clear (2) Model filter' });
 
     fireEvent.click(screen.getByRole('button', { name: 'glm-5.2' }));
 
-    await screen.findByRole('button', { name: 'Clear (1)' });
+    await screen.findByRole('button', { name: 'Clear (1) Model filter' });
     await waitFor(() => expect(urlNow()).toBe('model=claude-opus-4-8'));
     // The refetched data query carries only the remaining model.
     expect(
@@ -187,10 +188,34 @@ describe('PrOverviewPage model multi-select', () => {
 
     // Popover trigger reports the selection count, and each selected model is
     // a removable chip.
-    await screen.findByRole('button', { name: '2 selected · 7 total' });
+    await screen.findByRole('button', { name: 'Model 2 selected · 7 total' });
     fireEvent.click(screen.getByRole('button', { name: 'Remove gpt-5.2' }));
 
-    await screen.findByRole('button', { name: '1 selected · 7 total' });
+    await screen.findByRole('button', { name: 'Model 1 selected · 7 total' });
     await waitFor(() => expect(urlNow()).toBe('model=gemini-3-flash'));
+  });
+});
+
+describe('size mix without hover (story f17f36a5)', () => {
+  it('each size-mix bar says its counts to a screen reader', async () => {
+    renderPage('/prs');
+    const bars = await screen.findAllByRole('img', { name: /^Size mix: / });
+    expect(bars.length).toBeGreaterThan(0);
+    for (const b of bars) expect(b.getAttribute('aria-label')).toMatch(/^Size mix: (no PRs|(XS|S|M|L|XL) \d+(, (XS|S|M|L|XL) \d+)*)$/);
+  });
+
+  it('a mix bar names its sizes, or says there are no PRs', () => {
+    const { unmount } = render(<MixBar sizes={{ xs: 2, s: 0, m: 3, l: 0, xl: 1 }} total={6} />);
+    expect(screen.getByRole('img')).toHaveAccessibleName('Size mix: XS 2, M 3, XL 1');
+    unmount();
+    render(<MixBar sizes={{ xs: 0, s: 0, m: 0, l: 0, xl: 0 }} total={0} />);
+    expect(screen.getByRole('img')).toHaveAccessibleName('Size mix: no PRs');
+  });
+
+  it('the By model table shows the size counts the developer table does', async () => {
+    renderPage('/prs');
+    await screen.findAllByRole('img', { name: /^Size mix: / });
+    // One per table: developers and models.
+    expect(screen.getAllByRole('columnheader', { name: 'XS · S · M · L · XL' })).toHaveLength(2);
   });
 });

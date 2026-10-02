@@ -335,7 +335,9 @@ describe('contract details', () => {
 
     // Mid-flight: still named, still a facet.
     expect(screen.getByText('alpha')).toBeInTheDocument();
-    expect(screen.queryByText(ALPHA)).not.toBeInTheDocument();
+    // No chip fell back to its raw UUID as its name. (The id itself is on
+    // screen by design, under the name — STORY 501129d3.)
+    expect(screen.queryByRole('button', { name: new RegExp(`^${ALPHA}`) })).not.toBeInTheDocument();
     expect(screen.getByText('Child hub')).toBeInTheDocument();
     gate?.();
   });

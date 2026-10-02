@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { HubServerContext, HUB_VERSION } from '../server.js';
 import { requireAdmin } from '../auth/session.js';
 import { issueApiKey } from '../auth/apiKey.js';
+import { checkEmailAllowlist } from '../auth/oauth.js';
 import { encryptSecret } from '../crypto.js';
 import { createPasswordUser, hashPassword } from '../auth/password.js';
 import { randomUUID } from 'crypto';
@@ -100,6 +101,55 @@ function publicAuthConfig(row: AuthConfigRow) {
   };
 }
 
+interface SignInAdmin { id?: string; email: string; password_hash: string | null; provider: string }
+
+/**
+ * Whether at least one of `admins` (the org's active admins) could still sign
+ * in under this config, judged the way the sign-in routes judge it: password
+ * login needs a password account and ignores the allowlist (/auth/login), and
+ * Google/Entra need the provider on with everything its callback needs, plus
+ * an email the allowlist lets through (auth/google.ts, auth/entra.ts). A
+ * method being "on" is not enough; somebody has to be able to use it.
+ *
+ * An approximation in one respect: the callbacks check the allowlist against
+ * the email the identity provider returns, and this checks the stored
+ * users.email. They differ only for an admin who signs in under another
+ * address than the one they were invited with.
+ */
+export function adminCanStillSignIn(cfg: AuthConfigRow, admins: SignInAdmin[]): boolean {
+  const byPassword = !!cfg.password_enabled && admins.some(a => a.provider === 'password' && !!a.password_hash);
+  if (byPassword) return true;
+  const google = !!cfg.google_enabled && !!cfg.google_client_id?.trim() && !!cfg.google_client_secret_enc;
+  const entra = !!cfg.entra_enabled && !!cfg.entra_tenant_id?.trim() && !!cfg.entra_client_id?.trim() && !!cfg.entra_client_secret_enc;
+  return (google || entra) && admins.some(a => checkEmailAllowlist(a.email, cfg.email_allowlist).allowed);
+}
+
+/** The org's active admins, as the sign-in checks need them. Exported for tests that hold this read. */
+export const ACTIVE_ADMINS_SQL = "SELECT id, email, password_hash, provider FROM users WHERE org_id = ? AND role = 'admin' AND active = 1";
+
+/** Why no admin could sign in under this config, for the refusal; null when one can. */
+export function signInLockoutReason(cfg: AuthConfigRow, admins: SignInAdmin[]): string | null {
+  if (adminCanStillSignIn(cfg, admins)) return null;
+  if (cfg.password_enabled && !admins.some(a => a.provider === 'password' && !!a.password_hash)) {
+    return 'This would leave no admin able to sign in: no admin has an email + password account any more '
+      + '(signing in with Google or Entra once moves an account to it), and no single sign-on provider is set up '
+      + 'with an allowlist that lets an admin in.';
+  }
+  return 'This would leave no admin able to sign in: keep email + password on, or finish setting up '
+    + 'Google or Microsoft Entra (client ID, secret and, for Entra, the tenant) with an allowlist '
+    + 'that still lets an admin in.';
+}
+
+/**
+ * A WHERE fragment that holds unless the row is the org's last active admin.
+ * Binds two parameters: the org id, then the row's id.
+ */
+const NOT_LAST_ACTIVE_ADMIN = `NOT (role = 'admin' AND active = 1 AND (
+  SELECT COUNT(*) FROM users others
+  WHERE others.org_id = ? AND others.role = 'admin' AND others.active = 1 AND others.id <> ?
+) = 0)`;
+const LAST_ADMIN_ERROR = 'This is the last active admin; make someone else an admin first.';
+
 export function adminRouter(ctx: HubServerContext): Router {
   const router = Router();
 
@@ -108,7 +158,25 @@ export function adminRouter(ctx: HubServerContext): Router {
   // Keyed by the signed-in user, not the address: the hub is reached through
   // shared corporate egress, and an IP bucket would be an office-wide cap.
   router.use(rateLimit({ windowMs: 60 * 1000, max: 300, keyFn: sessionUserKey(ctx.config.sessionSecret), message: 'Too many requests, slow down.' }));
-  const guard = requireAdmin(ctx.config.sessionSecret);
+  const guard = requireAdmin(ctx.config.sessionSecret, ctx.db);
+
+  const activeAdmins = (orgId: string) => ctx.db.all<SignInAdmin>(ACTIVE_ADMINS_SQL, [orgId]);
+  /**
+   * Whether taking `userId`'s admin access away leaves no admin who can sign
+   * in. Counting active admins is not enough: an admin outside the allowlist,
+   * or without a password account once password is off, still counts but can
+   * never sign in again once their session ends. Judged as "makes it worse",
+   * like the sign-in config guard: an org already in that state is not blocked.
+   */
+  const removalStrandsSignIn = async (orgId: string, userId: string): Promise<boolean> => {
+    const cfg = await ctx.db.get<AuthConfigRow>('SELECT * FROM auth_config WHERE org_id = ?', [orgId]);
+    if (!cfg) return false;
+    const admins = await activeAdmins(orgId);
+    if (!admins.some(a => a.id === userId)) return false;
+    return adminCanStillSignIn(cfg, admins) && !adminCanStillSignIn(cfg, admins.filter(a => a.id !== userId));
+  };
+  const STRANDS_SIGN_IN = 'This would leave no admin able to sign in: the admins left are outside the allowlist or '
+    + 'have no way to sign in that is switched on. Fix the sign-in settings first.';
 
   // ── Auth config ──────────────────────────────────────────────────────────
   router.get('/auth-config', guard, asyncRoute(async (req: Request, res: Response) => {
@@ -120,9 +188,12 @@ export function adminRouter(ctx: HubServerContext): Router {
   router.put('/auth-config', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
     const b = req.body ?? {};
+    const current = await ctx.db.get<AuthConfigRow>('SELECT * FROM auth_config WHERE org_id = ?', [orgId]);
+    if (!current) return res.status(404).json({ error: 'auth_config row missing for org' });
+    const next: AuthConfigRow = { ...current };
     const updates: string[] = [];
     const params: any[] = [];
-    const setField = (col: string, val: any) => { updates.push(`${col} = ?`); params.push(val); };
+    const setField = (col: keyof AuthConfigRow, val: any) => { updates.push(`${col} = ?`); params.push(val); (next as any)[col] = val; };
 
     if (b.passwordEnabled !== undefined) setField('password_enabled', b.passwordEnabled ? 1 : 0);
     if (b.googleEnabled !== undefined) setField('google_enabled', b.googleEnabled ? 1 : 0);
@@ -139,6 +210,16 @@ export function adminRouter(ctx: HubServerContext): Router {
     if (Array.isArray(b.emailAllowlist)) setField('email_allowlist', JSON.stringify(b.emailAllowlist));
 
     if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
+    // Saving a config nobody can sign in with locks the whole org out, the
+    // admin making the change included.
+    const admins = await activeAdmins(orgId);
+    // Refuse only a save that makes things worse: a config already stored in a
+    // state no admin can sign in under (saved before this guard existed) must
+    // still accept a step towards fixing it.
+    if (adminCanStillSignIn(current, admins)) {
+      const reason = signInLockoutReason(next, admins);
+      if (reason) return res.status(400).json({ error: reason });
+    }
     params.push(orgId);
     await ctx.db.run(`UPDATE auth_config SET ${updates.join(', ')} WHERE org_id = ?`, params);
     const row = await ctx.db.get<AuthConfigRow>('SELECT * FROM auth_config WHERE org_id = ?', [orgId]);
@@ -713,6 +794,29 @@ export function adminRouter(ctx: HubServerContext): Router {
     if (!record) { res.status(404).json({ error: 'Unknown merge' }); return; }
     if (record.reverted_at) { res.status(409).json({ error: 'This merge has already been reverted' }); return; }
 
+    // Superseded: the merge moved events, and a newer merge has since taken
+    // every one of them onward. Reverting now would move nothing yet mark this
+    // merge reverted, using it up for good. Refuse, and keep it revertable for
+    // when the newer merge has been reverted first. (A merge that moved no
+    // events has nothing to supersede and reverts as before.)
+    const claim = await ctx.db.get<{ journaled: number; on_target: number }>(
+      `SELECT COUNT(*) AS journaled,
+              SUM(CASE WHEN lower(e.user_key) = lower(?) THEN 1 ELSE 0 END) AS on_target
+         FROM user_key_merge_events j
+         JOIN events e ON e.event_id = j.event_id AND e.org_id = ?
+        WHERE j.merge_id = ?`,
+      [record.to_user_key, orgId, id],
+    );
+    const journaled = Number(claim?.journaled ?? 0);
+    const SUPERSEDED = 'A newer merge has since taken these events. Revert the newer merge first; this one stays revertable.';
+    if (journaled > 0 && Number(claim?.on_target ?? 0) === 0) {
+      res.status(409).json({ error: SUPERSEDED });
+      return;
+    }
+    // Thrown inside the transaction when a merge landed after the check above:
+    // rolls the revert back instead of marking it reverted with nothing moved.
+    class Superseded extends Error {}
+
     // Oldest affected day BEFORE the restore, or the range is unrecoverable.
     const span = await ctx.db.get<{ first_day: string | null }>(
       `SELECT MIN(date(e.occurred_at)) AS first_day
@@ -725,6 +829,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     let eventsRestored = 0;
     let aliasesRemoved = 0;
     let aliasesRestored = 0;
+    try {
     await ctx.db.transaction(async () => {
       // Only rows still sitting on this merge's target are ours to move: if a
       // later merge took them onward, reverting here would corrupt the chain.
@@ -740,6 +845,7 @@ export function adminRouter(ctx: HubServerContext): Router {
         [id, orgId, record.to_user_key, id],
       );
       eventsRestored = restored.changes;
+      if (eventsRestored === 0 && journaled > 0) throw new Superseded(SUPERSEDED);
       if (eventsRestored > 0) {
         // Both identities change shape, so neither's stale rows may survive:
         // the recompute only rebuilds groups that still have events.
@@ -811,6 +917,10 @@ export function adminRouter(ctx: HubServerContext): Router {
         [id, orgId],
       );
     });
+    } catch (e) {
+      if (e instanceof Superseded) { res.status(409).json({ error: e.message }); return; }
+      throw e;
+    }
 
     let daysRecomputed = 0;
     if (eventsRestored > 0) {
@@ -829,10 +939,9 @@ export function adminRouter(ctx: HubServerContext): Router {
       aliasesRemoved,
       aliasesRestored,
       daysRecomputed,
-      note: eventsRestored === 0
-        ? 'Nothing to restore: a newer merge has since claimed these events, so this one is superseded. '
-          + 'Revert the newer merge first.'
-        : null,
+      // A superseded merge is refused above, so a zero here is a merge that
+      // never moved anything.
+      note: eventsRestored === 0 ? 'This merge moved no events, so there was nothing to move back.' : null,
     });
   }));
 
@@ -1320,16 +1429,48 @@ export function adminRouter(ctx: HubServerContext): Router {
     if (active === true || active === false) { sets.push('active = ?'); params.push(active ? 1 : 0); }
     if (typeof password === 'string' && password.length >= 8) { sets.push('password_hash = ?'); params.push(hashPassword(password)); }
     if (sets.length === 0) return res.status(400).json({ error: 'No fields to update' });
-    params.push(req.params.id, req.session!.orgId);
-    const result = await ctx.db.run(`UPDATE users SET ${sets.join(', ')} WHERE id = ? AND org_id = ?`, params);
-    if (result.changes === 0) return res.status(404).json({ error: 'User not found' });
+    const orgId = req.session!.orgId;
+    const removesAdminAccess = role === 'viewer' || active === false;
+    if (removesAdminAccess && req.session!.userId === req.params.id) {
+      return res.status(400).json({ error: 'You cannot demote or deactivate your own account; ask another admin.' });
+    }
+    if (removesAdminAccess && await removalStrandsSignIn(orgId, req.params.id)) {
+      return res.status(409).json({ error: STRANDS_SIGN_IN });
+    }
+    params.push(req.params.id, orgId);
+    // The session guard has checked the actor is an active admin, but another
+    // admin's change can land between that read and this write (two admins
+    // demoting each other). So the last-admin check sits in the UPDATE itself:
+    // on SQLite, where writes are serialised, that closes the race outright;
+    // on Postgres two exactly simultaneous cross-demotions could still both
+    // pass under READ COMMITTED.
+    let where = 'id = ? AND org_id = ?';
+    if (removesAdminAccess) {
+      where += ` AND ${NOT_LAST_ACTIVE_ADMIN}`;
+      params.push(orgId, req.params.id);
+    }
+    const result = await ctx.db.run(`UPDATE users SET ${sets.join(', ')} WHERE ${where}`, params);
+    if (result.changes === 0) {
+      const exists = await ctx.db.get('SELECT id FROM users WHERE id = ? AND org_id = ?', [req.params.id, orgId]);
+      if (!exists) return res.status(404).json({ error: 'User not found' });
+      return res.status(409).json({ error: LAST_ADMIN_ERROR });
+    }
     res.json({ ok: true });
   }));
 
   router.delete('/users/:id', guard, asyncRoute(async (req: Request, res: Response) => {
     if (req.session!.userId === req.params.id) return res.status(400).json({ error: 'Cannot delete the signed-in user' });
-    const result = await ctx.db.run('DELETE FROM users WHERE id = ? AND org_id = ?', [req.params.id, req.session!.orgId]);
-    if (result.changes === 0) return res.status(404).json({ error: 'User not found' });
+    const orgId = req.session!.orgId;
+    if (await removalStrandsSignIn(orgId, req.params.id)) return res.status(409).json({ error: STRANDS_SIGN_IN });
+    const result = await ctx.db.run(
+      `DELETE FROM users WHERE id = ? AND org_id = ? AND ${NOT_LAST_ACTIVE_ADMIN}`,
+      [req.params.id, orgId, orgId, req.params.id],
+    );
+    if (result.changes === 0) {
+      const exists = await ctx.db.get('SELECT id FROM users WHERE id = ? AND org_id = ?', [req.params.id, orgId]);
+      if (!exists) return res.status(404).json({ error: 'User not found' });
+      return res.status(409).json({ error: LAST_ADMIN_ERROR });
+    }
     res.json({ ok: true });
   }));
 

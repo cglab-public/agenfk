@@ -20,7 +20,7 @@ export function toggledSet(prev: ReadonlySet<string>, id: string): Set<string> {
 }
 
 export function ChildHubPicker({
-  childHubs, mode, selected, onMode, onToggle, onClose, testIdPrefix,
+  childHubs, mode, selected, onMode, onToggle, onClose, testIdPrefix, groupLabel,
 }: {
   childHubs: ChildHubRow[];
   mode: DispatchScopeMode;
@@ -30,20 +30,24 @@ export function ChildHubPicker({
   onClose?: () => void;
   /** e.g. 'flow-dispatch' → `flow-dispatch-scope-all`, `flow-dispatch-child-<id>`. */
   testIdPrefix: string;
+  /** Names the All / Selected group for screen readers; the owner knows what is being sent. */
+  groupLabel: string;
 }) {
   const pill = (active: boolean) =>
-    'text-[11px] px-2 py-0.5 rounded-full border transition-colors ' +
+    'text-caption px-2 py-0.5 rounded-full border transition-colors ' +
     (active ? 'border-accent text-accent-ink bg-accent-fill font-semibold' : 'border-border-soft text-ink-tertiary hover:text-ink');
 
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-1.5">
-        <button type="button" aria-pressed={mode === 'all'} className={pill(mode === 'all')} onClick={() => onMode('all')} data-testid={`${testIdPrefix}-scope-all`}>
-          All child hubs ({childHubs.length})
-        </button>
-        <button type="button" aria-pressed={mode === 'selected'} className={pill(mode === 'selected')} onClick={() => onMode('selected')} data-testid={`${testIdPrefix}-scope-selected`}>
-          Selected ({selected.size})
-        </button>
+        <div role="group" aria-label={groupLabel} className="flex items-center gap-1.5">
+          <button type="button" aria-pressed={mode === 'all'} className={pill(mode === 'all')} onClick={() => onMode('all')} data-testid={`${testIdPrefix}-scope-all`}>
+            All child hubs ({childHubs.length})
+          </button>
+          <button type="button" aria-pressed={mode === 'selected'} className={pill(mode === 'selected')} onClick={() => onMode('selected')} data-testid={`${testIdPrefix}-scope-selected`}>
+            Selected ({selected.size})
+          </button>
+        </div>
         <span className="flex-1" />
         {onClose && (
           <button type="button" onClick={onClose} className="text-ink-tertiary hover:text-ink" aria-label="Close">
@@ -54,7 +58,7 @@ export function ChildHubPicker({
       {mode === 'selected' && (
         <div className="space-y-1">
           {childHubs.map(c => (
-            <label key={c.id} className="flex items-center gap-2 text-xs text-ink-secondary">
+            <label key={c.id} className="flex items-center gap-2 text-small text-ink-secondary">
               <input
                 type="checkbox"
                 checked={selected.has(c.id)}
@@ -67,7 +71,7 @@ export function ChildHubPicker({
         </div>
       )}
       {mode === 'all' && (
-        <p className="text-[11px] text-ink-tertiary">
+        <p className="text-caption text-ink-tertiary">
           Every current child hub, and any that joins later.
         </p>
       )}

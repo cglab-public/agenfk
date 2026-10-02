@@ -102,6 +102,9 @@ export class SQLiteStorageProvider implements StorageProvider {
   /** The item with its records' results read back. */
   private hydrated<T>(item: T): T {
     const it: any = item;
+    // ec325925: one parse per blob per read - a capture and the authoredTests record that
+    // references the same results share it, rather than parsing megabytes twice.
+    const parsed = new Map<string, unknown>();
     for (const key of SQLiteStorageProvider.RECORD_LISTS) {
       const records = it?.[key];
       if (!Array.isArray(records) || !records.some((r: any) => typeof r?.testsBlob === 'string')) continue;
@@ -109,10 +112,15 @@ export class SQLiteStorageProvider implements StorageProvider {
         let out = r;
         for (const [field, ref] of SQLiteStorageProvider.HYDRATED_FIELDS) {
           if (typeof out?.[ref] !== 'string') continue;
-          const row = this.database.prepare('SELECT data FROM blobs WHERE hash = ?').get(out[ref]) as { data: string } | undefined;
+          const hash = out[ref] as string;
+          if (!parsed.has(hash)) {
+            const row = this.database.prepare('SELECT data FROM blobs WHERE hash = ?').get(hash) as { data: string } | undefined;
+            parsed.set(hash, row ? JSON.parse(row.data) : undefined);
+          }
+          const data = parsed.get(hash);
           const { [ref]: _ref, ...rest } = out;
           // A missing blob reads as missing - never as an empty, green run or an unchanged tree.
-          out = row ? { ...rest, [field]: JSON.parse(row.data) } : { ...rest, [`${field}Missing`]: true };
+          out = data !== undefined ? { ...rest, [field]: data } : { ...rest, [`${field}Missing`]: true };
         }
         return out;
       });
@@ -166,14 +174,31 @@ export class SQLiteStorageProvider implements StorageProvider {
     }
   }
 
+  /** ec325925: the records replaced as housekeeping - the card's updatedAt and history stay as they were. */
+  async rewriteRecords(id: string, records: { stepRecords?: unknown[]; supersededRecords?: unknown[] }): Promise<void> {
+    const stored = this.database.prepare('SELECT data FROM items WHERE id = ?').get(id) as { data: string } | undefined;
+    if (!stored) throw new Error(`Item ${id} not found`);
+    const item: any = { ...this.parseItem(stored.data) };
+    for (const key of SQLiteStorageProvider.RECORD_LISTS) {
+      if (!(key in records)) continue;
+      const list = (records as any)[key];
+      if (list === undefined) delete item[key]; else item[key] = list;
+    }
+    this.database.prepare('UPDATE items SET data = ? WHERE id = ?').run(this.rowOf(item), id);
+  }
+
+  async sweepUnreferencedBlobs(): Promise<number> {
+    return this.dropUnreferencedBlobs();
+  }
+
   /** Blobs no item row references: a rollback or a later capture replaced them. */
-  private dropUnreferencedBlobs(): void {
+  private dropUnreferencedBlobs(): number {
     const keep = new Set<string>();
     const rows = this.database.prepare(`SELECT data FROM items WHERE data LIKE '%Blob"%'`).all() as { data: string }[];
     for (const row of rows) for (const m of row.data.matchAll(/"(?:testsBlob|fileShasBlob)":"([0-9a-f]{64})"/g)) keep.add(m[1]);
     const all = this.database.prepare('SELECT hash FROM blobs').all() as { hash: string }[];
     const drop = all.filter(b => !keep.has(b.hash));
-    if (!drop.length) return;
+    if (!drop.length) return 0;
     this.database.exec('BEGIN');
     try {
       const del = this.database.prepare('DELETE FROM blobs WHERE hash = ?');
@@ -183,6 +208,7 @@ export class SQLiteStorageProvider implements StorageProvider {
       this.database.exec('ROLLBACK');
       throw e;
     }
+    return drop.length;
   }
 
   async shutdown(): Promise<void> {

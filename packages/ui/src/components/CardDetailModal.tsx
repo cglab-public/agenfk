@@ -128,7 +128,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
   const tabs = [
     { id: 'overview', label: 'Overview', icon: <AlignLeft size={14} /> },
     { id: 'plan', label: 'Plan', icon: <FileText size={14} />, hidden: isNew || !item.implementationPlan },
-    { id: 'subitems', label: 'Subitems', icon: <Layout size={14} />, badge: subitems.length, hidden: isNew || item.type === ItemType.TASK || item.type === ItemType.BUG },
+    { id: 'subitems', label: 'Subitems', icon: <Layout size={14} />, badge: subitems.length, hidden: isNew || (item.type === ItemType.TASK && subitems.length === 0) },
     { id: 'history', label: 'History', icon: <Clock size={14} />, badge: item.history?.length, hidden: isNew },
     { id: 'checks', label: 'Checks', icon: <ListChecks size={14} />, hidden: isNew },
     { id: 'tests', label: 'Test Results', icon: <FlaskConical size={14} />, badge: item.tests?.length, hidden: isNew },

@@ -25,6 +25,7 @@ import { AdminFlows } from '../pages/AdminFlows';
 import { PUBLIC_REGISTRY_REPO } from '../pages/adminFlowRegistry';
 import { api } from '../api';
 import { ThemeProvider } from '../ThemeContext';
+import { answerConfirm } from './helpers/confirmDialog';
 
 vi.mock('../api', () => ({ api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() } }));
 const get = api.get as unknown as ReturnType<typeof vi.fn>;
@@ -285,6 +286,7 @@ describe('Admin → Flows: the dispatch board', () => {
     const row = await screen.findByTestId('flow-dispatch-d-2');
     const before = served;
     fireEvent.click(within(row).getByTestId('flow-dispatch-cancel-d-2'));
+    await answerConfirm(true); // cancelling a dispatch asks first (ConfirmDialog)
     await waitFor(() => expect(post).toHaveBeenCalledWith('/v1/admin/flow-dispatches/d-2/cancel', {}));
     await waitFor(() => expect(served).toBeGreaterThan(before));
   });
@@ -303,6 +305,7 @@ describe('Admin → Flows: the dispatch board', () => {
     renderPage();
     const row = await screen.findByTestId('flow-dispatch-d-2');
     fireEvent.click(within(row).getByTestId('flow-dispatch-cancel-d-2'));
+    await answerConfirm(true); // cancelling a dispatch asks first (ConfirmDialog)
     expect(await screen.findByTestId('flow-dispatches-action-error')).toHaveTextContent(/already cancelled/);
   });
 
@@ -313,6 +316,7 @@ describe('Admin → Flows: the dispatch board', () => {
     renderPage();
     const row = await screen.findByTestId('flow-dispatch-d-2');
     fireEvent.click(within(row).getByTestId('flow-dispatch-cancel-d-2'));
+    await answerConfirm(true); // cancelling a dispatch asks first (ConfirmDialog)
     await waitFor(() => expect(screen.getByTestId('flow-dispatch-cancel-d-2')).toBeDisabled());
     expect(screen.getByTestId('flow-dispatch-cancel-d-1')).toBeEnabled();
     settle();

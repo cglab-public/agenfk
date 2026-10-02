@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { ADMIN_GROUPS } from './adminSections';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -8,9 +8,10 @@ import { canDeleteUserRow } from './canDeleteUserRow';
 import { hideTargetKey, partitionHiddenRows, canHideRow } from './hiddenPeople';
 import { canRetireRow, canUnretireRow, countRetired, retireConfirmMessage } from './retiredInstallations';
 import { isAttributedByUsername, attributionWarning, countAttributedByUsername } from './attributionWarning';
-import { Page, Toggle, RowMenu, CopyButton, Badge, LocalTime, QueryError, buttonClass, cardClass, controlClass } from '../components/ui';
+import { Page, Toggle, RowMenu, CopyButton, Badge, LocalTime, QueryError, InlineError, buttonClass, cardClass, controlClass, useConfirm } from '../components/ui';
 import { inviteErrors } from './adminValidation';
-import { providerStatus, ProviderRequirement } from './signInProviderStatus';
+import { providerStatus, ProviderRequirement, noWorkingSignInMethod, googleRequires, entraRequires } from './signInProviderStatus';
+import { userAccessLock, isLastActiveAdmin } from './userAccessLock';
 import { silentDays } from './installationStaleness';
 
 export function AdminLayout() {
@@ -18,15 +19,15 @@ export function AdminLayout() {
   const { pathname } = useLocation();
   const current = pathname.replace(/^\/admin\/?/, '').split('/')[0];
   const link = ({ isActive }: { isActive: boolean }) =>
-    'flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[13px] font-medium transition-colors ' + (isActive
+    'flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-body font-medium transition-colors ' + (isActive
       ? 'bg-accent-fill text-accent-ink'
       : 'text-ink-secondary hover:bg-nav-surface hover:text-ink');
   return (
     <Page>
       <header>
-        <p className="text-[11px] uppercase tracking-[0.18em] text-accent-ink font-semibold">Settings</p>
-        <h1 className="mt-1 text-2xl font-bold tracking-tight text-ink">Admin</h1>
-        <p className="mt-1 text-sm text-ink-tertiary">People, access, fleet-wide settings and the hub itself.</p>
+        <p className="eyebrow text-accent-ink">Settings</p>
+        <h1 className="mt-1 text-display font-bold tracking-tight text-ink">Admin</h1>
+        <p className="mt-1 text-body text-ink-tertiary">People, access, fleet-wide settings and the hub itself.</p>
       </header>
 
       {/* Narrow screens: one select instead of a rail. */}
@@ -52,7 +53,7 @@ export function AdminLayout() {
           <NavLink to="/admin" end className={link}>Overview</NavLink>
           {ADMIN_GROUPS.map(g => (
             <div key={g.id} role="group" aria-labelledby={`admin-nav-${g.id}`}>
-              <p id={`admin-nav-${g.id}`} className="px-2.5 mb-1 text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{g.label}</p>
+              <p id={`admin-nav-${g.id}`} className="eyebrow px-2.5 mb-1 text-ink-tertiary">{g.label}</p>
               <ul className="space-y-0.5">
                 {g.sections.map(s => (
                   <li key={s.to}>
@@ -104,31 +105,31 @@ export function AdminAuth() {
   // Only a first load that failed replaces the form; a failed background
   // refresh keeps the loaded form (and the admin's edits) on screen.
   if (cfg.isError && !cfg.data) return <QueryError error={cfg.error} onRetry={() => cfg.refetch()} />;
-  if (!cfg.data) return <p role="status" className="text-sm text-ink-tertiary">Loading…</p>;
+  if (!cfg.data) return <p role="status" className="text-body text-ink-tertiary">Loading…</p>;
   const c = { ...cfg.data, ...draft };
+  // Blocks only a save that makes things worse, like the hub: an org whose
+  // stored config already works for nobody must be able to save a partial fix.
+  const lockedOut = noWorkingSignInMethod(c) && !noWorkingSignInMethod(cfg.data);
 
   return (
-    <form className="space-y-4 max-w-2xl" onSubmit={(e) => { e.preventDefault(); save.mutate(draft); }}>
+    <form className="space-y-4 max-w-form" onSubmit={(e) => { e.preventDefault(); save.mutate(draft); }}>
       {cfg.isError && <QueryError error={cfg.error} onRetry={() => cfg.refetch()} />}
       <section className={cardCls}>
         <header className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-ink">Email + password</h3>
+          <h3 className="text-body font-semibold text-ink">Email + password</h3>
           <Toggle label="Email + password sign-in" checked={c.passwordEnabled} onChange={(v) => setDraft({ ...draft, passwordEnabled: v })} />
         </header>
-        <p className="mt-1 text-xs text-ink-tertiary">Allow users to sign in with email and a hashed password stored on this hub.</p>
+        <p className="mt-1 text-small text-ink-tertiary">Allow users to sign in with email and a hashed password stored on this hub.</p>
       </section>
 
       <section className={cardCls}>
         <header className="flex items-center justify-between">
           <div>
             <div className="flex items-center gap-2">
-              <h3 className="text-sm font-semibold text-ink">Google</h3>
-              <ProviderBadge enabled={c.googleEnabled} requires={[
-                { label: 'a client ID', present: !!c.google.clientId?.trim() },
-                { label: 'a client secret', present: c.google.clientSecretSet || !!c.google.clientSecret },
-              ]} />
+              <h3 className="text-body font-semibold text-ink">Google</h3>
+              <ProviderBadge enabled={c.googleEnabled} requires={googleRequires(c.google)} />
             </div>
-            <p className="mt-0.5 text-xs text-ink-tertiary">OAuth 2.0 sign-in with Google Workspace or consumer accounts.</p>
+            <p className="mt-0.5 text-small text-ink-tertiary">OAuth 2.0 sign-in with Google Workspace or consumer accounts.</p>
           </div>
           <Toggle label="Google sign-in" checked={c.googleEnabled} onChange={(v) => setDraft({ ...draft, googleEnabled: v })} />
         </header>
@@ -148,15 +149,10 @@ export function AdminAuth() {
         <header className="flex items-center justify-between">
           <div>
             <div className="flex items-center gap-2">
-              <h3 className="text-sm font-semibold text-ink">Microsoft Entra</h3>
-              <ProviderBadge enabled={c.entraEnabled} requires={[
-                // The server refuses Entra sign-in without a tenant (hub/src/auth/entra.ts).
-                { label: 'a tenant ID', present: !!c.entra.tenantId?.trim() },
-                { label: 'a client ID', present: !!c.entra.clientId?.trim() },
-                { label: 'a client secret', present: c.entra.clientSecretSet || !!c.entra.clientSecret },
-              ]} />
+              <h3 className="text-body font-semibold text-ink">Microsoft Entra</h3>
+              <ProviderBadge enabled={c.entraEnabled} requires={entraRequires(c.entra)} />
             </div>
-            <p className="mt-0.5 text-xs text-ink-tertiary">OAuth 2.0 sign-in via Azure AD / Entra ID tenants.</p>
+            <p className="mt-0.5 text-small text-ink-tertiary">OAuth 2.0 sign-in via Azure AD / Entra ID tenants.</p>
           </div>
           <Toggle label="Microsoft Entra sign-in" checked={c.entraEnabled} onChange={(v) => setDraft({ ...draft, entraEnabled: v })} />
         </header>
@@ -176,20 +172,26 @@ export function AdminAuth() {
       </section>
 
       <section className={cardCls}>
-        <h3 className="text-sm font-semibold text-ink">Email allowlist</h3>
-        <p className="mt-1 text-xs text-ink-tertiary">Comma-separated domains. Only addresses ending in these domains may sign in. Leave empty to accept any.</p>
-        <input className={`${inputCls} mt-3 font-mono text-xs`}
+        <h3 id="auth-email-allowlist" className="text-body font-semibold text-ink">Email allowlist</h3>
+        <p className="mt-1 text-small text-ink-tertiary">Comma-separated domains. Only addresses ending in these domains may sign in. Leave empty to accept any.</p>
+        <input className={`${inputCls} mt-3 font-mono text-small`}
+               aria-labelledby="auth-email-allowlist"
                placeholder='acme.com, *.subsidiary.com'
                defaultValue={c.emailAllowlist.join(', ')}
                onBlur={(e) => setDraft({ ...draft, emailAllowlist: e.target.value.split(',').map(s => s.trim()).filter(Boolean) })} />
       </section>
 
       <div className="flex items-center gap-3">
-        <button type="submit" disabled={save.isPending} className={primaryBtnCls}>
+        <button type="submit" disabled={save.isPending || lockedOut} aria-describedby={lockedOut ? 'signin-lockout' : undefined} className={primaryBtnCls}>
           {save.isPending ? 'Saving…' : 'Save changes'}
         </button>
-        {save.isSuccess && <span className="text-xs text-status-ok-text font-medium">✓ Saved</span>}
-        {save.isError && <span className="text-xs text-status-danger-text font-medium">Error: {(save.error as any)?.message}</span>}
+        {lockedOut && (
+          <span id="signin-lockout" role="alert" className="text-small text-status-danger-text font-medium">
+            This would leave no way to sign in. Keep email + password on, or finish setting up another provider first.
+          </span>
+        )}
+        {save.isSuccess && <span className="text-small text-status-ok-text font-medium">✓ Saved</span>}
+        <InlineError error={save.error} className="font-medium" />
       </div>
     </form>
   );
@@ -198,10 +200,10 @@ export function AdminAuth() {
 function Field({ label, error, errorId, children, className }: { label: string; error?: string; errorId?: string; children: React.ReactNode; className?: string }) {
   return (
     <label className={`block ${className ?? ''}`}>
-      <span className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary">{label}</span>
+      <span className="eyebrow text-ink-tertiary">{label}</span>
       <div className="mt-1.5">{children}</div>
       {/* Tied to its input by aria-describedby, not announced as an alert on every keystroke. */}
-      {error && <span id={errorId} className="mt-1 block text-xs text-status-danger-text">{error}</span>}
+      {error && <span id={errorId} className="mt-1 block text-small text-status-danger-text">{error}</span>}
     </label>
   );
 }
@@ -220,6 +222,7 @@ interface KeyRow {
 
 export function AdminKeys() {
   const qc = useQueryClient();
+  const { confirm, dialog } = useConfirm();
   const keys = useQuery<KeyRow[]>({ queryKey: ['api-keys'], queryFn: async () => (await api.get('/v1/admin/api-keys')).data });
   const create = useMutation({
     mutationFn: (label: string) => api.post('/v1/admin/api-keys', { label }),
@@ -248,19 +251,23 @@ export function AdminKeys() {
 
   return (
     <div className="space-y-6">
-      <section className={`${cardCls} max-w-2xl`}>
+      {dialog}
+      <section className={`${cardCls} max-w-form`}>
         <header className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-xl bg-accent-fill text-accent-ink flex items-center justify-center">
             <KeyRound className="w-4 h-4" />
           </div>
           <div>
-            <h3 className="text-sm font-semibold text-ink">Magic-link invite</h3>
-            <p className="mt-0.5 text-xs text-ink-tertiary">Generate a single-use, signed join command. Developers paste it into their terminal — they never see the token.</p>
+            <h3 className="text-body font-semibold text-ink">Magic-link invite</h3>
+            <p className="mt-0.5 text-small text-ink-tertiary">Generate a single-use, signed join command. Developers paste it into their terminal — they never see the token.</p>
           </div>
         </header>
         <button
           onClick={async () => {
-            const r = await createInvite.mutateAsync();
+            // A refusal is shown from createInvite.error below; caught here so
+            // it does not escape as an unhandled rejection.
+            const r = await createInvite.mutateAsync().catch(() => null);
+            if (!r) return;
             const data = r.data as { joinCommand: string; expiresAt: string };
             setInvites(prev => [
               ...prev,
@@ -272,18 +279,20 @@ export function AdminKeys() {
         >
           {createInvite.isPending ? 'Generating…' : invites.length === 0 ? 'Generate invite' : 'Generate another invite'}
         </button>
+        <InlineError error={createInvite.error} className="mt-2" />
         {invites.length > 0 && (
           <div className="mt-4 space-y-3">
             {invites.map((inv, idx) => (
               <div key={inv.id} className="rounded-xl border border-border-soft bg-canvas p-4">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] uppercase tracking-[0.14em] text-accent-ink font-semibold">
+                  <span className="eyebrow text-accent-ink">
                     Share this command{invites.length > 1 ? ` · #${idx + 1}` : ''}
                   </span>
                   <div className="flex items-center gap-3">
-                    <span className="text-[11px] text-ink-tertiary">expires {<LocalTime value={inv.expiresAt} format="date" />}</span>
+                    <span className="text-caption text-ink-tertiary">expires {<LocalTime value={inv.expiresAt} format="date" />}</span>
                     <button
                       onClick={() => setInvites(prev => prev.filter(p => p.id !== inv.id))}
+                      aria-label={`Dismiss invite ${idx + 1}`}
                       title="Dismiss"
                       className="text-ink-tertiary hover:text-status-danger-text"
                     >
@@ -291,35 +300,38 @@ export function AdminKeys() {
                     </button>
                   </div>
                 </div>
-                <pre className="mt-2 px-3 py-2.5 rounded-lg bg-canvas text-ink text-xs font-mono overflow-x-auto select-all">{inv.joinCommand}</pre>
-                <CopyButton value={inv.joinCommand} label="Copy to clipboard" className="mt-2" />
+                <pre className="mt-2 px-3 py-2.5 rounded-lg bg-canvas text-ink text-small font-mono relative overflow-x-auto select-all">{inv.joinCommand}</pre>
+                <CopyButton value={inv.joinCommand} label={`Copy invite ${idx + 1} command`} className="mt-2" />
               </div>
             ))}
           </div>
         )}
       </section>
 
-      <section className={`${cardCls} max-w-2xl`}>
+      <section className={`${cardCls} max-w-form`}>
         <header>
-          <h3 className="text-sm font-semibold text-ink">Issue an API key</h3>
-          <p className="mt-0.5 text-xs text-ink-tertiary">Manual installation token for legacy / scripted workflows. Prefer magic-link invites for human onboarding.</p>
+          <h3 className="text-body font-semibold text-ink">Issue an API key</h3>
+          <p className="mt-0.5 text-small text-ink-tertiary">Manual installation token for legacy / scripted workflows. Prefer magic-link invites for human onboarding.</p>
         </header>
         <form className="mt-3 flex flex-col sm:flex-row gap-2" onSubmit={async (e) => {
           e.preventDefault();
-          const r = await create.mutateAsync(label);
+          // A refusal is shown from create.error below; the label stays for a retry.
+          const r = await create.mutateAsync(label).catch(() => null);
+          if (!r) return;
           setIssued((r.data as any).token);
           setLabel('');
         }}>
-          <input className={`${inputCls} flex-1`} placeholder="Label, e.g. laptop-alice" value={label} onChange={(e) => setLabel(e.target.value)} />
+          <input className={`${inputCls} flex-1`} aria-label="Key label" placeholder="Label, e.g. laptop-alice" value={label} onChange={(e) => setLabel(e.target.value)} />
           <button type="submit" className={primaryBtnCls}>Issue key</button>
         </form>
+        <InlineError error={create.error} className="mt-2" />
         {issued && (
           <div className="mt-3 rounded-xl border border-status-warn-text/40 bg-status-warn-bg p-4">
-            <div className="text-[11px] uppercase tracking-[0.14em] text-status-warn-text font-semibold">Save this token now — it won't be shown again</div>
-            <pre className="mt-2 px-3 py-2.5 rounded-lg bg-canvas text-ink text-xs font-mono break-all overflow-x-auto select-all">{issued}</pre>
+            <div className="eyebrow text-status-warn-text">Save this token now — it won't be shown again</div>
+            <pre className="mt-2 px-3 py-2.5 rounded-lg bg-canvas text-ink text-small font-mono break-all relative overflow-x-auto select-all">{issued}</pre>
             <div className="mt-2 flex items-center gap-3">
               <CopyButton value={issued} label="Copy" />
-              <button onClick={() => setIssued(null)} className="text-xs font-medium text-ink-tertiary hover:text-ink">I've saved it</button>
+              <button onClick={() => setIssued(null)} className="text-small font-medium text-ink-tertiary hover:text-ink">I've saved it</button>
             </div>
           </div>
         )}
@@ -327,13 +339,14 @@ export function AdminKeys() {
 
       <section className={cardCls}>
         <header className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-ink">Active keys</h3>
-          <span className="text-[11px] text-ink-tertiary">{(keys.data ?? []).filter(k => !k.revokedAt).length} active · {(keys.data ?? []).length} total</span>
+          <h3 className="text-body font-semibold text-ink">Active keys</h3>
+          <span className="text-caption text-ink-tertiary">{(keys.data ?? []).filter(k => !k.revokedAt).length} active · {(keys.data ?? []).length} total</span>
         </header>
-        <div className="mt-3 -mx-5 overflow-x-auto">
-          <table className="w-full text-sm">
+        <InlineError error={revoke.error} className="mt-2" />
+        <div className="mt-3 -mx-5 relative overflow-x-auto">
+          <table className="w-full text-body">
             <thead>
-              <tr className="text-[10px] uppercase tracking-[0.14em] text-ink-tertiary font-semibold">
+              <tr className="eyebrow text-ink-tertiary">
                 <th className="text-left px-5 py-2">Preview</th>
                 <th className="text-left px-2 py-2">Label</th>
                 <th className="text-left px-2 py-2">Installation</th>
@@ -347,32 +360,45 @@ export function AdminKeys() {
                 const ident = k.gitEmail ?? k.osUser;
                 return (
                 <tr key={k.tokenHashPreview} className="hover:bg-accent-fill transition-colors">
-                  <td className="px-5 py-2.5 font-mono text-xs text-ink-secondary">{k.tokenHashPreview}…</td>
+                  <td className="px-5 py-2.5 font-mono text-small text-ink-secondary">{k.tokenHashPreview}…</td>
                   <td className="px-2 py-2.5 text-ink-secondary">{k.label ?? <span className="text-ink-tertiary">—</span>}</td>
-                  <td className="px-2 py-2.5 text-xs text-ink-secondary">
+                  <td className="px-2 py-2.5 text-small text-ink-secondary">
                     {ident ? (
                       <span className="font-mono" title={k.installationId ? `installation: ${k.installationId}` : undefined}>
                         {ident}
                         {k.installationId && (
-                          <span className="ml-1 text-ink-tertiary">· {k.installationId.slice(0, 8)}…</span>
+                          <span className="ml-1 text-ink-tertiary">
+                            <span aria-hidden="true">· {k.installationId.slice(0, 8)}…</span>
+                            <span className="sr-only">installation {k.installationId}</span>
+                          </span>
                         )}
                       </span>
                     ) : k.installationId ? (
-                      <span className="font-mono text-ink-tertiary" title={k.installationId}>{k.installationId.slice(0, 8)}…</span>
+                      <span className="font-mono text-ink-tertiary" title={k.installationId}>
+                        <span aria-hidden="true">{k.installationId.slice(0, 8)}…</span>
+                        <span className="sr-only">installation {k.installationId}</span>
+                      </span>
                     ) : (
                       <span className="text-ink-tertiary">—</span>
                     )}
                   </td>
-                  <td className="px-2 py-2.5 text-xs text-ink-tertiary tabular-nums">{<LocalTime value={k.createdAt} format="date" />}</td>
+                  <td className="px-2 py-2.5 text-small text-ink-tertiary tabular-nums">{<LocalTime value={k.createdAt} format="date" />}</td>
                   <td className="px-2 py-2.5">
                     {k.revokedAt
-                      ? <span className="px-2 py-0.5 rounded-md text-[10px] font-mono bg-status-danger-bg text-status-danger-text border border-status-danger-text/40">revoked</span>
-                      : <span className="px-2 py-0.5 rounded-md text-[10px] font-mono bg-status-ok-bg text-status-ok-text border border-status-ok-text/40">active</span>}
+                      ? <span className="px-2 py-0.5 rounded-md text-caption font-mono bg-status-danger-bg text-status-danger-text border border-status-danger-text/40">revoked</span>
+                      : <span className="px-2 py-0.5 rounded-md text-caption font-mono bg-status-ok-bg text-status-ok-text border border-status-ok-text/40">active</span>}
                   </td>
                   <td className="px-5 py-2.5 text-right">
                     {!k.revokedAt && (
-                      <button onClick={() => revoke.mutate(k.tokenHashPreview)}
-                              className="inline-flex items-center gap-1 text-xs font-semibold text-ink-tertiary hover:text-status-danger-text">
+                      <button onClick={async () => {
+                                if (await confirm({
+                                  title: `Revoke the key ${k.label ?? k.tokenHashPreview}?`,
+                                  body: 'Any machine using it stops reporting to the hub at once, and the key cannot be restored: the machine has to join again for a new one.',
+                                  confirmLabel: 'Revoke key',
+                                })) revoke.mutate(k.tokenHashPreview);
+                              }}
+                              aria-label={`Revoke key ${k.label ?? k.tokenHashPreview}`}
+                              className="inline-flex items-center gap-1 text-small font-semibold text-ink-tertiary hover:text-status-danger-text">
                         <Trash2 className="w-3 h-3" /> Revoke
                       </button>
                     )}
@@ -384,10 +410,10 @@ export function AdminKeys() {
                 <tr><td colSpan={6} className="px-5 py-4"><QueryError error={keys.error} onRetry={() => keys.refetch()} /></td></tr>
               )}
               {keys.isPending && (
-                <tr><td colSpan={6} className="px-5 py-6 text-center text-sm text-ink-tertiary" role="status">Loading…</td></tr>
+                <tr><td colSpan={6} className="px-5 py-6 text-center text-body text-ink-tertiary" role="status">Loading…</td></tr>
               )}
               {keys.data?.length === 0 && (
-                <tr><td colSpan={6} className="px-5 py-6 text-center text-sm text-ink-tertiary">No keys yet.</td></tr>
+                <tr><td colSpan={6} className="px-5 py-6 text-center text-body text-ink-tertiary">No keys yet.</td></tr>
               )}
             </tbody>
           </table>
@@ -407,19 +433,29 @@ const PROVIDER_BADGE: Record<string, string> = {
 
 export function AdminUsers() {
   const qc = useQueryClient();
+  const { confirm, dialog } = useConfirm();
   const users = useQuery<UserRow[]>({ queryKey: ['admin-users'], queryFn: async () => (await api.get('/v1/admin/users')).data });
   const me = useQuery<{ userId: string }>({ queryKey: ['auth-me'], queryFn: async () => (await api.get('/auth/me')).data });
   const invite = useMutation({
     mutationFn: (body: any) => api.post('/v1/admin/users/invite', body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-users'] }),
+    onSuccess: () => {
+      // Cleared only once the hub accepted it: a refused invite keeps what was
+      // typed, next to the reason.
+      setDraft(d => ({ email: '', password: '', role: 'viewer', authMethod: d.authMethod }));
+      setTouched({});
+      qc.invalidateQueries({ queryKey: ['admin-users'] });
+    },
   });
+  // A success on the card clears the other action's leftover error: the
+  // errors are not tied to a row, so a stale one would read as current. Only
+  // an errored one: reset() on a running mutation would lose its outcome.
   const update = useMutation({
     mutationFn: ({ id, ...rest }: any) => api.put(`/v1/admin/users/${id}`, rest),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-users'] }),
+    onSuccess: () => { if (remove.isError) remove.reset(); qc.invalidateQueries({ queryKey: ['admin-users'] }); },
   });
   const remove = useMutation({
     mutationFn: (id: string) => api.delete(`/v1/admin/users/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-users'] }),
+    onSuccess: () => { if (update.isError) update.reset(); qc.invalidateQueries({ queryKey: ['admin-users'] }); },
   });
   const [draft, setDraft] = useState<{ email: string; password: string; role: string; authMethod: 'password' | 'sso' }>({ email: '', password: '', role: 'viewer', authMethod: 'password' });
   const draftErrors = inviteErrors(draft);
@@ -430,10 +466,11 @@ export function AdminUsers() {
 
   return (
     <div className="space-y-6">
-      <section className={`${cardCls} max-w-2xl`}>
+      {dialog}
+      <section className={`${cardCls} max-w-form`}>
         <header>
-          <h3 className="text-sm font-semibold text-ink">Invite user</h3>
-          <p className="mt-0.5 text-xs text-ink-tertiary">Only invited users can sign in — SSO does not auto-create accounts. Choose <strong>Password</strong> for an email + password login, or <strong>SSO only</strong> to require Google/Entra sign-in for the same email.</p>
+          <h3 className="text-body font-semibold text-ink">Invite user</h3>
+          <p className="mt-0.5 text-small text-ink-tertiary">Only invited users can sign in — SSO does not auto-create accounts. Choose <strong>Password</strong> for an email + password login, or <strong>SSO only</strong> to require Google/Entra sign-in for the same email.</p>
         </header>
         <form
           className="mt-4 grid sm:grid-cols-12 gap-3"
@@ -442,24 +479,26 @@ export function AdminUsers() {
             const body: any = { email: draft.email.trim(), role: draft.role };
             if (draft.authMethod === 'password') body.password = draft.password;
             invite.mutate(body);
-            setDraft({ email: '', password: '', role: 'viewer', authMethod: draft.authMethod });
-            setTouched({});
           }}
         >
-          <Field label="Auth method" className="sm:col-span-12">
-            <div className="inline-flex p-1 rounded-lg border border-border-soft bg-canvas">
+          {/* Not a Field: a <label> around buttons names the first one and
+              presses it when the caption is clicked. */}
+          <div className="block sm:col-span-12">
+            <span id="invite-auth-method" className="eyebrow text-ink-tertiary">Auth method</span>
+            <div role="group" aria-labelledby="invite-auth-method" className="mt-1.5 inline-flex p-1 rounded-lg border border-border-soft bg-canvas">
               {(['password', 'sso'] as const).map(m => (
                 <button
                   key={m}
                   type="button"
+                  aria-pressed={draft.authMethod === m}
                   onClick={() => setDraft({ ...draft, authMethod: m, password: m === 'sso' ? '' : draft.password })}
-                  className={`px-3 py-1 rounded-md text-xs font-semibold transition-colors ${draft.authMethod === m ? 'bg-surface text-accent-ink shadow-sm' : 'text-ink-tertiary hover:text-ink'}`}
+                  className={`px-3 py-1 rounded-md text-small font-semibold transition-colors ${draft.authMethod === m ? 'bg-surface text-accent-ink shadow-sm' : 'text-ink-tertiary hover:text-ink'}`}
                 >
                   {m === 'password' ? 'Password' : 'SSO only'}
                 </button>
               ))}
             </div>
-          </Field>
+          </div>
           <Field label="Email" error={shownErrors.email} errorId="invite-email-error" className={draft.authMethod === 'password' ? 'sm:col-span-5' : 'sm:col-span-9'}>
             <input className={inputCls} placeholder="alice@acme.com" value={draft.email}
               aria-invalid={!!shownErrors.email} aria-describedby={shownErrors.email ? 'invite-email-error' : undefined}
@@ -486,17 +525,20 @@ export function AdminUsers() {
             </button>
           </div>
         </form>
+        <InlineError error={invite.error} className="mt-2" />
       </section>
 
       <section className={cardCls}>
         <header className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-ink">Users</h3>
-          <span className="text-[11px] text-ink-tertiary">{users.data?.length ?? 0} total</span>
+          <h3 className="text-body font-semibold text-ink">Users</h3>
+          <span className="text-caption text-ink-tertiary">{users.data?.length ?? 0} total</span>
         </header>
-        <div className="mt-3 -mx-5 overflow-x-auto">
-          <table className="w-full text-sm">
+        <InlineError error={update.error} className="mt-2" />
+        <InlineError error={remove.error} className="mt-2" />
+        <div className="mt-3 -mx-5 relative overflow-x-auto">
+          <table className="w-full text-body">
             <thead>
-              <tr className="text-[10px] uppercase tracking-[0.14em] text-ink-tertiary font-semibold">
+              <tr className="eyebrow text-ink-tertiary">
                 <th className="text-left px-5 py-2">Email</th>
                 <th className="text-left px-2 py-2">Provider</th>
                 <th className="text-left px-2 py-2">Role</th>
@@ -506,59 +548,78 @@ export function AdminUsers() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border-soft">
-              {(users.data ?? []).map(u => (
+              {(users.data ?? []).map(u => {
+                const lock = userAccessLock(u, me.data?.userId, users.data ?? []);
+                // Until /auth/me answers every row is locked, but there is nothing to explain yet.
+                const lockNote = me.data ? lock : null;
+                const lockId = `user-lock-${u.id}`;
+                return (
                 <tr key={u.id} className="hover:bg-accent-fill transition-colors">
                   <td className="px-5 py-2.5">
                     <div className="flex items-center gap-2.5">
-                      <div className="w-7 h-7 rounded-full bg-accent-fill text-accent-ink text-[10px] font-bold flex items-center justify-center shrink-0">
+                      <div className="w-7 h-7 rounded-full bg-accent-fill text-accent-ink text-caption font-bold flex items-center justify-center shrink-0">
                         {u.email.slice(0, 2).toUpperCase()}
                       </div>
-                      <span className="font-mono text-xs text-ink-secondary">{u.email}</span>
+                      <div className="min-w-0">
+                        <span className="font-mono text-small text-ink-secondary">{u.email}</span>
+                        {lockNote && <p id={lockId} className="text-caption text-ink-tertiary">{lockNote}</p>}
+                      </div>
                     </div>
                   </td>
                   <td className="px-2 py-2.5">
-                    <span className={`px-2 py-0.5 rounded-md text-[10px] font-mono border ${PROVIDER_BADGE[u.provider] ?? PROVIDER_BADGE.password}`}>{u.provider}</span>
+                    <span className={`px-2 py-0.5 rounded-md text-caption font-mono border ${PROVIDER_BADGE[u.provider] ?? PROVIDER_BADGE.password}`}>{u.provider}</span>
                   </td>
                   <td className="px-2 py-2.5">
                     <select
                       value={u.role}
+                      disabled={!!lock}
+                      aria-label={`Role: ${u.email}`}
+                      aria-describedby={lockNote ? lockId : undefined}
                       onChange={(e) => update.mutate({ id: u.id, role: e.target.value })}
-                      className="bg-transparent text-xs font-medium text-ink-secondary hover:bg-accent-fill rounded-md px-1.5 py-0.5"
+                      className="bg-transparent text-small font-medium text-ink-secondary hover:bg-accent-fill rounded-md px-1.5 py-0.5 disabled:opacity-60 disabled:cursor-not-allowed"
                     >
                       <option value="viewer">viewer</option>
                       <option value="admin">admin</option>
                     </select>
                   </td>
-                  <td className="px-2 py-2.5 text-xs text-ink-tertiary tabular-nums">{u.last_login_at ? <LocalTime value={u.last_login_at} format="date" /> : <span className="text-ink-tertiary">never</span>}</td>
+                  <td className="px-2 py-2.5 text-small text-ink-tertiary tabular-nums">{u.last_login_at ? <LocalTime value={u.last_login_at} format="date" /> : <span className="text-ink-tertiary">never</span>}</td>
                   <td className="px-2 py-2.5 text-right">
-                    <Toggle label={`Active: ${u.email}`} checked={!!u.active} onChange={(v) => update.mutate({ id: u.id, active: v })} />
+                    <Toggle label={`Active: ${u.email}`} checked={!!u.active} disabled={!!lock} aria-describedby={lockNote ? lockId : undefined} onChange={(v) => update.mutate({ id: u.id, active: v })} />
                   </td>
                   <td className="px-5 py-2.5 text-right">
-                    {canDeleteUserRow(u.id, me.data?.userId) && (
+                    {canDeleteUserRow(u.id, me.data?.userId) && !isLastActiveAdmin(u, users.data ?? []) && (
                       <button
-                        onClick={() => {
-                          if (window.confirm(`Permanently delete ${u.email}? This cannot be undone.`)) {
-                            remove.mutate(u.id);
-                          }
+                        onClick={async () => {
+                          if (await confirm({
+                            title: `Delete ${u.email}?`,
+                            body: 'They can no longer sign in, and the account cannot be undone or restored. Their history on the dashboards stays.',
+                            confirmLabel: 'Delete user',
+                          })) remove.mutate(u.id);
                         }}
                         disabled={remove.isPending}
+                        aria-label={`Delete ${u.email}`}
                         title="Delete user"
-                        className="inline-flex items-center gap-1 text-xs font-semibold text-ink-tertiary hover:text-status-danger-text disabled:opacity-50"
+                        className="inline-flex items-center gap-1 text-small font-semibold text-ink-tertiary hover:text-status-danger-text disabled:opacity-50"
                       >
                         <Trash2 className="w-3 h-3" /> Delete
                       </button>
                     )}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
+              {/* Without the signed-in user every row stays locked; say why. If the list itself failed there are no rows, and its error says enough. */}
+              {me.isError && !users.isError && (
+                <tr><td colSpan={6} className="px-5 py-4"><QueryError error={me.error} onRetry={() => me.refetch()} /></td></tr>
+              )}
               {users.isError && (
                 <tr><td colSpan={6} className="px-5 py-4"><QueryError error={users.error} onRetry={() => users.refetch()} /></td></tr>
               )}
               {users.isPending && (
-                <tr><td colSpan={6} className="px-5 py-6 text-center text-sm text-ink-tertiary" role="status">Loading…</td></tr>
+                <tr><td colSpan={6} className="px-5 py-6 text-center text-body text-ink-tertiary" role="status">Loading…</td></tr>
               )}
               {users.data?.length === 0 && (
-                <tr><td colSpan={6} className="px-5 py-6 text-center text-sm text-ink-tertiary">No users yet.</td></tr>
+                <tr><td colSpan={6} className="px-5 py-6 text-center text-body text-ink-tertiary">No users yet.</td></tr>
               )}
             </tbody>
           </table>
@@ -593,6 +654,8 @@ interface HiddenPersonRow {
 const personLabel = (r: InstallationRow): string => r.gitName ?? r.osUser ?? r.gitEmail ?? r.id.slice(0, 8);
 
 export function AdminInstallations() {
+  const { confirm, dialog } = useConfirm();
+  const retiredHintId = useId();
   const qc = useQueryClient();
   // CGLAB-31: hidden people are excluded server-side by default; the toggle
   // re-fetches with ?includeHidden=1 and flags them inline.
@@ -620,21 +683,23 @@ export function AdminInstallations() {
     qc.invalidateQueries({ queryKey: ['admin-hidden-users'] });
     qc.invalidateQueries({ queryKey: ['api-keys'] });
   };
+  // A success clears the other actions' leftover errors (see AdminUsers).
+  const succeeded = () => { for (const m of [hide, unhide, retire, unretire]) if (m.isError) m.reset(); invalidate(); };
   const hide = useMutation({
     mutationFn: (userKey: string) => api.post('/v1/admin/hidden-users', { userKey }),
-    onSuccess: invalidate,
+    onSuccess: () => succeeded(),
   });
   const unhide = useMutation({
     mutationFn: (userKey: string) => api.delete(`/v1/admin/hidden-users/${encodeURIComponent(userKey)}`),
-    onSuccess: invalidate,
+    onSuccess: () => succeeded(),
   });
   const retire = useMutation({
     mutationFn: (id: string) => api.post(`/v1/admin/installations/${encodeURIComponent(id)}/retire`),
-    onSuccess: invalidate,
+    onSuccess: () => succeeded(),
   });
   const unretire = useMutation({
     mutationFn: (id: string) => api.delete(`/v1/admin/installations/${encodeURIComponent(id)}/retire`),
-    onSuccess: invalidate,
+    onSuccess: () => succeeded(),
   });
 
   const rows = installations.data ?? [];
@@ -647,19 +712,21 @@ export function AdminInstallations() {
 
   return (
     <div className="space-y-6">
+      {dialog}
       <section className={cardCls}>
-        <header className="flex items-center justify-between">
+        <header className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h3 className="text-sm font-semibold text-ink">Installations</h3>
-            <p className="mt-0.5 text-xs text-ink-tertiary">
+            <h3 className="text-body font-semibold text-ink">Installations</h3>
+            <p className="mt-0.5 text-small text-ink-tertiary">
               Every AgEnFK install that has reported events to this hub. Use this to audit which version is running where.
+              {' '}<span id={retiredHintId}>Retired installations are dead endpoints, excluded from upgrades and address changes.</span>
             </p>
           </div>
           <div className="flex items-center gap-3">
             {hiddenCount > 0 && (
               <button
                 onClick={() => setShowHidden(v => !v)}
-                className="inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-ink"
+                className="inline-flex items-center gap-1 text-caption font-semibold text-ink-tertiary hover:text-ink"
               >
                 {showHidden ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
                 {showHidden ? 'Hide hidden' : `Show hidden (${hiddenCount})`}
@@ -670,27 +737,33 @@ export function AdminInstallations() {
                 is why this label only counts once they are on screen. */}
             <button
               onClick={() => setShowRetired(v => !v)}
-              className="inline-flex items-center gap-1 text-[11px] font-semibold text-ink-tertiary hover:text-ink"
-              title="Retired installations are dead endpoints, excluded from upgrades and address changes"
+              className="inline-flex items-center gap-1 text-caption font-semibold text-ink-tertiary hover:text-ink"
+              // What retired means is in the header's description, on screen.
+              aria-describedby={retiredHintId}
             >
               {showRetired ? <ArchiveRestore className="w-3.5 h-3.5" /> : <Archive className="w-3.5 h-3.5" />}
               {showRetired ? `Hide retired (${retiredCount})` : 'Show retired'}
             </button>
             {attributedByUsername > 0 && (
-              <span
-                className="text-[11px] font-semibold text-status-warn-text cursor-help"
-                title="These installs have no git email, so their work is filed under an OS username instead of a person."
-              >
+              <span className="text-caption font-semibold text-status-warn-text">
                 {attributedByUsername} attributed by username
               </span>
             )}
-            <span className="text-[11px] text-ink-tertiary">{showHidden ? rows.length : visible.length} total</span>
+            <span className="text-caption text-ink-tertiary">{showHidden ? rows.length : visible.length} total</span>
           </div>
         </header>
-        <div className="mt-3 -mx-5 overflow-x-auto">
-          <table className="w-full text-sm">
+        {attributedByUsername > 0 && (
+          <p className="mt-1 text-caption text-ink-tertiary">
+            {attributedByUsername === 1 ? 'One install has' : `${attributedByUsername} installs have`} no git email, so their work is filed under an OS username instead of a person.
+          </p>
+        )}
+        <InlineError error={hide.error} className="mt-2" />
+        <InlineError error={retire.error} className="mt-2" />
+        <InlineError error={unretire.error} className="mt-2" />
+        <div className="mt-3 -mx-5 relative overflow-x-auto">
+          <table className="w-full text-body">
             <thead>
-              <tr className="text-[10px] uppercase tracking-[0.14em] text-ink-tertiary font-semibold">
+              <tr className="eyebrow text-ink-tertiary">
                 <th className="text-left px-5 py-2">Person</th>
                 <th className="text-left px-2 py-2">Installation</th>
                 <th className="text-left px-2 py-2">Version</th>
@@ -703,47 +776,46 @@ export function AdminInstallations() {
               {rows.map(r => (
                 <tr key={r.id} className={`hover:bg-accent-fill transition-colors ${r.hidden || r.retired ? 'opacity-50' : ''}`}>
                   <td className="px-5 py-2.5">
-                    <div className="text-sm font-medium text-ink">{personLabel(r)}</div>
+                    <div className="text-body font-medium text-ink">{personLabel(r)}</div>
                     {r.gitEmail
-                      ? <div className="text-[11px] text-ink-tertiary font-mono">{r.gitEmail}</div>
+                      ? <div className="text-caption text-ink-tertiary font-mono">{r.gitEmail}</div>
                       : (
                         // Their whole history is filed under an OS username, and
                         // fixing it later splits them into two identities.
-                        <div
-                          className="text-[11px] font-semibold text-status-warn-text cursor-help"
-                          title={attributionWarning(r.osUser)}
-                        >
-                          no git email — attributed by username
-                        </div>
+                        <details className="text-caption text-status-warn-text">
+                          <summary className="font-semibold cursor-pointer">no git email — attributed by username</summary>
+                          <p className="mt-0.5 max-w-prose text-ink-secondary">{attributionWarning(r.osUser)}</p>
+                        </details>
                       )}
                   </td>
                   <td className="px-2 py-2.5">
-                    <span className="font-mono text-[11px] text-ink-secondary" title={r.id}>{r.id.slice(0, 8)}</span>
+                    <span className="font-mono text-caption text-ink-secondary" title={r.id}>
+                      <span aria-hidden="true">{r.id.slice(0, 8)}</span>
+                      <span className="sr-only">installation {r.id}</span>
+                    </span>
                     <CopyButton value={r.id} iconOnly label={`Copy installation id for ${personLabel(r)}`} copiedLabel={`Copied installation id for ${personLabel(r)}`} className="ml-1.5 align-middle" />
                     {r.hidden && (
-                      <span className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-status-warn-text">hidden</span>
+                      <span className="eyebrow ml-2 text-status-warn-text">hidden</span>
                     )}
                     {r.retired && (
-                      <span
-                        className="ml-2 text-[10px] font-semibold uppercase tracking-wide text-ink-tertiary"
-                        title={r.retiredByEmail ? `Retired by ${r.retiredByEmail}` : 'Retired'}
-                      >
+                      <span className="eyebrow ml-2 text-ink-tertiary">
                         retired
+                        {r.retiredByEmail && <span className="ml-1 normal-case tracking-normal font-normal">by {r.retiredByEmail}</span>}
                       </span>
                     )}
                   </td>
                   <td className="px-2 py-2.5">
                     {r.agenfkVersion
-                      ? <span className="font-mono text-[11px] px-2 py-0.5 rounded-md border border-accent bg-accent-fill text-accent-ink">{r.agenfkVersion}</span>
-                      : <span className="text-[11px] text-ink-tertiary italic">unknown</span>}
+                      ? <span className="font-mono text-caption px-2 py-0.5 rounded-md border border-accent bg-accent-fill text-accent-ink">{r.agenfkVersion}</span>
+                      : <span className="text-caption text-ink-tertiary italic">unknown</span>}
                   </td>
-                  <td className="px-2 py-2.5 text-xs text-ink-tertiary tabular-nums">
+                  <td className="px-2 py-2.5 text-small text-ink-tertiary tabular-nums">
                     {r.agenfkVersionUpdatedAt ? <LocalTime value={r.agenfkVersionUpdatedAt} format="date" /> : <span className="text-ink-tertiary">—</span>}
                   </td>
-                  <td className="px-5 py-2.5 text-right text-xs text-ink-tertiary tabular-nums">
+                  <td className="px-5 py-2.5 text-right text-small text-ink-tertiary tabular-nums">
                     {r.lastSeen ? <LocalTime value={r.lastSeen} format="date" /> : <span className="text-ink-tertiary">—</span>}
                     {silentDays(r.lastSeen) !== null && (
-                      <span className="ml-2 rounded-md border border-status-warn-text/40 bg-status-warn-bg px-1.5 py-0.5 text-[10px] font-semibold text-status-warn-text">
+                      <span className="ml-2 rounded-md border border-status-warn-text/40 bg-status-warn-bg px-1.5 py-0.5 text-caption font-semibold text-status-warn-text">
                         silent {silentDays(r.lastSeen)}d
                       </span>
                     )}
@@ -755,19 +827,23 @@ export function AdminInstallations() {
                         ...(canHideRow(r) ? [{
                           label: `Hide ${personLabel(r)}`,
                           disabled: hide.isPending,
-                          onSelect: () => {
+                          onSelect: async () => {
                             const key = hideTargetKey(r);
                             if (!key) return;
-                            if (confirm(`Hide ${key}? Their installations disappear from pickers, their API keys are revoked, and new events are dropped. Historical data stays visible. This is reversible.`)) {
-                              hide.mutate(key);
-                            }
+                            if (await confirm({
+                              title: `Hide ${key}?`,
+                              body: 'Their installations disappear from pickers, their API keys are revoked, and new events are dropped. Historical data stays visible. You can unhide them later, but the keys stay revoked: their machines must join again.',
+                              confirmLabel: 'Hide',
+                            })) hide.mutate(key);
                           },
                         }] : []),
                         ...(canRetireRow(r) ? [{
                           label: `Retire ${personLabel(r)}'s installation`,
                           tone: 'danger' as const,
                           disabled: retire.isPending,
-                          onSelect: () => { if (confirm(retireConfirmMessage(r.id))) retire.mutate(r.id); },
+                          onSelect: async () => {
+                            if (await confirm({ title: `Retire ${personLabel(r)}'s installation?`, body: retireConfirmMessage(r.id), confirmLabel: 'Retire installation' })) retire.mutate(r.id);
+                          },
                         }] : []),
                         ...(canUnretireRow(r) ? [{
                           label: `Restore ${personLabel(r)}'s installation`,
@@ -780,7 +856,7 @@ export function AdminInstallations() {
                 </tr>
               ))}
               {rows.length === 0 && (
-                <tr><td colSpan={6} className="px-5 py-6 text-center text-sm text-ink-tertiary">No installations have reported yet.</td></tr>
+                <tr><td colSpan={6} className="px-5 py-6 text-center text-body text-ink-tertiary">No installations have reported yet.</td></tr>
               )}
             </tbody>
           </table>
@@ -790,24 +866,26 @@ export function AdminInstallations() {
       {(hiddenPeople.data?.length ?? 0) > 0 && (
         <section className={cardCls}>
           <header>
-            <h3 className="text-sm font-semibold text-ink">Hidden people</h3>
-            <p className="mt-0.5 text-xs text-ink-tertiary">
+            <h3 className="text-body font-semibold text-ink">Hidden people</h3>
+            <p className="mt-0.5 text-small text-ink-tertiary">
               Hidden people no longer appear in installation pickers, their API keys are revoked, and new events from them are dropped. Historical dashboards are unaffected. Unhiding restores visibility but does not restore revoked keys.
             </p>
           </header>
+          <InlineError error={unhide.error} className="mt-2" />
           <ul className="mt-3 divide-y divide-border-soft">
             {hiddenPeople.data!.map(p => (
               <li key={p.userKey} className="flex items-center justify-between py-2">
                 <div>
-                  <div className="font-mono text-xs text-ink-secondary">{p.userKey}</div>
-                  <div className="text-[11px] text-ink-tertiary">
+                  <div className="font-mono text-small text-ink-secondary">{p.userKey}</div>
+                  <div className="text-caption text-ink-tertiary">
                     hidden {<LocalTime value={p.createdAt} format="date" />}{p.hiddenByEmail ? ` by ${p.hiddenByEmail}` : ''}
                   </div>
                 </div>
                 <button
                   onClick={() => unhide.mutate(p.userKey)}
                   disabled={unhide.isPending}
-                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-accent-ink hover:opacity-80"
+                  aria-label={`Unhide ${p.userKey}`}
+                  className="inline-flex items-center gap-1 text-caption font-semibold text-accent-ink hover:opacity-80"
                 >
                   <Eye className="w-3.5 h-3.5" /> Unhide
                 </button>

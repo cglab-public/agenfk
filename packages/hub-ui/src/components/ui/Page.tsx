@@ -7,5 +7,5 @@ import { cn } from './cn';
  * several hundred pixels between the rail and the page on a wide monitor.
  */
 export function Page({ className, ...rest }: HTMLAttributes<HTMLDivElement>) {
-  return <div data-page className={cn('max-w-[1200px] space-y-6', className)} {...rest} />;
+  return <div data-page className={cn('max-w-data space-y-6', className)} {...rest} />;
 }

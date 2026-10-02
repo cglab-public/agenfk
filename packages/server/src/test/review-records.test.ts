@@ -120,7 +120,7 @@ describe('CGLAB-381: review records', () => {
     expect(res.body.reviewer).toMatchObject({ client: 'claude-code', sessionId: 'sess-A', agentId: 'agent123' });
     expect(res.body.range).toEqual({ from: base, to: tip });
     expect(res.body.findings).toEqual(findings);
-    const got = (await agent().get(`/items/${id}`)).body;
+    const got = (await agent().get(`/items/${id}?records=1`)).body;
     expect(got.reviewRecords).toHaveLength(1);
     expect(got.reviewRecords[0].reviewer.sessionId).toBe('sess-A');
   });
@@ -237,7 +237,7 @@ describe('CGLAB-381: review records', () => {
     const { dir } = makeRepo();
     const id = await cardIn(dir);
     await agent().put(`/items/${id}`).send({ reviewRecords: [{ reviewer: { sessionId: 'x' } }] });
-    expect((await agent().get(`/items/${id}`)).body.reviewRecords).toBeUndefined();
+    expect((await agent().get(`/items/${id}?records=1`)).body.reviewRecords).toBeUndefined();
   });
 
   it('verify records the author identity the caller reports on the step record it writes', async () => {
@@ -247,7 +247,7 @@ describe('CGLAB-381: review records', () => {
     const res = await agent().post(`/items/${id}/validate`).set(internal())
       .send({ evidence: 'ok', actor: { client: 'claude-code', sessionId: 'author-sess' } });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    const exit = (await agent().get(`/items/${id}`)).body.stepRecords.find((r: any) => r.kind === 'exit' && r.step === 'IN_PROGRESS');
+    const exit = (await agent().get(`/items/${id}?records=1`)).body.stepRecords.find((r: any) => r.kind === 'exit' && r.step === 'IN_PROGRESS');
     expect(exit.actor).toEqual({ client: 'claude-code', sessionId: 'author-sess', agentId: null });
   });
 
@@ -256,7 +256,7 @@ describe('CGLAB-381: review records', () => {
     const id = await cardIn(dir);
     await storage.updateItem(id, { status: 'IN_PROGRESS' } as any);
     await agent().post(`/items/${id}/validate`).set(internal()).send({ evidence: 'ok', actor: { sessionId: 42 } });
-    const exit = (await agent().get(`/items/${id}`)).body.stepRecords.find((r: any) => r.kind === 'exit');
+    const exit = (await agent().get(`/items/${id}?records=1`)).body.stepRecords.find((r: any) => r.kind === 'exit');
     expect(exit.actor).toBeUndefined();
   });
 });

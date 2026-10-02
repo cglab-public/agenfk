@@ -52,7 +52,7 @@ export function AdminOverview() {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-lg font-semibold text-ink">Overview</h2>
+      <h2 className="text-title font-semibold text-ink">Overview</h2>
       <div className="grid gap-4 md:grid-cols-2">
         {ADMIN_GROUPS.map(g => <AreaCard key={g.id} group={g} facts={facts[g.id] ?? []} />)}
       </div>
@@ -66,11 +66,11 @@ function AreaCard({ group, facts }: { group: AdminGroup; facts: string[] }) {
     <Card aria-labelledby={headingId}>
       <CardHeader id={headingId} title={group.label} />
       {facts.length > 0 && (
-        <ul className="mb-3 space-y-1 text-sm text-ink-secondary">
+        <ul className="mb-3 space-y-1 text-body text-ink-secondary">
           {facts.map(f => <li key={f}>{f}</li>)}
         </ul>
       )}
-      <ul className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
+      <ul className="flex flex-wrap gap-x-4 gap-y-1 text-body">
         {group.sections.map(s => (
           <li key={s.to}><Link to={`/admin/${s.to}`} className="text-accent-ink hover:underline">{s.label}</Link></li>
         ))}

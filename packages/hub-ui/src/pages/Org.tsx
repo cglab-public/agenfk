@@ -7,15 +7,15 @@ import { TimelineBar } from '../components/TimelineBar';
 import { FacetMultiselect } from '../components/FacetMultiselect';
 import { FilterAccordion, FILTERS_OPEN, parseFiltersOpen } from '../components/FilterAccordion';
 import { describeFilters } from '../filterSummary';
-import { MetricsTilesRow, MetricsTotals } from '../components/MetricsTilesRow';
+import { MetricsTilesRow, tileTotals } from '../components/MetricsTilesRow';
 import { ChipRow, DataTable, Page, PageHeader, PeriodControl, QueryState } from '../components/ui';
 import { shortRemote } from '../components/facetSearch';
 import { mergeEventTypes } from '../eventTypes';
 import { EventTypeChips } from '../components/EventTypeChips';
-import { browserTimezone, fmtRelative, utcTitle } from '../dates';
+import { browserTimezone, fmtDateTime, fmtRelative, utcTitle } from '../dates';
 import { checkPassRate } from '../checkPassRate';
 import { buildDayAxis } from '../prOverview';
-import { Sparkline } from '../components/Sparkline';
+import { Sparkline, sharedPeak } from '../components/Sparkline';
 import { useToggleSet } from '../hooks/useToggleSet';
 import { useUrlFilters } from '../hooks/useUrlFilters';
 import { usePeopleNames } from '../hooks/usePeopleNames';
@@ -31,7 +31,12 @@ const RANGES: Array<{ key: RangeKey; label: string }> = [
   { key: '90d', label: '90d' },
 ];
 
-interface MetricsResponse { bucket: string; series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; validate_passes: number; validate_fails: number; prs_opened: number }> }
+interface MetricsResponse {
+  bucket: string;
+  series: Array<{ user_key: string; day: string; events_count: number; items_closed: number; validate_passes: number; validate_fails: number; prs_opened: number }>;
+  /** The period's totals from live events, on the per-person rows' rules. */
+  totals?: { events_count: number; items_closed: number; validate_passes: number; validate_fails: number; prs_opened: number };
+}
 interface UsersResponse {
   user_key: string;
   last_seen: string;
@@ -148,9 +153,24 @@ export function OrgPage() {
     () => buildDayAxis(fromIsoForRange(new Date(), range), new Date().toISOString(), browserTimezone() ?? 'UTC'),
     [range],
   );
+  // One scale for every person's closures line, so rows compare (story 4e45bf2f).
+  const closuresPeak = useMemo(() => sharedPeak(users.data ?? [], u => u.closed_daily, activityAxis), [users.data, activityAxis]);
 
   // Both chip lists are partitioned by hub — offering a repo or an event type
   // from a hub the board is not showing is a dead end.
+  // A person link carries the view it was clicked in: the period, every
+  // filter and the hub scope. The person page reads the same keys, and a
+  // link that names any of them replaces what it remembered, so a link with
+  // only some would open the others unfiltered and the person's numbers would
+  // stop matching the row clicked (BUG 72c309df). `types=` (present, empty)
+  // is the explicit "none", as here.
+  const personQs = useMemo(() => {
+    const p = new URLSearchParams({ range, types: [...eventTypeSel.set].join(',') });
+    if (projectSel.set.size) p.set('projects', [...projectSel.set].join(','));
+    if (itemTypeSel.set.size) p.set('itemTypes', [...itemTypeSel.set].join(','));
+    if (childHubSel.set.size) p.set('childHubId', [...childHubSel.set].join(','));
+    return `?${p}`;
+  }, [range, eventTypeSel.set, projectSel.set, itemTypeSel.set, childHubSel.set]);
   const hubQs = childHubSel.set.size
     ? `?${new URLSearchParams({ childHubId: [...childHubSel.set].join(',') })}`
     : '';
@@ -167,16 +187,7 @@ export function OrgPage() {
     queryFn: async () => (await api.get(`/v1/item-types${itemTypesQs ? `?${itemTypesQs}` : ''}`)).data,
   });
 
-  const totals: MetricsTotals = (metrics.data?.series ?? []).reduce(
-    (a, r) => ({
-      events: a.events + r.events_count,
-      closed: a.closed + r.items_closed,
-      passes: a.passes + r.validate_passes,
-      fails: a.fails + r.validate_fails,
-      prsOpened: a.prsOpened + (r.prs_opened ?? 0),
-    }),
-    { events: 0, closed: 0, passes: 0, fails: 0, prsOpened: 0 },
-  );
+  const totals = tileTotals(metrics.data);
 
   const types = mergeEventTypes(eventTypes.data?.types);
   const projectOptions = projects.data?.projects ?? [];
@@ -200,7 +211,7 @@ export function OrgPage() {
       />
 
       <div className="space-y-1.5">
-        <p className="text-[11px] text-ink-tertiary">Totals apply every filter except event type.</p>
+        <p className="text-caption text-ink-tertiary">Totals apply every filter except event type.</p>
         <QueryState query={metrics} label="activity totals">{() => <MetricsTilesRow totals={totals} selectedTypes={eventTypeSel.set} onFilterTypes={eventTypeSel.replace} />}</QueryState>
       </div>
 
@@ -264,21 +275,21 @@ export function OrgPage() {
 
       <section className="space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-ink-secondary">Users</h2>
+          <h2 className="text-body font-semibold text-ink-secondary">Users</h2>
           {/* Scoped to the event types when some are picked: say so, or a person
               active a minute ago drops out of "reporting" for no visible reason. */}
-          {users.data && <span className="text-[11px] text-ink-tertiary">{users.data.length} {typeScoped ? 'with matching events' : 'reporting'}</span>}
+          {users.data && <span className="text-caption text-ink-tertiary">{users.data.length} {typeScoped ? 'with matching events' : 'reporting'}</span>}
         </div>
         <QueryState
           query={users}
           label="users"
           isEmpty={list => list.length === 0}
-          empty={<div className="bg-card-glass border border-border-soft rounded-2xl px-5 py-8 text-center text-sm text-ink-tertiary">No users match the current filters.</div>}
+          empty={<div className="bg-card-glass border border-border-soft rounded-2xl px-5 py-8 text-center text-body text-ink-tertiary">No users match the current filters.</div>}
         >
           {list => (
             <div className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl overflow-hidden">
               {typeScoped && (
-                <p className="px-5 pt-3 text-[11px] text-ink-tertiary">
+                <p className="px-5 pt-3 text-caption text-ink-tertiary">
                   Listed by matching events. Items closed, check pass rate and PRs count every event type.
                 </p>
               )}
@@ -303,18 +314,18 @@ export function OrgPage() {
                         // Carry the hub scope through the click-through: landing on a
                         // person aggregated across every hub would contradict the board
                         // just left, with nothing saying the scope had been dropped.
-                        to={`/users/${encodeURIComponent(u.user_key)}${hubQs}`}
+                        to={`/users/${encodeURIComponent(u.user_key)}${personQs}`}
                         className="group flex items-center gap-3 min-w-0 max-w-[320px]"
                       >
                         <PersonAvatar name={nameOf(u.user_key)} userKey={u.user_key} />
                         <div className="min-w-0">
                           {nameOf(u.user_key) ? (
                             <>
-                              <div className="text-[13px] text-ink truncate group-hover:text-accent-ink transition-colors">{nameOf(u.user_key)}</div>
-                              <div className="font-mono text-[11px] text-ink-tertiary truncate">{u.user_key}</div>
+                              <div className="text-body text-ink truncate group-hover:text-accent-ink transition-colors">{nameOf(u.user_key)}</div>
+                              <div className="font-mono text-caption text-ink-tertiary truncate">{u.user_key}</div>
                             </>
                           ) : (
-                            <div className="font-mono text-[13px] text-ink truncate group-hover:text-accent-ink transition-colors">{u.user_key}</div>
+                            <div className="font-mono text-body text-ink truncate group-hover:text-accent-ink transition-colors">{u.user_key}</div>
                           )}
                         </div>
                         <ChevronRight className="w-4 h-4 text-ink-tertiary group-hover:text-accent-ink transition-colors shrink-0 ml-auto" />
@@ -339,8 +350,10 @@ export function OrgPage() {
                     render: u => {
                       const pct = checkPassRate(u.validate_passes, u.validate_fails);
                       return pct === null
-                        ? <span className="text-ink-tertiary" title="no checks ran">—</span>
-                        : <span className="font-mono tabular-nums text-ink" title={`${u.validate_passes} passed · ${u.validate_fails} failed`}>{pct}%</span>;
+                        // The hover title rides on the aria-hidden visual; the
+                        // sr-only text says it once to a screen reader.
+                        ? <span className="text-ink-tertiary"><span aria-hidden="true" title="no checks ran">—</span><span className="sr-only">no checks ran</span></span>
+                        : <span className="font-mono tabular-nums text-ink"><span aria-hidden="true" title={`${u.validate_passes} passed · ${u.validate_fails} failed`}>{pct}%</span><span className="sr-only">{`${pct}%, ${u.validate_passes} passed, ${u.validate_fails} failed`}</span></span>;
                     },
                   },
                   {
@@ -354,7 +367,7 @@ export function OrgPage() {
                   {
                     key: 'activity',
                     header: 'Closed per day',
-                    render: u => <Sparkline daily={u.closed_daily} axis={activityAxis} label="Closures" />,
+                    render: u => <Sparkline daily={u.closed_daily} axis={activityAxis} max={closuresPeak} label="Closures" />,
                   },
                   {
                     key: 'events',
@@ -370,7 +383,13 @@ export function OrgPage() {
                     align: 'right',
                     firstDir: 'desc',
                     sortValue: u => Date.parse(u.last_seen) || 0,
-                    render: u => <span className="text-[12px] text-ink-tertiary" title={utcTitle(u.last_seen)}>{formatLastSeen(u.last_seen)}</span>,
+                    render: u => (
+                      <span className="text-small text-ink-tertiary" title={utcTitle(u.last_seen)}>
+                        {formatLastSeen(u.last_seen)}
+                        {/* The absolute time behind "3h ago", read out rather than hover-only. */}
+                        <span className="sr-only">{` (${fmtDateTime(u.last_seen)})`}</span>
+                      </span>
+                    ),
                   },
                 ]}
               />

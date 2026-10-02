@@ -148,7 +148,10 @@ describe('the user page event list', () => {
     const inList = screen.getAllByText('Step changed').filter(el => el.closest('summary'));
     expect(inList).toHaveLength(1);
     expect(inList[0]).toHaveAttribute('title', 'step.transitioned');
-    expect(screen.queryByText('step.transitioned')).toBeNull();
+    // The raw id is not on the row itself; opening the event shows it as Type.
+    const raw = screen.getAllByText('step.transitioned');
+    expect(raw.filter(el => el.closest('summary'))).toHaveLength(0);
+    expect(raw.some(el => el.previousElementSibling?.textContent === 'Type')).toBe(true);
   });
 
   it('opens to a field list with links, and keeps the raw JSON behind a toggle', async () => {
@@ -163,10 +166,11 @@ describe('the user page event list', () => {
     expect(pr).toHaveAttribute('title', 'https://github.com/acme/api/pull/7');
     expect(within(details).getByText('Model').nextElementSibling).toHaveTextContent('claude-opus-5-5');
     expect(details.querySelector('pre')).toBeNull();
-    const toggle = within(details).getByRole('button', { name: 'Show raw JSON' });
+    // Several events can be open at once: each toggle names its own event.
+    const toggle = within(details).getByRole('button', { name: /^Show raw JSON for PR opened\b/ });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(toggle);
-    expect(within(details).getByRole('button', { name: 'Hide raw JSON' })).toHaveAttribute('aria-expanded', 'true');
+    expect(within(details).getByRole('button', { name: /^Hide raw JSON for PR opened\b/ })).toHaveAttribute('aria-expanded', 'true');
     expect(details.querySelector('pre')).toHaveTextContent('"prNumber": 7');
   });
 });

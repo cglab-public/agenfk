@@ -9,7 +9,7 @@
  * the token utility a variant must use, because jsdom runs no Tailwind.
  */
 import React from 'react';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, getDefaultNormalizer } from '@testing-library/react';
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -33,6 +33,13 @@ describe('Button', () => {
   it('can still submit when asked', () => {
     render(<Button type="submit">Go</Button>);
     expect(screen.getByRole('button').getAttribute('type')).toBe('submit');
+  });
+
+  it('keeps its text colour beside a type-scale size (cn knows the scale is not a colour)', () => {
+    render(<Button variant="primary" size="md">Create</Button>);
+    const cls = screen.getByRole('button').className;
+    expect(cls).toMatch(/\btext-navy\b/);
+    expect(cls).toMatch(/\btext-body\b/);
   });
 
   it('primary is solid brand teal with navy text: no gradient, no glow', () => {
@@ -303,7 +310,9 @@ describe('StatTile', () => {
   it('shows label and formatted value', () => {
     render(<StatTile label="Items closed" value={1548} />);
     expect(screen.getByText('Items closed')).toBeTruthy();
-    expect(screen.getByText((1548).toLocaleString())).toBeTruthy();
+    // Compare uncollapsed: the default normalizer turns fr-FR's narrow no-break
+    // space into a plain one, which the expected string still carries.
+    expect(screen.getByText((1548).toLocaleString(), { normalizer: getDefaultNormalizer({ collapseWhitespace: false }) })).toBeTruthy();
   });
 
   it('a rise is marked ok with an arrow and a word for screen readers', () => {
@@ -417,7 +426,7 @@ describe('the primitives only use colours the tokens define', () => {
     const dir = path.resolve(__dirname, '../components/ui');
     const PREFIX = /(?:^|[\s'"`:])(?:bg|text|border|ring|outline|fill|stroke|divide|caret)-([a-z][\w-]*?)(?:\/\d+)?(?=[\s'"`]|$)/g;
     // Non-colour utilities sharing those prefixes.
-    const NOT_COLOUR = /^(xs|sm|base|lg|xl|\d?xl|\d+|\[.*\]|left|right|center|justify|wrap|nowrap|balance|ellipsis|clip|x|y|t|b|l|r|none|hidden|solid|dashed|dotted|double|offset.*|inset|collapse|separate|spacing.*|opacity.*|image.*|fixed|local|scroll|cover|contain|auto|repeat.*|no-repeat|origin.*|clip.*|blend.*)$/;
+    const NOT_COLOUR = /^(caption|small|body|title|display|xs|sm|base|lg|xl|\d?xl|\d+|\[.*\]|left|right|center|justify|wrap|nowrap|balance|ellipsis|clip|x|y|t|b|l|r|none|hidden|solid|dashed|dotted|double|offset.*|inset|collapse|separate|spacing.*|opacity.*|image.*|fixed|local|scroll|cover|contain|auto|repeat.*|no-repeat|origin.*|clip.*|blend.*)$/;
     const bad: string[] = [];
     for (const f of fs.readdirSync(dir).filter(n => n.endsWith('.tsx'))) {
       const src = fs.readFileSync(path.join(dir, f), 'utf8');

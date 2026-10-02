@@ -20,7 +20,14 @@ vi.mock('../api', () => ({ api: { get: vi.fn() } }));
 const get = api.get as unknown as ReturnType<typeof vi.fn>;
 afterEach(() => { cleanup(); get.mockReset(); });
 
-const day = (offset: number) => new Date(Date.now() - offset * 86_400_000).toISOString().slice(0, 10);
+// Local calendar days, like the page's axis (it buckets in the browser's zone,
+// as the hub files closures). A UTC date here ran a day ahead every evening
+// west of UTC and dropped today's closure off the axis.
+const day = (offset: number) => {
+  const d = new Date();
+  d.setDate(d.getDate() - offset);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 const ago = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
 
 const USERS = [
@@ -103,6 +110,22 @@ describe('Org user rows say what each person got done', () => {
     expect(alice['Items closed']).toHaveTextContent('4');
     expect(alice['Check pass rate']).toHaveTextContent('90%');
     expect(alice['PRs']).toHaveTextContent('3');
+  });
+
+  it('reads out what the pass rate and Last active only showed on hover (story f17f36a5)', async () => {
+    mount();
+    const bob = await rowFor(/bob@acme\.com/);
+    // Read once: the hover title sits on the aria-hidden visual, the sr-only
+    // text carries the counts.
+    expect(within(bob['Check pass rate']).getByText('25%, 1 passed, 3 failed')).toHaveClass('sr-only');
+    expect(within(bob['Check pass rate']).getByTitle('1 passed · 3 failed')).toHaveAttribute('aria-hidden', 'true');
+    const quiet = await rowFor(/quiet@acme\.com/);
+    expect(within(quiet['Check pass rate']).getByText('no checks ran')).toHaveClass('sr-only');
+    expect(within(quiet['Check pass rate']).getByText('—')).toHaveAttribute('aria-hidden', 'true');
+    // The relative time on screen; the absolute one read out. (This view is
+    // filtered by event type, so the column reads "Last match".)
+    const last = within(bob['Last match']).getAllByText((_, el) => !!el?.classList.contains('sr-only') && /\d/.test(el.textContent ?? ''));
+    expect(last.length).toBeGreaterThan(0);
   });
 
   it('reads the rows from the users answer, not the metrics the tiles use', async () => {

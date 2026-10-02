@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { GitPullRequest, RefreshCw, Search, X } from 'lucide-react';
@@ -13,12 +13,13 @@ import { csvParam } from '../urlParams';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useSettledKey } from '../hooks/useSettledKey';
 import { fromIsoForRange, type RangeKey } from '../components/timelineAxis';
-import { SIZE_META, type SizeKey, buildDayAxis, fmtAverage, pctDelta } from '../prOverview';
+import { SIZE_META, type SizeKey, buildDayAxis, pctDelta } from '../prOverview';
 import { heatColor } from '../chartColours';
-import { Sparkline } from '../components/Sparkline';
+import { Sparkline, sharedPeak } from '../components/Sparkline';
 import { parsePrQuery } from '../prSearch';
 import { buildMonthBands, dayHeaderInfo, contributionPcts, cellTooltip, placeTooltip } from '../prPerDay';
-import { buildVolumeSeries, type Granularity } from '../prVolumeGranularity';
+import { buildVolumeSeries, edgeCoverage, type Granularity } from '../prVolumeGranularity';
+import { PrVolumeChart } from '../components/PrVolumeChart';
 import { DataTable, DateRange, LocalTime, Page, PageHeader, PeriodControl, QueryError, Skeleton, StatTile } from '../components/ui';
 import { browserTimezone, endOfLocalDay, startOfLocalDay } from '../dates';
 import { describeFilters } from '../filterSummary';
@@ -77,6 +78,9 @@ interface PrOverviewResponse {
 }
 interface ProjectsResponse { projects: string[] }
 
+/** The heatmap's focus ring, on whichever element is a cell's focus target. */
+const HEAT_FOCUS_RING = 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent';
+
 /**
  * A stable identity for one PR row.
  *
@@ -89,16 +93,19 @@ const prKey = (p: { repo: string; prNumber: number; childHubId?: string }) =>
   `${p.childHubId ?? 'local'}\u0000${p.repo}#${p.prNumber}`;
 
 // XL→XS so the stacked bar renders largest at the bottom. Hoisted out of render.
-const SIZE_META_DESC = [...SIZE_META].reverse();
 const colorOf = (k: SizeKey) => SIZE_META.find(s => s.key === k)!.color;
 
 /** Horizontal stacked size-mix bar for one row of size counts. */
-function MixBar({ sizes, total }: { sizes: SizeDist; total: number }) {
-  if (total === 0) return <div className="h-2 w-full rounded-full bg-border-soft" />;
+export function MixBar({ sizes, total }: { sizes: SizeDist; total: number }) {
+  // The segments are empty spans: the counts go in the bar's own name, not in
+  // a per-segment title that only a mouse can read.
+  const present = SIZE_META.filter(s => sizes[s.key] > 0);
+  const label = `Size mix: ${total === 0 ? 'no PRs' : present.map(s => `${s.label} ${sizes[s.key]}`).join(', ')}`;
+  if (total === 0) return <div role="img" aria-label={label} className="h-2 w-full rounded-full bg-border-soft" />;
   return (
     // 2px gaps keep neighbouring ramp steps apart; the track is neutral.
-    <div className="flex gap-[2px] h-2 w-full rounded-full overflow-hidden bg-border-soft">
-      {SIZE_META.filter(s => sizes[s.key] > 0).map(s => (
+    <div role="img" aria-label={label} className="flex gap-[2px] h-2 w-full rounded-full overflow-hidden bg-border-soft">
+      {present.map(s => (
         <span key={s.key} title={`${s.label}: ${sizes[s.key]}`} style={{ background: s.color, width: `${(sizes[s.key] / total) * 100}%` }} />
       ))}
     </div>
@@ -107,16 +114,17 @@ function MixBar({ sizes, total }: { sizes: SizeDist; total: number }) {
 
 function SizeCounts({ sizes }: { sizes: SizeDist }) {
   return (
-    <div className="flex gap-1">
+    <div data-testid="size-counts" className="flex gap-1">
       {SIZE_META.map(s => (
         <span
           key={s.key}
-          title={`${s.label} PRs`}
-          className={`min-w-[26px] text-center rounded-md px-1 py-0.5 font-mono text-[11px] tabular-nums ${sizes[s.key] === 0
+          className={`min-w-[26px] text-center rounded-md px-1 py-0.5 font-mono text-caption tabular-nums ${sizes[s.key] === 0
             ? 'text-ink-tertiary bg-canvas'
             : 'text-ink-secondary bg-canvas'}`}
         >
-          {sizes[s.key]}
+          {/* The column header names the sizes once; each count says its own
+              to a screen reader, which reads it out of the header's order. */}
+          <span className="sr-only">{s.label} </span>{sizes[s.key]}
         </span>
       ))}
     </div>
@@ -179,17 +187,17 @@ function PrDrilldownModal({ dev, day, prs, onClose }: {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label={`PRs by ${dev} on ${day}`} onKeyDown={trapTab}>
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div ref={panelRef} className="relative z-50 w-full max-w-xl max-h-[70vh] overflow-y-auto rounded-2xl border border-border-soft bg-surface shadow-2xl">
+      <div ref={panelRef} className="relative z-50 w-full max-w-form max-h-[70vh] overflow-y-auto rounded-2xl border border-border-soft bg-surface shadow-2xl">
         <div className="sticky top-0 flex items-center justify-between gap-3 border-b border-border-soft bg-surface px-5 py-3.5">
           <div className="min-w-0">
-            <h3 className="truncate text-sm font-semibold text-ink">{dev}</h3>
-            <p className="font-mono text-[11px] text-ink-tertiary">{weekday} {day} · {prs.length} PR{prs.length === 1 ? '' : 's'}</p>
+            <h3 className="truncate text-body font-semibold text-ink">{dev}</h3>
+            <p className="font-mono text-caption text-ink-tertiary">{weekday} {day} · {prs.length} PR{prs.length === 1 ? '' : 's'}</p>
           </div>
           <button
             ref={closeRef}
             onClick={onClose}
             aria-label="Close"
-            className="rounded-lg border border-border-soft px-2 py-1 text-[12px] text-ink-tertiary hover:text-ink hover:bg-accent-fill transition-colors"
+            className="rounded-lg border border-border-soft px-2 py-1 text-small text-ink-tertiary hover:text-ink hover:bg-accent-fill transition-colors"
           >
             ✕
           </button>
@@ -201,30 +209,34 @@ function PrDrilldownModal({ dev, day, prs, onClose }: {
             const rowBody = (
               <>
                 {p.url ? (
-                  <span className="font-mono text-[13px] font-bold text-accent-ink shrink-0">
+                  <span className="font-mono text-body font-bold text-accent-ink shrink-0">
                     #{p.prNumber}
                   </span>
                 ) : (
-                  <span
-                    className="font-mono text-[13px] font-bold text-ink-secondary shrink-0"
-                    title={`${p.repo} — no GitHub link (non-GitHub host)`}
-                  >
-                    #{p.prNumber}
-                  </span>
+                  <>
+                    <span
+                      className="font-mono text-body font-bold text-ink-secondary shrink-0"
+                      title={`${p.repo} — no GitHub link (non-GitHub host)`}
+                    >
+                      #{p.prNumber}
+                    </span>
+                    {/* Why this row is not a link, read out rather than hover-only. */}
+                    <span className="sr-only">no GitHub link (non-GitHub host)</span>
+                  </>
                 )}
                 <div className="min-w-0 flex-1">
-                  <div className="truncate font-mono text-[12px] text-ink-secondary">{p.repo}</div>
-                  <div className="text-[11px] text-ink-tertiary truncate">{p.model}{p.harness ? ` · via ${p.harness}` : ''}</div>
+                  <div className="truncate font-mono text-small text-ink-secondary">{p.repo}</div>
+                  <div className="text-caption text-ink-tertiary truncate">{p.model}{p.harness ? ` · via ${p.harness}` : ''}</div>
                 </div>
                 <div className="text-right shrink-0">
                   {size && (
                     // size.text (not a fixed text-white): the ramp's light end
                     // is near-white, so white-on-XS reads as a blank box.
-                    <span className="inline-block rounded-md px-1.5 py-0.5 font-mono text-[10px] font-bold" style={{ background: size.color, color: size.text }}>
+                    <span className="inline-block rounded-md px-1.5 py-0.5 font-mono text-caption font-bold" style={{ background: size.color, color: size.text }}>
                       {size.label}
                     </span>
                   )}
-                  <div className="mt-0.5 font-mono text-[10px] text-ink-tertiary tabular-nums">
+                  <div className="mt-0.5 font-mono text-caption text-ink-tertiary tabular-nums">
                     {!Number.isNaN(openedAt.getTime()) && <LocalTime value={openedAt} />}
                   </div>
                 </div>
@@ -589,10 +601,17 @@ export function PrOverviewPage() {
     [d, searchActive, searchDays, from, to, timeZone],
   );
   // Re-bucketed PR volume for the "PR volume by size" chart (daily/weekly/monthly).
-  const volume = useMemo(() => (d ? buildVolumeSeries(d.byDay, axis, gran) : null), [d, axis, gran]);
+  // A PR search's axis is its matched days, whole; otherwise the period's
+  // first and last day are partial for a rolling range.
+  const volume = useMemo(
+    () => (d ? buildVolumeSeries(d.byDay, axis, gran, searchActive ? null : edgeCoverage(from, to, timeZone ?? 'UTC')) : null),
+    [d, axis, gran, searchActive, from, to, timeZone],
+  );
   const prsDelta = d?.previous ? pctDelta(d.totals.prs, d.previous.prs) : null;
-  const volumeBuckets = volume?.buckets ?? [];
-  const maxBucketTotal = Math.max(1, ...volumeBuckets.map(b => b.total));
+  // The API sends the previous period's size points too (story 4e45bf2f).
+  const sizeDelta = d?.previous ? pctDelta(d.totals.sizePoints, d.previous.sizePoints) : null;
+  // One scale for every developer's trend line, so rows compare (story 4e45bf2f).
+  const trendPeak = useMemo(() => sharedPeak(d?.byDeveloper ?? [], dev => dev.daily, axis), [d, axis]);
   // Reference date for the heatmap's "today" column highlight (local, like the axis).
   const todayIso = buildDayAxis(new Date().toISOString(), new Date().toISOString(), timeZone ?? 'UTC')[0];
   // Per-column header info, computed once per axis instead of per cell.
@@ -606,9 +625,73 @@ export function PrOverviewPage() {
   // a stacking context that swallows the z-index — the CGLAB-131 defect). So it
   // renders at the page root, below, in viewport coordinates from placeTooltip.
   const [heatTip, setHeatTip] = useState<{ text: string; x: number; y: number; below: boolean } | null>(null);
-  const showHeatTip = (text: string) => (e: React.MouseEvent<HTMLDivElement>) => {
-    const r = e.currentTarget.getBoundingClientRect();
+  const heatTipAt = (text: string, el: Element) => {
+    const r = el.getBoundingClientRect();
     setHeatTip({ text, ...placeTooltip({ left: r.left, top: r.top, width: r.width, height: r.height }, text, window.innerWidth) });
+  };
+  const showHeatTip = (text: string) => (e: React.MouseEvent<HTMLDivElement>) => heatTipAt(text, e.currentTarget);
+
+  // The heatmap is an ARIA grid with ONE tab stop (story 6b898739): a stop per
+  // non-empty cell was hundreds at 90 days × 20 developers. The stop is the
+  // cell last focused, else the first day with PRs; the arrow keys move it.
+  const heatGridRef = useRef<HTMLDivElement>(null);
+  const [heatPos, setHeatPos] = useState<{ r: number; c: number } | null>(null);
+  const heatRows = d?.byDeveloper.length ?? 0;
+  const heatCols = axis.length;
+  const heatStop = useMemo(() => {
+    if (heatPos && heatPos.r < heatRows && heatPos.c < heatCols) return heatPos;
+    const devs = d?.byDeveloper ?? [];
+    for (let r = 0; r < devs.length; r++) {
+      const c = axis.findIndex(day => (devs[r].daily[day] ?? 0) > 0);
+      if (c >= 0) return { r, c };
+    }
+    return { r: 0, c: 0 };
+  }, [heatPos, heatRows, heatCols, d, axis]);
+  // Whether the last input was a pointer. Focus a click gave (or the drill
+  // dialog handed back on closing) opens no tooltip: the pointer is elsewhere
+  // by then, and the tip would stay until something else took focus.
+  const heatPointer = useRef(false);
+  useEffect(() => {
+    const pointer = () => { heatPointer.current = true; };
+    const key = () => { heatPointer.current = false; };
+    document.addEventListener('pointerdown', pointer, true);
+    document.addEventListener('keydown', key, true);
+    return () => {
+      document.removeEventListener('pointerdown', pointer, true);
+      document.removeEventListener('keydown', key, true);
+    };
+  }, []);
+  /** The tooltip for a focused cell, measured on the next frame: the browser
+   *  scrolls a focused cell into view after the focus event, so measuring in
+   *  it placed the tip where the cell had been. */
+  const heatTipOnFocus = (text: string, el: HTMLElement) => {
+    if (heatPointer.current) return;
+    requestAnimationFrame(() => { if (document.activeElement === el) heatTipAt(text, el); });
+  };
+  const onHeatKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const at = (e.target as HTMLElement).dataset.cell?.split('-').map(Number);
+    // Modified keys belong to the browser (Alt+Left is Back, Cmd+Left on a
+    // Mac); Ctrl/Cmd+Home/End are the grid's own corner moves.
+    const corners = e.key === 'Home' || e.key === 'End';
+    if (!at || heatRows === 0 || heatCols === 0 || e.altKey || ((e.metaKey || e.ctrlKey) && !corners)) return;
+    // Escape dismisses the tooltip and leaves the focus where it is (WCAG
+    // 1.4.13); Space on an empty day would otherwise scroll the page.
+    if (e.key === 'Escape') { setHeatTip(null); return; }
+    if (e.key === ' ') { e.preventDefault(); return; }
+    const [r, c] = at;
+    const corner = e.ctrlKey || e.metaKey;
+    const next: Record<string, [number, number]> = {
+      ArrowLeft: [r, c - 1], ArrowRight: [r, c + 1], ArrowUp: [r - 1, c], ArrowDown: [r + 1, c],
+      Home: corner ? [0, 0] : [r, 0],
+      End: corner ? [heatRows - 1, heatCols - 1] : [r, heatCols - 1],
+    };
+    const to = next[e.key];
+    if (!to) return;
+    e.preventDefault();
+    const nr = Math.min(heatRows - 1, Math.max(0, to[0]));
+    const nc = Math.min(heatCols - 1, Math.max(0, to[1]));
+    setHeatPos({ r: nr, c: nc });
+    heatGridRef.current?.querySelector<HTMLElement>(`[data-cell="${nr}-${nc}"]`)?.focus();
   };
   // CGLAB-131 — the cell being drilled into (developer × day), or null.
   const [drill, setDrill] = useState<{ dev: string; day: string } | null>(null);
@@ -619,7 +702,10 @@ export function PrOverviewPage() {
   }, []);
   // A refetch replaces the data the open drill was built from — close it
   // rather than show a stale (or emptied) list against the new window.
-  useEffect(() => { setDrill(null); }, [d]);
+  // The heatmap's tab stop is a (row, column) of the old answer: on a new one
+  // it may name another developer or day, so it goes back to the first day
+  // with PRs.
+  useEffect(() => { setDrill(null); setHeatPos(null); }, [d]);
   const drillPrs = useMemo(() => {
     if (!drill || !d?.prs) return [];
     // The server already orders by open time, then repo#number, and applied the
@@ -709,7 +795,7 @@ export function PrOverviewPage() {
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <label
             htmlFor="pr-number-search"
-            className="text-[11px] uppercase tracking-[0.14em] font-semibold text-ink-tertiary"
+            className="eyebrow text-ink-tertiary"
           >
             PR number
           </label>
@@ -717,7 +803,7 @@ export function PrOverviewPage() {
             <button
               onClick={() => setPrQuery('')}
               aria-label="Clear PR search"
-              className="inline-flex items-center gap-1 text-[11px] font-medium text-ink-tertiary hover:text-danger-muted"
+              className="inline-flex items-center gap-1 text-caption font-medium text-ink-tertiary hover:text-danger-muted"
             >
               <X className="w-3 h-3" /> Clear
             </button>
@@ -733,10 +819,10 @@ export function PrOverviewPage() {
             onChange={e => setPrQuery(e.target.value)}
             placeholder="57, #57, or paste a PR URL…"
             aria-describedby="pr-search-note"
-            className="flex-1 min-w-0 bg-transparent outline-none text-[12px] font-mono text-ink placeholder:text-ink-tertiary"
+            className="flex-1 min-w-0 bg-transparent outline-none text-small font-mono text-ink placeholder:text-ink-tertiary"
           />
         </div>
-        <p id="pr-search-note" className="mt-1.5 text-[11px] text-ink-tertiary">
+        <p id="pr-search-note" className="mt-1.5 text-caption text-ink-tertiary">
           {searchActive ? (
             answerMatchesBox ? (
               <>
@@ -839,7 +925,7 @@ export function PrOverviewPage() {
         <QueryError error={overview.error} onRetry={() => { void overview.refetch(); }} live="assertive" retrying={overview.isFetching} />
       )}
       {d && d.totals.prs === 0 && (
-        <div className="rounded-2xl border border-border-soft bg-surface px-5 py-10 text-center text-sm text-ink-tertiary">
+        <div className="rounded-2xl border border-border-soft bg-surface px-5 py-10 text-center text-body text-ink-tertiary">
           {/* A search that misses must say which PR it missed, and whether a
               project filter narrowed it. "No PRs for this project and period"
               would be actively wrong here — the period is not in play.
@@ -868,7 +954,8 @@ export function PrOverviewPage() {
             <StatTile
               label="Weighted size"
               value={d.totals.sizePoints}
-              hint={<>size points · <a href="#size-derivation" className="underline decoration-dotted hover:text-ink">how size is derived</a></>}
+              delta={sizeDelta}
+              hint={<>{sizeDelta == null ? '— no prior period · ' : ''}size points · <a href="#size-derivation" className="underline decoration-dotted hover:text-ink">how size is derived</a></>}
             />
             <StatTile
               label="Active developers"
@@ -882,26 +969,26 @@ export function PrOverviewPage() {
           {d.resized.count > 0 && (
             <div className="flex items-center gap-3 flex-wrap rounded-xl border border-border-soft border-l-[3px] border-l-accent bg-surface px-4 py-3">
               <RefreshCw className="w-4 h-4 text-accent-ink" />
-              <span className="text-[13px] text-ink-secondary">
+              <span className="text-body text-ink-secondary">
                 <b className="text-ink">{d.resized.count} PRs re-sized</b> this period —{' '}
                 <span className="text-ink font-semibold">{d.resized.grew} grew ↑</span>,{' '}
                 <span className="text-ink font-semibold">{d.resized.shrank} shrank ↓</span>.
               </span>
-              <span className="ml-auto text-[11px] text-ink-tertiary">Each PR counts once, at its latest sizing.</span>
+              <span className="ml-auto text-caption text-ink-tertiary">Each PR counts once, at its latest sizing.</span>
             </div>
           )}
 
           {/* Daily stacked bar */}
           <section className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5">
             <div className="flex items-baseline justify-between gap-3 flex-wrap mb-4">
-              <h2 className="text-sm font-semibold text-ink">PR volume by size</h2>
+              <h2 className="text-body font-semibold text-ink">PR volume by size</h2>
               <div className="flex items-center gap-3 flex-wrap">
                 {SIZE_META.map(s => (
-                  <span key={s.key} className="inline-flex items-center gap-1.5 text-[11px] text-ink-tertiary">
+                  <span key={s.key} className="inline-flex items-center gap-1.5 text-caption text-ink-tertiary">
                     <span className="w-3 h-3 rounded-sm" style={{ background: s.color }} /> {s.label}
                   </span>
                 ))}
-                <div className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-[11px] font-medium" role="group" aria-label="Chart granularity">
+                <div className="inline-flex rounded-lg border border-border-soft bg-canvas p-0.5 text-caption font-medium" role="group" aria-label="Chart granularity">
                   {GRANULARITIES.map(g => (
                     <button
                       key={g.key}
@@ -917,53 +1004,13 @@ export function PrOverviewPage() {
                 </div>
               </div>
             </div>
-            <div className="overflow-x-auto">
-              <div className="flex items-end gap-1.5 h-44 min-w-[420px]">
-                {volumeBuckets.map(b => {
-                  const sizes = b.sizes;
-                  const sliceTitle = (key: SizeKey, label: string) => {
-                    const devs = b.devBySize[key] ?? [];
-                    const head = `${label} · ${b.rangeLabel} · ${sizes[key]} PR${sizes[key] === 1 ? '' : 's'}`;
-                    const lines = devs.map(x => `  ${x.user_key}: ${x.count}`).join('\n');
-                    return lines ? `${head}\n${lines}` : head;
-                  };
-                  return (
-                    <div key={b.key} className="flex-1 flex flex-col justify-end gap-0.5 h-full group" title={`${b.rangeLabel}: ${b.total} PR${b.total === 1 ? '' : 's'}`}>
-                      {SIZE_META_DESC.filter(s => sizes[s.key] > 0).map(s => (
-                        <div
-                          key={s.key}
-                          style={{ background: s.color, height: `${(sizes[s.key] / maxBucketTotal) * 100}%` }}
-                          className="rounded-[2px] hover:opacity-80 transition-opacity cursor-default"
-                          title={sliceTitle(s.key, s.label)}
-                        />
-                      ))}
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="flex gap-1.5 mt-2 min-w-[420px]">
-                {volumeBuckets.map((b, i) => (
-                  <div key={b.key} className="flex-1 text-center font-mono text-[9px] text-ink-tertiary">
-                    {volumeBuckets.length <= 16 || i % Math.ceil(volumeBuckets.length / 10 || 1) === 0 ? b.label : ''}
-                  </div>
-                ))}
-              </div>
-            </div>
-            {/* Stats under the chart — respect the selected granularity. Average
-                is per bucket over the WHOLE range (empty buckets included). */}
-            {volume && (
-              <div className="mt-4 flex gap-3 flex-wrap">
-                <StatTile size="sm" label="Total" value={volume.stats.total} />
-                <StatTile size="sm" label={`Average / ${GRANULARITIES.find(g => g.key === gran)?.unit ?? gran}`} value={fmtAverage(volume.stats.average)} />
-                <StatTile size="sm" label={`Max${volume.stats.maxLabel ? ` · ${volume.stats.maxLabel}` : ''}`} value={volume.stats.max} />
-              </div>
-            )}
+            {volume && <PrVolumeChart series={volume} unit={GRANULARITIES.find(g => g.key === gran)?.unit ?? gran} />}
           </section>
 
           {/* By developer */}
           <section className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl overflow-hidden">
             <div className="px-5 py-4 border-b border-border-soft">
-              <h2 className="text-sm font-semibold text-ink">By developer</h2>
+              <h2 className="text-body font-semibold text-ink">By developer</h2>
             </div>
             <DataTable
               caption="By developer"
@@ -983,11 +1030,11 @@ export function PrOverviewPage() {
                     </div>
                   ),
                 },
-                { key: 'prs', header: 'PRs', align: 'right', firstDir: 'desc', sortValue: dev => dev.prs, render: dev => <span className="font-mono tabular-nums text-lg font-bold text-ink">{dev.prs}</span> },
+                { key: 'prs', header: 'PRs', align: 'right', firstDir: 'desc', sortValue: dev => dev.prs, render: dev => <span className="font-mono tabular-nums text-title font-bold text-ink">{dev.prs}</span> },
                 { key: 'pts', header: 'Size points', align: 'right', firstDir: 'desc', sortValue: dev => dev.sizePoints, render: dev => <span className="font-mono tabular-nums text-ink-secondary">{dev.sizePoints.toLocaleString()}</span> },
                 { key: 'mix', header: 'Size mix', className: 'w-[180px]', render: dev => <MixBar sizes={dev.sizes} total={dev.prs} /> },
                 { key: 'counts', header: 'XS · S · M · L · XL', render: dev => <SizeCounts sizes={dev.sizes} /> },
-                { key: 'trend', header: 'Trend', align: 'right', render: dev => <div className="inline-block"><Sparkline daily={dev.daily} axis={axis} /></div> },
+                { key: 'trend', header: 'Trend', align: 'right', render: dev => <div className="inline-block"><Sparkline daily={dev.daily} axis={axis} max={trendPeak} /></div> },
               ]}
             />
           </section>
@@ -995,8 +1042,8 @@ export function PrOverviewPage() {
           {/* By model */}
           <section className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl overflow-hidden">
             <div className="px-5 py-4 border-b border-border-soft">
-              <h2 className="text-sm font-semibold text-ink">By model</h2>
-              <p className="text-[11px] text-ink-tertiary mt-0.5">Which agent runtime opened the PRs.</p>
+              <h2 className="text-body font-semibold text-ink">By model</h2>
+              <p className="text-caption text-ink-tertiary mt-0.5">Which agent runtime opened the PRs.</p>
             </div>
             <DataTable
               caption="By model"
@@ -1011,13 +1058,14 @@ export function PrOverviewPage() {
                   sortValue: m => m.model.toLowerCase(),
                   render: m => (
                     <>
-                      <div className="font-mono text-[12px] text-ink-secondary">{m.model}</div>
-                      {m.harnesses.length > 0 && <div className="text-[10px] text-ink-tertiary">via {m.harnesses.join(', ')}</div>}
+                      <div className="font-mono text-small text-ink-secondary">{m.model}</div>
+                      {m.harnesses.length > 0 && <div className="text-caption text-ink-tertiary">via {m.harnesses.join(', ')}</div>}
                     </>
                   ),
                 },
-                { key: 'prs', header: 'PRs', align: 'right', firstDir: 'desc', sortValue: m => m.prs, render: m => <span className="font-mono tabular-nums text-lg font-bold text-ink">{m.prs}</span> },
+                { key: 'prs', header: 'PRs', align: 'right', firstDir: 'desc', sortValue: m => m.prs, render: m => <span className="font-mono tabular-nums text-title font-bold text-ink">{m.prs}</span> },
                 { key: 'mix', header: 'Size mix', className: 'w-[180px]', render: m => <MixBar sizes={m.sizes} total={m.prs} /> },
+                { key: 'counts', header: 'XS · S · M · L · XL', render: m => <SizeCounts sizes={m.sizes} /> },
                 { key: 'share', header: 'Share', align: 'right', render: m => <span className="font-mono tabular-nums text-ink-secondary">{Math.round((m.prs / d.totals.prs) * 100)}%</span> },
               ]}
             />
@@ -1028,91 +1076,126 @@ export function PrOverviewPage() {
               tooltip on EVERY cell (the native title alone proved unreliable
               here, and 0-count cells previously lost hover to a nested div). */}
           <section className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5">
-            <h2 className="text-sm font-semibold text-ink mb-1">Per developer, per day</h2>
-            <p className="text-[11px] text-ink-tertiary mb-4">Cell shade = PRs opened that day. Pills: share of PRs · share of size points.</p>
-            <div className="overflow-x-auto">
+            <h2 className="text-body font-semibold text-ink mb-1">Per developer, per day</h2>
+            <p className="text-caption text-ink-tertiary mb-4">Cell shade = PRs opened that day. Pills: share of PRs · share of size points.</p>
+            {/* scroll-padding: a cell focused into view must land clear of the
+                sticky name column (at most 190px plus the 4px gap), not under
+                it. A scroll moves the cells out from under the tooltip. */}
+            <div className="relative overflow-x-auto scroll-pl-[194px]" onScroll={() => setHeatTip(null)}>
               <div
+                ref={heatGridRef}
+                role="grid"
+                aria-label="PRs per developer, per day. Use the arrow keys to move between days."
+                onKeyDown={onHeatKey}
                 className="grid gap-1 items-center min-w-[560px]"
                 style={{ gridTemplateColumns: `minmax(150px, 190px) repeat(${Math.max(axis.length, 1)}, minmax(10px, 40px))` }}
               >
-                {/* header row 1: month name spanning its day columns */}
-                <div className="sticky left-0 z-10 self-stretch bg-surface" />
-                {buildMonthBands(axis).map((band, i) => (
-                  <div
-                    key={`${band.label}-${i}`}
-                    style={{ gridColumn: `span ${band.span}` }}
-                    className="text-center font-mono text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-tertiary border-b-2 border-border-soft pb-1"
-                  >
-                    {band.label}
-                  </div>
-                ))}
+                {/* header row 1: month name spanning its day columns. Visual
+                    only: each day header below names its own date. */}
+                <div aria-hidden="true" className="contents">
+                  <div className="sticky left-0 z-10 self-stretch bg-surface" />
+                  {buildMonthBands(axis).map((band, i) => (
+                    <div
+                      key={`${band.label}-${i}`}
+                      style={{ gridColumn: `span ${band.span}` }}
+                      className="eyebrow text-center font-mono text-ink-tertiary border-b-2 border-border-soft pb-1"
+                    >
+                      {band.label}
+                    </div>
+                  ))}
+                </div>
 
                 {/* header row 2: weekday abbreviation + day number per column */}
-                <div className="sticky left-0 z-10 self-stretch bg-surface" />
+                <div role="row" className="contents">
+                <div role="columnheader" className="sticky left-0 z-10 self-stretch bg-surface"><span className="sr-only">Developer</span></div>
                 {axis.map((day, i) => {
                   const h = dayInfos[i];
                   return (
                     <div
                       key={day}
+                      role="columnheader"
+                      aria-label={day}
                       data-testid="heatmap-day"
                       className={`text-center rounded-md py-0.5 ${h.isToday
                         ? 'bg-canvas outline outline-1 outline-accent'
                         : h.isWeekend ? 'bg-canvas' : ''}`}
                     >
-                      <span className={`block font-mono text-[8px] uppercase leading-tight ${h.isWeekend ? 'text-ink-tertiary' : 'text-ink-tertiary'}`}>{h.weekday}</span>
-                      <span className={`block font-mono text-[11px] font-bold tabular-nums leading-tight ${h.isToday
+                      <span className={`block font-mono text-caption uppercase leading-tight ${h.isWeekend ? 'text-ink-tertiary' : 'text-ink-tertiary'}`}>{/* One letter: at 11px a three-letter day overruns a 10px column; the full day is the column's aria-label. */}{h.weekday.charAt(0)}</span>
+                      <span className={`block font-mono text-caption font-bold tabular-nums leading-tight ${h.isToday
                         ? 'text-accent-ink'
                         : h.isWeekend ? 'text-ink-tertiary' : 'text-ink-secondary'}`}>{h.dayNum}</span>
                     </div>
                   );
                 })}
+                </div>
 
                 {/* one row per developer: name + contribution pills | day cells */}
-                {d.byDeveloper.map(dev => {
+                {d.byDeveloper.map((dev, ri) => {
                   const max = Math.max(1, ...axis.map(day => dev.daily[day] ?? 0));
                   const pct = contributionPcts(dev, d.totals);
                   return (
-                    <Fragment key={dev.user_key}>
+                    <div key={dev.user_key} role="row" className="contents">
                       {/* sticky so names + pills stay visible when the day axis scrolls */}
-                      <div className="sticky left-0 z-10 self-stretch flex items-center gap-2 pr-2 min-w-0 bg-surface">
+                      <div role="rowheader" className="sticky left-0 z-10 self-stretch flex items-center gap-2 pr-2 min-w-0 bg-surface">
+                        {/* Wrapped, not cut off with the rest in a mouse-only title. A
+                            name stands for its key; two people sharing a name get
+                            the key beside it from labelOf. */}
                         {nameOf(dev.user_key)
-                          ? <span title={dev.user_key} className="text-[11px] text-ink-secondary truncate">{labelOf(dev.user_key)}</span>
-                          : <span title={dev.user_key} className="font-mono text-[11px] text-ink-tertiary truncate">{dev.user_key}</span>}
+                          ? <span className="min-w-0 text-caption text-ink-secondary break-words">{labelOf(dev.user_key)}</span>
+                          : <span className="min-w-0 font-mono text-caption text-ink-tertiary break-all">{dev.user_key}</span>}
                         {/* stacked vertically so long dev emails keep the width */}
                         <span className="ml-auto flex flex-col items-end gap-0.5 shrink-0">
-                          <span title={`${pct.prPct}% share of all PRs in the period`} className="text-[11px] font-semibold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-accent-ink bg-accent-fill border border-accent">{pct.prPct}% of PRs</span>
-                          <span title={`${pct.ptsPct}% share of all size points in the period`} className="text-[11px] font-semibold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-ink-secondary bg-canvas border border-border-soft">{pct.ptsPct}% of size</span>
+                          <span title={`${pct.prPct}% share of all PRs in the period`} className="text-caption font-semibold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-accent-ink bg-accent-fill border border-accent">{pct.prPct}% of PRs</span>
+                          <span title={`${pct.ptsPct}% share of all size points in the period`} className="text-caption font-semibold tabular-nums whitespace-nowrap rounded-full px-1.5 py-px text-ink-secondary bg-canvas border border-border-soft">{pct.ptsPct}% of size</span>
                         </span>
                       </div>
                       {axis.map((day, i) => {
                         const c = dev.daily[day] ?? 0;
                         const h = dayInfos[i];
                         const intensity = c === 0 ? 0 : c / max; // heatColor owns the visible floor
+                        const tip = cellTooltip(labelOf(dev.user_key), day, c);
+                        // The cell's one focus target: the drill button of a day
+                        // with PRs, else the empty cell itself. Only the grid's
+                        // stop is tabbable; the arrow keys reach the rest.
+                        const target = {
+                          'data-cell': `${ri}-${i}`,
+                          tabIndex: heatStop.r === ri && heatStop.c === i ? 0 : -1,
+                          onFocus: (e: React.FocusEvent<HTMLElement>) => { setHeatPos({ r: ri, c: i }); heatTipOnFocus(tip, e.currentTarget); },
+                          onBlur: () => setHeatTip(null),
+                        };
                         return (
                           <div
                             key={day}
-                            onMouseEnter={showHeatTip(cellTooltip(labelOf(dev.user_key), day, c))}
+                            role="gridcell"
+                            onMouseEnter={showHeatTip(tip)}
                             onMouseLeave={() => setHeatTip(null)}
-                            // CGLAB-131 — non-empty cells are drillable: open the PR list.
-                            // (Clear the tooltip so it cannot peek out from the modal.)
-                            // role/tabIndex/keydown keep the drill reachable by keyboard.
-                            onClick={c > 0 ? () => openDrill(dev.user_key, day) : undefined}
-                            role={c > 0 ? 'button' : undefined}
-                            tabIndex={c > 0 ? 0 : undefined}
-                            aria-label={c > 0 ? `${c} PR${c === 1 ? '' : 's'} by ${labelOf(dev.user_key)} on ${day} — open list` : undefined}
-                            onKeyDown={c > 0 ? (e) => {
-                              if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDrill(dev.user_key, day); }
-                            } : undefined}
-                            className={`aspect-square rounded-[3px] ${c === 0
+                            {...(c === 0 ? { ...target, 'aria-label': `No PRs by ${labelOf(dev.user_key)} on ${day}` } : {})}
+                            className={`aspect-square rounded-[3px] ${HEAT_FOCUS_RING} ${c === 0
                               ? h.isWeekend
                                 ? 'bg-transparent border border-dashed border-ink-tertiary/40'
                                 : 'bg-border-soft'
                               : 'cursor-pointer hover:opacity-75 transition-opacity'}`}
                             style={{ background: c === 0 ? undefined : heatColor(intensity) }}
-                          />
+                          >
+                            {c > 0 && (
+                              // CGLAB-131 — a day with PRs opens its list (the
+                              // drill clears the tooltip so it cannot peek out
+                              // from the modal).
+                              <button
+                                type="button"
+                                {...target}
+                                aria-label={`${c} PR${c === 1 ? '' : 's'} by ${labelOf(dev.user_key)} on ${day} — open list`}
+                                onClick={() => openDrill(dev.user_key, day)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDrill(dev.user_key, day); }
+                                }}
+                                className={`block w-full h-full rounded-[3px] cursor-pointer ${HEAT_FOCUS_RING}`}
+                              />
+                            )}
+                          </div>
                         );
                       })}
-                    </Fragment>
+                    </div>
                   );
                 })}
               </div>
@@ -1125,7 +1208,7 @@ export function PrOverviewPage() {
               defect). Coordinates are viewport-relative, from placeTooltip. */}
           {heatTip && (
             <div
-              className={`pointer-events-none fixed z-50 -translate-x-1/2 whitespace-nowrap rounded-md bg-surface text-ink border border-border-soft font-mono text-[10px] px-2 py-1 shadow-lg ${heatTip.below ? '' : '-translate-y-full'}`}
+              className={`pointer-events-none fixed z-50 -translate-x-1/2 whitespace-nowrap rounded-md bg-surface text-ink border border-border-soft font-mono text-caption px-2 py-1 shadow-lg ${heatTip.below ? '' : '-translate-y-full'}`}
               style={{ left: heatTip.x, top: heatTip.y }}
             >
               {heatTip.text}
@@ -1135,17 +1218,17 @@ export function PrOverviewPage() {
 
           {/* Size model explainer */}
           <section className="bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5">
-            <h2 id="size-derivation" className="text-sm font-semibold text-ink mb-3 scroll-mt-4">How size is derived</h2>
-            <div className="font-mono text-[13px] rounded-lg bg-canvas border border-border-soft px-4 py-3 text-ink-secondary">
+            <h2 id="size-derivation" className="text-body font-semibold text-ink mb-3 scroll-mt-4">How size is derived</h2>
+            <div className="font-mono text-body rounded-lg bg-canvas border border-border-soft px-4 py-3 text-ink-secondary">
               <span className="text-ink-tertiary">// count leaves — the unit of work in each branch</span><br />
               <span className="text-accent-ink">size_points</span> = leafStory·<b>4</b> + task·<b>2</b> + bug·<b>1</b>
             </div>
-            <p className="text-[12px] text-ink-tertiary mt-3 max-w-2xl">
+            <p className="text-small text-ink-tertiary mt-3 max-w-prose">
               An Epic rolls up its Stories, and a Story rolls up its Tasks &amp; Bugs — so summing all four tiers
               double-counts. We size by the atomic deliverables; a Story with no subtasks is itself a leaf and scores ×4.
               A later re-size re-buckets the same PR (it never adds a second one), and the PR is attributed to its opener.
             </p>
-            <div className="flex gap-2 flex-wrap mt-3 text-[11px] font-mono">
+            <div className="flex gap-2 flex-wrap mt-3 text-caption font-mono">
               {[{ b: 'XS', r: '0–2' }, { b: 'S', r: '3–6' }, { b: 'M', r: '7–14' }, { b: 'L', r: '15–30' }, { b: 'XL', r: '31+' }].map((x, i) => (
                 <span key={x.b} className="inline-flex items-center gap-1.5 rounded-md border border-border-soft px-2 py-1">
                   <span className="w-2.5 h-2.5 rounded-sm" style={{ background: colorOf(SIZE_META[i].key) }} />

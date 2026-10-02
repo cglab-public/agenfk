@@ -60,7 +60,7 @@ async function card(projectId: string, status = 'WORK', extra: Record<string, un
   return c.body.id as string;
 }
 const validate = (id: string) => agent().post(`/items/${id}/validate`).set({ 'x-agenfk-internal': VERIFY_TOKEN! }).send({ evidence: 'ok' });
-const get = async (id: string) => (await agent().get(`/items/${id}`)).body;
+const get = async (id: string) => (await agent().get(`/items/${id}?records=1`)).body;
 
 describe('the verifyAt flow setting', () => {
   it('is stored on POST and changed on PUT', async () => {

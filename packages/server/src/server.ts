@@ -13,6 +13,9 @@ import { suggestTestReport, withTestFiles } from './testReportHint';
 import { SuiteSlots, suiteRunLimit, waitingLine } from './suiteSlots';
 import { DEFAULT_REUSE_IGNORE, namedByTests, reuseIgnoreMatcher } from './reuseIgnore';
 import { capturedGreen, countedApproval, evaluateChecks, needsNetwork, judgeReview, formatCheckResults, describeCapture, TEST_FILE_PATTERN, ANY_TEST_FILE_PATTERN, needsCapture, needsEntryRecord, parseAgentReports, parseCheckAnswers, describeTreeWarnings, MAX_UNREVIEWED_LINES, type AgentReport, type CheckResult, type TreeWarning } from './checkEngine';
+import { retainSuperseded, withRecordRetention } from './recordRetention';
+import { compactAuthored, expandAuthored } from './authoredRecord';
+import { pruneStepRecords } from './pruneRecords';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { readProjectFile, approvalFor, commandFingerprint, hiddenCharacters, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
@@ -1388,7 +1391,7 @@ export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null
 
   // Working-tree changes the author did NOT stage: not ours to commit, ours to
   // mention. Porcelain v1 with -z (a quoted path is a name the reader cannot
-  // copy), consuming the second   a rename emits.
+  // copy), consuming the second NUL a rename emits.
   const unstaged: string[] = [];
   const status = await git(['status', '--porcelain', '-z'], root);
   const entries = status.out.split('\0');
@@ -1451,12 +1454,14 @@ const initStorage = async () => {
     dbPath = remapped;
   }
 
-  storage = new SQLiteStorageProvider();
+  // ec325925: every record write keeps only the captures something still reads.
+  storage = withRecordRetention(new SQLiteStorageProvider());
 
   console.log(`[SERVER_START] Using Database: ${dbPath} (SQLite)`);
   await storage.init({ path: dbPath });
   // f8d0a752: the server-wide suite-run limit, read from the settings it lives in.
   await loadSuiteRunSetting();
+  await pruneRecordsOnStart();
 
   // Apply pending migration (written by install/upgrade when a db.json was detected)
   const migrationPath = path.join(os.homedir(), '.agenfk', 'migration.json');
@@ -1769,6 +1774,24 @@ type TransitionFlow = { steps: Array<{ name: string; order: number; isSpecial?: 
  * only `isSpecial` - which is how `agenfk flow create` marks its entry and
  * exit - and so does a step held mid-flow.
  */
+/**
+ * ec325925: the upgrade's prune of the step records cards carried before the
+ * retention rule. Runs on every start (the restart after `agenfk upgrade` is
+ * the one that finds work), is idempotent, and reads only light rows unless a
+ * card still has an inline authoredTests list.
+ */
+async function pruneRecordsOnStart(): Promise<void> {
+  try {
+    const r = await pruneStepRecords(storage);
+    if (r.cards || r.blobs) {
+      console.log(`[MIGRATION] step records: pruned ${r.records} record(s) on ${r.cards} card(s), ${r.authored} authoredTests list(s) now by reference, ${r.blobs} results blob(s) freed`);
+    }
+  } catch (e: any) {
+    // Housekeeping: a failure leaves the records as they were, and says so.
+    console.error(`[MIGRATION] step-record prune failed, records left as they were: ${e?.message ?? e}`);
+  }
+}
+
 function flowProgression(flow: TransitionFlow) {
   return [...flow.steps]
     .sort((a, b) => a.order - b.order)
@@ -1951,14 +1974,13 @@ async function frozenTestsRollbackRefusal(item: any, toStatus: string, flow: Tra
   return `TESTS CHANGED ON ${occupied}: ${changed.slice(0, 5).join(', ')}${changed.length > 5 ? ` and ${changed.length - 5} more` : ''}. ${occupied} does not change the tests, and a rollback would re-take its baseline after the change. Put them back first${reopen}.`;
 }
 
-const SUPERSEDED_KEPT = 20;
 function supersededByRollback(item: any, toStatus: string, flow: TransitionFlow): any[] | undefined {
   const kept = new Set(recordsAfterRollback(item?.stepRecords, toStatus, flow) ?? []);
   const dropped = (item?.stepRecords ?? []).filter((r: any) => !kept.has(r) && r?.kind === 'capture');
   if (!dropped.length) return undefined;
   const at = new Date().toISOString();
-  // Bounded: only reuse reads them, and the newest greens are the ones worth reusing.
-  return [...(item.supersededRecords ?? []), ...dropped.map((r: any) => ({ ...r, supersededAt: at, rolledBackTo: toStatus }))].slice(-SUPERSEDED_KEPT);
+  // Bounded: only reuse reads them, so only greens are kept, the newest first (recordRetention).
+  return retainSuperseded([...(item.supersededRecords ?? []), ...dropped.map((r: any) => ({ ...r, supersededAt: at, rolledBackTo: toStatus }))]);
 }
 
 /** Refusal text for completing a card outside verify, whatever the exit step is called. */
@@ -6513,12 +6535,17 @@ app.post("/items/trash-archived", asyncHandler(async (req: any, res: any) => {
   res.json({ count: archivedItems.length });
 }));
 
+/*
+ * ec325925: without its step records unless asked (?records=1). Every capture's
+ * whole-suite results came back on every read - 11 MB for one card, past what
+ * MCP get_item can return - and nothing outside the server reads them here.
+ */
 app.get("/items/:id", asyncHandler(async (req: any, res: any) => {
   const item = await storage.getItem(req.params.id);
   if (!item) {
     return res.status(404).json({ error: "Item not found" });
   }
-  res.json(withActiveRun(item));
+  res.json(withActiveRun(req.query.records === '1' ? item : listShape(item)));
 }));
 
 /**
@@ -8457,7 +8484,11 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const prev = sorted[index - 1];
   const earlier = new Set(sorted.slice(0, Math.max(index, 0)).map(st => st.name));
   const produced: Record<string, unknown> = {};
-  for (const r of records) if (r?.kind === 'record' && earlier.has(r.step) && typeof r.name === 'string') produced[r.name] = r.value;
+  // ec325925: authoredTests is stored by reference to its capture; the engine reads names,
+  // or - when the reference's results cannot be read - a marker it refuses on (never a soft pass).
+  for (const r of records) if (r?.kind === 'record' && earlier.has(r.step) && typeof r.name === 'string') {
+    produced[r.name] = r.name === 'authoredTests' ? (expandAuthored(r) ?? { unreadable: true }) : r.value;
+  }
 
   const reportPath = reportPathsOf(project?.testReport)[0] ?? null;
   // People's approvals and overrides of THIS step (CGLAB-382); a rollback over it dropped older ones.
@@ -8591,7 +8622,8 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   }
   const at = new Date().toISOString();
   const latest: any = await storage.getItem(item.id);
-  const made = outcome.blocked ? [] : Object.entries(outcome.produced).map(([name, value]) => ({ step: item.status, kind: 'record', name, value, at, head: null, clean: false }));
+  // ec325925: authoredTests names every test in the suite; it is stored as its capture's results, shared with the capture's blob.
+  const made = outcome.blocked ? [] : Object.entries(outcome.produced).map(([name, value]) => ({ step: item.status, kind: 'record', name, at, head: null, clean: false, ...(name === 'authoredTests' ? compactAuthored(value, capture) : { value }) }));
   await storage.updateItem(item.id, {
     lastChecks: { step: item.status, at, blocked: outcome.blocked, results: outcome.results, ...(disabled.length ? { disabled } : {}) },
     checkHistory: withHistory(latest, {

@@ -134,7 +134,8 @@ describe('PR overview', () => {
     expect(cell).toBeInTheDocument();
     // The row label sits in the same grid as the cell.
     const grid = cell.closest('.grid') as HTMLElement;
-    expect(within(grid).getByText('Carol Diaz')).toHaveAttribute('title', 'carol@acme.com');
+    // The name stands for the key, without a mouse-only title (STORY 501129d3).
+    expect(within(grid).getByText('Carol Diaz')).not.toHaveAttribute('title');
   });
 
   it('tells two keys with the same name apart', async () => {

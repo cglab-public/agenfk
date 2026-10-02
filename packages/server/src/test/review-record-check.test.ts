@@ -213,7 +213,7 @@ describe('CGLAB-381: the review-record check', () => {
     await record(id, claudeSubagentTranscript('someone', 'rev4', FUTURE), `${base}..${tip}`);
     const res = await validate(id);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    const r = (await agent().get(`/items/${id}`)).body.lastChecks.results.find((c: any) => c.id === 'review-record');
+    const r = (await agent().get(`/items/${id}?records=1`)).body.lastChecks.results.find((c: any) => c.id === 'review-record');
     expect(r).toMatchObject({ outcome: 'unavailable', blocking: false });
   });
 
@@ -283,7 +283,7 @@ describe('CGLAB-381: the review-record check', () => {
       const id = await cardAt(pid, base, 'LOOK', { stepRecords: [{ step: 'START', kind: 'exit', at: 't', head: base, clean: true }] });
       const res = await validate(id);
       expect(res.status, JSON.stringify(res.body)).toBe(200);
-      const r = (await agent().get(`/items/${id}`)).body.lastChecks.results.find((c: any) => c.id === 'review-record');
+      const r = (await agent().get(`/items/${id}?records=1`)).body.lastChecks.results.find((c: any) => c.id === 'review-record');
       expect(r).toMatchObject({ outcome: 'unavailable', blocking: false });
     });
   });

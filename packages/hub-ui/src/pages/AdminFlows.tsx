@@ -17,7 +17,8 @@ import { Plus, Pencil, Trash2, X, ChevronDown, ChevronRight, Send } from 'lucide
 import { ChildHubPicker, toggledSet } from './childHubPicker';
 import { FlowEditorModal, type FlowClient, type RegistryClient, type Flow } from '@agenfk/flow-editor';
 import { api } from '../api';
-import { QueryError } from '../components/ui';
+import { QueryError, InlineError, useConfirm } from '../components/ui';
+import { issuedAt } from '../dates';
 import { RegistryPullsPanel } from './RegistryPullsPanel';
 import { flattenAdminFlow } from './adminFlowShape';
 import { repoOverrideOptions } from './repoOverrideOptions';
@@ -226,16 +227,16 @@ export function AdminFlows() {
   const openEditor = (flowId?: string) => { setInitialFlowId(flowId); setEditorOpen(true); };
 
   return (
-    <div className="space-y-4 max-w-3xl">
+    <div className="space-y-4">
       <header className="flex items-center justify-between">
         <div>
-          <h2 className="text-sm font-semibold text-ink">Org-managed flows</h2>
-          <p className="mt-0.5 text-xs text-ink-tertiary">
+          <h2 className="text-body font-semibold text-ink">Org-managed flows</h2>
+          <p className="mt-0.5 text-small text-ink-tertiary">
             Define and assign workflow flows. An installation runs the most specific assignment: an installation override, then a repo override, then the org default.
           </p>
         </div>
         <button
-          className="px-3 py-1.5 rounded-lg bg-brand text-navy text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
+          className="px-3 py-1.5 rounded-lg bg-brand text-navy text-small font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0"
           onClick={() => openEditor()}
           data-testid="admin-flows-new-btn"
         >
@@ -253,7 +254,7 @@ export function AdminFlows() {
             aria-selected={tab === t}
             aria-controls={`flows-panel-${t}`}
             onClick={() => setTab(t)}
-            className={'px-3 py-1.5 rounded-lg text-[12px] font-semibold transition-colors ' + (tab === t
+            className={'px-3 py-1.5 rounded-lg text-small font-semibold transition-colors ' + (tab === t
               ? 'bg-accent-fill text-accent-ink'
               : 'text-ink-secondary hover:bg-accent-fill/50 hover:text-ink')}
           >
@@ -269,10 +270,10 @@ export function AdminFlows() {
           <div className="p-4"><QueryError error={flowsQ.error} onRetry={() => flowsQ.refetch()} /></div>
         )}
         {flowsQ.isPending && (
-          <div className="p-6 text-sm text-ink-tertiary" role="status">Loading…</div>
+          <div className="p-6 text-body text-ink-tertiary" role="status">Loading…</div>
         )}
         {flowsQ.isSuccess && flows.length === 0 && (
-          <div className="p-6 text-sm text-ink-tertiary">
+          <div className="p-6 text-body text-ink-tertiary">
             No flows yet. Click <span className="font-semibold">New flow</span> to create one or import one from the community registry.
           </div>
         )}
@@ -287,6 +288,7 @@ export function AdminFlows() {
               <button
                 onClick={() => setExpandedFlowId(expanded ? null : f.id)}
                 data-testid={`admin-flow-row-${f.id}`}
+                aria-expanded={expanded}
                 className="w-full text-left p-4 hover:bg-accent-fill transition-colors flex items-center gap-3"
               >
                 <span className="text-ink-tertiary shrink-0">
@@ -296,40 +298,40 @@ export function AdminFlows() {
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-semibold text-ink truncate">{f.name}</span>
                     <span className={
-                      'text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold ' +
+                      'text-caption font-bold uppercase px-1.5 py-0.5 rounded-full ' +
                       (f.source === 'community'
                         ? 'bg-accent-fill text-accent-ink'
                         : 'bg-canvas text-ink-secondary')
                     }>{f.source ?? 'hub'}</span>
                     {isOrgDefault && (
-                      <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-status-ok-bg text-status-ok-text">
+                      <span className="text-caption font-bold uppercase px-1.5 py-0.5 rounded-full bg-status-ok-bg text-status-ok-text">
                         Org default
                       </span>
                     )}
                     {f.orgAvailable && !isOrgDefault && (
-                      <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-accent-fill text-accent-ink">
+                      <span className="text-caption font-bold uppercase px-1.5 py-0.5 rounded-full bg-accent-fill text-accent-ink">
                         Available
                       </span>
                     )}
                     {repoCount > 0 && (
-                      <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-canvas text-ink-secondary border border-border-soft">
+                      <span className="text-caption font-bold uppercase px-1.5 py-0.5 rounded-full bg-canvas text-ink-secondary border border-border-soft">
                         {repoCount} repo{repoCount === 1 ? '' : 's'}
                       </span>
                     )}
                     {installCount > 0 && (
-                      <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-canvas text-ink-secondary border border-border-soft">
+                      <span className="text-caption font-bold uppercase px-1.5 py-0.5 rounded-full bg-canvas text-ink-secondary border border-border-soft">
                         {installCount} install{installCount === 1 ? '' : 's'}
                       </span>
                     )}
                     {typeof f.hubVersion === 'number' && (
-                      <span className="text-[10px] text-ink-tertiary">v{f.hubVersion}</span>
+                      <span className="text-caption text-ink-tertiary">v{f.hubVersion}</span>
                     )}
                   </div>
                   {f.description && (
-                    <p className="mt-0.5 text-xs text-ink-tertiary truncate">{f.description}</p>
+                    <p className="mt-0.5 text-small text-ink-tertiary truncate">{f.description}</p>
                   )}
                 </div>
-                <span className="text-xs text-ink-tertiary shrink-0">{f.steps?.length ?? 0} steps</span>
+                <span className="text-small text-ink-tertiary shrink-0">{f.steps?.length ?? 0} steps</span>
               </button>
               {expanded && (
                 <AssignmentsPanel
@@ -381,31 +383,17 @@ export function AdminFlows() {
             : tabLabels.registry,
         }}
         registryToolbar={showSourcePicker ? (
-          <div className="flex items-center gap-1.5" data-testid="registry-source-picker">
-            {registrySourceOptions({
+          <RegistrySourcePicker
+            options={registrySourceOptions({
               isPublic: registryCfg?.isPublic ?? null,
               repo: registryCfg?.repo ?? null,
-            }).map((opt) => (
-              <button
-                key={opt.value}
-                type="button"
-                data-testid={`registry-source-${opt.value}`}
-                onClick={() => {
-                  setRegistrySource(opt.value);
-                  sourceRef.current = opt.value;
-                }}
-                aria-pressed={registrySource === opt.value}
-                className={clsx(
-                  'px-2 py-0.5 rounded-full text-[11px] border transition-colors',
-                  registrySource === opt.value
-                    ? 'border-accent text-accent-ink bg-accent-fill font-semibold'
-                    : 'border-border-soft text-ink-tertiary hover:text-ink',
-                )}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
+            })}
+            value={registrySource}
+            onChange={(v) => {
+              setRegistrySource(v);
+              sourceRef.current = v;
+            }}
+          />
         ) : undefined}
         theme={theme}
       />
@@ -423,6 +411,7 @@ function AssignmentsPanel({
   childHubs: ChildHubRow[];
   onEdit: () => void;
 }) {
+  const { confirm, dialog } = useConfirm();
   const qc = useQueryClient();
   const [adding, setAdding] = useState<'repo' | 'installation' | null>(null);
 
@@ -433,22 +422,26 @@ function AssignmentsPanel({
     qc.invalidateQueries({ queryKey: ['admin-flow-assignments'] });
     qc.invalidateQueries({ queryKey: ['admin-flows'] });
   };
+  // A success in the panel clears the other changes' leftover errors, which
+  // would otherwise read as current.
+  const clearPanelErrors = () => { for (const m of [setOrgDefault, remove, addOverride, setAvailability]) if (m.isError) m.reset(); };
 
   const setOrgDefault = useMutation({
     mutationFn: () => api.put('/v1/admin/flow-assignments', { scope: 'org', flowId: flow.id }),
-    onSuccess: invalidateFlowState,
+    onSuccess: () => { clearPanelErrors(); invalidateFlowState(); },
   });
 
   const remove = useMutation({
     mutationFn: ({ scope, targetId }: { scope: string; targetId: string }) =>
       api.put('/v1/admin/flow-assignments', { scope, targetId, flowId: null }),
-    onSuccess: invalidateFlowState,
+    onSuccess: () => { clearPanelErrors(); invalidateFlowState(); },
   });
 
   const addOverride = useMutation({
     mutationFn: ({ scope, targetId }: { scope: 'repo' | 'installation'; targetId: string }) =>
       api.put('/v1/admin/flow-assignments', { scope, targetId, flowId: flow.id }),
     onSuccess: () => {
+      clearPanelErrors();
       qc.invalidateQueries({ queryKey: ['admin-flow-assignments'] });
       setAdding(null);
     },
@@ -458,7 +451,7 @@ function AssignmentsPanel({
     mutationFn: (available: boolean) =>
       api.put(`/v1/admin/flows/${flow.id}/availability`, { available }),
     // The org-available flag lives on the flows list, not the assignments list.
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-flows'] }),
+    onSuccess: () => { clearPanelErrors(); qc.invalidateQueries({ queryKey: ['admin-flows'] }); },
   });
 
   const orgRow = assignments.find(a => a.scope === 'org');
@@ -467,22 +460,38 @@ function AssignmentsPanel({
   // this deliberately gates Edit alone. See parentFlowLock.
   const lock = parentFlowLock(flow.source);
 
+  /** Take an override off after the admin has seen who it moves. */
+  const confirmRemove = async (scope: 'repo' | 'installation', row: Assignment | undefined, targetId: string) => {
+    const what = scope === 'repo' ? `the repo ${row?.remoteUrl ?? targetId}` : `the installation ${targetId}`;
+    if (await confirm({
+      title: `Remove the override for ${what}?`,
+      body: `It stops being assigned "${flow.name}" by this override. From its next sync it follows the next assignment in line (installation, repo, project), else the org default; with none at all, its installations keep the flow they already have.`,
+      confirmLabel: 'Remove override',
+    })) remove.mutate({ scope, targetId });
+  };
+
   return (
     <div className="px-4 pb-4 pt-1 bg-canvas border-t border-border-soft space-y-3">
+      {dialog}
+      {/* One slot per change; react-query clears each on its next attempt. */}
+      <InlineError error={setOrgDefault.error} />
+      <InlineError error={remove.error} />
+      <InlineError error={addOverride.error} />
+      <InlineError error={setAvailability.error} />
       {lock.locked && (
-        <p className="pt-2 text-xs text-ink-tertiary" data-testid="admin-flow-parent-lock">
+        <p className="pt-2 text-small text-ink-tertiary" data-testid="admin-flow-parent-lock">
           {lock.reason}
         </p>
       )}
       <div className="flex items-center justify-between pt-2">
-        <h3 className="text-xs uppercase tracking-wide font-semibold text-ink-tertiary">Assignments</h3>
+        <h3 className="eyebrow text-ink-tertiary">Assignments</h3>
         <div className="flex items-center gap-1.5">
           <button
             onClick={onEdit}
             disabled={lock.locked}
             title={lock.reason ?? undefined}
             className={
-              'px-2 py-1 rounded-md text-[11px] font-semibold inline-flex items-center gap-1 ' +
+              'px-2 py-1 rounded-md text-caption font-semibold inline-flex items-center gap-1 ' +
               (lock.locked
                 ? 'text-ink-tertiary opacity-60 cursor-not-allowed'
                 : 'text-ink-secondary hover:bg-accent-fill')
@@ -497,26 +506,40 @@ function AssignmentsPanel({
       {/* Org-default toggle */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full font-bold bg-status-ok-bg text-status-ok-text">
+          <span className="text-caption font-bold uppercase px-1.5 py-0.5 rounded-full bg-status-ok-bg text-status-ok-text">
             Org
           </span>
-          <span className="text-xs text-ink-secondary">
+          <span className="text-small text-ink-secondary">
             {orgRow ? 'This flow is the org default.' : 'Not the org default.'}
           </span>
         </div>
         {orgRow ? (
           <button
-            onClick={() => remove.mutate({ scope: 'org', targetId: '' })}
+            onClick={async () => {
+              if (await confirm({
+                title: `Stop using "${flow.name}" as the org default?`,
+                body: 'Installations and repos without an override of their own stop being assigned a flow by the hub: they keep the flow they already have until another one is assigned.',
+                confirmLabel: 'Clear org default',
+              })) remove.mutate({ scope: 'org', targetId: '' });
+            }}
             disabled={remove.isPending}
-            className="text-[11px] text-status-danger-text hover:underline"
+            aria-label={`Clear org default (${flow.name})`}
+            className="text-caption text-status-danger-text hover:underline"
           >
             Clear
           </button>
         ) : (
           <button
-            onClick={() => setOrgDefault.mutate()}
+            onClick={async () => {
+              if (await confirm({
+                title: `Make "${flow.name}" the org default?`,
+                body: `Every installation without an assignment of its own (installation, repo or project) will use "${flow.name}" from its next sync, replacing the current org default.`,
+                confirmLabel: 'Set as org default',
+                tone: 'default',
+              })) setOrgDefault.mutate();
+            }}
             disabled={setOrgDefault.isPending}
-            className="text-[11px] text-accent-ink font-semibold hover:underline"
+            className="text-caption text-accent-ink font-semibold hover:underline"
             data-testid="admin-flow-set-org-default"
           >
             Set as org default
@@ -529,19 +552,19 @@ function AssignmentsPanel({
           default, but the default is always available and locked on here. */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold bg-accent-fill text-accent-ink">
+          <span className="text-caption px-1.5 py-0.5 rounded-full font-bold bg-accent-fill text-accent-ink">
             Shown in flow picker
           </span>
-          <span className="text-xs text-ink-secondary">{availability.hint}</span>
+          <span className="text-small text-ink-secondary">{availability.hint}</span>
         </div>
         {availability.locked ? (
-          <span className="text-[11px] text-ink-tertiary">Locked on</span>
+          <span className="text-caption text-ink-tertiary">Locked on</span>
         ) : (
           <button
             onClick={() => setAvailability.mutate(availability.nextAvailable)}
             disabled={setAvailability.isPending}
             className={
-              'text-[11px] font-semibold hover:underline ' +
+              'text-caption font-semibold hover:underline ' +
               (availability.nextAvailable
                 ? 'text-accent-ink'
                 : 'text-status-danger-text')
@@ -559,9 +582,10 @@ function AssignmentsPanel({
       <ScopeSection
         scope="repo"
         label="Repo overrides"
+        addLabel="Add repo override"
         chipClass="text-ink-secondary"
         rows={assignments.filter(a => a.scope === 'repo')}
-        onRemove={(targetId) => remove.mutate({ scope: 'repo', targetId })}
+        onRemove={(targetId) => confirmRemove('repo', assignments.find(a => a.scope === 'repo' && a.targetId === targetId), targetId)}
         onAdd={() => setAdding('repo')}
       />
 
@@ -569,9 +593,10 @@ function AssignmentsPanel({
       <ScopeSection
         scope="installation"
         label="Installation overrides"
+        addLabel="Add installation override"
         chipClass="text-ink-secondary"
         rows={assignments.filter(a => a.scope === 'installation')}
-        onRemove={(targetId) => remove.mutate({ scope: 'installation', targetId })}
+        onRemove={(targetId) => confirmRemove('installation', undefined, targetId)}
         onAdd={() => setAdding('installation')}
       />
 
@@ -604,13 +629,13 @@ function ChildHubsRow({ flow, childHubs }: { flow: Flow; childHubs: ChildHubRow[
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between">
-        <span className="text-[11px] font-semibold text-ink-secondary">Child hubs</span>
+        <span className="text-caption font-semibold text-ink-secondary">Child hubs</span>
         <button
           onClick={() => setOpen(v => !v)}
           disabled={!gate.allowed}
           title={gate.reason ?? undefined}
           className={
-            'text-[11px] inline-flex items-center gap-1 ' +
+            'text-caption inline-flex items-center gap-1 ' +
             (gate.allowed ? 'text-accent-ink hover:underline' : 'text-ink-tertiary opacity-60 cursor-not-allowed')
           }
           data-testid="admin-flow-dispatch-btn"
@@ -619,7 +644,7 @@ function ChildHubsRow({ flow, childHubs }: { flow: Flow; childHubs: ChildHubRow[
         </button>
       </div>
       {!gate.allowed && gate.reason && (
-        <p className="text-[11px] text-ink-tertiary" data-testid="admin-flow-dispatch-reason">{gate.reason}</p>
+        <p className="text-caption text-ink-tertiary" data-testid="admin-flow-dispatch-reason">{gate.reason}</p>
       )}
       {open && gate.allowed && (
         <DispatchPicker flowId={flow.id} childHubs={childHubs} onDone={() => setOpen(false)} />
@@ -673,16 +698,17 @@ function DispatchPicker({
         onToggle={toggle}
         onClose={onDone}
         testIdPrefix="flow-dispatch"
+        groupLabel="Dispatch to"
       />
       {error && (
-        <p className="text-xs text-status-danger-text" data-testid="flow-dispatch-error">{error}</p>
+        <p className="text-small text-status-danger-text" data-testid="flow-dispatch-error">{error}</p>
       )}
       <div className="flex justify-end">
         <button
           type="button"
           onClick={submit}
           disabled={send.isPending}
-          className="px-2.5 py-1 rounded-md bg-brand text-navy text-[11px] font-bold disabled:opacity-40"
+          className="px-2.5 py-1 rounded-md bg-brand text-navy text-caption font-bold disabled:opacity-40"
           data-testid="flow-dispatch-send"
         >
           {send.isPending ? 'Sending…' : 'Send'}
@@ -705,6 +731,7 @@ function FlowDispatches({
   isParent: boolean;
   hasLiveChildren: boolean;
 }) {
+  const { confirm, dialog } = useConfirm();
   const qc = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const knownFlowIds = useMemo(() => new Set(flows.map(f => f.id)), [flows]);
@@ -735,8 +762,8 @@ function FlowDispatches({
   if (q.isError) {
     return (
       <section className="space-y-2" data-testid="flow-dispatches">
-        <h2 className="text-sm font-semibold text-ink">Dispatched to child hubs</h2>
-        <p className="text-xs text-status-danger-text" data-testid="flow-dispatches-error">
+        <h2 className="text-body font-semibold text-ink">Dispatched to child hubs</h2>
+        <p className="text-small text-status-danger-text" data-testid="flow-dispatches-error">
           Could not load flow dispatches. Reload to try again.
         </p>
       </section>
@@ -749,8 +776,8 @@ function FlowDispatches({
     if (!hasLiveChildren) return null;
     return (
       <section className="space-y-2" data-testid="flow-dispatches">
-        <h2 className="text-sm font-semibold text-ink">Dispatched to child hubs</h2>
-        <p className="text-xs text-ink-tertiary" data-testid="flow-dispatches-empty">
+        <h2 className="text-body font-semibold text-ink">Dispatched to child hubs</h2>
+        <p className="text-small text-ink-tertiary" data-testid="flow-dispatches-empty">
           Nothing dispatched yet. Expand a flow and choose Dispatch to child hubs.
         </p>
       </section>
@@ -765,9 +792,10 @@ function FlowDispatches({
 
   return (
     <section className="space-y-2" data-testid="flow-dispatches">
-      <h2 className="text-sm font-semibold text-ink">Dispatched to child hubs</h2>
+      {dialog}
+      <h2 className="text-body font-semibold text-ink">Dispatched to child hubs</h2>
       {error && (
-        <p className="text-xs text-status-danger-text" data-testid="flow-dispatches-action-error">{error}</p>
+        <p className="text-small text-status-danger-text" data-testid="flow-dispatches-action-error">{error}</p>
       )}
       <div className="bg-surface border border-border-soft rounded-2xl divide-y divide-border-soft">
         {dispatches.map(d => {
@@ -776,39 +804,46 @@ function FlowDispatches({
           <div key={d.id} className="p-3" data-testid={`flow-dispatch-${d.id}`}>
             <div className="flex items-center gap-2 flex-wrap">
               <span className="font-semibold text-ink">{nameOf(d.flowId)}</span>
-              <span className="text-[10px] text-ink-tertiary">v{d.flowVersion}</span>
-              <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-canvas text-ink-secondary">
+              <span className="text-caption text-ink-tertiary">v{d.flowVersion}</span>
+              <span className="text-caption font-bold uppercase px-1.5 py-0.5 rounded-full bg-canvas text-ink-secondary">
                 {d.scope}
               </span>
               {d.cancelledAt && (
                 <span
-                  className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-canvas text-ink-tertiary"
+                  className="text-caption font-bold uppercase px-1.5 py-0.5 rounded-full bg-canvas text-ink-tertiary"
                   data-testid={`flow-dispatch-cancelled-${d.id}`}
                 >
                   cancelled
                 </span>
               )}
               {d.createdByEmail && (
-                <span className="text-[11px] text-ink-tertiary">by {d.createdByEmail}</span>
+                <span className="text-caption text-ink-tertiary">by {d.createdByEmail}</span>
               )}
               <span className="flex-1" />
               {!d.cancelledAt && (
                 <button
-                  onClick={() => cancel.mutate(d.id)}
+                  onClick={async () => {
+                    if (await confirm({
+                      title: `Cancel the dispatch of ${nameOf(d.flowId)} v${d.flowVersion}?`,
+                      body: 'Child hubs that have not installed it yet will not. Child hubs that already installed it keep it.',
+                      confirmLabel: 'Cancel dispatch',
+                    })) cancel.mutate(d.id);
+                  }}
                   disabled={cancel.isPending && cancel.variables === d.id}
-                  className="text-[11px] text-status-danger-text hover:underline"
+                  className="text-caption text-status-danger-text hover:underline"
                   data-testid={`flow-dispatch-cancel-${d.id}`}
+                  aria-label={`Cancel dispatch of ${nameOf(d.flowId)} v${d.flowVersion}${issuedAt(d.createdAt)}`}
                 >
                   Cancel
                 </button>
               )}
             </div>
             {deleted && !d.cancelledAt ? (
-              <p className="mt-1 text-xs text-status-danger-text" data-testid={`flow-dispatch-deleted-${d.id}`}>
+              <p className="mt-1 text-small text-status-danger-text" data-testid={`flow-dispatch-deleted-${d.id}`}>
                 This flow has been deleted, so the dispatch can never land. Cancel it.
               </p>
             ) : d.targets.length === 0 ? (
-              <p className="mt-1 text-xs text-ink-tertiary" data-testid={`flow-dispatch-unpolled-${d.id}`}>
+              <p className="mt-1 text-small text-ink-tertiary" data-testid={`flow-dispatch-unpolled-${d.id}`}>
                 No child hub has picked this up yet.
               </p>
             ) : (
@@ -818,12 +853,12 @@ function FlowDispatches({
                   return (
                     <div
                       key={t.childHubId}
-                      className={'flex items-center gap-2 text-xs ' + (row.settled ? 'text-ink-tertiary' : 'text-ink-secondary')}
+                      className={'flex items-center gap-2 text-small ' + (row.settled ? 'text-ink-tertiary' : 'text-ink-secondary')}
                       data-testid={`flow-dispatch-target-${d.id}-${t.childHubId}`}
                     >
                       <span className="font-medium text-ink">{t.name}</span>
-                      <span className={'px-1.5 py-0.5 rounded text-[10px] font-bold ' + toneClass(row.tone)}>{row.label}</span>
-                      {row.detail && <span className="truncate min-w-0" title={row.detail}>{row.detail}</span>}
+                      <span className={'px-1.5 py-0.5 rounded text-caption font-bold ' + toneClass(row.tone)}>{row.label}</span>
+                      {row.detail && <span className="break-words min-w-0">{row.detail}</span>}
                     </div>
                   );
                 })}
@@ -838,10 +873,12 @@ function FlowDispatches({
 }
 
 function ScopeSection({
-  label, chipClass, rows, onRemove, onAdd,
+  label, addLabel, chipClass, rows, onRemove, onAdd,
 }: {
   scope: 'repo' | 'installation';
   label: string;
+  /** The Add button's name: both sections have one, so a bare "Add" is ambiguous. */
+  addLabel: string;
   chipClass: string;
   rows: Assignment[];
   onRemove: (targetId: string) => void;
@@ -850,26 +887,27 @@ function ScopeSection({
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between">
-        <span className="text-[11px] font-semibold text-ink-secondary">{label}</span>
+        <span className="text-caption font-semibold text-ink-secondary">{label}</span>
         <button
           onClick={onAdd}
-          className="text-[11px] text-accent-ink hover:underline inline-flex items-center gap-1"
+          aria-label={addLabel}
+          className="text-caption text-accent-ink hover:underline inline-flex items-center gap-1"
         >
           <Plus className="w-3 h-3" /> Add
         </button>
       </div>
       {rows.length === 0 && (
-        <p className="text-[11px] text-ink-tertiary">None.</p>
+        <p className="text-caption text-ink-tertiary">None.</p>
       )}
       {rows.map((r) => (
         <div key={r.targetId} className="flex items-center justify-between bg-surface border border-border-soft rounded-md px-2 py-1.5">
-          <span className={'min-w-0 truncate font-mono text-[11px] ' + chipClass} title={r.remoteUrl ?? r.targetId}>
+          <span className={'min-w-0 break-all font-mono text-caption ' + chipClass}>
             {r.remoteUrl ?? r.targetId}
           </span>
           <button
             onClick={() => onRemove(r.targetId)}
             className="text-ink-tertiary hover:text-status-danger-text"
-            aria-label="Remove"
+            aria-label={`Remove override for ${r.remoteUrl ?? r.targetId}`}
           >
             <Trash2 className="w-3.5 h-3.5" />
           </button>
@@ -915,7 +953,7 @@ function AddOverridePicker({
   return (
     <div className="bg-surface border border-border-soft rounded-lg p-3 space-y-2 shadow-sm">
       <div className="flex items-center justify-between">
-        <span className="text-[11px] font-semibold text-ink-secondary">
+        <span className="text-caption font-semibold text-ink-secondary">
           Pick a {scope}
         </span>
         <button onClick={onCancel} className="text-ink-tertiary hover:text-ink" aria-label="Cancel">
@@ -923,7 +961,7 @@ function AddOverridePicker({
         </button>
       </div>
       {options.length === 0 ? (
-        <p className="text-[11px] text-ink-tertiary">
+        <p className="text-caption text-ink-tertiary">
           No {scope}s seen yet. Connect an installation and run agenfk to populate this list.
         </p>
       ) : (
@@ -938,8 +976,8 @@ function AddOverridePicker({
                   className="w-full text-left px-2 py-1 rounded-md hover:bg-accent-fill disabled:opacity-50 disabled:cursor-not-allowed"
                   data-testid={`admin-flow-${scope}-pick-${o.id}`}
                 >
-                  <div className="text-[12px] font-mono text-ink">{o.label}</div>
-                  <div className="text-[10px] text-ink-tertiary">{o.sub}{taken ? ' · already pinned' : ''}</div>
+                  <div className="text-small font-mono text-ink">{o.label}</div>
+                  <div className="text-caption text-ink-tertiary">{o.sub}{taken ? ' · already pinned' : ''}</div>
                 </button>
               </li>
             );
@@ -966,6 +1004,7 @@ interface RegistryConfig {
 }
 
 function RegistryRepoPanel() {
+  const { confirm, dialog } = useConfirm();
   const qc = useQueryClient();
   const { data: cfg } = useQuery<RegistryConfig>({
     queryKey: ['admin-registry-config'],
@@ -1019,15 +1058,16 @@ function RegistryRepoPanel() {
       className="bg-surface border border-border-soft rounded-2xl p-4 space-y-3"
       data-testid="admin-registry-panel"
     >
+      {dialog}
       <div>
-        <h3 className="text-xs font-semibold text-ink uppercase tracking-wide">Flow registry</h3>
-        <p className="mt-0.5 text-xs text-ink-tertiary">
+        <h3 className="eyebrow text-ink">Flow registry</h3>
+        <p className="mt-0.5 text-small text-ink-tertiary">
           Where this org&apos;s installations browse and install flows. Pointing it at your own
           repository copies the community flows into it once; you can move back at any time.
         </p>
       </div>
 
-      <div className="flex items-center gap-2 text-xs">
+      <div className="flex items-center gap-2 text-small">
         <span className="text-ink-tertiary">Current:</span>
         <code className="px-1.5 py-0.5 rounded bg-canvas text-ink">{cfg?.repo ?? '…'}</code>
         {cfg?.isPublic ? (
@@ -1042,7 +1082,8 @@ function RegistryRepoPanel() {
       <div className="flex flex-col gap-2 sm:flex-row">
         <input
           data-testid="admin-registry-repo"
-          className="flex-1 px-2.5 py-1.5 rounded-lg bg-canvas border border-border-soft text-xs text-ink"
+          aria-label="Registry repository"
+          className="flex-1 px-2.5 py-1.5 rounded-lg bg-canvas border border-border-soft text-small text-ink"
           placeholder="owner/agenfk-flows"
           value={repo}
           onChange={(e) => setRepo(e.target.value)}
@@ -1050,8 +1091,9 @@ function RegistryRepoPanel() {
         {showToken && (
           <input
             data-testid="admin-registry-token"
+            aria-label="GitHub token"
             type="password"
-            className="flex-1 px-2.5 py-1.5 rounded-lg bg-canvas border border-border-soft text-xs text-ink"
+            className="flex-1 px-2.5 py-1.5 rounded-lg bg-canvas border border-border-soft text-small text-ink"
             placeholder={hasStoredToken ? 'token stored — blank keeps it' : 'GitHub token (contents:write)'}
             value={token}
             onChange={(e) => setToken(e.target.value)}
@@ -1060,19 +1102,19 @@ function RegistryRepoPanel() {
       </div>
 
       {error && (
-        <p className="text-xs text-status-danger-text" data-testid="admin-registry-error">
+        <p className="text-small text-status-danger-text" data-testid="admin-registry-error">
           {error}
         </p>
       )}
 
       {movingToPublic && (
-        <p className="text-xs text-status-warn-text" data-testid="admin-registry-confirm">
+        <p className="text-small text-status-warn-text" data-testid="admin-registry-confirm">
           {MOVE_BACK_TO_PUBLIC_CONFIRM}
         </p>
       )}
 
       {result && typeof result.copied === 'number' && (
-        <p className="text-xs text-ink-tertiary" data-testid="admin-registry-result">
+        <p className="text-small text-ink-tertiary" data-testid="admin-registry-result">
           {result.copied > 0
             ? `${result.copied} community flow(s) copied into ${repo.trim()}.`
             : 'Registry updated.'}
@@ -1093,13 +1135,18 @@ function RegistryRepoPanel() {
         <button
           data-testid="admin-registry-save"
           disabled={!!error || save.isPending}
-          onClick={() => {
+          onClick={async () => {
             // Moving back to public is reversible but changes what every
             // installation reads, so it earns an explicit click.
-            if (movingToPublic && !window.confirm(MOVE_BACK_TO_PUBLIC_CONFIRM)) return;
+            if (movingToPublic && !(await confirm({
+              title: 'Move back to the public registry?',
+              body: MOVE_BACK_TO_PUBLIC_CONFIRM,
+              confirmLabel: 'Move to public',
+              tone: 'default',
+            }))) return;
             save.mutate();
           }}
-          className="px-3 py-1.5 rounded-lg bg-brand text-navy text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed"
+          className="px-3 py-1.5 rounded-lg bg-brand text-navy text-small font-bold disabled:opacity-40 disabled:cursor-not-allowed"
         >
           {save.isPending ? 'Saving…' : registryConfigSaveLabel({ repo, token, hasStoredToken })}
         </button>
@@ -1108,18 +1155,44 @@ function RegistryRepoPanel() {
             data-testid="admin-registry-sync"
             disabled={sync.isPending}
             onClick={() => sync.mutate()}
-            className="px-3 py-1.5 rounded-lg border border-border-soft text-xs text-ink-tertiary disabled:opacity-40"
+            className="px-3 py-1.5 rounded-lg border border-border-soft text-small text-ink-tertiary disabled:opacity-40"
           >
             {sync.isPending ? 'Copying…' : 'Retry copy'}
           </button>
         )}
       </div>
 
-      {save.error && (
-        <p className="text-xs text-status-danger-text" data-testid="admin-registry-save-error">
-          {(save.error as Error).message}
-        </p>
-      )}
+      <InlineError error={save.error} />
+      <InlineError error={sync.error} />
     </section>
+  );
+}
+
+/** Which registry the flow editor browses: the org's own repo or the community one. */
+export function RegistrySourcePicker({ options, value, onChange }: {
+  options: Array<{ value: RegistrySource; label: string }>;
+  value: RegistrySource;
+  onChange: (v: RegistrySource) => void;
+}) {
+  return (
+    <div role="group" aria-label="Registry source" className="flex items-center gap-1.5" data-testid="registry-source-picker">
+      {options.map((opt) => (
+        <button
+          key={opt.value}
+          type="button"
+          data-testid={`registry-source-${opt.value}`}
+          onClick={() => onChange(opt.value)}
+          aria-pressed={value === opt.value}
+          className={clsx(
+            'px-2 py-0.5 rounded-full text-caption border transition-colors',
+            value === opt.value
+              ? 'border-accent text-accent-ink bg-accent-fill font-semibold'
+              : 'border-border-soft text-ink-tertiary hover:text-ink',
+          )}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
   );
 }
