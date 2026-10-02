@@ -713,7 +713,7 @@ export function AdminInstallations() {
     <div className="space-y-6">
       {dialog}
       <section className={cardCls}>
-        <header className="flex items-center justify-between">
+        <header className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="text-body font-semibold text-ink">Installations</h3>
             <p className="mt-0.5 text-small text-ink-tertiary">

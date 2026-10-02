@@ -92,7 +92,8 @@ function classesOutsideLogo(root: HTMLElement): string {
 
 function expectOnTokens(root: HTMLElement) {
   // Story 7073be87: the type scale and the two content widths too.
-  expectOnTypeScale(root);
+  // The whole document: dialogs, menus and an open facet panel render in portals.
+  expectOnTypeScale(root.ownerDocument.body);
   const cls = classesOutsideLogo(root);
   expect(cls.match(RAW_PALETTE)?.[0] ?? null, 'raw palette colour').toBeNull();
   expect(cls.match(OLD_ACCENT)?.[0]?.trim() ?? null, 'old teal accent / gradient / glow').toBeNull();

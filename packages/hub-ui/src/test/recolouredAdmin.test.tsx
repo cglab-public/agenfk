@@ -141,7 +141,8 @@ function mount(element: React.ReactNode, entry = '/admin/x') {
 
 function expectOnTokens(root: HTMLElement) {
   // Story 7073be87: the type scale and the two content widths too.
-  expectOnTypeScale(root);
+  // The whole document: dialogs, menus and an open facet panel render in portals.
+  expectOnTypeScale(root.ownerDocument.body);
   // A destructive control must not hover in the selection colour.
   for (const el of Array.from(root.querySelectorAll('button, a'))) {
     const c = el.getAttribute('class') ?? '';

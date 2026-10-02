@@ -164,7 +164,7 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
           )}
         </div>
 
-        <div className="flex items-center gap-3 shrink-0">
+        <div className="flex items-center gap-3 min-w-0 basis-full sm:basis-auto sm:max-w-xs">
           <div>
             <label className="flex items-center gap-2 text-caption text-ink-tertiary cursor-pointer">
               <input

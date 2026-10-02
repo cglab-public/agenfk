@@ -295,6 +295,15 @@ describe('Layout on narrow screens', () => {
   });
 
   describe('content', () => {
+    it('is the containing block for what it holds, so hidden text cannot stretch the page', async () => {
+      // sr-only spans are position:absolute; with no positioned ancestor they
+      // took the page as their box, and long admin tables made the whole
+      // shell scroll away (epic review, measured at 390px).
+      renderLayout();
+      await screen.findByText('org page');
+      expect(classes(document.querySelector('main[data-scroll-root]')!)).toContain('relative');
+    });
+
     it('pads 16px below md, then as before', async () => {
       renderLayout();
       await screen.findByText('org page');

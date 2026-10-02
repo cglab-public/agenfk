@@ -150,7 +150,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </div>
         </div>
       </aside>
-      <main data-scroll-root inert={navOpen || undefined} className="flex-1 min-w-0 overflow-y-auto p-4 md:p-6 lg:p-8">
+      {/* relative: absolutely positioned children (sr-only text in tables) must
+          be contained here, or they stretch the page past the h-dvh shell. */}
+      <main data-scroll-root inert={navOpen || undefined} className="relative flex-1 min-w-0 overflow-y-auto p-4 md:p-6 lg:p-8">
         {me.data?.role === 'admin' && <PendingEnvOrgIdBanner />}
         {children}
       </main>
