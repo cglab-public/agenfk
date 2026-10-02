@@ -1,8 +1,7 @@
 /**
  * The server prunes step records when it starts (TASK 6f774968, BUG ec325925):
- * the restart after `agenfk upgrade` is what runs it. A card closed under the
- * project's flow (its last step) keeps only its final green; an open one keeps
- * what its next check reads.
+ * the restart after `agenfk upgrade` is what runs it. Every card keeps what its
+ * next check reads, a closed one too (it can be reopened).
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import * as fs from 'fs';
@@ -26,7 +25,7 @@ const capture = (step: string, ok: boolean) => ({
   step, kind: 'capture', at: new Date(Date.UTC(2026, 9, 2, 12, 0, n++)).toISOString(), head: 'h', clean: false,
   exitCode: ok ? 0 : 1, available: true, tests: [{ name: `t ${n}`, file: 'a.test.ts', status: ok ? 'passed' : 'failed' }],
 });
-const done = [capture('IN_PROGRESS', false), capture('REVIEW', true), capture('DONE', true)];
+const done = [capture('IN_PROGRESS', false), capture('IN_PROGRESS', false), capture('REVIEW', true), capture('DONE', true)];
 const open = [capture('IN_PROGRESS', false), capture('IN_PROGRESS', false), capture('IN_PROGRESS', false)];
 
 let storage: any;
@@ -53,9 +52,9 @@ afterAll(async () => {
 });
 
 describe('server start after the upgrade', () => {
-  it('reduces a card closed under its flow to its final green', async () => {
+  it('prunes a closed card by the same rule, keeping each step\'s latest for a reopen', async () => {
     const card = await storage.getItem('done-card');
-    expect(card.stepRecords.filter((r: any) => r.kind === 'capture').map((r: any) => r.at)).toEqual([done[2].at]);
+    expect(card.stepRecords.filter((r: any) => r.kind === 'capture').map((r: any) => r.at)).toEqual([done[1].at, done[2].at, done[3].at]);
   });
 
   it('gives an open card the runtime rule', async () => {

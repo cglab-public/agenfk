@@ -100,6 +100,9 @@ export class SQLiteStorageProvider implements StorageProvider {
   /** The item with its records' results read back. */
   private hydrated<T>(item: T): T {
     const it: any = item;
+    // ec325925: one parse per blob per read - a capture and the authoredTests record that
+    // references the same results share it, rather than parsing megabytes twice.
+    const parsed = new Map<string, unknown>();
     for (const key of SQLiteStorageProvider.RECORD_LISTS) {
       const records = it?.[key];
       if (!Array.isArray(records) || !records.some((r: any) => typeof r?.testsBlob === 'string')) continue;
@@ -107,10 +110,15 @@ export class SQLiteStorageProvider implements StorageProvider {
         let out = r;
         for (const [field, ref] of SQLiteStorageProvider.HYDRATED_FIELDS) {
           if (typeof out?.[ref] !== 'string') continue;
-          const row = this.database.prepare('SELECT data FROM blobs WHERE hash = ?').get(out[ref]) as { data: string } | undefined;
+          const hash = out[ref] as string;
+          if (!parsed.has(hash)) {
+            const row = this.database.prepare('SELECT data FROM blobs WHERE hash = ?').get(hash) as { data: string } | undefined;
+            parsed.set(hash, row ? JSON.parse(row.data) : undefined);
+          }
+          const data = parsed.get(hash);
           const { [ref]: _ref, ...rest } = out;
           // A missing blob reads as missing - never as an empty, green run or an unchanged tree.
-          out = row ? { ...rest, [field]: JSON.parse(row.data) } : { ...rest, [`${field}Missing`]: true };
+          out = data !== undefined ? { ...rest, [field]: data } : { ...rest, [`${field}Missing`]: true };
         }
         return out;
       });

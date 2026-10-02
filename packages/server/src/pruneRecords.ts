@@ -5,18 +5,21 @@
  * authoredTests list of every test name. Run on the server's start - the
  * restart after `agenfk upgrade` - and idempotent, so later starts find
  * nothing to do:
- *  - an open card gets the runtime rule (recordRetention): the latest capture
- *    of each step and its latest green; only greens among rolled-back ones;
- *  - a closed card keeps only its final green: its close has re-stamped it,
- *    and nothing reads the rest. Its rolled-back captures go too;
+ *  - every card gets the runtime rule (recordRetention): the latest capture of
+ *    each step and its latest green; only greens among rolled-back ones. A
+ *    closed card included: DONE, ARCHIVED and TRASHED can all be reopened, and
+ *    a rollback takes no new capture, so the entry baseline its next verify
+ *    reads must still be there (epic review);
  *  - every record that is not a capture is kept;
  *  - an inline authoredTests list becomes a reference to its capture while
  *    that capture is still on the card (authoredRecord);
  *  - then the blobs nothing references any more are swept.
+ * Decided on the light row (results left as blob references): a failed run's
+ * exit code and broken files are on it, so a card is read whole only to turn
+ * its inline authoredTests list into a reference - once.
  * Rows are rewritten as housekeeping: the card's updatedAt and history stay.
  */
 import type { StorageProvider } from '@agenfk/core';
-import { capturedGreen } from './checkEngine';
 import { retainCaptures, retainSuperseded } from './recordRetention';
 import { compactAuthored } from './authoredRecord';
 
@@ -34,23 +37,6 @@ export interface PruneReport {
 const isCapture = (r: any) => r?.kind === 'capture';
 const isInlineAuthored = (r: any) => r?.kind === 'record' && r.name === 'authoredTests' && Array.isArray(r.value);
 
-/** A closed card: its final green, and every record that is not a capture. */
-function retainClosed(records: any[]): any[] {
-  const finalGreen = [...records].reverse().find(r => isCapture(r) && capturedGreen(r));
-  return records.filter(r => !isCapture(r) || r === finalGreen);
-}
-
-/** Whether the row, read without its results, could change at all. */
-function mayChange(item: any, closed: boolean): boolean {
-  const records: any[] = item.stepRecords ?? [];
-  const captures = records.filter(isCapture);
-  if (records.some(isInlineAuthored)) return true;
-  if ((item.supersededRecords ?? []).length) return true;
-  // A failed run's exit code is on the row: a closed card's lone red capture goes too.
-  if (closed) return captures.length > 1 || captures.some(r => r.exitCode !== 0);
-  return captures.length > new Set(captures.map(r => r.step)).size;
-}
-
 /** authoredTests lists, by reference to the capture of their step taken just before them. */
 function compactAuthoredLists(records: any[]): { records: any[]; converted: number } {
   let converted = 0;
@@ -66,23 +52,23 @@ function compactAuthoredLists(records: any[]): { records: any[]; converted: numb
   return { records: out, converted };
 }
 
-export async function pruneStepRecords(storage: StorageProvider, isClosed: (item: any) => boolean | Promise<boolean>): Promise<PruneReport> {
+export async function pruneStepRecords(storage: StorageProvider): Promise<PruneReport> {
   const report: PruneReport = { cards: 0, records: 0, authored: 0, blobs: 0 };
   if (!storage.rewriteRecords) return report;
   for (const light of await storage.listItems({ hydrate: false })) {
-    const closed = await isClosed(light);
-    if (!mayChange(light, closed)) continue;
-    // Read whole only now: judging a green needs its results.
-    const item: any = await storage.getItem(light.id);
-    if (!item) continue;
-    const before: any[] = item.stepRecords ?? [];
-    const superseded: any[] = item.supersededRecords ?? [];
-    const { records: compacted, converted } = compactAuthoredLists(before);
-    const stepRecords = closed ? retainClosed(compacted) : retainCaptures(compacted);
-    const keptSuperseded = closed ? [] : retainSuperseded(superseded);
-    const dropped = before.length - stepRecords.length + superseded.length - keptSuperseded.length;
+    let records: any[] = (light as any).stepRecords ?? [];
+    const superseded: any[] = (light as any).supersededRecords ?? [];
+    let converted = 0;
+    if (records.some(isInlineAuthored)) {
+      // Its capture's results are needed to tell the list is exactly theirs.
+      const whole: any = await storage.getItem(light.id);
+      ({ records, converted } = compactAuthoredLists(whole?.stepRecords ?? []));
+    }
+    const stepRecords = retainCaptures(records);
+    const keptSuperseded = retainSuperseded(superseded);
+    const dropped = records.length - stepRecords.length + superseded.length - keptSuperseded.length;
     if (!dropped && !converted) continue;
-    await storage.rewriteRecords(item.id, {
+    await storage.rewriteRecords(light.id, {
       stepRecords,
       supersededRecords: keptSuperseded.length ? keptSuperseded : undefined,
     });

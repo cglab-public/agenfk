@@ -1728,25 +1728,12 @@ type TransitionFlow = { steps: Array<{ name: string; order: number; isSpecial?: 
 /**
  * ec325925: the upgrade's prune of the step records cards carried before the
  * retention rule. Runs on every start (the restart after `agenfk upgrade` is
- * the one that finds work) and is idempotent. Closed means the card is on its
- * flow's last step, or archived/trashed: the anchors are not assumed to be
- * called DONE.
+ * the one that finds work), is idempotent, and reads only light rows unless a
+ * card still has an inline authoredTests list.
  */
 async function pruneRecordsOnStart(): Promise<void> {
   try {
-    const flows = await storage.listFlows();
-    const lastStepOf = new Map<string, string | undefined>();
-    const isClosed = async (item: any): Promise<boolean> => {
-      if (item.status === Status.ARCHIVED || item.status === Status.TRASHED) return true;
-      const key = item.projectId ?? '';
-      if (!lastStepOf.has(key)) {
-        const project: any = item.projectId ? await storage.getProject(item.projectId) : null;
-        const steps = flowProgression(getActiveFlow(project?.flowId ?? undefined, flows) as TransitionFlow);
-        lastStepOf.set(key, steps[steps.length - 1]?.name);
-      }
-      return item.status === lastStepOf.get(key);
-    };
-    const r = await pruneStepRecords(storage, isClosed);
+    const r = await pruneStepRecords(storage);
     if (r.cards || r.blobs) {
       console.log(`[MIGRATION] step records: pruned ${r.records} record(s) on ${r.cards} card(s), ${r.authored} authoredTests list(s) now by reference, ${r.blobs} results blob(s) freed`);
     }
@@ -8030,8 +8017,11 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
   const prev = sorted[index - 1];
   const earlier = new Set(sorted.slice(0, Math.max(index, 0)).map(st => st.name));
   const produced: Record<string, unknown> = {};
-  // ec325925: authoredTests is stored by reference to its capture; the engine reads names.
-  for (const r of records) if (r?.kind === 'record' && earlier.has(r.step) && typeof r.name === 'string') produced[r.name] = r.name === 'authoredTests' ? expandAuthored(r) : r.value;
+  // ec325925: authoredTests is stored by reference to its capture; the engine reads names,
+  // or - when the reference's results cannot be read - a marker it refuses on (never a soft pass).
+  for (const r of records) if (r?.kind === 'record' && earlier.has(r.step) && typeof r.name === 'string') {
+    produced[r.name] = r.name === 'authoredTests' ? (expandAuthored(r) ?? { unreadable: true }) : r.value;
+  }
 
   // In a shared worktree the tree holds other cards' work too (MULTI_AGENT.md):
   // what another active card has claimed is theirs, not this card's change.

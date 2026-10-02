@@ -273,7 +273,10 @@ function entryTests(ctx: EngineContext): ReportedTest[] | Verdict {
 
 /** The test names recorded when the tests were written, as tests. */
 function authoredTests(ctx: EngineContext): ReportedTest[] | Verdict {
-  const names = ctx.records.authoredTests;
+  const names = ctx.records.authoredTests as unknown;
+  // ec325925: stored by reference to a capture whose results cannot be read. The card did write its
+  // tests - the record says so - so this is not a card that predates checks: it holds, never passes soft.
+  if ((names as { unreadable?: boolean } | undefined)?.unreadable) return { outcome: 'unavailable', soft: false, detail: "the 'authoredTests' record points at test results that can no longer be read, so the tests as written cannot be counted. Move the card back to the step that writes tests to record them again, or a person can pass this check on the board" };
   if (!Array.isArray(names)) return { outcome: 'unavailable', soft: true, detail: "no 'authoredTests' record: the step that writes tests did not produce one for this card (it entered that step before checks, or its tests could not be judged there)" };
   return names.map(name => ({ name: String(name), file: '', status: 'passed' as const }));
 }
