@@ -1,0 +1,13 @@
+# Normalise line endings. A Windows checkout (core.autocrlf=true) would otherwise
+# turn shell wrappers and scripts into CRLF, which breaks them under Git Bash
+# and POSIX shells ("\r: command not found"). Issue #201.
+* text=auto
+
+*.sh   text eol=lf
+*.mjs  text eol=lf
+*.cjs  text eol=lf
+bin/*  text eol=lf
+
+# Windows-native scripts want CRLF.
+*.cmd  text eol=crlf
+*.bat  text eol=crlf

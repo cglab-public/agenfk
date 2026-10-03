@@ -156,6 +156,18 @@ describe('child hub: join, request release, leave', () => {
       expect(enrollCalls).toHaveLength(0);
     });
 
+    it('still refuses its canonical URL when the admin browses it on a link-local address', async () => {
+      // BUG 9afde47e review: a link-local self URL is now refused by assertHttpUrl,
+      // and that throw used to skip the whole self-check, canonical name included.
+      app.locals.hubPublicUrl = 'https://canonical.example.com';
+      const r = await supertest(app).post('/v1/admin/federation/join')
+        .set('Cookie', adminCookie).set('Host', '169.254.10.20:4000')
+        .send({ inviteToken: joinToken('https://canonical.example.com', 't') });
+      expect(r.status).toBe(400);
+      expect(r.body.error).toMatch(/itself|own/i);
+      expect(enrollCalls).toHaveLength(0);
+    });
+
     it('requires an invite token', async () => {
       expect((await join({ parentUrl: PARENT })).status).toBe(400);
       expect(enrollCalls).toHaveLength(0);

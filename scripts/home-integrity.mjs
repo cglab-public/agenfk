@@ -18,6 +18,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { createHash } from 'crypto';
+import { fileURLToPath } from 'url';
 
 export const PROTECTED_FILES = [
   'hub.json',
@@ -66,7 +67,9 @@ export function verifyHome(homeDir, snapshot) {
 }
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname);
+// fileURLToPath, not URL.pathname: on Windows the latter is `/C:/...` (and keeps
+// %20 for spaces), so the comparison never matched and the CLI silently no-op'd.
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
 if (isMain) {
   const [, , cmd] = process.argv;
   if (cmd === 'snapshot') {

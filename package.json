@@ -1,6 +1,6 @@
 {
   "name": "agenfk",
-  "version": "2.0.0-beta.25",
+  "version": "2.0.0-beta.27",
   "description": "AgenFK Engineering Framework",
   "private": true,
   "workspaces": [
@@ -23,6 +23,7 @@
   "scripts": {
     "build": "npm run build -w packages/core -w packages/storage-sqlite -w packages/telemetry && npm run build -w packages/cli -w packages/server -w packages/ui -w packages/hub -w packages/hub-ui -w packages/desktop",
     "test": "vitest",
+    "test:windows": "vitest run --config vitest.windows.config.ts",
     "test:coverage": "node scripts/home-integrity.mjs snapshot && vitest run --coverage && node scripts/home-integrity.mjs verify",
     "test:ui:coverage": "cd packages/ui && npx vitest run --coverage",
     "install:framework": "node scripts/install.mjs",

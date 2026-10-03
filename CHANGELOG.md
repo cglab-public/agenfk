@@ -2,6 +2,88 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.27] — 2026-10-03
+
+Pre-release. Beta, cumulative over `2.0.0-beta.26`: everything below, plus the fixes in this section.
+
+### Windows
+
+- **agenfk can launch the AI client CLIs on Windows (ad57c267).** The installer, the uninstaller and
+  `agenfk configure-ide` could not start claude, codex, gemini, cursor, opencode or pi: an npm-installed client is a
+  `.cmd` shim, which Node 22 refuses to spawn without a shell (EINVAL, CVE-2024-27980), and Claude Code's native
+  installer ships `claude.exe`, which the forced `claude.cmd` never found. A client is now looked up on PATH only
+  (never the current directory, so a repo's stray `claude.js` cannot run in its place), as `.exe`/`.cmd`/`.bat`; an
+  `.exe` is spawned directly, a shim through cmd.exe with every argument quoted. `--with-mcp` now registers the MCP
+  server on Windows.
+- **The Windows CI job is blocking.** It is the only place the Windows-only cases run; a failure there now fails
+  the run.
+
+### Fixes
+
+- **`agenfk init` respects the CLI-only default (98aab7b6).** On a machine with Claude Code, every `init` registered
+  the agenfk MCP server at user scope and wrote its permissions, undoing the CLI-only install. It now does so only on
+  a `--with-mcp` install (`agenfk configure-ide` still adds it on demand), a failure in that step no longer reads
+  "Could not connect to API server", and a missing db path is a warning, not a red error.
+- **`agenfk init` without Claude Code prints no error (5cc7de1e).**
+- **A card cannot be created under a project that does not exist (f36c8a42).** `POST /items` and the JIRA/GitHub
+  imports answer 404 naming the project; verifying a card whose project is gone answers a clear 409 pointing at
+  `agenfk move`, instead of a bare 500.
+- **The board announces the stable that graduates a beta (61bc10b0).**
+
+## [2.0.0-beta.26] — 2026-10-02
+
+Pre-release. Beta, cumulative over `2.0.0-beta.25`: everything in beta.25 and beta.24 (below), plus the fixes in
+this section and the Windows CI job from `main` (PR #202).
+
+### Security
+
+- **JIRA secrets are owner-only (cc26b206).** `~/.agenfk/config.json` (the JIRA client secret) and
+  `jira-token.json` (access and refresh token) were written 0644, readable by every local user. Every writer -
+  the CLI, the server, telemetry and the installer - now writes them 0600, through a fresh file renamed over the
+  old one, so a reader that opened the old file cannot follow later writes. The server also tightens both on
+  start. If other people have logins on your machine, rotate the JIRA client secret: it may already have been read.
+- **A federation parent is never a link-local or cloud-metadata address (9afde47e, fa4f7dbd).**
+  `AGENFK_HUB_ALLOW_PRIVATE_PARENT` admits a parent on the LAN; it no longer admits `169.254.0.0/16`, `fe80::/10`,
+  AWS/GCP/OCI/Alibaba metadata (including their IPv6 addresses), Azure WireServer `168.63.129.16` or OCI Classic
+  `192.0.0.192`, in any spelling (IPv4-mapped, NAT64, 6to4, RFC 8215 local-use NAT64 under every placement). The
+  rule is applied to the URL, to every DNS answer and, for a stored IP-literal parent, before the socket opens. A
+  parent reached over link-local, which used to work with the opt-in, is now refused.
+
+### Upgrades pick the newest release by version
+
+- **`agenfk upgrade` never downgrades without being asked (3a261573).** On a beta, plain `upgrade` used to install
+  the older latest stable. It now refuses a version that is not newer; `--force` reinstalls the same version only,
+  and only `--version <x>` goes backwards. `--beta` includes stable, so a beta install moves to the stable that
+  graduates it. `/agenfk-upgrade` picks the channel from the installed version and no longer passes `--force`.
+- **"Latest" means newest by version, everywhere.** GitHub's `/releases/latest` picks by date, so an older line's
+  hotfix or a hub release could win. The CLI, the server's `/releases/latest` (which feeds the upgrade-tier gate,
+  the MCP notice and the board's reminder) and both npx installers now take the newest framework release by
+  version: never a `hub-v*` tag, a draft, or a tag with a prerelease part on stable (022b229a, 4bd98e16).
+- **The upgrade tier is the strongest among releases newer than yours (022b229a).** A mandatory hotfix on an older
+  line still gates, and `agenfk upgrade`, which installs the newest, satisfies it.
+
+### CI
+
+- **A Windows compat job runs beside the Linux one (PR #202).** Advisory for now (`continue-on-error`); it runs
+  `npm run test:windows` with a HOME that has spaces and accents.
+
+## [2.0.0-beta.25] — 2026-10-02
+
+Pre-release. Beta, cumulative over `2.0.0-beta.24`.
+
+- **Desktop terminal on Windows opens again.** Opening a terminal failed with `pty:spawn File not found`, because
+  the shell resolved to `/bin/sh` on every OS. On Windows the terminal and the agent picker's **Shell** entry now
+  start PowerShell by its absolute path (`%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`), and
+  `$SHELL` is ignored there (2fd7c65c).
+- **The agent picker's Shell entry uses your own shell on macOS and Linux.** It was fixed to `bash -l`: a machine
+  without bash could not open it, and zsh or fish users got bash. It now opens your shell (`$SHELL`, else your
+  account's shell, else `/bin/sh`) as a login shell where that shell takes `-l`. The plain terminal already used
+  `$SHELL` and is unchanged (df675f82).
+- **Server tests keep their databases out of the repository.** About 60 sqlite files (with their `-wal`/`-shm`
+  sidecars) were left in the repo root by test runs. Each server test now takes its database from `testDbPath()`,
+  in a directory the runner pins inside the HOME sandbox, which is deleted when the run ends; a guard test refuses a
+  server test that builds one with `path.resolve('<name>.sqlite')` (c89e677d).
+
 ## [2.0.0-beta.24] — 2026-10-02
 
 Pre-release. Beta, cumulative over `2.0.0-beta.23`: everything in beta.23 and beta.22 (below) and the CGLAB-164
@@ -31,6 +113,16 @@ reached the desktop app's bundle that way. Each package that builds with `tsc` (
 storage-sqlite, telemetry) now cleans its own `dist/` in a `prebuild`, for the root build and `npm run build -w`
 alike. The hub and e2e-harness Dockerfiles copy the clean script. Your projects and cards are untouched: they live
 in the database and in each repository's `.agenfk/project.json`, never in a package's `dist/`.
+
+## [2.0.0-beta.23] — 2026-10-02
+
+Beta, cumulative over `2.0.0-beta.22`.
+
+- **The flow editor is on the shared type scale.** The five sizes (caption 11 / small 12 / body 14 / title 18 /
+  display 24), the two content widths and `eyebrow` moved from the hub's stylesheet into
+  `packages/brand/type-scale.css`, imported by both the hub and the local board, so the flow editor looks the same in
+  both. Visible changes: flow-name headings are 18px (were 20px) and the exit-criteria token estimate is 11px (was
+  10px).
 
 ## [2.0.0-beta.22] — 2026-10-02
 

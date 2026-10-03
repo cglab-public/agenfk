@@ -56,6 +56,16 @@ describe("What's New shows the installed release", () => {
     expect(screen.getByRole('link', { name: /View on GitHub/ }).getAttribute('href')).toBe('https://github.com/x/y/releases/tag/v2.0.0-beta.12');
   });
 
+  // BUG 61bc10b0: its own copy of the comparison dropped the prerelease
+  // suffix, so the stable that graduates a beta read as "up to date".
+  it('announces the stable that graduates the installed beta', async () => {
+    vi.mocked(api.getLatestRelease).mockResolvedValue({ ...LATEST_STABLE, version: '2.0.0', tagName: 'v2.0.0', currentVersion: '2.0.0-beta.12' } as any);
+    vi.mocked(api.getCurrentRelease).mockRejectedValue(new Error('502'));
+    renderModal();
+    expect(await screen.findByText(/v2\.0\.0 available/)).toBeTruthy();
+    expect(screen.queryByText("You're up to date")).toBeNull();
+  });
+
   it('when the notes cannot be read, still links the releases page', async () => {
     vi.mocked(api.getCurrentRelease).mockRejectedValue(new Error('502'));
     renderModal();

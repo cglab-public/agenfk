@@ -134,6 +134,8 @@ describe('GET /releases/latest — upgradeTier in response', () => {
         html_url: 'https://github.com/example/repo/releases/tag/v2.0.0',
       }
     });
+    // The release list (BUG 022b229a): latest is one candidate beside it.
+    axios.get.mockResolvedValueOnce({ data: [] });
     axios.get.mockResolvedValueOnce({
       data: { name: '@agenfk/cli', version: '2.0.0', agenfkUpgradeTier: 'mandatory' }
     });
@@ -153,6 +155,8 @@ describe('GET /releases/latest — upgradeTier in response', () => {
         html_url: 'https://github.com/example/repo/releases/tag/v1.5.0',
       }
     });
+    // The release list (BUG 022b229a): latest is one candidate beside it.
+    axios.get.mockResolvedValueOnce({ data: [] });
     axios.get.mockResolvedValueOnce({
       data: { name: '@agenfk/cli', version: '1.5.0', agenfkUpgradeTier: 'recommended' }
     });
@@ -283,13 +287,16 @@ describe('GET /releases/latest — hub-only releases are never the framework ver
     const axios = (await import('axios')).default as any;
     axios.get
       .mockResolvedValueOnce({ data: { tag_name: 'v3.0.0', name: 'n', body: '', published_at: '2026-09-11T00:00:00Z', html_url: 'h', prerelease: false } })
+      .mockResolvedValueOnce({ data: [] })
       .mockResolvedValueOnce({ data: { agenfkUpgradeTier: 'recommended' } });
 
     const res = await request(app).get('/releases/latest');
     expect(res.body.tagName).toBe('v3.0.0');
     expect(res.body.upgradeTier).toBe('recommended');
-    // No second GitHub query for a healthy response.
-    expect(axios.get.mock.calls.filter((c: any[]) => String(c[0]).includes('api.github.com'))).toHaveLength(1);
+    // Exactly latest + the list. This used to pin ONE query for a healthy
+    // response; BUG 022b229a makes the list a candidate every time, because a
+    // healthy latest can still be an older line's hotfix (picked by date).
+    expect(axios.get.mock.calls.filter((c: any[]) => String(c[0]).includes('api.github.com'))).toHaveLength(2);
   });
 });
 

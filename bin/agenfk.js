@@ -5,7 +5,7 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { fileURLToPath } from 'url';
-import { compareSemver } from './version-utils.mjs';
+import { compareSemver, newestChannelTag } from './version-utils.mjs';
 import { pruneInstallDir, pruneInstallDirAgainstManifest } from './sync-install-dir.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -89,29 +89,75 @@ function readLocalVersion(installDir) {
   } catch { return null; }
 }
 
-// Fetch latest release tag — curl (no auth) first, gh CLI as fallback.
-// When beta=true, fetches all recent releases and picks the most recently published
-// (including pre-releases), mirroring the behaviour of `agenfk upgrade --beta`.
+// The release a channel installs - curl (no auth) first, gh CLI as fallback.
+// BUG 4bd98e16: both used to pick by DATE with no hub-tag filter (`--beta` the
+// newest release of any kind, its gh fallback `--limit 1` of any kind), so a hub
+// image release or a hotfix on an older line could be installed as the
+// framework. Now the CLI's rule (newestChannelTag): never hub-v*, the channel's
+// newest by version. GitHub's /releases/latest (and `gh release view`) is
+// date-chosen, so for stable it is only one candidate beside the list.
 function fetchLatestTag(repo, beta = false) {
-  try {
-    const url = beta
-      ? `https://api.github.com/repos/${repo}/releases?per_page=20`
-      : `https://api.github.com/repos/${repo}/releases/latest`;
-    const json = execSync(
-      `curl -fsSL "${url}" -H "Accept: application/vnd.github+json" -H "User-Agent: agenfk-installer"`,
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
-    );
-    const data = JSON.parse(json);
-    const tag = beta
-      ? (Array.isArray(data) ? data.sort((a, b) => new Date(b.published_at) - new Date(a.published_at))[0]?.tag_name : null)
-      : data.tag_name;
-    if (tag) return tag;
-  } catch {}
-  // Fallback: gh CLI
-  if (beta) {
-    return execSync(`gh release list --repo ${repo} --limit 1 --json tagName --template '{{range .}}{{.tagName}}{{end}}'`, { encoding: 'utf8' }).trim();
+  // Same order as the CLI's: GitHub's own answer first, the list best-effort,
+  // so a list that fails (rate limit, a page past maxBuffer) never throws away
+  // a good /releases/latest. maxBuffer: the 100-release list is ~0.6 MB today
+  // and grows with every release's notes; execSync's default is 1 MB.
+  const run = (cmd) => execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 32 * 1024 * 1024 });
+  const curlJson = (url) => JSON.parse(run(`curl -fsSL "${url}" -H "Accept: application/vnd.github+json" -H "User-Agent: agenfk-installer"`));
+  // --beta INCLUDES stable: once 2.0.0 ships, 2.0.0-beta.23 is not the newest
+  // thing a beta user should get (the CLI's resolveReleaseTag does the same).
+  const pick = (refs) => {
+    const stable = newestChannelTag(refs, false);
+    if (!beta) return stable;
+    const pre = newestChannelTag(refs, true);
+    if (pre && stable) return compareSemver(stable, pre) > 0 ? stable : pre;
+    return pre || stable;
+  };
+
+  // Each source says whether its LIST answered: for --beta, GitHub's latest
+  // alone is only ever a stable, so it is not an answer while the other source
+  // could still list the newer beta.
+  const viaApi = () => {
+    const refs = [];
+    let listed = false;
+    try {
+      const latest = curlJson(`https://api.github.com/repos/${repo}/releases/latest`)?.tag_name;
+      if (latest) refs.push({ tag: latest, prerelease: false, publishedAt: 0 });
+    } catch { /* the list alone decides */ }
+    try {
+      const list = curlJson(`https://api.github.com/repos/${repo}/releases?per_page=100`);
+      for (const r of Array.isArray(list) ? list : []) {
+        refs.push({ tag: r?.tag_name, prerelease: !!r?.prerelease, publishedAt: Date.parse(r?.published_at) || 0 });
+      }
+      listed = Array.isArray(list);
+    } catch { /* latest alone decides */ }
+    return { tag: pick(refs), listed };
+  };
+  const viaGh = () => {
+    const refs = [];
+    let listed = false;
+    try {
+      const viewed = run(`gh release view --repo ${repo} --json tagName --template '{{.tagName}}'`).trim();
+      if (viewed) refs.push({ tag: viewed, prerelease: false, publishedAt: 0 });
+    } catch { /* the list alone decides */ }
+    try {
+      const rows = JSON.parse(run(`gh release list --repo ${repo} --limit 100 --exclude-drafts --json tagName,isPrerelease,createdAt`) || '[]');
+      for (const r of rows) refs.push({ tag: r?.tagName, prerelease: !!r?.isPrerelease, publishedAt: Date.parse(r?.createdAt) || 0 });
+      listed = Array.isArray(rows);
+    } catch { /* the viewed tag alone decides */ }
+    return { tag: pick(refs), listed };
+  };
+
+  const api = viaApi();
+  if (api.tag && (api.listed || !beta)) return api.tag;
+  const gh = viaGh();
+  if (gh.tag && (gh.listed || !beta)) return gh.tag;
+  // Neither listed: a stable from either latest is the best that is known.
+  const tag = api.tag || gh.tag;
+  if (!tag) {
+    throw new Error(`Could not resolve a ${beta ? 'pre-release or stable' : 'stable'} framework release for ${repo}: `
+      + 'the GitHub API and gh both failed, or the repo lists only hub releases.');
   }
-  return execSync(`gh release view --repo ${repo} --json tagName --template '{{.tagName}}'`, { encoding: 'utf8' }).trim();
+  return tag;
 }
 
 // Run the setup script, surfacing a clean failure instead of letting the success

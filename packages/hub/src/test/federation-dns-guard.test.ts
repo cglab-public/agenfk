@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import * as http from 'http';
+import * as https from 'https';
 import type { AddressInfo } from 'net';
 import { guardedLookup } from '../services/federation/guardedLookup';
 import { httpFederationClient } from '../services/federation/federationClient';
@@ -251,5 +252,82 @@ describe('end to end, through the real client (CGLAB-371 review, F1 + F7)', () =
       .enroll({ parentUrl: `http://parent.example.test:${target.port}`, inviteToken: 'secret-invite', name: 'child' });
     expect(target.n.requests).toBe(1);
     expect(proxy.n.connections, 'federation traffic went through the proxy').toBe(0);
+  });
+});
+
+// ── BUG 9afde47e ───────────────────────────────────────────────────────────
+
+describe('link-local and cloud-metadata addresses, even with the opt-in (BUG 9afde47e)', () => {
+  const NEVER = ['169.254.169.254', '169.254.0.1', 'fe80::1', 'fd00:ec2::254', 'fd20:ce::254', '100.100.100.200', '::ffff:169.254.169.254', '64:ff9b::a9fe:a9fe',
+    // BUG fa4f7dbd: Azure WireServer, OCI Classic metadata, local-use NAT64.
+    '168.63.129.16', '192.0.0.192', '64:ff9b:1::a9fe:a9fe'];
+  const optedIn = (address: string) => lookupOf(
+    guardedLookup({ allowPrivate: () => true, resolve: table({ 'parent.lan': [{ address, family: address.includes(':') ? 6 : 4 }] }) }),
+    'parent.lan',
+  );
+
+  it('refuses a name that resolves to one, even when private parents are allowed', async () => {
+    for (const address of NEVER) expect((await optedIn(address)).err?.code, address).toBe('EPRIVATEADDR');
+  });
+
+  it('refuses when ANY answer is one, even when private parents are allowed', async () => {
+    const lookup = guardedLookup({ allowPrivate: () => true, resolve: table({ 'parent.lan': [{ address: '10.0.0.5', family: 4 }, { address: '169.254.169.254', family: 4 }] }) });
+    expect((await lookupOf(lookup, 'parent.lan')).err?.code).toBe('EPRIVATEADDR');
+  });
+
+  it('still lets the LAN parent through', async () => {
+    for (const address of ['10.0.0.5', '192.168.1.9', 'fd12:3456::1', '100.64.0.1']) expect((await optedIn(address)).err, address).toBeNull();
+  });
+
+  // The dial underneath the guard is stubbed, so a regression is reported by
+  // this test and never reaches the metadata service with a bearer token, even
+  // with the suite's network guard switched off.
+  const stubDials = () => {
+    const dials: string[] = [];
+    const stub = function (this: unknown, opts: any) { dials.push(String(opts?.host)); throw Object.assign(new Error('dialled'), { code: 'EDIALLED' }); };
+    const h = vi.spyOn(http.Agent.prototype as any, 'createConnection').mockImplementation(stub as any);
+    const s = vi.spyOn(https.Agent.prototype as any, 'createConnection').mockImplementation(stub as any);
+    return { dials, restore: () => { h.mockRestore(); s.mockRestore(); } };
+  };
+
+  it('refuses a STORED parent written as such a literal, which never reaches a lookup - http and https', async () => {
+    // A binding made before this fix (or by hand) keeps its URL; an IP literal
+    // skips DNS, so the lookup above never sees it. The bearer token must not go.
+    process.env.AGENFK_HUB_ALLOW_PRIVATE_PARENT = '1';
+    const net = stubDials();
+    try {
+      const t = httpTransport();
+      for (const parentUrl of ['http://169.254.169.254', 'https://169.254.169.254', 'http://[fd00:ec2::254]:80', 'https://[fd20:ce::254]', 'http://[fe80::1]:4000']) {
+        const err: any = await t.ping({ parentUrl, token: 'bearer', hubVersion: '1' }).then(() => null, (e: any) => e);
+        expect(err?.code, parentUrl).toBe('EPRIVATEADDR');
+      }
+      expect(net.dials, 'a refused parent was dialled').toEqual([]);
+    } finally {
+      net.restore();
+      delete process.env.AGENFK_HUB_ALLOW_PRIVATE_PARENT;
+    }
+  });
+
+  it('refuses a stored PRIVATE literal once the opt-in is withdrawn, as it does a private name', async () => {
+    // Review finding: names are re-judged on every connection (the lookup reads
+    // the env each time); a literal skipped that, so a binding to 10.0.0.5 made
+    // under the opt-in kept getting the bearer token after it was unset.
+    delete process.env.AGENFK_HUB_ALLOW_PRIVATE_PARENT;
+    const net = stubDials();
+    try {
+      const t = httpTransport();
+      for (const parentUrl of ['http://10.0.0.5:4000', 'https://[fd12:3456::1]']) {
+        const err: any = await t.ping({ parentUrl, token: 'bearer', hubVersion: '1' }).then(() => null, (e: any) => e);
+        expect(err?.code, parentUrl).toBe('EPRIVATEADDR');
+      }
+      expect(net.dials).toEqual([]);
+      // ...and dials it again once the operator opts back in.
+      process.env.AGENFK_HUB_ALLOW_PRIVATE_PARENT = '1';
+      await t.ping({ parentUrl: 'http://10.0.0.5:4000', token: 'bearer', hubVersion: '1' }).catch(() => {});
+      expect(net.dials).toEqual(['10.0.0.5']);
+    } finally {
+      net.restore();
+      delete process.env.AGENFK_HUB_ALLOW_PRIVATE_PARENT;
+    }
   });
 });

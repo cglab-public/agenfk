@@ -200,7 +200,25 @@ export function setTelemetryEnabled(enabled: boolean): void {
   // The directory may not exist: this screen is reachable on a machine where no
   // agenfk command has ever been typed.
   fs.mkdirSync(agenfkDir(), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(config, null, 2), 'utf8');
+  // Owner-only: the same file carries the JIRA clientSecret (BUG cc26b206).
+  // A fresh 0600 temp file renamed over the target, as @agenfk/core's
+  // writePrivateFileSync does (telemetry does not depend on core): a rewrite in
+  // place would keep an inode an older release left 0644.
+  // A symlinked config.json stays a symlink: write where it points.
+  let target = file;
+  try { target = fs.realpathSync(file); } catch { /* not there yet */ }
+  const tmp = path.join(path.dirname(target), `.config.json.${process.pid}.${Date.now()}.tmp`);
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(config, null, 2), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    // Run as root over a user's home, keep the file the user's.
+    if (process.getuid?.() === 0) {
+      try { const st = fs.statSync(target); fs.chownSync(tmp, st.uid, st.gid); } catch { /* no existing file */ }
+    }
+    fs.renameSync(tmp, target);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch { /* never created, or already renamed */ }
+    throw e;
+  }
 }
 
 export {

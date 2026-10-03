@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { isNewerVersion } from '../versionCompare';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api';
 import { Sparkles, X, ExternalLink, Loader2, ArrowUpCircle } from 'lucide-react';
@@ -14,21 +15,8 @@ interface ReleaseInfo {
   currentVersion: string;
 }
 
-const isNewerVersion = (latest: string, current: string): boolean => {
-  if (!latest || !current) return false;
-  const clean = (v: string) => v.replace(/^v/, '').split('-')[0].split('.').map(Number);
-  const l = clean(latest);
-  const c = clean(current);
-  for (let i = 0; i < Math.max(l.length, c.length); i++) {
-    const lv = l[i] || 0;
-    const cv = c[i] || 0;
-    if (lv > cv) return true;
-    /* v8 ignore start */
-    if (lv < cv) return false;
-  }
-  return false;
-  /* v8 ignore stop */
-};
+// One comparison for the whole board (versionCompare.ts): this file's own copy
+// dropped the prerelease suffix (BUG 61bc10b0).
 
 /** The installed version's own release (GET /releases/current). */
 interface CurrentReleaseInfo {

@@ -17,7 +17,7 @@ import { retainSuperseded, withRecordRetention } from './recordRetention';
 import { compactAuthored, expandAuthored } from './authoredRecord';
 import { pruneStepRecords } from './pruneRecords';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { readProjectFile, approvalFor, commandFingerprint, hiddenCharacters, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
+import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, approvalFor, commandFingerprint, hiddenCharacters, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -1430,6 +1430,7 @@ export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null
 // ── Storage initialisation ───────────────────────────────────────────────────
 
 const initStorage = async () => {
+  tightenSecretFiles();
   // Priority: env var → ~/.agenfk/config.json → default
   if (process.env.AGENFK_DB_PATH) {
     dbPath = process.env.AGENFK_DB_PATH;
@@ -6911,6 +6912,10 @@ export const buildExternalRefUpdates = async (
   return { updates, warning };
 };
 
+/** f36c8a42: the one refusal for a card asked to live under a project that does not exist. */
+const unknownProjectError = (projectId: string) =>
+  `Project ${projectId} not found. Run \`agenfk list-projects\` for the ids that exist.`;
+
 app.post("/items", asyncHandler(async (req: any, res: any) => {
   console.log(`[API_DEBUG] POST /items body keys: ${Object.keys(req.body).join(', ')}`);
   const { type, title, description, parentId, status, implementationPlan, projectId } = req.body;
@@ -6922,14 +6927,21 @@ app.post("/items", asyncHandler(async (req: any, res: any) => {
   if (!projectId) {
     return res.status(400).json({ error: "ProjectId is required" });
   }
+  if (typeof projectId !== 'string') {
+    return res.status(400).json({ error: "ProjectId must be a string" });
+  }
+
+  // f36c8a42: a card under a project that does not exist cannot be verified -
+  // refuse it here rather than mint a card every later verify chokes on.
+  const createProject: any = await storage.getProject(projectId);
+  if (!createProject) {
+    return res.status(404).json({ error: unknownProjectError(projectId) });
+  }
 
   // A brand-new id can have no descendants, so pass itemId=null: existence and
   // project-match still apply, the cycle walk is skipped as impossible.
   // Resolve the project's flow so a create cannot mint a completed item.
-  const createFlowForStatus = getActiveFlow(
-    (await storage.getProject(projectId) as any)?.flowId,
-    await storage.listFlows(),
-  );
+  const createFlowForStatus = getActiveFlow(createProject.flowId, await storage.listFlows());
 
   const createParentError = await validateParentAssignment(null, projectId, parentId);
   if (createParentError) return res.status(400).json({ error: createParentError });
@@ -9906,8 +9918,18 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
   if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
     return res.status(403).json({ error: "Forbidden: validate endpoint requires internal token." });
   }
+  // f36c8a42: a card whose project is gone has no flow, root or verify command
+  // to check it against. Say so - left to run, the root-learning below threw
+  // on the missing project and the caller saw a bare 500.
+  const validatedItem = await storage.getItem(req.params.id);
+  if (validatedItem && !(await storage.getProject(validatedItem.projectId))) {
+    return res.status(409).json({
+      error: `Refusing to verify: card ${validatedItem.id} belongs to project ${validatedItem.projectId}, which does not exist. `
+        + `Move it to a project that does: \`agenfk move ${validatedItem.id} <projectId>\` (\`agenfk list-projects\` lists them).`,
+    });
+  }
   const cwd: string | undefined = typeof req.body.cwd === 'string' && req.body.cwd ? req.body.cwd : undefined;
-  const cwdItem = cwd ? await storage.getItem(req.params.id) : null;
+  const cwdItem = cwd ? validatedItem : null;
   if (cwd && cwdItem) {
     const item = cwdItem;
     const projRoot = (await storage.getProject(item.projectId) as any)?.projectRoot as string | undefined;
@@ -10378,11 +10400,24 @@ const loadJiraToken = (): JiraTokenData | null => {
 export let jiraValidationCache: { valid: boolean; checkedAt: number } | null = null;
 const JIRA_VALIDATION_TTL = 60_000; // 60 seconds
 
+// The token file holds the access AND refresh token: owner-only (BUG cc26b206).
 const saveJiraToken = (data: JiraTokenData): void => {
-  const dir = path.dirname(jiraTokenPath());
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(jiraTokenPath(), JSON.stringify(data, null, 2));
+  writePrivateFileSync(jiraTokenPath(), JSON.stringify(data, null, 2));
   jiraValidationCache = null;
+};
+
+/**
+ * Files an older release wrote 0644 (BUG cc26b206) are tightened at boot, not
+ * only on their next write: a refresh token can sit unwritten for months.
+ * config.json carries the JIRA clientSecret. A failure costs the warning, not
+ * the boot.
+ */
+export const tightenSecretFiles = (): void => {
+  for (const file of [path.join(os.homedir(), '.agenfk', 'config.json'), jiraTokenPath()]) {
+    try { tightenPrivateFile(file); } catch (e: any) {
+      console.warn(`[SERVER_START] Could not make ${file} owner-only (${e?.code ?? e?.message}); it may be readable by other local users.`);
+    }
+  }
 };
 
 const deleteJiraToken = (): void => {
@@ -10642,7 +10677,10 @@ app.get("/jira/oauth/authorize", limitExpensive, asyncHandler(async (req: any, r
   }
   const redirectUri = jiraConfig.redirectUri || `http://localhost:3000/jira/oauth/callback`;
   const { state } = generateOAuthState();
-  oauthStateStore.set(state, { expiresAt: Date.now() + 10 * 60 * 1000 });
+  // An abandoned sign-in never reaches the callback that deletes its state.
+  const now = Date.now();
+  for (const [key, entry] of oauthStateStore) if (entry.expiresAt <= now) oauthStateStore.delete(key);
+  oauthStateStore.set(state, { expiresAt: now + 10 * 60 * 1000 });
   const params = new URLSearchParams({
     audience: 'api.atlassian.com',
     client_id: jiraConfig.clientId,
@@ -10864,6 +10902,11 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
   const { projectId, items } = req.body;
   if (!projectId || !Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: "projectId and items[] are required" });
+  }
+  // f36c8a42: the same refusal as POST /items - no cards under a missing project.
+  if (typeof projectId !== 'string') return res.status(400).json({ error: "projectId must be a string" });
+  if (!(await storage.getProject(projectId))) {
+    return res.status(404).json({ error: unknownProjectError(projectId) });
   }
 
   const imported: any[] = [];
@@ -11146,6 +11189,9 @@ app.post("/github/import", async (req: any, res: any) => {
   try {
     const { projectId, items } = req.body;
     if (!projectId || !items?.length) return res.status(400).json({ error: 'projectId and items[] required' });
+    if (typeof projectId !== 'string') return res.status(400).json({ error: 'projectId must be a string' });
+    // f36c8a42: a GitHub config outlives its project - check the project, not just the config.
+    if (!(await storage.getProject(projectId))) return res.status(404).json({ error: unknownProjectError(projectId) });
 
     const config = loadGitHubConfig(projectId);
     if (!config) return res.status(400).json({ error: 'GitHub not configured for this project.' });
@@ -11510,7 +11556,7 @@ app.get("/releases/update/:jobId", (req: any, res: any) => {
 
 /*
  * 4aac7076: the notes of the release that is INSTALLED - what What's New shows.
- * /releases/latest is GitHub's latest stable (the CLI's tier gate and the
+ * /releases/latest is the newest framework stable (the CLI's tier gate and the
  * update reminder rely on it), so on a beta What's New showed an older
  * stable's notes. A version with no published release (a local build) answers
  * published:false with the releases page, never another version's notes.
@@ -11561,53 +11607,55 @@ app.get("/releases/latest", asyncHandler(async (_req: any, res: any) => {
   if (token) headers.Authorization = `Bearer ${token}`;
 
   try {
-    const { data } = await axios.get(`https://api.github.com/repos/${repo}/releases/latest`, { headers });
-    let tagName: string = data.tag_name;
-    let meta: any = data;
-
-    // A hub build (`hub-v*`, CGLAB-8) is not a framework release, and this
-    // endpoint is what feeds the CLI's upgrade nag AND its tier gate. GitHub's
-    // /releases/latest can hand one back: when hub-v1.1.19-beta.1 was created
-    // without --prerelease it became GitHub's "latest stable", and every CLI
-    // read version "hub-v1.1.19-beta.1" from here. Re-query the list and answer
-    // with the newest real framework release.
-    if (isHubRelease(tagName)) {
-      const { data: list } = await axios.get(
-        `https://api.github.com/repos/${repo}/releases?per_page=30`,
-        { headers },
-      );
-      meta = ((Array.isArray(list) ? list : []) as any[])
-        .filter((r) => typeof r?.tag_name === 'string' && r.tag_name && !isHubRelease(r.tag_name) && !r.prerelease)
-        .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())[0];
-      tagName = meta?.tag_name ?? '';
-      if (!tagName) {
-        // Nothing to report. An empty version is what the CLI reads as "no
-        // upgrade available"; a hub tag must never reach it, and must never
-        // arrive with a tier attached — `mandatory` exits(1) every CLI call.
-        return res.json({
-          version: '',
-          tagName: null,
-          name: null,
-          body: '',
-          publishedAt: null,
-          url: null,
-          upgradeTier: 'optional',
-          currentVersion,
-        });
-      }
+    // BUG 022b229a: GitHub's /releases/latest picks by DATE (and can hand back
+    // a hub build published without --prerelease, CGLAB-8). This feeds the
+    // CLI's tier gate and upgrade nag, so it must name the release `agenfk
+    // upgrade` installs: the newest framework stable by VERSION (core's
+    // releaseChannel, shared with the CLI's own fallback). Latest is one
+    // candidate beside the list; either failing leaves the other. Both run at
+    // once, bounded: the CLI waits 3s and the MCP notice 2s for this route.
+    const [latestRes, listRes] = await Promise.allSettled([
+      axios.get(`https://api.github.com/repos/${repo}/releases/latest`, { headers, timeout: 4000 }),
+      axios.get(`https://api.github.com/repos/${repo}/releases?per_page=100`, { headers, timeout: 4000 }),
+    ]);
+    if (latestRes.status === 'rejected' && listRes.status === 'rejected') throw latestRes.reason;
+    const candidates: any[] = [
+      ...(latestRes.status === 'fulfilled' ? [latestRes.value?.data] : []),
+      ...(listRes.status === 'fulfilled' && Array.isArray(listRes.value?.data) ? listRes.value.data : []),
+    ];
+    const meta: any = newestFrameworkStable(candidates);
+    const tagName: string = meta?.tag_name ?? '';
+    if (!tagName) {
+      // Nothing to report. An empty version is what the CLI reads as "no
+      // upgrade available"; a hub tag must never reach it, and must never
+      // arrive with a tier attached — `mandatory` exits(1) every CLI call.
+      return res.json({
+        version: '',
+        tagName: null,
+        name: null,
+        body: '',
+        publishedAt: null,
+        url: null,
+        upgradeTier: 'optional',
+        currentVersion,
+      });
     }
 
-    // Fetch upgradeTier from the raw CLI package.json for this tag
-    let upgradeTier: 'mandatory' | 'recommended' | 'optional' = 'optional';
-    try {
-      const rawUrl = `https://raw.githubusercontent.com/${repo}/${tagName}/packages/cli/package.json`;
-      const { data: cliPkg } = await axios.get(rawUrl, { timeout: 5000 });
-      if (cliPkg?.agenfkUpgradeTier === 'mandatory' || cliPkg?.agenfkUpgradeTier === 'recommended') {
-        upgradeTier = cliPkg.agenfkUpgradeTier;
+    // The tier is the strongest among the stables newer than this install
+    // (user decision, 022b229a review): a mandatory hotfix on an older line
+    // still gates, and `agenfk upgrade` - installing the newest - satisfies it.
+    // Read from each tag's raw CLI package.json; a failed read counts optional.
+    const tierOf = async (tag: string): Promise<unknown> => {
+      try {
+        const rawUrl = `https://raw.githubusercontent.com/${repo}/${tag}/packages/cli/package.json`;
+        return (await axios.get(rawUrl, { timeout: 2000 })).data?.agenfkUpgradeTier; // bounded: the CLI waits 3s
+      } catch {
+        return undefined; // non-fatal: optional
       }
-    } catch {
-      // If fetch fails, default to optional — non-fatal
-    }
+    };
+    const newer = newerFrameworkStables(candidates, currentVersion);
+    const tagsToRead = newer.length ? newer.map((r: any) => r.tag_name as string) : [tagName];
+    const upgradeTier = strongestTier(await Promise.all(tagsToRead.map(tierOf)));
 
     const releaseData = {
       version: tagName.replace(/^v/, ''),

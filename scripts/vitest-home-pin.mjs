@@ -32,9 +32,22 @@ const REAL_HOME = process.env.HOME || os.homedir();
 
 let cached = null;
 
+/**
+ * Prefix of the per-run sandbox HOME directory.
+ *
+ * AGENFK_TEST_UNICODE_HOME=1 (set by the Windows CI job, issue #201) makes the
+ * sandbox look like a real Windows user profile — a space plus non-ASCII
+ * letters, as in `C:\Users\Fábio Teixeira` — so every code path that builds or
+ * parses a path under HOME is exercised with the characters that actually broke
+ * users, not just ASCII.
+ */
+export function testHomePrefix(env = process.env) {
+  return env.AGENFK_TEST_UNICODE_HOME === '1' ? 'agenfk Fábio Téixeira ção-' : 'agenfk-test-home-';
+}
+
 export function testHomeEnv() {
   if (!cached) {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-test-home-'));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), testHomePrefix()));
     // Pre-seed the framework dir so code that reads verify-token / server-port
     // sees "absent", not a hostile foreign home.
     fs.mkdirSync(path.join(home, '.agenfk'), { recursive: true });

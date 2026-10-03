@@ -26,12 +26,12 @@ vi.mock('fs', () => ({
   existsSync: mockExistsSync,
   readFileSync: mockReadFileSync,
   writeFileSync: mockWriteFileSync,
-  mkdirSync: vi.fn(),
+  mkdirSync: vi.fn(), chmodSync: vi.fn(), renameSync: (from: string, to: string) => { const c = mockWriteFileSync.mock.calls.find((x: any[]) => x[0] === from); if (c) mockWriteFileSync(to, c[1], c[2]); }, unlinkSync: vi.fn(),
   default: {
     existsSync: mockExistsSync,
     readFileSync: mockReadFileSync,
     writeFileSync: mockWriteFileSync,
-    mkdirSync: vi.fn(),
+    mkdirSync: vi.fn(), chmodSync: vi.fn(), renameSync: (from: string, to: string) => { const c = mockWriteFileSync.mock.calls.find((x: any[]) => x[0] === from); if (c) mockWriteFileSync(to, c[1], c[2]); }, unlinkSync: vi.fn(),
   },
 }));
 
@@ -330,7 +330,8 @@ describe('flow registry commands', () => {
       expect(mockWriteFileSync).toHaveBeenCalledWith(
         expect.any(String),
         expect.stringContaining('my-org/my-registry'),
-        expect.any(String)
+        // Owner-only: the same file holds the JIRA clientSecret (BUG cc26b206).
+        expect.objectContaining({ mode: 0o600 })
       );
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('my-org/my-registry'));
       logSpy.mockRestore();
