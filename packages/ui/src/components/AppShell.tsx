@@ -19,13 +19,14 @@
  *    region has to opt back out, or it silently stops receiving clicks.
  */
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { clsx } from 'clsx';
 import { agentLabel } from '../agentLabels';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Book, Check, ChevronDown, ChevronRight, Folder, FolderOpen, GitBranch, LayoutGrid, ListFilter, PanelLeftClose, PanelLeftOpen, Pin, PinOff, Plus, Settings, SquareTerminal, type LucideIcon } from 'lucide-react';
 import { useSocketEvent, useSocket } from '../SocketContext';
 import { AgenfkWordmark } from './AgenfkWordmark';
-import { desktopInfo } from '../desktop';
+import { desktopInfo, useFullScreen } from '../desktop';
 import { FleetSheet } from './FleetSheet';
 import { workingByItem, sessionForItem, adoptions } from '../workingSessions';
 import { SHELL_AGENT_ID } from '../agentIds';
@@ -1436,6 +1437,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const info = desktopInfo();
   const isMac = info?.platform === 'darwin';
+  /*
+   * The shell draws a title bar only on macOS, and only for a WINDOW: in full
+   * screen there are no traffic lights to clear and no window to drag, so the
+   * bar would be dead space over the terminal (e7ad8020).
+   */
+  const fullScreen = useFullScreen();
+  const drawsTitleBar = isMac && !fullScreen;
   const { data: versionData } = useQuery({ queryKey: ['version'], queryFn: api.getVersion });
   const version = versionData?.version;
 
@@ -1463,7 +1471,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   // The sidebar normally clears the window buttons on its own; collapsed, it
   // is narrower than they are, so the main column has to make room instead.
-  const reservesWindowControls = isMac && !sidebarOpen;
+  const reservesWindowControls = drawsTitleBar && !sidebarOpen;
+
+  /*
+   * With the terminal up, its tab strip IS the title bar: it is the top row of
+   * the column, so it takes the drag region and the traffic-light reserve, and
+   * the empty row above it goes. The user's words: if the bar has to be
+   * there, the terminals should be in it.
+   *
+   * Only while there are tabs. With no session the panel is an empty state
+   * with no strip, and the window still needs something to be dragged by.
+   */
+  const tabsAreTitleBar = active === 'terminal' && terminalOpened && sessions.length > 0;
 
   /**
    * Keep the width legal when the WINDOW changes, not only when the handle does.
@@ -1559,7 +1578,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           onNudge={nudgeSidebar}
           open={sidebarOpen}
           onToggle={toggleSidebar}
-          isMac={isMac}
+          drawsTitleBar={drawsTitleBar}
           requestTerminal={requestTerminal}
           sessionRows={sessionRows}
           herdrProject={herdrProject}
@@ -1622,8 +1641,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               without this the first control renders underneath them.
 
               The 36px goes to the terminal, which is the whole reason the git
-              panel moved into a button as well. */}
-          {reservesWindowControls && (
+              panel moved into a button as well.
+
+              And not at all in FULL SCREEN, or with the terminal's tabs on
+              screen (e7ad8020). Full screen has no lights and no window to
+              drag; over the terminal the tab strip is the top row and carries
+              the handle and the reserve itself. What is left is the board,
+              windowed, with the sidebar collapsed. */}
+          {reservesWindowControls && !tabsAreTitleBar && (
             <div
               data-app-region="drag"
               data-reserves-window-controls="true"
@@ -1816,6 +1841,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 onClose={closeSession}
                 editors={editors}
                 showWorktree
+                titleBar={drawsTitleBar ? { reserveWindowControls: !sidebarOpen } : undefined}
                 onOpenInEditor={(itemId, editorId) => {
                   // Fire and forget: failing to open an editor must not
                   // disturb the terminal the user is working in.
@@ -1910,6 +1936,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       */}
       {fleetParent ? (
         <div
+          // `no-drag`: a drag region beats whatever is stacked over it, so
+          // without this the top of the window ignores the click that closes
+          // this. The terminal's tab strip is a drag region on macOS.
+          data-app-region="no-drag"
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
           onClick={() => setFleetParentId(null)}
         >
@@ -1956,6 +1986,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         */}
       {asking && (
         <div
+          // `no-drag`: see the fleet sheet's backdrop above.
+          data-app-region="no-drag"
           className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-8 backdrop-blur-sm"
           onClick={e => { if (e.target === e.currentTarget) setAsking(null); }}
         >
@@ -2181,7 +2213,11 @@ interface SidebarProps {
   readonly onOpenFleet: (itemId: string) => void;
   open: boolean;
   onToggle: () => void;
-  isMac: boolean;
+  /**
+   * A macOS WINDOW: the traffic lights sit on the sidebar's top strip and it
+   * is a handle. False off macOS (a native bar) and in full screen (neither).
+   */
+  drawsTitleBar: boolean;
   sessionRows: SessionRow[];
   herdrProject: ProjectPaneRow[];
   openPane: string | null;
@@ -2221,7 +2257,7 @@ interface SidebarProps {
   onOpenTerminal: () => void;
 }
 
-function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResizeStart, onNudge, requestTerminal, sessionRows, herdrProject, openPane, onOpenPane, liveItems, openSession, openSettings, revealOnBoard, activeView, onSelectView, onOpenProject, onOpenFlows, onOpenTerminal, onOpenFleet }: SidebarProps) {
+function Sidebar({ open, onToggle, drawsTitleBar, widthPx, resizable, dragging, onResizeStart, onNudge, requestTerminal, sessionRows, herdrProject, openPane, onOpenPane, liveItems, openSession, openSettings, revealOnBoard, activeView, onSelectView, onOpenProject, onOpenFlows, onOpenTerminal, onOpenFleet }: SidebarProps) {
   /*
    * EVERY item, to tell which cards have children (the fleet launcher). Not the
    * in-flight list the rows are drawn from: a parent's children are anywhere.
@@ -2534,7 +2570,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
         collapse" pins that.
       */}
       <div
-        data-app-region={isMac ? 'drag' : undefined}
+        data-app-region={drawsTitleBar ? 'drag' : undefined}
         className={clsx(
           'flex shrink-0',
           open
@@ -2542,7 +2578,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
              * Open: one row. The 76px clears the traffic lights, which sit on
              * this strip because the sidebar is the leftmost column.
              */
-            ? clsx('h-9 items-center justify-between pr-1', isMac ? 'pl-[76px]' : 'pl-3')
+            ? clsx('h-9 items-center justify-between pr-1', drawsTitleBar ? 'pl-[76px]' : 'pl-3')
             /*
              * Collapsed: a COLUMN, and the padding is chosen here rather than
              * overridden.
@@ -2556,7 +2592,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
              * And on macOS the lights own the top of the rail, so the mark
              * stacks UNDER them rather than fighting for the same row.
              */
-            : clsx('flex-col items-center gap-2 px-0', isMac ? 'pt-[34px]' : 'pt-2'),
+            : clsx('flex-col items-center gap-2 px-0', drawsTitleBar ? 'pt-[34px]' : 'pt-2'),
         )}
       >
         {open
@@ -2565,7 +2601,7 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
         <button
           onClick={onToggle}
           // `no-drag`: see above. Without it this button is unclickable on macOS.
-          data-app-region={isMac ? 'no-drag' : undefined}
+          data-app-region={drawsTitleBar ? 'no-drag' : undefined}
           aria-label={open ? 'Collapse sidebar' : 'Expand sidebar'}
           title={open ? 'Collapse sidebar' : 'Expand sidebar'}
           className={clsx(
@@ -3254,12 +3290,24 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
           Fixed rather than absolute: the projects list scrolls, and a menu
           positioned inside it would slide away from the row it belongs to on
           the first wheel event. */}
-      {cardMenu && (
+      {/*
+        PORTALLED to the end of <body> (review, e7ad8020). Electron combines
+        drag and no-drag regions in DOCUMENT order, so a no-drag catcher
+        rendered here, inside the sidebar, is drawn over again by the main
+        column's drag region that comes after it - the terminal's tab strip.
+        At the end of the document nothing comes after it.
+      */}
+      {cardMenu && createPortal(
         <>
           {/* Anything that is not the menu dismisses it, including a second
               right-click elsewhere — a menu you can only close by choosing
               something is a trap. */}
           <div
+            // `no-drag`: a drag region beats whatever is stacked over it, so
+            // without this a click on the title bar would not close the menu.
+            // It works only because the menu is portalled to the end of the
+            // document - see above.
+            data-app-region="no-drag"
             className="fixed inset-0 z-40"
             onClick={() => setCardMenu(null)}
             onContextMenu={e => { e.preventDefault(); setCardMenu(null); }}
@@ -3286,7 +3334,8 @@ function Sidebar({ open, onToggle, isMac, widthPx, resizable, dragging, onResize
               Show in board
             </button>
           </div>
-        </>
+        </>,
+        document.body,
       )}
 
       {/* Processes whose card is NOT in the tree.

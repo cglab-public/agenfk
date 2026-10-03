@@ -106,6 +106,16 @@ const ptyCalls: { spawned: string[]; killed: string[]; requests: unknown[] } = {
 let ptySeq = 0;
 
 /**
+ * The window's full-screen state, as the preload reports it. Module scope so
+ * a test can flip it after render, the way the window does.
+ */
+const fullScreen = { value: false, listeners: new Set<(v: boolean) => void>() };
+const setFullScreen = (value: boolean) => act(() => {
+  fullScreen.value = value;
+  fullScreen.listeners.forEach(l => l(value));
+});
+
+/**
  * The preload bridge, which is what tells the UI it is in the desktop app.
  *
  * It carries a `terminal` surface. Without one, TerminalPane's own
@@ -119,6 +129,13 @@ const setBridge = (platform: string, prefs: { autoApprove: boolean } = { autoApp
       isDesktop: true,
       platform,
       versions: { electron: '40.10.6', chrome: '130', node: '24' },
+      fullScreen: {
+        current: () => fullScreen.value,
+        onChange: (cb: (v: boolean) => void) => {
+          fullScreen.listeners.add(cb);
+          return () => { fullScreen.listeners.delete(cb); };
+        },
+      },
       prefs: {
         get: async () => prefs,
         setAutoApprove: async (value: boolean) => ({ autoApprove: value }),
@@ -155,6 +172,8 @@ const setBridge = (platform: string, prefs: { autoApprove: boolean } = { autoApp
 };
 
 beforeEach(() => {
+  fullScreen.value = false;
+  fullScreen.listeners.clear();
   ptyCalls.spawned = [];
   ptyCalls.killed = [];
   ptyCalls.requests = [];
@@ -755,6 +774,173 @@ describe('AppShell — window controls (CGLAB-168)', () => {
     await screen.findByRole('button', { name: 'horizon-lab' });
     fireEvent.click(screen.getByRole('button', { name: /collapse sidebar/i }));
     expect(document.querySelector('[data-reserves-window-controls="true"]')).toBeNull();
+  });
+});
+
+/**
+ * The empty title bar (CGLAB-164, e7ad8020).
+ *
+ * On macOS the main column's top row is an empty drag handle with room for
+ * the traffic lights. The user's complaint, with a screenshot: in full screen
+ * it is a black bar over the terminal for nothing - no lights, no window to
+ * drag. And where it does have to exist, the terminals should be in it.
+ *
+ * So: full screen draws no row and no traffic-light inset; with the terminal
+ * up, the tab strip IS the title bar; on the board, windowed, the row stays,
+ * because it is the only place left to grab the window.
+ */
+describe('AppShell — the title bar in full screen and over the terminal', () => {
+  const ITEMS = [
+    { id: 'i1', projectId: 'p1', type: 'TASK', title: 'Some work', status: 'IN_PROGRESS', branchName: 'feat/some' },
+  ];
+
+  const titleRow = (container: HTMLElement) => container.querySelector('main > [data-app-region="drag"]');
+  const terminalTabs = () => document.querySelector('[role="tablist"][aria-label="Open terminals"]') as HTMLElement | null;
+
+  const openTerminal = async () => {
+    vi.mocked(api.listActiveItems).mockResolvedValue(ITEMS as never);
+    const view = renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+    const list = document.querySelector('[data-testid="project-list"]') as HTMLElement;
+    fireEvent.click(await within(list).findByTitle('Some work'));
+    fireEvent.click(await screen.findByRole('button', { name: /^(create|continue)$/i }));
+    await waitFor(() => expect(terminalTabs()).not.toBeNull());
+    return view;
+  };
+
+  const collapse = () => fireEvent.click(screen.getByRole('button', { name: /collapse sidebar/i }));
+
+  it('drops the empty row when the window goes full screen, and brings it back after', async () => {
+    const { container } = renderShell();
+    await screen.findByRole('button', { name: 'horizon-lab' });
+    collapse();
+    expect(titleRow(container), 'precondition: windowed and collapsed draws the row').not.toBeNull();
+
+    setFullScreen(true);
+    expect(titleRow(container), 'a title bar in full screen, where there is nothing to drag').toBeNull();
+    expect(document.querySelector('[data-reserves-window-controls="true"]')).toBeNull();
+
+    setFullScreen(false);
+    expect(titleRow(container), 'leaving full screen left the window with no handle').not.toBeNull();
+  });
+
+  it('comes up without the row when it is ALREADY full screen - a reload there', async () => {
+    fullScreen.value = true;
+    const { container } = renderShell();
+    await screen.findByRole('button', { name: 'horizon-lab' });
+    collapse();
+    expect(titleRow(container)).toBeNull();
+  });
+
+  it('gives the sidebar no traffic-light inset in full screen', async () => {
+    renderShell();
+    await screen.findByRole('button', { name: 'horizon-lab' });
+    const openHeader = () => screen.getByRole('button', { name: /collapse sidebar/i }).parentElement!;
+    const railHeader = () => screen.getByRole('button', { name: /expand sidebar/i }).parentElement!;
+
+    expect(openHeader().className, 'precondition: windowed clears the lights').toContain('pl-[76px]');
+    setFullScreen(true);
+    expect(openHeader().className, 'open sidebar still indented for lights that are gone').not.toContain('pl-[76px]');
+
+    collapse();
+    expect(railHeader().className, 'the rail still leaves 34px for lights that are gone').not.toContain('pt-[34px]');
+    setFullScreen(false);
+    expect(railHeader().className, 'windowed, the mark has to clear the lights').toContain('pt-[34px]');
+  });
+
+  it('makes the terminal tabs the title bar instead of an empty row over them', async () => {
+    const { container } = await openTerminal();
+    collapse();
+
+    expect(titleRow(container), 'the empty row is still drawn over the terminal tabs').toBeNull();
+    const tabs = terminalTabs()!;
+    expect(tabs.getAttribute('data-app-region'), 'the tab strip is not a window handle').toBe('drag');
+    expect(
+      tabs.getAttribute('data-reserves-window-controls'),
+      'collapsed, the first tab sits under the traffic lights',
+    ).toBe('true');
+
+    // The tabs are the TOP row - above the card's own header, not under it.
+    const header = screen.getByTestId('terminal-header');
+    expect(tabs.compareDocumentPosition(header) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('keeps every control in the tab strip clickable', async () => {
+    // A drag region swallows clicks. The strip is now one, so every tab, close
+    // and new-terminal button in it has to opt back out.
+    await openTerminal();
+    collapse();
+    const controls = Array.from(terminalTabs()!.querySelectorAll('button'));
+    expect(controls.length).toBeGreaterThan(1);
+    for (const el of controls) {
+      const nearest = el.closest('[data-app-region="drag"], [data-app-region="no-drag"]');
+      expect(
+        nearest?.getAttribute('data-app-region'),
+        `${el.getAttribute('aria-label') ?? el.textContent} would be unclickable`,
+      ).toBe('no-drag');
+    }
+  });
+
+  it('reserves nothing in the tab strip while the sidebar is open', async () => {
+    // Open, the sidebar is the column under the lights.
+    await openTerminal();
+    const tabs = terminalTabs()!;
+    expect(tabs.getAttribute('data-app-region')).toBe('drag');
+    expect(tabs.hasAttribute('data-reserves-window-controls')).toBe(false);
+  });
+
+  it('makes the tab strip neither a handle nor indented in full screen', async () => {
+    // Nothing to drag, and on macOS double-clicking a drag region zooms the
+    // window - not something a tab strip should do.
+    await openTerminal();
+    collapse();
+    setFullScreen(true);
+    const tabs = terminalTabs()!;
+    expect(tabs.hasAttribute('data-app-region')).toBe(false);
+    expect(tabs.hasAttribute('data-reserves-window-controls')).toBe(false);
+  });
+
+  it('brings the row back on the board, where nothing else can move the window', async () => {
+    const { container } = await openTerminal();
+    collapse();
+    expect(titleRow(container)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /^tasks$/i }));
+    expect(titleRow(container), 'on the board, collapsed and windowed, the window cannot be moved').not.toBeNull();
+  });
+
+  it('brings the row back when the last terminal closes - an empty panel has no strip', async () => {
+    // From review: with no session the panel is an empty state, no tab strip,
+    // and without the row the window could only be moved by the 40px rail.
+    const { container } = await openTerminal();
+    collapse();
+    expect(titleRow(container)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Close terminal on Some work' }));
+    await waitFor(() => expect(terminalTabs()).toBeNull());
+    expect(titleRow(container), 'the empty terminal panel left the window with no handle').not.toBeNull();
+  });
+
+  it('keeps the overlays out of the drag region, or clicking them away does nothing', async () => {
+    // From review: a drag region wins over whatever is stacked on top of it
+    // unless that element is no-drag, and the tab strip now spans the column.
+    await openTerminal();
+    fireEvent.contextMenu(within(document.querySelector('[data-testid="project-list"]') as HTMLElement).getByTitle('Some work'));
+    const catcher = document.querySelector('.fixed.inset-0');
+    expect(catcher, 'precondition: the card menu opened its click catcher').not.toBeNull();
+    expect(catcher!.getAttribute('data-app-region')).toBe('no-drag');
+    // And AFTER the main column in the document. Electron adds drag regions
+    // and subtracts no-drag ones in document order, so a no-drag catcher
+    // rendered inside the sidebar is painted over again by the tab strip.
+    const main = document.querySelector('main')!;
+    expect(
+      main.compareDocumentPosition(catcher!) & Node.DOCUMENT_POSITION_FOLLOWING,
+      'the catcher sits before the tab strip in the document, so the strip still wins the click',
+    ).toBeTruthy();
+  });
+
+  it('leaves the tab strip alone off macOS, where the native title bar is still there', async () => {
+    setBridge('win32');
+    await openTerminal();
+    expect(terminalTabs()!.hasAttribute('data-app-region')).toBe(false);
   });
 });
 

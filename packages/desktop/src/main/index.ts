@@ -36,6 +36,7 @@ import { EDITORS } from './editors.js';
 import { detectTmux, type TmuxStatus } from './tmux.js';
 import { whichOnPath, setAgentDetectionDeps } from './detectAgents.js';
 import { makeEmit } from './windowEmit.js';
+import { wireFullScreen, answerFullScreenQuery } from './windowFullScreen.js';
 import { makeLoginPathCache } from './loginPathCache.js';
 import { SOUND_EXTENSIONS } from './customSound.js';
 import { showAttentionNotice } from './attentionNotice.js';
@@ -175,6 +176,8 @@ function createWindow(url: string): BrowserWindow {
 
   // Paint only once there is something to show, instead of a white flash.
   win.once('ready-to-show', () => win.show());
+  // The shell's own title bar is dead space in full screen; see windowFullScreen.ts.
+  wireFullScreen(win);
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null;
   });
@@ -1029,6 +1032,15 @@ if (!app.requestSingleInstanceLock()) {
       app.dock?.setIcon(path.join(__dirname, '../../build/icon.png'));
     } catch { /* an icon is not worth a failed launch */ }
   });
+
+  /*
+   * Every window's preload asks this synchronously before its page runs (see
+   * windowFullScreen.ts), so it is answered from here: once, before boot, and
+   * outside boot's terminal setup - a sendSync nobody answers blocks the
+   * renderer, and a node-pty that fails to load must not take the window
+   * with it.
+   */
+  answerFullScreenQuery(ipcMain, sender => BrowserWindow.fromWebContents(sender as Electron.WebContents));
 
   void app.whenReady().then(boot);
 

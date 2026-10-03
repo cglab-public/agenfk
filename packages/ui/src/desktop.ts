@@ -1,3 +1,5 @@
+import { useSyncExternalStore } from 'react';
+
 /**
  * Am I running inside AgEnFK Desktop? (CGLAB-168)
  *
@@ -19,6 +21,10 @@ export interface DesktopInfo {
 
 interface DesktopBridge extends Partial<DesktopInfo> {
   isDesktop?: unknown;
+  fullScreen?: {
+    current?: unknown;
+    onChange?: unknown;
+  };
 }
 
 function bridge(): DesktopBridge | null {
@@ -48,4 +54,37 @@ export function desktopInfo(): DesktopInfo | null {
       node: b.versions?.node ?? '',
     },
   };
+}
+
+/**
+ * Whether the desktop window is full screen. False in a browser, and false for
+ * a preload that predates the question.
+ *
+ * Absent reads as windowed on purpose: that keeps the shell's macOS title bar,
+ * and the opposite mistake is a window with nothing to drag it by.
+ */
+export function isFullScreen(): boolean {
+  const current = bridge()?.fullScreen?.current;
+  if (typeof current !== 'function') return false;
+  return current() === true;
+}
+
+/** Every change of full screen from here on; a no-op outside the desktop. */
+export function onFullScreenChange(cb: (fullScreen: boolean) => void): () => void {
+  const onChange = bridge()?.fullScreen?.onChange;
+  if (typeof onChange !== 'function') return () => {};
+  const off = onChange((value: unknown) => {
+    // Another process's data: only a real boolean gets through.
+    if (typeof value === 'boolean') cb(value);
+  });
+  return typeof off === 'function' ? off : () => {};
+}
+
+/**
+ * Full screen as React state, following the window. An external store, which
+ * is what it is: the value lives in the preload, and React reads it through the
+ * subscription rather than copying it into state and hoping to stay in step.
+ */
+export function useFullScreen(): boolean {
+  return useSyncExternalStore(onFullScreenChange, isFullScreen, () => false);
 }

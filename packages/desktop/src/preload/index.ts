@@ -210,6 +210,18 @@ export interface AgenfkDesktopApi {
   readonly editors: AgenfkEditorsApi;
   readonly sounds: AgenfkSoundsApi;
   readonly notifications: AgenfkNotificationsApi;
+  readonly fullScreen: AgenfkFullScreenApi;
+}
+
+/**
+ * Whether the window is full screen, which only main can see. The shell's
+ * macOS title bar is dead space there - no traffic lights, nothing to drag.
+ */
+export interface AgenfkFullScreenApi {
+  /** Asked from main when the preload starts, then kept current by its pushes. */
+  current(): boolean;
+  /** Every change from here on. Returns the unsubscribe. */
+  onChange(cb: (fullScreen: boolean) => void): () => void;
 }
 
 /**
@@ -286,6 +298,33 @@ const notifications: AgenfkNotificationsApi = {
   }),
 };
 
+/*
+ * ASKED synchronously here, before the page has run any code, so the first
+ * paint is already right - a reload in full screen included. sendSync blocks
+ * this renderer for one round trip, once per load, and main answers from
+ * memory. After that every change is pushed and kept.
+ */
+let fullScreenNow = false;
+try {
+  fullScreenNow = ipcRenderer.sendSync('window:isFullScreen') === true;
+} catch {
+  // No answer reads as windowed: the title bar stays, and the window can
+  // still be dragged. The first push corrects it.
+}
+const fullScreenListeners = new Set<(fullScreen: boolean) => void>();
+ipcRenderer.on('window:fullScreen', (_event: unknown, value: unknown) => {
+  fullScreenNow = value === true;
+  fullScreenListeners.forEach(cb => cb(fullScreenNow));
+});
+
+const fullScreen: AgenfkFullScreenApi = {
+  current: () => fullScreenNow,
+  onChange: cb => {
+    fullScreenListeners.add(cb);
+    return () => { fullScreenListeners.delete(cb); };
+  },
+};
+
 const api: AgenfkDesktopApi = {
   isDesktop: true,
   terminal,
@@ -293,6 +332,7 @@ const api: AgenfkDesktopApi = {
   editors,
   sounds,
   notifications,
+  fullScreen,
   platform: process.platform,
   versions: {
     electron: process.versions.electron,

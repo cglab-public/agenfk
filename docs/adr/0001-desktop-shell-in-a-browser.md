@@ -143,6 +143,9 @@ Electron app:
 - `editors` — opening a card's worktree in an editor.
 - `sounds` — the custom notification sound.
 - `notifications` — operating-system notifications.
+- `fullScreen` — whether the window is full screen. Absent, the shell reads
+  the window as windowed, so on a `darwin` stub the macOS title bar always
+  draws; full screen dropping it is checked in the Electron app.
 
 Nor does it cover the main process (server adoption, window chrome, menus),
 packaging or code signing. A sandboxed server has no hub, so screens that
