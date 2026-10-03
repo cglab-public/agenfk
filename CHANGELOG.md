@@ -2,6 +2,34 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.27] — 2026-10-03
+
+Pre-release. Beta, cumulative over `2.0.0-beta.26`: everything below, plus the fixes in this section.
+
+### Windows
+
+- **agenfk can launch the AI client CLIs on Windows (ad57c267).** The installer, the uninstaller and
+  `agenfk configure-ide` could not start claude, codex, gemini, cursor, opencode or pi: an npm-installed client is a
+  `.cmd` shim, which Node 22 refuses to spawn without a shell (EINVAL, CVE-2024-27980), and Claude Code's native
+  installer ships `claude.exe`, which the forced `claude.cmd` never found. A client is now looked up on PATH only
+  (never the current directory, so a repo's stray `claude.js` cannot run in its place), as `.exe`/`.cmd`/`.bat`; an
+  `.exe` is spawned directly, a shim through cmd.exe with every argument quoted. `--with-mcp` now registers the MCP
+  server on Windows.
+- **The Windows CI job is blocking.** It is the only place the Windows-only cases run; a failure there now fails
+  the run.
+
+### Fixes
+
+- **`agenfk init` respects the CLI-only default (98aab7b6).** On a machine with Claude Code, every `init` registered
+  the agenfk MCP server at user scope and wrote its permissions, undoing the CLI-only install. It now does so only on
+  a `--with-mcp` install (`agenfk configure-ide` still adds it on demand), a failure in that step no longer reads
+  "Could not connect to API server", and a missing db path is a warning, not a red error.
+- **`agenfk init` without Claude Code prints no error (5cc7de1e).**
+- **A card cannot be created under a project that does not exist (f36c8a42).** `POST /items` and the JIRA/GitHub
+  imports answer 404 naming the project; verifying a card whose project is gone answers a clear 409 pointing at
+  `agenfk move`, instead of a bare 500.
+- **The board announces the stable that graduates a beta (61bc10b0).**
+
 ## [2.0.0-beta.26] — 2026-10-02
 
 Pre-release. Beta, cumulative over `2.0.0-beta.25`: everything in beta.25 and beta.24 (below), plus the fixes in
