@@ -15,6 +15,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { isNewerVersion } from '../versionCompare';
+import { isUpgrade } from '@agenfk/core';
 
 describe('comparing versions', () => {
   it('sees a newer patch, minor and major', () => {
@@ -46,11 +47,36 @@ describe('comparing versions', () => {
     expect(isNewerVersion('v1.2.0', '1.1.18')).toBe(true);
   });
 
-  it('ignores the pre-release suffix', () => {
-    // Deliberate, and inherited. A beta of the version you already run is not
-    // an upgrade to offer, and 1.2.0-beta.1 against 1.1.18 is.
+  it('reads the pre-release suffix by semver order (BUG 61bc10b0)', () => {
+    // A beta of the version you already run is still not an upgrade, and
+    // 1.2.0-beta.1 against 1.1.18 still is: both held before. What changed is
+    // that the suffix is no longer DROPPED, which made the stable that
+    // graduates a beta read as "same version" - so the board never announced
+    // it - and a newer beta read as no update.
     expect(isNewerVersion('1.1.18-beta.6', '1.1.18')).toBe(false);
     expect(isNewerVersion('1.2.0-beta.1', '1.1.18')).toBe(true);
+    expect(isNewerVersion('2.0.0', '2.0.0-beta.12')).toBe(true);
+    expect(isNewerVersion('2.0.0-beta.13', '2.0.0-beta.12')).toBe(true);
+    expect(isNewerVersion('2.0.0-beta.10', '2.0.0-beta.9')).toBe(true); // numeric, not lexical
+    expect(isNewerVersion('2.0.0-beta.12', '2.0.0')).toBe(false);
+  });
+
+  it('never offers a hub release (hub-v*) as a framework update', () => {
+    expect(isNewerVersion('hub-v9.9.9', '2.0.0')).toBe(false);
+  });
+
+  it('agrees with core isUpgrade, which the CLI notice and the tier gate use', () => {
+    // The board cannot import @agenfk/core at runtime (CommonJS breaks the
+    // bundle, see claimState.ts), so versionCompare is a copy - pinned here
+    // against the real one, which this test can import.
+    const versions = ['1.1.18', '1.1.18-beta.6', '1.2.0-beta.1', '2.0.0-beta.9', '2.0.0-beta.10', '2.0.0-beta.12',
+      '2.0.0', 'v2.0.1', '2.1.0-rc.1', '10.0.0', 'hub-v2.0.0', 'nonsense', '',
+      // Every prerelease-ordering branch, and the spellings core accepts (review of 61bc10b0).
+      '2.0.0-alpha.1', '2.0.0-beta', '2.0.0-beta.1', '2.0.0-rc.1', '2.0.0-1', '2.1.0-beta.5',
+      ' 2.0.0 ', 'V2.0.0', '2.0.0+build.1'];
+    for (const a of versions) for (const b of versions) {
+      expect(isNewerVersion(a, b), `${a} vs ${b}`).toBe(isUpgrade(a, b));
+    }
   });
 
   it('answers no rather than throwing when a version is missing', () => {
