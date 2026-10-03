@@ -6912,6 +6912,10 @@ export const buildExternalRefUpdates = async (
   return { updates, warning };
 };
 
+/** f36c8a42: the one refusal for a card asked to live under a project that does not exist. */
+const unknownProjectError = (projectId: string) =>
+  `Project ${projectId} not found. Run \`agenfk list-projects\` for the ids that exist.`;
+
 app.post("/items", asyncHandler(async (req: any, res: any) => {
   console.log(`[API_DEBUG] POST /items body keys: ${Object.keys(req.body).join(', ')}`);
   const { type, title, description, parentId, status, implementationPlan, projectId } = req.body;
@@ -6923,14 +6927,21 @@ app.post("/items", asyncHandler(async (req: any, res: any) => {
   if (!projectId) {
     return res.status(400).json({ error: "ProjectId is required" });
   }
+  if (typeof projectId !== 'string') {
+    return res.status(400).json({ error: "ProjectId must be a string" });
+  }
+
+  // f36c8a42: a card under a project that does not exist cannot be verified -
+  // refuse it here rather than mint a card every later verify chokes on.
+  const createProject: any = await storage.getProject(projectId);
+  if (!createProject) {
+    return res.status(404).json({ error: unknownProjectError(projectId) });
+  }
 
   // A brand-new id can have no descendants, so pass itemId=null: existence and
   // project-match still apply, the cycle walk is skipped as impossible.
   // Resolve the project's flow so a create cannot mint a completed item.
-  const createFlowForStatus = getActiveFlow(
-    (await storage.getProject(projectId) as any)?.flowId,
-    await storage.listFlows(),
-  );
+  const createFlowForStatus = getActiveFlow(createProject.flowId, await storage.listFlows());
 
   const createParentError = await validateParentAssignment(null, projectId, parentId);
   if (createParentError) return res.status(400).json({ error: createParentError });
@@ -9907,8 +9918,18 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
   if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
     return res.status(403).json({ error: "Forbidden: validate endpoint requires internal token." });
   }
+  // f36c8a42: a card whose project is gone has no flow, root or verify command
+  // to check it against. Say so - left to run, the root-learning below threw
+  // on the missing project and the caller saw a bare 500.
+  const validatedItem = await storage.getItem(req.params.id);
+  if (validatedItem && !(await storage.getProject(validatedItem.projectId))) {
+    return res.status(409).json({
+      error: `Refusing to verify: card ${validatedItem.id} belongs to project ${validatedItem.projectId}, which does not exist. `
+        + `Move it to a project that does: \`agenfk move ${validatedItem.id} <projectId>\` (\`agenfk list-projects\` lists them).`,
+    });
+  }
   const cwd: string | undefined = typeof req.body.cwd === 'string' && req.body.cwd ? req.body.cwd : undefined;
-  const cwdItem = cwd ? await storage.getItem(req.params.id) : null;
+  const cwdItem = cwd ? validatedItem : null;
   if (cwd && cwdItem) {
     const item = cwdItem;
     const projRoot = (await storage.getProject(item.projectId) as any)?.projectRoot as string | undefined;
@@ -10882,6 +10903,11 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
   if (!projectId || !Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: "projectId and items[] are required" });
   }
+  // f36c8a42: the same refusal as POST /items - no cards under a missing project.
+  if (typeof projectId !== 'string') return res.status(400).json({ error: "projectId must be a string" });
+  if (!(await storage.getProject(projectId))) {
+    return res.status(404).json({ error: unknownProjectError(projectId) });
+  }
 
   const imported: any[] = [];
   const errors: any[] = [];
@@ -11163,6 +11189,9 @@ app.post("/github/import", async (req: any, res: any) => {
   try {
     const { projectId, items } = req.body;
     if (!projectId || !items?.length) return res.status(400).json({ error: 'projectId and items[] required' });
+    if (typeof projectId !== 'string') return res.status(400).json({ error: 'projectId must be a string' });
+    // f36c8a42: a GitHub config outlives its project - check the project, not just the config.
+    if (!(await storage.getProject(projectId))) return res.status(404).json({ error: unknownProjectError(projectId) });
 
     const config = loadGitHubConfig(projectId);
     if (!config) return res.status(400).json({ error: 'GitHub not configured for this project.' });

@@ -870,6 +870,22 @@ describe('POST /jira/import (with token + mock axios)', () => {
     expect(res.status).toBe(400);
   }));
 
+  // f36c8a42: an import under a project that does not exist used to mint
+  // cards every later verify failed on.
+  it('refuses a projectId no project has with 404, before asking JIRA for anything', withJiraToken(async () => {
+    await initStorage();
+    const axios = (await import('axios')).default as any;
+    axios.mockClear(); axios.get.mockClear();
+    const res = await agent()
+      .post('/jira/import')
+      .send({ projectId: 'no-such-project', items: [{ issueKey: 'TEST-1', type: 'TASK' }] });
+    expect(res.status).toBe(404);
+    expect(res.body.error).toContain('Project no-such-project not found');
+    expect(axios).not.toHaveBeenCalled();
+    expect(axios.get).not.toHaveBeenCalled();
+    expect(await storage.listItems({ projectId: 'no-such-project' } as any)).toHaveLength(0);
+  }));
+
   it('imports a task item', withJiraToken(async () => {
     await initStorage();
     const p = (await agent().post('/projects').send({ name: 'P' })).body;
