@@ -11,6 +11,13 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+// A HOME of the test's own: init reads ~/.agenfk/config.json (BUG 98aab7b6).
+const { home } = vi.hoisted(() => ({ home: { dir: '' } }));
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  const homedir = vi.fn(() => home.dir || actual.homedir());
+  return { ...actual, homedir, default: { ...actual, homedir } };
+});
 vi.mock('@agenfk/telemetry', () => ({
   TelemetryClient: vi.fn(function (this: any) { this.capture = vi.fn(); this.shutdown = vi.fn().mockResolvedValue(undefined); this.isEnabled = false; }),
   getInstallationId: vi.fn().mockReturnValue('test-install-id'),
@@ -37,6 +44,7 @@ let err: string[];
 
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-init-'));
+  home.dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-init-home-'));
   vi.spyOn(process, 'cwd').mockReturnValue(dir);
   out = []; err = [];
   // eslint-disable-next-line no-control-regex
@@ -58,10 +66,19 @@ afterEach(() => {
   mockedAxios.get.mockReset();
   mockedAxios.post.mockReset();
   fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(home.dir, { recursive: true, force: true });
+  home.dir = '';
 });
+
+/** A --with-mcp install: the only one where init looks for Claude Code (BUG 98aab7b6). */
+const withMcpInstall = () => {
+  fs.mkdirSync(path.join(home.dir, '.agenfk'), { recursive: true });
+  fs.writeFileSync(path.join(home.dir, '.agenfk', 'config.json'), JSON.stringify({ dbPath: '/db.sqlite', withMcp: true }));
+};
 
 describe('agenfk init on a machine without Claude Code (BUG 5cc7de1e)', () => {
   it('initializes the project and prints no error', async () => {
+    withMcpInstall();
     await program.parseAsync(['node', 'agenfk', 'init', 'demo']);
     expect(JSON.parse(fs.readFileSync(path.join(dir, '.agenfk', 'project.json'), 'utf8'))).toEqual({ projectId: 'p-123' });
     expect(err, err.join('\n')).toEqual([]);
@@ -69,12 +86,23 @@ describe('agenfk init on a machine without Claude Code (BUG 5cc7de1e)', () => {
   });
 
   it('says the Claude Code step was skipped and how to run it later', async () => {
+    withMcpInstall();
     await program.parseAsync(['node', 'agenfk', 'init', 'demo']);
+    expect(err, err.join('\n')).toEqual([]);
     const text = out.join('\n');
     expect(text).toMatch(/Initialized project/);
     expect(text).toMatch(/Claude Code .*not found.*skipped/i);
     // configure-ide adds the MCP integration; it is offered as that, not as a missing step.
     expect(text).toMatch(/MCP integration later, run: agenfk configure-ide/);
+  });
+});
+
+describe('agenfk init on a CLI-only install without Claude Code', () => {
+  it('initializes the project, prints no error, and never looks for claude', async () => {
+    await program.parseAsync(['node', 'agenfk', 'init', 'demo']);
+    expect(fs.existsSync(path.join(dir, '.agenfk', 'project.json'))).toBe(true);
+    expect(err, err.join('\n')).toEqual([]);
+    expect(execSync.mock.calls.map(c => String(c[0])).filter(c => c.startsWith('claude'))).toEqual([]);
   });
 });
 

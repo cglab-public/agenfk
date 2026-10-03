@@ -1217,6 +1217,16 @@ program
     }
   });
 
+/** Whether the install opted into MCP (`withMcp` in ~/.agenfk/config.json, written by install.mjs). CLI-only is the default. */
+function installChoseMcp(): boolean {
+    try {
+        const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.agenfk', 'config.json'), 'utf8'));
+        return cfg?.withMcp === true;
+    } catch {
+        return false;
+    }
+}
+
 /**
  * Configure Claude Code IDE integration for an AgEnFK project directory.
  * Registers the agenfk MCP server via `claude mcp add --scope user` (the official
@@ -1230,7 +1240,9 @@ program
  * (BUG 5cc7de1e): after `agenfk init` the step is optional - CLI-only is the
  * default and a Codex, Cursor or pi machine has no `claude` - so it is skipped
  * with one grey line; `agenfk configure-ide` asked for exactly this, so a
- * missing `claude` stays an error there.
+ * missing `claude` stays an error there. A db path that cannot be found is
+ * treated the same way: a warning after init, an error for configure-ide.
+ * init calls this only on a --with-mcp install (BUG 98aab7b6).
  */
 function configureClaudeCodeIde(rootDir: string, whenMissing: 'skip' | 'error'): boolean {
     // Require the claude CLI
@@ -1266,6 +1278,10 @@ function configureClaudeCodeIde(rootDir: string, whenMissing: 'skip' | 'error'):
         }
     }
     if (!dbPath) {
+        if (whenMissing === 'skip') {
+            console.log(chalk.yellow('Claude Code\'s MCP setup was skipped: could not determine AGENFK_DB_PATH. Run "agenfk up", then: agenfk configure-ide'));
+            return false;
+        }
         console.error(chalk.red('Could not determine AGENFK_DB_PATH.'));
         console.error(chalk.gray('Run "agenfk up" first to complete the installation.'));
         return false;
@@ -1434,7 +1450,23 @@ program
         console.log(chalk.green(`\n✨ Initialized project in ${projFile}`));
         console.log(chalk.gray('You can now start creating items with "agenfk create <type> [title]"'));
 
-        configureClaudeCodeIde(rootDir, 'skip');
+        /*
+         * BUG 98aab7b6: only a --with-mcp install gets the MCP server at init.
+         * CLI-only is the default, and install.mjs removes the registration
+         * for it ("Ensuring CLI-only mode"); registering here, at user scope,
+         * undid that for every project. configure-ide still does it on demand.
+         */
+        if (!installChoseMcp()) {
+            console.log(chalk.gray('CLI-only install: Claude Code\'s agenfk MCP server was not registered. To add it to this project: agenfk configure-ide; to opt the whole install into MCP (every project and client): agenfk integration install claude --with-mcp'));
+            return;
+        }
+        // Past this point the project exists: a failure is the IDE step's,
+        // never the API server's, which the catch below would claim.
+        try {
+            configureClaudeCodeIde(rootDir, 'skip');
+        } catch (ideErr: any) {
+            console.log(chalk.yellow(`The project was initialized, but Claude Code's MCP setup failed: ${ideErr?.message ?? ideErr}. To retry: agenfk configure-ide`));
+        }
 
     } catch (e: any) {
         console.error(chalk.red(`Could not connect to API server at ${API_URL}. Is it running?`));
