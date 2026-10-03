@@ -45,6 +45,7 @@ import { program } from '../index';
 
 const posix = process.platform !== 'win32';
 let home: string;
+let proj: string;
 let oldUmask: number;
 const configFile = () => path.join(home, '.agenfk', 'config.json');
 const mode = (p: string) => fs.statSync(p).mode & 0o777;
@@ -65,6 +66,14 @@ async function run(...args: string[]) {
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-private-config-'));
   vi.mocked(os.homedir).mockReturnValue(home);
+  // BUG 181b3a5f: never the directory the suite was launched from. A developer
+  // checkout carries an untracked .agenfk/project.json there and CI's does not,
+  // so a command that looks up the project passed locally and failed in CI.
+  // It also keeps `skills install` (whose project root falls back to the cwd)
+  // from sweeping agenfk entries out of the real repo root. A directory of its
+  // own, not HOME, so a lookup that wrongly used the home dir would not pass.
+  proj = fs.mkdtempSync(path.join(home, 'proj-'));
+  vi.spyOn(process, 'cwd').mockReturnValue(proj);
   delete process.env.AGENFK_HUB_URL;
   oldUmask = process.umask(0o022);
   vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -120,14 +129,22 @@ describe.runIf(posix)('CLI writers of ~/.agenfk/config.json keep it private', ()
     expect(mode(configFile())).toBe(0o600);
   });
 
+  /** github setup links the project found from the cwd, so the cwd is one. */
+  const inProject = () => {
+    fs.mkdirSync(path.join(proj, '.agenfk'), { recursive: true });
+    fs.writeFileSync(path.join(proj, '.agenfk', 'project.json'), JSON.stringify({ projectId: 'p-1' }));
+  };
+
   it('github setup leaves it 0600', async () => {
     secretConfig();
+    inProject();
     await run('github', 'setup', '--owner', 'cglab', '--repo', 'agenfk');
     expect(Object.values(readConfig().github.repos)).toContainEqual(expect.objectContaining({ owner: 'cglab', repo: 'agenfk' }));
     expect(mode(configFile())).toBe(0o600);
   });
 
   it('github disconnect leaves it 0600', async () => {
+    inProject();
     await run('github', 'setup', '--owner', 'cglab', '--repo', 'agenfk');
     fs.chmodSync(configFile(), 0o644);
     await run('github', 'disconnect');
