@@ -1,0 +1,253 @@
+/**
+ * A process drawn beneath the card it belongs to (1a1b8df6).
+ *
+ * The sessions rail is a flat list at the bottom of the sidebar showing work
+ * that is ALREADY listed above it in the projects tree. Two places for one
+ * fact is what this removes: the process moves under its own card, and the
+ * title goes with the move, because the card directly above already carries it.
+ *
+ * What is left per process is the two things the card cannot say: what state it
+ * is in, and which agent it is.
+ *
+ * MOST OF THIS FILE IS ABOUT THE TITLE BEING GONE and about the row still
+ * saying everything the rail's row said. Dropping a line of text is easy to do
+ * and easy to overdo, and the failure mode is a row that looks tidier while
+ * quietly telling you less.
+ */
+import { describe, it, expect, vi } from 'vitest';
+import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { afterEach } from 'vitest';
+import '@testing-library/jest-dom/vitest';
+import { CardProcessRow } from '../components/CardProcessRow';
+import type { SessionRow } from '../sessionRow';
+
+afterEach(cleanup);
+
+/* The REAL SessionRow, read off sessionRow.ts rather than invented. Getting
+   this wrong is how a producer and a consumer come to agree with nobody. */
+const row = (over: Partial<SessionRow> = {}): SessionRow => ({
+  runId: 'r1',
+  itemId: 'i1',
+  projectId: 'p1',
+  title: 'Harden the token worker',
+  agentId: 'claude-code',
+  agentLabel: 'Claude Code',
+  state: 'running',
+  startedAt: new Date(Date.now() - 60_000).toISOString(),
+  hasTerminal: true,
+  ...over,
+});
+
+describe('what the row says', () => {
+  it('does not repeat the card title', () => {
+    /*
+     * THE point of the change. The card sits directly above this row, so the
+     * title here is the same string twice, inches apart - which is the
+     * duplication the whole redesign exists to remove.
+     */
+    render(<CardProcessRow row={row()} />);
+    expect(screen.queryByText('Harden the token worker')).toBeNull();
+  });
+
+  it('names the agent, which the card cannot', () => {
+    // A card may have three processes on it. Without this the rows are
+    // indistinguishable from each other.
+    render(<CardProcessRow row={row({ agentLabel: 'Claude Code' })} />);
+    expect(screen.getByText(/claude code/i)).toBeInTheDocument();
+  });
+
+  it('says the state as a word, not only to a screen reader', () => {
+    /*
+     * In the rail these strings existed but only reached assistive tech - the
+     * dot carried the state visually and the label was an aria-label. With the
+     * title gone there is room for the word, and a colour-only state fails for
+     * the ~8% of men with a colour vision deficiency.
+     */
+    render(<CardProcessRow row={row({ state: 'blocked' })} />);
+    expect(screen.getByText('Waiting for you')).toBeInTheDocument();
+  });
+
+  it('uses the same words as the rail did, rather than inventing its own', () => {
+    // Two vocabularies for one set of states is how the rail and the tree came
+    // to disagree in the first place.
+    render(<CardProcessRow row={row({ state: 'failed' })} />);
+    expect(screen.getByText('Failed')).toBeInTheDocument();
+  });
+
+  /*
+   * The `lastAction` test that stood here is gone with the field.
+   *
+   * It rendered `row({ state: 'running', lastAction: 'Editing cardState.ts' })`
+   * and asserted the text appeared - injecting a prop the real component never
+   * receives. Nothing in the app ever set `lastAction`: both places that build
+   * SessionRows omitted it, so the span could not draw and the docblock
+   * promising "Bash - npx vitest run" described nothing.
+   *
+   * Removed rather than pretended, on the same reasoning that removed the
+   * `waiting` state. Giving it a producer is carded.
+   */
+});
+
+describe('the state is not carried by colour alone', () => {
+  it('spins while running, so "is it thinking" is answerable at a glance', () => {
+    render(<CardProcessRow row={row({ state: 'running' })} />);
+    expect(screen.getByTestId('session-spinner')).toBeInTheDocument();
+  });
+
+  it('draws a still mark for every state that is not running', () => {
+    // A spinner on a dead session says it is alive, which is worse than saying
+    // nothing.
+    render(<CardProcessRow row={row({ state: 'failed' })} />);
+    expect(screen.queryByTestId('session-spinner')).toBeNull();
+  });
+
+  it('exposes the state to assistive tech as well as drawing it', () => {
+    render(<CardProcessRow row={row({ state: 'blocked' })} />);
+    expect(screen.getByTestId('process-row').getAttribute('data-state')).toBe('blocked');
+  });
+});
+
+/*
+ * A `describe('stopping it')` block sat here with three tests: that STOP was
+ * offered, that it stopped the right session, and that it was absent without a
+ * handler.
+ *
+ * The control is gone, reported by the user (8b019106). It did not stop
+ * anything - the handler looked the run up among the open sessions and CLOSED
+ * the terminal - so a label promising to interrupt an agent discarded the
+ * session and its scrollback instead, at exactly the moment somebody most
+ * wants the output.
+ *
+ * Deleted rather than reversed into "offers no STOP", because that assertion
+ * would pass on any row that happens to lack the button for any reason,
+ * including a rendering bug. The absence that matters is asserted once, below,
+ * against the whole row.
+ */
+describe('what the row does NOT offer', () => {
+  it('has no controls that act on the process', () => {
+    /*
+     * Both hover controls are gone and for different reasons. BOARD would have
+     * taken you to the line directly above the one you are pointing at. STOP
+     * closed the terminal.
+     *
+     * Asserted as "no buttons but the one that opens it", which is stronger
+     * than naming the two that were removed: a third control added later
+     * without a decision behind it fails here too.
+     */
+    render(<CardProcessRow row={row()} onOpen={vi.fn()} />);
+    const buttons = screen.getAllByRole('button');
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0]).toHaveAttribute('data-testid', 'process-open');
+  });
+});
+
+/**
+ * The suggested command, on the row (CGLAB-200).
+ *
+ * nextAction.test.ts proves the decision. This proves it is SHOWN, and pins
+ * the one thing a row can get wrong that a pure function cannot: putting a
+ * command on every line, which is how the useful ones stop being read.
+ */
+describe('the command the row suggests', () => {
+  const row = (state: SessionRow['state'], hasTerminal = true): SessionRow => ({
+    runId: 'r1', itemId: 'abcdef12-0000', title: 'A card',
+    agentId: 'claude-code', agentLabel: 'Claude Code', state,
+    startedAt: new Date().toISOString(), hasTerminal,
+  });
+
+  it('shows an inspection for an agent it cannot reach', () => {
+    render(<CardProcessRow row={row('unverifiable')} />);
+    const el = screen.getByTestId('next-action');
+    expect(el.textContent).toMatch(/agenfk get abcdef12/);
+  });
+
+  it('explains it in words before the command, in the accessible name', () => {
+    /*
+     * A bare argv is a thing to paste without understanding. Being able to
+     * decide NOT to run it is the whole point, so the sentence comes first.
+     */
+    render(<CardProcessRow row={row('unverifiable')} />);
+    expect(screen.getByTestId('next-action').getAttribute('title')).toMatch(/^Cannot reach it/);
+  });
+
+  it('shows nothing on a healthy row', () => {
+    // THE test for this layer. A command on every line is noise, and noise on
+    // every line is how the two that matter get skipped.
+    render(<CardProcessRow row={row('running')} />);
+    expect(screen.queryByTestId('next-action')).toBeNull();
+  });
+
+  it('shows nothing for a blocked agent, which needs a window and not a command', () => {
+    // The move there is to open its terminal. A CLI call would send somebody
+    // to the wrong window.
+    render(<CardProcessRow row={row('blocked')} />);
+    expect(screen.queryByTestId('next-action')).toBeNull();
+  });
+});
+
+/**
+ * Long silence, on the row (CGLAB-201).
+ *
+ * It qualifies "running" rather than replacing it: a separate badge would read
+ * as a fourth state to learn, and a state invites acting on it where a
+ * qualifier invites looking.
+ */
+describe('the quiet warning', () => {
+  const longAgo = new Date(Date.now() - 45 * 60_000).toISOString();
+  const row = (state: SessionRow['state'], lastSeenAt?: string, startedAt = longAgo): SessionRow => ({
+    runId: 'r1', itemId: 'abcdef12-0000', title: 'A card',
+    agentId: 'claude-code', agentLabel: 'Claude Code', state,
+    startedAt, lastSeenAt, hasTerminal: true,
+  });
+
+  it('says how long a running agent has been quiet', () => {
+    render(<CardProcessRow row={row('running', longAgo)} />);
+    expect(screen.getByTestId('stall-warning').textContent).toMatch(/quiet 4\dm/);
+  });
+
+  it('measures SILENCE, not how long the session has been open', () => {
+    /*
+     * THE test, and the one the old fixture could not be: the row was built
+     * with `startedAt` alone and the component passed it in as `lastSeenAt`,
+     * so age and silence were the same number and every assertion here held
+     * either way.
+     *
+     * A session open for 45 minutes whose agent spoke a moment ago is WORKING.
+     * Calling it quiet for 45 minutes is the overstatement this whole feature
+     * exists to avoid, and it fired on every long session.
+     */
+    render(<CardProcessRow row={row('running', new Date().toISOString(), longAgo)} />);
+    expect(
+      screen.queryByTestId('stall-warning'),
+      'an agent that spoke a second ago was reported quiet',
+    ).toBeNull();
+  });
+
+  it('says nothing when it has never heard from the card at all', () => {
+    // Absent is not silent. Without a last-seen time there is no evidence of
+    // silence, and inventing one is how the old version went wrong.
+    render(<CardProcessRow row={row('running', undefined, longAgo)} />);
+    expect(screen.queryByTestId('stall-warning')).toBeNull();
+  });
+
+  it('never tells anybody to kill or retry it', () => {
+    // THE test for this layer too: the sentence is where an instruction would
+    // appear first, and instruction precedes action.
+    render(<CardProcessRow row={row('running', longAgo)} />);
+    const title = screen.getByTestId('stall-warning').getAttribute('title') ?? '';
+    expect(title).not.toMatch(/kill|retry|restart|abandon/i);
+    expect(title).toMatch(/may be working/i);
+  });
+
+  it('stays quiet for an agent that has just started', () => {
+    render(<CardProcessRow row={row('running', new Date().toISOString(), new Date().toISOString())} />);
+    expect(screen.queryByTestId('stall-warning')).toBeNull();
+  });
+
+  it('leaves the other states to their own words', () => {
+    // A failed or unreachable agent already has a sentence; two voices on one
+    // fact teach a reader to trust neither.
+    render(<CardProcessRow row={row('unverifiable', longAgo)} />);
+    expect(screen.queryByTestId('stall-warning')).toBeNull();
+  });
+});

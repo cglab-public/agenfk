@@ -80,9 +80,14 @@ export function cellTooltip(userKey: string, day: string, count: number): string
 // measured from the DOM: the tooltip only appears on hover, a layout pass to
 // measure it would flash it at the wrong spot for one frame, and the mono
 // character width is exact enough for clamping.
-const TIP_CHAR_WIDTH = 6;   // 10px font-mono ≈ 6px per glyph
-const TIP_PADDING = 18;     // px-2 padding + border slack
-const TIP_HEIGHT = 26;       // single line: py-1 + 10px text
+// The tooltip is text-caption (11px, line-height 1.45) in mono, whose glyphs
+// are 0.6em wide. Derived from the caption size, so a change to the type scale
+// cannot leave the estimate behind (it did once: 6px glyphs for 11px text let
+// right-edge tooltips run off the screen).
+const TIP_FONT_PX = 11;
+const TIP_CHAR_WIDTH = TIP_FONT_PX * 0.6;              // 6.6px, measured 6.62
+const TIP_PADDING = 18;                                 // px-2 padding + border slack
+const TIP_HEIGHT = Math.ceil(TIP_FONT_PX * 1.45) + 10;  // one line + py-1 + border = 26
 const TIP_GAP = 6;           // distance from the cell edge
 const TIP_MARGIN = 8;        // minimum distance from the viewport edges
 

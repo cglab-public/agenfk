@@ -614,3 +614,49 @@ describe('pr-overview-aggregate mutation sweep (pure)', () => {
     });
   });
 });
+
+describe('aggregatePrOverview — days in the viewer zone (story 12753604)', () => {
+  const late = row({ pr_number: 9, occurred_at: '2026-05-03T23:30:00Z' });
+  it('keeps UTC days when no offset is given', () => {
+    const r = aggregatePrOverview([late]);
+    expect(r.byDay.map(d => d.day)).toEqual(['2026-05-03']);
+  });
+  it('puts a PR on the local day of its opening', () => {
+    const r = aggregatePrOverview([late], { tzOffsetMin: 120 });
+    expect(r.byDay.map(d => d.day)).toEqual(['2026-05-04']);
+    expect(Object.keys(r.byDeveloper[0].daily)).toEqual(['2026-05-04']);
+    expect(r.prs[0].day).toBe('2026-05-04');
+  });
+  it('works west of UTC', () => {
+    const r = aggregatePrOverview([row({ occurred_at: '2026-05-03T05:00:00Z' })], { tzOffsetMin: -600 });
+    expect(r.byDay.map(d => d.day)).toEqual(['2026-05-02']);
+  });
+  it('clamps an offset beyond ±14h', () => {
+    const r = aggregatePrOverview([row({ occurred_at: '2026-05-03T09:00:00Z' })], { tzOffsetMin: 100_000 });
+    // +14h → 23:00 the same day; an unclamped shift would land weeks later.
+    expect(r.byDay.map(d => d.day)).toEqual(['2026-05-03']);
+  });
+});
+
+describe('aggregatePrOverview — IANA zone (story 12753604 review)', () => {
+  it('files PRs by the zone’s own offset on each date, across DST', () => {
+    const r = aggregatePrOverview([
+      // 23:30 CET (UTC+1) — still the 12th.
+      row({ pr_number: 1, occurred_at: '2026-01-12T22:30:00Z' }),
+      // 00:30 CEST (UTC+2) — already the 13th.
+      row({ pr_number: 2, occurred_at: '2026-07-12T22:30:00Z' }),
+    ], { timeZone: 'Europe/Berlin' });
+    expect(r.byDay.map(d => d.day)).toEqual(['2026-01-12', '2026-07-13']);
+  });
+  it('prefers the zone over an offset, and ignores a zone that does not exist', () => {
+    const late = row({ pr_number: 9, occurred_at: '2026-05-03T23:30:00Z' });
+    expect(aggregatePrOverview([late], { timeZone: 'Europe/Berlin', tzOffsetMin: -600 }).byDay[0].day).toBe('2026-05-04');
+    expect(aggregatePrOverview([late], { timeZone: 'Mars/Olympus', tzOffsetMin: 120 }).byDay[0].day).toBe('2026-05-04');
+    expect(aggregatePrOverview([late], { timeZone: 'Mars/Olympus' }).byDay[0].day).toBe('2026-05-03');
+  });
+  it('does not throw on a timestamp that does not parse', () => {
+    const bad = row({ pr_number: 3, occurred_at: 'garbage' });
+    expect(() => aggregatePrOverview([bad], { tzOffsetMin: 120 })).not.toThrow();
+    expect(() => aggregatePrOverview([bad], { timeZone: 'Europe/Berlin' })).not.toThrow();
+  });
+});

@@ -8,10 +8,11 @@ import {
 } from './modelMappings';
 import { ModelMetaRow } from './adminModelMeta';
 import { ModelTable } from '../components/ModelTable';
+import { buttonClass, cardClass, controlClass, useConfirm } from '../components/ui';
 
-const inputCls = 'w-full px-3 py-2 rounded-lg border border-border-soft bg-chip text-ink dark:text-white text-sm placeholder:text-ink-tertiary focus:outline-none focus:ring-2 focus:ring-brand';
-const cardCls = 'bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5';
-const primaryBtnCls = 'px-4 py-2 rounded-lg bg-[image:var(--gradient-accent)] text-navy shadow-glow disabled:opacity-50 text-sm font-bold transition-colors';
+const inputCls = controlClass;
+const cardCls = cardClass;
+const primaryBtnCls = buttonClass('primary');
 
 interface ModelsResponse {
   mappings: MappingRow[];
@@ -29,6 +30,7 @@ interface ModelsResponse {
  * mapping puts the dashboard back the way it was.
  */
 export function AdminModels() {
+  const { confirm, dialog } = useConfirm();
   const qc = useQueryClient();
   const [alias, setAlias] = useState('');
   const [canonical, setCanonical] = useState('');
@@ -81,10 +83,11 @@ export function AdminModels() {
 
   return (
     <div className="space-y-6">
+      {dialog}
       <section className={cardCls}>
         <header>
-          <h3 className="text-sm font-semibold text-ink">Add a mapping</h3>
-          <p className="mt-0.5 text-xs text-ink-tertiary">
+          <h3 className="text-body font-semibold text-ink">Add a mapping</h3>
+          <p className="mt-0.5 text-small text-ink-tertiary">
             A model name is whatever each install reports, so one model can arrive as several spellings and
             appear as several rows. Map a reported spelling to the single name you want shown.
           </p>
@@ -92,7 +95,7 @@ export function AdminModels() {
 
         <div className="mt-3 grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr_auto] gap-2 items-end">
           <label className="block">
-            <span className="block mb-1 text-[10px] uppercase tracking-[0.14em] text-ink-tertiary font-semibold">
+            <span className="eyebrow block mb-1 text-ink-tertiary">
               Reported today as
             </span>
             <input
@@ -106,7 +109,7 @@ export function AdminModels() {
           </label>
           <span className="hidden sm:block pb-2 text-ink-tertiary">→</span>
           <label className="block">
-            <span className="block mb-1 text-[10px] uppercase tracking-[0.14em] text-ink-tertiary font-semibold">
+            <span className="eyebrow block mb-1 text-ink-tertiary">
               Show as (desired name)
             </span>
             <input
@@ -135,10 +138,10 @@ export function AdminModels() {
         </datalist>
 
         {error && (
-          <p role="alert" className="mt-2 text-xs font-semibold text-red-600 dark:text-red-400">{error}</p>
+          <p role="alert" className="mt-2 text-small font-semibold text-status-danger-text">{error}</p>
         )}
         {suggestions.length > 0 && !error && (
-          <p className="mt-2 text-[11px] text-ink-tertiary">
+          <p className="mt-2 text-caption text-ink-tertiary">
             Pick an existing desired name to add a spelling to a group that already exists, rather than
             starting a second one for the same model.
           </p>
@@ -151,10 +154,12 @@ export function AdminModels() {
         loading={data.isLoading}
         onError={setError}
         invalidate={invalidate}
-        onUnmap={(alias) => {
-          if (window.confirm(`Stop mapping "${alias}"? Dashboards will show it as its own model again.`)) {
-            remove.mutate(alias);
-          }
+        onUnmap={async (alias) => {
+          if (await confirm({
+            title: `Stop mapping "${alias}"?`,
+            body: 'Dashboards will show it as its own model again.',
+            confirmLabel: 'Stop mapping',
+          })) remove.mutate(alias);
         }}
         unmapping={remove.isPending}
         unmappedCount={unmappedCount}

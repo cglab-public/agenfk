@@ -63,8 +63,8 @@ export function cleanupHome(home: string): void {
 }
 
 /** Run scripts/install.mjs into a throwaway HOME (created if not supplied). */
-export function runInstall(args: string[] = [], home = makeHome('agenfk-install'), cwd?: string): RunResult {
-  return run(INSTALL, args, home, { cwd });
+export function runInstall(args: string[] = [], home = makeHome('agenfk-install'), cwd?: string, extraEnv?: Record<string, string>): RunResult {
+  return run(INSTALL, args, home, { cwd, extraEnv });
 }
 
 /** Run scripts/uninstall.mjs against an existing throwaway HOME. */

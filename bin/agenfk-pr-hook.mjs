@@ -12,6 +12,9 @@
  * Usage in client config: `agenfk-pr-hook --client <name>`
  */
 import { execSync } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 // ── Pure helpers (also exported for unit tests) ──────────────────────────────
 
@@ -232,8 +235,15 @@ async function main() {
 // ESM script entry detection: only run main() when executed directly, not when imported.
 const isMain = (() => {
   try {
-    const url = new URL(import.meta.url);
-    return process.argv[1] && url.pathname === process.argv[1];
+    if (!process.argv[1]) return false;
+    // Compare real filesystem paths, not `new URL(import.meta.url).pathname`:
+    // on Windows the URL pathname is `/C:/...` while argv[1] is `C:\...`, so
+    // a string compare never matched and the hook silently never ran.
+    const self = fs.realpathSync(fileURLToPath(import.meta.url));
+    const entry = fs.realpathSync(path.resolve(process.argv[1]));
+    return process.platform === 'win32'
+      ? self.toLowerCase() === entry.toLowerCase()
+      : self === entry;
   } catch { return false; }
 })();
 if (isMain) {

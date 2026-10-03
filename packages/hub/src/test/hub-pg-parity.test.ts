@@ -10,7 +10,18 @@ import { openPgMemDb, backfillPrEventRemoteUrls } from '../db/postgres';
 import { issueApiKey } from '../auth/apiKey';
 import { createPasswordUser } from '../auth/password';
 import { recomputeRollups } from '../rollup';
+import { raceBehindGuard } from './helpers/raceBehindGuard';
+import { ACTIVE_ADMINS_SQL } from '../routes/admin';
 import type { HubDb } from '../db/types';
+
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * drainApp calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and createHubApp returns an Express
+ * app, so with `?.` those calls vanished silently.
+ */
+let __server: any;
 
 const SECRET = 'a'.repeat(64);
 
@@ -32,8 +43,10 @@ async function bootHubOnPg(): Promise<Fixture> {
     // Otherwise every upgrade post 422s against the real GitHub release list.
     releaseExists: async (v: string) => v === '0.3.1',
   } as any);
+  if (__server) await new Promise<void>(r => __server.close(() => r()));
+  __server = out.app.listen(0);
   await createPasswordUser(db, 'org', 'admin@x', 'longenough1', 'admin');
-  const login = await supertest(out.app).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
+  const login = await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
   const cookie = login.headers['set-cookie']?.[0] ?? '';
   const token = await issueApiKey(db, 'org', 'parity');
   return { app: out.app, db, cookie, token };
@@ -151,6 +164,48 @@ describe('PG parity: admin endpoints', () => {
     const dup = await supertest(fx.app).post('/v1/admin/users/invite').set('Cookie', fx.cookie)
       .send({ email: 'new@x', password: 'longenough1', role: 'viewer' });
     expect(dup.status).toBe(409);
+  });
+
+  // The last-admin guard is a subquery inside the UPDATE, so it is dialect SQL
+  // that a SQLite-only suite would pass and Postgres could reject.
+  it('refuses demoting the last active admin when a cross-demotion lands between guard and write', async () => {
+    await createPasswordUser(fx.db, 'org', 'admin2@x', 'longenough1', 'admin');
+    const login2 = await supertest(__server).post('/auth/login').send({ email: 'admin2@x', password: 'longenough1' });
+    const cookie2 = login2.headers['set-cookie']?.[0] ?? '';
+    const idOf = async (email: string) => (await fx.db.get<any>('SELECT id FROM users WHERE email = ?', [email])).id;
+
+    // admin2 passes the session guard, then admin@x demotes admin2 (allowed:
+    // admin@x remains), then admin2's write runs. The UPDATE's own last-admin
+    // condition must keep admin@x.
+    const demote1 = await raceBehindGuard(fx.db, await idOf('admin2@x'),
+      async () => supertest(fx.app).put(`/v1/admin/users/${await idOf('admin@x')}`).set('Cookie', cookie2).send({ role: 'viewer' }),
+      async () => expect((await supertest(fx.app).put(`/v1/admin/users/${await idOf('admin2@x')}`).set('Cookie', fx.cookie).send({ role: 'viewer' })).status).toBe(200), { method: 'all', sql: ACTIVE_ADMINS_SQL });
+    expect(demote1.status).toBe(409);
+    expect((await fx.db.get<any>('SELECT role FROM users WHERE email = ?', ['admin@x'])).role).toBe('admin');
+  });
+
+  it('refuses deleting the last active admin when a deactivation lands between guard and delete', async () => {
+    await createPasswordUser(fx.db, 'org', 'admin2@x', 'longenough1', 'admin');
+    const login2 = await supertest(__server).post('/auth/login').send({ email: 'admin2@x', password: 'longenough1' });
+    const cookie2 = login2.headers['set-cookie']?.[0] ?? '';
+    const idOf = async (email: string) => (await fx.db.get<any>('SELECT id FROM users WHERE email = ?', [email])).id;
+    const r = await raceBehindGuard(fx.db, await idOf('admin2@x'),
+      async () => supertest(fx.app).delete(`/v1/admin/users/${await idOf('admin@x')}`).set('Cookie', cookie2),
+      async () => expect((await supertest(fx.app).put(`/v1/admin/users/${await idOf('admin2@x')}`).set('Cookie', fx.cookie).send({ active: false })).status).toBe(200), { method: 'all', sql: ACTIVE_ADMINS_SQL });
+    expect(r.status).toBe(409);
+    expect(await fx.db.get<any>('SELECT id FROM users WHERE email = ?', ['admin@x'])).toBeTruthy();
+  });
+
+  it('refuses password sign-in while it is switched off (BUG cdb1b47f)', async () => {
+    await fx.db.run('UPDATE auth_config SET password_enabled = 0 WHERE org_id = ?', ['org']);
+    const r = await supertest(__server).post('/auth/login').send({ email: 'admin@x', password: 'longenough1' });
+    expect(r.status).toBe(403);
+    expect(r.headers['set-cookie']).toBeUndefined();
+  });
+
+  it('refuses an auth-config save that leaves no way to sign in', async () => {
+    const r = await supertest(fx.app).put('/v1/admin/auth-config').set('Cookie', fx.cookie).send({ passwordEnabled: false });
+    expect(r.status).toBe(400);
   });
 
   it('hidden-users: hide lists, revokes installation api_keys, unhide reverses (CGLAB-31)', async () => {
@@ -317,10 +372,79 @@ describe('PG parity: queries + rollup', () => {
   });
   afterEach(async () => { try { await fx.db.close(); } catch { /* */ } });
 
+  it('GET /v1/people/names reads installations and recorded child-hub names on PG', async () => {
+    await fx.db.run(
+      'INSERT INTO child_people (org_id, child_hub_id, user_key, git_name, last_seen) VALUES (?, ?, ?, ?, ?)',
+      ['org', 'child-hub-1', 'hana@child.com', 'Hana Ito', '2026-05-05T10:00:00Z'],
+    );
+    const r = await supertest(fx.app).get('/v1/people/names').set('Cookie', fx.cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.names['bob@acme.com']).toBe('B');
+    expect(r.body.names['hana@child.com']).toBe('Hana Ito');
+  });
+
   it('GET /v1/users returns distinct user_keys', async () => {
     const r = await supertest(fx.app).get('/v1/users').set('Cookie', fx.cookie);
     expect(r.status).toBe(200);
     expect(r.body.map((u: any) => u.user_key).sort()).toEqual(['alice@acme.com', 'bob@acme.com']);
+  });
+
+  it('GET /v1/users counts what each person got done, on PG (story f355efe4)', async () => {
+    const r = await supertest(fx.app).get('/v1/users').set('Cookie', fx.cookie);
+    const u = Object.fromEntries((r.body as any[]).map(x => [x.user_key, x]));
+    expect(u['alice@acme.com']).toMatchObject({
+      items_closed: 1, validate_passes: 1, validate_fails: 0, prs_opened: 0, closed_daily: { '2026-05-03': 1 },
+    });
+    expect(u['bob@acme.com']).toMatchObject({ items_closed: 0, prs_opened: 1, closed_daily: {} });
+    expect(typeof u['alice@acme.com'].items_closed).toBe('number');
+  });
+
+  it('GET /v1/histogram files by an IANA zone on PG (BUG 27ede354)', async () => {
+    // alice's events are 08:00–10:00 UTC on 2026-05-03: 13:30–15:30 in Kolkata.
+    const r = await supertest(fx.app)
+      .get('/v1/histogram?bucket=hour&tz=Asia%2FKolkata&tzOffsetMin=330&users=alice@acme.com')
+      .set('Cookie', fx.cookie);
+    expect(r.status).toBe(200);
+    expect(r.body.buckets.map((b: any) => b.time)).toEqual(['2026-05-03T13:00', '2026-05-03T14:00', '2026-05-03T15:00']);
+    // The single-offset fallback shifts by a modifier too, on PG as well.
+    const o = await supertest(fx.app).get('/v1/histogram?bucket=hour&tzOffsetMin=120&users=alice@acme.com').set('Cookie', fx.cookie);
+    expect(o.status).toBe(200);
+    expect(o.body.buckets.map((b: any) => b.time)).toEqual(['2026-05-03T10:00', '2026-05-03T11:00', '2026-05-03T12:00']);
+  });
+
+  it('GET /v1/timeline pages by cursor with a total and PR links on PG', async () => {
+    const all: string[] = [];
+    let before: string | undefined;
+    let first: any;
+    for (let i = 0; i < 10; i++) {
+      const r = await supertest(fx.app).get(`/v1/timeline?limit=1${before ? `&before=${encodeURIComponent(before)}` : ''}`).set('Cookie', fx.cookie);
+      expect(r.status).toBe(200);
+      first ??= r.body;
+      all.push(...r.body.events.map((e: any) => e.event_id));
+      before = r.body.nextBefore;
+      if (!before) break;
+    }
+    expect(first.total).toBe(4);
+    expect(typeof first.total).toBe('number');
+    expect(all.sort()).toEqual(['a1', 'a2', 'a3', 'b1']);
+    const pr = await supertest(fx.app).get('/v1/timeline?types=pr.opened').set('Cookie', fx.cookie);
+    // The fixture's remote is git@x:api.git: not github.com, so no link is guessed.
+    expect(pr.body.events[0]).toHaveProperty('pr_url', null);
+  });
+
+  it('GET /v1/users files closures by an IANA zone on PG', async () => {
+    // A close at 20:00 UTC on May 3 is 01:30 on May 4 in Kolkata: UTC filing
+    // and zone filing disagree, so this pins the zone path on PG.
+    await supertest(fx.app).post('/v1/events').set('Authorization', `Bearer ${fx.token}`).send({ events: [
+      sample({ eventId: 'z1', occurredAt: '2026-05-03T20:00:00Z', type: 'item.closed', itemId: 'zi',
+        actor: { osUser: 'zed', gitName: 'Z', gitEmail: 'zed@acme.com' } }),
+    ] });
+    const r = await supertest(fx.app).get('/v1/users?tz=Asia%2FKolkata').set('Cookie', fx.cookie);
+    expect(r.status).toBe(200);
+    const zed = (r.body as any[]).find(u => u.user_key === 'zed@acme.com');
+    expect(zed.closed_daily).toEqual({ '2026-05-04': 1 });
+    const utc = await supertest(fx.app).get('/v1/users').set('Cookie', fx.cookie);
+    expect((utc.body as any[]).find(u => u.user_key === 'zed@acme.com').closed_daily).toEqual({ '2026-05-03': 1 });
   });
 
   it('GET /v1/timeline filters by user + type', async () => {
@@ -398,6 +522,18 @@ describe('PG parity: queries + rollup', () => {
     expect(m.status).toBe(200);
     expect(m.body.bucket).toBe('day');
     expect(m.body.series.length).toBeGreaterThan(0);
+  });
+
+  it('GET /v1/metrics totals are numbers on PG and agree with the live events', async () => {
+    const m = await supertest(fx.app).get('/v1/metrics').set('Cookie', fx.cookie);
+    expect(m.status).toBe(200);
+    const t = m.body.totals;
+    // Postgres answers COUNT/SUM as strings: the tiles would concatenate them.
+    for (const k of ['events_count', 'items_closed', 'validate_passes', 'validate_fails', 'prs_opened']) {
+      expect(typeof t[k]).toBe('number');
+    }
+    const live = await fx.db.get<{ n: number | string }>('SELECT COUNT(*) AS n FROM events');
+    expect(t.events_count).toBe(Number(live?.n));
   });
 
   it('rollups_daily computes items_closed and leaves token consumption at zero on PG', async () => {
@@ -667,6 +803,21 @@ describe('PG parity: hub endpoint lifecycle (CGLAB-62)', () => {
     expect(rows[0].canonical_key).toBe('new@acme.com');
   });
 
+  it('refuses an out-of-order revert and leaves the merge unreverted', async () => {
+    await fx.db.run(
+      `INSERT INTO events (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, payload)
+       VALUES ('lifo1', 'org', 'inst-pg', 'a', '2026-02-01T09:00:00Z', '2026-02-01T09:00:00Z', 'item.created', '{}')`,
+    );
+    const post = (path: string, body?: unknown) => supertest(fx.app).post(path).set('Cookie', fx.cookie).send(body ?? {});
+    const first = await post('/v1/admin/user-keys/merge', { from: 'a', to: 'b@acme.com' });
+    const second = await post('/v1/admin/user-keys/merge', { from: 'b@acme.com', to: 'c@acme.com' });
+    expect((await post(`/v1/admin/user-keys/merges/${first.body.mergeId}/revert`)).status).toBe(409);
+    const row = await fx.db.get<any>('SELECT reverted_at FROM user_key_merges WHERE id = ?', [first.body.mergeId]);
+    expect(row.reverted_at).toBeNull();
+    // The successful revert itself is SQLite-tested only (admin-merge-revert):
+    // its UPDATE uses a correlated subquery that pg-mem cannot execute.
+  });
+
   it('merge moves events, sums same-day rollups and repairs history', async () => {
     const ev = (id: string, key: string, day: string) => fx.db.run(
       `INSERT INTO events (event_id, org_id, installation_id, user_key, occurred_at, received_at, type, payload)
@@ -733,7 +884,7 @@ describe('PG parity: hub endpoint lifecycle (CGLAB-62)', () => {
     const send = (host: string) => supertest(fx.app).post('/v1/events')
       .set('Authorization', `Bearer ${bound}`)
       .set('X-Installation-Id', 'inst-pg')
-      .set('X-Forwarded-Host', host)
+      .set('Host', host)
       .send({ events: [{
         eventId: `pgev-${host}`, installationId: 'inst-pg', orgId: 'org',
         occurredAt: new Date().toISOString(),

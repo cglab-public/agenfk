@@ -1,0 +1,19 @@
+extensions:
+  # `containedPath` returns the path only when it resolves inside the root, and
+  # null otherwise - so its RETURN VALUE is sanitised by construction. The
+  # analysis cannot see that on its own: it walks straight through the ternary
+  # in pathContainment.ts and treats the output as the tainted input.
+  #
+  # Deliberately only the RETURN value. `isInsideRoot` is not modelled: it hands
+  # back a boolean and leaves the caller holding the unchecked variable, which
+  # is precisely the shape this codebase keeps getting wrong. Modelling it would
+  # tell the analysis that calling it is enough, and calling it is not.
+  - addsTo:
+      pack: codeql/javascript-all
+      extensible: barrierModel
+    data:
+      - ["@agenfk/core", "Member[containedPath].ReturnValue", "path-injection"]
+      # The file form, for the flows that resolve through the local source
+      # rather than through the package specifier. index.ts is what server.ts
+      # imports; it re-exports from pathContainment.ts.
+      - ["file:packages/core/src/index.ts", "Member[containedPath].ReturnValue", "path-injection"]

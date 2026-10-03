@@ -114,5 +114,7 @@ export function useToggleSet(initial: Iterable<string> = [], opts: ToggleSetOpti
       return n;
     }),
     clear: () => setS(new Set()),
+    /** Make the selection exactly `values` (a stat tile choosing its filter). */
+    replace: (values: Iterable<string>) => setS(new Set(values)),
   };
 }

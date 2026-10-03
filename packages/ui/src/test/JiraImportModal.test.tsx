@@ -6,6 +6,8 @@ import { JiraImportModal } from '../components/JiraImportModal';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api } from '../api';
+import { guardTokens } from './helpers/tokenGuard';
+
 
 vi.mock('../api', () => ({
   api: {
@@ -44,6 +46,8 @@ describe('JiraImportModal', () => {
   afterEach(() => {
     cleanup();
   });
+  // CGLAB-434: after this suite's cleanup is registered, so the sweep runs first.
+  guardTokens();
 
   it('renders nothing when open=false', () => {
     vi.mocked(api.listJiraProjects).mockResolvedValue(PROJECTS);

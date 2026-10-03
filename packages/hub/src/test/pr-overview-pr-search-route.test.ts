@@ -117,6 +117,22 @@ describe('GET /v1/prs/overview — ?pr= search', () => {
 
   const API_REMOTE = 'git@github.com:acme/api.git';
 
+  it('buckets days in the zone given by tzOffsetMin (story 12753604)', async () => {
+    // bob's PR#3 opened 2026-05-04T10:00Z is 2026-05-05 00:00 at UTC+14.
+    const local = await supertest(app).get('/v1/prs/overview?tzOffsetMin=840').set('Cookie', cookie);
+    expect(local.status).toBe(200);
+    expect(local.body.byDay.map((d: any) => d.day)).toContain('2026-05-05');
+    // No offset, or one that does not parse: UTC days, as before.
+    // An IANA zone does the same, by the zone's own rules.
+    const zoned = await supertest(app).get('/v1/prs/overview?tz=Pacific%2FKiritimati').set('Cookie', cookie);
+    expect(zoned.status).toBe(200);
+    expect(zoned.body.byDay.map((d: any) => d.day)).toContain('2026-05-05');
+    for (const q of ['', '?tzOffsetMin=abc', '?tz=Not%2FAZone']) {
+      const utc = await supertest(app).get(`/v1/prs/overview${q}`).set('Cookie', cookie);
+      expect(utc.body.byDay.map((d: any) => d.day)).toEqual(['2026-05-03', '2026-05-04']);
+    }
+  });
+
   it('finds a PR opened OUTSIDE the date window (date filter superseded)', async () => {
     // Without ?pr this window returns only bob's PR#3 (opened 05-04).
     const baseline = await supertest(app)

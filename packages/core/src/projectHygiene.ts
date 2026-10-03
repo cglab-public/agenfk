@@ -47,3 +47,36 @@ export function findDuplicateProjectRoots<T extends ProjectRootInfo>(
   }
   return groups;
 }
+
+/**
+ * Is this a directory we are willing to record as a project's root?
+ *
+ * `projectRoot` is the directory a worktree is cut from and the cwd that
+ * `git add -A && git commit` runs in. A project rooted at $HOME points both at
+ * the user's private files, and that is not hypothetical: `findProjectRoot`
+ * walks up looking for a `.agenfk` directory and `~/.agenfk` exists, so
+ * `agenfk verify` run from anywhere under $HOME with no closer `.agenfk`
+ * resolves to $HOME — which is how four projects on one machine came to share
+ * it.
+ *
+ * Refused rather than corrected: there is no defensible guess at what the user
+ * meant, and recording "somewhere plausible" is how this happened.
+ */
+export function isPersistableProjectRoot(root: string | null | undefined, homeDir: string): boolean {
+  if (typeof root !== 'string' || !root.trim()) return false;
+  // Normalised so a trailing slash or a `.` segment cannot walk around the
+  // comparison: they name the same directory, and a guard that can be missed
+  // by accident is not a guard.
+  const normalise = (p: string): string => {
+    const collapsed = p.replace(/\/+/g, '/').replace(/\/\.(?=\/|$)/g, '');
+    return collapsed.length > 1 ? collapsed.replace(/\/$/, '') : collapsed;
+  };
+  const candidate = normalise(root.trim());
+  const home = normalise(homeDir);
+  if (candidate === '/' || candidate === '') return false;
+  if (candidate === home) return false;
+  // ~/.agenfk is precisely what the walk-up finds. Recording it would point a
+  // worktree at the framework's own state.
+  if (candidate === `${home}/.agenfk`) return false;
+  return true;
+}

@@ -37,7 +37,7 @@ AgenFK features an automated orchestration layer where the primary agent acts as
     - **Protocol**: Decomposes request into `TODO` sub-items and **PAUSES** for human approval.
 2.  **Coding Agent (IN_PROGRESS Phase)**:
     - **Trigger**: Human approval of the plan.
-    - **Protocol**: Implements the plan, then calls `validate_progress` to close the coding step. Never signal completion with `update_item({ status })` — a forward transition by any route other than `validate_progress` skips the gate.
+    - **Protocol**: Implements the plan, then calls `validate_progress` to close the step it is on. Never signal completion with `update_item({ status })` — a forward transition by any route other than `validate_progress` skips the gate.
 3.  **Review Agent (REVIEW Phase)**:
     - **Trigger**: Automatic spawn when item enters REVIEW.
     - **Protocol**: Calls `workflow_gatekeeper(itemId)` to read exit criteria, audits code for security and requirements, then calls `validate_progress` to advance to `TEST`.
@@ -71,6 +71,37 @@ AgenFK supports six AI coding assistants. Each integrates with the same MCP serv
 ### Note on Codex hook coverage
 
 Codex's hook system reliably fires for the shell tool but not for `apply_patch` or most MCP tool calls (open issues `openai/codex#14882`, `#16732`, May 2026). The PR sizing hook is unaffected because `gh pr create` and `git push` always run via the shell tool. If pre-edit gatekeeping is added to Codex later, this caveat will need to be revisited.
+
+## Where a preference lives
+
+Three stores exist, and which one a setting belongs in is decided by a single
+question: **what is the worst thing a wrong value can do?**
+
+| Store | Holds | Reached by |
+|---|---|---|
+| `~/.agenfk/config.json` | What is needed to FIND or START the system: `dbPath`, `rulesScope`, `withMcp` | The CLI, directly. No server in the path — by necessity, since `dbPath` has to be known before the database can be opened. |
+| `app_settings` table (SQLite) | Behaviour preferences shared across clients: `tmuxByDefault` | `GET`/`PUT /settings`, so the CLI, the UI and MCP all see the same value. |
+| `packages/desktop` prefs (`userData/prefs.json`) | Preferences with EXECUTION semantics: `autoApprove` | The desktop's preload IPC only. No HTTP route reaches it. |
+
+The third store exists because of a specific finding rather than a preference
+for tidiness. `autoApprove` appends `--dangerously-skip-permissions` — and for
+codex `sandbox_mode=danger-full-access` — to every agent spawned afterwards.
+`PUT /settings` is unauthenticated and accepts requests with no `Origin`
+header, so an agent running WITH its prompts on, granted approval for a single
+localhost call, could have removed the prompts for every future session. That
+is the boundary the gatekeeper architecture exists to hold.
+
+The server already draws this line elsewhere and it is the precedent to follow:
+`verifyCommand` sits behind `VERIFY_TOKEN` because it is a shell string, and
+`autoWorktree` is open because it is "a boolean preference with no execution
+semantics". A new setting goes in the database only if it is genuinely in the
+second category.
+
+**Known inconsistency, recorded rather than hidden:** `telemetry` and
+`flowRegistry` are behaviour preferences and still live in `config.json`, from
+before this rule existed. They are reachable only from the CLI, so the settings
+screen cannot show them. Moving them is a migration, and the migration is only
+worth doing if the settings screen is going to surface them.
 
 ## Hub Federation (hub of hubs)
 

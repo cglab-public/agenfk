@@ -47,14 +47,15 @@ describe('ModelMetaFilter while a PR search supersedes it', () => {
       .toMatch(/supersede/i);
   });
 
-  it('keeps the ordinary tooltip when nothing supersedes the filter', () => {
+  it('keeps the ordinary explanations when nothing supersedes the filter', () => {
     // Without this the fix could pass by blanking every tooltip, which would
-    // remove the "why is this 0?" answer from normal use.
+    // remove the "why is this 0?" answer from normal use. What a class means
+    // is now a visible hint the chip is described by (STORY 501129d3).
     render(tree(false));
     expect(screen.getByRole('button', { name: /Anthropic/ }).getAttribute('title'))
       .toMatch(/Add \d+ more Anthropic/);
-    expect(screen.getByRole('button', { name: /Open weights/ }).getAttribute('title'))
-      .toMatch(/publicly downloadable/i);
+    expect(screen.getByRole('button', { name: /Open weights/ }))
+      .toHaveAccessibleDescription(/publicly downloadable/i);
   });
 
   it('makes the licence disclosure inert while superseded', () => {

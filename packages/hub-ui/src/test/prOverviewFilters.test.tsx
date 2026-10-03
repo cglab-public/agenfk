@@ -59,7 +59,7 @@ function UrlProbe() {
   return <span data-testid="url-probe">{sp.toString()}</span>;
 }
 
-const renderPage = (entry = '/prs') => {
+const renderPage = (entry = '/prs?filters=1') => {
   get.mockImplementation(async (url: string) => {
     if (url.startsWith('/v1/projects')) return { data: { projects: ['acme/api'] } };
     // The page asks which hubs it is showing (CGLAB-184). Answer it explicitly:
@@ -113,78 +113,85 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers(); get.mockReset(); });
 
 describe('parseFiltersOpen', () => {
-  it('is open by default — hiding filters on first visit would be a regression', () => {
-    expect(parseFiltersOpen(null)).toBe(true);
-    expect(parseFiltersOpen('')).toBe(true);
-    expect(parseFiltersOpen('1')).toBe(true);
-    expect(parseFiltersOpen('garbage')).toBe(true);
-  });
-  it('collapses only on an explicit false', () => {
+  // Reversed deliberately (Hub UI review): the dashboard opens on data, with a
+  // summary line saying what the collapsed filters apply.
+  it('is collapsed by default, so the first screen is data', () => {
+    expect(parseFiltersOpen(null)).toBe(false);
+    expect(parseFiltersOpen('')).toBe(false);
+    expect(parseFiltersOpen('garbage')).toBe(false);
+    // A link from before the change that said "collapsed" still means it.
     expect(parseFiltersOpen('0')).toBe(false);
     expect(parseFiltersOpen('false')).toBe(false);
+  });
+  it('opens only on an explicit true', () => {
+    expect(parseFiltersOpen('1')).toBe(true);
+    expect(parseFiltersOpen('true')).toBe(true);
   });
 });
 
 describe('FilterAccordion', () => {
-  it('renders its children open by default', () => {
+  it('shows its children when open', () => {
     render(
-      <FilterAccordion activeCount={0} activeSummary={[]} initialOpen onOpenChange={() => {}}>
+      <FilterAccordion activeCount={0} summary="30 days" open onOpenChange={() => {}}>
         <p>facet-body</p>
       </FilterAccordion>,
     );
     expect(screen.getByText('facet-body')).toBeVisible();
-    expect(screen.getByRole('button', { name: /Filters/ })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: 'Hide filters' })).toHaveAttribute('aria-expanded', 'true');
   });
 
   it('hides the body when collapsed but keeps the toggle reachable', () => {
     render(
-      <FilterAccordion activeCount={0} activeSummary={[]} initialOpen={false} onOpenChange={() => {}}>
+      <FilterAccordion activeCount={0} summary="30 days" open={false} onOpenChange={() => {}}>
         <p>facet-body</p>
       </FilterAccordion>,
     );
     // `hidden` (not just visually collapsed) — a hidden-but-focusable control is
     // a keyboard trap.
     expect(screen.getByText('facet-body').closest('[hidden]')).not.toBeNull();
-    expect(screen.getByRole('button', { name: /Filters/ })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByRole('button', { name: 'Edit filters' })).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('reports the active count so a collapsed bar cannot hide that filters apply', () => {
     render(
-      <FilterAccordion activeCount={2} activeSummary={['2 models']} initialOpen={false} onOpenChange={() => {}}>
+      <FilterAccordion activeCount={2} summary="30 days · 2 models" open={false} onOpenChange={() => {}}>
         <p>facet-body</p>
       </FilterAccordion>,
     );
     expect(screen.getByText('2 active')).toBeInTheDocument();
-    expect(screen.getByText('2 models')).toBeInTheDocument();
+    expect(screen.getByText('30 days · 2 models')).toBeInTheDocument();
   });
 
   it('calls onOpenChange so the caller can persist the state to the URL', () => {
     const onOpenChange = vi.fn();
     render(
-      <FilterAccordion activeCount={0} activeSummary={[]} initialOpen onOpenChange={onOpenChange}>
+      <FilterAccordion activeCount={0} summary="30 days" open onOpenChange={onOpenChange}>
         <p>facet-body</p>
       </FilterAccordion>,
     );
-    fireEvent.click(screen.getByRole('button', { name: /Filters/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide filters' }));
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 });
 
 describe('PR Overview filters in the accordion', () => {
-  it('shows the facets open by default', async () => {
-    renderPage();
-    await screen.findByRole('heading', { name: 'Model' });
-    expect(screen.getByRole('button', { name: /Filters/ })).toHaveAttribute('aria-expanded', 'true');
+  it('starts collapsed, and opens on request', async () => {
+    renderPage('/prs');
+    const toggle = await screen.findByRole('button', { name: 'Edit filters' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(toggle);
+    expect(await screen.findByRole('heading', { name: 'Model' })).toBeInTheDocument();
+    await waitFor(() => expect(urlNow().get('filters')).toBe('1'));
   });
 
-  it('keeps filters APPLIED while collapsed and writes filters=0 to the URL', async () => {
-    renderPage('/prs?model=glm-5.2');
+  it('keeps filters APPLIED while collapsed and drops filters=1 from the URL', async () => {
+    renderPage('/prs?filters=1&model=glm-5.2');
     await screen.findByRole('heading', { name: 'Model' });
 
     // Collapse.
-    fireEvent.click(screen.getByRole('button', { name: /Filters/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Hide filters' }));
 
-    await waitFor(() => expect(urlNow().get('filters')).toBe('0'));
+    await waitFor(() => expect(urlNow().get('filters')).toBeNull());
 
     // The model filter is still in the data query — collapsed != inactive.
     await waitFor(() => expect(dataQueryModel()).toBe('glm-5.2'));
@@ -195,13 +202,12 @@ describe('PR Overview filters in the accordion', () => {
 
   it('restores a collapsed bar from the URL', async () => {
     renderPage('/prs?filters=0');
-    await screen.findByRole('button', { name: /Filters/ });
-    expect(screen.getByRole('button', { name: /Filters/ })).toHaveAttribute('aria-expanded', 'false');
+    expect(await screen.findByRole('button', { name: 'Edit filters' })).toHaveAttribute('aria-expanded', 'false');
   });
 
-  it('omits the filters param when open, so the common URL stays clean', async () => {
-    renderPage();
-    await screen.findByRole('heading', { name: 'Model' });
+  it('omits the filters param when collapsed, so the common URL stays clean', async () => {
+    renderPage('/prs');
+    await screen.findByRole('button', { name: 'Edit filters' });
     await waitFor(() => expect(urlNow().get('filters')).toBeNull());
   });
 });
@@ -244,7 +250,7 @@ describe('PR Overview model meta-filter', () => {
   });
 
   it('never drops models the user picked individually', async () => {
-    renderPage('/prs?model=claude-opus-4-8');
+    renderPage('/prs?filters=1&model=claude-opus-4-8');
     fireEvent.click(await screen.findByRole('button', { name: /Open weights/ }));
     await waitFor(() => {
       const m = (urlNow().get('model') ?? '').split(',').sort();
@@ -253,7 +259,7 @@ describe('PR Overview model meta-filter', () => {
   });
 
   it('disables a vendor with nothing left to add rather than hiding it', async () => {
-    renderPage('/prs?model=claude-opus-4-8');
+    renderPage('/prs?filters=1&model=claude-opus-4-8');
     const anthropic = await screen.findByRole('button', { name: /^Anthropic/ });
     await waitFor(() => expect(anthropic).toBeDisabled());
   });
@@ -269,7 +275,7 @@ describe('PR Overview model meta-filter', () => {
     });
     render(
       <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <MemoryRouter initialEntries={['/prs']}>
+        <MemoryRouter initialEntries={['/prs?filters=1']}>
           <PrOverviewPage />
         </MemoryRouter>
       </QueryClientProvider>,

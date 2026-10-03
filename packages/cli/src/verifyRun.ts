@@ -9,6 +9,8 @@ export interface RunSnapshot {
   output?: string;
   message?: string;
   itemStatus?: string;
+  /** The step checks of a refused run (CGLAB-380). */
+  checks?: Array<{ id: string; blocking?: boolean }>;
 }
 
 export interface FollowOptions {

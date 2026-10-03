@@ -7,6 +7,8 @@
 /* CG/lab shared design tokens — single source of truth, also consumed by
  * packages/ui/src/index.css. Edit values only in packages/brand/tokens.css. */
 @import "../../brand/tokens.css";
+/* The shared type scale (caption … display, eyebrow, max-w-form/data). */
+@import "../../brand/type-scale.css";
 
 /* @import statements must precede all other statements (besides @charset or
  * an empty @layer) per the CSS spec — @plugin/@source below silently broke
@@ -44,5 +46,5 @@ body {
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(100,116,139,0.3); border-radius: 8px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(100,116,139,0.5); }
+::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--color-slate-500) 30%, transparent); border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--color-slate-500) 50%, transparent); }

@@ -1,20 +1,29 @@
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import chalk from 'chalk';
-import { resolveFromOptions } from './harnessModel.js';
-import figlet from 'figlet';
+import { harnessActor, resolveFromOptions } from './harnessModel.js';
 import axios from 'axios';
-import { ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, isHubRelease, isUpgrade } from '@agenfk/core';
-import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
+import { readProjectFile, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
+import { findUpdateNotice } from './updateNotice.js';
+import { writeActiveWork } from './activeWork.js';
+import { resolveItemIdPrefix } from './resolveItemId.js';
+import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT, setTelemetryEnabled } from '@agenfk/telemetry';
+import { checkClaudeCodeEnforcement, checkPiEnforcement } from './enforcement.js';
 import { execSync, execFileSync, spawn, spawnSync } from 'child_process';
+import { chooseOpenTarget } from './openTarget.js';
+import { onlyApprovalBlocks, waitAllowed, waitForApproval, alreadySatisfied, commandWaitedOn, approvedAt, approvalNeededBlock, type BlockingCheck, type GatesSnapshot } from './approvalWait.js';
+import { parseCheckFlags } from './agentChecksFlag.js';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { stageJsonMigration } from './db-migration.js';
 import { followValidateRun } from './verifyRun.js';
+import { buildPrBody, prRegisterComment, type GateEvent, type CustomCheckRow, type TreeWarningRow, type DisabledCheckRow } from './humanGates.js';
+import { registryFlowToLocal } from './registryFlowFile.js';
 import { buildUiOpenUrl, resolveDashboardUrl } from './uiUrl.js';
 import { registerHubCommands } from './commands/hub.js';
 import { toonEncode } from './toon.js';
+import { releaseHint } from './releaseHint.js';
 
 /**
  * Consecutive delivery failures before the startup banner warns. A halted
@@ -30,7 +39,7 @@ const API_URL = getApiUrl();
 
 // Global --toon switch: emit token-optimized TOON instead of JSON on read
 // commands. Falls back to JSON when the flag is absent.
-program.option('--toon', 'Emit token-optimized TOON instead of JSON on read commands');
+program.option('--toon', 'Emit token-optimized TOON instead of JSON on read commands (and for the card `create` prints)');
 
 /** Serialize structured data honoring the global --toon flag (else pretty JSON). */
 function structuredOutput(data: unknown): string {
@@ -44,6 +53,7 @@ const INTEGRATION_ALIASES: Record<string, string> = {
   codex: 'codex',
   gemini: 'gemini',
   'gemini-cli': 'gemini',
+  pi: 'pi',
 };
 const INTEGRATION_LABELS: Record<string, string> = {
   claude: 'Claude Code',
@@ -51,6 +61,20 @@ const INTEGRATION_LABELS: Record<string, string> = {
   cursor: 'Cursor',
   codex: 'Codex',
   gemini: 'Gemini CLI',
+  /*
+   * pi was missing, and it is the client with the DEEPEST integration here: a
+   * native extension carrying the pre-edit gatekeeper, the mcp-enforcer and the
+   * PR-sizing reminder. The installer has always known how to install it -
+   * `shouldRun('pi')` - so `integration install all` reached it while
+   * `integration install pi` said it was unsupported.
+   *
+   * Not a cosmetic omission. This map is read as the answer to "which clients
+   * does AgEnFK support", and during CGLAB-169 it was taken as the source of
+   * truth for the terminal's agent picker: pi was left out and opencode put in.
+   * integration-list-covers-what-ships.test.ts now derives the expected set
+   * from the installer so the next divergence fails instead of misleading.
+   */
+  pi: 'Pi',
 };
 
 const telemetry = new TelemetryClient();
@@ -60,82 +84,111 @@ function isMinGW() {
 }
 
 /**
- * Cross-platform port killing logic
+ * What a kill helper did. `down` and `kill` report it (e04dac92): `down` used to
+ * say "stopped" whatever happened, because the helpers reported nothing.
  */
-function killPort(port: number) {
+interface KillResult { killed: number; failed: string[] }
+
+/** SIGKILL one pid, recording the outcome. A pid already gone (ESRCH) is neither. */
+function killPid(pid: number, result: KillResult): void {
+  if (pid === process.pid) return;
   try {
-    if (process.platform === 'win32' && !isMinGW()) {
-      const output = execSync(`netstat -ano | findstr :${port}`, { encoding: 'utf8' });
-      const lines = output.split('\n').filter(l => l.includes('LISTENING'));
-      for (const line of lines) {
-        const parts = line.trim().split(/\s+/);
-        const pid = parts[parts.length - 1];
-        if (pid) execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
-      }
-    } else {
-      try {
-        const pid = execSync(`lsof -t -i:${port}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-        if (pid) {
-          process.kill(parseInt(pid, 10), 'SIGKILL');
-        }
-      } catch {
-        // Fallback to cross-platform ps check if lsof fails
-        try {
-          const output = execSync('ps -ef', { encoding: 'utf8' });
-          const lines = output.split('\n');
-          for (const line of lines) {
-            if (line.includes(`:${port}`) || line.includes(` ${port}`)) {
-               const parts = line.trim().split(/\s+/);
-               const pid = parts[1];
-               if (pid && /^\d+$/.test(pid)) {
-                 process.kill(parseInt(pid, 10), 'SIGKILL');
-               }
-            }
-          }
-        } catch {}
-      }
-    }
-  } catch (e) {
-    // Port might not be in use
+    process.kill(pid, 'SIGKILL');
+    result.killed++;
+  } catch (e: any) {
+    if (e?.code !== 'ESRCH') result.failed.push(`PID ${pid}: ${e?.code ?? e?.message ?? e}`);
+  }
+}
+
+/** taskkill one pid. Exit 128 is "process not found" - gone already, like ESRCH. */
+function taskkillPid(pid: string, result: KillResult): void {
+  if (pid === String(process.pid)) return;
+  try {
+    execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
+    result.killed++;
+  } catch (e: any) {
+    if (e?.status !== 128) result.failed.push(`PID ${pid}: ${e?.message ?? e}`);
   }
 }
 
 /**
- * Kill process by pattern (cross-platform)
+ * Kill whatever LISTENS on a port (cross-platform). Only the listener: a board
+ * open in a browser or the desktop app holds a socket on the same port, and
+ * those are not ours to kill (e04dac92 review).
  */
-function killPattern(pattern: string) {
-  try {
-    if (process.platform === 'win32' && !isMinGW()) {
-      // Very basic pattern matching for Windows
-      const output = execSync(`wmic process where "commandline like '%${pattern.replace(/\//g, '\\\\')}%'" get processid`, { encoding: 'utf8' });
-      const pids = output.split('\n').map(l => l.trim()).filter(l => /^\d+$/.test(l));
-      for (const pid of pids) {
-        execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
-      }
-    } else {
-      try {
-        const output = execSync('ps -ef', { encoding: 'utf8' });
-        const lines = output.split('\n');
-        for (const line of lines) {
-          if (line.includes(pattern) && !line.includes('ps -ef') && !line.includes('grep')) {
-            const parts = line.trim().split(/\s+/);
-            const pid = parts[1];
-            if (pid && /^\d+$/.test(pid)) {
-              process.kill(parseInt(pid, 10), 'SIGKILL');
-            }
-          }
-        }
-      } catch (e) {
-        // Fallback to pgrep if ps fails
-        try {
-          const pids = execSync(`pgrep -f "${pattern}"`, { encoding: 'utf8' }).split('\n').filter(Boolean);
-          for (const pid of pids) {
-            process.kill(parseInt(pid, 10), 'SIGKILL');
-          }
-        } catch {}
+function killPort(port: number): KillResult {
+  const result: KillResult = { killed: 0, failed: [] };
+  if (process.platform === 'win32' && !isMinGW()) {
+    let output = '';
+    try {
+      output = execSync(`netstat -ano | findstr LISTENING`, { encoding: 'utf8' });
+    } catch {
+      return result; // findstr exits 1 when nothing listens
+    }
+    const pids = new Set<string>();
+    for (const line of output.split('\n')) {
+      // Proto  Local-Address  Foreign-Address  State  PID - one line per stack (IPv4, IPv6)
+      const parts = line.trim().split(/\s+/);
+      if (parts.length >= 5 && parts[1].endsWith(`:${port}`) && /^\d+$/.test(parts[parts.length - 1])) {
+        pids.add(parts[parts.length - 1]);
       }
     }
-  } catch (e) {}
+    for (const pid of pids) taskkillPid(pid, result);
+    return result;
+  }
+  let pids: string[] = [];
+  try {
+    pids = execSync(`lsof -t -iTCP:${port} -sTCP:LISTEN`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+      .split('\n').map(p => p.trim()).filter(p => /^\d+$/.test(p));
+  } catch {
+    // lsof exits 1 when nothing listens - the normal case. Without lsof there is
+    // no listener to find: the server's command line carries no port (it comes
+    // in AGENFK_PORT), so scanning argv could only hit someone else's process.
+    // killPattern stops the server by its path either way.
+  }
+  for (const pid of new Set(pids)) killPid(parseInt(pid, 10), result);
+  return result;
+}
+
+/**
+ * Kill process by pattern (cross-platform), reporting what it killed and what
+ * it could not - including not being able to list processes at all.
+ */
+function killPattern(pattern: string): KillResult {
+  const result: KillResult = { killed: 0, failed: [] };
+  if (process.platform === 'win32' && !isMinGW()) {
+    let output = '';
+    try {
+      // Very basic pattern matching for Windows. The query's own command line
+      // (and cmd.exe's around it) holds the pattern too: leave those out.
+      output = execSync(`wmic process where "commandline like '%${pattern.replace(/\//g, '\\\\')}%' and not commandline like '%wmic%'" get processid`, { encoding: 'utf8' });
+    } catch (e: any) {
+      result.failed.push(`could not list processes: ${e?.message ?? e}`);
+      return result;
+    }
+    const pids = new Set(output.split('\n').map(l => l.trim()).filter(l => /^\d+$/.test(l)));
+    for (const pid of pids) taskkillPid(pid, result);
+    return result;
+  }
+  let pids: number[] = [];
+  try {
+    const output = execSync('ps -ef', { encoding: 'utf8' });
+    for (const line of output.split('\n')) {
+      if (line.includes(pattern) && !line.includes('ps -ef') && !line.includes('grep')) {
+        const pid = line.trim().split(/\s+/)[1];
+        if (pid && /^\d+$/.test(pid)) pids.push(parseInt(pid, 10));
+      }
+    }
+  } catch {
+    // Fallback to pgrep if ps fails; pgrep exits 1 when nothing matches
+    try {
+      pids = execSync(`pgrep -f "${pattern}"`, { encoding: 'utf8' }).split('\n').filter(Boolean).map(p => parseInt(p, 10));
+    } catch (e: any) {
+      if (e?.status !== 1) result.failed.push(`could not list processes: ${e?.message ?? e}`);
+    }
+  }
+  for (const pid of new Set(pids)) killPid(pid, result);
+  return result;
 }
 
 // Strict semver allowlist — prevents shell injection via `--version` flowing into execSync calls.
@@ -169,6 +222,28 @@ async function fetchReleaseTagByVersion(repo: string, version: string): Promise<
   }
 }
 
+/**
+ * A developer's working tree, not an installed copy (658ef023): it holds .git.
+ * Except ~/.agenfk-system, which IS a clone in real installs (packages/create's
+ * rebuild and download-failure fallbacks) - the same carve-out install.mjs
+ * step 1a and the hub's defaultSelfExtract make.
+ */
+function isDevCheckout(root: string): boolean {
+  if (!fs.existsSync(path.join(root, '.git'))) return false;
+  // Same directory by (dev, inode), not by spelling: a symlinked ~/.agenfk-system, or a path cased
+  // differently on APFS, is still that install (Codex review of 658ef023).
+  // BigInt, so distinct 64-bit inodes cannot round to one value; an inode of 0 is no identity, and
+  // never proves the two the same - in doubt, it is a checkout (Codex review of 658ef023).
+  try {
+    const here = fs.statSync(root, { bigint: true });
+    const install = fs.statSync(path.join(os.homedir(), '.agenfk-system'), { bigint: true });
+    if (!here.ino || !install.ino) return true;
+    return !(here.dev === install.dev && here.ino === install.ino);
+  } catch {
+    return true;
+  }
+}
+
 async function resolveReleaseTag(repo: string, opts: { version?: string; beta?: boolean }): Promise<string> {
   if (opts.version) return fetchReleaseTagByVersion(repo, opts.version);
   return fetchLatestReleaseTag(repo, !!opts.beta);
@@ -196,9 +271,22 @@ interface ReleaseRef {
  * source cannot forget the guard by omission.
  */
 function newestChannelRelease(refs: ReleaseRef[], beta: boolean): string | null {
+  // Newest by VERSION, publish date only breaking ties (b60bc8bf): betas are cut
+  // from per-version branches, so a 1.1.21-beta.1 hotfix published after
+  // 2.0.0-beta.13 would otherwise be "the latest beta" - and `upgrade --beta`
+  // would downgrade to it. An unparseable tag sorts below any parseable one.
   const match = refs
     .filter((r) => r.tag && !isHubRelease(r.tag) && r.prerelease === beta)
-    .sort((a, b) => b.publishedAt - a.publishedAt)[0];
+    .sort((a, b) => {
+      const pa = parseSemver(a.tag), pb = parseSemver(b.tag);
+      if (pa && pb) {
+        const byVersion = compareSemver(b.tag, a.tag);
+        if (byVersion !== 0) return byVersion;
+      } else if (pa || pb) {
+        return pa ? -1 : 1;
+      }
+      return b.publishedAt - a.publishedAt;
+    })[0];
   return match?.tag ?? null;
 }
 
@@ -259,7 +347,8 @@ export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promis
     const out = execFileSync(
       'gh',
       ['release', 'list', '--repo', repo, '--limit', '30', '--json', 'tagName,isPrerelease,createdAt'],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+      // A bounded wait: this also runs from bare `agenfk`, which must not hang on a stalled gh.
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000 },
     ).trim();
     return toReleaseRefs(JSON.parse(out || '[]'), GH_KEYS);
   };
@@ -273,7 +362,7 @@ export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promis
   const viewTag = execFileSync(
     'gh',
     ['release', 'view', '--repo', repo, '--json', 'tagName', '--template', '{{.tagName}}'],
-    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000 },
   ).trim();
   if (viewTag && !isHubRelease(viewTag)) return viewTag;
   // Same recovery as the REST path — `gh release view` reports the newest
@@ -343,23 +432,6 @@ function setPausedIntegrations(list: string[]): void {
   }
   cfg.pausedIntegrations = list;
   fs.writeFileSync(agenfkConfigPath(), JSON.stringify(cfg, null, 2), 'utf8');
-}
-
-// Only show the ASCII banner for interactive humans. When stdout is piped or
-// captured (the agent case — every mutating command runs through a shell and is
-// read back into context), the ~10-line figlet banner is pure token waste, so
-// gate on isTTY in addition to the existing --json / mcp suppression.
-if (
-  process.env.NODE_ENV !== 'test' &&
-  !process.argv.includes('mcp') &&
-  !process.argv.includes('--json') &&
-  process.stdout.isTTY
-) {
-  console.log(
-    chalk.cyan(
-      figlet.textSync('AgEnFK', { font: 'Big' })
-    )
-  );
 }
 
 export { program };
@@ -579,15 +651,15 @@ program
 
     console.log(chalk.blue(`AgEnFK CLI v${CURRENT_VERSION}`));
 
-    // Check for updates silently
+    // Check for updates silently. On a prerelease the beta channel counts too, and
+    // only a strictly newer release is offered (b60bc8bf: a beta was offered an
+    // older stable). One channel failing does not hide the other.
     try {
       const REPO = 'cglab-public/agenfk';
-      const latestTag = await fetchLatestReleaseTag(REPO, false);
-      const latestVersion = latestTag.replace(/^v/, '');
-
-      if (latestVersion !== CURRENT_VERSION) {
-        console.log(chalk.yellow(`\nUpdate available: ${latestVersion} (current: ${CURRENT_VERSION})`));
-        console.log(chalk.gray(`Run 'agenfk upgrade' to update.`));
+      const notice = await findUpdateNotice(CURRENT_VERSION, (beta) => fetchLatestReleaseTag(REPO, beta));
+      if (notice) {
+        console.log(chalk.yellow(`\nUpdate available: ${notice.version} (current: ${CURRENT_VERSION})`));
+        console.log(chalk.gray(`Run '${notice.command}' to update.`));
       }
     } catch (e) {
       // Silence errors for version check
@@ -643,8 +715,24 @@ program
       if (result.status === 'failed') process.exit(1);
     };
 
-    log(chalk.blue(`Checking for updates from https://github.com/${REPO}${options.beta ? ' (including betas)' : ''}${options.version ? ` (target ${options.version})` : ''}...`));
-    log(chalk.gray(`Local version: ${CURRENT_VERSION}`));
+    /*
+     * Never over a development checkout (658ef023). The published build is
+     * extracted into the directory this CLI runs from, and when `agenfk` is a
+     * symlink into a checkout that directory IS the checkout: an upgrade to
+     * 2.0.0-beta.10 once rewrote 28 tracked files and every dist, and the
+     * server came back as a different version from the branch being worked
+     * on. Refused before any network, `down` or extract; --json says
+     * 'failed', which the fleet reconciler records and never self-extracts
+     * over.
+     */
+    const installRoot = path.resolve(__dirname, '../../..');
+    if (isDevCheckout(installRoot)) {
+      const msg = `This agenfk runs from a development checkout (${installRoot}): it is a git repository, and upgrading would write the published build over its tracked files and dist. `
+        + 'Update it as a checkout instead - git pull, npm run build, agenfk restart - or install a separate copy (npx agenfk@latest installs one under ~/.agenfk-system).';
+      errLog(chalk.red(msg));
+      emitResult({ status: 'failed', fromVersion: CURRENT_VERSION, toVersion: options.version ?? '', error: msg });
+      return;
+    }
 
     let resolvedTag = '';
     let targetVersion = '';
@@ -670,29 +758,24 @@ program
       }
 
       targetVersion = resolvedTag.replace(/^v/, '');
-      log(chalk.gray(`Remote version: ${targetVersion}`));
 
       // Idempotent skip: target === current and not forced.
       if (targetVersion === CURRENT_VERSION && !options.force) {
         emitResult({ status: 'noop', fromVersion: CURRENT_VERSION, toVersion: targetVersion });
-        log(chalk.green('You are already on the requested version. Use --force to reinstall.'));
+        log(chalk.green(`AgEnFK is already on ${CURRENT_VERSION} (use --force to reinstall)`));
         return;
       }
 
-      if (options.force && targetVersion === CURRENT_VERSION) {
-        log(chalk.yellow('Versions match, but --force was specified. Proceeding with upgrade...'));
-      } else {
-        log(chalk.yellow(`New version available: ${targetVersion} (current: ${CURRENT_VERSION})`));
-      }
-
-      log(chalk.blue('Upgrading...'));
+      // e04dac92: one line now and one when done; the steps are --debuglog's.
+      log(targetVersion === CURRENT_VERSION
+        ? `Reinstalling AgEnFK ${targetVersion}...`
+        : `Upgrading AgEnFK ${CURRENT_VERSION} → ${targetVersion}...`);
 
       const rootDir = path.resolve(__dirname, '../../..');
 
       if (servicesRunning) {
-        log(chalk.blue('Stopping services before upgrade...'));
         try {
-          execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, stdio: isJson ? 'ignore' : 'inherit' });
+          execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, stdio: 'ignore' });
         } catch (e) { /* ignore */ }
       }
 
@@ -700,13 +783,11 @@ program
       fs.mkdirSync(tempDir, { recursive: true });
       let distTarball: string | null = null;
       try {
-        log(chalk.gray(`Downloading pre-built binary for ${resolvedTag}...`));
         downloadReleaseAsset(REPO, resolvedTag, 'agenfk-dist.tar.gz', path.join(tempDir, 'agenfk-dist.tar.gz'));
-        log(chalk.gray('Extracting update...'));
         // --exclude: published releases up to v1.1.16-beta.4 were ~half macOS
         // AppleDouble (`._*`) entries; never let them into the install dir
         // (CGLAB-94 / issue #163).
-        execSync(`tar --exclude='._*' --exclude='.DS_Store' -xzf "${path.join(tempDir, 'agenfk-dist.tar.gz')}" -C "${rootDir}"`, { stdio: isJson ? 'ignore' : 'inherit' });
+        execSync(`tar --exclude='._*' --exclude='.DS_Store' -xzf "${path.join(tempDir, 'agenfk-dist.tar.gz')}" -C "${rootDir}"`, { stdio: ['ignore', 'ignore', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
         // `tar -xzf` deletes nothing, so the install dir keeps files this
         // version dropped — and its own commands/ cannot be asked what is
         // current, because it IS the stale thing. Hand install.mjs the archive
@@ -714,7 +795,8 @@ program
         // therefore cleaned up AFTER install.mjs runs, not here.
         distTarball = path.join(tempDir, 'agenfk-dist.tar.gz');
       } catch (e: any) {
-        log(chalk.yellow('Pre-built binary not available, falling back to source build...'));
+        const why = String(e?.stderr || e?.message || e).trim().split('\n').slice(-3).join(' ');
+        log(chalk.yellow(`⚠ Could not install the pre-built binary (${why}), falling back to a source build...`));
         fs.rmSync(tempDir, { recursive: true, force: true });
       }
 
@@ -735,15 +817,15 @@ program
       // calls emitResult, which process.exit()s past every pending finally.
       try {
       if (stageJsonMigration(localAgenfkDir)) {
-        log(chalk.yellow('Legacy db.json detected — data will be migrated to SQLite on next server start.'));
+        log(chalk.yellow('⚠ Legacy db.json detected — data will be migrated to SQLite on next server start.'));
       }
       } catch (e) {
         fs.rmSync(tempDir, { recursive: true, force: true });
         throw e;
       }
 
-      const debuglogFlag = options.debuglog ? ' --debuglog' : '';
-      log(chalk.gray('Running install script (pre-built mode)...'));
+      // --quiet: this command prints the summary, so the installer prints only warnings.
+      const debuglogFlag = options.debuglog ? ' --debuglog' : ' --quiet';
       try {
         // BUG 2f491181: `down` ran above, so install.mjs's own reachability
         // probe will read the server as gone and skip the post-upgrade
@@ -775,10 +857,7 @@ program
         fs.rmSync(tempDir, { recursive: true, force: true });
       }
 
-      log(chalk.green(`Successfully upgraded to ${targetVersion}`));
-      if (servicesRunning) {
-        log(chalk.green('Server restart was triggered by the installer (running in background).'));
-      }
+      log(chalk.green(`✓ ${targetVersion === CURRENT_VERSION ? 'Reinstalled' : 'Upgraded to'} ${targetVersion}${servicesRunning ? ' (server restarting in the background)' : ''}`));
 
       emitResult({ status: 'upgraded', fromVersion: CURRENT_VERSION, toVersion: targetVersion });
     } catch (error: any) {
@@ -797,15 +876,12 @@ program
   .option('-q, --quiet', 'Do not auto-open the dashboard in a browser window')
   .action(async (options) => {
     const rootDir = path.resolve(__dirname, '../../..');
-    console.log(chalk.blue('🚀 Bringing up AgEnFK Engineering Framework (agenfk)...'));
-
+    // e04dac92: `up` says nothing of its own - start-services.mjs prints the one line.
     // 0. Cleanup zombies — kill the previously persisted API port (if any)
     // plus the default, in case the server crashed without unlinking the file.
-    console.log(chalk.gray('🧹 Cleaning up zombie processes...'));
     const persistedApiPort = readServerPort();
     if (persistedApiPort && persistedApiPort !== DEFAULT_API_PORT) killPort(persistedApiPort);
     killPort(DEFAULT_API_PORT); // API default
-    killPort(5173); // UI default
     killPattern('packages/server/dist/server.js');
     killPattern('packages/ui');
 
@@ -819,17 +895,16 @@ program
     const missingDist = requiredDists.some(d => !fs.existsSync(d));
 
     if (!fs.existsSync(startScript) || missingDist) {
-        console.log(chalk.yellow('📦 Initial bootstrap required...'));
         try {
             const installFlags = options.debuglog ? ' --debuglog' : '';
             execSync(`node scripts/install.mjs${installFlags}`, { cwd: rootDir, stdio: 'inherit' });
         } catch (e) {
             console.error(chalk.red('Bootstrap failed.'));
+            process.exitCode = 1;
             return;
         }
     }
     
-    console.log(chalk.blue('⚡ Starting agenfk services...'));
     try {
         const startEnv = { ...process.env };
         if (options.easterEggs) startEnv.VITE_EASTER_EGGS = 'true';
@@ -847,64 +922,39 @@ program
 
 program
   .command('down')
-  .description('Stop all AgEnFK services (API server and UI)')
+  .description('Stop all AgEnFK services (the server, which also serves the board)')
   .action(() => {
-    const rootDir = path.resolve(__dirname, '../../..');
-    console.log(chalk.blue('🛑 Bringing down AgEnFK services...'));
-
-    let stopped = 0;
-
-    // Stop API server — match the specific server.js path
-    try {
-      killPattern('packages/server/dist/server.js');
-      console.log(chalk.green('  ✓ API server stopped'));
-      stopped++;
-    } catch {
-      console.log(chalk.gray('  - API server was not running'));
-    }
-
-    // Stop UI dev server — match vite process rooted in packages/ui
-    try {
-      killPattern('packages/ui');
-      console.log(chalk.green('  ✓ UI server stopped'));
-      stopped++;
-    } catch {
-      console.log(chalk.gray('  - UI server was not running'));
-    }
-
-    if (stopped > 0) {
-      console.log(chalk.green(`\n✅ Stopped ${stopped} service(s).`));
-    } else {
-      console.log(chalk.yellow('\nNo running services found.'));
-    }
+    // 24a7b899: the server serves the board, so stopping it stopped the board. A separate
+    // vite UI an older version ran is cleared quietly - it is not a service of this one.
+    const server = killPattern('packages/server/dist/server.js');
+    const legacyUi = killPattern('packages/ui');
+    for (const f of [...server.failed, ...legacyUi.failed]) console.log(chalk.yellow(`⚠ Could not stop ${f}`));
+    if (server.killed > 0) console.log(chalk.green('✓ AgEnFK stopped'));
+    else if (server.failed.length === 0) console.log(chalk.gray('AgEnFK was not running'));
+    else process.exitCode = 1;
   });
 
 program
   .command('kill')
   .description('Force kill all AgEnFK related processes and ports (aggressive cleanup)')
   .action(() => {
-    console.log(chalk.red('🧹 Aggressively killing all AgEnFK related processes...'));
-
     // Kill by port
     const killApiPort = readServerPort() ?? DEFAULT_API_PORT;
-    console.log(chalk.gray(`  - Killing processes on port ${killApiPort} (API)...`));
-    killPort(killApiPort);
-    if (killApiPort !== DEFAULT_API_PORT) {
-      console.log(chalk.gray(`  - Also killing processes on default port ${DEFAULT_API_PORT}...`));
-      killPort(DEFAULT_API_PORT);
-    }
-    console.log(chalk.gray('  - Killing processes on port 5173 (UI)...'));
-    killPort(5173);
+    const results: KillResult[] = [killPort(killApiPort)];
+    if (killApiPort !== DEFAULT_API_PORT) results.push(killPort(DEFAULT_API_PORT));
 
-    // Kill by pattern
-    console.log(chalk.gray('  - Killing API server processes...'));
-    killPattern('packages/server/dist/server.js');
-    console.log(chalk.gray('  - Killing UI server processes...'));
-    killPattern('packages/ui');
-    console.log(chalk.gray('  - Killing MCP server processes...'));
-    killPattern('packages/server/dist/index.js');
-    
-    console.log(chalk.green('\n✅ Cleanup complete.'));
+    // Kill by pattern: the API server, UI processes an older version left, MCP servers.
+    // (Not by port 5173: that is vite's default, and a user's own dev server is not ours.)
+    results.push(killPattern('packages/server/dist/server.js'));
+    results.push(killPattern('packages/ui'));
+    results.push(killPattern('packages/server/dist/index.js'));
+
+    const killed = results.reduce((n, r) => n + r.killed, 0);
+    const failed = results.flatMap(r => r.failed);
+    for (const f of failed) console.log(chalk.yellow(`⚠ Could not kill ${f}`));
+    if (killed > 0) console.log(chalk.green(`✓ Killed ${killed} AgEnFK process${killed === 1 ? '' : 'es'}`));
+    else if (failed.length === 0) console.log(chalk.gray('No AgEnFK processes were running'));
+    if (failed.length > 0) process.exitCode = 1;
   });
 
 program
@@ -913,37 +963,37 @@ program
   .option('-q, --quiet', 'Do not auto-open the dashboard in a browser window (used by fleet-upgrade auto-restart)')
   .action(async (options) => {
     const rootDir = path.resolve(__dirname, '../../..');
-    console.log(chalk.blue('🔄 Restarting AgEnFK services...'));
-
-    // Call 'down'
+    // Call 'down'. Its "stopped" line would only repeat what `up` says next;
+    // a warning it raises (a server it could not stop) is passed on.
+    let downOut = '';
     try {
-      execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, stdio: 'inherit' });
-    } catch (e) {}
+      downOut = String(execSync('node packages/cli/bin/agenfk.js down', { cwd: rootDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }) ?? '');
+    } catch (e: any) {
+      downOut = String(e?.stdout ?? '');
+    }
+    for (const line of downOut.split('\n')) if (line.includes('⚠')) console.log(line);
 
-    // Call 'up' — pass --quiet through so a fleet-driven restart doesn't
-    // pop a new browser tab on the user's machine.
-    try {
-      const upArgs = ['packages/cli/bin/agenfk.js', 'up'];
-      if (options.quiet) upArgs.push('--quiet');
-      const start = spawn('node', upArgs, {
-        cwd: rootDir,
-        stdio: 'inherit',
-        detached: true
-      });
-      start.unref();
-      console.log(chalk.green('🚀 Services restart initiated in background.'));
-      // Give it a second to show initial output before exiting the CLI
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    } catch (e) {
-      console.error(chalk.red('Failed to initiate restart.'));
+    // Call 'up' in the foreground - start-services detaches the server itself and
+    // exits once it reports its port, so waiting costs nothing and its one line
+    // (and any warning: a moved port, a server that never reported) reaches the
+    // terminal. --quiet passes through so a fleet-driven restart doesn't pop a
+    // new browser tab on the user's machine.
+    const upArgs = ['packages/cli/bin/agenfk.js', 'up'];
+    if (options.quiet) upArgs.push('--quiet');
+    const up = spawnSync('node', upArgs, { cwd: rootDir, stdio: 'inherit' });
+    if (up.error || up.status !== 0) {
+      console.error(chalk.red(`Failed to restart: ${up.error?.message ?? `agenfk up exited ${up.status}`}`));
+      process.exitCode = 1;
     }
   });
 
 program
   .command('ui')
-  .description('Show dashboard information and open in browser')
+  .description('Open the dashboard: the desktop app when there is one, otherwise the browser')
   .option('--open <itemId>', 'Open the dashboard with that item highlighted (deep-links the Search Box to the item id)')
-  .action(async (options: { open?: string }) => {
+  .option('--details', 'With --open: open the card itself, on its Overview tab (where a step is approved), instead of only highlighting it')
+  .option('--web', 'Force the browser, even when the desktop app is installed or running')
+  .action(async (options: { open?: string; web?: boolean; details?: boolean }) => {
     console.log(chalk.cyan('🌐 Opening UI...'));
 
     const rootDir = path.resolve(__dirname, '../../..');
@@ -966,11 +1016,66 @@ program
       // NOT FOUND for a perfectly valid item.
       let projectId = await resolveItemProjectId(itemId);
       if (!projectId) projectId = findProjectId(process.cwd());
-      uiUrl = buildUiOpenUrl(base, itemId, projectId);
+      uiUrl = buildUiOpenUrl(base, itemId, projectId, options.details ? { view: 'overview' } : {});
     }
 
     console.log(chalk.white(`Dashboard: ${uiUrl}`));
-    
+
+    /*
+     * THE DESKTOP APP FIRST, when there is one (cb05216e).
+     *
+     * This opened a browser unconditionally, and the browser surface does not
+     * have the projects tree, the terminals or the preload bridge - the app
+     * serves the same bundle, so the two look alike and only one of them can do
+     * the things people come here for. The case that made it obvious: the app
+     * is open on screen and this puts a tab next to it.
+     */
+    const appCandidates = process.platform === 'darwin'
+      ? [
+          '/Applications/AgEnFK.app',
+          path.join(os.homedir(), 'Applications', 'AgEnFK.app'),
+          // The build from source, which is where development happens.
+          path.resolve(rootDir, 'packages/desktop/release/mac-arm64/AgEnFK.app'),
+          path.resolve(rootDir, 'packages/desktop/release/mac/AgEnFK.app'),
+        ].filter(p => fs.existsSync(p))
+      : [];
+
+    /*
+     * Matched on the BUNDLE ID, not on "is some Electron running". Every
+     * Electron app on the machine would answer yes to the looser question, and
+     * the command would then try to focus somebody else's editor.
+     */
+    let appIsRunning = false;
+    if (process.platform === 'darwin') {
+      try {
+        execSync('pgrep -f "AgEnFK.app/Contents/MacOS/AgEnFK"', { stdio: 'ignore' });
+        appIsRunning = true;
+      } catch { /* not running, which is not an error */ }
+    }
+
+    const target = chooseOpenTarget({
+      forceWeb: options.web === true,
+      appIsRunning,
+      installedApps: appCandidates,
+    });
+
+    if (target.kind === 'desktop') {
+      // `open -a` FOCUSES a running app rather than starting a second one, and
+      // the main process holds a single-instance lock anyway - so a second
+      // launch would exit silently and look like this did nothing.
+      console.log(chalk.cyan(`Opening the desktop app (${target.why}). Use --web for the browser.`));
+      try {
+        execFileSync('open', ['-a', target.appPath], { stdio: 'ignore' });
+        return;
+      } catch {
+        // Falls through to the browser rather than failing: a dashboard in the
+        // wrong surface beats no dashboard.
+        console.log(chalk.yellow('Could not open the desktop app; falling back to the browser.'));
+      }
+    } else {
+      console.log(chalk.white(`Opening the browser (${target.why}).`));
+    }
+
     try {
       if (isMinGW()) {
         try {
@@ -1578,6 +1683,7 @@ program
   .option('-p, --parent <id>', 'Parent ID')
   .option('--project <id>', 'Project ID')
   .option('--jira-item <key>', 'Link the new card to a JIRA item by key (e.g. CGLAB-163)')
+  .option('--json', 'Print only the created card, as JSON (by default it follows the confirmation line)')
   .action(async (type, title, options) => {
     try {
       const itemType = type.toUpperCase() as ItemType;
@@ -1602,10 +1708,20 @@ program
       if (options.jiraItem !== undefined) payload.jiraItem = options.jiraItem;
 
       const { data } = await axios.post(`${API_URL}/items`, payload);
+      // CGLAB-427: the created card itself, so an agent need not query agenfk again for its id and details.
+      if (options.json || program.opts().toon) {
+        console.log(structuredOutput(data));
+        // stdout carries the card alone; a warning there would break the JSON.
+        if (data.jiraWarning) console.error(chalk.yellow(`  ! ${data.jiraWarning}`));
+        return;
+      }
       console.log(chalk.green(`Created ${type}: ${data.title} (ID: ${data.id})`));
       reportJiraLink(data, options.jiraItem);
+      console.log(structuredOutput(data));
     } catch (error: any) {
       console.error(chalk.red('Error creating item:'), error.response?.data?.error || error.message);
+      // A failed create must not read as a success to the agent that ran it.
+      process.exit(1);
     }
   });
 
@@ -1661,6 +1777,9 @@ program
   .option('--type <type>', 'New type (EPIC, STORY, TASK, BUG)')
   .option('--parent <parentId>', "Re-parent under another item; pass 'none' to detach to top level")
   .option('--jira-item <key>', "Link this card to a JIRA item by key (e.g. CGLAB-163); pass 'none' to unlink")
+  .option('--external-id <key>', 'Issue key in another tracker, e.g. a JIRA key')
+  .option('--external-url <url>', 'Link to that issue')
+  .option('--worktree <path>', "Where the card runs: a checkout of this repository, 'none' (the project root, whatever its parents have) or 'inherit' (clear the choice). Use this, never --parent, to move a card to another tree")
   .action(async (id, options) => {
     try {
       // Handle short ID
@@ -1684,6 +1803,17 @@ program
       if (options.title) updates.title = options.title;
       if (options.description) updates.description = options.description;
       if (options.type) updates.type = options.type.toUpperCase();
+      if (options.externalId !== undefined) updates.externalId = options.externalId;
+      // 686fdbf6: a path is sent absolute, resolved from where the command runs.
+      if (options.worktree !== undefined) {
+        const w = String(options.worktree);
+        // Spelled as git lists it: the server matches the string, and on macOS
+        // /tmp is a link to /private/tmp. Resolving here is safe - it is the
+        // user's own process reading the user's own path.
+        const abs = path.resolve(process.cwd(), w);
+        updates.worktree = w === 'none' || w === 'inherit' ? w : (fs.existsSync(abs) ? fs.realpathSync(abs) : abs);
+      }
+      if (options.externalUrl !== undefined) updates.externalUrl = options.externalUrl;
 
       if (options.parent !== undefined) {
         const detachWords = ['none', 'null', 'root', ''];
@@ -1827,24 +1957,155 @@ program
   });
 
 program
+  .command('approve-file-command <projectId>')
+  .description('Show the commands this project declares in .agenfk/project.json, and where a person approves them (the board)')
+  // Kept so a script passing it gets the explanation below instead of an unknown-option error.
+  .option('-y, --yes', 'no longer approves: approving is done by a person on the board')
+  .action(async (projectId: string, options: { yes?: boolean }) => {
+    /*
+     * The way OUT of the refusal - for a person.
+     *
+     * A project may declare its own verifyCommand in the repository, which is
+     * what lets configuration travel - and is also how cloning a repo could
+     * hand this machine a command it runs. So the server refuses to run one
+     * until somebody here has read it.
+     *
+     * This command used to do the approving, with ~/.agenfk/verify-token: the
+     * token the agent's own CLI holds, so the agent the refusal was addressed
+     * to could approve and run the command itself (34ee6b8a). Approving is now
+     * a person's act on the board; this prints what there is to read and
+     * where to approve it.
+     */
+    try {
+      const { data: project } = await axios.get(`${API_URL}/projects/${projectId}`);
+      const root = project?.projectRoot;
+      if (!root) {
+        console.error(chalk.red('This project has no folder, so it declares nothing.'));
+        process.exit(1);
+        return;
+      }
+      const filePath = path.join(root, '.agenfk', 'project.json');
+      if (!fs.existsSync(filePath)) {
+        console.error(chalk.red(`No project file at ${filePath}.`));
+        process.exit(1);
+        return;
+      }
+      const { value, problems } = readProjectFile(fs.readFileSync(filePath, 'utf8'));
+      for (const problem of problems) console.log(chalk.gray(`  ${problem}`));
+      const commands = (['verifyCommand', 'setupCommand'] as const)
+        .map(key => ({ key, command: value.settings[key] }))
+        .filter((c): c is { key: 'verifyCommand' | 'setupCommand'; command: string } => Boolean(c.command));
+      if (commands.length === 0) {
+        console.log(chalk.gray('This repository declares no commands, so there is nothing to approve.'));
+        return;
+      }
+
+      console.log(chalk.bold(`\n${filePath} declares:`));
+      for (const { key, command } of commands) console.log(`  ${chalk.cyan(key)}: ${command}`);
+      if (options.yes) console.log(chalk.yellow('\n--yes no longer approves anything.'));
+      if (commands.some(c => c.key === 'verifyCommand')) {
+        console.log(chalk.yellow(
+          '\nA person approves the verifyCommand on the board: open the project\'s Settings in `agenfk ui`, read it, and press Approve. '
+          + 'An agent cannot approve it.',
+        ));
+      }
+      // Said, so nobody goes looking for an approval that would change nothing.
+      if (commands.some(c => c.key === 'setupCommand')) {
+        console.log(chalk.gray('The file\'s setupCommand is not run on this machine: worktree setup uses the project\'s stored setupCommand.'));
+      }
+    } catch (error) {
+      console.error(chalk.red('Error reading the project\'s commands:'), (error as Error).message);
+      process.exit(1);
+    }
+  });
+
+program
   .command('update-project <id>')
-  .description('Update a project\'s name, description, or verify command (MCP fallback: update_project)')
+  .description('Update a project\'s name, description, verify command, or project root (MCP fallback: update_project)')
   .option('--name <name>', 'New project name')
   .option('--description <text>', 'New project description')
   .option('--verify-command <cmd>', 'Project-level verification command')
+  .option('--setup-command <cmd>', 'What to run in a newly cut worktree to make it usable (e.g. "npm ci")')
+  .option('--project-root <path>', 'Absolute path to the repository this project lives in')
+  .option('--test-report-format <format>', 'How per-test results are read: vitest-json | junit-xml (with --test-report-command and --test-report-path)')
+  .option('--test-report-command <cmd>', 'Command that runs the suite and writes the report')
+  .option('--test-report-path <path>', 'Where that command writes the report, relative to the project root; several reports (one per suite) as a comma list')
+  .option('--test-report-surface <paths>', 'Comma-separated test paths (files or directories) the report cannot name, so test-surface-frozen can see them; "none" clears them')
+  .option('--test-report-related-command <cmd>', 'The runner\'s related-tests command with {files} (e.g. "npx vitest related --run {files}"): a step that changed code runs only the tests it affects; "none" clears it')
+  .option('--test-report-reuse-ignore <globs>', 'Comma-separated globs a re-run skips when only they changed, unless a test names the file (default: **/*.md); "none" ignores nothing')
+  .option('--test-report <none>', 'Pass "none" to clear the test report setting')
   .action(async (id, options) => {
     try {
       const updates: Record<string, unknown> = {};
+      const wantsTestReport = options.testReport !== undefined || options.testReportFormat !== undefined
+        || options.testReportCommand !== undefined || options.testReportPath !== undefined
+        || options.testReportSurface !== undefined || options.testReportReuseIgnore !== undefined
+        || options.testReportRelatedCommand !== undefined;
       if (options.name !== undefined) updates.name = options.name;
       if (options.description !== undefined) updates.description = options.description;
-      if (options.verifyCommand === undefined && Object.keys(updates).length === 0) {
-        console.error(chalk.yellow('Nothing to update. Pass at least one of --name, --description, --verify-command.'));
+      if (options.verifyCommand === undefined && options.projectRoot === undefined
+          && options.setupCommand === undefined && !wantsTestReport
+          && Object.keys(updates).length === 0) {
+        console.error(chalk.yellow('Nothing to update. Pass at least one of --name, --description, --verify-command, --setup-command, --project-root, --test-report-*.'));
         process.exit(1);
         return;
       }
       let data: unknown;
       if (Object.keys(updates).length > 0) {
         ({ data } = await axios.put(`${API_URL}/projects/${id}`, updates));
+      }
+      // The test report command is a shell string the server runs, so it goes
+      // through the internal endpoint like verifyCommand (CGLAB-379).
+      if (wantsTestReport) {
+        const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
+        if (!fs.existsSync(tokenPath)) {
+          console.error(chalk.red('Error: ~/.agenfk/verify-token not found. Run npm run install:framework first.'));
+          process.exit(1);
+          return;
+        }
+        const token = fs.readFileSync(tokenPath, 'utf8').trim();
+        let body: Record<string, unknown>;
+        if (options.testReport === 'none' && options.testReportSurface !== undefined) {
+          console.error(chalk.red('Error: --test-report none clears the whole setting, surface included; pass --test-report-surface on its own to change only the test paths.'));
+          process.exit(1);
+          return;
+        }
+        if (options.testReport === 'none') {
+          body = { testReport: null };
+        } else {
+          // The server replaces the whole setting: merge the flags given onto
+          // the stored one, so changing one part never drops the others (9afdba7d).
+          const { data: current } = await axios.get(`${API_URL}/projects/${id}`);
+          const stored = (current as any)?.testReport ?? {};
+          const merged: Record<string, unknown> = {
+            format: options.testReportFormat ?? stored.format,
+            command: options.testReportCommand ?? stored.command,
+            // Several reports (one per suite) as a comma list, read as one run (d26832d6 #6).
+            reportPath: options.testReportPath === undefined ? stored.reportPath
+              : (() => { const ps = String(options.testReportPath).split(',').map(p => p.trim()).filter(Boolean); return ps.length === 1 ? ps[0] : ps; })(),
+          };
+          const surface = options.testReportSurface === undefined
+            ? stored.surface
+            : options.testReportSurface === 'none' ? undefined : String(options.testReportSurface).split(',').map(p => p.trim()).filter(Boolean);
+          if (surface !== undefined) merged.surface = surface;
+          // 32045202: kept across other changes, like the surface; "none" is an empty list, which ignores nothing.
+          const reuseIgnore = options.testReportReuseIgnore === undefined
+            ? stored.reuseIgnore
+            : options.testReportReuseIgnore === 'none' ? [] : String(options.testReportReuseIgnore).split(',').map(p => p.trim()).filter(Boolean);
+          if (reuseIgnore !== undefined) merged.reuseIgnore = reuseIgnore;
+          // a36047ea: kept across other changes; "none" clears it.
+          const relatedCommand = options.testReportRelatedCommand === undefined ? stored.relatedCommand
+            : options.testReportRelatedCommand === 'none' ? undefined : String(options.testReportRelatedCommand);
+          if (relatedCommand !== undefined) merged.relatedCommand = relatedCommand;
+          if (!merged.format || !merged.command || !merged.reportPath) {
+            console.error(chalk.red('Error: this project has no test report to change yet. Set one with --test-report-format, --test-report-command and --test-report-path.'));
+            process.exit(1);
+            return;
+          }
+          body = merged;
+        }
+        ({ data } = await axios.put(`${API_URL}/projects/${id}/test-report`, body, { headers: { 'x-agenfk-internal': token } }));
+        if (typeof (data as any)?.warning === 'string') console.warn(chalk.yellow(`⚠️  ${(data as any).warning}`));
       }
       // verifyCommand is a privileged shell string — set it via the internal
       // endpoint with the install-time token (mirrors `agenfk backup`).
@@ -1859,6 +2120,53 @@ program
         ({ data } = await axios.put(
           `${API_URL}/projects/${id}/verify-command`,
           { verifyCommand: options.verifyCommand },
+          { headers: { 'x-agenfk-internal': token } },
+        ));
+      }
+      /*
+       * setupCommand is privileged for the same reason, and it is the one most
+       * likely to be mistaken for a harmless preference: it is a shell string
+       * run in a directory this machine just created. Same endpoint shape, same
+       * token.
+       */
+      if (options.setupCommand !== undefined) {
+        const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
+        if (!fs.existsSync(tokenPath)) {
+          console.error(chalk.red('Error: ~/.agenfk/verify-token not found. Run npm run install:framework first.'));
+          process.exit(1);
+          return;
+        }
+        const token = fs.readFileSync(tokenPath, 'utf8').trim();
+        ({ data } = await axios.put(
+          `${API_URL}/projects/${id}/setup-command`,
+          { setupCommand: options.setupCommand },
+          { headers: { 'x-agenfk-internal': token } },
+        ));
+      }
+      /*
+       * The project root is privileged for the same reason verifyCommand is:
+       * it is the CWD that `git add -A && git commit` runs in and that
+       * worktrees are cut from. So it goes through the internal endpoint too.
+       *
+       * It exists because there was NO way to correct a wrong one — the value
+       * is otherwise written only as a side effect of validating from inside a
+       * directory, so a project that picked up the wrong root kept it. Four
+       * projects pointing at $HOME is the state that made this necessary.
+       */
+      if (options.projectRoot !== undefined) {
+        const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
+        if (!fs.existsSync(tokenPath)) {
+          console.error(chalk.red('Error: ~/.agenfk/verify-token not found. Run npm run install:framework first.'));
+          process.exit(1);
+          return;
+        }
+        const token = fs.readFileSync(tokenPath, 'utf8').trim();
+        // Resolved here rather than on the server: a relative path means
+        // relative to where the PERSON is standing, and the server has a
+        // different cwd entirely.
+        ({ data } = await axios.put(
+          `${API_URL}/projects/${id}/project-root`,
+          { projectRoot: path.resolve(process.cwd(), options.projectRoot) },
           { headers: { 'x-agenfk-internal': token } },
         ));
       }
@@ -1895,17 +2203,20 @@ program
 program
   .command('analyze <request>')
   .description('Get AgEnFK decomposition guidance for a user request (MCP fallback: analyze_request)')
-  .action((request) => {
-    console.log(chalk.blue(`\nComplexity analysis for: "${request}"\n`));
-    console.log('REMINDER: All work MUST follow these decomposition and inspection rules:');
-    console.log('  1. Minimum Decomposition: An EPIC must be decomposed into child STORIES before');
-    console.log('     any of them starts - an EPIC is never worked directly. A STORY is decomposed');
-    console.log('     into TASKs only when it is large (multiple deliverables, several packages, or');
-    console.log('     more than one focused implementation pass) - the agent\'s judgement.');
-    console.log('  2. Backlog Inspection: Only items in TODO status should be inspected when starting new');
-    console.log('     work; IDEAs (drafts) must be ignored.');
-    console.log('  3. Create ALL sub-items (Stories/Tasks) in TODO status.');
-    console.log('  4. PAUSE and ask the user for approval of the plan before moving any item to IN_PROGRESS.');
+  .option('--proposal', 'print the contract for proposing a decomposition as a reviewable tree, instead of the guidance')
+  .action((request, options) => {
+    // The text comes from core. It used to be ten console.log lines here and a
+    // template literal in the MCP tool — two hand-written copies of the same
+    // rules, free to disagree. The default output is unchanged.
+    try {
+      const text = options.proposal ? decompositionContract(request) : decompositionRules(request);
+      const [header, ...rest] = text.split('\n');
+      console.log('\n' + chalk.blue(header));
+      console.log(rest.join('\n') + '\n');
+    } catch (e: any) {
+      console.error(chalk.red(e.message));
+      process.exit(1);
+    }
   });
 
 program
@@ -1959,6 +2270,100 @@ program
       }
     } else {
       console.log(chalk.gray('N/A (Opencode not detected)'));
+    }
+
+    /*
+     * Enforcement, for the clients that actually have it.
+     *
+     * This was missing entirely, which meant health could report "All systems
+     * healthy" on a machine where nothing gated an edit. The rules are still
+     * READ in that state, so the agent believes it is enforced — health saying
+     * fine turns a missing safeguard into a confirmed one.
+     *
+     * Silent when a client is not installed at all: a machine without pi is
+     * not a machine with broken pi enforcement, and a check that complains
+     * about absent software trains people to ignore it.
+     */
+    /*
+     * Gated on the CLIENT's directory, not on settings.json.
+     *
+     * Gating on the file reopened the very bug this check exists to close:
+     * Claude Code creates ~/.claude without necessarily creating
+     * settings.json, so the single most important case — Claude installed,
+     * enforcement never installed — skipped the check entirely and printed
+     * "All systems healthy".
+     */
+    const claudeDir = path.join(os.homedir(), '.claude');
+    const claudeSettingsPath = path.join(claudeDir, 'settings.json');
+    if (fs.existsSync(claudeDir)) {
+      process.stdout.write('Checking Claude Code enforcement... ');
+      // Three distinct states, and collapsing them misdiagnoses two of them.
+      // An unreadable file is NOT "not registered": the remedy for that one
+      // rewrites settings.json wholesale, so telling a user with a trailing
+      // comma to reinstall would silently delete the rest of their config.
+      let parsed: unknown = null;
+      let unreadable = false;
+      if (fs.existsSync(claudeSettingsPath)) {
+        try { parsed = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf8')); }
+        catch { unreadable = true; }
+      }
+      if (unreadable) {
+        console.log(chalk.red('UNREADABLE'));
+        console.log(chalk.yellow(`   - Could not parse ${claudeSettingsPath}`));
+        console.log(chalk.gray('   - Fix that file by hand. Reinstalling would overwrite it.'));
+        issues++;
+      } else {
+      const result = checkClaudeCodeEnforcement(
+        parsed,
+        hook => ['', '.cmd', '.mjs'].some(ext =>
+          fs.existsSync(path.join(os.homedir(), '.local', 'bin', `${hook}${ext}`))),
+      );
+      if (result.ok) {
+        console.log(chalk.green('OK'));
+      } else {
+        console.log(chalk.red('INCOMPLETE'));
+        // Named, not counted. "2 hooks missing" sends the user hunting.
+        if (result.missing.length) {
+          console.log(chalk.yellow(`   - Not registered: ${result.missing.join(', ')}`));
+        }
+        if (result.missingBinaries.length) {
+          console.log(chalk.yellow(`   - Registered but not installed: ${result.missingBinaries.join(', ')}`));
+        }
+        console.log(chalk.gray(`   - Fix: ${result.hint}`));
+        issues++;
+      }
+      }
+    } else {
+      // Said, not skipped. Every sibling check prints a line even when it does
+      // not apply, and silence here is indistinguishable from "fine".
+      console.log('Checking Claude Code enforcement... ' + chalk.gray('N/A (Claude Code not detected)'));
+    }
+
+    const piDir = path.join(os.homedir(), '.pi');
+    if (fs.existsSync(piDir)) {
+      process.stdout.write('Checking pi enforcement... ');
+      const result = checkPiEnforcement(
+        fs.existsSync(path.join(piDir, 'agent', 'extensions', 'agenfk.ts')),
+        // The extension delegates every decision to these, and its runner
+        // swallows a spawn failure rather than break the host — so missing
+        // scripts mean pi allows every edit, silently.
+        script => fs.existsSync(path.join(os.homedir(), '.agenfk', 'bin', script)),
+      );
+      if (result.ok) {
+        console.log(chalk.green('OK'));
+      } else {
+        console.log(chalk.red('INCOMPLETE'));
+        if (result.missing.length) {
+          console.log(chalk.yellow(`   - Absent: ${result.missing.join(', ')}`));
+        }
+        if (result.missingBinaries.length) {
+          console.log(chalk.yellow(`   - Extension present but its scripts are gone: ${result.missingBinaries.join(', ')}`));
+        }
+        console.log(chalk.gray(`   - Fix: ${result.hint}`));
+        issues++;
+      }
+    } else {
+      console.log('Checking pi enforcement... ' + chalk.gray('N/A (pi not detected)'));
     }
 
     // 4. Skills Check
@@ -2061,10 +2466,40 @@ const jiraCommand = program
   .command('jira')
   .description('JIRA integration commands');
 
+/**
+ * The hub this installation is joined to, or null (CGLAB-412). Same rule as
+ * the server's hubClient.loadHubConfig - AGENFK_HUB_* env vars override
+ * ~/.agenfk/hub.json, and url, token and orgId must all be present - so the
+ * CLI and the server never disagree about whether JIRA is the hub's.
+ */
+function joinedHubUrl(): string | null {
+  // Mirrors readHubConfigFile: the file counts only as a whole - url, token
+  // and orgId all strings - before any env var overrides a field of it.
+  let file: { url: string; token: string; orgId: string } | null = null;
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.agenfk', 'hub.json'), 'utf8'));
+    if (raw && typeof raw.url === 'string' && typeof raw.token === 'string' && typeof raw.orgId === 'string') file = raw;
+  } catch { /* not joined via file */ }
+  const url = process.env.AGENFK_HUB_URL || file?.url;
+  const token = process.env.AGENFK_HUB_TOKEN || file?.token;
+  const orgId = process.env.AGENFK_HUB_ORG || file?.orgId;
+  return url && token && orgId ? String(url) : null;
+}
+
+/** On a joined installation the JIRA app is configured on the hub, by an admin: say so and stop. */
+function refuseLocalJiraSetupWhenJoined(): void {
+  const hubUrl = joinedHubUrl();
+  if (!hubUrl) return;
+  console.error(chalk.red(`\nJIRA is managed by your hub (${hubUrl}).`));
+  console.error(chalk.white('Ask a hub admin to configure it on the hub (Admin → JIRA), then use Connect JIRA on your board.'));
+  process.exit(1);
+}
+
 jiraCommand
   .command('setup')
   .description('Configure JIRA OAuth integration (Client ID & Secret)')
   .action(async () => {
+    refuseLocalJiraSetupWhenJoined();
     const readline = await import('readline');
 
     const ask = (rl: any, question: string, hidden = false): Promise<string> => {
@@ -2151,6 +2586,35 @@ jiraCommand
   .action(async () => {
     console.log(chalk.blue('\nJIRA Integration Status\n'));
 
+    const hubUrl = joinedHubUrl();
+    if (hubUrl) {
+      // Joined: the connection is the hub's, so local config and token files
+      // are irrelevant - ask the server, which asks the hub.
+      console.log(chalk.white(`  Source:        hub (${hubUrl})`));
+      try {
+        const { data } = await axios.get(`${API_URL}/jira/status`, { timeout: 5000 });
+        if (data.connected) {
+          console.log(chalk.green(`  Connection:    ✓ Connected to ${data.cloudUrl}`));
+          if (data.email) console.log(chalk.gray(`    Account:   ${data.email}`));
+        } else if (data.reason === 'hub_unreachable') {
+          console.log(chalk.yellow('  Connection:    ✗ Hub not reachable'));
+        } else if (data.reason === 'hub_auth_failed') {
+          console.log(chalk.yellow('  Connection:    ✗ The hub rejected this installation\'s key'));
+          console.log(chalk.white('    Run: agenfk hub login'));
+        } else if (data.configured) {
+          console.log(chalk.yellow('  Connection:    ✗ Your JIRA account is not connected'));
+          console.log(chalk.white('    Use "Connect JIRA" on the board (it connects through your hub).'));
+        } else {
+          console.log(chalk.yellow('  Connection:    ✗ JIRA is not configured on the hub'));
+          console.log(chalk.white('    Ask a hub admin to configure it on the hub (Admin → JIRA).'));
+        }
+      } catch {
+        console.log(chalk.gray('  Connection:    (server not reachable - try: agenfk up)'));
+      }
+      console.log('');
+      return;
+    }
+
     // Config check
     const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
     let jiraConfig: any = null;
@@ -2204,6 +2668,19 @@ jiraCommand
   .command('disconnect')
   .description('Remove stored JIRA OAuth token')
   .action(async () => {
+    if (joinedHubUrl()) {
+      // Joined: the token lives on the hub. Drop THIS user's connection there,
+      // through the server; the local token file is not ours to touch.
+      try {
+        await axios.post(`${API_URL}/jira/disconnect`, {}, { timeout: 15000 });
+        console.log(chalk.green('Disconnected your JIRA account from the hub.'));
+      } catch (error: any) {
+        console.error(chalk.red('Error:'), error.response?.data?.error || error.message);
+        console.error(chalk.yellow('Is the API server running? Try: agenfk up'));
+        process.exit(1);
+      }
+      return;
+    }
     const tokenPath = path.join(os.homedir(), '.agenfk', 'jira-token.json');
     if (!fs.existsSync(tokenPath)) {
       console.log(chalk.yellow('No JIRA token found — already disconnected.'));
@@ -2412,7 +2889,68 @@ const configCommand = program
 
 const configSetCommand = configCommand
   .command('set')
-  .description('Set a configuration value');
+  .description('Set a configuration value: telemetry and flowRegistry are this machine\'s; any other key is one of the server\'s settings (agenfk config get lists them)')
+  // e437ea58: any key the server's settings report, by name - a setting added later needs no new command.
+  .argument('[key]', 'A server setting (e.g. maxConcurrentSuiteRuns)')
+  .argument('[value]', 'Its value: true/false, a number, or text, as the setting is')
+  .action(async (key: string | undefined, value: string | undefined) => {
+    if (!key || value === undefined) {
+      console.error(chalk.red('Usage: agenfk config set <key> <value>. Keys: telemetry, flowRegistry, or a server setting (agenfk config get lists them).'));
+      process.exit(1);
+      return;
+    }
+    let current: Record<string, unknown>;
+    try {
+      current = (await axios.get(`${API_URL}/settings`)).data ?? {};
+    } catch (e: any) {
+      console.error(chalk.red('Could not read the server\'s settings:'), e?.response?.data?.error ?? e?.message);
+      process.exit(1);
+      return;
+    }
+    if (!Object.prototype.hasOwnProperty.call(current, key)) {
+      console.error(chalk.red(`Unknown setting "${key}". Server settings: ${Object.keys(current).join(', ')}; this machine's: telemetry, flowRegistry.`));
+      process.exit(1);
+      return;
+    }
+    // Read by the setting's own type: the server refuses a string where it stores a number.
+    const kind = typeof current[key];
+    let parsed: unknown = value;
+    if (kind === 'boolean') {
+      const v = value.trim().toLowerCase();
+      if (v !== 'true' && v !== 'false') { console.error(chalk.red(`"${key}" is true or false.`)); process.exit(1); return; }
+      parsed = v === 'true';
+    } else if (kind === 'number') {
+      if (!/^-?\d+(\.\d+)?$/.test(value.trim())) { console.error(chalk.red(`"${key}" is a number.`)); process.exit(1); return; }
+      parsed = Number(value);
+    }
+    try {
+      const { data } = await axios.put(`${API_URL}/settings`, { [key]: parsed });
+      console.log(chalk.green(`${key} set to ${JSON.stringify((data ?? {})[key] ?? parsed)}`) + chalk.gray(' (server-wide)'));
+    } catch (e: any) {
+      console.error(chalk.red('The server refused it:'), e?.response?.data?.error ?? e?.message);
+      process.exit(1);
+    }
+  });
+
+// e437ea58: the server's settings, all or one.
+configCommand
+  .command('get [key]')
+  .description("Print the server's settings, or one of them")
+  .action(async (key: string | undefined) => {
+    try {
+      const { data } = await axios.get(`${API_URL}/settings`);
+      if (!key) { console.log(JSON.stringify(data, null, 2)); return; }
+      if (!Object.prototype.hasOwnProperty.call(data ?? {}, key)) {
+        console.error(chalk.red(`Unknown setting "${key}". Server settings: ${Object.keys(data ?? {}).join(', ')}.`));
+        process.exit(1);
+        return;
+      }
+      console.log(typeof data[key] === 'string' ? data[key] : JSON.stringify(data[key]));
+    } catch (e: any) {
+      console.error(chalk.red('Could not read the server\'s settings:'), e?.response?.data?.error ?? e?.message);
+      process.exit(1);
+    }
+  });
 
 configSetCommand
   .command('telemetry <value>')
@@ -2424,14 +2962,12 @@ configSetCommand
       process.exit(1);
     }
     const enabled = normalised === 'true';
-    const configPath = path.join(os.homedir(), '.agenfk', 'config.json');
     try {
-      let config: Record<string, unknown> = {};
-      if (fs.existsSync(configPath)) {
-        config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      }
-      config.telemetry = enabled;
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+      // The shared writer rather than a read-modify-write here. The settings
+      // screen sets the same flag, and two hand-rolled versions of "keep the
+      // other keys" is how one of them eventually drops flowRegistry or the
+      // GitHub repo mappings. See packages/telemetry/src/index.ts.
+      setTelemetryEnabled(enabled);
       if (enabled) {
         console.log(chalk.green('Telemetry enabled.') + ' Anonymous usage data will be sent to help improve AgEnFK.');
         console.log(chalk.gray('  To opt out at any time: agenfk config set telemetry false'));
@@ -3094,8 +3630,9 @@ rulesCommand
 
 program
   .command('get <id>')
-  .description('Get details of a specific item (MCP fallback: get_item)')
+  .description('Get details of a specific item (MCP: get_item)')
   .option('--json', 'Output as JSON')
+  .option('--records', 'Also return its step records (per-step checks and whole-suite test results; large)')
   .action(async (id, options) => {
     try {
       let targetId = id;
@@ -3106,7 +3643,7 @@ program
         if (found.length > 1) { console.error(chalk.red(`Ambiguous ID ${id}, matches multiple items`)); process.exit(1); }
         targetId = found[0].id;
       }
-      const { data: item } = await axios.get(`${API_URL}/items/${targetId}`);
+      const { data: item } = await axios.get(`${API_URL}/items/${targetId}${options.records ? '?records=1' : ''}`);
       if (program.opts().toon || options.json) {
         console.log(structuredOutput(item));
       } else {
@@ -3141,6 +3678,34 @@ program
     }
   });
 
+/**
+ * CGLAB-420: a PR opened with plain `gh pr create` carries none of the checks'
+ * history; `agenfk pr create` puts it in the body. pr-register follows both, so
+ * it posts the history as a comment - best effort, and said when it could not.
+ */
+async function postCheckHistory(itemId: string, prNumber: number, repo: string): Promise<void> {
+  const read = async <T>(what: string): Promise<T[] | null> => {
+    try { return ((await axios.get(`${API_URL}/items/${itemId}/${what}`)).data ?? []) as T[]; } catch { return null; }
+  };
+  const [events, custom, warnings] = await Promise.all([read<GateEvent>('gate-events'), read<CustomCheckRow>('custom-checks'), read<TreeWarningRow>('warnings')]);
+  if (!events || !custom || !warnings) {
+    console.warn(chalk.yellow('⚠️  Could not read the cards\' check history from the server; nothing was posted on the PR.'));
+    return;
+  }
+  // CGLAB-428: an older server has no such route; the rest of the history still goes on.
+  const disabled = await read<DisabledCheckRow>('disabled-checks');
+  if (!disabled) console.warn(chalk.yellow('⚠️  Could not read the checks the org\'s hub switched off; the PR comment will not list them.'));
+  const comment = prRegisterComment(events, custom, warnings, disabled ?? []);
+  if (!comment) return;
+  if (!checkGhCli()) { console.warn(chalk.yellow('⚠️  gh is not installed: the check history was not posted on the PR.')); return; }
+  // Once per PR: a second pr-register (a re-run) does not post it again.
+  const seen = spawnSync('gh', ['pr', 'view', String(prNumber), '--repo', repo, '--json', 'comments', '-q', '.comments[].body'], { encoding: 'utf8', timeout: 30_000 });
+  if (seen.status === 0 && (seen.stdout ?? '').includes('### AgEnFK check history')) { console.log(chalk.dim(`The check history is already on PR #${prNumber}.`)); return; }
+  const r = spawnSync('gh', ['pr', 'comment', String(prNumber), '--repo', repo, '--body', comment], { encoding: 'utf8', timeout: 30_000 });
+  if (r.status !== 0) console.warn(chalk.yellow(`⚠️  Could not post the check history on the PR: ${(r.stderr || r.stdout || '').trim()}`));
+  else console.log(chalk.green(`Posted the check history on PR #${prNumber}.`));
+}
+
 program
   .command('pr-register')
   .description('Register a freshly opened PR with agent-declared sizing (MCP fallback: register_pr)')
@@ -3168,6 +3733,7 @@ program
         ...(options.harness ? { harness: options.harness } : {}),
       });
       console.log(structuredOutput(data));
+      await postCheckHistory(options.item, options.number, options.repo);
     } catch (error: any) {
       console.error(chalk.red('Error registering PR:'), error.response?.data?.error || error.message);
       process.exit(1);
@@ -3249,8 +3815,20 @@ run
   .option('--source <path>', 'Absolute path of the worker session JSONL (for live tailing)')
   .action(async (o) => {
     try {
+      /*
+       * Resolve a short id first, for the same reason `run list` does: a run
+       * stored with a truncated itemId never matches its card, because the
+       * per-card route filters by exact id.
+       */
+      let itemId = o.item;
+      if (itemId.length < 36) {
+        const { data: allItems } = await axios.get(`${API_URL}/items`);
+        const resolved = resolveItemIdPrefix(allItems, itemId);
+        if (!resolved.ok) { console.error(chalk.red(resolved.error)); process.exit(1); }
+        itemId = resolved.id;
+      }
       const { data } = await axios.post(`${API_URL}/agent-runs`, {
-        itemId: o.item, step: o.step, projectId: o.project, actor: o.actor,
+        itemId, step: o.step, projectId: o.project, actor: o.actor,
         harness: o.harness, model: o.model, sessionId: o.session, sourcePath: o.source,
       });
       console.log(structuredOutput(data));
@@ -3323,7 +3901,20 @@ run
   .requiredOption('--item <id>', 'AgEnFK item id')
   .action(async (o) => {
     try {
-      const { data } = await axios.get(`${API_URL}/items/${o.item}/agent-runs`);
+      /*
+       * Resolve a short id the way `agenfk get` does. This passed the value
+       * straight to the route, which filters by EXACT item id - so
+       * `run list --item 2cab541e` returned [] for a card that had runs, and
+       * made a working registration look broken.
+       */
+      let itemId = o.item;
+      if (itemId.length < 36) {
+        const { data: allItems } = await axios.get(`${API_URL}/items`);
+        const resolved = resolveItemIdPrefix(allItems, itemId);
+        if (!resolved.ok) { console.error(chalk.red(resolved.error)); process.exit(1); }
+        itemId = resolved.id;
+      }
+      const { data } = await axios.get(`${API_URL}/items/${itemId}/agent-runs`);
       console.log(structuredOutput(data));
     } catch (error: any) {
       console.error(chalk.red('Error listing runs:'), error.response?.data?.error || error.message);
@@ -3359,7 +3950,7 @@ program
   .command('gatekeeper')
   .description('Check workflow authorization before making changes (MCP fallback: workflow_gatekeeper)')
   .option('--intent <text>', 'Description of what you intend to do')
-  .option('--role <role>', 'Role: planning|coding|review|testing|closing', 'coding')
+  .option('--role <role>', 'Role label (planning|coding|review|testing|closing); defaults to the role of the step the card is on')
   .option('--item-id <id>', 'Specific item ID to check against')
   .option('--json', 'Output as JSON')
   .action(async (options) => {
@@ -3401,8 +3992,12 @@ program
       // when no flow is resolvable.
       let activeFlow: any = null;
       let flowFetchFailed = false;
-      if (projectId) {
-        try { ({ data: activeFlow } = await axios.get(`${API_URL}/projects/${projectId}/flow`)); }
+      // With --item-id and no project here, the card names its own project: its
+      // flow still decides the step and its role (d26832d6 #11).
+      const flowProject = projectId
+        ?? (options.itemId ? (items as any[]).find((i: any) => i.id === options.itemId || String(i.id).startsWith(options.itemId))?.projectId ?? null : null);
+      if (flowProject) {
+        try { ({ data: activeFlow } = await axios.get(`${API_URL}/projects/${flowProject}/flow`)); }
         catch {
           // Do NOT swallow this. Without the flow the step's exit criteria are
           // unknown, and reporting "no criteria" for a failed lookup asserts a
@@ -3418,11 +4013,53 @@ program
         role: options.role,
       });
 
+      /*
+       * THE BASE MOVED UNDER THE AGENT (44163aa2), and the CLI is where most
+       * agents actually are - the MCP tool is opt-in. Same notice the MCP
+       * gatekeeper appends, from the same core helper, so the two cannot say
+       * different things about the same tree.
+       *
+       * Advisory only: `shouldWait` (the 20-commit threshold) belongs to the
+       * DISPATCHER, not to a gate that runs before every edit.
+       */
+      let driftNotice = '';
+      if (decision.authorized && decision.task) {
+        const project = await axios
+          .get(`${API_URL}/projects/${(decision.task as any).projectId}`)
+          .then(r => r.data)
+          .catch(() => null);
+        const target = driftTargets(decision.task as any, projectItems, project?.projectRoot);
+        if (target) {
+          driftNotice = dispatchDriftNotice({
+            ...target,
+            deps: { run: args => execFileSync('git', args as string[], { encoding: 'utf8' }) },
+          });
+        }
+      }
+
+      // Record which card this session is working on (CGLAB-177). This is the
+      // one place the workflow resolves that unambiguously — the run recorder
+      // reads it instead of guessing, because `?active=true` can return dozens
+      // of items across projects and attributing work to the wrong card is
+      // worse than recording none.
+      if (decision.authorized && decision.task?.id) {
+        writeActiveWork({ id: decision.task.id, projectId: (decision.task as any).projectId });
+      }
+
+      // 37a292a7: what leaving this step will run, so the agent does not run the
+      // suite first when verify will - and knows the tests are its own when it won't.
+      // Advice only: a server that cannot answer it never stops the authorization.
+      let onLeave: any = null;
+      if (decision.authorized && decision.task?.id) {
+        onLeave = await axios.get(`${API_URL}/items/${decision.task.id}/leave-plan`, { timeout: 5000 }).then(r => r.data ?? null).catch(() => null);
+      }
+
       if (options.json) {
         console.log(JSON.stringify({
           authorized: decision.authorized,
           message: decision.message,
           task: decision.task ? { id: decision.task.id, title: decision.task.title, status: decision.task.status } : null,
+          baseDrift: driftNotice || null,
           exitCriteria: decision.exitCriteria ?? null,
           // criteriaState keeps "absent" and "unknown" distinguishable for JSON
           // consumers; exitCriteria is null for both.
@@ -3430,10 +4067,12 @@ program
           activeFlow: decision.activeFlow ?? null,
           codingStep: decision.codingStep ?? null,
           finalStep: decision.finalStep ?? null,
+          leavePlan: onLeave,
           flowFetchFailed,
         }));
       } else {
-        console.log(decision.authorized ? chalk.green(decision.message) : chalk.red(decision.message));
+        console.log(decision.authorized ? chalk.green(decision.message + driftNotice) : chalk.red(decision.message));
+        if (onLeave?.advice) console.log(chalk.cyan(`\n${onLeave.advice}`));
         if (flowFetchFailed) {
           console.error(chalk.yellow(`⚠️  Could not load the project's flow from ${API_URL}. Exit criteria are unknown, not absent — retry or run \`agenfk flow show\` before advancing.`));
         }
@@ -3445,13 +4084,84 @@ program
     }
   });
 
+const reviewCmd = program
+  .command('review')
+  .description('Record independent reviews (CGLAB-381)');
+
+reviewCmd
+  .command('record <id>')
+  .description('Record an independent review of a card. The server reads the reviewer\'s identity from --transcript (a session log under ~/.claude/projects, ~/.pi/agent/sessions or ~/.codex/sessions), so the reviewer must not be the author. MCP: record_review.')
+  .requiredOption('--transcript <path>', 'The REVIEWER\'s session log, e.g. a Claude Code sub-agent\'s <session>/subagents/agent-<id>.jsonl')
+  .requiredOption('--range <from..to>', 'The commits the review covered')
+  .requiredOption('--findings <json>', 'JSON list of { "title", "state": "fixed"|"rejected", "reason"? } ([] when nothing was found)')
+  .action(async (id, options) => {
+    let findings: unknown;
+    try { findings = JSON.parse(options.findings); } catch {
+      console.error(chalk.red('Error: --findings must be JSON, e.g. [{"title":"null check in x","state":"fixed"}]'));
+      process.exit(1);
+      return;
+    }
+    const tokenPath = path.join(os.homedir(), '.agenfk', 'verify-token');
+    if (!fs.existsSync(tokenPath)) {
+      console.error(chalk.red('Error: ~/.agenfk/verify-token not found.'));
+      process.exit(1);
+      return;
+    }
+    const verifyToken = fs.readFileSync(tokenPath, 'utf8').trim();
+    try {
+      const { data } = await axios.post(`${API_URL}/items/${id}/review-records`,
+        { transcript: options.transcript, range: options.range, findings },
+        { headers: { 'x-agenfk-internal': verifyToken } });
+      const who = data?.reviewer ? `${data.reviewer.client} session ${data.reviewer.sessionId}${data.reviewer.agentId ? `, agent ${data.reviewer.agentId}` : ''}` : 'the reviewer';
+      console.log(chalk.green(`✅ Review recorded for [${String(id).slice(0, 8)}] by ${who}: ${(data?.findings ?? []).length} finding(s).`));
+    } catch (e: any) {
+      console.error(chalk.red(`❌ ${e.response?.data?.error || e.message}`));
+      process.exit(1);
+    }
+  });
+
 program
   .command('verify <id> [command]')
-  .description('Log evidence and advance item to next flow step (MCP fallback: validate_progress)')
+  .description('Log evidence and advance item to next flow step (MCP fallback: validate_progress). [command] runs only on intermediate steps; on the final step the server runs the project verifyCommand.')
   .option('--evidence <text>', 'REQUIRED: How you satisfied the current step\'s exit criteria')
+  // 961f301d: removed. Kept hidden and IGNORED, so an older script or rule bundle still verifies - and still waits.
+  .addOption(new Option('--no-wait').hideHelp())
+  .option('--wait-minutes <n>', 'How long to wait for a person\'s approval before giving up (default 9)')
+  .option('--check <name=outcome>', 'Report an agent check of this step: <name>=pass or <name>=fail (repeatable)', (v: string, acc: string[] = []) => [...acc, v])
+  .option('--check-note <name=text>', 'What you found for a reported agent check, or your answer to one of the step\'s failing warnings: <name>=<text> (repeatable)', (v: string, acc: string[] = []) => [...acc, v])
+  .option('--plan', 'Dry run: say what leaving the current step would run on this tree (reuse, only the changed or affected tests, the whole suite, a sibling\'s green, or nothing) - runs nothing, moves nothing')
+  .option('--json', 'With --plan: print the plan as JSON')
   .action(async (id, command, options) => {
+    // 2ebacb23: the dry run needs no evidence and never posts a verify.
+    if (options.plan) {
+      try {
+        let targetId = id;
+        if (id.length < 36) {
+          const { data: allItems } = await axios.get(`${API_URL}/items`);
+          const found = allItems.filter((i: any) => i.id.startsWith(id));
+          if (found.length !== 1) { console.error(chalk.red(found.length ? `Ambiguous ID ${id}` : `No item found starting with ${id}`)); process.exit(1); return; }
+          targetId = found[0].id;
+        }
+        const { data: plan } = await axios.get(`${API_URL}/items/${targetId}/leave-plan?predict=1`);
+        if (options.json) console.log(JSON.stringify(plan));
+        else console.log(`${plan.advice}${plan.prediction?.advice ? `\n${plan.prediction.advice}` : ''}\n${chalk.gray('(Dry run: nothing ran and the card did not move.)')}`);
+      } catch (e: any) {
+        console.error(chalk.red('Error reading the leave plan:'), e.response?.data?.error || e.message);
+        process.exit(1);
+        return;
+      }
+      process.exit(0);
+      return;
+    }
     if (!options.evidence) {
       console.error(chalk.red('Error: --evidence is required. Describe how you satisfied the current step\'s exit criteria.'));
+      process.exit(1);
+      return;
+    }
+    // C3b: refused here, before anything is sent - a typo must not cost a verify.
+    const reported = parseCheckFlags(options.check ?? [], options.checkNote ?? []);
+    if ('error' in reported) {
+      console.error(chalk.red(`Error: ${reported.error}`));
       process.exit(1);
       return;
     }
@@ -3481,68 +4191,151 @@ program
 
     // Follow an async validate run to completion, streaming output. No overall
     // deadline — the verifyCommand may legitimately run for a long time.
-    const follow = async (runId: string) => {
-      const final = await followValidateRun({
-        poll: async () => {
-          try {
-            return (await axios.get(`${API_URL}/items/validate-runs/${runId}`, { headers: { 'x-agenfk-internal': verifyToken }, timeout: 10000 })).data;
-          } catch (e: any) {
-            // 404 is a definitive answer (run expired / server restarted mid-run),
-            // not a connection blip — don't retry, surface the server's guidance.
-            if (e.response?.status === 404) {
-              const fatal: any = new Error(e.response.data?.message || 'The validation run is unknown to the server (it may have restarted). Check the item\'s comments for the persisted outcome before re-running verify.');
-              fatal.fatal = true;
-              throw fatal;
-            }
-            throw e;
+    const follow = (runId: string) => followValidateRun({
+      poll: async () => {
+        try {
+          return (await axios.get(`${API_URL}/items/validate-runs/${runId}`, { headers: { 'x-agenfk-internal': verifyToken }, timeout: 10000 })).data;
+        } catch (e: any) {
+          // 404 is a definitive answer (run expired / server restarted mid-run),
+          // not a connection blip — don't retry, surface the server's guidance.
+          if (e.response?.status === 404) {
+            const fatal: any = new Error(e.response.data?.message || 'The validation run is unknown to the server (it may have restarted). Check the item\'s comments for the persisted outcome before re-running verify.');
+            fatal.fatal = true;
+            throw fatal;
           }
-        },
-        onOutput: (chunk: string) => process.stdout.write(chunk),
-      });
-      if (final.status === 'passed') {
-        console.log(chalk.green(final.message || `\n✅ Validation passed.`));
-      } else {
-        console.error(chalk.red(`\n❌ ${final.message || 'Validation failed.'}`));
-        process.exit(1);
+          throw e;
+        }
+      },
+      onOutput: (chunk: string) => process.stdout.write(chunk),
+    });
+
+    // The --check reports are about the step they were given on: once the card is elsewhere, stop sending them.
+    let sendReports = true;
+    /** One verify: its outcome, never an exit. Throws only when following a run fails. */
+    const attempt = async (): Promise<{ ok: boolean; message?: string; output?: string; checks?: BlockingCheck[] }> => {
+      try {
+        // Report the caller's cwd so the server can run the verifyCommand in this
+        // project's directory (resolved up to the repo root), not the daemon's own
+        // cwd — matching the MCP validate_progress path (CGLAB-13).
+        const body: any = { evidence: options.evidence, async: true, cwd: process.cwd() };
+        // Who is advancing the card (CGLAB-381), so a review check can tell an
+        // independent reviewer apart from the author.
+        const actor = harnessActor();
+        if (actor) body.actor = actor;
+        if (command) body.command = command;
+        if (sendReports && reported.agentChecks.length) body.agentChecks = reported.agentChecks;
+        if (sendReports && reported.checkAnswers?.length) body.checkAnswers = reported.checkAnswers;
+        // 5-minute POST timeout: a NEW server answers 202 in milliseconds, but an
+        // OLD server (upgrade window) ignores async:true and blocks for the whole
+        // command — keep the previous ceiling so that path doesn't regress.
+        const res = await axios.post(`${API_URL}/items/${targetId}/validate`, body, { headers: { 'x-agenfk-internal': verifyToken }, timeout: 300000 });
+        if (res.status === 202 && res.data?.runId) {
+          console.log(chalk.blue(res.data.message || `⏳ Validation running in background…`));
+          const final = await follow(res.data.runId);
+          return { ok: final.status === 'passed', message: final.message, checks: final.checks };
+        }
+        // Synchronous fast-path (no command executed: anchor advance, sibling
+        // propagation, intermediate step without command).
+        return { ok: true, message: res.data.message, output: res.data.output };
+      } catch (error: any) {
+        const errData = error.response?.data;
+        // A run is already active for this item — follow it instead of failing.
+        if (errData?.error === 'VALIDATE_RUN_ACTIVE' && errData.runId) {
+          console.log(chalk.yellow(errData.message || 'A validation run is already active — following it.'));
+          const final = await follow(errData.runId);
+          return { ok: final.status === 'passed', message: final.message, checks: final.checks };
+        }
+        if (errData === undefined && (error?.fatal || !error?.response)) throw error;
+        return { ok: false, message: errData?.message || errData?.error || error.message, output: errData?.output, checks: errData?.checks };
       }
     };
 
-    try {
-      // Report the caller's cwd so the server can run the verifyCommand in this
-      // project's directory (resolved up to the repo root), not the daemon's own
-      // cwd — matching the MCP validate_progress path (CGLAB-13).
-      const body: any = { evidence: options.evidence, async: true, cwd: process.cwd() };
-      if (command) body.command = command;
-      // 5-minute POST timeout: a NEW server answers 202 in milliseconds, but an
-      // OLD server (upgrade window) ignores async:true and blocks for the whole
-      // command — keep the previous ceiling so that path doesn't regress.
-      const res = await axios.post(`${API_URL}/items/${targetId}/validate`, body, { headers: { 'x-agenfk-internal': verifyToken }, timeout: 300000 });
-      if (res.status === 202 && res.data?.runId) {
-        console.log(chalk.blue(res.data.message || `⏳ Validation running in background…`));
-        await follow(res.data.runId);
+    /*
+     * c857900e: when a person's approval is the only thing holding the card,
+     * open the board on it and wait for the go-ahead, then verify again - the
+     * agent carries on with no message in its chat. Bounded: an agent's tool
+     * call is killed after minutes, so past the deadline it says to run the
+     * same verify again, which waits again.
+     */
+    if (options.wait === false) console.error(chalk.yellow('⚠️  --no-wait was removed and is ignored: when only a person\'s approval blocks the card, verify opens it on the board and waits.'));
+    const canWait = waitAllowed(process.env);
+    const waitMinutes = options.waitMinutes !== undefined && Number.isFinite(Number(options.waitMinutes)) ? Math.max(0, Number(options.waitMinutes)) : 9;
+    const pollMs = Number(process.env.AGENFK_APPROVAL_POLL_MS) || 3000;
+    const gatesNow = async () => (await axios.get(`${API_URL}/items/${targetId}/gates`, { timeout: 10000 })).data;
+    let opened = false;
+    // An approval that lands but does not let the card go is not waited on forever.
+    for (let round = 0; round < 5; round++) {
+      let r: Awaited<ReturnType<typeof attempt>>;
+      try {
+        r = await attempt();
+      } catch (e: any) {
+        console.error(chalk.red(`\n❌ ${e?.message || e}`));
+        process.exit(1);
         return;
       }
-      // Synchronous fast-path (no command executed: anchor advance, sibling
-      // propagation, intermediate step without command).
-      if (res.data.output) console.log(res.data.output);
-      console.log(chalk.green(res.data.message || `\n✅ Validation passed.`));
-    } catch (error: any) {
-      const errData = error.response?.data;
-      // A run is already active for this item — follow it instead of failing.
-      if (errData?.error === 'VALIDATE_RUN_ACTIVE' && errData.runId) {
-        console.log(chalk.yellow(errData.message || 'A validation run is already active — following it.'));
-        try {
-          await follow(errData.runId);
-        } catch (followErr: any) {
-          console.error(chalk.red(`\n❌ ${followErr?.message || followErr}`));
-          process.exit(1);
-        }
+      if (r.ok) {
+        if (r.output) console.log(r.output);
+        console.log(chalk.green(r.message || `\n✅ Validation passed.`));
         return;
       }
-      if (errData?.output) console.error(errData.output);
-      console.error(chalk.red(`\n❌ ${errData?.message || errData?.error || error.message}`));
-      process.exit(1);
+      if (r.output) console.error(r.output);
+      // The server's refusals carry their own icon; one is enough.
+      console.error(chalk.red(`\n❌ ${(r.message || 'Validation failed.').replace(/^\s*❌\s*/, '')}`));
+      if (!onlyApprovalBlocks(r.checks)) { process.exit(1); return; }
+      const commands = (r.checks ?? []).filter(c => c.blocking).map(commandWaitedOn).filter((c): c is NonNullable<typeof c> => c !== null);
+      const stepBlocks = (r.checks ?? []).some(c => c.blocking && c.id === 'human-approval');
+      const what = [stepBlocks ? 'this step' : '', ...commands.map(c => `the command ${c.command ?? ''}`.trim())].filter(Boolean).join(' and ');
+      // 8a62a8c2: the request for the approval, in the chat - the agent relays it to the person.
+      const askForApproval = async () => {
+        let card: any = null;
+        try { card = (await axios.get(`${API_URL}/items/${targetId}`, { timeout: 10000 })).data; } catch { /* the block still names the card */ }
+        const url = buildUiOpenUrl(resolveDashboardUrl(path.resolve(__dirname, '../../..')), targetId, card?.projectId ?? findProjectId(process.cwd()), { view: 'overview' });
+        console.log(chalk.yellow(approvalNeededBlock({ what, itemId: targetId, title: typeof card?.title === 'string' ? card.title : undefined, url })));
+      };
+      if (!canWait) {
+        await askForApproval();
+        process.exit(1);
+        return;
+      }
+      let before: GatesSnapshot | null = null;
+      try { before = await gatesNow(); } catch { /* the wait polls again */ }
+      // An approval that landed while the refused verify ran is already here: verify again at once.
+      if (alreadySatisfied(r.checks, before)) {
+        console.log(chalk.green('✅ Approved while the checks ran — verifying again.'));
+        continue;
+      }
+      if (!opened) {
+        // --details: the approval is given on the card's Overview, so open it there.
+        spawnSync(process.execPath, [process.argv[1], 'ui', '--open', targetId, '--details'], { stdio: 'inherit' });
+        opened = true;
+      }
+      await askForApproval();
+      console.log(chalk.cyan(`⏳ Waiting up to ${waitMinutes} min for a person to approve ${what} on the board…`));
+      const outcome = await waitForApproval({
+        step: before?.step ?? '',
+        approvalsBefore: before?.approvals?.length ?? 0,
+        commandsWaitedOn: commands.map(c => ({ hash: c.hash, approvedAt: approvedAt(before, c.hash) })),
+        // Without a baseline, never a step move we could not compare.
+        poll: async () => { const g = await gatesNow(); return before ? g : { ...g, step: '' }; },
+        intervalMs: pollMs,
+        deadlineMs: waitMinutes * 60_000,
+      });
+      if (outcome === 'moved') {
+        // A person moved the card on (or back) on the board: this verify's step is behind it.
+        sendReports = false;
+        console.log(chalk.yellow(`The card left ${before?.step ?? 'the step'} on the board while this waited; nothing more to verify here. Run agenfk verify again for the step it is on now.`));
+        return;
+      }
+      if (outcome === 'timeout') {
+        await askForApproval();
+        console.error(chalk.yellow(`Still waiting for a person's approval. Once it is given, run the same agenfk verify again: it waits again and carries on.`));
+        process.exit(1);
+        return;
+      }
+      console.log(chalk.green('✅ Approved on the board — verifying again.'));
     }
+    console.error(chalk.red('\n❌ The card was approved but is still refused: check its step checks on the board.'));
+    process.exit(1);
   });
 
 // ── Branch commands ──────────────────────────────────────────────────────────
@@ -3585,6 +4378,154 @@ branchCmd
 
       await axios.put(`${API_URL}/items/${itemId}`, { branchName });
       console.log(chalk.green(`✅ Branch '${branchName}' created and linked to item [${itemId.substring(0, 8)}].`));
+    } catch (e: any) {
+      console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
+      process.exit(1);
+    }
+  });
+
+const worktreeCmd = program
+  .command('worktree')
+  .description('Manage per-item git worktrees, so several agents can work at once');
+
+worktreeCmd
+  .command('prune')
+  .option('-y, --yes', 'Remove without asking. Only what a dry run would have listed.')
+  .description('Show which finished cards still hold a worktree, and remove the ones you confirm')
+  .action(async (options: { yes?: boolean }) => {
+    /*
+     * Deliberately a command rather than a rule.
+     *
+     * Removing a worktree when its card reaches the final step is the obvious
+     * policy and the wrong one: people go back to a directory after closing a
+     * card, and deleting a working tree is not something undo recovers. So
+     * this lists what it WOULD remove and removes only what the person
+     * confirms — which still answers the real complaint, because what has
+     * already accumulated can finally be cleared.
+     */
+    // The same resolution `current-project` uses: the nearest .agenfk/project.json.
+    const projFile = findProjectJsonPath(process.cwd());
+    if (!projFile) {
+      console.error(chalk.red('No AgEnFK project here. Run this from inside an initialized project.'));
+      process.exit(1);
+      return;
+    }
+    let projectId: string | null = null;
+    try { projectId = JSON.parse(fs.readFileSync(projFile, 'utf8')).projectId || null; } catch { /* handled below */ }
+    if (!projectId) {
+      console.error(chalk.red(`${projFile} is missing a "projectId" key.`));
+      process.exit(1);
+      return;
+    }
+    const { data: items } = await axios.get(`${API_URL}/items`, {
+      params: projectId ? { projectId } : undefined,
+    });
+    const { data: flow } = await axios
+      .get(`${API_URL}/projects/${projectId}/flow`)
+      .catch(() => ({ data: null }));
+
+    // "Finished" is whatever this project's flow says it is. Hardcoding DONE
+    // would offer nothing on a custom flow.
+    const finalSteps: string[] = flow?.steps?.length
+      ? [flow.steps[flow.steps.length - 1].name]
+      : ['DONE'];
+
+    const candidates = prunableWorktrees(items ?? [], {
+      finalSteps,
+      isDirty: (dir: string) => {
+        // Throws if the directory is gone or is not a repository, and the
+        // caller treats a throw as "do not touch" — a failed check read as
+        // clean is how a tool deletes work nobody pushed.
+        const out = execFileSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8' });
+        return out.trim().length > 0;
+      },
+    });
+
+    if (candidates.length === 0) {
+      console.log(chalk.green('Nothing to prune: no finished card is holding a clean worktree.'));
+      return;
+    }
+
+    console.log(chalk.blue(`\n${candidates.length} worktree(s) could be removed:\n`));
+    for (const c of candidates) {
+      console.log(`  ${chalk.bold(c.title)}`);
+      console.log(chalk.gray(`    ${c.path}`));
+      console.log(chalk.gray(`    ${c.reason}`));
+    }
+
+    if (!options.yes) {
+      // The listing IS the default. Someone running this to see what is there
+      // must not have anything deleted by it.
+      console.log(chalk.yellow('\nNothing was removed. Re-run with --yes to remove these.'));
+      return;
+    }
+
+    let removed = 0;
+    for (const c of candidates) {
+      try {
+        // Through git, not rm: it also clears the .git/worktrees registration,
+        // and leaving those behind is half the slowdown this is meant to fix.
+        execFileSync('git', ['worktree', 'remove', c.path], { stdio: 'ignore' });
+        removed += 1;
+      } catch (e: any) {
+        console.log(chalk.yellow(`  Kept ${c.path}: ${e?.message ?? 'git refused'}`));
+      }
+    }
+    console.log(chalk.green(`\nRemoved ${removed} of ${candidates.length}.`));
+  });
+
+worktreeCmd
+  .command('create <itemId>')
+  .description("Create (or adopt) the item's git worktree and link it to the item")
+  .option('--root <path>', 'Directory that holds all worktrees (default: ~/.agenfk/worktrees)')
+  .action(async (itemId, options) => {
+    try {
+      const { data } = await axios.post(`${API_URL}/items/${itemId}/worktree`, {
+        root: options.root,
+      });
+      const verb = data.created ? 'Created' : 'Reusing';
+      console.log(chalk.green(`✅ ${verb} worktree for [${itemId.substring(0, 8)}]`));
+      console.log(`   ${chalk.cyan(data.path)}  ${chalk.dim(`(${data.branchName})`)}`);
+    } catch (e: any) {
+      console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
+      process.exit(1);
+    }
+  });
+
+worktreeCmd
+  .command('status <itemId>')
+  .description("Show the item's worktree and whether its directory is still there")
+  .action(async (itemId) => {
+    try {
+      const { data } = await axios.get(`${API_URL}/items/${itemId}/worktree`);
+      // 686fdbf6: a tree the card chose is where it runs, whatever it carries.
+      if (data.chosen) {
+        console.log(`Runs in:  ${chalk.cyan(data.chosen === 'root' ? 'the project root (chosen with --worktree none)' : `${data.chosen} (chosen with --worktree)`)}`);
+      }
+      if (!data.path) {
+        console.log(chalk.yellow(`No worktree for [${itemId.substring(0, 8)}].`));
+        return;
+      }
+      console.log(`Worktree: ${chalk.cyan(data.path)}`);
+      console.log(`Branch:   ${chalk.cyan(data.branchName ?? '(none)')}`);
+      // "recorded but missing" is a real state — someone deleted the directory
+      // by hand — and it needs recreating, not a plain cd.
+      console.log(`On disk:  ${data.exists ? chalk.green('yes') : chalk.yellow('no — run `agenfk worktree create` to recreate')}`);
+    } catch (e: any) {
+      console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
+      process.exit(1);
+    }
+  });
+
+worktreeCmd
+  .command('remove <itemId>')
+  .description("Remove the item's worktree directory (the branch and its commits are kept)")
+  .action(async (itemId) => {
+    try {
+      const { data } = await axios.delete(`${API_URL}/items/${itemId}/worktree`);
+      console.log(data.removed
+        ? chalk.green(`✅ Worktree removed for [${itemId.substring(0, 8)}]. The branch and its commits are untouched.`)
+        : chalk.yellow(`No worktree to remove for [${itemId.substring(0, 8)}].`));
     } catch (e: any) {
       console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
       process.exit(1);
@@ -3700,6 +4641,53 @@ const prCmd = program
   .description('Manage pull requests for AgEnFK items (requires GitHub CLI)');
 
 prCmd
+  .command('import <prNumber>')
+  .description('Open a card from an existing pull request, bringing its title, body and branch')
+  .action(async (prNumber: string) => {
+    /*
+     * The card CGLAB-177 asked for. The server holds every decision — reuse
+     * rather than duplicate, body without the conversation, no fetch for a
+     * fork — so this is the thin part: find the project, POST, report.
+     *
+     * It exists at all because `tasks-from-branch` shipped as a route with no
+     * caller in either the CLI or the UI, which means the composition it built
+     * cannot be reached by anyone. A second unreachable endpoint would have
+     * been the same mistake twice.
+     */
+    const projFile = findProjectJsonPath(process.cwd());
+    if (!projFile) {
+      console.error(chalk.red('No AgEnFK project here. Run this from inside an initialized project.'));
+      process.exit(1);
+      return;
+    }
+    let projectId: string | null = null;
+    try { projectId = JSON.parse(fs.readFileSync(projFile, 'utf8')).projectId || null; } catch { /* handled below */ }
+    if (!projectId) {
+      console.error(chalk.red(`${projFile} is missing a "projectId" key.`));
+      process.exit(1);
+      return;
+    }
+    try {
+      const { data } = await axios.post(`${API_URL}/projects/${projectId}/tasks-from-pr`, { prNumber });
+      if (data.reused) {
+        // Not an error, and not silent either: the person asked for a card and
+        // is getting one they already had, which they need to be told.
+        console.log(chalk.yellow(`Reused ${data.item.id} — ${data.reason}`));
+        return;
+      }
+      console.log(chalk.green(`Created ${data.item.id}  ${data.item.title}`));
+      if (data.worktree?.path) console.log(chalk.dim(`  worktree: ${data.worktree.path}`));
+      // The card exists either way; what is missing is said plainly rather
+      // than left for the person to discover when they go looking for it.
+      if (data.worktreeSkipped) console.log(chalk.yellow(`  no worktree: ${data.worktreeSkipped}`));
+      if (data.worktreeError) console.log(chalk.yellow(`  no worktree: ${data.worktreeError}`));
+    } catch (e: any) {
+      console.error(chalk.red(e?.response?.data?.error ?? e?.message ?? String(e)));
+      process.exit(1);
+    }
+  });
+
+prCmd
   .command('create <itemId>')
   .description('Create a pull request for the item\'s branch, store the PR URL/number, and auto-register sizing (emits pr.opened)')
   .option('--title <title>', 'PR title (defaults to item title)')
@@ -3721,7 +4709,28 @@ prCmd
       }
       const prTitle = options.title || item.title;
       const args = ['pr', 'create', '--title', prTitle];
-      if (options.body) { args.push('--body', options.body); } else { args.push('--body', item.description || ''); }
+      // A person's approvals and overrides go on the PR, so a reviewer sees what was let through (CGLAB-382).
+      let gateEvents: GateEvent[] = [];
+      try { gateEvents = (await axios.get(`${API_URL}/items/${itemId}/gate-events`)).data ?? []; } catch (e: any) {
+        // An older server has no such route: say so rather than drop the section silently.
+        console.warn(chalk.yellow(`⚠️  Could not read the card's approvals and overrides (${e?.response?.status ?? e?.message}); the PR body will not list them.`));
+      }
+      // C3b: the custom checks the tree passed, and whose word each result is.
+      let customChecks: CustomCheckRow[] = [];
+      try { customChecks = (await axios.get(`${API_URL}/items/${itemId}/custom-checks`)).data ?? []; } catch (e: any) {
+        console.warn(chalk.yellow(`⚠️  Could not read the card's custom checks (${e?.response?.status ?? e?.message}); the PR body will not list them.`));
+      }
+      // CGLAB-420: the warnings the checks raised, and what the agent answered.
+      let warnings: TreeWarningRow[] = [];
+      try { warnings = (await axios.get(`${API_URL}/items/${itemId}/warnings`)).data ?? []; } catch (e: any) {
+        console.warn(chalk.yellow(`⚠️  Could not read the card's warnings (${e?.response?.status ?? e?.message}); the PR body will not list them.`));
+      }
+      // CGLAB-428: the checks the org's hub switched off, which never ran.
+      let disabledChecks: DisabledCheckRow[] = [];
+      try { disabledChecks = (await axios.get(`${API_URL}/items/${itemId}/disabled-checks`)).data ?? []; } catch (e: any) {
+        console.warn(chalk.yellow(`⚠️  Could not read the checks the org's hub switched off (${e?.response?.status ?? e?.message}); the PR body will not list them.`));
+      }
+      args.push('--body', buildPrBody(options.body || item.description || '', gateEvents, customChecks, warnings, disabledChecks));
       if (options.draft) args.push('--draft');
 
       console.log(chalk.blue(`Creating PR: "${prTitle}"...`));
@@ -3771,7 +4780,8 @@ prCmd
         console.log(chalk.yellow(`   ⚠️  Could not parse repo/number from PR URL — skipped auto-registration. Run 'agenfk pr-register' manually.`));
       }
 
-      console.log(chalk.cyan('\nWhen your PR is approved and merged, run /agenfk-release to create a release.'));
+      const hint = releaseHint(getProjectRoot(), 'open');
+      if (hint) console.log(chalk.cyan(`\n${hint}`));
     } catch (e: any) {
       console.error(chalk.red('Error:'), e.response?.data?.error || e.message);
       process.exit(1);
@@ -3845,14 +4855,15 @@ prCmd
 
       if (result.state === 'merged') {
         console.log(chalk.green(`✅ PR #${item.prNumber} is merged: "${result.title}"`));
-        console.log(chalk.cyan('You can now run /agenfk-release to create a release.'));
+        const hint = releaseHint(getProjectRoot(), 'merged');
+        if (hint) console.log(chalk.cyan(hint));
         process.exit(0);
       } else if (result.state === 'closed') {
         console.log(chalk.red(`⚠ PR #${item.prNumber} was closed without merging.`));
         process.exit(1);
       } else {
         console.log(chalk.yellow(`PR #${item.prNumber} is ${result.state}: "${result.title}"`));
-        console.log(chalk.dim('Run /agenfk-release once the PR is merged.'));
+        if (releaseHint(getProjectRoot(), 'open')) console.log(chalk.dim('Run /agenfk-release once the PR is merged.'));
         process.exit(1);
       }
     } catch (e: any) {
@@ -3913,6 +4924,13 @@ flowCommand
         // reading, so `flow show` reflects a just-changed Hub assignment without
         // waiting for the 5-minute poll (falls back to the local flow on error).
         ({ data: flow } = await axios.get(`${API_URL}/projects/${projectId}/flow?refresh=true`));
+        // 37a292a7: what leaving each step runs, under this project's settings - shown, never saved into the flow.
+        // `leavePlan`, not `onLeave`: the flow contract already names its resolved checks onLeave.
+        let plansFailed = false;
+        const plans: any[] = await axios.get(`${API_URL}/projects/${projectId}/flow/leave-plans`, { timeout: 5000 }).then(r => r.data).catch(() => { plansFailed = true; return []; });
+        const byStep = new Map((Array.isArray(plans) ? plans : []).map((p: any) => [p.step, p]));
+        if (byStep.size) flow = { ...flow, steps: (flow.steps ?? []).map((st: any) => byStep.has(st.name) ? { ...st, leavePlan: byStep.get(st.name) } : st) };
+        if (plansFailed && !(program.opts().toon || options.json)) console.error(chalk.yellow('⚠️  Could not read what leaving each step runs; the table shows the flow without it.'));
       }
       if (program.opts().toon || options.json) {
         console.log(structuredOutput(flow));
@@ -3931,6 +4949,7 @@ flowCommand
         Name: s.name,
         Label: s.label,
         Special: s.isSpecial ? 'yes' : 'no',
+        ...(sorted.some((x: any) => x.leavePlan) ? { 'On leave': s.leavePlan ? ({ suite: 'runs the suite', 'verify-command': 'runs the verify command', nothing: 'runs no tests' } as Record<string, string>)[s.leavePlan.runs] ?? '-' : '-' } : {}),
         'Exit Criteria': s.exitCriteria ? s.exitCriteria.substring(0, 50) : '-',
       })));
     } catch (error: any) {
@@ -4233,35 +5252,19 @@ function getFlowRegistryRepo(): string {
   return 'cglab-public/agenfk-flows';
 }
 
-function serializeFlowToRegistry(flow: any): object {
-  const sorted = [...(flow.steps || [])].sort((a: any, b: any) => a.order - b.order);
-  return {
-    schemaVersion: '1',
-    name: flow.name,
-    description: flow.description || undefined,
-    author: flow.author || undefined,
-    version: flow.version || '1.0.0',
-    steps: sorted.map((s: any) => ({
-      name: s.name,
-      label: s.label,
-      order: s.order,
-      isSpecial: s.isSpecial || false,
-      exitCriteria: s.exitCriteria || undefined,
-    })),
-  };
-}
-
 // ── Flow Registry Commands ─────────────────────────────────────────────────────
 
 flowCommand
   .command('publish <id>')
   .description('Publish a flow to the community registry (requires gh auth login)')
   .option('--registry <owner/repo>', 'Registry repo (default: from config or cglab-public/agenfk-flows)')
+  .option('--allow-removing-checks', 'Publish even though this removes step roles/checks the registry copy has')
   .action(async (id, options) => {
     try {
       const registry = options.registry || getFlowRegistryRepo();
       const body: any = { flowId: id };
       if (registry) body.registry = registry;
+      if (options.allowRemovingChecks) body.allowContractRemoval = true;
       const { data } = await axios.post(`${API_URL}/registry/flows/publish`, body);
       console.log(chalk.green(`\nFlow published successfully!`));
       if (data.version) console.log(chalk.gray(`Version: ${data.version}`));
@@ -4346,18 +5349,8 @@ flowCommand
         return;
       }
 
-      const newFlow = {
-        name: parsed.name,
-        description: parsed.description,
-        steps: parsed.steps.map((s: any) => ({
-          id: randomUUID(),
-          name: s.name,
-          label: s.label,
-          order: s.order,
-          isSpecial: s.isSpecial || false,
-          exitCriteria: s.exitCriteria || undefined,
-        })),
-      };
+      // The step contract travels with the flow (CGLAB-385).
+      const newFlow = registryFlowToLocal(parsed, randomUUID);
 
       const { data: created } = await axios.post(`${API_URL}/flows`, newFlow);
       console.log(chalk.green(`\nFlow installed: ${created.name} (ID: ${created.id})`));

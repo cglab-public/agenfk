@@ -16,24 +16,30 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { existsSync, readFileSync, readdirSync } from 'fs';
-import { execFileSync } from 'child_process';
 import path from 'path';
 import { runInstall, runBootstrap, cleanupHome, REPO_ROOT, type RunResult } from './helpers/runInstaller';
+import { claudeHookCommands } from '../../../../scripts/install-helpers.mjs';
+import { HOOK_VARIANTS } from '../../../../scripts/uninstall-helpers.mjs';
 
 describe('install.mjs — default (CLI-only) install writes the expected artifacts', () => {
   let r: RunResult;
   const readJson = (...segs: string[]) => JSON.parse(readFileSync(r.p(...segs), 'utf8'));
+  // 24a7b899: the service script as it was before the install ran - the check is that the INSTALL leaves it alone,
+  // which an absolute "is the file clean" could not tell from a change being worked on in the tree.
+  let serviceScriptBefore = '';
 
   beforeAll(() => {
+    serviceScriptBefore = readFileSync(path.join(REPO_ROOT, 'scripts', 'start-services.mjs'), 'utf8');
     // A plain install (no --with-mcp / --no-mcp) is the CLI-only default: MCP is
     // opt-in (withMcp stays false) but Codex keeps MCP on (codexMcp default).
-    r = runInstall(['--rules-scope=global']);
+    // --debuglog: the stale-source guard below is read from the step log, which a plain install no longer prints.
+    r = runInstall(['--rules-scope=global', '--debuglog']);
   });
   afterAll(() => cleanupHome(r.home));
 
   it('completes successfully', () => {
     expect(r.status).toBe(0);
-    expect(r.stdout).toMatch(/Installation Complete/);
+    expect(r.stdout).toMatch(/✓ AgEnFK \S+ installed/);
   });
 
   it('installs the workflow rules (global CLAUDE.md)', () => {
@@ -50,6 +56,19 @@ describe('install.mjs — default (CLI-only) install writes the expected artifac
     const settings = JSON.stringify(readJson('.claude', 'settings.json'));
     expect(settings).toContain('agenfk-gatekeeper');
     expect(settings).toContain('agenfk-pr-hook');
+  });
+
+  it('registers every agenfk hook in claude settings.json with the command the installer derives for it', () => {
+    // The table is the single rule for the command shape (#192); a hook wired
+    // past it — as agenfk-run-hook once was — shows up here as a mismatch.
+    const expected = claudeHookCommands(r.p('.local', 'bin'));
+    const hooks = readJson('.claude', 'settings.json').hooks as Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
+    const registered = Object.values(hooks).flat().flatMap((e) => e.hooks ?? []).map((h) => h.command ?? '')
+      .filter((c) => c.includes('agenfk-'));
+    for (const cmd of registered) expect(Object.values(expected)).toContain(cmd);
+    for (const name of HOOK_VARIANTS) expect(registered, name).toContain(expected[name]);
+    // Stop is per-turn: a run hook there closes a live session's run every turn.
+    expect(JSON.stringify(readJson('.claude', 'settings.json').hooks.Stop ?? [])).not.toContain('agenfk-');
   });
 
   it('installs the agenfk skills and slash commands', () => {
@@ -76,14 +95,10 @@ describe('install.mjs — default (CLI-only) install writes the expected artifac
   });
 
   it('does not dirty tracked repo files (installer writes only under the sandbox HOME)', () => {
-    // install.mjs (re)writes scripts/start-services.mjs at its rootDir (= this
-    // repo). It is byte-identical to the committed file today, so the tree stays
-    // clean — but assert it explicitly so any future drift in the template fails
-    // loudly here instead of silently mutating a tracked file during the suite.
-    const dirty = execFileSync('git', ['status', '--porcelain', '--', 'scripts/start-services.mjs'], {
-      cwd: REPO_ROOT, encoding: 'utf8',
-    }).trim();
-    expect(dirty).toBe('');
+    // install.mjs once (re)wrote scripts/start-services.mjs at its rootDir (= this repo) from a template that had
+    // drifted behind the real script. It no longer does; this keeps it that way. Byte-for-byte against the file as it
+    // was before the install, not "clean in git": a change being worked on in the tree is not the installer's.
+    expect(readFileSync(path.join(REPO_ROOT, 'scripts', 'start-services.mjs'), 'utf8')).toBe(serviceScriptBefore);
   });
 });
 

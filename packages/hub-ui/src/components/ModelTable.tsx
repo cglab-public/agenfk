@@ -14,7 +14,7 @@
  * separate add-form was removed because "correct this row" and "add a row" are
  * the same operation against an upsert endpoint.
  */
-import { useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Check, Pencil, Trash2, X } from 'lucide-react';
 import { api } from '../api';
@@ -24,10 +24,11 @@ import {
   type UnifiedRow,
 } from '../pages/adminModelsUnified';
 import type { ModelGroup } from '../pages/modelMappings';
+import { cardClass, cn, controlClass, useConfirm } from './ui';
 
-const cardCls = 'bg-card-glass backdrop-blur border border-border-soft rounded-2xl p-5';
-const inputCls = 'w-full px-2 py-1 rounded-md border border-border-soft bg-chip text-ink dark:text-white text-[12px] placeholder:text-ink-tertiary focus:outline-none focus:ring-2 focus:ring-brand';
-const filterCls = 'w-full px-3 py-2 rounded-lg border border-border-soft bg-chip text-ink dark:text-white text-sm placeholder:text-ink-tertiary focus:outline-none focus:ring-2 focus:ring-brand';
+const cardCls = cardClass;
+const inputCls = cn(controlClass, 'px-2 py-1 rounded-md text-small');
+const filterCls = controlClass;
 
 interface Props {
   groups: ModelGroup[];
@@ -55,6 +56,8 @@ interface Draft {
 }
 
 export function ModelTable({ groups, metaRows, loading, onError, invalidate, onUnmap, unmapping, unmappedCount, unusedCount }: Props) {
+  const { confirm, dialog } = useConfirm();
+  const unmapHintId = useId();
   const [query, setQuery] = useState('');
   const [scope, setScope] = useState<'observed' | 'all'>('observed');
   const [editing, setEditing] = useState<string | null>(null);
@@ -138,20 +141,21 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
 
   return (
     <section className={cardCls}>
+      {dialog}
       <header className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h3 className="text-sm font-semibold text-ink">
+          <h3 className="text-body font-semibold text-ink">
             Models <span className="text-ink-tertiary font-normal">({visible.length})</span>
           </h3>
-          <p className="mt-0.5 text-xs text-ink-tertiary">
+          <p className="mt-0.5 text-small text-ink-tertiary">
             One row per model name. Aliases fold into it; provider and licence are what the PR
             Overview filters by. Click a value to edit it inline. “Open weights” means the
             weights are downloadable — not that the licence is open source.
           </p>
           {(unknownCount > 0 || adminCount > 0) && (
-            <p className="mt-1 text-[11px] text-ink-tertiary">
+            <p className="mt-1 text-caption text-ink-tertiary">
               {unknownCount > 0 && (
-                <span className="text-amber-600 dark:text-amber-400 font-semibold">
+                <span className="text-status-warn-text font-semibold">
                   {unknownCount} unknown
                 </span>
               )}
@@ -161,27 +165,27 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
           )}
         </div>
 
-        <div className="flex items-center gap-3 shrink-0">
-          <label className="flex items-center gap-2 text-[11px] text-ink-tertiary cursor-pointer">
-            <input
-              type="checkbox"
-              checked={scope === 'all'}
-              onChange={e => setScope(e.target.checked ? 'all' : 'observed')}
-              className="accent-brand"
-            />
-            Show all classification rules
-            <span
-              title="Off: only models actually reported. On: also the seeded rules that matched nothing, so family rules like 'glm-' can be edited."
-              className="cursor-help"
-            >
-              ⓘ
-            </span>
-          </label>
+        <div className="flex items-center gap-3 min-w-0 basis-full sm:basis-auto sm:max-w-xs">
+          <div>
+            <label className="flex items-center gap-2 text-caption text-ink-tertiary cursor-pointer">
+              <input
+                type="checkbox"
+                checked={scope === 'all'}
+                onChange={e => setScope(e.target.checked ? 'all' : 'observed')}
+                aria-describedby="models-scope-hint"
+                className="accent-brand"
+              />
+              Show all classification rules
+            </label>
+            <p id="models-scope-hint" className="mt-0.5 text-caption text-ink-tertiary">
+              Off: only models actually reported. On: also the seeded rules that matched nothing, so family rules like 'glm-' can be edited.
+            </p>
+          </div>
         </div>
       </header>
 
       {unmappedCount > 0 && (
-        <p className="mt-2 text-[11px] font-semibold text-amber-600 dark:text-amber-400">
+        <p className="mt-2 text-caption font-semibold text-status-warn-text">
           <AlertTriangle className="w-3.5 h-3.5 inline -mt-0.5 mr-1" />
           {unmappedCount} unmapped — these names are each their own group. Use “add a mapping”
           above to fold spellings of the same model together.
@@ -189,7 +193,7 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
       )}
 
       {unusedCount > 0 && (
-        <p className="mt-2 text-[11px] text-ink-tertiary">
+        <p className="mt-2 text-caption text-ink-tertiary">
           {unusedCount} {unusedCount === 1 ? 'mapping is' : 'mappings are'} listed below but that
           spelling has not been reported yet — the mapping is waiting, not broken.
         </p>
@@ -204,22 +208,22 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
       />
 
       {rowError && (
-        <p role="alert" className="mt-2 text-[12px] text-rose-600 dark:text-rose-400">{rowError}</p>
+        <p role="alert" className="mt-2 text-small text-status-danger-text">{rowError}</p>
       )}
 
-      {loading && <p className="mt-3 text-sm text-ink-tertiary">Loading…</p>}
+      {loading && <p className="mt-3 text-body text-ink-tertiary">Loading…</p>}
 
       {!loading && visible.length === 0 && (
-        <p className="mt-3 text-sm text-ink-tertiary">
+        <p className="mt-3 text-body text-ink-tertiary">
           {query ? `No models match “${query}”.` : 'No models reported yet.'}
         </p>
       )}
 
       {visible.length > 0 && (
-        <div className="mt-3 -mx-5 overflow-x-auto">
-          <table className="w-full text-sm">
+        <div className="mt-3 -mx-5 relative overflow-x-auto">
+          <table className="w-full text-body">
             <thead>
-              <tr className="text-[10px] uppercase tracking-[0.14em] text-ink-tertiary font-semibold">
+              <tr className="eyebrow text-ink-tertiary">
                 <th className="px-5 py-2 text-left font-semibold">Model</th>
                 <th className="px-3 py-2 text-right font-semibold">PRs</th>
                 <th className="px-3 py-2 text-left font-semibold">Provider</th>
@@ -237,6 +241,7 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
                   draft={draft}
                   dirty={isDirty(row, draft)}
                   invalid={!!rowProblem(row.canonicalModel, draft)}
+                  problem={rowProblem(row.canonicalModel, draft)}
                   busy={save.isPending || remove.isPending}
                   onEdit={() => beginEdit(row)}
                   onCancel={() => { setEditing(null); setRowError(null); }}
@@ -244,10 +249,13 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
                   onSave={() => commit(row)}
                   onUnmap={onUnmap}
                   unmapping={unmapping}
-                  onDelete={() => {
-                    if (window.confirm(`Delete the classification for "${row.canonicalModel}"? It will show as unknown until re-added.`)) {
-                      remove.mutate(row.meta?.matchedKey ?? row.canonicalModel);
-                    }
+                  unmapHintId={unmapHintId}
+                  onDelete={async () => {
+                    if (await confirm({
+                      title: `Delete the classification for "${row.canonicalModel}"?`,
+                      body: 'It will show as an unknown model until it is classified again.',
+                      confirmLabel: 'Delete classification',
+                    })) remove.mutate(row.meta?.matchedKey ?? row.canonicalModel);
                   }}
                 />
               ))}
@@ -255,8 +263,14 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
           </table>
         </div>
       )}
+      {/* What Unmap does, on screen once rather than in each button's title. */}
+      {visible.some(r => r.aliases.length > 0) && (
+        <p id={unmapHintId} className="mt-2 text-caption text-ink-tertiary">
+          Unmapping a spelling stops folding it into its model: dashboards show it as its own model again.
+        </p>
+      )}
 
-      <p className="mt-3 text-[11px] text-ink-tertiary">
+      <p className="mt-3 text-caption text-ink-tertiary">
         Rules match by prefix, longest first, so a specific model beats its family. Editing a row
         that inherited a family rule narrows that rule to this model.
       </p>
@@ -264,12 +278,14 @@ export function ModelTable({ groups, metaRows, loading, onError, invalidate, onU
   );
 }
 
-function ModelRow({ row, editing, draft, dirty, invalid, busy, onEdit, onCancel, onChange, onSave, onDelete, onUnmap, unmapping }: {
+function ModelRow({ row, editing, draft, dirty, invalid, problem, busy, onEdit, onCancel, onChange, onSave, onDelete, onUnmap, unmapping, unmapHintId }: {
   row: UnifiedRow;
   editing: boolean;
   draft: Draft;
   dirty: boolean;
   invalid: boolean;
+  /** What is wrong with the draft, in words; null when nothing is. */
+  problem: string | null;
   busy: boolean;
   onEdit: () => void;
   onCancel: () => void;
@@ -278,17 +294,21 @@ function ModelRow({ row, editing, draft, dirty, invalid, busy, onEdit, onCancel,
   onDelete: () => void;
   onUnmap: (aliasModel: string) => void;
   unmapping: boolean;
+  unmapHintId: string;
 }) {
   const inherited = row.meta && !row.meta.exact;
+  // An untouched row (a brand-new model starts empty) is not an error yet:
+  // say what is wrong only once the admin has changed something.
+  const saveBlocked = !dirty ? 'No changes to save' : invalid ? problem : null;
 
   return (
     <>
-      <tr className={`border-t border-border-soft ${row.unknown ? 'bg-amber-500/5' : ''}`}>
+      <tr className={`border-t border-border-soft ${row.unknown ? 'bg-status-warn-bg' : ''}`}>
         <td className="px-5 py-2 align-top">
-          <div className="font-mono text-[12px] font-semibold text-ink">{row.canonicalModel}</div>
-          <div className="mt-0.5 flex items-center gap-2 text-[10px] text-ink-tertiary">
+          <div className="font-mono text-small font-semibold text-ink">{row.canonicalModel}</div>
+          <div className="mt-0.5 flex items-center gap-2 text-caption text-ink-tertiary">
             {row.aliasCount > 0 && <span>{row.aliasCount} alias{row.aliasCount === 1 ? '' : 'es'}</span>}
-            {row.meta?.source === 'admin' && <span className="text-accent-text">edited</span>}
+            {row.meta?.source === 'admin' && <span className="text-accent-ink">edited</span>}
             {inherited && (
               <span title={`Inherited from the rule "${row.meta?.matchedKey}"`} className="cursor-help">
                 from {row.meta?.matchedKey}
@@ -297,7 +317,7 @@ function ModelRow({ row, editing, draft, dirty, invalid, busy, onEdit, onCancel,
             {row.familyCovers != null && <span>covers {row.familyCovers}</span>}
           </div>
         </td>
-        <td className="px-3 py-2 text-right align-top font-mono text-[12px] text-ink-secondary">
+        <td className="px-3 py-2 text-right align-top font-mono text-small text-ink-secondary">
           {row.prs}
         </td>
 
@@ -340,16 +360,16 @@ function ModelRow({ row, editing, draft, dirty, invalid, busy, onEdit, onCancel,
               <button
                 onClick={onSave}
                 disabled={!dirty || invalid || busy}
-                title={invalid ? 'Fix the highlighted value first' : dirty ? 'Save' : 'No changes to save'}
+                title={saveBlocked ?? undefined}
                 aria-label="Save"
-                className="p-1 rounded text-accent-text disabled:opacity-30 hover:bg-chip"
+                className="p-1 rounded text-accent-ink disabled:opacity-30 hover:bg-accent-fill"
               >
                 <Check className="w-4 h-4" />
               </button>
               <button
                 onClick={onCancel}
                 aria-label="Cancel"
-                className="p-1 rounded text-ink-tertiary hover:text-ink hover:bg-chip"
+                className="p-1 rounded text-ink-tertiary hover:text-ink hover:bg-accent-fill"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -357,13 +377,13 @@ function ModelRow({ row, editing, draft, dirty, invalid, busy, onEdit, onCancel,
           </>
         ) : (
           <>
-            <td className="px-3 py-2 text-[12px] text-ink">
-              {row.meta?.provider ?? <span className="text-amber-600 dark:text-amber-400 font-semibold">{UNKNOWN_LABEL}</span>}
+            <td className="px-3 py-2 text-small text-ink">
+              {row.meta?.provider ?? <span className="text-status-warn-text font-semibold">{UNKNOWN_LABEL}</span>}
             </td>
-            <td className="px-3 py-2 text-[12px] text-ink-secondary">
+            <td className="px-3 py-2 text-small text-ink-secondary">
               {row.meta ? licenseClassLabel(row.meta.licenseClass) : '—'}
             </td>
-            <td className="px-3 py-2 text-[12px] text-ink-tertiary">
+            <td className="px-3 py-2 text-small text-ink-tertiary">
               {row.meta?.license || '—'}
             </td>
             <td className="px-3 py-2 text-right whitespace-nowrap">
@@ -371,7 +391,7 @@ function ModelRow({ row, editing, draft, dirty, invalid, busy, onEdit, onCancel,
                 onClick={onEdit}
                 aria-label={`Edit classification for ${row.canonicalModel}`}
                 title={row.unknown ? 'Classify this model' : 'Edit'}
-                className="p-1 rounded text-ink-tertiary hover:text-accent-text hover:bg-chip"
+                className="p-1 rounded text-ink-tertiary hover:text-accent-ink hover:bg-accent-fill"
               >
                 <Pencil className="w-3.5 h-3.5" />
               </button>
@@ -380,7 +400,7 @@ function ModelRow({ row, editing, draft, dirty, invalid, busy, onEdit, onCancel,
                   onClick={onDelete}
                   disabled={busy}
                   aria-label={`Delete classification for ${row.canonicalModel}`}
-                  className="p-1 rounded text-ink-tertiary hover:text-rose-600 disabled:opacity-40"
+                  className="p-1 rounded text-ink-tertiary hover:text-status-danger-text disabled:opacity-40"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
@@ -395,21 +415,21 @@ function ModelRow({ row, editing, draft, dirty, invalid, busy, onEdit, onCancel,
           unmap control, since unmapping is about a spelling, not the model. */}
       {!editing && row.aliases.map(a => (
         <tr key={a.model} className="border-t border-border-soft/50">
-          <td className="px-5 py-1 pl-9 text-[11px] text-ink-tertiary font-mono">
+          <td className="px-5 py-1 pl-9 text-caption text-ink-tertiary font-mono">
             <span className="text-ink-tertiary/70">↳</span> {a.model}
             {a.reported
               ? a.prs > 0 && <span className="ml-1">({a.prs})</span>
               : <span className="ml-1 italic">not reported yet</span>}
           </td>
-          <td className="px-3 py-1 text-[10px] text-ink-tertiary italic">maps to {row.canonicalModel}</td>
+          <td className="px-3 py-1 text-caption text-ink-tertiary italic">maps to {row.canonicalModel}</td>
           <td className="px-3 py-1" colSpan={2} />
           <td className="px-3 py-1 text-right whitespace-nowrap">
             <button
               onClick={() => onUnmap(a.model)}
               disabled={unmapping}
               aria-label={`Unmap ${a.model}`}
-              title={`Stop mapping "${a.model}" — dashboards will show it as its own model again`}
-              className="p-1 rounded text-ink-tertiary hover:text-rose-600 disabled:opacity-40"
+              aria-describedby={unmapHintId}
+              className="p-1 rounded text-ink-tertiary hover:text-status-danger-text disabled:opacity-40"
             >
               <Trash2 className="w-3.5 h-3.5" />
             </button>

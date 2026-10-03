@@ -39,9 +39,6 @@ vi.mock('child_process', () => ({
   spawnSync: vi.fn(),
   default: { execSync: vi.fn(), spawn: vi.fn(), spawnSync: vi.fn() },
 }));
-vi.mock('figlet', () => ({
-  default: { textSync: vi.fn().mockReturnValue('AgEnFK') },
-}));
 
 import { program } from '../index';
 import axios from 'axios';
@@ -67,10 +64,13 @@ describe('verify command', () => {
     expect(program.commands.map(c => c.name())).toContain('verify');
   });
 
-  it('review and test commands should not exist', () => {
+  it('no review or test command advances a card: verify is the only forward move', () => {
     const names = program.commands.map(c => c.name());
-    expect(names).not.toContain('review');
     expect(names).not.toContain('test');
+    // `review` is only the group for `review record` (CGLAB-381), which
+    // records an independent review and moves nothing.
+    const review = program.commands.find(c => c.name() === 'review');
+    if (review) expect(review.commands.map(c => c.name())).toEqual(['record']);
   });
 
   it('should POST evidence to /validate without GET or PUT', async () => {

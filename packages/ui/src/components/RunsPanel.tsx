@@ -1,11 +1,12 @@
 import React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { io } from 'socket.io-client';
+import { useSocketEvent } from '../SocketContext';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { api } from '../api';
-import { API_URL } from '../apiUrl';
-import { stripAnsi } from '../utils';
+import { stripAnsi, prettyModel } from '../utils';
+import { appendEvent } from '../runEvents';
+import { agentLabel } from '../agentLabels';
 
 export interface AgentRun {
   id: string;
@@ -49,10 +50,23 @@ const IS_MACHINE_OUTPUT: Record<RunEvent['kind'], boolean> = {
 };
 
 const LANE = {
-  orchestrator: { label: 'orchestrator', ini: 'C', avatar: 'bg-story-blue/60', tag: 'text-story-blue' },
-  worker: { label: 'pi · worker', ini: 'π', avatar: 'bg-amber-500/60', tag: 'text-amber-600 dark:text-amber-300' },
-  reviewer: { label: 'reviewer', ini: 'R', avatar: 'bg-teal-500/60', tag: 'text-teal-600 dark:text-teal-300' },
+  orchestrator: { label: 'orchestrator', ini: 'C', avatar: 'bg-series-5/15 border border-series-5 text-ink', tag: 'text-ink-secondary' },
+  worker: { label: 'worker', ini: 'W', avatar: 'bg-series-4/15 border border-series-4 text-ink', tag: 'text-ink-secondary' },
+  reviewer: { label: 'reviewer', ini: 'R', avatar: 'bg-series-3/15 border border-series-3 text-ink', tag: 'text-ink-secondary' },
 } as const;
+
+/**
+ * 7251a4f7 - a lane as a given run shows it. The worker lane was hard-coded
+ * 'pi · worker', from when every worker was a pi agent, so a Claude Code run
+ * read as pi's. The worker is named by the run's own harness; pi keeps its π.
+ */
+function laneOf(actor: string | undefined, harness: string | undefined) {
+  const lane = LANE[actor as keyof typeof LANE] || LANE.worker;
+  if (lane !== LANE.worker) return lane;
+  const h = harness || 'pi';
+  const name = agentLabel(h);
+  return { ...lane, label: `${name} · worker`, ini: h === 'pi' ? 'π' : name.charAt(0).toUpperCase() };
+}
 
 function fmtTokens(n?: number): string {
   return typeof n === 'number' ? n.toLocaleString('en-US') : '';
@@ -66,18 +80,6 @@ function fmtTimestamp(ts?: string): { date?: string; time?: string } {
     date: d.toLocaleDateString(),
     time: d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
   };
-}
-
-// Short, human display name for a model id: the first meaningful alphabetic
-// family token (>=3 letters, so version bits like "v1"/"27b" are skipped),
-// title-cased. "qwen3.6:27b" -> "Qwen", "claude-opus-4-8" -> "Claude",
-// "3.5-sonnet" -> "Sonnet". Falls back to the raw id if no such token exists,
-// so it never emits a meaningless single letter.
-function prettyModel(model?: string): string {
-  if (!model) return '';
-  const family = model.match(/[a-zA-Z]{3,}/)?.[0];
-  if (!family) return model;
-  return family.charAt(0).toUpperCase() + family.slice(1);
 }
 
 // Markdown emphasis rewrites literal text, and these transcripts are full of
@@ -160,7 +162,8 @@ const TranscriptRow = React.memo(function TranscriptRow({
   selected: AgentRun | null;
   isLast: boolean;
 }) {
-  const lane = LANE[ev.lane as keyof typeof LANE] || LANE.worker;
+  // The run's own harness names its worker lane; other lanes keep their role.
+  const lane = laneOf(ev.lane, ev.lane === selected?.actor ? selected?.harness : undefined);
   // Identity caption: for the lane that matches this run's own actor (the agent
   // that ran it — pi worker, or the reviewer/orchestrator), show
   // "<harness> · <model>" from the run, omitting the separator when the model is
@@ -176,7 +179,7 @@ const TranscriptRow = React.memo(function TranscriptRow({
     // bottom padding so the rail ends at the event rather than trailing past it.
     <div className="flex gap-3">
       <div className="flex flex-col items-start shrink-0 w-24 pr-3 border-r border-slate-200/70 dark:border-slate-700/50">
-        <span className={'w-6 h-6 rounded-md grid place-items-center font-mono text-xs font-bold text-white ' + lane.avatar}>{lane.ini}</span>
+        <span className={'w-6 h-6 rounded-md grid place-items-center font-mono text-xs font-bold ' + lane.avatar}>{lane.ini}</span>
         <span className={'mt-1 font-mono text-[10px] leading-tight break-words ' + lane.tag}>{who}</span>
         {(() => {
           const { date, time } = fmtTimestamp(ev.ts);
@@ -244,21 +247,23 @@ export const RunsPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
   const events = Array.isArray(eventsData) ? eventsData : [];
 
   // Live: append streamed events into the cache; refresh the run list on updates.
-  React.useEffect(() => {
-    const socket = io(API_URL || undefined);
-    socket.on('run:event', (b: { itemId: string; runId: string; event: RunEvent }) => {
-      if (b.itemId !== itemId) return;
-      queryClient.setQueryData<RunEvent[]>(['run-events', b.runId], (old) => {
-        const prev = Array.isArray(old) ? old : [];
-        return prev.some(e => e.seq === b.event.seq) ? prev : [...prev, b.event].sort((a, z) => a.seq - z.seq);
-      });
-      queryClient.invalidateQueries({ queryKey: ['agent-runs', itemId] });
-    });
-    socket.on('run:updated', (b: { itemId: string }) => {
-      if (b.itemId === itemId) queryClient.invalidateQueries({ queryKey: ['agent-runs', itemId] });
-    });
-    return () => { socket.disconnect(); };
-  }, [itemId, queryClient]);
+  // Shared connection (CGLAB-168). The desktop shell can show several of these
+  // panels at once, one per agent session, so a socket per panel would multiply
+  // with every open tab.
+  useSocketEvent('run:event', (b: { itemId: string; runId: string; event: RunEvent }) => {
+    if (b.itemId !== itemId) return;
+    // Constant-time on the ordinary path. This used to scan, copy and re-sort
+    // an already-sorted array on every event — work proportional to the SQUARE
+    // of the session's length. See runEvents.ts for why the slow path stays.
+    queryClient.setQueryData<RunEvent[]>(
+      ['run-events', b.runId],
+      old => appendEvent(old, b.event) as RunEvent[],
+    );
+    queryClient.invalidateQueries({ queryKey: ['agent-runs', itemId] });
+  });
+  useSocketEvent('run:updated', (b: { itemId: string }) => {
+    if (b.itemId === itemId) queryClient.invalidateQueries({ queryKey: ['agent-runs', itemId] });
+  });
 
   // Autoscroll the transcript as events arrive.
   React.useEffect(() => {
@@ -276,7 +281,18 @@ export const RunsPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
       {/* Run list */}
       <div className="w-56 shrink-0 space-y-2 overflow-y-auto">
         {runs.map(run => {
-          const lane = LANE[run.actor];
+          /*
+           * The same fallback the event row has used all along, which this
+           * line did not. An actor that is absent or unrecognised made
+           * `lane.tag` a read on undefined and took the WHOLE panel down - a
+           * white screen rather than a missing label.
+           *
+           * It mattered less while the panel was only reachable from the card
+           * detail modal. It is a top-level screen now (0d897a8c), so the
+           * surface is every run the server returns, including ones written by
+           * an older build or a client that did not set an actor.
+           */
+          const lane = laneOf(run.actor, run.harness);
           const isSel = run.id === selectedRunId;
           return (
             <button
@@ -285,14 +301,14 @@ export const RunsPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
               className={
                 'w-full text-left rounded-lg border p-2.5 transition-colors ' +
                 (isSel
-                  ? 'border-border-brand bg-chip'
-                  : 'border-slate-200 dark:border-slate-700 hover:border-brand-light')
+                  ? 'border-accent bg-accent-fill'
+                  : 'border-slate-200 dark:border-slate-700 hover:border-accent')
               }
             >
               <div className="flex items-center gap-2">
                 <span className={
                   'w-2 h-2 rounded-full shrink-0 ' +
-                  (run.status === 'running' ? 'bg-brand animate-pulse' : run.status === 'failed' ? 'bg-danger-muted' : 'bg-brand-dark')
+                  (run.status === 'running' ? 'bg-status-ok-text animate-pulse motion-reduce:animate-none' : run.status === 'failed' ? 'bg-status-danger-text' : 'bg-ink-tertiary')
                 } />
                 <span className="font-mono text-xs font-bold text-slate-700 dark:text-slate-200 truncate">{run.step}</span>
               </div>
@@ -313,8 +329,10 @@ export const RunsPanel: React.FC<{ itemId: string }> = ({ itemId }) => {
             <span className={
               'font-mono text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ' +
               (selected.status === 'running'
-                ? 'text-accent-text bg-chip animate-pulse'
-                : 'text-accent-text bg-chip')
+                ? 'text-status-ok-text bg-status-ok-bg animate-pulse'
+                : selected.status === 'failed'
+                  ? 'text-status-danger-text bg-status-danger-bg'
+                  : 'text-ink-secondary bg-canvas')
             }>
               {selected.status === 'running' ? '● LIVE' : ('● ' + (selected.verdict || selected.status.toUpperCase()))}
             </span>

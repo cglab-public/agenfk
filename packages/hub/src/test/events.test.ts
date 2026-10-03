@@ -7,6 +7,17 @@ import { createHubApp } from '../server';
 import { issueApiKey } from '../auth/apiKey';
 import { drainApp } from './helpers/drainApp';
 
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
+
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-events-test-${process.pid}.sqlite`);
 const cleanup = () => {
   for (const suffix of ['', '-wal', '-shm']) {
@@ -37,42 +48,44 @@ describe('hub /v1 events', () => {
     cleanup();
     const out = await createHubApp({ dbPath: TEST_DB, secretKey: '0'.repeat(64), sessionSecret: 'sess', defaultOrgId: 'org' });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     token = await issueApiKey(ctx.db, 'org', 'test');
   });
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
   it('rejects requests without bearer', async () => {
-    const r = await supertest(app).get('/v1/ping');
+    const r = await supertest(__server).get('/v1/ping');
     expect(r.status).toBe(401);
   });
 
   it('rejects invalid token', async () => {
-    const r = await supertest(app).get('/v1/ping').set('Authorization', 'Bearer garbage');
+    const r = await supertest(__server).get('/v1/ping').set('Authorization', 'Bearer garbage');
     expect(r.status).toBe(401);
   });
 
   it('ping returns ok with valid token', async () => {
-    const r = await supertest(app).get('/v1/ping').set('Authorization', `Bearer ${token}`);
+    const r = await supertest(__server).get('/v1/ping').set('Authorization', `Bearer ${token}`);
     expect(r.status).toBe(200);
     expect(r.body).toEqual({ ok: true, orgId: 'org' });
   });
 
   it('rejects revoked token', async () => {
     await ctx.db.run('UPDATE api_keys SET revoked_at = datetime(\'now\')');
-    const r = await supertest(app).get('/v1/ping').set('Authorization', `Bearer ${token}`);
+    const r = await supertest(__server).get('/v1/ping').set('Authorization', `Bearer ${token}`);
     expect(r.status).toBe(401);
   });
 
   it('ingests valid events', async () => {
     const events = [sampleEvent({ eventId: 'e1' }), sampleEvent({ eventId: 'e2' })];
-    const r = await supertest(app).post('/v1/events')
+    const r = await supertest(__server).post('/v1/events')
       .set('Authorization', `Bearer ${token}`)
       .set('X-Installation-Id', 'inst-1')
       .send({ events });
@@ -94,7 +107,7 @@ describe('hub /v1 events', () => {
         payload: { input: 100, cachedInput: 25, output: 50 },
       }),
     ];
-    const r = await supertest(app).post('/v1/events')
+    const r = await supertest(__server).post('/v1/events')
       .set('Authorization', `Bearer ${token}`)
       .set('X-Installation-Id', 'inst-1')
       .send({ events });
@@ -108,9 +121,9 @@ describe('hub /v1 events', () => {
 
   it('is idempotent on event_id', async () => {
     const events = [sampleEvent({ eventId: 'dup' })];
-    let r = await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
+    let r = await supertest(__server).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
     expect(r.body.ingested).toBe(1);
-    r = await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
+    r = await supertest(__server).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
     expect(r.body.ingested).toBe(0);
     expect(r.body.skipped).toBe(1);
     const countRow = await ctx.db.get<{ c: number }>('SELECT COUNT(*) AS c FROM events');
@@ -119,22 +132,22 @@ describe('hub /v1 events', () => {
 
   it('rejects events with mismatched orgId', async () => {
     const events = [sampleEvent({ orgId: 'someone-else' })];
-    const r = await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
+    const r = await supertest(__server).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events });
     expect(r.body.rejected).toBe(1);
     expect(r.body.ingested).toBe(0);
   });
 
   it('rejects malformed payloads', async () => {
-    const r = await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events: [] });
+    const r = await supertest(__server).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events: [] });
     expect(r.status).toBe(400);
 
-    const r2 = await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events: [{ nope: 1 }] });
+    const r2 = await supertest(__server).post('/v1/events').set('Authorization', `Bearer ${token}`).send({ events: [{ nope: 1 }] });
     expect(r2.body.rejected).toBe(1);
     expect(r2.body.ingested).toBe(0);
   });
 
   it('user_key normalizes to lower(gitEmail) when present', async () => {
-    const r = await supertest(app).post('/v1/events').set('Authorization', `Bearer ${token}`)
+    const r = await supertest(__server).post('/v1/events').set('Authorization', `Bearer ${token}`)
       .send({ events: [sampleEvent({ eventId: 'e1', actor: { osUser: 'alice', gitName: 'A', gitEmail: 'Alice@Example.COM' } })] });
     expect(r.status).toBe(200);
     const row = await ctx.db.get<{ user_key: string }>('SELECT user_key FROM events');

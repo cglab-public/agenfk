@@ -67,6 +67,11 @@ export function sharedTest(
     // Repairs `localStorage` for jsdom specs — Node's own undefined global
     // clobbers jsdom's. See vitest.setup.ts.
     setupFiles: ['./vitest.setup.ts'],
+    // Deletes the HOME sandbox above once the run is over - with the server
+    // suite's sqlite databases in it (scripts/vitest-sandbox-teardown.mjs).
+    // Absolute: globalSetup resolves against the config's own root, and
+    // packages/hub-ui runs this config from its package directory.
+    globalSetup: [path.join(ROOT, 'scripts/vitest-sandbox-teardown.mjs')],
     include: opts.include,
     exclude: [
       '**/dist/**',

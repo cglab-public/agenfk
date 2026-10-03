@@ -23,6 +23,7 @@
  * with no sanitising, so a stored `javascript:` URL is a stored-XSS trigger on
  * click. The server is the only place that can refuse it.
  */
+import { testDbPath } from './helpers/testDb';
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import * as fs from 'fs';
@@ -50,7 +51,7 @@ vi.mock('axios', async (importOriginal) => {
 import axios from 'axios';
 import { app, initStorage, JIRA_HTTP_TIMEOUT_MS, isJiraBrowseUrlFor, describeRejectedInput } from '../server';
 
-const TEST_DB = path.resolve('./jira-item-linking-test-db.sqlite');
+const TEST_DB = testDbPath('jira-item-linking-test-db.sqlite');
 const SANDBOX_HOME = path.join(os.tmpdir(), 'agenfk-jira-link-home');
 const CLOUD_URL = 'https://cg-lab.atlassian.net';
 

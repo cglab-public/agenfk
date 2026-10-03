@@ -10,6 +10,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { RunsPanel } from '../components/RunsPanel';
 import { api } from '../api';
+import { guardTokens } from './helpers/tokenGuard';
 
 function renderPanelWithClient(itemId = 'i1') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -39,6 +40,8 @@ function renderPanel(itemId = 'i1') {
 }
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
+// CGLAB-434: every test here also proves the panel renders on tokens.
+guardTokens();
 
 describe('RunsPanel', () => {
   it('shows an empty state when there are no runs', async () => {
@@ -109,6 +112,24 @@ describe('RunsPanel', () => {
     // Caption is just the harness, with no trailing "· "
     expect(screen.getByText('pi')).toBeDefined();
     expect(screen.queryByText(/pi ·\s*$/)).toBeNull();
+  });
+
+  /*
+   * A run whose actor is absent or unrecognised is what an older record looks
+   * like. The run row reads LANE[run.actor] with a `|| LANE.worker` fallback;
+   * without it that is a read on undefined and the whole panel goes white.
+   *
+   * Moved here from the deleted runsPanelWiring.test.tsx (396c8350): the shell
+   * screen that used to drive it is gone, but RunsPanel itself is still
+   * mounted by the card detail modal, so the guard stays covered.
+   */
+  it('draws a run with no actor as a worker rather than taking the screen down', async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'r1', itemId: 'i1', step: 'REFACTOR', status: 'running', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([] as any);
+    renderPanel();
+    expect(await screen.findByRole('button', { name: /REFACTOR/ })).toBeDefined();
   });
 
   // CGLAB-20: the un-proxied /agent-runs route served the SPA index.html, so
@@ -575,4 +596,29 @@ describe('RunsPanel', () => {
     expect(link?.getAttribute('rel')).toContain('noopener');
     expect(link?.getAttribute('rel')).toContain('noreferrer');
   });
+
+  // 7251a4f7: the worker lane was hard-coded 'π pi · worker', so a Claude Code run read as pi's.
+  it("names a worker run by its own harness: a Claude Code run is not listed as pi's", async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'c1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'claude-code', model: 'claude-opus-5-5', status: 'done', startedAt: '2026-09-28T23:35:46.736Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([
+      { id: 'e1', runId: 'c1', seq: 0, ts: '2026-09-28T23:36:00.000Z', lane: 'worker', kind: 'tool', tool: 'bash', text: 'git status' },
+    ] as any);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText('git status')).toBeDefined());
+    expect(screen.getByText(/Claude Code · worker/)).toBeDefined();
+    expect(screen.queryByText(/pi · worker/i)).toBeNull();
+    expect(screen.queryByText('π')).toBeNull();
+  });
+
+  it("still names a pi worker run as pi's", async () => {
+    vi.mocked(api.listAgentRuns).mockResolvedValue([
+      { id: 'p1', itemId: 'i1', step: 'IN_PROGRESS', actor: 'worker', harness: 'pi', model: 'qwen3.6:27b', status: 'done', startedAt: '2026-07-21T10:00:00.000Z' },
+    ] as any);
+    vi.mocked(api.listRunEvents).mockResolvedValue([] as any);
+    renderPanel();
+    await waitFor(() => expect(screen.getByText(/Pi · worker/)).toBeDefined());
+  });
 });
+

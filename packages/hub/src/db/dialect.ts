@@ -78,22 +78,32 @@ function rewriteDatetimeNow(sql: string): string {
   return sql.replace(/\bdatetime\s*\(\s*'now'\s*\)/gi, 'now()');
 }
 
+/** Format a timestamptz expression as a UTC key (see rewriteDate). */
+function utcToChar(expr: string, pgFmt: string): string {
+  return `to_char(timezone('UTC', ${expr}), '${pgFmt}')`;
+}
+
 /**
- * date(col) → to_char((col)::timestamptz, 'YYYY-MM-DD').
+ * date(col) → to_char(timezone('UTC', (col)::timestamptz), 'YYYY-MM-DD').
  * SQLite stores datetimes as ISO-8601 TEXT; PG as TIMESTAMPTZ. We cast and format
  * to a string so day-bucket comparisons against ISO date params keep working.
+ * timezone('UTC', …) because to_char() on a timestamptz formats in the SESSION
+ * TimeZone, and every day/hour key the hub stores or compares is UTC — as
+ * SQLite's date()/strftime() are. Query-level rather than a connection option,
+ * which a transaction-pooling proxy would not carry (BUG ba7880e0).
  */
 function rewriteDate(sql: string): string {
   // Match date(<expr>) where <expr> is a balanced single argument with no nested parens
   // (true for every hub call site — they all pass a column).
   return sql.replace(/\bdate\s*\(\s*([a-zA-Z_][\w.]*)\s*\)/g,
-    (_m, col) => `to_char((${col})::timestamptz, 'YYYY-MM-DD')`);
+    (_m, col) => utcToChar(`(${col})::timestamptz`, 'YYYY-MM-DD'));
 }
 
 /**
- * strftime('%Y-%m-%d', col)               → to_char((col)::timestamptz, 'YYYY-MM-DD')
- * strftime('%Y-%m-%dT%H:00', col)         → to_char((col)::timestamptz, 'YYYY-MM-DD"T"HH24":00"')
- * strftime('...', col, $N)                → to_char((col)::timestamptz + ($N)::interval, '...')
+ * strftime('%Y-%m-%d', col)               → to_char(timezone('UTC', (col)::timestamptz), 'YYYY-MM-DD')
+ * strftime('%Y-%m-%dT%H:00', col)         → to_char(timezone('UTC', (col)::timestamptz), 'YYYY-MM-DD"T"HH24":00"')
+ * strftime('...', col, $N)                → to_char(timezone('UTC', (col)::timestamptz + ($N)::interval), '...')
+ * UTC for the same reason as date() above.
  * Only the hub's two patterns are supported. Unknown formats fall through.
  */
 function rewriteStrftime(sql: string): string {
@@ -106,7 +116,7 @@ function rewriteStrftime(sql: string): string {
       const expr = modifier
         ? `(${col})::timestamptz + (${modifier.trim()})::interval`
         : `(${col})::timestamptz`;
-      return `to_char(${expr}, '${pgFmt}')`;
+      return utcToChar(expr, pgFmt);
     },
   );
 }

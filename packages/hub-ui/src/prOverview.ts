@@ -1,28 +1,31 @@
 // Pure helpers for the PR Overview page — kept out of the component so they can
 // be unit-tested without a DOM.
 
-/** Ordinal PR-size ramp (XS→XL): a single teal hue climbing in weight, so a
- *  bigger PR reads as a denser colour. Separate from status colours on purpose. */
-/** Size ramp: light → dark on the dark canvas. `color` is the fill; `text`
- *  is the label color when text is rendered ON the fill (the drill-down modal
- *  badge, CGLAB-131) — the ramp's light end is near-white, so one fixed
- *  `text-white` reads as a blank white box there; light steps take the dark
- *  primary ink, dark steps take white. */
+/** Ordinal PR-size ramp (XS→XL): one indigo hue climbing in weight, from the
+ *  --size-N tokens so each theme gets its own validated steps (CGLAB-434).
+ *  `text` is the ink for a label drawn ON the fill (the drill-down badge,
+ *  CGLAB-131): --on-size-N is the readable ink for that step in each theme. */
 export const SIZE_META = [
-  { key: 'xs', label: 'XS', color: '#dbf7f0', text: '#000f3b' },
-  { key: 's', label: 'S', color: '#7fe5ca', text: '#000f3b' },
-  { key: 'm', label: 'M', color: '#04cc98', text: '#000f3b' },
-  { key: 'l', label: 'L', color: '#056f71', text: '#ffffff' },
-  { key: 'xl', label: 'XL', color: '#00332f', text: '#ffffff' },
+  { key: 'xs', label: 'XS', color: 'var(--size-1)', text: 'var(--on-size-1)' },
+  { key: 's', label: 'S', color: 'var(--size-2)', text: 'var(--on-size-2)' },
+  { key: 'm', label: 'M', color: 'var(--size-3)', text: 'var(--on-size-3)' },
+  { key: 'l', label: 'L', color: 'var(--size-4)', text: 'var(--on-size-4)' },
+  { key: 'xl', label: 'XL', color: 'var(--size-5)', text: 'var(--on-size-5)' },
 ] as const;
 
 export type SizeKey = typeof SIZE_META[number]['key'];
 
-/** Every calendar day in [from, to] inclusive, as YYYY-MM-DD (UTC). Capped so a
+/** Every calendar day in [from, to] inclusive, as YYYY-MM-DD in `timeZone`
+ *  (default UTC). Each end is read by the zone's rules for ITS date, so a
+ *  window across a DST change gets one column per day. Capped so a
  *  pathological range can't build an unbounded array. */
-export function buildDayAxis(from: string, to: string): string[] {
-  const start = new Date(from.slice(0, 10) + 'T00:00:00Z');
-  const end = new Date(to.slice(0, 10) + 'T00:00:00Z');
+export function buildDayAxis(from: string, to: string, timeZone = 'UTC'): string[] {
+  const a = Date.parse(from), b = Date.parse(to);
+  if (Number.isNaN(a) || Number.isNaN(b)) return [];
+  const fmt = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
+  // Once both ends are calendar dates, walking them needs no zone at all.
+  const start = new Date(fmt.format(a) + 'T00:00:00Z');
+  const end = new Date(fmt.format(b) + 'T00:00:00Z');
   const out: string[] = [];
   const cur = new Date(start);
   while (cur <= end && out.length < 366) {
@@ -30,6 +33,15 @@ export function buildDayAxis(from: string, to: string): string[] {
     cur.setUTCDate(cur.getUTCDate() + 1);
   }
   return out;
+}
+
+/** Average PRs per bucket: integers stay bare, a fractional rate always shows
+ *  exactly one decimal (2.04 → "2.0", so it never passes for exact), with the
+ *  locale's digit grouping. */
+export function fmtAverage(n: number): string {
+  return Number.isInteger(n)
+    ? n.toLocaleString()
+    : n.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 }
 
 /** Rounded percentage change vs a baseline. Returns null when there is no

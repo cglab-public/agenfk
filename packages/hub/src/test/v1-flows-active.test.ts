@@ -3,10 +3,22 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import supertest from 'supertest';
+import { loginAs } from './helpers/loginAs';
 import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { drainApp } from './helpers/drainApp';
+
+/**
+ * A REAL listening server, so drainApp has something to drain (BUG 2bd7ee36).
+ *
+ * `drainApp` calls closeIdleConnections/closeAllConnections, which exist on
+ * http.Server and NOT on an Express app — and `createHubApp` returns an
+ * Express app. With `?.` those calls vanished silently, so the helper written
+ * to fix this suite's flakiness never did anything. Module scope because a
+ * file can hold several describes, each reassigning `app`.
+ */
+let __server: any;
 
 const TEST_DB = path.join(os.tmpdir(), `agenfk-hub-flows-active-${process.pid}.sqlite`);
 const SECRET = 'a'.repeat(64);
@@ -18,10 +30,6 @@ const cleanup = () => {
   }
 };
 
-const loginAs = async (app: any, email: string, password: string) => {
-  const r = await supertest(app).post('/auth/login').send({ email, password });
-  return r.headers['set-cookie']?.[0] ?? '';
-};
 
 const sampleDef = (name = 'Active Flow') => ({
   name,
@@ -48,6 +56,8 @@ describe('GET /v1/flows/active', () => {
       defaultOrgId: 'org-a',
     });
     app = out.app;
+    if (__server) await new Promise<void>(r => __server.close(() => r()));
+    __server = app.listen(0);
     ctx = out.ctx;
     await ctx.db.run('INSERT OR IGNORE INTO orgs (id, name) VALUES (?, ?)', ['org-b', 'org-b']);
     await ctx.db.run('INSERT OR IGNORE INTO auth_config (org_id, password_enabled) VALUES (?, 1)', ['org-b']);
@@ -59,30 +69,30 @@ describe('GET /v1/flows/active', () => {
 
   afterEach(async () => {
     // Drain in-flight responses before closing the DB — see helpers/drainApp.ts
-    await drainApp(app);
+    await drainApp(__server);
     await ctx.db.close();
     cleanup();
   });
 
   it('rejects unauthenticated requests', async () => {
-    const r = await supertest(app).get('/v1/flows/active');
+    const r = await supertest(__server).get('/v1/flows/active');
     expect(r.status).toBe(401);
   });
 
   it('returns { flow: null } when org has no assignment', async () => {
-    const r = await supertest(app).get('/v1/flows/active').set('Authorization', `Bearer ${tokenA}`);
+    const r = await supertest(__server).get('/v1/flows/active').set('Authorization', `Bearer ${tokenA}`);
     expect(r.status).toBe(200);
     expect(r.body).toEqual({ flow: null });
   });
 
   it('returns the assigned flow with hubVersion + ETag when assigned', async () => {
     const cookie = await loginAs(app, 'admin-a@x', 'longenough1');
-    const created = await supertest(app).post('/v1/admin/flows').set('Cookie', cookie)
+    const created = await supertest(__server).post('/v1/admin/flows').set('Cookie', cookie)
       .send({ definition: sampleDef() });
-    await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookie)
+    await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookie)
       .send({ flowId: created.body.id });
 
-    const r = await supertest(app).get('/v1/flows/active').set('Authorization', `Bearer ${tokenA}`);
+    const r = await supertest(__server).get('/v1/flows/active').set('Authorization', `Bearer ${tokenA}`);
     expect(r.status).toBe(200);
     expect(r.body.flow).toBeTruthy();
     expect(r.body.flow.id).toBe(created.body.id);
@@ -93,12 +103,12 @@ describe('GET /v1/flows/active', () => {
 
   it('returns 304 when If-None-Match matches the current ETag', async () => {
     const cookie = await loginAs(app, 'admin-a@x', 'longenough1');
-    const created = await supertest(app).post('/v1/admin/flows').set('Cookie', cookie)
+    const created = await supertest(__server).post('/v1/admin/flows').set('Cookie', cookie)
       .send({ definition: sampleDef() });
-    await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookie)
+    await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookie)
       .send({ flowId: created.body.id });
 
-    const r = await supertest(app).get('/v1/flows/active')
+    const r = await supertest(__server).get('/v1/flows/active')
       .set('Authorization', `Bearer ${tokenA}`)
       .set('If-None-Match', 'W/"1:org:"');
     expect(r.status).toBe(304);
@@ -106,15 +116,15 @@ describe('GET /v1/flows/active', () => {
 
   it('bumps version on edit and breaks the cached ETag', async () => {
     const cookie = await loginAs(app, 'admin-a@x', 'longenough1');
-    const created = await supertest(app).post('/v1/admin/flows').set('Cookie', cookie)
+    const created = await supertest(__server).post('/v1/admin/flows').set('Cookie', cookie)
       .send({ definition: sampleDef() });
-    await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookie)
+    await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookie)
       .send({ flowId: created.body.id });
     // Edit the flow → version 2
-    await supertest(app).put(`/v1/admin/flows/${created.body.id}`).set('Cookie', cookie)
+    await supertest(__server).put(`/v1/admin/flows/${created.body.id}`).set('Cookie', cookie)
       .send({ definition: { ...sampleDef(), name: 'Renamed' } });
 
-    const stale = await supertest(app).get('/v1/flows/active')
+    const stale = await supertest(__server).get('/v1/flows/active')
       .set('Authorization', `Bearer ${tokenA}`)
       .set('If-None-Match', 'W/"1:org:"');
     expect(stale.status).toBe(200);
@@ -124,12 +134,12 @@ describe('GET /v1/flows/active', () => {
 
   it('isolates orgs — org-b token never sees org-a flow', async () => {
     const cookieA = await loginAs(app, 'admin-a@x', 'longenough1');
-    const created = await supertest(app).post('/v1/admin/flows').set('Cookie', cookieA)
+    const created = await supertest(__server).post('/v1/admin/flows').set('Cookie', cookieA)
       .send({ definition: sampleDef() });
-    await supertest(app).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
+    await supertest(__server).put('/v1/admin/flow-assignments').set('Cookie', cookieA)
       .send({ flowId: created.body.id });
 
-    const r = await supertest(app).get('/v1/flows/active').set('Authorization', `Bearer ${tokenB}`);
+    const r = await supertest(__server).get('/v1/flows/active').set('Authorization', `Bearer ${tokenB}`);
     expect(r.status).toBe(200);
     expect(r.body).toEqual({ flow: null });
   });

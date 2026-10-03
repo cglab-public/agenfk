@@ -109,6 +109,7 @@ export class HubClient {
         itemType: (input as any).itemType,
         itemTitle: (input as any).itemTitle ?? undefined,
         externalId: (input as any).externalId ?? undefined,
+        externalUrl: (input as any).externalUrl ?? undefined,
         type: input.type,
         payload: input.payload ?? {},
       };
