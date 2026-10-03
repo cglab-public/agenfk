@@ -778,6 +778,145 @@ describe('AppShell — window controls (CGLAB-168)', () => {
 });
 
 /**
+ * The widened rail (CGLAB-164).
+ *
+ * The mockup's numbers: the rail goes 40 -> 56px, its icons 14 -> 18px, and the
+ * collapse toggle grows with them.
+ *
+ * What makes this more than cosmetic is that the rail's width FUNDS the
+ * traffic-light reserve in the column beside it, so the numbers are asserted
+ * rather than left as literals to be re-guessed. The last time two sizes in
+ * this header disagreed, `pl-0` did not beat `pl-[76px]` - they are the same
+ * property at the same specificity - and the FK mark vanished off the edge of
+ * the rail entirely for it.
+ */
+describe('AppShell - the widened rail', () => {
+  const renderCollapsed = async () => {
+    const view = renderShell();
+    await screen.findByRole('button', { name: 'horizon-lab' });
+    fireEvent.click(screen.getByRole('button', { name: /collapse sidebar/i }));
+    return view;
+  };
+
+  const navIcon = () => document.querySelector('nav[aria-label="Work"] svg')!;
+
+  it('is 56px wide, not the 40 it was', async () => {
+    const { container } = await renderCollapsed();
+    expect(container.querySelector('aside')!.style.width).toBe('56px');
+  });
+
+  it('scales the nav icons to 18px, and leaves the open sidebar at 14', async () => {
+    /*
+     * CONDITIONAL, and that is the whole point. There is one `size` literal
+     * behind these icons and it is shared with the open sidebar, whose rows are
+     * 13px text with their own tuned proportions - the mockup only touches the
+     * rail. Bumping the literal would grow the open sidebar's icons under its
+     * labels, which nobody asked for.
+     */
+    await renderCollapsed();
+    expect(navIcon().getAttribute('width')).toBe('18');
+
+    fireEvent.click(screen.getByRole('button', { name: /expand sidebar/i }));
+    expect(navIcon().getAttribute('width'), 'the open sidebar grew with the rail').toBe('14');
+  });
+
+  it('makes each nav row a 40px square without fighting w-full', async () => {
+    /*
+     * `w-full` and `w-10` are the same property at the same specificity, so the
+     * winner is whichever Tailwind emitted LAST - not source order, and not
+     * something the next reader can see. The width is therefore chosen per mode
+     * instead of overridden.
+     */
+    await renderCollapsed();
+    const button = document.querySelector('nav[aria-label="Work"] button') as HTMLElement;
+    expect(button.className).toContain('h-10');
+    expect(button.className).toContain('w-10');
+    expect(button.className, 'w-full leaves the width to Tailwind emission order').not.toContain('w-full');
+  });
+
+  it('scales the collapse toggle with the rail', async () => {
+    // The one control that stays 14px while every icon beside it grows read as
+    // left over from the old rail - and it is the control the rail exists for.
+    await renderCollapsed();
+    const toggle = screen.getByRole('button', { name: /expand sidebar/i });
+    expect(toggle.querySelector('svg')!.getAttribute('width')).toBe('18');
+  });
+
+  it('recedes the main column by 32px, not the 48 a 40px rail needed', async () => {
+    const { container } = await renderCollapsed();
+    const reserving = document.querySelector('[data-reserves-window-controls="true"]')!;
+    expect(reserving.className).toContain('pl-8');
+    expect(reserving.className, 'pl-12 is the reserve for a 40px rail').not.toContain('pl-12');
+  });
+
+  it('gives every rail icon a hover hint, which is its only label there', async () => {
+    /*
+     * On the rail the button's only visible child is an aria-hidden icon, so
+     * the hint is the whole of what a pointer user has to go on.
+     *
+     * ASSERTED AS A TOOLTIP, NOT AS A `title`. Native tooltips arrive about a
+     * second after the pointer stops moving and are drawn by the OS, which is
+     * exactly why the rail still read as unlabelled while every control
+     * already carried a `title`. Asserted of every control that survives the
+     * collapse, too, because the failure mode is one control quietly left
+     * without a hint - which is how the 13px gear happened.
+     */
+    await renderCollapsed();
+    const rows = [...document.querySelectorAll('nav[aria-label="Work"] li')] as HTMLElement[];
+    expect(rows.length).toBeGreaterThan(0);
+    for (const li of rows) {
+      const button = li.querySelector('button')!;
+      const label = button.getAttribute('aria-label');
+      const disabled = button.getAttribute('aria-disabled') === 'true';
+      const tip = li.querySelector('[role="tooltip"]');
+      expect(tip, `"${label}" shows an icon with no hover hint`).not.toBeNull();
+      // The dead row says WHY it is dead rather than repeating its own name.
+      expect(tip!.textContent!.trim()).toBe(disabled ? 'Open a project to edit its flow' : label);
+    }
+
+    expect(
+      document.querySelector('[data-testid="shell-nav"] [role="tooltip"]')!.textContent,
+    ).toBe('Settings');
+    expect(
+      screen.getByRole('button', { name: /expand sidebar/i })
+        .parentElement!.querySelector('[role="tooltip"]')!.textContent,
+    ).toBe('Expand sidebar');
+  });
+
+  it('draws no hint while the sidebar is open, where the labels are on screen', async () => {
+    renderShell();
+    await screen.findByRole('button', { name: 'horizon-lab' });
+    /*
+     * Only the DEAD row explains itself with the sidebar open; nothing repeats a
+     * label that is already readable. Asserted as "no hint repeats a label"
+     * rather than "no hints at all", because the Flows reason is deliberately
+     * still drawn there - it is the one thing on this rail that is not the
+     * control's own name.
+     */
+    const nav = screen.getByRole('navigation', { name: /work/i });
+    const hints = [...nav.querySelectorAll('[role="tooltip"]')].map(el => el.textContent ?? '');
+    expect(hints.every(t => /project/i.test(t)), `a hint repeats a visible label: ${hints}`).toBe(true);
+  });
+
+  it('scales the Settings control too, which lives outside the nav', async () => {
+    /*
+     * The one control the first pass missed, found by looking at the rail
+     * rather than at the diff. It renders OUTSIDE the `open` guard on purpose
+     * - collapsing must not remove the only route to Settings, and the sidebar
+     * state is persisted, so getting that wrong is permanent - and being
+     * outside the nav is exactly why a change made to the nav rows skipped it.
+     * 13px beside 18px reads as a different rail.
+     */
+    await renderCollapsed();
+    const settings = document.querySelector('[data-testid="shell-nav"] button') as HTMLElement;
+    expect(settings.querySelector('svg')!.getAttribute('width')).toBe('18');
+    expect(settings.className).toContain('h-10');
+    expect(settings.className).toContain('w-10');
+    expect(settings.className, 'w-full leaves the width to Tailwind emission order').not.toContain('w-full');
+  });
+});
+
+/**
  * The empty title bar (CGLAB-164, e7ad8020).
  *
  * On macOS the main column's top row is an empty drag handle with room for
@@ -887,6 +1026,21 @@ describe('AppShell — the title bar in full screen and over the terminal', () =
     const tabs = terminalTabs()!;
     expect(tabs.getAttribute('data-app-region')).toBe('drag');
     expect(tabs.hasAttribute('data-reserves-window-controls')).toBe(false);
+  });
+
+  it('recedes the tabs by 32px, not the 48 a 40px rail needed', async () => {
+    /*
+     * The reserve is DERIVED, not taste. The traffic lights reach ~78px from
+     * the window edge: against the 40px rail the uncovered 38px rounded up to
+     * 48, and the 56px rail covers 16px more of it, so 78 - 56 = 22 rounds up
+     * to 32. A rail that grows while this stays put is a first tab under the
+     * zoom button.
+     */
+    await openTerminal();
+    collapse();
+    const tabs = terminalTabs()!;
+    expect(tabs.className, 'the tabs still reserve room for a 40px rail').toContain('pl-8');
+    expect(tabs.className, 'pl-12 is the reserve for a 40px rail').not.toContain('pl-12');
   });
 
   it('makes the tab strip neither a handle nor indented in full screen', async () => {
@@ -1879,8 +2033,13 @@ describe('the WORK group in the sidebar (CGLAB-164)', () => {
       ).toBeDefined();
     }
 
-    // And the visible text really is gone - otherwise this is not a rail.
-    expect(nav.textContent?.trim()).toBe('');
+    // And the label really is off the BUTTON. Asked of the buttons rather than
+    // of the nav now that each row also carries its hover hint - text that is
+    // in the DOM and unreadable until the pointer rests on the row, so
+    // asserting the nav's textContent was really asking about the tooltip.
+    const buttonText = [...nav.querySelectorAll('button')].map(b => b.textContent?.trim() ?? '');
+    expect(buttonText.length).toBeGreaterThan(0);
+    expect(buttonText.every(t => t === ''), 'a label was left on the rail').toBe(true);
 
     fireEvent.click(screen.getByRole('button', { name: /expand sidebar/i }));
     expect(screen.getByRole('navigation', { name: /work/i }).textContent).toMatch(/tasks/i);

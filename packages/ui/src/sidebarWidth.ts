@@ -35,8 +35,26 @@ export const SIDEBAR_MIN_PX = 224;
  */
 export const SIDEBAR_MAX_PX = 420;
 
-/** The rail. Not resizable: collapsing is a different action from resizing. */
-export const SIDEBAR_COLLAPSED_PX = 40;
+/**
+ * The rail. Not resizable: collapsing is a different action from resizing.
+ *
+ * 56px (CGLAB-164), up from 40. It was asked for at 40 and the mockup moves it
+ * to 56 so the icons can be 18px inside a 40px square button.
+ *
+ * ITS WIDTH IS NOT FREE, because it funds the reserve in the column beside it.
+ * The macOS traffic lights reach ~78px from the window edge and the rail covers
+ * part of that, so whatever is left is padded onto the first control of the
+ * main column:
+ *
+ *     78 - 40 = 38, rounded up to 48   (the old rail)
+ *     78 - 56 = 22, rounded up to 32   (this one)
+ *
+ * Those two paddings live as `pl-8`/`pl-12` in AppShell and TerminalTab. Change
+ * this number and they have to move with it, or the first tab is rendered under
+ * the zoom button - unclickable, with the OS window menu opening on top of it.
+ * The test in sidebarWidth.test.ts pins the pair.
+ */
+export const SIDEBAR_COLLAPSED_PX = 56;
 
 /**
  * The widest the sidebar may be right now, given the window.

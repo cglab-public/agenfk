@@ -205,13 +205,21 @@ describe('the sidebar Flows entry', () => {
     const flows = workRow(/flows/i) as HTMLButtonElement;
     /*
      * `aria-disabled` and still focusable, NOT the `disabled` attribute. A
-     * disabled button drops out of the tab order, which takes the title - the
-     * only place the reason is written - out of reach of the keyboard and
-     * screen-reader users it is written for.
+     * disabled button drops out of the tab order, which takes the reason out of
+     * reach of the keyboard and screen-reader users it is written for.
+     *
+     * The reason lives on a `role="tooltip"` element now rather than on `title`,
+     * because a native tooltip arrives a second late and is drawn by the OS - so
+     * the assertion follows `aria-describedby` to it. That link is the part with
+     * teeth: the tooltip also shows on keyboard focus, which `title` never did.
      */
     expect(flows.getAttribute('aria-disabled')).toBe('true');
     expect(flows.disabled).toBe(false);
-    expect(flows.title).toMatch(/project/i);
+    const describedBy = flows.getAttribute('aria-describedby');
+    expect(describedBy, 'the reason is not associated with the button').toBeTruthy();
+    const reason = document.getElementById(describedBy!);
+    expect(reason?.getAttribute('role')).toBe('tooltip');
+    expect(reason?.textContent).toMatch(/project/i);
 
     fireEvent.click(flows);
     expect(screen.queryByTestId('flow-editor')).toBeNull();

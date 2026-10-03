@@ -20,7 +20,7 @@ import { AppShell } from '../components/AppShell';
 import { ActiveProjectProvider } from '../ActiveProject';
 import { SocketProvider } from '../SocketContext';
 import { api } from '../api';
-import { SIDEBAR_MIN_PX, SIDEBAR_MAX_PX, maxSidebarWidth } from '../sidebarWidth';
+import { SIDEBAR_MIN_PX, SIDEBAR_MAX_PX, SIDEBAR_COLLAPSED_PX, maxSidebarWidth } from '../sidebarWidth';
 
 vi.mock('../api', () => ({
   api: {
@@ -293,13 +293,18 @@ describe('what the terminal is told', () => {
   it('is told the rail width when the sidebar is collapsed', async () => {
     // Collapsing gives the terminal room back. Reporting the open width there
     // would waste it, in the other direction and just as invisibly.
+    //
+    // Against the CONSTANT, not a literal: this is the rail's width, and it is
+    // not the point of the test — the point is that the terminal is told
+    // whatever the rail actually is. Spelled 40 here, it failed the moment the
+    // rail moved to 56, reporting a layout bug that did not exist.
     seedAndBridge();
     terminalWidths.length = 0;
     renderShell();
     await screen.findByTestId('sidebar-resize');
     await waitFor(() => expect(terminalWidths.length, 'the terminal never mounted').toBeGreaterThan(0));
     fireEvent.click(screen.getByRole('button', { name: /collapse|sidebar/i }));
-    await waitFor(() => expect(terminalWidths.at(-1)).toBe(40));
+    await waitFor(() => expect(terminalWidths.at(-1)).toBe(SIDEBAR_COLLAPSED_PX));
   });
 });
 

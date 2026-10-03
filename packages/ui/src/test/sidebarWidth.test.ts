@@ -12,6 +12,7 @@ import {
   clampSidebarWidth,
   maxSidebarWidth,
   sidebarIsResizable,
+  SIDEBAR_COLLAPSED_PX,
   SIDEBAR_MIN_PX,
   SIDEBAR_MAX_PX,
 } from '../sidebarWidth';
@@ -113,5 +114,33 @@ describe('whether there is anything to drag', () => {
   it('says yes on an ordinary window', () => {
     expect(sidebarIsResizable(WINDOW_MIN)).toBe(true);
     expect(sidebarIsResizable(ROOMY)).toBe(true);
+  });
+});
+
+/**
+ * The rail's width (CGLAB-164).
+ *
+ * NOT a free number. The terminal tabs' traffic-light reserve is derived from
+ * it: the lights reach ~78px from the window edge, and the reserve is what
+ * they do not cover — 48 against a 40px rail, 32 against 56.
+ *
+ * So the two move together. A rail that grows while the reserve does not is a
+ * first tab rendered under the zoom button: unclickable, with the OS window
+ * menu opening on top of it. Pinned here so the pair cannot drift apart
+ * quietly.
+ */
+describe('the rail', () => {
+  it('is 56px, the width the mockup asked for', () => {
+    expect(SIDEBAR_COLLAPSED_PX).toBe(56);
+  });
+
+  it('stays narrower than the open sidebar it collapses from', () => {
+    expect(SIDEBAR_COLLAPSED_PX).toBeLessThan(SIDEBAR_MIN_PX);
+  });
+
+  it('stays narrower than the traffic lights it shares the window edge with', () => {
+    // Past ~78px the rail starts covering the window's own controls, and there
+    // would be no reserve left to give back - the subtraction goes negative.
+    expect(SIDEBAR_COLLAPSED_PX).toBeLessThan(78);
   });
 });

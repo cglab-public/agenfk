@@ -154,6 +154,48 @@ const SIDEBAR_KEY = 'agenfk_shell_sidebar';
 const SIDEBAR_WIDTH_KEY = 'agenfk_shell_sidebar_width';
 
 /**
+ * The hover hint for a control that has lost its label to the rail.
+ *
+ * CSS-only, because the anchor is already there: every one of these rows is a
+ * `group`, so a hint needs no state, no ref, no portal and no measurement. A
+ * component holding state could not be used inside the nav's `.map()` anyway -
+ * hooks in a loop.
+ *
+ * THIS REPLACES `title` ON THESE CONTROLS rather than sitting beside it. Native
+ * tooltips arrive after about a second and are drawn by the OS; on a 56px
+ * column of four similar glyphs, a hint that appears once the pointer has moved
+ * on is not a hint. Keeping both would also show both.
+ *
+ * `group-focus-within` as well as hover: the rail is fully keyboard navigable,
+ * and a pointer-only hint leaves a keyboard user with four unlabelled glyphs.
+ *
+ * No `aria-describedby` onto this text, deliberately: the hint says what the
+ * button's accessible name already says, so describing it by the same string
+ * makes a screen reader announce the control twice.
+ */
+const RAIL_TIP_BASE =
+  'pointer-events-none absolute left-full top-1/2 z-50 ml-2 -translate-y-1/2 whitespace-nowrap '
+  + 'rounded border border-border-soft bg-canvas px-2 py-1 text-[11px] font-normal text-ink shadow-sm '
+  + 'opacity-0 transition-opacity';
+
+/** For a row that IS the hover target: the `li` or the block around one control. */
+const RAIL_TIP = `${RAIL_TIP_BASE} group-hover:opacity-100 group-focus-within:opacity-100`;
+
+/**
+ * For a control that must show its OWN hint and nobody else's.
+ *
+ * `peer` binds it to the element immediately before it, which is what the
+ * toggle needs: it shares its row with the FK mark, so `group` there would fire
+ * the hint while the pointer was over the mark instead.
+ *
+ * A wrapper <span> around the button would say the same thing, and was the
+ * first attempt - it broke a test that reads the toggle's PARENT to get the
+ * row's traffic-light padding, which is a real assumption about this markup
+ * rather than a coincidence.
+ */
+const RAIL_TIP_PEER = `${RAIL_TIP_BASE} peer-hover:opacity-100 peer-focus-visible:opacity-100`;
+
+/**
  * When this run of the app began.
  *
  * Read once at module load, which is both the earliest honest answer and the
@@ -1624,20 +1666,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             a row here would stack a second empty one under the real one.
 
             The left padding is the traffic-light reserve. Collapsed, the
-            sidebar rail is ~40px against the ~78px the lights occupy from the
+            sidebar rail is 56px against the ~78px the lights occupy from the
             window edge, so this column's top-left corner is underneath them -
             and anything put in this row without the reserve would render under
             the window buttons: unclickable, with the OS window menu opening on
             top of it. Nothing sits here today, which is exactly why the
             reserve is written down rather than discovered again by whatever is
             put here next.
+
+            `pl-8` is 32px, and it is 32 rather than 48 because the rail grew:
+            the lights reach ~78px and the rail covers 56 of them, leaving 22 to
+            round up. The arithmetic is in sidebarWidth.ts beside the number
+            that drives it, and a test pins the pair.
           */}
           {/* Only while the sidebar is COLLAPSED, which is the only time this row
               earns its 36px. Open, the sidebar is wider than the traffic lights
               and already carries its own drag region with the wordmark in it -
               so this row would be reserving space for buttons that are not over
               it and offering a second handle for a window that already has one.
-              Collapsed, the rail is ~40px against the lights' ~78px, and
+              Collapsed, the rail is 56px against the lights' ~78px, and
               without this the first control renders underneath them.
 
               The 36px goes to the terminal, which is the whole reason the git
@@ -1654,7 +1701,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               data-reserves-window-controls="true"
               className={clsx(
                 'flex h-9 shrink-0 items-center border-b border-border-soft bg-nav-surface',
-                'pl-12',
+                'pl-8',
               )}
             />
           )}
@@ -2571,8 +2618,11 @@ function Sidebar({ open, onToggle, drawsTitleBar, widthPx, resizable, dragging, 
       */}
       <div
         data-app-region={drawsTitleBar ? 'drag' : undefined}
+        // `relative` so the toggle's hint anchors to this row without a wrapper
+        // around the button: that the toggle's parent IS the row is what the
+        // traffic-light test reads the padding through.
         className={clsx(
-          'flex shrink-0',
+          'relative flex shrink-0',
           open
             /*
              * Open: one row. The 76px clears the traffic lights, which sit on
@@ -2597,19 +2647,27 @@ function Sidebar({ open, onToggle, drawsTitleBar, widthPx, resizable, dragging, 
       >
         {open
           ? <AgenfkWordmark size={13} />
-          : <AgenfkWordmark size={15} markOnly />}
+          : <AgenfkWordmark size={16} markOnly />}
         <button
           onClick={onToggle}
           // `no-drag`: see above. Without it this button is unclickable on macOS.
           data-app-region={drawsTitleBar ? 'no-drag' : undefined}
           aria-label={open ? 'Collapse sidebar' : 'Expand sidebar'}
-          title={open ? 'Collapse sidebar' : 'Expand sidebar'}
           className={clsx(
-            'flex items-center rounded p-1 text-ink-tertiary transition-colors hover:bg-canvas hover:text-ink-secondary',
+            'peer flex items-center text-ink-tertiary transition-colors hover:bg-canvas hover:text-ink-secondary',
+            /*
+             * A 40px square on the rail, matching the nav rows below it, and
+             * the short row it shares with the mark when the sidebar is open.
+             * Collapsed this is the control the rail exists for, so it scales
+             * with the icons instead of staying at the size the old one
+             * wanted - a lone 14px glyph among 18px ones reads as left over.
+             */
+            open ? 'rounded p-1' : 'h-10 w-10 justify-center rounded-lg',
           )}
         >
-          {open ? <PanelLeftClose size={14} /> : <PanelLeftOpen size={14} />}
+          {open ? <PanelLeftClose size={14} /> : <PanelLeftOpen size={18} />}
         </button>
+        {!open && <span role="tooltip" className={RAIL_TIP_PEER}>Expand sidebar</span>}
       </div>
 
       {/* WORK, above PROJECTS (CGLAB-164). Where you GO, over what you have.
@@ -2627,7 +2685,10 @@ function Sidebar({ open, onToggle, drawsTitleBar, widthPx, resizable, dragging, 
           the first icon are two glyphs of the same size, and two pixels of gap
           reads as one control with a hiccup rather than as two things. */}
       <nav aria-label="Work" className={clsx('shrink-0', open ? 'px-2 pt-2' : 'px-1 pt-4')}>
-        <ul className="flex flex-col gap-px">
+        {/* The gap widens with the buttons: at 40px apiece, the 1px that
+            separates the short rows when open leaves four of them reading as
+            one block. */}
+        <ul className={clsx('flex flex-col', open ? 'gap-px' : 'gap-1.5')}>
           {WORK_ROWS.map(row => {
             const { label, Icon } = row;
             const current = row.kind === 'view' && activeView === row.id;
@@ -2636,7 +2697,7 @@ function Sidebar({ open, onToggle, drawsTitleBar, widthPx, resizable, dragging, 
             // control rather than opening an empty one.
             const disabled = row.kind === 'action' && row.id === 'flows' && !activeProjectId;
             return (
-              <li key={row.id}>
+              <li key={row.id} className="group relative">
                 <button
                   type="button"
                   onClick={() => {
@@ -2653,21 +2714,19 @@ function Sidebar({ open, onToggle, drawsTitleBar, widthPx, resizable, dragging, 
                   // out, at the cost of having to refuse the click ourselves.
                   aria-disabled={disabled || undefined}
                   /*
-                   * ONE title, deciding between two reasons.
+                   * ONE hint, deciding between two reasons - and it is the
+                   * tooltip below rather than `title`, so it arrives at once
+                   * and in this app's own colours instead of an OS bubble drawn
+                   * a second later.
                    *
-                   * A second `title` was added for the collapsed rail and JSX
-                   * silently kept the last one - so the "open a project first"
-                   * hint vanished the moment the rail hint arrived, with no
-                   * error beyond a build warning nobody reads in a test run.
+                   * A second `title` was added here once and JSX silently kept
+                   * the last one - so the "open a project first" hint vanished
+                   * the moment the rail hint arrived, with no error beyond a
+                   * build warning nobody reads in a test run.
                    *
                    * The disabled reason wins when both apply: being told why a
                    * control is dead beats being told what it is called.
                    */
-                  title={
-                    disabled ? 'Open a project to edit its flow'
-                    : !open ? label
-                    : undefined
-                  }
                   // `page`, not `true`: views are destinations, and a screen
                   // reader should say "current page" rather than the generic
                   // "current". Absent — not `false` — on the others, so exactly
@@ -2685,9 +2744,31 @@ function Sidebar({ open, onToggle, drawsTitleBar, widthPx, resizable, dragging, 
                    * hovering rather than by guessing at a glyph.
                    */
                   aria-label={label}
+                  /*
+                   * The dead row's reason is a DESCRIPTION, not a second name.
+                   * It used to ride on `title`, which most screen readers do
+                   * expose as the description - so dropping `title` for the
+                   * tooltip would have taken it away. Pointing at the hint
+                   * keeps it announced AND makes it visible on keyboard focus,
+                   * which `title` never was.
+                   */
+                  aria-describedby={disabled ? `rail-tip-${row.id}` : undefined}
                   className={clsx(
-                    'flex w-full items-center gap-2 rounded-md py-1.5 text-left text-[13px] transition-colors',
-                    open ? 'px-2' : 'justify-center px-0',
+                    'flex items-center gap-2 text-left text-[13px] transition-colors',
+                    /*
+                     * THE WIDTH IS CHOSEN PER MODE, NEVER OVERRIDDEN.
+                     *
+                     * `w-full` and `w-10` are the same property at the same
+                     * specificity, so the winner is whichever Tailwind emitted
+                     * LAST - not source order, and nothing the next reader can
+                     * see. That is exactly how the FK mark went missing earlier:
+                     * `pl-0` did not beat `pl-[76px]`. So the rail gets a 40px
+                     * square and the open sidebar gets the full row, each as a
+                     * complete answer.
+                     */
+                    open
+                      ? 'w-full rounded-md px-2 py-1.5'
+                      : 'h-10 w-10 justify-center rounded-lg px-0',
                     current
                       ? 'bg-accent-fill font-semibold text-accent-ink'
                       : 'text-ink-secondary hover:bg-canvas/60 hover:text-ink',
@@ -2696,7 +2777,7 @@ function Sidebar({ open, onToggle, drawsTitleBar, widthPx, resizable, dragging, 
                 >
                   {/* Decorative: the name is on the button, and a second one
                       here would make it say everything twice. */}
-                  <Icon size={14} aria-hidden="true" className="shrink-0 text-ink-tertiary" />
+                  <Icon size={open ? 14 : 18} aria-hidden="true" className="shrink-0 text-ink-tertiary" />
                   {/*
                     The label goes away on the rail, the ICON DOES NOT.
                     Collapsing used to take this whole nav with it, so the only
@@ -2705,6 +2786,18 @@ function Sidebar({ open, onToggle, drawsTitleBar, widthPx, resizable, dragging, 
                   */}
                   {open && label}
                 </button>
+                {/* Beside the button, not inside it: as a child it would join
+                    the button's computed name, and this text duplicates the
+                    accessible one. */}
+                {/* Drawn whenever the text is NOT already on screen: on the
+                    rail for every row, and in the open sidebar for the one row
+                    whose hint is a reason rather than a repeat of its own
+                    label. */}
+                {(disabled || !open) && (
+                  <span id={`rail-tip-${row.id}`} role="tooltip" className={RAIL_TIP}>
+                    {disabled ? 'Open a project to edit its flow' : label}
+                  </span>
+                )}
               </li>
             );
           })}
@@ -3397,22 +3490,34 @@ function Sidebar({ open, onToggle, drawsTitleBar, widthPx, resizable, dragging, 
           thirty cards in flight. */}
       <div
         data-testid="shell-nav"
-        className="shrink-0 border-t border-border-soft px-1.5 py-1.5"
+        className="group relative shrink-0 border-t border-border-soft px-1.5 py-1.5"
       >
         <button
           type="button"
           onClick={openSettings}
-          title="Settings"
           className={clsx(
-            'flex w-full items-center gap-2 rounded-md py-1.5 text-left text-[12px] text-ink-secondary transition-colors hover:bg-canvas hover:text-ink',
-            open ? 'px-2' : 'justify-center px-0',
+            'flex items-center gap-2 text-left text-[12px] text-ink-secondary transition-colors hover:bg-canvas hover:text-ink',
+            /*
+             * The same rule as the nav rows above, for the same reason: the
+             * width is CHOSEN per mode rather than `w-10` trying to beat
+             * `w-full` - same property, same specificity, so the winner is
+             * whichever Tailwind emitted later.
+             *
+             * This control is outside the nav (see the comment above), which
+             * is how the rail's first pass walked straight past it and left a
+             * 13px gear among 18px icons.
+             */
+            open ? 'w-full rounded-md px-2 py-1.5' : 'h-10 w-10 justify-center rounded-lg px-0',
           )}
         >
-          <Settings size={13} className="shrink-0" />
+          <Settings size={open ? 13 : 18} className="shrink-0" />
           {/* The label goes, the button stays. `title` and the accessible name
               below keep it identifiable when only the icon is showing. */}
           {open ? <span className="flex-1">Settings</span> : <span className="sr-only">Settings</span>}
         </button>
+        {/* The label is `sr-only` when collapsed, so the button keeps its
+            accessible name either way; this is only the pointer hint. */}
+        {!open && <span role="tooltip" className={RAIL_TIP}>Settings</span>}
       </div>
     </aside>
   );

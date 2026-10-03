@@ -520,8 +520,12 @@ export function TerminalTab({
        * swallows clicks, so everything clickable in it opts back out with
        * `no-drag` - and the empty stretch after the last tab is the handle.
        *
-       * `pl-12` is the traffic-light reserve the empty row used to carry: the
-       * collapsed rail is ~40px and the lights reach ~78px from the edge.
+       * `pl-8` is the traffic-light reserve the empty row also carries: the
+       * lights reach ~78px from the window edge and the collapsed rail covers
+       * 56 of them, leaving 22 to round up to 32. It was `pl-12` while the rail
+       * was 40px; the arithmetic lives in sidebarWidth.ts beside the constant
+       * that drives it, because a rail that grows without this puts the first
+       * tab under the zoom button.
        */}
       <div
         role="tablist"
@@ -530,7 +534,7 @@ export function TerminalTab({
         data-reserves-window-controls={titleBar?.reserveWindowControls ? 'true' : undefined}
         className={clsx(
           'flex shrink-0 items-stretch border-b border-border-soft bg-nav-surface',
-          titleBar?.reserveWindowControls && 'pl-12',
+          titleBar?.reserveWindowControls && 'pl-8',
         )}
       >
         {sessions.map((session, index) => {
