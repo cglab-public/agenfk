@@ -27,10 +27,10 @@ vi.mock('@agenfk/telemetry', () => ({
   DEFAULT_API_PORT: 3000,
 }));
 vi.mock('axios');
-const { execSync } = vi.hoisted(() => ({ execSync: vi.fn() }));
+const { execSync, spawnSync } = vi.hoisted(() => ({ execSync: vi.fn(), spawnSync: vi.fn() }));
 vi.mock('child_process', () => ({
-  execSync, execFileSync: vi.fn(), spawn: vi.fn(), spawnSync: vi.fn(),
-  default: { execSync, execFileSync: vi.fn(), spawn: vi.fn(), spawnSync: vi.fn() },
+  execSync, execFileSync: vi.fn(), spawn: vi.fn(), spawnSync,
+  default: { execSync, execFileSync: vi.fn(), spawn: vi.fn(), spawnSync },
 }));
 vi.mock('inquirer', () => ({ default: { prompt: vi.fn() } }));
 
@@ -57,12 +57,17 @@ beforeEach(() => {
     if (String(cmd).startsWith('claude')) throw Object.assign(new Error('claude: command not found'), { status: 127 });
     return '';
   });
+  // claude is launched through runTool, which spawns it (BUG ad57c267): not installed = ENOENT.
+  spawnSync.mockImplementation((cmd: string) => (String(cmd) === 'claude'
+    ? { status: null, error: Object.assign(new Error('spawnSync claude ENOENT'), { code: 'ENOENT' }) }
+    : { status: 0 }));
   mockedAxios.get.mockResolvedValue({ data: { message: 'AgEnFK Framework API is running' } } as any);
   mockedAxios.post.mockResolvedValue({ data: { id: 'p-123', name: 'demo' } } as any);
 });
 afterEach(() => {
   vi.restoreAllMocks();
   execSync.mockReset();
+  spawnSync.mockReset();
   mockedAxios.get.mockReset();
   mockedAxios.post.mockReset();
   fs.rmSync(dir, { recursive: true, force: true });
@@ -102,7 +107,8 @@ describe('agenfk init on a CLI-only install without Claude Code', () => {
     await program.parseAsync(['node', 'agenfk', 'init', 'demo']);
     expect(fs.existsSync(path.join(dir, '.agenfk', 'project.json'))).toBe(true);
     expect(err, err.join('\n')).toEqual([]);
-    expect(execSync.mock.calls.map(c => String(c[0])).filter(c => c.startsWith('claude'))).toEqual([]);
+    const claudeLaunches = [...execSync.mock.calls, ...spawnSync.mock.calls].map(c => String(c[0])).filter(c => /(^|[\\/"])claude(\.(exe|cmd|bat))?\b/.test(c));
+    expect(claudeLaunches).toEqual([]);
   });
 });
 

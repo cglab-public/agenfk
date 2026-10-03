@@ -9,6 +9,7 @@ import { resolveItemIdPrefix } from './resolveItemId.js';
 import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT, setTelemetryEnabled } from '@agenfk/telemetry';
 import { checkClaudeCodeEnforcement, checkPiEnforcement } from './enforcement.js';
 import { execSync, execFileSync, spawn, spawnSync } from 'child_process';
+import { runTool } from './runTool.js';
 import { chooseOpenTarget } from './openTarget.js';
 import { onlyApprovalBlocks, waitAllowed, waitForApproval, alreadySatisfied, commandWaitedOn, approvedAt, approvalNeededBlock, type BlockingCheck, type GatesSnapshot } from './approvalWait.js';
 import { parseCheckFlags } from './agentChecksFlag.js';
@@ -1245,10 +1246,9 @@ function installChoseMcp(): boolean {
  * init calls this only on a --with-mcp install (BUG 98aab7b6).
  */
 function configureClaudeCodeIde(rootDir: string, whenMissing: 'skip' | 'error'): boolean {
-    // Require the claude CLI
-    try {
-        execSync('claude --version', { stdio: 'ignore' });
-    } catch {
+    // Require the claude CLI. Every launch of claude goes through runTool: on
+    // Windows it is a .cmd shim or a native .exe, found on PATH only (BUG ad57c267).
+    if (runTool('claude', ['--version'], { stdio: 'ignore' }).status !== 0) {
         if (whenMissing === 'skip') {
             console.log(chalk.gray('Claude Code (the claude CLI) was not found, so its IDE setup was skipped; the agenfk CLI works without it. To add its MCP integration later, run: agenfk configure-ide'));
             return false;
@@ -1290,13 +1290,11 @@ function configureClaudeCodeIde(rootDir: string, whenMissing: 'skip' | 'error'):
     // The agenfk bin installed by the framework (symlink in ~/.local/bin)
     const agenfkBin = path.join(os.homedir(), '.local', 'bin', 'agenfk');
 
-    // Remove any existing registration (idempotent)
-    try {
-        execSync('claude mcp remove agenfk', { stdio: 'ignore' });
-    } catch {}
+    // Remove any existing registration (idempotent; non-zero when there is none)
+    runTool('claude', ['mcp', 'remove', 'agenfk'], { stdio: 'ignore' });
 
     // Register via the official claude mcp add CLI (user scope = available in all projects)
-    const result = spawnSync('claude', [
+    const result = runTool('claude', [
         'mcp', 'add',
         '--transport', 'stdio',
         '--scope', 'user',

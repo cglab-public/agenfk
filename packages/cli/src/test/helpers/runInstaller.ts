@@ -68,8 +68,8 @@ export function runInstall(args: string[] = [], home = makeHome('agenfk-install'
 }
 
 /** Run scripts/uninstall.mjs against an existing throwaway HOME. */
-export function runUninstall(args: string[], home: string, cwd?: string): RunResult {
-  return run(UNINSTALL, args, home, { cwd });
+export function runUninstall(args: string[], home: string, cwd?: string, extraEnv?: Record<string, string>): RunResult {
+  return run(UNINSTALL, args, home, { cwd, extraEnv });
 }
 
 /** Run bin/agenfk.js (the npx bootstrap) with a given cwd via extra env. */

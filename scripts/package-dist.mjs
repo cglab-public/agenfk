@@ -35,6 +35,7 @@ async function run() {
         // (e.g. the #88 uninstaller fix). Keep this in sync with every local
         // ./*.mjs import of the shipped scripts (enforced by dist-ships-uninstaller.test).
         'scripts/install-helpers.mjs',
+        'scripts/client-cli.mjs',
         'scripts/private-file.mjs',
         'scripts/uninstall.mjs',
         'scripts/uninstall-helpers.mjs',

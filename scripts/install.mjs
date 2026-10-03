@@ -7,6 +7,7 @@ import crypto from 'crypto';
 import { fileURLToPath, pathToFileURL } from 'url';
 import readline from 'readline';
 import { writePrivateFileSync } from './private-file.mjs';
+import { runTool } from './client-cli.mjs';
 import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, buildPosixWrapper, applyClaudeHooks, isDevCheckout } from './install-helpers.mjs';
 
 const GREEN = '\x1b[32m';
@@ -19,10 +20,6 @@ const rootDir = path.resolve(__dirname, '..');
 const agenfkHome = path.join(os.homedir(), '.agenfk');
 
 const isMinGW = !!(process.env.MSYSTEM || process.env.MINGW_PREFIX || (os.platform() === 'win32' && process.env.SHELL?.includes('bash')));
-
-function getCliCommand(name) {
-    return os.platform() === 'win32' && !isMinGW ? `${name}.cmd` : name;
-}
 
 // Returns the platform-appropriate path for Cursor's global mcp.json.
 function getCursorMcpPath() {
@@ -761,7 +758,7 @@ async function run() {
     if (withMcp && shouldRun('opencode')) {
         detail(`${GREEN}[6/14] Configuring Opencode MCP...${NC}`);
         const opencodeConfigPath = path.join(os.homedir(), '.config', 'opencode', 'opencode.json');
-        const opencodeInstalled = spawnSync(getCliCommand('opencode'), ['--version'], { stdio: 'ignore' }).status === 0;
+        const opencodeInstalled = runTool('opencode', ['--version'], { stdio: 'ignore' }).status === 0;
         if (existsSync(opencodeConfigPath) || opencodeInstalled) {
             try {
                 let config = {};
@@ -801,9 +798,8 @@ async function run() {
         detail(`${GREEN}[6b/14] Configuring Cursor MCP...${NC}`);
         const cursorMcpPath = getCursorMcpPath();
         const cursorConfigDir = path.dirname(cursorMcpPath);
-        const cursorCmd = getCliCommand('cursor');
         const cursorInstalled = existsSync(cursorConfigDir) ||
-            spawnSync(cursorCmd, ['--version'], { stdio: 'ignore' }).status === 0;
+            runTool('cursor', ['--version'], { stdio: 'ignore' }).status === 0;
         if (cursorInstalled) {
             try {
                 let cursorMcp = {};
@@ -847,14 +843,13 @@ async function run() {
     // reach the local API server; the MCP stdio server is not sandbox-restricted.
     if (codexMcp && shouldRun('codex')) {
         detail(`${GREEN}[6c/14] Configuring Codex MCP (default for Codex)...${NC}`);
-        const codexCmd = getCliCommand('codex');
-        const codexInstalled = spawnSync(codexCmd, ['--version'], { stdio: 'ignore' }).status === 0;
+        const codexInstalled = runTool('codex', ['--version'], { stdio: 'ignore' }).status === 0;
         if (codexInstalled) {
             try {
                 detail("  Registering AgenFK MCP server with Codex...");
                 // Remove any existing registration first (ignore errors if not registered)
-                spawnSync(codexCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'ignore' });
-                const result = spawnSync(codexCmd, [
+                runTool('codex', ['mcp', 'remove', 'agenfk'], { stdio: 'ignore' });
+                const result = runTool('codex', [
                     'mcp', 'add',
                     '--env', `AGENFK_DB_PATH=${dbPath}`,
                     '--',
@@ -878,14 +873,13 @@ async function run() {
     // 6d. Configure Gemini CLI MCP
     if (withMcp && shouldRun('gemini')) {
         detail(`${GREEN}[6d/14] Configuring Gemini CLI MCP...${NC}`);
-        const geminiCmd = getCliCommand('gemini');
-        const geminiInstalled = spawnSync(geminiCmd, ['--version'], { stdio: 'ignore' }).status === 0;
+        const geminiInstalled = runTool('gemini', ['--version'], { stdio: 'ignore' }).status === 0;
         if (geminiInstalled) {
             try {
                 detail("  Registering AgenFK MCP server with Gemini CLI...");
                 // Remove any existing registration first (ignore errors if not registered)
-                spawnSync(geminiCmd, ['mcp', 'remove', '-s', 'user', 'agenfk'], { stdio: 'ignore' });
-                const result = spawnSync(geminiCmd, [
+                runTool('gemini', ['mcp', 'remove', '-s', 'user', 'agenfk'], { stdio: 'ignore' });
+                const result = runTool('gemini', [
                     'mcp', 'add',
                     '-s', 'user',
                     '-e', `AGENFK_DB_PATH=${dbPath}`,
@@ -914,24 +908,21 @@ async function run() {
         detail(`${GREEN}[6e/14] Ensuring CLI-only mode (unregistering any existing agenfk MCP server)...${NC}`);
 
         if (shouldRun('claude')) {
-            const claudeCmd = getCliCommand('claude');
-            if (spawnSync(claudeCmd, ['--version'], { stdio: 'ignore' }).status === 0) {
-                spawnSync(claudeCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'ignore' });
+            if (runTool('claude', ['--version'], { stdio: 'ignore' }).status === 0) {
+                runTool('claude', ['mcp', 'remove', 'agenfk'], { stdio: 'ignore' });
             }
         }
         // Codex is the exception: MCP is on by default there (§6c registered it),
         // so only unregister it when Codex MCP is actually disabled (--no-mcp, or a
         // persisted opt-out).
         if (!codexMcp && shouldRun('codex')) {
-            const codexCmd = getCliCommand('codex');
-            if (spawnSync(codexCmd, ['--version'], { stdio: 'ignore' }).status === 0) {
-                spawnSync(codexCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'ignore' });
+            if (runTool('codex', ['--version'], { stdio: 'ignore' }).status === 0) {
+                runTool('codex', ['mcp', 'remove', 'agenfk'], { stdio: 'ignore' });
             }
         }
         if (shouldRun('gemini')) {
-            const geminiCmd = getCliCommand('gemini');
-            if (spawnSync(geminiCmd, ['--version'], { stdio: 'ignore' }).status === 0) {
-                spawnSync(geminiCmd, ['mcp', 'remove', '-s', 'user', 'agenfk'], { stdio: 'ignore' });
+            if (runTool('gemini', ['--version'], { stdio: 'ignore' }).status === 0) {
+                runTool('gemini', ['mcp', 'remove', '-s', 'user', 'agenfk'], { stdio: 'ignore' });
             }
         }
         if (shouldRun('opencode')) {
@@ -1231,7 +1222,7 @@ async function run() {
 
     // 10c. Slash Commands — Gemini CLI (.toml wrappers referencing .md files)
     if (shouldRun('gemini')) {
-        const geminiInstalled = spawnSync(getCliCommand('gemini'), ['--version'], { stdio: 'ignore' }).status === 0;
+        const geminiInstalled = runTool('gemini', ['--version'], { stdio: 'ignore' }).status === 0;
         if (geminiInstalled) {
             detail(`${GREEN}[10c/14] Installing global slash commands (Gemini CLI)...${NC}`);
             const geminiCommandsBase = path.join(os.homedir(), '.gemini', 'commands');
@@ -1422,7 +1413,7 @@ async function run() {
     // 12c. Install Opencode MCP enforcer plugin
     if (shouldRun('opencode')) {
         const opencodePluginsDir = path.join(os.homedir(), '.config', 'opencode', 'plugins');
-        const opencodeInstalled = spawnSync(getCliCommand('opencode'), ['--version'], { stdio: 'ignore' }).status === 0;
+        const opencodeInstalled = runTool('opencode', ['--version'], { stdio: 'ignore' }).status === 0;
         if (existsSync(path.join(os.homedir(), '.config', 'opencode')) || opencodeInstalled) {
             await fs.mkdir(opencodePluginsDir, { recursive: true });
             const opencodeEnforcerSource = path.join(rootDir, 'bin', 'agenfk-mcp-enforcer-opencode.mjs');
@@ -1451,7 +1442,7 @@ async function run() {
     if (shouldRun('pi')) {
         if (!onlyPlatform) detail(`${GREEN}[12e/14] Installing pi extension (~/.pi/agent/extensions)...${NC}`);
         const piHome = path.join(os.homedir(), '.pi');
-        const piInstalled = spawnSync(getCliCommand('pi'), ['--version'], { stdio: 'ignore' }).status === 0;
+        const piInstalled = runTool('pi', ['--version'], { stdio: 'ignore' }).status === 0;
         if (existsSync(piHome) || piInstalled) {
             const piExtDir = path.join(piHome, 'agent', 'extensions');
             await fs.mkdir(piExtDir, { recursive: true });
@@ -1470,14 +1461,13 @@ async function run() {
     if (withMcp && shouldRun('claude')) {
         detail(`${GREEN}[7/14] Configuring Claude Code MCP...${NC}`);
         try {
-            const claudeCmd = getCliCommand('claude');
-            const claudeCheck = spawnSync(claudeCmd, ['--version'], { stdio: 'ignore' });
+            const claudeCheck = runTool('claude', ['--version'], { stdio: 'ignore' });
             if (claudeCheck.status === 0) {
                 detail("  Registering AgenFK MCP server with Claude Code...");
                 // Remove any existing registration first (ignore errors if not registered)
-                spawnSync(claudeCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'ignore' });
+                runTool('claude', ['mcp', 'remove', 'agenfk'], { stdio: 'ignore' });
                 // Register with correct syntax: options, then -- to end variadic -e, then name + command
-                const result = spawnSync(claudeCmd, [
+                const result = runTool('claude', [
                     'mcp', 'add',
                     '--transport', 'stdio',
                     '--scope', 'user',
@@ -1573,11 +1563,10 @@ async function run() {
     // 13b. Install Cursor workflow rules (.mdc)
     if (shouldRun('cursor')) {
         detail(`${GREEN}[13b/14] Installing Cursor workflow rules (agenfk.mdc)...${NC}`);
-        const cursorCmd = getCliCommand('cursor');
         const cursorMcpPath = getCursorMcpPath();
         const cursorConfigDir = path.dirname(cursorMcpPath);
         const cursorInstalled = existsSync(cursorConfigDir) ||
-            spawnSync(cursorCmd, ['--version'], { stdio: 'ignore' }).status === 0;
+            runTool('cursor', ['--version'], { stdio: 'ignore' }).status === 0;
         if (cursorInstalled) {
             try {
                 const globalCursorMdc = path.join(getCursorRulesDir(), 'agenfk.mdc');
@@ -1595,8 +1584,7 @@ async function run() {
     // 13c. Install Codex workflow rules (AGENTS.md)
     if (shouldRun('codex')) {
         detail(`${GREEN}[13c/14] Installing Codex workflow rules (AGENTS.md)...${NC}`);
-        const codexCmd = getCliCommand('codex');
-        const codexInstalled = spawnSync(codexCmd, ['--version'], { stdio: 'ignore' }).status === 0;
+        const codexInstalled = runTool('codex', ['--version'], { stdio: 'ignore' }).status === 0;
         if (codexInstalled) {
             try {
                 const globalAgentsMd = path.join(os.homedir(), '.codex', 'AGENTS.md');
@@ -1614,8 +1602,7 @@ async function run() {
     // 13d. Install Gemini CLI workflow rules (GEMINI.md)
     if (shouldRun('gemini')) {
         detail(`${GREEN}[13d/14] Installing Gemini CLI workflow rules (GEMINI.md)...${NC}`);
-        const geminiCmd = getCliCommand('gemini');
-        const geminiInstalled = spawnSync(geminiCmd, ['--version'], { stdio: 'ignore' }).status === 0;
+        const geminiInstalled = runTool('gemini', ['--version'], { stdio: 'ignore' }).status === 0;
         if (geminiInstalled) {
             try {
                 const globalGeminiMd = path.join(os.homedir(), '.gemini', 'GEMINI.md');

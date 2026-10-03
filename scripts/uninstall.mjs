@@ -3,7 +3,6 @@ import { existsSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import readline from 'readline';
-import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import {
     HOOK_VARIANTS,
@@ -15,6 +14,7 @@ import {
   isAgenfkOwnedFile,
   isAgenfkOwnedArtifact,
 } from './uninstall-helpers.mjs';
+import { runTool } from './client-cli.mjs';
 
 const RED = '\x1b[31m';
 const GREEN = '\x1b[32m';
@@ -24,10 +24,6 @@ const NC = '\x1b[0m';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
-
-function getCliCommand(name) {
-    return os.platform() === 'win32' ? `${name}.cmd` : name;
-}
 
 function getCursorMcpPath() {
     if (os.platform() === 'win32') {
@@ -340,10 +336,9 @@ async function run() {
     // 5. MCP config — Claude Code
     await step('Claude Code MCP config', shouldRun('claude'), async () => {
         console.log(`${GREEN}[5] Removing Claude Code MCP config...${NC}`);
-        const claudeCmd = getCliCommand('claude');
-        const claudeCheck = spawnSync(claudeCmd, ['--version'], { stdio: 'ignore' });
+        const claudeCheck = runTool('claude', ['--version'], { stdio: 'ignore' });
         if (claudeCheck.status === 0) {
-            spawnSync(claudeCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'inherit' });
+            runTool('claude', ['mcp', 'remove', 'agenfk'], { stdio: 'inherit' });
             console.log("  Removed: agenfk MCP from Claude Code");
             return true;
         }
@@ -416,10 +411,9 @@ async function run() {
     // 6c. MCP config — Codex
     await step('Codex MCP config', shouldRun('codex'), async () => {
         console.log(`${GREEN}[6c] Removing Codex MCP config...${NC}`);
-        const codexCmd = getCliCommand('codex');
-        const codexCheck = spawnSync(codexCmd, ['--version'], { stdio: 'ignore' });
+        const codexCheck = runTool('codex', ['--version'], { stdio: 'ignore' });
         if (codexCheck.status === 0) {
-            spawnSync(codexCmd, ['mcp', 'remove', 'agenfk'], { stdio: 'inherit' });
+            runTool('codex', ['mcp', 'remove', 'agenfk'], { stdio: 'inherit' });
             console.log("  Removed: agenfk MCP from Codex");
             return true;
         }
@@ -430,10 +424,9 @@ async function run() {
     // 6d. MCP config — Gemini CLI
     await step('Gemini CLI MCP config', shouldRun('gemini'), async () => {
         console.log(`${GREEN}[6d] Removing Gemini CLI MCP config...${NC}`);
-        const geminiCmd = getCliCommand('gemini');
-        const geminiCheck = spawnSync(geminiCmd, ['--version'], { stdio: 'ignore' });
+        const geminiCheck = runTool('gemini', ['--version'], { stdio: 'ignore' });
         if (geminiCheck.status === 0) {
-            spawnSync(geminiCmd, ['mcp', 'remove', '-s', 'user', 'agenfk'], { stdio: 'inherit' });
+            runTool('gemini', ['mcp', 'remove', '-s', 'user', 'agenfk'], { stdio: 'inherit' });
             console.log("  Removed: agenfk MCP from Gemini CLI");
             return true;
         }
