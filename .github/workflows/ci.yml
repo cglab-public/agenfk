@@ -84,12 +84,12 @@ jobs:
   # space and accents so the characters that broke real Windows users are hit on
   # every run. `*.xplat.test.ts` specs are shared with the Linux job.
   #
-  # Advisory (`continue-on-error`) while the subset proves stable; remove that
-  # line, then mark this job as a required check, once it has.
+  # Blocking: a failure fails the run. It is the only place the win32-only cases
+  # run (BUG ad57c267 passed every local run and still needed it). Making it a
+  # required check on main's "Protect main" ruleset is the repo owner's step.
   windows-compat:
     name: Windows compat
     runs-on: windows-latest
-    continue-on-error: true
     defaults:
       run:
         # Git Bash, which is what Claude Code uses to run hooks on Windows.
