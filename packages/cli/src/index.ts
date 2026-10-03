@@ -1225,12 +1225,22 @@ program
  *
  * Returns true on success, false if claude CLI is unavailable or dbPath cannot
  * be determined.
+ *
+ * `whenMissing` is required, because the right answer depends on the caller
+ * (BUG 5cc7de1e): after `agenfk init` the step is optional - CLI-only is the
+ * default and a Codex, Cursor or pi machine has no `claude` - so it is skipped
+ * with one grey line; `agenfk configure-ide` asked for exactly this, so a
+ * missing `claude` stays an error there.
  */
-function configureClaudeCodeIde(rootDir: string): boolean {
+function configureClaudeCodeIde(rootDir: string, whenMissing: 'skip' | 'error'): boolean {
     // Require the claude CLI
     try {
         execSync('claude --version', { stdio: 'ignore' });
     } catch {
+        if (whenMissing === 'skip') {
+            console.log(chalk.gray('Claude Code (the claude CLI) was not found, so its IDE setup was skipped; the agenfk CLI works without it. To add its MCP integration later, run: agenfk configure-ide'));
+            return false;
+        }
         console.error(chalk.red('Error: claude CLI not found in PATH.'));
         console.error(chalk.gray('Install Claude Code from https://claude.ai/download and try again.'));
         return false;
@@ -1424,7 +1434,7 @@ program
         console.log(chalk.green(`\n✨ Initialized project in ${projFile}`));
         console.log(chalk.gray('You can now start creating items with "agenfk create <type> [title]"'));
 
-        configureClaudeCodeIde(rootDir);
+        configureClaudeCodeIde(rootDir, 'skip');
 
     } catch (e: any) {
         console.error(chalk.red(`Could not connect to API server at ${API_URL}. Is it running?`));
@@ -1436,7 +1446,7 @@ program
 
 program
   .command('configure-ide')
-  .description('Fix Claude Code MCP integration for an already-initialized project. Creates .mcp.json and updates .claude/settings.json. Safe to re-run.')
+  .description('Set up the Claude Code MCP integration for an already-initialized project: registers the agenfk MCP server with `claude mcp add` and its permissions in .claude/settings.local.json. Safe to re-run.')
   .action(() => {
     const rootDir = process.cwd();
     const projFile = path.join(rootDir, '.agenfk', 'project.json');
@@ -1448,13 +1458,12 @@ program
     }
 
     console.log(chalk.blue('Configuring Claude Code IDE integration...'));
-    const ok = configureClaudeCodeIde(rootDir);
+    const ok = configureClaudeCodeIde(rootDir, 'error');
 
-    if (!ok) {
-        console.error(chalk.red('Could not find agenfk MCP config in ~/.claude/settings.json.'));
-        console.error(chalk.gray('The agenfk MCP server must be registered in ~/.claude/settings.json under mcpServers.'));
-        process.exit(1);
-    }
+    // Each failure inside configureClaudeCodeIde already printed its own cause
+    // (no claude CLI, no db path, `claude mcp add` failed); a generic line here
+    // named a legacy settings.json mechanism that is not the cause (5cc7de1e review).
+    if (!ok) process.exit(1);
 
     console.log(chalk.green('\n✓ IDE configuration complete.'));
     console.log(chalk.gray('Restart Claude Code for the changes to take effect.'));
