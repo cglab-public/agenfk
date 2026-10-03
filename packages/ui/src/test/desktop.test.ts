@@ -10,7 +10,8 @@
  * be moved.
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { isDesktop, desktopInfo } from '../desktop';
+import { renderHook, act } from '@testing-library/react';
+import { isDesktop, desktopInfo, isFullScreen, onFullScreenChange, useFullScreen } from '../desktop';
 
 const setBridge = (value: unknown): void => {
   Object.defineProperty(window, 'agenfkDesktop', {
@@ -64,5 +65,93 @@ describe('desktopInfo', () => {
   it('does not throw when the bridge is present but partial', () => {
     setBridge({ isDesktop: true });
     expect(() => desktopInfo()).not.toThrow();
+  });
+});
+
+/**
+ * Full screen, which only the window knows (the empty title bar on macOS).
+ *
+ * Read through the same shape check as everything else here: the bridge is
+ * another process's data, and an older preload has no `fullScreen` at all.
+ * Absent means "not full screen", which keeps the title bar - the safe side,
+ * because the other mistake is a window that cannot be dragged.
+ */
+const fullScreenBridge = (initial: boolean) => {
+  let value = initial;
+  const listeners = new Set<(v: unknown) => void>();
+  setBridge({
+    isDesktop: true, platform: 'darwin', versions: { electron: '40', chrome: '1', node: '24' },
+    fullScreen: {
+      current: () => value,
+      onChange: (cb: (v: unknown) => void) => { listeners.add(cb); return () => { listeners.delete(cb); }; },
+    },
+  });
+  return {
+    listeners,
+    push: (v: unknown) => { if (typeof v === 'boolean') value = v; listeners.forEach(l => l(v)); },
+  };
+};
+
+describe('isFullScreen', () => {
+  it('is false in a browser', () => {
+    expect(isFullScreen()).toBe(false);
+  });
+
+  it('is false for a preload that predates full screen', () => {
+    setBridge({ isDesktop: true, platform: 'darwin' });
+    expect(isFullScreen()).toBe(false);
+  });
+
+  it('reads what the window last said', () => {
+    fullScreenBridge(true);
+    expect(isFullScreen()).toBe(true);
+  });
+
+  it('takes only a real boolean', () => {
+    setBridge({ isDesktop: true, fullScreen: { current: () => 'yes', onChange: () => () => {} } });
+    expect(isFullScreen()).toBe(false);
+  });
+});
+
+describe('onFullScreenChange', () => {
+  it('is a harmless no-op in a browser', () => {
+    const off = onFullScreenChange(() => {});
+    expect(() => off()).not.toThrow();
+  });
+
+  it('forwards changes and stops after unsubscribing', () => {
+    const b = fullScreenBridge(false);
+    const seen: boolean[] = [];
+    const off = onFullScreenChange(v => seen.push(v));
+    b.push(true);
+    off();
+    b.push(false);
+    expect(seen).toEqual([true]);
+    expect(b.listeners.size).toBe(0);
+  });
+
+  it('drops a payload that is not a boolean', () => {
+    const b = fullScreenBridge(false);
+    const seen: boolean[] = [];
+    onFullScreenChange(v => seen.push(v));
+    b.push('true');
+    expect(seen).toEqual([]);
+  });
+});
+
+describe('useFullScreen', () => {
+  it('starts from the current state and follows the window', () => {
+    const b = fullScreenBridge(true);
+    const { result, unmount } = renderHook(() => useFullScreen());
+    expect(result.current).toBe(true);
+    act(() => b.push(false));
+    expect(result.current).toBe(false);
+    unmount();
+    expect(b.listeners.size, 'the hook left a listener behind').toBe(0);
+  });
+
+  it('is false in a browser', () => {
+    const { result } = renderHook(() => useFullScreen());
+    expect(result.current).toBe(false);
   });
 });

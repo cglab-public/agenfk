@@ -30,12 +30,18 @@ const read = (rel: string): string => fs.readFileSync(path.resolve(here, '..', r
 
 const registeredChannels = (): string[] => {
   const src = read('main/ptyIpc.ts');
-  return [...src.matchAll(/ipc\.handle\(\s*'([^']+)'/g)].map(m => m[1]).sort();
+  // And the one synchronous question, answered outside ptyIpc because it is
+  // about the window rather than a session.
+  const windowSrc = read('main/windowFullScreen.ts');
+  return [
+    ...[...src.matchAll(/ipc\.handle\(\s*'([^']+)'/g)].map(m => m[1]),
+    ...[...windowSrc.matchAll(/FULL_SCREEN_QUERY\s*=\s*'([^']+)'/g)].map(m => m[1]),
+  ].sort();
 };
 
 const preloadChannels = (): string[] => {
   const src = read('preload/index.ts');
-  return [...src.matchAll(/ipcRenderer\.(?:invoke|on|off)\(\s*'([^']+)'/g)].map(m => m[1]);
+  return [...src.matchAll(/ipcRenderer\.(?:invoke|on|off|sendSync)\(\s*'([^']+)'/g)].map(m => m[1]);
 };
 
 /**
@@ -48,7 +54,12 @@ const preloadChannels = (): string[] => {
  */
 const preloadSubscriptions = (): string[] => {
   const src = read('preload/index.ts');
-  return [...src.matchAll(/demux\.on\(\s*'([^']+)'/g)].map(m => m[1]).sort();
+  // And `ipcRenderer.on` itself, for a push that is not per-session and so
+  // never goes through the demux - the window's full-screen state.
+  return [...new Set([
+    ...[...src.matchAll(/demux\.on\(\s*'([^']+)'/g)].map(m => m[1]),
+    ...[...src.matchAll(/ipcRenderer\.on\(\s*'([^']+)'/g)].map(m => m[1]),
+  ])].sort();
 };
 
 /**
@@ -61,7 +72,13 @@ const preloadSubscriptions = (): string[] => {
  */
 const emittedChannels = (): string[] => {
   const src = read('main/ptyRegistry.ts');
-  return [...new Set([...src.matchAll(/emit\([^,]+,\s*'([^']+)'/g)].map(m => m[1]))].sort();
+  // The window's own push, sent straight to its webContents rather than
+  // through the registry's emit.
+  const windowSrc = read('main/windowFullScreen.ts');
+  return [...new Set([
+    ...[...src.matchAll(/emit\([^,]+,\s*'([^']+)'/g)].map(m => m[1]),
+    ...[...windowSrc.matchAll(/FULL_SCREEN_CHANNEL\s*=\s*'([^']+)'/g)].map(m => m[1]),
+  ])].sort();
 };
 
 describe('the IPC surface is reachable from the renderer', () => {

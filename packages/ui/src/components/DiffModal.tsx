@@ -11,6 +11,7 @@
  * that is running.
  */
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { useQuery } from '@tanstack/react-query';
 import { clsx } from 'clsx';
 import { X } from 'lucide-react';
@@ -47,8 +48,17 @@ export function DiffModal({ itemId, filePath, staged, onClose }: {
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  return (
+  /*
+   * `no-drag`, and PORTALLED to the end of <body> (e7ad8020). It opens over
+   * the terminal, whose tab strip is the window's drag region on macOS, so
+   * without `no-drag` the top of this dialog and its close button would move
+   * the window instead of taking the click. Electron combines drag and
+   * no-drag regions in DOCUMENT order, a later drag region winning; at the end
+   * of the document nothing can come after this one, wherever it is opened.
+   */
+  return createPortal(
     <div
+      data-app-region="no-drag"
       role="dialog"
       aria-modal="true"
       aria-label={`Diff of ${filePath}`}
@@ -105,6 +115,7 @@ export function DiffModal({ itemId, filePath, staged, onClose }: {
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

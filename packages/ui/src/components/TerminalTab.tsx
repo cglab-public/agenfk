@@ -255,6 +255,16 @@ export interface TerminalTabProps {
    * something to start doing on somebody's behalf.
    */
   readonly showWorktree?: boolean;
+  /**
+   * The tab strip as the WINDOW'S title bar (e7ad8020). On macOS the shell
+   * hides the native bar, and the strip is the top row of the column, so it
+   * is what the window is dragged by - and, with the sidebar collapsed, it
+   * sits under the traffic lights and has to leave them room.
+   *
+   * Absent off macOS and in full screen, where there is a native bar or no
+   * window to drag.
+   */
+  readonly titleBar?: { readonly reserveWindowControls: boolean };
 }
 
 /**
@@ -326,6 +336,7 @@ export function TerminalTab({
   editors,
   onOpenInEditor,
   showWorktree,
+  titleBar,
 }: TerminalTabProps): React.ReactElement {
   // Seeded from storage in the initializer, so there is no first paint with
   // the panel open for someone who closed it.
@@ -504,100 +515,24 @@ export function TerminalTab({
   return (
     <div className="flex h-full min-h-0 flex-col">
       {/*
-       * WHICH WORKTREE you are typing into - and HIDDEN once there is more than
-       * one pane.
+       * THE TOP ROW, above the card's header: with `titleBar` it is the
+       * window's title bar, the way a browser's tabs are. A drag region
+       * swallows clicks, so everything clickable in it opts back out with
+       * `no-drag` - and the empty stretch after the last tab is the handle.
        *
-       * It names the ACTIVE card and branch, which is a second, conflicting
-       * answer the moment every pane carries its own line (ccbe7ba4): for
-       * every pane but the focused one it is simply wrong, and sending a
-       * command to the wrong branch is exactly the expensive mistake this bar
-       * was added to prevent. It also gives the split panes the row back.
+       * `pl-12` is the traffic-light reserve the empty row used to carry: the
+       * collapsed rail is ~40px and the lights reach ~78px from the edge.
        */}
-      {paneIds.size <= 1 && !attachedToHerdr && (
-      <div data-testid="terminal-header" className="flex shrink-0 items-center gap-2 border-b border-border-soft bg-nav-surface px-3 py-1.5 text-xs">
-        <span className="truncate text-ink-secondary">
-          {current?.projectName && <span className="text-ink-tertiary">{current.projectName} / </span>}
-          {current?.title}
-        </span>
-        {current?.branchName ? (
-          <span
-            title={current.branchName}
-            data-testid="session-branch"
-            className="ml-auto flex min-w-0 shrink items-center gap-1.5 rounded-lg border border-border-soft bg-canvas px-2 py-0.5"
-          >
-            <GitBranch size={11} className="shrink-0 text-ink-tertiary" />
-            <span className="truncate font-mono text-[11px] text-ink">{current.branchName}</span>
-          </span>
-        ) : (
-          // Said, not hidden. A card with no branch yet is a worktree that has
-          // not been created, and that is worth knowing BEFORE you type.
-          <span className="ml-auto shrink-0 font-mono text-[11px] text-ink-tertiary">no branch yet</span>
+      <div
+        role="tablist"
+        aria-label="Open terminals"
+        data-app-region={titleBar ? 'drag' : undefined}
+        data-reserves-window-controls={titleBar?.reserveWindowControls ? 'true' : undefined}
+        className={clsx(
+          'flex shrink-0 items-stretch border-b border-border-soft bg-nav-surface',
+          titleBar?.reserveWindowControls && 'pl-12',
         )}
-
-        {/* Its OWN group, separated from the editor button by a divider.
-            "Open in VS Code" launches an application; these two change what is
-            on screen, and three identical buttons in a row would read as three
-            of the same kind of control.
-
-            Buttons with `aria-pressed`, not a tablist. A tablist has to have a
-            selected tab, and the state this pair spends most of its time in is
-            the one where neither list is showing. */}
-        {showWorktree && (
-          <div
-            role="group"
-            aria-label="Worktree"
-            className="flex shrink-0 items-center gap-1 border-r border-border-soft pr-2"
-          >
-            {/* ONE control, not two. Changed and staged are two halves of one
-                question about one worktree, so splitting them into two buttons
-                made a reader close one half to see the other. The button opens
-                the panel; choosing between the halves happens inside it, where
-                both counts are in view.
-
-                The counts stay out here because with the panel shut they are
-                the only sign the worktree has changes at all - which is the
-                whole reason this moved into the bar. */}
-            <button
-              type="button"
-              aria-pressed={panelOpen}
-              onClick={toggleWorktree}
-              title={panelOpen ? 'Hide the worktree files' : 'Show the worktree files beside the terminal'}
-              className={clsx(
-                'flex shrink-0 items-center gap-1.5 rounded border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide transition-colors',
-                panelOpen
-                  ? 'border-accent bg-canvas font-semibold text-ink'
-                  : 'border-border-soft text-ink-tertiary hover:border-accent hover:text-ink',
-              )}
-            >
-              <FileDiff size={11} />
-              {(git?.changed ?? 0)} / {(git?.staged ?? 0)}
-            </button>
-
-            {
-              /* DELETED: the Runs toggle (396c8350). The feed this opened is
-                 gone with the Agents screen; the agent rows under the cards
-                 are what shows what is running. */
-            }
-          </div>
-        )}
-
-        {/* Here because this is where the user already is when they want it:
-            looking at what the agent just did and wanting to see the files. */}
-        {current && editors?.map(editor => (
-          <button
-            key={editor.id}
-            type="button"
-            onClick={() => current.itemId && onOpenInEditor?.(current.itemId, editor.id)}
-            className="flex shrink-0 items-center gap-1.5 rounded border border-border-soft px-2 py-0.5 font-mono text-[10px] text-ink-secondary transition-colors hover:border-accent hover:text-ink"
-          >
-            <EditorIcon editorId={editor.id} />
-            Open in {editor.label}
-          </button>
-        ))}
-      </div>
-      )}
-
-      <div role="tablist" aria-label="Open terminals" className="flex shrink-0 items-stretch border-b border-border-soft bg-nav-surface">
+      >
         {sessions.map((session, index) => {
           const selected = session.id === activeId;
           /*
@@ -615,6 +550,7 @@ export function TerminalTab({
             <div
               key={session.id}
               data-testid="terminal-tab"
+              data-app-region={titleBar ? 'no-drag' : undefined}
               /*
                * A DROP TARGET FOR REORDER (e488bcdd). The same payload the
                * pane edges take; a drop HERE reorders the strip, a drop on a
@@ -784,6 +720,7 @@ export function TerminalTab({
         <button
           onClick={onNew}
           aria-label="New terminal"
+          data-app-region={titleBar ? 'no-drag' : undefined}
           className={clsx(
             'flex shrink-0 items-center px-3 text-ink-tertiary transition-colors hover:text-ink',
             !anyNarrow && 'ml-auto',
@@ -792,6 +729,100 @@ export function TerminalTab({
           <Plus size={14} />
         </button>
       </div>
+
+      {/*
+       * WHICH WORKTREE you are typing into - and HIDDEN once there is more than
+       * one pane.
+       *
+       * It names the ACTIVE card and branch, which is a second, conflicting
+       * answer the moment every pane carries its own line (ccbe7ba4): for
+       * every pane but the focused one it is simply wrong, and sending a
+       * command to the wrong branch is exactly the expensive mistake this bar
+       * was added to prevent. It also gives the split panes the row back.
+       */}
+      {paneIds.size <= 1 && !attachedToHerdr && (
+      <div data-testid="terminal-header" className="flex shrink-0 items-center gap-2 border-b border-border-soft bg-nav-surface px-3 py-1.5 text-xs">
+        <span className="truncate text-ink-secondary">
+          {current?.projectName && <span className="text-ink-tertiary">{current.projectName} / </span>}
+          {current?.title}
+        </span>
+        {current?.branchName ? (
+          <span
+            title={current.branchName}
+            data-testid="session-branch"
+            className="ml-auto flex min-w-0 shrink items-center gap-1.5 rounded-lg border border-border-soft bg-canvas px-2 py-0.5"
+          >
+            <GitBranch size={11} className="shrink-0 text-ink-tertiary" />
+            <span className="truncate font-mono text-[11px] text-ink">{current.branchName}</span>
+          </span>
+        ) : (
+          // Said, not hidden. A card with no branch yet is a worktree that has
+          // not been created, and that is worth knowing BEFORE you type.
+          <span className="ml-auto shrink-0 font-mono text-[11px] text-ink-tertiary">no branch yet</span>
+        )}
+
+        {/* Its OWN group, separated from the editor button by a divider.
+            "Open in VS Code" launches an application; these two change what is
+            on screen, and three identical buttons in a row would read as three
+            of the same kind of control.
+
+            Buttons with `aria-pressed`, not a tablist. A tablist has to have a
+            selected tab, and the state this pair spends most of its time in is
+            the one where neither list is showing. */}
+        {showWorktree && (
+          <div
+            role="group"
+            aria-label="Worktree"
+            className="flex shrink-0 items-center gap-1 border-r border-border-soft pr-2"
+          >
+            {/* ONE control, not two. Changed and staged are two halves of one
+                question about one worktree, so splitting them into two buttons
+                made a reader close one half to see the other. The button opens
+                the panel; choosing between the halves happens inside it, where
+                both counts are in view.
+
+                The counts stay out here because with the panel shut they are
+                the only sign the worktree has changes at all - which is the
+                whole reason this moved into the bar. */}
+            <button
+              type="button"
+              aria-pressed={panelOpen}
+              onClick={toggleWorktree}
+              title={panelOpen ? 'Hide the worktree files' : 'Show the worktree files beside the terminal'}
+              className={clsx(
+                'flex shrink-0 items-center gap-1.5 rounded border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide transition-colors',
+                panelOpen
+                  ? 'border-accent bg-canvas font-semibold text-ink'
+                  : 'border-border-soft text-ink-tertiary hover:border-accent hover:text-ink',
+              )}
+            >
+              <FileDiff size={11} />
+              {(git?.changed ?? 0)} / {(git?.staged ?? 0)}
+            </button>
+
+            {
+              /* DELETED: the Runs toggle (396c8350). The feed this opened is
+                 gone with the Agents screen; the agent rows under the cards
+                 are what shows what is running. */
+            }
+          </div>
+        )}
+
+        {/* Here because this is where the user already is when they want it:
+            looking at what the agent just did and wanting to see the files. */}
+        {current && editors?.map(editor => (
+          <button
+            key={editor.id}
+            type="button"
+            onClick={() => current.itemId && onOpenInEditor?.(current.itemId, editor.id)}
+            className="flex shrink-0 items-center gap-1.5 rounded border border-border-soft px-2 py-0.5 font-mono text-[10px] text-ink-secondary transition-colors hover:border-accent hover:text-ink"
+          >
+            <EditorIcon editorId={editor.id} />
+            Open in {editor.label}
+          </button>
+        ))}
+      </div>
+      )}
 
       {/* All of them, always. Hiding is a style; unmounting kills a process. */}
       {/* Panes and the worktree panel share the row, so the panel sits beside
