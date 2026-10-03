@@ -11,6 +11,7 @@ export * from "./pathContainment.js";
 export * from "./worktreePrune.js";
 export * from "./prImport.js";
 export * from './verifyAt';
+export * from './pollBackoff';
 export * from './fanOut';
 export * from './circuitBreaker';
 export * from './baseDrift';
