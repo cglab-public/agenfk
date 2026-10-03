@@ -4057,8 +4057,8 @@ const commandStateOf = (root: string, project: any): string | null => {
 /**
  * 32045202: the state capture REUSE compares - the tree's files with the
  * report aside AND the project's reuse-ignore globs (default: every Markdown
- * file) left out, except a file some test names. Only reuse reads it; the
- * record's filesState, the final step and command checks keep every file.
+ * file) left out, except a file some test names. Reuse reads it - at the final
+ * step too (ef1342b8) - while the record's filesState and command checks keep every file.
  * Null when the tree cannot be read, or nothing may be shared on it.
  */
 function suiteStateOf(root: string, setting: TestReportSetting | undefined, read?: TreeRead | null): string | null {
@@ -8190,6 +8190,31 @@ export function ownCaptureGreenOf(capture: any, command: string, root: string | 
   return state !== null && treeStateOf(root, project) === state ? capture : null;
 }
 
+/**
+ * ef1342b8: a green of this tree's content already on record that stands for
+ * the verify command on the move that ends the flow, or null. The card's own
+ * earlier capture, a sibling's, the previous card's close: a whole, fenced,
+ * per-test green of the same command in the same root, matched on every file
+ * or on every file but the reuse-ignored ones (the user's call, 2026-10-03:
+ * a docs-only card closes without a run). Read afresh from the tree, so a
+ * capture reused earlier on this move counts only if the tree still matches.
+ * Like a capture's green, it needs a report with paths (only fenced runs
+ * carry a state) and the report's command to BE the verify command.
+ */
+async function closeGreenOnRecord(item: any, project: any, root: string | null | undefined, command: string): Promise<{ green: any; state: string; sha: string | null } | null> {
+  const setting: TestReportSetting | undefined = project?.testReport;
+  if (!root || !setting || reportPathsOf(setting).length === 0) return null;
+  if (effectiveVerifyCommand(project).command !== command) return null;
+  // ONE read of the tree: the state matched and the state recorded must be the same content (review: an agent
+  // sharing the tree could save a file between two reads, and the close would record its untested edit as green).
+  const sha = readCleanTreeSha(root, gitRun);
+  const read = treeFiles(root, reportOwnedOf(root, project));
+  // HEAD read again after the files: a commit between the two reads would tie this content to the wrong commit.
+  if (!read || !read.shareable || readCleanTreeSha(root, gitRun) !== sha) return null;
+  const green = await reusableCapture(item, project, root, sha, read.hash, suiteStateOf(root, setting, read));
+  return green && green.available === true && capturedGreen(green) ? { green, state: read.hash, sha } : null;
+}
+
 async function entryCaptureOf(item: any, sorted: any[], index: number): Promise<any | null> {
   const prevStep = sorted[index - 1];
   if (!prevStep || ['testing', 'refactoring'].includes((sorted[index] as any)?.role)) return null;
@@ -8316,9 +8341,9 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown 
   else if (refuses === 'NO_VERIFY_COMMAND') parts.push(`Leaving ${step} needs the project's verify command, and none is set: verify will refuse until one is (\`agenfk update-project <id> --verify-command "<cmd>"\`).`);
   else if (refuses === 'NO_TREE') parts.push(`Leaving ${step} runs the suite, but this card has no tree to run it in: verify will refuse until the project root is set or the card has a worktree.`);
   else if (runs === 'suite') {
-    parts.push(`Leaving ${step} runs the project's suite${q(captureCommand)} for you${why}${entry}${thenCommand ? `, then the project's verify command${q(thenCommand)}, which gates the close` : ''}${closesOnCapture ? '; it is the verify command, so its green closes the card (after a partial run, a reused green, or a tree that moved, the whole command runs too)' : ''}.${dontPreRun}${smaller}`);
+    parts.push(`Leaving ${step} runs the project's suite${q(captureCommand)} for you${why}${entry}${thenCommand ? `, then the project's verify command${q(thenCommand)}, which gates the close` : ''}${closesOnCapture ? '; it is the verify command, so its green closes the card (a green of this tree already on record does too; after a partial run, or a tree that moved, the whole command runs)' : ''}.${dontPreRun}${smaller}`);
     if (toParent) parts.push(`The suite's green itself is deferred to the parent [${String(toParent.id).slice(0, 8)}] "${toParent.title}", whose final verify runs it.`);
-  } else if (runs === 'verify-command') parts.push(`Leaving ${step} runs the project's verify command${q(gateCommand)} for you, and the card moves only if it passes.${dontPreRun}`);
+  } else if (runs === 'verify-command') parts.push(`Leaving ${step} runs the project's verify command${q(gateCommand)} for you, and the card moves only if it passes${leavingEndsFlow(sorted as any, index) ? ' (a green of this tree already on record stands for it instead)' : ''}.${dontPreRun}`);
   else if (toParent) parts.push(`Leaving ${step} runs no tests on this card: the project's suite is deferred to the parent [${String(toParent.id).slice(0, 8)}] "${toParent.title}", whose final verify runs it.`);
   else parts.push(`Leaving ${step} runs no tests. If its exit criteria ask for passing tests, running them is yours${handRunnable ? ` (\`${handRunnable}\`, or only the tests your change affects)` : ''}.`);
   if (held) parts.push(`${runs === 'suite' ? 'After that, verify' : 'Verify'} will hold the card: ${held}.`);
@@ -8343,8 +8368,8 @@ export interface LeavePrediction {
   reusedFrom?: { itemId: string; step: string };
   /** The sibling whose green of this tree a final verify would propagate. */
   sibling?: { id: string; title: string };
-  /** On a final move with a capture: the verify command that runs after it. */
-  command?: { mode: 'full' | 'sibling-green'; sibling?: { id: string; title: string } };
+  /** On a final move with a capture: the verify command that runs after it - or the green that stands for it. */
+  command?: { mode: 'full' | 'sibling-green' | 'reuse'; sibling?: { id: string; title: string }; reusedFrom?: { itemId: string; step: string } };
   advice: string;
 }
 
@@ -8364,19 +8389,26 @@ async function predictLeave(item: any, plan: LeavePlan, flow: { steps: any[] }, 
   const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
   const sorted = sortedFlowSteps(flow as any);
   const index = sorted.findIndex(st => st.name === item.status);
-  const commandLeg = async (command: string): Promise<{ mode: 'full' | 'sibling-green'; sibling?: { id: string; title: string } }> => {
+  // The close's order: a sibling's green of this tree, then a green of it on record (ef1342b8), then the command.
+  const commandLeg = async (command: string): Promise<{ mode: 'full' | 'sibling-green' | 'reuse'; sibling?: { id: string; title: string }; reusedFrom?: { itemId: string; step: string } }> => {
     if (item.parentId && leavingEndsFlow(sorted as any, index)) {
       const { pass } = await siblingGreenOf(item, await storage.listItems({ parentId: item.parentId }), flow as TransitionFlow, project, root, command);
       if (pass) return { mode: 'sibling-green', sibling: { id: pass.sibling.id, title: pass.sibling.title } };
+    }
+    if (leavingEndsFlow(sorted as any, index) && !stepHasCommandChecks(flow, item.status)) {
+      const onRecord = await closeGreenOnRecord(item, project, root, command);
+      if (onRecord) return { mode: 'reuse', reusedFrom: { itemId: String(onRecord.green.reusedFrom?.itemId ?? item.id), step: String(onRecord.green.reusedFrom?.step ?? '') } };
     }
     return { mode: 'full' };
   };
   const sayCommand = (c: { mode: string; sibling?: { id: string; title: string } }, command: string) => c.mode === 'sibling-green'
     ? `would not run \`${command}\`: [${String(c.sibling!.id).slice(0, 8)}] "${c.sibling!.title}" already verified this very tree, and its green carries over`
-    : `would run \`${command}\` in full`;
+    : c.mode === 'reuse'
+      ? `would not run \`${command}\`: a green of this tree's content is on record, and it closes the card`
+      : `would run \`${command}\` in full`;
   if (plan.runs === 'verify-command') {
     const c = await commandLeg(plan.command!);
-    return { mode: c.mode, ...(c.sibling ? { sibling: c.sibling } : {}), advice: `On this tree it ${sayCommand(c, plan.command!)}.` };
+    return { mode: c.mode, ...(c.sibling ? { sibling: c.sibling } : {}), ...(c.reusedFrom ? { reusedFrom: c.reusedFrom } : {}), advice: `On this tree it ${sayCommand(c, plan.command!)}.` };
   }
   // The capture leg. With no tree there is nothing to diff or reuse against (and the tree readers need one).
   let capture: Omit<LeavePrediction, 'advice' | 'command'> & { said: string };
@@ -8397,7 +8429,8 @@ async function predictLeave(item: any, plan: LeavePlan, flow: { steps: any[] }, 
   }
   const { said, ...rest } = capture;
   if (plan.refuses) return { ...rest, advice: `On this tree it ${said}, and then verify refuses (${plan.refuses}): set a verify command first, and the suite is not spent for nothing.` };
-  // 36c5ca25: a partial run, or a green reused rather than run, cannot stand for the verify command: the whole command follows it.
+  // 36c5ca25: a partial run, or a green reused rather than run, is not this move's own green: the command leg follows it -
+  // and (ef1342b8) a green of this tree on record may still stand for the command there.
   const then = plan.thenCommand ?? (plan.closesOnCapture && rest.mode !== 'full' ? plan.command : undefined);
   if (!then) return { ...rest, advice: `On this tree it ${said}${plan.closesOnCapture ? ', and its green closes the card' : ''}.` };
   const c = await commandLeg(then);
@@ -9331,6 +9364,25 @@ async function handleValidateProgress(itemId: string, command: string | undefine
         const leave = await nextLeaveNote(itemId);
         return res.json({ status: nextStatus, message: `✅ Validation Passed!\n\nItem moved to ${nextStatus}. ${ahead}${mandatoryInstructions}${leave.text}${nowOn(nextStatus)}`, output: 'Sibling propagation', ...leave.field });
       }
+    }
+  }
+
+  // ── A green of this tree on record (ef1342b8) ────────────────────────────
+  // Same conditions as closing on this move's capture: the move that ends the flow, no command check after the gate.
+  // A capture of this move that ran and was NOT green is never outvoted by an older green (as stampCloseGreen refuses).
+  const gateRanRed = !!gate?.capture && gate.capture.kind === 'capture' && !gate.capture.reusedFrom && !capturedGreen(gate.capture);
+  if (endsFlow && resolvedCommand && !gateRanRed && !stepHasCommandChecks(activeFlow, item.status)) {
+    const onRecord = await closeGreenOnRecord(item, project, effectiveRoot, resolvedCommand);
+    // The state it matched, still the tree's: a tree that moved since runs the command.
+    if (onRecord && treeStateOf(effectiveRoot!, project) === onRecord.state) {
+      const from = onRecord.green.reusedFrom ?? {};
+      const source = `${from.itemId === itemId ? 'this card' : `card \`${String(from.itemId ?? '').slice(0, 8)}\``}${from.step ? ` at ${from.step}` : ''}${from.at ? ` (${from.at})` : ''}`;
+      // The tree that closes: on a docs-only change, not the content the green ran on.
+      const green = { ...(onRecord.sha ? { commit: onRecord.sha } : {}), treeState: onRecord.state, treeStateVersion: STATE_VERSION, commitRoot: effectiveRoot };
+      return closeOnGreen(res, {
+        how: 'a green of this tree on record', output: 'Green on record', recordOutput: `Green on record: ${source} ran this command green on this tree's content`, green, stampAt: onRecord.state,
+        note: `\`${resolvedCommand}\` already ran green on this tree's content (${source}), so it was not run again.${passedChecks ? `\n\n${passedChecks}` : ''}`,
+      });
     }
   }
 

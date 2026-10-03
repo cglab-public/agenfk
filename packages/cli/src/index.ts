@@ -2122,7 +2122,7 @@ program
   .option('--test-report-path <path>', 'Where that command writes the report, relative to the project root; several reports (one per suite) as a comma list')
   .option('--test-report-surface <paths>', 'Comma-separated test paths (files or directories) the report cannot name, so test-surface-frozen can see them; "none" clears them')
   .option('--test-report-related-command <cmd>', 'The runner\'s related-tests command with {files} (e.g. "npx vitest related --run {files}"): a step that changed code runs only the tests it affects; "none" clears it')
-  .option('--test-report-reuse-ignore <globs>', 'Comma-separated globs a re-run skips when only they changed, unless a test names the file (default: **/*.md); "none" ignores nothing')
+  .option('--test-report-reuse-ignore <globs>', 'Comma-separated globs a re-run skips when only they changed, unless a test names the file (default: **/*.md); "none" ignores nothing. The final step skips the verify command for them too: do not cover files that command checks (a markdown lint, prettier --check)')
   .option('--test-report <none>', 'Pass "none" to clear the test report setting')
   .action(async (id, options) => {
     try {

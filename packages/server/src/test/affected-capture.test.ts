@@ -322,3 +322,35 @@ describe('de5e5a03: an affected-only run never stands in for tests it cannot tra
   });
 });
 
+
+/*
+ * ef1342b8 review: the close may stand on a green of this tree already on
+ * record - but never over a capture THIS move ran red. A related run is the one
+ * capture that runs before the reuse lookup, so it can be red on a state another
+ * card already holds a whole green for; with suite-green a warning the gate lets
+ * it through, and the verify command must still decide the close.
+ */
+describe('ef1342b8: a red run on this move is not outvoted by an older green of the tree', () => {
+  it('a related run red on the move that ends the flow: the verify command runs, though a green of this tree is on record', async () => {
+    const t = await setup({
+      related: `node -e "require('fs').writeFileSync('report.xml','<testsuites><testsuite name=\\"s\\"><testcase classname=\\"t\\" name=\\"adds\\" file=\\"a.test.js\\"><failure message=\\"no\\" type=\\"AssertionError\\"/></testcase></testsuite></testsuites>');process.exit(1)" {files}`,
+      steps: [s('START', 0, { isAnchor: true }), s('PLAN', 1),
+        s('BUILD', 2, { checks: [{ id: 'existing-tests-still-green', severity: 'warn' }, { id: 'suite-green', severity: 'warn' }] }), s('END', 3, { isAnchor: true })],
+    });
+    const project: any = await storage.getProject(t.pid);
+    await storage.updateProject(t.pid, { verifyCommand: project.testReport.command } as never);
+    await enterBuild(t);
+    t.edit('lib.js', 'module.exports = 10;\n');
+    // Another card, same tree: a whole green of exactly this content.
+    const other = await agent().post('/items').send({ type: 'TASK', title: `af-${++seq}`, projectId: t.pid });
+    await storage.updateItem(other.body.id, { status: 'PLAN' } as any);
+    const cap = await agent().post(`/items/${other.body.id}/step-records/capture`).set(internal()).send({});
+    expect(cap.status, JSON.stringify(cap.body)).toBe(200);
+    expect(t.runs()).toEqual(['ALL', 'ALL']);
+
+    const res = await validate(t.id);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(((await storage.getItem(t.id)) as any).status).toBe('END');
+    expect(t.runs(), 'an older green outvoted the red this move ran').toEqual(['ALL', 'ALL', 'ALL']);
+  });
+});
