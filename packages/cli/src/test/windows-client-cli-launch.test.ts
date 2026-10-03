@@ -151,9 +151,17 @@ describe('resolveWindowsTool: which file a Windows launch runs', () => {
       });
 
       it('skips a relative PATH entry, which would be the current-directory lookup again', () => {
-        const rel = path.relative(process.cwd(), a);
-        expect(path.isAbsolute(rel)).toBe(false);
-        expect(impl.resolveWindowsTool('tool', { PATH: rel, PATHEXT: '.CMD' })).toBeNull();
+        // Relative to a cwd it really resolves from: path.relative(repo, tmp)
+        // is absolute on Windows when the two sit on different drives.
+        const cwd = process.cwd();
+        process.chdir(path.dirname(a));
+        try {
+          const rel = path.basename(a);
+          expect(fs.existsSync(path.join(rel, 'tool.cmd'))).toBe(true);
+          expect(impl.resolveWindowsTool('tool', { PATH: rel, PATHEXT: '.CMD' })).toBeNull();
+        } finally {
+          process.chdir(cwd);
+        }
       });
 
       it('passes over a directory that merely carries a launchable name', () => {
