@@ -2,6 +2,56 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.30] — 2026-10-04
+
+Pre-release, cut from the `feat/CGLAB-164_electron-desktop` line. It held the desktop changes below and `main`
+(PR #202, the Windows compat CI job), but not the `2.0.0-beta.27`-`2.0.0-beta.29` work, which was cut from
+the stacked `feat/CGLAB-434` / `feat/CGLAB-494` branches. The two lines rejoin in the next beta.
+
+### Desktop
+
+- **Terminal tabs scroll sideways** when more terminals are open than fit in the bar.
+- **Wider desktop rail:** 40 to 56px, 18px icons; tabs recede 32px.
+- **No empty title bar on macOS:** gone in full screen; the terminal tabs become the bar.
+
+## [2.0.0-beta.29] — 2026-10-04
+
+Pre-release, cut from `feat/CGLAB-494_todo-sweep` (CGLAB-494, the TODO sweep). Cumulative over `2.0.0-beta.28`.
+
+### Verify engine
+
+- **Monorepos: reuse looks beside the project root.** In a project that is a subdirectory of its repository, a
+  green is shared (capture reuse, close-green-on-record, sibling propagation) only when the content OUTSIDE the
+  root is the same too - HEAD's tree there plus the work in progress, by content. A green from before another
+  agent changed a neighbouring package is no longer reused. Top-level projects hash exactly as before. Simulated
+  A/B against beta.28 on a scratch monorepo.
+- **The board's specs gate cards:** `packages/ui` runs inside the root vitest run as its own project, so the
+  verify command, the test report and `vitest related` see them.
+- **Hub-switched-off checks:** a parent the roll-up walks past a switched-off review records it for the PR;
+  `--check-note` on a switched-off check says so; `pr-register` / `pr create` are quiet on a 404 from an older
+  server; a hub admin's copy of a hub flow keeps its switched-off checks.
+
+### Server and CLI
+
+- **Uncaught route errors reach the CLI and MCP as JSON** with their message (no stack), not an HTML 500.
+- **Windows:** `configure-ide` and the installer register the MCP server as `cmd /c <agenfk.cmd> mcp`.
+- **Hook commands are quoted** when the home path holds a space or a shell character; such a home silently
+  disabled every guard. A Windows end-to-end hook test runs the real installer and every hook under Git Bash.
+
+### Hub
+
+- **Config audit log (Admin -> Audit log):** who changed which setting, when, from where (board / CLI /
+  federation, IP), before -> after. Secrets never stored; append-only, kept forever; rows link to older trails;
+  CSV export of the filtered view. Recorded inside each config route after its guards, before the reply.
+- **Admin recovery for an SSO-only hub:** `AGENFK_HUB_RESET_ADMIN_EMAIL` makes a boot log a single-use, one-hour
+  token; `/recover` sets that admin's password and signs them in.
+- **Client errors keep their 4xx** (malformed JSON, an undecodable path escape).
+
+### Board
+
+- **Breadcrumb:** too long for its row, the topmost levels ellipsise first, so the immediate parent and the
+  current level stay visible.
+
 ## [2.0.0-beta.28] — 2026-10-03
 
 Pre-release. Beta, cumulative over `2.0.0-beta.27`: everything below, plus the changes in this section. Measured
