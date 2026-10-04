@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api, MeResponse, ProvidersResponse } from './api';
 import { LoginPage } from './pages/Login';
 import { SetupPage } from './pages/Setup';
+import { AdminAudit } from './pages/AdminAudit';
 import { RecoverPage } from './pages/Recover';
 import { OrgPage } from './pages/Org';
 import { PrOverviewPage } from './pages/PrOverview';
@@ -76,6 +77,7 @@ export function App() {
         <Route path="identities" element={<AdminIdentities />} />
         <Route path="models" element={<AdminModels />} />
         <Route path="jira" element={<AdminJira />} />
+        <Route path="audit" element={<AdminAudit />} />
         <Route path="org" element={<AdminOrg />} />
         <Route index element={<AdminOverview />} />
       </Route>

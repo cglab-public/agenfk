@@ -3,7 +3,7 @@
 // the hub's own settings. `to` is the route under /admin (App.tsx); the labels
 // are what an admin reads, so they say what the section does.
 import type { LucideIcon } from 'lucide-react';
-import { ShieldCheck, KeyRound, Users, GitBranch, ArrowUpCircle, Server, ArrowRightLeft, UserCheck, Tags, Ticket, Building2 } from 'lucide-react';
+import { ShieldCheck, KeyRound, Users, GitBranch, ArrowUpCircle, Server, ArrowRightLeft, UserCheck, Tags, Ticket, Building2, ScrollText } from 'lucide-react';
 
 export interface AdminSection { to: string; label: string; icon: LucideIcon }
 export interface AdminGroup { id: string; label: string; sections: AdminSection[] }
@@ -34,6 +34,7 @@ export const ADMIN_GROUPS: AdminGroup[] = [
       { to: 'org', label: 'Organization', icon: Building2 },
       { to: 'repoint', label: 'Address change', icon: ArrowRightLeft },
       { to: 'jira', label: 'JIRA integration', icon: Ticket },
+      { to: 'audit', label: 'Audit log', icon: ScrollText },
     ],
   },
 ];
