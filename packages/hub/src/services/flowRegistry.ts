@@ -343,11 +343,16 @@ export async function writeRegistryFile(
     if (existing.ok) sha = (await existing.json())?.sha;
   } catch { /* treat as new file */ }
 
-  const resp = await fetchImpl(`${base}?ref=${encodeURIComponent(branch)}`, {
+  // GitHub's create-or-update-file endpoint reads the target branch from the
+  // JSON body (default = the repo's default branch); `?ref=` is only honoured
+  // on GET. The branch must go in the body or the write lands on the default
+  // branch while the configured-branch reads never see it (CGLAB-495).
+  const resp = await fetchImpl(base, {
     method: 'PUT',
     headers: ghHeaders(token),
     body: JSON.stringify({
       message,
+      branch,
       content: Buffer.from(content, 'utf8').toString('base64'),
       ...(sha ? { sha } : {}),
     }),
