@@ -4052,7 +4052,8 @@ const reportOwnedOf = (root: string, project: any): string[] => reportsOwned(roo
  */
 const treeStateOf = (root: string, project: any): string | null => {
   const t = treeFiles(root, reportOwnedOf(root, project));
-  return t && t.shareable ? t.hash : null;
+  // 19e660ac: and what lies beside a subdirectory project's root.
+  return t && t.shareable ? sharedState(t.hash, outsideContent(root)) : null;
 };
 /**
  * The state a command check's pass is shared at (3ffc9651 review): the files,
@@ -4072,7 +4073,7 @@ const commandStateOf = (root: string, project: any): string | null => {
  * step too (ef1342b8) - while the record's filesState and command checks keep every file.
  * Null when the tree cannot be read, or nothing may be shared on it.
  */
-function suiteStateOf(root: string, setting: TestReportSetting | undefined, read?: TreeRead | null): string | null {
+function suiteStateOf(root: string, setting: TestReportSetting | undefined, read?: TreeRead | null, outside: string | null = outsideContent(root)): string | null {
   if (!setting) return null;
   // de5e5a03: from the caller's read when it has one - a fenced run's, so the state is the content it ran on.
   const tree = read === undefined ? treeFiles(root, reportsOwned(root, setting)) : read;
@@ -4095,7 +4096,8 @@ function suiteStateOf(root: string, setting: TestReportSetting | undefined, read
       }
     } catch { return null; }
   }
-  return hashEntries(Object.entries(tree.files).filter(([rel]) => !ignored.has(rel)));
+  // 19e660ac: what lies beside a subdirectory project's root is content too.
+  return sharedState(hashEntries(Object.entries(tree.files).filter(([rel]) => !ignored.has(rel))), outside);
 }
 /**
  * How a record's tree states were hashed (de5e5a03). Before `--relative`, a
@@ -4280,7 +4282,8 @@ export async function stampCloseGreen(itemId: string, root: string, sha: string)
   const runs = (item.stepRecords ?? []).filter((r: any) => isOwnRun(r, setting, root) && stateOfRecord(r) !== null);
   if (!runs.length) return null;
   if (readCleanTreeSha(root, gitRun) !== sha) return null;
-  const files = treeFilesState(root, reportsOwned(root, setting));
+  // 19e660ac: compared with a stamped filesState, so the content beside the root counts the same way.
+  const files = sharedState(treeFilesState(root, reportsOwned(root, setting)), outsideContent(root));
   if (!files) return null;
   const last = [...runs].reverse().find((r: any) => stateOfRecord(r) === files);
   if (!last || !capturedGreen(last)) return null;
@@ -4389,6 +4392,12 @@ const OUTSIDE_MAX_FILES = 2000;
  * taken with that work beside it.
  */
 function outsideState(root: string, head: string): string | null {
+  const beside = outsideEntries(root, head);
+  return beside === null ? null : beside.length ? hashEntries(beside) : '';
+}
+
+/** outsideState's entries, by repository path: `<mode>:<blob>`, `160000:<commit>`, or 'absent'. [] when nothing differs. */
+function outsideEntries(root: string, head: string): [string, string][] | null {
   try {
     const run = (args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 64 * 1024 * 1024 });
     const prefix = run(['rev-parse', '--show-prefix']).trim();
@@ -4400,7 +4409,7 @@ function outsideState(root: string, head: string): string | null {
       ...run(['diff', '--no-relative', '--no-renames', '--name-only', '-z', head]).split('\0'),
       ...run(['ls-files', '-z', '--others', '--exclude-standard', '--full-name', '--', ':/']).split('\0'),
     ].filter(f => f && !f.startsWith(prefix)).map(f => (f.endsWith('/') ? f.slice(0, -1) : f)));
-    if (!names.size) return '';
+    if (!names.size) return [];
     if (names.size > OUTSIDE_MAX_FILES) return null;
     const entries: [string, string][] = [];
     for (const f of names) {
@@ -4417,10 +4426,53 @@ function outsideState(root: string, head: string): string | null {
         entries.push([f, `160000:${sub(['rev-parse', 'HEAD']).trim()}`]);
       } else return null;   // anything else cannot be told apart from itself changed: no partial run
     }
-    return hashEntries(entries);
+    return entries;
   } catch {
     return null;
   }
+}
+
+/**
+ * 19e660ac — the content OUTSIDE a subdirectory project's root, as one hash:
+ * HEAD's tree there, overlaid with the work beside the root (outsideEntries),
+ * so it names bytes, not commits - another agent committing exactly what it
+ * had leaves it unchanged, a commit of anything else changes it. '' for a
+ * project at the repository's top, which has nothing beside it. Null when it
+ * cannot be read: nothing is shared then.
+ */
+function outsideContent(root: string): string | null {
+  try {
+    const run = (args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 256 * 1024 * 1024 });
+    const prefix = run(['rev-parse', '--show-prefix']).trim();
+    if (!prefix) return '';
+    const head = run(['rev-parse', 'HEAD']).trim();
+    const files = new Map<string, string>();
+    // <mode> SP <type> SP <object> TAB <path>
+    for (const line of run(['ls-tree', '-r', '-z', '--full-tree', head]).split('\0')) {
+      const tab = line.indexOf('\t');
+      if (tab === -1) continue;
+      const rel = line.slice(tab + 1);
+      if (rel.startsWith(prefix)) continue;
+      const [mode, , object] = line.slice(0, tab).split(' ');
+      files.set(rel, `${mode}:${object}`);
+    }
+    const beside = outsideEntries(root, head);
+    if (beside === null) return null;
+    for (const [rel, v] of beside) {
+      if (v === 'absent') files.delete(rel);
+      else files.set(rel, v);
+    }
+    return hashEntries(files);
+  } catch {
+    return null;
+  }
+}
+
+/** 19e660ac: a root's files state with what lies beside it folded in; unchanged for a top-level project (outside ''). */
+function sharedState(files: string | null | undefined, outside: string | null): string | null {
+  if (!files || outside === null) return null;
+  if (outside === '') return files;
+  return crypto.createHash('sha256').update(`${files}\0outside\0${outside}`).digest('hex');
 }
 
 /**
@@ -4564,6 +4616,8 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
   const stateBefore = treeContentState(root, owned);
   // de5e5a03/83c1cbca: the work beside `root` as the run starts - read on both sides, so a change meanwhile counts.
   const besideBefore = typeof record.head === 'string' ? outsideState(root, record.head) : null;
+  // 19e660ac: and the content beside the root, which the shared states fold in - only when it held still.
+  const outsideBefore = outsideContent(root);
   // The plan was made before the run was fenced: the tree must still be what it saw.
   if (lazy && JSON.stringify(changedSinceEntry(root, lazy.entry, owned)) !== JSON.stringify({ inside: lazy.changed, outside: false })) return null;
   if (lazy) {
@@ -4586,7 +4640,11 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
         throw new Error('the tree changed while the command ran, so the results cannot be tied to it');
       }
       // What the run saw, without HEAD: a close that commits exactly this can re-stamp it (e99b5015).
-      record.filesState = stateAfter.slice(stateAfter.indexOf(':') + 1);
+      // 19e660ac: with the content beside a subdirectory root, when it did not change during the run; else no state.
+      const outsideAfter = outsideContent(root);
+      const outsideHeld = outsideBefore !== null && outsideBefore === outsideAfter ? outsideAfter : null;
+      const filesState = sharedState(stateAfter.slice(stateAfter.indexOf(':') + 1), outsideHeld);
+      if (filesState) record.filesState = filesState;
       record.stateVersion = STATE_VERSION;
       // 6e0d2fd6: which file held what, for the next step's partial run.
       record.fileShas = after!.tree.files;
@@ -4594,7 +4652,7 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
       const besideAfter = typeof record.head === 'string' ? outsideState(root, record.head) : null;
       if (besideBefore !== null && besideBefore === besideAfter) record.outsideState = besideAfter;
       // 32045202: what reuse compares, docs no test names aside.
-      const suite = suiteStateOf(root, setting, after!.tree);
+      const suite = suiteStateOf(root, setting, after!.tree, outsideHeld);
       if (suite) record.suiteState = suite;
       // Each report the command should have written, read as one run's results.
       // One that is missing says which: a suite that crashed before writing its
@@ -8222,8 +8280,12 @@ async function closeGreenOnRecord(item: any, project: any, root: string | null |
   const read = treeFiles(root, reportOwnedOf(root, project));
   // HEAD read again after the files: a commit between the two reads would tie this content to the wrong commit.
   if (!read || !read.shareable || readCleanTreeSha(root, gitRun) !== sha) return null;
-  const green = await reusableCapture(item, project, root, sha, read.hash, suiteStateOf(root, setting, read));
-  return green && green.available === true && capturedGreen(green) ? { green, state: read.hash, sha } : null;
+  // 19e660ac: one read of what lies beside a subdirectory root, for both states.
+  const outside = outsideContent(root);
+  const state = sharedState(read.hash, outside);
+  if (!state) return null;
+  const green = await reusableCapture(item, project, root, sha, state, suiteStateOf(root, setting, read, outside));
+  return green && green.available === true && capturedGreen(green) ? { green, state, sha } : null;
 }
 
 async function entryCaptureOf(item: any, sorted: any[], index: number): Promise<any | null> {
@@ -9469,6 +9531,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   const statusBeforeRun = gateRoot ? readTreeStatus(gateRoot, gitRun) : null;
   // 3ffc9651: and every file's content, so a green on a DIRTY tree can be tied to a state too.
   const filesBeforeRun = gateRoot && endsFlow ? treeFiles(gateRoot, reportOwnedOf(gateRoot, project)) : null;
+  // 19e660ac: and what lies beside a subdirectory root, which the stamped state folds in.
+  const outsideBeforeRun = gateRoot && endsFlow ? outsideContent(gateRoot) : null;
 
   // try/finally around the spawn, not just the awaited result: spawn() throws
   // SYNCHRONOUSLY on a bad argument (a NUL byte in the command, a non-string
@@ -9634,7 +9698,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
          * sibling reading the same state propagates it.
          */
         const filesNow = filesBeforeRun ? treeFiles(gateRoot, reportOwnedOf(gateRoot, project)) : null;
-        const treeState = filesNow && filesBeforeRun && filesNow.shareable && filesNow.hash === filesBeforeRun.hash ? filesNow.hash : null;
+        const outsideNow = filesNow ? outsideContent(gateRoot) : null;
+        const treeState = filesNow && filesBeforeRun && filesNow.shareable && filesNow.hash === filesBeforeRun.hash && outsideNow === outsideBeforeRun
+          ? sharedState(filesNow.hash, outsideNow) : null;
         if (verifiedSha || treeState) {
           const current = await storage.getItem(itemId);
           const tests = testRecords(current?.tests).map((t: any) =>
