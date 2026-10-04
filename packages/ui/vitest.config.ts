@@ -14,6 +14,9 @@ export default defineConfig({
     // home fs writes today, but a future one would land in the sandbox.
     env: testEnv(),
     environment: 'jsdom',
+    // Never concurrent within a file (4ac25844 -> core vitestParallelism.test.ts): the specs share one
+    // jsdom document, so concurrent tests collide renders. Pinned here now that the root run carries it.
+    sequence: { concurrent: false },
     setupFiles: ['./src/test/setup.ts'],
     globals: true,
     /*
