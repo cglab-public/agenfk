@@ -78,8 +78,18 @@ const modelMetaSnap: Snapshot = async (db, orgId, p, req) =>
   (await db.get('SELECT model, provider, license_class, license, source FROM model_meta WHERE org_id = ? AND model = ?', [orgId, keyOf(p, req, 'model')])) ?? null;
 const installationSnap: Snapshot = async (db, orgId, p) =>
   (await db.get('SELECT * FROM installations WHERE id = ? AND org_id = ?', [p.id, orgId])) ?? null;
-const apiKeySnap: Snapshot = async (db, orgId, p) =>
-  (await db.get('SELECT label, created_at, revoked_at, installation_id FROM api_keys WHERE org_id = ? AND substr(token_hash, 1, length(?)) = ?', [orgId, p.tokenHashPreview, p.tokenHashPreview])) ?? null;
+// The handler takes the preview in any case and revokes the one LIVE key it names (BUG 915f76ed): the snapshot
+// finds that key the same way before, and by its full hash after, once it is revoked.
+const apiKeySnap: Snapshot = async (db, orgId, p, req) => {
+  const known = (req as any)._auditApiKeyHash as string | undefined;
+  const row = known
+    ? await db.get<any>('SELECT token_hash, label, created_at, revoked_at, installation_id FROM api_keys WHERE org_id = ? AND token_hash = ?', [orgId, known])
+    : await db.get<any>('SELECT token_hash, label, created_at, revoked_at, installation_id FROM api_keys WHERE org_id = ? AND lower(token_hash) LIKE ? AND revoked_at IS NULL', [orgId, `${String(p.tokenHashPreview ?? '').toLowerCase()}%`]);
+  if (!row) return null;
+  (req as any)._auditApiKeyHash = row.token_hash;
+  const { token_hash: _hash, ...rest } = row;
+  return rest;
+};
 const jiraSnap: Snapshot = async (db, orgId) =>
   (await db.get('SELECT client_id, client_secret_enc, updated_at FROM org_jira WHERE org_id = ?', [orgId])) ?? null;
 
@@ -223,6 +233,8 @@ function auditLayerFor(route: AuditedRoute, db: DB, config: { defaultOrgId: stri
       (res as any).end = (...args: any[]) => {
         if (ended || res.statusCode < 200 || res.statusCode >= 300) return end(...args);
         ended = true;
+        // The reply is decided; headersSent stays false until the row is written, so say so (BUG 915f76ed).
+        res.locals.auditReplyPending = true;
         const record = async () => {
           const who = await actorOf(db, req);
           const orgId = route.orgAfter?.(req) ?? who.orgId ?? config.defaultOrgId;

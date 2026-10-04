@@ -309,7 +309,7 @@ export async function createHubApp(
   const stopFederation = startFederationSync({
     db, secretKey: config.secretKey, hubVersion: HUB_VERSION,
     // Which org a flow dispatched by the parent lands in: this hub's own.
-    orgId: config.defaultOrgId,
+    orgId: () => config.defaultOrgId,
     // Both undefined in production, where the worker builds its own HTTP
     // transport and ticks once a minute.
     transport: config.federationTransport as any,
@@ -388,7 +388,8 @@ export async function createHubApp(
  */
 export function hubErrorHandler(err: any, _req: Request, res: Response, _next: NextFunction): void {
   console.error('[HUB_ERROR]', err?.message ?? err);
-  if (res.headersSent) return;
+  // An audited reply whose row is still being written has been sent as far as the handler knows (BUG 915f76ed).
+  if (res.headersSent || res.locals?.auditReplyPending) return;
   // A client error Express or body-parser raised (an undecodable %-escape in a
   // path param, malformed JSON) keeps its 4xx; its message names no table.
   const status = Number.isInteger(err?.status) && err.status >= 400 && err.status < 500 ? err.status : 500;

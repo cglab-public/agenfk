@@ -15,12 +15,12 @@
  *    upgrade dispatch) left no row, and a dispatch that changed nothing still
  *    wrote one.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import supertest from 'supertest';
-import { createHubApp } from '../server';
+import { createHubApp, hubErrorHandler } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { listAudit, recordAudit } from '../services/configAudit';
 import { installDispatchedFlow, federationTick } from '../services/federation/federationSync';
@@ -191,5 +191,74 @@ describe('reading the log', () => {
     const lines = r.text.trim().split(/\r?\n/);
     expect(lines.length).toBe(1 + 3 + 1);
     expect(lines[lines.length - 1]).toMatch(/truncated/i);
+  });
+});
+
+describe('review round 2 (BUG 915f76ed)', () => {
+  it('ends a CSV export that fails part-way instead of leaving the download hanging', async () => {
+    for (let i = 0; i < 5; i++) await recordAudit(ctx.db, { orgId: 'org', actor: null, source: 'system', ip: null, area: 'flows', action: `a${i}`, target: null, before: null, after: null });
+    await drainApp(server); await ctx.db.close();
+    await boot({ auditCsvMaxRows: 100 });
+    admin = await loginAs(server, 'admin@x', 'longenough1');
+    const all = ctx.db.all.bind(ctx.db);
+    let calls = 0;
+    ctx.db.all = async (sql: string, p: unknown[]) => {
+      // The header line is already on the wire before the first page is read: a failure there is mid-stream.
+      if (/FROM config_audit/.test(sql) && ++calls >= 1) throw new Error('db went away');
+      return all(sql, p);
+    };
+    const started = Date.now();
+    const r = await supertest(server).get('/v1/admin/audit.csv?limit=2').set('Cookie', admin).timeout(5000).catch((e: any) => e);
+    expect(Date.now() - started).toBeLessThan(4000);
+    expect(String(r?.code ?? r?.message ?? r?.text ?? '')).not.toMatch(/ECONNABORTED|Timeout/i);
+  });
+
+  it("files the federation worker's rows under the org as it is now, after a rename", async () => {
+    await drainApp(server); await ctx.db.close();
+    let revoke = false;
+    const transport = { ping: async () => { if (revoke) throw Object.assign(new Error('gone'), { response: { status: 401 } }); return { ok: true }; }, directives: async () => null, deliver: async () => ({}) };
+    await boot({ federationTransport: transport, federationIntervalMs: 40 });
+    admin = await loginAs(server, 'admin@x', 'longenough1');
+    expect((await supertest(server).post('/v1/admin/orgs/rename').set('Cookie', admin).send({ from: 'org', to: 'acme' })).status).toBe(200);
+    await writeParentBinding(ctx.db, 'a'.repeat(64), { parentUrl: 'https://parent.example.com', token: 'fed_' + 'f'.repeat(64), childHubId: 'ch-1' } as any);
+    revoke = true;
+    const deadline = Date.now() + 3000;
+    let rows: any[] = [];
+    while (Date.now() < deadline && !rows.length) {
+      rows = (await listAudit(ctx.db, 'acme', { area: 'federation' })).rows.filter(x => x.action === 'parent.revoked');
+      if (!rows.length) await new Promise(res => setTimeout(res, 40));
+    }
+    expect(rows).toHaveLength(1);
+  });
+
+  it("keeps the flow's definition on a dispatch row, before and after", async () => {
+    const d = { dispatchId: 'd-1', flowVersion: 2, flow: { id: 'pf-9', name: 'Parent flow', version: 2, definition: definition('Parent flow') } };
+    await installDispatchedFlow(ctx.db, 'org', d as any);
+    await installDispatchedFlow(ctx.db, 'org', { ...d, flowVersion: 3, flow: { ...d.flow, version: 3, definition: definition('Parent flow', 'Implement') } } as any);
+    const [v3] = await now('org', 'federation');
+    expect(JSON.stringify(v3.before)).toContain('"Build"');
+    expect(JSON.stringify(v3.after)).toContain('"Implement"');
+  });
+
+  it('records the key a case-varied preview revoked, live before and revoked after', async () => {
+    const issued = await supertest(server).post('/v1/admin/api-keys').set('Cookie', admin).send({ label: 'ci' });
+    expect(issued.status, JSON.stringify(issued.body)).toBeLessThan(300);
+    const hash = (await ctx.db.get("SELECT token_hash FROM api_keys WHERE label = 'ci'")).token_hash as string;
+    const r = await supertest(server).delete(`/v1/admin/api-keys/${hash.slice(0, 12).toUpperCase()}`).set('Cookie', admin);
+    expect(r.status, JSON.stringify(r.body)).toBeLessThan(300);
+    const row = (await now('org', 'api-keys')).find(x => x.action === 'api-key.revoke')!;
+    expect(row.before).toMatchObject({ label: 'ci', revoked_at: null });
+    expect((row.after as any)?.revoked_at).toBeTruthy();
+  });
+});
+
+describe('an error after an audited reply (BUG 915f76ed)', () => {
+  it('does not replace a reply whose audit row is still being written', () => {
+    const res: any = { headersSent: false, locals: { auditReplyPending: true }, status: vi.fn(() => res), json: vi.fn(() => res) };
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    hubErrorHandler(new Error('after the reply'), {} as any, res, (() => {}) as any);
+    log.mockRestore();
+    expect(res.status).not.toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
   });
 });

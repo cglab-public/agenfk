@@ -52,22 +52,36 @@ export function auditRouter(ctx: HubServerContext): Router {
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="hub-audit-${new Date().toISOString().slice(0, 10)}.csv"`);
     // Streamed a page at a time (BUG 91d2941d): rows carry whole flow definitions, twice.
-    res.write(`${AUDIT_CSV_HEADER.join(',')}\r\n`);
-    let cursor: string | undefined;
-    let rows = 0;
-    let truncated = false;
-    for (;;) {
-      const page = await listAudit(ctx.db, req.session!.orgId, { ...f, limit: Math.min(AUDIT_PAGE_MAX, cap - rows), cursor });
-      const lines = auditCsvLines(page.rows);
-      if (lines.length) res.write(`${lines.join('\r\n')}\r\n`);
-      rows += page.rows.length;
-      cursor = page.next ?? undefined;
-      if (!cursor) break;
-      if (rows >= cap) { truncated = true; break; }
+    // BUG 915f76ed: a reader that stops reading is waited for, one that leaves stops the
+    // export, and a failure after the first byte ends the response instead of leaving it open.
+    let gone = false;
+    req.on('close', () => { gone = true; });
+    const send = (chunk: string) => (res.write(chunk) ? Promise.resolve() : new Promise<void>(resolve => {
+      const done = () => { res.off('drain', done); res.off('close', done); resolve(); };
+      res.on('drain', done); res.on('close', done);
+    }));
+    try {
+      await send(`${AUDIT_CSV_HEADER.join(',')}\r\n`);
+      let cursor: string | undefined;
+      let rows = 0;
+      let truncated = false;
+      while (!gone) {
+        const page = await listAudit(ctx.db, req.session!.orgId, { ...f, limit: Math.min(AUDIT_PAGE_MAX, cap - rows), cursor });
+        const lines = auditCsvLines(page.rows);
+        if (lines.length) await send(`${lines.join('\r\n')}\r\n`);
+        rows += page.rows.length;
+        cursor = page.next ?? undefined;
+        if (!cursor) break;
+        if (rows >= cap) { truncated = true; break; }
+      }
+      // Said in the file itself, where whoever opens it will see it.
+      if (truncated && !gone) await send(`truncated: this export stops at ${cap} rows; narrow the filters to see the rest\r\n`);
+      res.end();
+    } catch (err) {
+      console.error('[HUB] audit CSV export failed:', (err as Error).message);
+      // The status line is gone already: cut the download so the client sees it fail, not a short file.
+      res.destroy(err as Error);
     }
-    // Said in the file itself, where whoever opens it will see it.
-    if (truncated) res.write(`truncated: this export stops at ${cap} rows; narrow the filters to see the rest\r\n`);
-    res.end();
   }));
 
   return router;

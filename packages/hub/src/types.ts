@@ -15,7 +15,8 @@ export interface HubServerConfig {
   /**
    * AGENFK_HUB_RESET_ADMIN_EMAIL (STORY a44f3697): the admin a boot mints a
    * single-use recovery token for and logs, so an operator can get back into a
-   * hub whose SSO broke. Unset it once back in; each boot replaces the token.
+   * hub whose SSO broke. Unset it once back in. A token lives until it is used or
+   * its hour runs out - another boot does not withdraw it.
    */
   resetAdminEmail?: string;
   /** Most rows one audit CSV export carries (default 100000); set low by tests. */

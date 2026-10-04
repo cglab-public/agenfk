@@ -310,7 +310,14 @@ export async function installDispatchedFlow(db: DB, orgId: string, directive: Fl
   if (!Number.isFinite(version)) return false;
 
   // BUG 91d2941d: what was here, so the row shows what a reclaim replaced.
-  const flowRow = () => db.get<any>('SELECT id, name, source, version, org_available FROM flows WHERE id = ?', [flow.id]);
+  const flowRow = async () => {
+    const r = await db.get<any>('SELECT id, name, source, version, org_available, definition_json FROM flows WHERE id = ?', [flow.id]);
+    if (!r) return null;
+    const { definition_json, ...rest } = r;
+    let definition: unknown = null;
+    try { definition = JSON.parse(String(definition_json)); } catch { definition = null; }
+    return { ...rest, definition };
+  };
   const before = await flowRow();
   const written = await db.run(
     `INSERT INTO flows (id, org_id, name, description, definition_json, source, version, org_available, updated_at)
@@ -704,7 +711,8 @@ export function startFederationSync(args: {
   hubVersion?: string;
   intervalMs?: number;
   transport?: FederationTransport;
-  orgId?: string;
+  /** This hub's org; a getter reads it at each tick, so an org rename takes effect (BUG 915f76ed). */
+  orgId?: string | (() => string);
 }): () => void {
   const intervalMs = args.intervalMs ?? FEDERATION_TICK_MS;
   let inflight = false;
@@ -741,7 +749,7 @@ export function startFederationSync(args: {
         }
         const out = await federationTick({
           db: args.db, secretKey: args.secretKey, transport, hubVersion: args.hubVersion,
-          orgId: args.orgId,
+          orgId: typeof args.orgId === 'function' ? args.orgId() : args.orgId,
         });
         if (out.revoked) {
           console.warn('[FEDERATION] parent rejected our credential; sync stopped until this hub rejoins');
