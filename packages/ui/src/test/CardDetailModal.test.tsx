@@ -159,6 +159,35 @@ describe('CardDetailModal', () => {
       fireEvent.click(tab(/^History/));
       expect((screen.getByTestId('edit-title') as HTMLInputElement).value).toBe('Renamed story');
     });
+
+    it('saves the edited title from any tab, not only Overview', async () => {
+      const onUpdateItem = vi.fn(async () => {});
+      (api.getItem as any).mockResolvedValue(mockItem);
+      render(
+        <CardDetailModal
+          item={mockItem as any}
+          allItems={[]}
+          onClose={() => {}}
+          onSelectItem={() => {}}
+          onAddItem={async () => {}}
+          onDeleteItem={async () => {}}
+          onUpdateItem={onUpdateItem}
+        />,
+        { wrapper },
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Edit item' }));
+      fireEvent.change(screen.getByTestId('edit-title'), { target: { value: 'Renamed story' } });
+      fireEvent.click(tab(/^History/));
+      fireEvent.click(screen.getByTestId('save-edit'));
+      await waitFor(() => expect(onUpdateItem).toHaveBeenCalled());
+      expect((onUpdateItem.mock.calls[0] as any[]).some(arg => JSON.stringify(arg).includes('Renamed story'))).toBe(true);
+    });
+
+    it('takes its accessible name from the visible title heading', () => {
+      renderModal(mockItem);
+      const heading = screen.getByRole('heading', { name: 'Test Story' });
+      expect(screen.getByRole('dialog', { name: 'Test Story' }).getAttribute('aria-labelledby')).toBe(heading.id);
+    });
   });
 
   it('shows when the card was created and when it was last updated', async () => {
