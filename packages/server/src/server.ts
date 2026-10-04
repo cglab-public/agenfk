@@ -4402,7 +4402,7 @@ function outsideEntries(root: string, head: string): [string, string][] | null {
     const run = (args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 64 * 1024 * 1024 });
     const prefix = run(['rev-parse', '--show-prefix']).trim();
     // c03ae9f7: a project at the repository's top has nothing beside it.
-    if (!prefix) return '';
+    if (!prefix) return [];
     const top = run(['rev-parse', '--show-toplevel']).trim();
     const names = new Set([
       // --no-relative (c03ae9f7): a user's diff.relative would list only what is under `root`.
