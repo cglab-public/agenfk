@@ -870,6 +870,28 @@ describe('the create form is a draft, not a finished card', () => {
     expect(document.activeElement).toBe(screen.getByRole('dialog', { name: 'Real card' }));
   });
 
+  it('draws no focus ring around the whole panel it focuses (BUG c02ff6a2)', () => {
+    // The ring was the brand's own `:focus-visible` rule (brand/tokens.css,
+    // CGLAB-434), framing the entire card because the panel takes focus to keep
+    // it inside the dialog. The panel is out of the Tab order and not a
+    // control: it opts out on purpose; fields and buttons keep their rings.
+    // jsdom applies no CSS, so this pins the opt-out marker, not the rendering.
+    render(
+      <CardDetailModal
+        item={{ id: 'i9', projectId: 'p1', type: ItemType.TASK, title: 'Real card', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() } as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper },
+    );
+    const panel = screen.getByRole('dialog', { name: 'Real card' });
+    expect(document.activeElement).toBe(panel);
+    expect(panel.classList.contains('focus:outline-hidden')).toBe(true);
+  });
+
   it('names the type control, which was an unlabelled combobox', () => {
     // One <label> served three inputs. The type <select> had none, so it was
     // announced as "combobox" and nothing else.
