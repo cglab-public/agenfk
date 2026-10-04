@@ -265,7 +265,9 @@ describe('prefs over IPC', () => {
       // not an agent this app starts.
       expect(message, 'herdr is not an agent this app starts').not.toMatch(/herdr/);
     }
-    expect((await handlers['prefs:get']({} as never, undefined)).defaultAgentId).toBe('');
+    // Refused, so the stored answer is still the DEFAULT - which is the shell,
+    // the one agent every machine has.
+    expect((await handlers['prefs:get']({} as never, undefined)).defaultAgentId).toBe('shell');
   });
 
   it('still refuses the string preference that reaches the filesystem', async () => {

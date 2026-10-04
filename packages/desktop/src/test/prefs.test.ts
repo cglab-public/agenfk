@@ -214,13 +214,16 @@ describe('cloneDirOrDefault', () => {
  * it brings its own tabs. It cannot be a default the open-dialog honours.
  */
 describe('the default agent', () => {
-  it('starts empty, meaning nobody has chosen one', () => {
+  it('starts on the shell, the one agent every machine has', () => {
     /*
-     * '' is deliberately NOT 'claude-code'. A written value is a decision the
-     * person made, and inventing one here would make "remembered" and
-     * "suggested" the same thing — the cloneDir rule, arrived at again.
+     * NOT 'claude-code'. `detectAgents.ts` keeps ALWAYS_AVAILABLE =
+     * new Set(['shell']) and `agents.ts` resolves it per platform — the
+     * account's login shell on Unix, an absolute PowerShell on Windows — so the
+     * shell is the only id that cannot name a program the person does not have.
+     * Every other choice is a CLI somebody may not have installed yet, and a
+     * default that names one fails on a fresh machine.
      */
-    expect(DEFAULT_PREFS.defaultAgentId).toBe('');
+    expect(DEFAULT_PREFS.defaultAgentId).toBe('shell');
   });
 
   it('keeps the agent it is given, across a restart', () => {
@@ -236,7 +239,7 @@ describe('the default agent', () => {
     // A hand-edited or half-written file: the answer is "nobody chose", not a
     // crash and not a guess at which agent the object meant.
     fs.writeFileSync(file(), JSON.stringify({ defaultAgentId: { id: 'pi' } }));
-    expect(readPrefs(dir).defaultAgentId).toBe('');
+    expect(readPrefs(dir).defaultAgentId).toBe('shell');
   });
 
   it('does not disturb autoApprove when it is written', () => {

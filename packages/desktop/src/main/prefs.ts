@@ -31,7 +31,7 @@ export interface Prefs {
   autoApprove: boolean;
 
   /**
-   * The agent a new terminal starts with, or '' for "nobody has chosen one".
+   * The agent a new terminal starts with.
    *
    * HERE, and not in the server's `/settings`, for the reason this file exists:
    * it decides WHICH BINARY every terminal the desktop spawns runs, and that is
@@ -40,11 +40,16 @@ export interface Prefs {
    * starts next — one step short of the shell string already behind
    * VERIFY_TOKEN.
    *
-   * '' rather than 'claude-code', deliberately. A value written to disk is a
-   * decision the person made, and answering with an agent they never picked
-   * would make "remembered" and "suggested" the same thing on the screen that
-   * reads it — the rule `cloneDir` already follows below. Empty means the dialog
-   * keeps the default it has today.
+   * DEFAULTS TO `shell`, and that is the only defensible default because it is
+   * the only agent that cannot be missing. `detectAgents.ts` keeps
+   * `ALWAYS_AVAILABLE = new Set(['shell'])` and `agents.ts` resolves it per
+   * platform — the account's login shell on Unix, an absolute PowerShell on
+   * Windows, where it ships with every supported version. Every OTHER id names
+   * a CLI the person may not have installed, and a default that names one is a
+   * default that fails on a fresh machine.
+   *
+   * A stored value always wins, so this is where a fresh install starts and
+   * nothing more.
    *
    * `herdr` is not a value this can hold, and nothing here has to reject it: it
    * is in `agentLabels.ts` only because it is rendered beside agents. It is an
@@ -96,10 +101,11 @@ export interface Prefs {
 export const DEFAULT_PREFS: Prefs = {
   autoApprove: false,
   /*
-   * Empty: nobody has chosen an agent yet, so the dialog behaves as it always
-   * did. See the field's own comment for why this is not 'claude-code'.
+   * The shell, because it is the one agent every machine has — see the field's
+   * own comment. Not 'claude-code': that would make a fresh install's first
+   * terminal fail wherever the CLI is not installed yet.
    */
-  defaultAgentId: '',
+  defaultAgentId: 'shell',
   /*
    * On: exactly today's behaviour, and the only way it changes is somebody
    * turning it off in this app.

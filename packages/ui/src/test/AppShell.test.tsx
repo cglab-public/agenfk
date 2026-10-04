@@ -2239,7 +2239,20 @@ describe('a card whose run belongs to a terminal this app opened', () => {
 });
 
 describe('opening a terminal directly from the sidebar', () => {
-  it('offers one action above Tasks and opens a shell even with a project active', async () => {
+  it('offers one action above Tasks, and with a project open it opens ON that project', async () => {
+    /*
+     * IT USED TO OPEN A BARE SHELL whatever was open, and this test pinned that
+     * — "opens a shell even with a project active".
+     *
+     * What changed is not where the row is but what it obeys. The switch that
+     * decides whether a terminal asks which agent is GLOBAL, so a third door
+     * that ignored it — and ignored the default agent — made one setting mean
+     * different things depending on which button you pressed.
+     *
+     * The row's place is still asserted, and it is the half that has not moved:
+     * one action, above Tasks, never a second "Open shell" beside it.
+     */
+    setBridge('darwin', { autoApprove: false, defaultAgentId: 'pi', askBeforeOpening: false } as never);
     renderShell();
     fireEvent.click(await screen.findByRole('button', { name: 'horizon-lab' }));
 
@@ -2251,11 +2264,11 @@ describe('opening a terminal directly from the sidebar', () => {
       .toBeLessThan(labels.indexOf('Tasks'));
 
     fireEvent.click(within(nav).getByRole('button', { name: 'Open terminal' }));
-    expect(screen.queryByRole('dialog')).toBeNull();
     await waitFor(() => expect(ptyCalls.requests.length).toBe(1));
-    expect(ptyCalls.requests[0]).toMatchObject({ agentId: 'shell' });
+    // The default agent, on the project — not a bare shell in $HOME.
+    expect(ptyCalls.requests[0]).toMatchObject({ agentId: 'pi' });
+    expect(ptyCalls.requests[0]).toHaveProperty('projectId');
     expect(ptyCalls.requests[0]).not.toHaveProperty('itemId');
-    expect(ptyCalls.requests[0]).not.toHaveProperty('projectId');
   });
 
   it('also opens a shell with no project selected, without a dialog', async () => {
@@ -2397,6 +2410,39 @@ describe('Ask before opening is one switch for every terminal', () => {
     expect(screen.queryByRole('button', { name: /^(create|continue)$/i })).toBeNull();
     // No remembered agent on this card, so the global default answers.
     expect((ptyCalls.requests.at(-1) as { agentId?: string }).agentId).toBe('pi');
+  });
+
+  it('the sidebar\'s Open terminal obeys the same flow when a project is open', async () => {
+    /*
+     * The THIRD door, and the one that used to ignore all of this: it handed
+     * back a bare shell whatever the settings said, which is how the app grew
+     * two buttons called Open terminal that behaved differently.
+     */
+    setBridge('darwin', { autoApprove: false, defaultAgentId: 'pi', askBeforeOpening: false } as never);
+    renderShell();
+    // A project has to be open for there to be somewhere to run.
+    fireEvent.click(await screen.findByRole('button', { name: 'agenfk' }));
+    fireEvent.click(screen.getByRole('button', { name: /^open terminal$/i }));
+
+    await waitFor(() => expect(ptyCalls.requests.length).toBeGreaterThan(0));
+    const req = ptyCalls.requests.at(-1) as { agentId?: string; projectId?: string; itemId?: string };
+    expect(req.agentId, 'it did not use the default agent').toBe('pi');
+    expect(req.projectId, 'it did not open on the project').toBeTruthy();
+    expect(req.itemId).toBeUndefined();
+  });
+
+  it('and stays a plain shell when no project is open', async () => {
+    /*
+     * No project means no worktree to run in and no agent to run in it. This is
+     * the case that makes `shell` the only defensible default agent: it needs no
+     * project, no card and no installed CLI.
+     */
+    renderShell();
+    await screen.findByRole('button', { name: 'agenfk' });
+    fireEvent.click(screen.getByRole('button', { name: /^open terminal$/i }));
+
+    await waitFor(() => expect(ptyCalls.requests.length).toBeGreaterThan(0));
+    expect((ptyCalls.requests.at(-1) as { agentId?: string }).agentId).toBe('shell');
   });
 
   it('but a card that remembers its own agent still wins over the default', async () => {

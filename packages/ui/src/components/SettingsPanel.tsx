@@ -453,20 +453,15 @@ export function SettingsPanel(): React.ReactElement {
   const defaultAgentId = prefs?.defaultAgentId ?? '';
 
   /*
-   * What the ROW shows: the stored choice, or the agent a dialog would pick when
-   * nobody has chosen — the first installed one, falling back to the same
-   * 'claude-code' the dialog has always used.
-   *
-   * PROPOSED, NOT IMPOSED, and that is the reason `defaultAgentId` is stored
-   * empty instead of pre-filled: showing the agent that will actually run is not
-   * the same as claiming somebody chose it, and writing it here would make
-   * "remembered" and "suggested" the same thing. The clone-dir row follows the
-   * same rule.
+   * What the ROW shows: the stored choice, or the agent that would run instead —
+   * the first installed one, falling back to `shell`, which every machine has.
    *
    * Without this the picker renders an EMPTY label for '', because its trigger
-   * shows the chosen agent's name and there is none to show.
+   * shows the chosen agent's name and there is none to show. That is reachable
+   * from a hand-edited prefs file rather than from the UI: main refuses '' as a
+   * default agent, so nothing in the app can store one.
    */
-  const shownAgentId = defaultAgentId || agents.find(a => a.installed)?.id || 'claude-code';
+  const shownAgentId = defaultAgentId || agents.find(a => a.installed)?.id || 'shell';
   /*
    * `!== false` rather than `?? true`: a preload older than this key answers
    * undefined, and reading that as "off" would silently start skipping the
