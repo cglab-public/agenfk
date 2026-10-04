@@ -399,6 +399,26 @@ const SCHEMA_SQLITE = `
     expires_at TEXT NOT NULL
   );
 
+  -- Config audit log (STORY a89af514): who changed which setting, when, from
+  -- where, before -> after. Append-only, kept forever; secrets never stored.
+  -- See packages/hub/src/services/configAudit.ts.
+  CREATE TABLE IF NOT EXISTS config_audit (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    at TEXT NOT NULL,
+    actor_user_id TEXT,
+    actor_email TEXT,
+    source TEXT NOT NULL,
+    ip TEXT,
+    area TEXT NOT NULL,
+    action TEXT NOT NULL,
+    target TEXT,
+    before_json TEXT,
+    after_json TEXT,
+    link TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_config_audit_org_at ON config_audit(org_id, at, id);
+
   -- People hidden by an admin (CGLAB-31), keyed on events.user_key
   -- (lowercased git email). Membership removes the person from selection
   -- surfaces (installation lists, upgrade targeting, admin actions) and

@@ -148,6 +148,30 @@ describe('PG parity: auth + setup', () => {
   });
 });
 
+describe('PG parity: config audit log (a89af514)', () => {
+  let fx: Fixture;
+  beforeEach(async () => { fx = await bootHubOnPg(); });
+  afterEach(async () => { try { await fx.db.close(); } catch { /* */ } });
+
+  it('records, filters, pages and exports on Postgres', async () => {
+    const { recordAudit } = await import('../services/configAudit');
+    for (let i = 0; i < 3; i++) {
+      await recordAudit(fx.db, { orgId: 'org', actor: { userId: 'u', email: 'admin@x' }, source: 'board', ip: null, area: i === 2 ? 'sign-in' : 'flows', action: `a${i}`, target: null, before: null, after: { clientSecret: 'shh', n: i }, at: `2026-10-0${i + 1}T00:00:00.000Z` });
+    }
+    const r = await supertest(__server).get('/v1/admin/audit?area=flows&limit=1').set('Cookie', fx.cookie);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.rows.map((x: any) => x.action)).toEqual(['a1']);
+    const next = await supertest(__server).get(`/v1/admin/audit?area=flows&limit=1&cursor=${encodeURIComponent(r.body.next)}`).set('Cookie', fx.cookie);
+    expect(next.body.rows.map((x: any) => x.action)).toEqual(['a0']);
+    expect(JSON.stringify(next.body)).not.toContain('shh');
+    expect((await supertest(__server).get('/v1/admin/audit?actor=ADMIN%40').set('Cookie', fx.cookie)).body.rows).toHaveLength(3);
+    expect((await supertest(__server).get('/v1/admin/audit?actor=nobody_100%25').set('Cookie', fx.cookie)).body.rows).toHaveLength(0);
+    const csv = await supertest(__server).get('/v1/admin/audit.csv?from=2026-10-02').set('Cookie', fx.cookie);
+    expect(csv.status).toBe(200);
+    expect(csv.text.trim().split(/\r?\n/)).toHaveLength(3);
+  });
+});
+
 describe('PG parity: admin endpoints', () => {
   let fx: Fixture;
   beforeEach(async () => { fx = await bootHubOnPg(); });

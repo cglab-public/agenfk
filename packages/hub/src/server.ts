@@ -13,6 +13,7 @@ import { jiraAdminRouter, jiraInstallationRouter } from './routes/jira.js';
 import { googleRouter } from './auth/google.js';
 import { entraRouter } from './auth/entra.js';
 import { ensureBootstrapToken } from './auth/bootstrapToken.js';
+import { auditRouter } from './routes/audit.js';
 import { mintAdminRecoveryToken } from './auth/adminRecovery.js';
 import { queriesRouter } from './routes/queries.js';
 import { connectRouter } from './routes/connect.js';
@@ -247,6 +248,7 @@ export async function createHubApp(
   app.use('/setup', setupRouter(ctx));
   app.use('/v1/admin', adminRouter(ctx));
   app.use('/v1/admin', orgRenameRouter(ctx));
+  app.use('/v1/admin', auditRouter(ctx));
   app.use('/v1', queriesRouter(ctx));
   app.use('/hub', connectRouter(ctx));
   app.use('/hub/federation', federationInviteRouter(ctx));
