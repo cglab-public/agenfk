@@ -67,6 +67,18 @@ describe('the hub on Express 5 (what the image runs)', () => {
     expect([...known].filter(r => !served.includes(r))).toEqual([]);
   });
 
+  // The class, not just express: the image ships the root node_modules and the
+  // dist of hub and core, never their own node_modules. Any production
+  // dependency the lockfile nests there is tested at one version and silently
+  // swapped for the root's in the image - beta.31 had 21 of them.
+  it('nests no production dependency under a package the image ships without its node_modules', () => {
+    const lock = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../../../package-lock.json'), 'utf8'));
+    const nested = Object.entries<any>(lock.packages)
+      .filter(([k, v]) => /^packages\/(hub|core)\/node_modules\//.test(k) && !v.dev)
+      .map(([k, v]) => `${k}@${v.version}`);
+    expect(nested).toEqual([]);
+  });
+
   it('records a change made over HTTP', async () => {
     await createPasswordUser(ctx.db, 'org', 'admin@x', 'longenough1', 'admin');
     const admin = await loginAs(server, 'admin@x', 'longenough1');
