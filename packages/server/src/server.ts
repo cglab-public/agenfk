@@ -11864,6 +11864,17 @@ if (process.env.AGENFK_SERVE_UI) {
 }
 /* v8 ignore stop */
 
+// BUG 345e0701: last in the chain, so an error no route caught reaches the CLI
+// and MCP as JSON with its message - Express's default answers an HTML page.
+// The stack stays in the server log, never in the body.
+app.use((err: any, _req: any, res: any, next: any) => {
+  if (res.headersSent) return next(err);
+  const status = Number.isInteger(err?.status) && err.status >= 400 && err.status < 600 ? err.status : 500;
+  if (status >= 500) console.error('[HTTP] Unhandled route error:', err);
+  const message = typeof err?.message === 'string' && err.message ? err.message : 'Internal server error';
+  res.status(status).json({ error: message });
+});
+
 // ── WebSocket ────────────────────────────────────────────────────────────────
 /* v8 ignore start */
 io.on('connection', (socket) => {
