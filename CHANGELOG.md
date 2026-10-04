@@ -2,6 +2,30 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.28] — 2026-10-03
+
+Pre-release. Beta, cumulative over `2.0.0-beta.27`: everything below, plus the changes in this section. Measured
+on the 2.0 lineage simulation (beta.27 snapshot, same machine load, back to back): suite runs halved (14 -> 7) and
+the time spent in `agenfk verify` fell 40%.
+
+### Reuse
+
+- **The close stands on a green of this tree already on record (ef1342b8).** The move that ends the flow used to
+  run the verify command again on a tree a green was already recorded for - the card's own earlier run, a
+  sibling's, the previous card's close, REFACTOR's whole run. It now closes on that green when its content
+  matches, with the same command, in the same checkout, and no command check on the step. A card that changed
+  code runs its suite once, not twice; a no-op card runs it zero times.
+- **A docs-only change closes without a run.** Files under `--test-report-reuse-ignore` (default `**/*.md`, minus
+  any a test names) are left out of that match at the final step too. If the verify command checks such files (a
+  markdown lint, `prettier --check .`, a link checker), narrow the globs or set them to `none`.
+- **`agenfk verify --plan` predicts it:** "would not run `<cmd>`: a green of this tree's content is on record".
+
+### Faster verifies
+
+- **A quick background verify answers in about half a second (cc5e4943).** `agenfk verify` and MCP
+  `validate_progress` polled a background run every 1.5s, so every such verify took at least 1.6s. They now poll
+  after 100ms and back off to 1.5s.
+
 ## [2.0.0-beta.27] — 2026-10-03
 
 Pre-release. Beta, cumulative over `2.0.0-beta.26`: everything below, plus the fixes in this section.
