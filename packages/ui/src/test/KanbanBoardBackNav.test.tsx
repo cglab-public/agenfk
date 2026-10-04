@@ -400,3 +400,63 @@ describe('KanbanBoard back navigation out of a drill-down', () => {
     });
   });
 });
+
+/**
+ * Task 803c4633 (user request, 2026-10-04): a breadcrumb too wide for its row
+ * used to clip its LAST items - the immediate parent and the level you are on -
+ * off the right edge. The topmost levels give way first now: they shrink and
+ * ellipsise, so the parent and the current level keep their room. jsdom has no
+ * layout, so this pins the contract the browser lays out: the trail clips
+ * rather than scrolls, ancestors shrink ahead of the last two, and every crumb
+ * keeps its full title for assistive tech and as a tooltip.
+ */
+describe('a breadcrumb too long for its row', () => {
+  beforeEach(() => {
+    localStorage.setItem('agenfk_project_id', 'p1');
+    setItems([EPIC, STORY, SUB, LEAF, OTHER]);
+  });
+  afterEach(() => cleanup());
+
+  const crumb = (title: string) => screen.getAllByTestId('breadcrumb-crumb').find(b => b.textContent?.includes(title)) as HTMLElement;
+  const shrink = (el: HTMLElement) => Number(el.style.flexShrink || getComputedStyle(el).flexShrink || 1);
+
+  it('clips instead of scrolling the last levels out of view', async () => {
+    render(<KanbanBoard />, { wrapper });
+    await drillInto('Epic One');
+    await drillInto('Story Two');
+    await drillInto('Sub Story');
+    await screen.findByText('Leaf Task');
+    const trail = screen.getByTestId('breadcrumb-trail');
+    expect(trail.className).not.toMatch(/overflow-x-auto/);
+    expect(trail.className).toMatch(/overflow-hidden/);
+    expect(trail.className).toMatch(/min-w-0/);
+  });
+
+  it('gives way at the top: ancestors shrink and ellipsise before the parent and the current level', async () => {
+    render(<KanbanBoard />, { wrapper });
+    await drillInto('Epic One');
+    await drillInto('Story Two');
+    await drillInto('Sub Story');
+    await screen.findByText('Leaf Task');
+    const top = crumb('Epic One'), parent = crumb('Story Two'), current = crumb('Sub Story');
+    expect(shrink(top)).toBeGreaterThan(shrink(parent));
+    expect(shrink(top)).toBeGreaterThan(shrink(current));
+    // The title itself is what ellipsises; the button may shrink below its text, down to its dot and an ellipsis.
+    expect(top.className).toMatch(/min-w-\[3rem\]/);
+    expect(top.querySelector('[data-testid="breadcrumb-title"]')!.className).toMatch(/truncate/);
+    // The last two shrink only once the ancestors cannot.
+    expect(shrink(parent)).toBeGreaterThan(0);
+    expect(shrink(current)).toBeGreaterThan(0);
+  });
+
+  it('keeps every full title for screen readers and as a tooltip, however short it is drawn', async () => {
+    render(<KanbanBoard />, { wrapper });
+    await drillInto('Epic One');
+    await drillInto('Story Two');
+    await screen.findByText('Sub Story');
+    for (const t of ['Epic One', 'Story Two']) {
+      expect(crumb(t)).toHaveAttribute('title', t);
+      expect(crumb(t).textContent).toContain(t);
+    }
+  });
+});

@@ -2035,9 +2035,15 @@ agenfk update-project <id> --setup-command "npm ci"`}
         </div>
 
         <div className="flex items-center justify-between border-t border-slate-100 dark:border-slate-800/50 pt-2 px-1">
-          <div className="flex items-center gap-1.5 text-xs overflow-x-auto scrollbar-hide py-1">
+          {/*
+            * Too long for the row, the trail gives way at the TOP (task 803c4633):
+            * ancestors above the immediate parent shrink and ellipsise first, so the
+            * parent and the level you are on keep their room. It clips rather than
+            * scrolls - a hidden scrollbar used to push the last levels off the right.
+            */}
+          <div data-testid="breadcrumb-trail" className="flex items-center gap-1.5 text-xs overflow-hidden min-w-0 flex-1 py-1">
             {navPath.length === 0 ? (
-              <button onClick={() => navigateTo(-1)} className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all whitespace-nowrap bg-accent-fill text-accent-ink font-bold">
+              <button onClick={() => navigateTo(-1)} className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all whitespace-nowrap shrink-0 bg-accent-fill text-accent-ink font-bold">
                 <Home size={14} />
                 <span>Top Level</span>
               </button>
@@ -2046,7 +2052,7 @@ agenfk update-project <id> --setup-command "npm ci"`}
               <button
                 onClick={() => navigateTo(navPath.length - 2)}
                 aria-label={`Back to ${navPath.length > 1 ? navPath[navPath.length - 2].title : 'All Items'}`}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all whitespace-nowrap text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all whitespace-nowrap shrink-0 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
               >
                 <ArrowLeft size={14} />
                 <span className="hidden sm:inline">Back</span>
@@ -2057,13 +2063,19 @@ agenfk update-project <id> --setup-command "npm ci"`}
                 <ChevronRight size={14} className="text-slate-300 dark:text-slate-500 flex-shrink-0" />
                 <button
                   onClick={() => navigateTo(index)}
-                  className={clsx("flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all whitespace-nowrap", index === navPath.length - 1 ? "bg-accent-fill text-accent-ink font-bold" : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800")}>
+                  data-testid="breadcrumb-crumb"
+                  title={nav.title}
+                  // The last two (parent and current) shrink only once every ancestor is down to its minimum.
+                  // Flex shares shrinkage by shrink x width: at 1000:1 the last two still lost a fraction of a
+                  // pixel - enough to draw an ellipsis - while an ancestor had room to give. At 1e6 that rounds to 0.
+                  style={{ flexShrink: index >= navPath.length - 2 ? 1 : 1_000_000 }}
+                  className={clsx("flex items-center gap-1.5 px-2.5 py-1 rounded-lg transition-all whitespace-nowrap", index < navPath.length - 2 ? "min-w-[3rem]" : "min-w-0", index === navPath.length - 1 ? "bg-accent-fill text-accent-ink font-bold" : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800")}>
                   {/* The breadcrumb dot is a type colour too (CGLAB-164): it used to be
                       `EPIC ? brand-light : story-blue`, which put a blue dot
                       directly above the emerald STORY badge it had just
                       revealed. Same grammar, same source. */}
-                  <span data-testid="breadcrumb-type-dot" className={clsx("w-2 h-2 rounded-full", ITEM_TYPE_VISUAL[nav.type]?.fill ?? "bg-slate-400")}></span>
-                  <span>{nav.title}</span>
+                  <span data-testid="breadcrumb-type-dot" className={clsx("w-2 h-2 rounded-full shrink-0", ITEM_TYPE_VISUAL[nav.type]?.fill ?? "bg-slate-400")}></span>
+                  <span data-testid="breadcrumb-title" className="truncate">{nav.title}</span>
                 </button>
               </React.Fragment>
             ))}
