@@ -4,7 +4,7 @@
  * step, the check and the reason, so a reviewer sees what a person let through.
  */
 import { describe, it, expect } from 'vitest';
-import { buildPrBody, formatHumanGates, formatCustomChecks, formatTreeWarnings, formatDisabledChecks, prRegisterComment, type GateEvent, type CustomCheckRow, type TreeWarningRow, type DisabledCheckRow } from '../humanGates';
+import { buildPrBody, formatHumanGates, formatCustomChecks, formatTreeWarnings, formatDisabledChecks, prRegisterComment, readDisabledChecks, type GateEvent, type CustomCheckRow, type TreeWarningRow, type DisabledCheckRow } from '../humanGates';
 
 const override: GateEvent = { itemId: 'c1', title: 'Fix the picker', step: 'WORK', kind: 'override', check: 'jira-key-valid', reason: 'spike card, no issue', by: 'board', at: '2026-09-24T10:00:00.000Z' };
 const approval: GateEvent = { itemId: 'c2', title: 'Plan it', step: 'DISCOVERY', kind: 'approval', note: 'go', by: 'board', at: '2026-09-24T09:00:00.000Z' };
@@ -194,5 +194,23 @@ describe('formatDisabledChecks (CGLAB-428)', () => {
     expect(buildPrBody('Body', [], [], [], [row])).toMatch(/## Checks switched off by the org's hub/);
     expect(prRegisterComment([], [], [], [row])).toMatch(/new-tests-born-green/);
     expect(prRegisterComment([], [], [], [])).toBeNull();
+  });
+});
+
+describe('readDisabledChecks (890be63f)', () => {
+  const rows = [{ itemId: 'i', title: 'T', step: 'WORK', check: 'command-check:lint', source: 'flow', at: '2026-10-04T00:00:00Z' }];
+  const httpError = (status: number) => Object.assign(new Error(`Request failed with status code ${status}`), { response: { status } });
+
+  it("gives the server's rows", async () => {
+    expect(await readDisabledChecks(async () => ({ data: rows }))).toEqual({ rows, failed: null });
+  });
+
+  it('treats a 404 - an older server with no such route - as nothing switched off, with no warning', async () => {
+    expect(await readDisabledChecks(async () => { throw httpError(404); })).toEqual({ rows: [], failed: null });
+  });
+
+  it('reports any other failure, so the caller can say the PR will not list them', async () => {
+    expect(await readDisabledChecks(async () => { throw httpError(500); })).toEqual({ rows: [], failed: '500' });
+    expect(await readDisabledChecks(async () => { throw new Error('ECONNREFUSED'); })).toEqual({ rows: [], failed: 'ECONNREFUSED' });
   });
 });

@@ -175,3 +175,33 @@ describe('the hub sync', () => {
     expect((await storage.listFlows()).some(f => f.hubFlowId === remote.id)).toBe(false);
   });
 });
+
+describe('CGLAB-428 review follow-ups (890be63f)', () => {
+  it("lists the parent's own switched-off row when the roll-up walks it past a step whose review the hub switched off", async () => {
+    const id = randomUUID();
+    await storage.createFlow({ id, name: `dc-${++seq}`, description: '', version: '1.0.0', createdAt: new Date(), updatedAt: new Date(), source: 'hub', hubFlowId: `remote-${seq}`, hubVersion: 1,
+      steps: [s('TODO', 0, { isAnchor: true }), s('WORK', 1), s('REV', 2, { role: 'review', disabledChecks: ['review-record'] }), s('NEXT', 3), s('DONE', 4, { isAnchor: true })] } as any);
+    const pid = await project(id);
+    const parent = await card(pid);
+    const child = await card(pid, { parentId: parent });
+    expect((await validate(child)).status).toBe(200);
+    expect((await storage.getItem(parent))!.status).toBe('REV');
+    const r = await validate(child);
+    expect(r.status, text(r.body)).toBe(200);
+    // Nothing held the parent at REV - its review was switched off - so the walk moved it on...
+    expect((await storage.getItem(parent))!.status).toBe('NEXT');
+    // ...and the PR still says the parent left REV with its review switched off.
+    const rows = (await agent().get(`/items/${parent}/disabled-checks`)).body;
+    expect(rows).toEqual(expect.arrayContaining([expect.objectContaining({ itemId: parent, step: 'REV', check: 'review-record' })]));
+  });
+
+  it('answers a --check-note on a switched-off check by saying the hub switched it off', async () => {
+    const pid = await project(await flowRow('hub', { disabledChecks: ['command-check:lint'] }));
+    const id = await card(pid);
+    const r = await agent().post(`/items/${id}/validate`).set({ 'x-agenfk-internal': VERIFY_TOKEN! }).send({ evidence: 'ok', checkAnswers: [{ id: 'command-check:lint', note: 'fine' }] });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toMatch(/switched off/i);
+    expect(r.body.error).toMatch(/command-check:lint/);
+    expect(r.body.error).not.toMatch(/has no check/);
+  });
+});

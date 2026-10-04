@@ -960,7 +960,18 @@ const syncParentStatus = async (parentId: string, how: RollUp = {}) => {
   if (newStatus) {
     const timestamp = new Date().toISOString();
     console.log(`[${timestamp}] [AUTO_SYNC] Updating parent ${parent.id} (${parent.title}) to ${newStatus}`);
-    await storage.updateItem(parent.id, { status: newStatus });
+    // 890be63f: the walk stops at the parent's review (above), so a review the
+    // hub switched off is what let it through. It leaves the exit row verify
+    // would, so the PR lists it for the parent too. Only that check: the walk
+    // never runs a step's other checks, switched off or not. No head or actor:
+    // nothing ran and nobody advanced it.
+    const from = orderOf(parent.status);
+    const to = orderOf(newStatus);
+    const walked = from === null || to === null ? [] : ordered.slice(from, to)
+      .map(st => ({ step: st.name, disabled: disabledChecksOf(parentFlow.steps, st.name).filter(c => c.id === 'review-record') }))
+      .filter(w => w.disabled.length > 0)
+      .map(w => ({ step: w.step, kind: 'exit' as const, at: timestamp, walked: true, disabled: w.disabled }));
+    await storage.updateItem(parent.id, { status: newStatus, ...(walked.length ? { stepRecords: [...((parent as any).stepRecords ?? []), ...walked] } : {}) } as any);
     io.emit('items_updated');
     recordMoveEvents(parent, parent.status, newStatus, parentFlow);
   }
@@ -8847,6 +8858,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   if (answered.length && !opts?.gate) {
     const ids = resolveStepChecks(activeFlow.steps, item.status).map(c => c.id);
     const unknown = answered.filter(a => !ids.includes(a));
+    // 890be63f: a check the org's hub switched off is the step's, but it does not run - there is nothing to answer.
+    const off = disabledChecksOf(activeFlow.steps, item.status).map(c => c.id).filter(id => unknown.includes(id));
+    if (off.length) return res.status(400).json({ error: `On step ${item.status}, ${off.map(n => `'${n}'`).join(', ')} ${off.length === 1 ? 'was' : 'were'} switched off by your org's hub: it does not run, so there is nothing to answer.` });
     if (unknown.length) return res.status(400).json({ error: `Step ${item.status} has no check ${unknown.map(n => `'${n}'`).join(', ')} to answer. Its checks: ${ids.join(', ') || 'none'}.` });
   }
   // efcacdeb: a report must name one of THIS step's agent checks.

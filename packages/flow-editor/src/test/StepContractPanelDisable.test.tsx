@@ -139,6 +139,11 @@ describe('StepContractPanel: switching checks off (CGLAB-428)', () => {
     expect(onChange).toHaveBeenLastCalledWith({ disabledChecks: ['on-card-branch'] });
   });
 
+  it('never lists a check every step runs as Not run on the terminal step, which never runs them (890be63f)', () => {
+    show(flow().map(st => (st.name === 'DONE' ? { ...st, disabledChecks: ['on-card-branch'] } : st)), { canDisableChecks: true }, 3);
+    expect(screen.getByTestId('contract-preview').textContent).not.toMatch(/not run/i);
+  });
+
   it('lists nothing for removal before the contract has described the step', () => {
     const steps = flow({ disabledChecks: ['suite-green'] });
     const contract = describeFlowContract(steps) as any;

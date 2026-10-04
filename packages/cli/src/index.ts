@@ -20,7 +20,7 @@ import path from 'path';
 import os from 'os';
 import { stageJsonMigration } from './db-migration.js';
 import { followValidateRun } from './verifyRun.js';
-import { buildPrBody, prRegisterComment, type GateEvent, type CustomCheckRow, type TreeWarningRow, type DisabledCheckRow } from './humanGates.js';
+import { buildPrBody, prRegisterComment, readDisabledChecks, type GateEvent, type CustomCheckRow, type TreeWarningRow } from './humanGates.js';
 import { registryFlowToLocal } from './registryFlowFile.js';
 import { buildUiOpenUrl, resolveDashboardUrl } from './uiUrl.js';
 import { registerHubCommands } from './commands/hub.js';
@@ -3784,10 +3784,10 @@ async function postCheckHistory(itemId: string, prNumber: number, repo: string):
     console.warn(chalk.yellow('⚠️  Could not read the cards\' check history from the server; nothing was posted on the PR.'));
     return;
   }
-  // CGLAB-428: an older server has no such route; the rest of the history still goes on.
-  const disabled = await read<DisabledCheckRow>('disabled-checks');
-  if (!disabled) console.warn(chalk.yellow('⚠️  Could not read the checks the org\'s hub switched off; the PR comment will not list them.'));
-  const comment = prRegisterComment(events, custom, warnings, disabled ?? []);
+  // CGLAB-428: an older server has no such route (a 404, silent); the rest of the history still goes on.
+  const disabled = await readDisabledChecks(() => axios.get(`${API_URL}/items/${itemId}/disabled-checks`));
+  if (disabled.failed) console.warn(chalk.yellow(`⚠️  Could not read the checks the org's hub switched off (${disabled.failed}); the PR comment will not list them.`));
+  const comment = prRegisterComment(events, custom, warnings, disabled.rows);
   if (!comment) return;
   if (!checkGhCli()) { console.warn(chalk.yellow('⚠️  gh is not installed: the check history was not posted on the PR.')); return; }
   // Once per PR: a second pr-register (a re-run) does not post it again.
@@ -4818,10 +4818,9 @@ prCmd
         console.warn(chalk.yellow(`⚠️  Could not read the card's warnings (${e?.response?.status ?? e?.message}); the PR body will not list them.`));
       }
       // CGLAB-428: the checks the org's hub switched off, which never ran.
-      let disabledChecks: DisabledCheckRow[] = [];
-      try { disabledChecks = (await axios.get(`${API_URL}/items/${itemId}/disabled-checks`)).data ?? []; } catch (e: any) {
-        console.warn(chalk.yellow(`⚠️  Could not read the checks the org's hub switched off (${e?.response?.status ?? e?.message}); the PR body will not list them.`));
-      }
+      const disabled = await readDisabledChecks(() => axios.get(`${API_URL}/items/${itemId}/disabled-checks`));
+      if (disabled.failed) console.warn(chalk.yellow(`⚠️  Could not read the checks the org's hub switched off (${disabled.failed}); the PR body will not list them.`));
+      const disabledChecks = disabled.rows;
       args.push('--body', buildPrBody(options.body || item.description || '', gateEvents, customChecks, warnings, disabledChecks));
       if (options.draft) args.push('--draft');
 

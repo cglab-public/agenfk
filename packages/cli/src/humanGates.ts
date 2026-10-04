@@ -131,6 +131,23 @@ export function formatTreeWarnings(rows: readonly TreeWarningRow[]): string {
 export interface DisabledCheckRow { itemId: string; title: string; step: string; check: string; source: string; at: string }
 
 /**
+ * 890be63f: read a card tree's switched-off checks. A 404 is a server from
+ * before CGLAB-428, which has no such route and no way to switch a check off:
+ * nothing to list and nothing to warn about. Any other failure is reported in
+ * `failed` (the status, or the error), so the caller can say the PR will not
+ * list them.
+ */
+export async function readDisabledChecks(get: () => Promise<{ data: unknown }>): Promise<{ rows: DisabledCheckRow[]; failed: string | null }> {
+  try {
+    const data = (await get()).data;
+    return { rows: Array.isArray(data) ? (data as DisabledCheckRow[]) : [], failed: null };
+  } catch (e: any) {
+    if (e?.response?.status === 404) return { rows: [], failed: null };
+    return { rows: [], failed: String(e?.response?.status ?? e?.message ?? e) };
+  }
+}
+
+/**
  * CGLAB-428: the checks the org's hub switched off on the steps a card tree
  * left. They did not run, so a reviewer must know which safeguards were absent.
  */
