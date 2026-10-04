@@ -870,6 +870,26 @@ describe('the create form is a draft, not a finished card', () => {
     expect(document.activeElement).toBe(screen.getByRole('dialog', { name: 'Real card' }));
   });
 
+  it('draws no focus outline around the whole panel it focuses (BUG c02ff6a2)', () => {
+    // The panel takes focus only to keep it inside the dialog, and is out of
+    // the Tab order: the browser's default ring (the OS accent colour) framed
+    // the entire card for no reason. Fields and buttons keep their own rings.
+    render(
+      <CardDetailModal
+        item={{ id: 'i9', projectId: 'p1', type: ItemType.TASK, title: 'Real card', status: Status.TODO, createdAt: new Date(), updatedAt: new Date() } as any}
+        allItems={[]}
+        onClose={() => {}}
+        onSelectItem={() => {}}
+        onAddItem={async () => {}}
+        onDeleteItem={async () => {}}
+      />,
+      { wrapper },
+    );
+    const panel = screen.getByRole('dialog', { name: 'Real card' });
+    expect(document.activeElement).toBe(panel);
+    expect(panel.classList.contains('focus:outline-none')).toBe(true);
+  });
+
   it('names the type control, which was an unlabelled combobox', () => {
     // One <label> served three inputs. The type <select> had none, so it was
     // announced as "combobox" and nothing else.

@@ -103,6 +103,16 @@ describe('the picker', () => {
     expect(document.activeElement).toBe(screen.getByRole('dialog'));
   });
 
+  it('draws no focus outline around the whole panel it focuses (BUG c02ff6a2)', () => {
+    // Focused only so the keyboard reaches it, and out of the Tab order: the
+    // browser's default ring (the OS accent colour, green on this Mac) said
+    // nothing but outlined the entire picker. Its controls keep their rings.
+    render(<CardPicker items={THREE} currentItemId="i1" onPick={vi.fn()} onClose={vi.fn()} />);
+    const dialog = screen.getByRole('dialog');
+    expect(document.activeElement).toBe(dialog);
+    expect(dialog.classList.contains('focus:outline-none')).toBe(true);
+  });
+
   it('closes on Escape pressed wherever focus actually is', () => {
     const onClose = vi.fn();
     render(<CardPicker items={THREE} currentItemId="i1" onPick={vi.fn()} onClose={onClose} />);
