@@ -560,13 +560,32 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
     // agentId comes off the ITEM, which is where it lives — the server keeps it
     // in the item's own record, so it follows the card rather than the machine.
-    enqueuePending({
+    const entry = {
       itemId: item.id,
       title: item.title,
       agentId: item.agentId,
       branchName: (item as { branchName?: string | null }).branchName ?? null,
-    });
-  }, [setActiveProjectId, sessions, enqueuePending]);
+    };
+    /*
+     * ONE GESTURE, when the user asked for one — the same rule the project row
+     * follows, and GLOBAL on purpose: one switch for every terminal, not one per
+     * project and not one per card.
+     *
+     * What a card gives up when this is off. The dialog also says whether the
+     * work is ALREADY running — and that check is above, so it still wins: an
+     * open session is navigated to rather than duplicated, switch or no switch.
+     * What is actually lost is the button's wording, Continue or Create, which
+     * was a label on a screen nobody sees any more.
+     *
+     * The card's remembered agent still beats the default: somebody who chose an
+     * agent for this card meant that card.
+     */
+    if (desktopPrefs?.askBeforeOpening === false) {
+      openPendingTerminal(entry, item.agentId || desktopPrefs.defaultAgentId || 'claude-code');
+      return;
+    }
+    enqueuePending(entry);
+  }, [setActiveProjectId, sessions, enqueuePending, openPendingTerminal, desktopPrefs]);
 
   /**
    * Steer herdr to the pane that was clicked.

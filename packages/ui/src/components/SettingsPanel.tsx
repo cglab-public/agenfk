@@ -897,7 +897,7 @@ export function SettingsPanel(): React.ReactElement {
             title="Ask before opening a terminal"
             /* Says what each side does, because "ask before opening" alone does
                not tell a reader what is being asked, or what they give up. */
-            description="On, the dialog appears so you can confirm which agent runs. Off, the terminal opens straight away with the default agent from Agents — nothing to answer."
+            description="On, a dialog appears so you can confirm which agent runs. Off, terminals open straight away — a project's with the default agent from Agents, a card's with the agent that card already remembers."
             control={
               <Switch
                 aria-label="Ask before opening a terminal"

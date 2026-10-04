@@ -2368,3 +2368,47 @@ describe('the project row: terminal, and the menu that replaced the +', () => {
   });
 });
 
+/**
+ * One switch, every terminal.
+ *
+ * `askBeforeOpening` is a GLOBAL preference — one value for the whole app — so
+ * turning it off must silence the dialog for a card as well as for a project.
+ * Scoping it to projects was the narrower reading and the wrong one: the switch
+ * says nothing about cards.
+ */
+describe('Ask before opening is one switch for every terminal', () => {
+  const card = (extra: Record<string, unknown> = {}) => [
+    { id: 'i1', projectId: 'p1', type: 'TASK', title: 'Some work', status: 'IN_PROGRESS', branchName: 'feat/some', ...extra },
+  ];
+
+  const openCard = async (): Promise<void> => {
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand agenfk' }));
+    const list = document.querySelector('[data-testid="project-list"]') as HTMLElement;
+    fireEvent.click(await within(list).findByTitle('Some work'));
+  };
+
+  it('a CARD terminal opens without a dialog too', async () => {
+    setBridge('darwin', { autoApprove: false, defaultAgentId: 'pi', askBeforeOpening: false } as never);
+    vi.mocked(api.listActiveItems).mockResolvedValue(card() as never);
+    renderShell();
+    await openCard();
+
+    await waitFor(() => expect(ptyCalls.requests.length).toBeGreaterThan(0));
+    expect(screen.queryByRole('button', { name: /^(create|continue)$/i })).toBeNull();
+    // No remembered agent on this card, so the global default answers.
+    expect((ptyCalls.requests.at(-1) as { agentId?: string }).agentId).toBe('pi');
+  });
+
+  it('but a card that remembers its own agent still wins over the default', async () => {
+    // The more specific answer, and the reason the fallback is a CHAIN rather
+    // than a replacement: somebody who chose codex for this card meant it.
+    setBridge('darwin', { autoApprove: false, defaultAgentId: 'pi', askBeforeOpening: false } as never);
+    vi.mocked(api.listActiveItems).mockResolvedValue(card({ agentId: 'codex' }) as never);
+    renderShell();
+    await openCard();
+
+    await waitFor(() => expect(ptyCalls.requests.length).toBeGreaterThan(0));
+    expect((ptyCalls.requests.at(-1) as { agentId?: string }).agentId).toBe('codex');
+  });
+});
+
