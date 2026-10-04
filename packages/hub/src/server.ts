@@ -13,6 +13,7 @@ import { jiraAdminRouter, jiraInstallationRouter } from './routes/jira.js';
 import { googleRouter } from './auth/google.js';
 import { entraRouter } from './auth/entra.js';
 import { ensureBootstrapToken } from './auth/bootstrapToken.js';
+import { configAuditMiddleware } from './services/configAuditRoutes.js';
 import { auditRouter } from './routes/audit.js';
 import { mintAdminRecoveryToken } from './auth/adminRecovery.js';
 import { queriesRouter } from './routes/queries.js';
@@ -228,6 +229,9 @@ export async function createHubApp(
   app.locals.hubPublicUrl = config.publicUrl;
   app.use(express.json({ limit: '10mb' }));
   app.use(cookieParser());
+  // Config audit log (STORY a89af514): ahead of every router, so it sees each
+  // config route's state before its handler runs.
+  app.use(configAuditMiddleware(db, config.defaultOrgId));
 
   app.get('/healthz', (_req: Request, res: Response) => {
     // `service` lets spokes verify they're pointing at an agenfk hub (and not

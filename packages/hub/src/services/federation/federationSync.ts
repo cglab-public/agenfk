@@ -5,6 +5,7 @@ import {
   readParentBinding, markBindingRevoked, writeParentBinding, PARENT_BINDING_KEY,
   type ParentBinding, type IdentityPolicy,
 } from './parentBinding.js';
+import { recordAudit } from '../configAudit.js';
 import { releaseParentFlows } from './parentFlows.js';
 import { invalidFlowDefinition } from '../flowDefinition.js';
 import { applyUpgradeDispatch, type UpgradeDispatch, type UpgradeFanoutResult } from './upgradeFanout.js';
@@ -333,6 +334,12 @@ export async function installDispatchedFlow(db: DB, orgId: string, directive: Fl
     [flow.id, orgId, flow.name, flow.description ?? null,
      JSON.stringify(flow.definition), version, new Date().toISOString()],
   );
+  // STORY a89af514: a flow the parent placed here, locked to it.
+  await recordAudit(db, {
+    orgId, actor: null, source: 'federation', ip: null, area: 'federation', action: 'flow.dispatch-install',
+    target: `flow ${flow.name} (${flow.id}) v${version}`, before: null,
+    after: { id: flow.id, name: flow.name, version, dispatchId: directive.dispatchId ?? null, definition: flow.definition },
+  });
   return true;
 }
 

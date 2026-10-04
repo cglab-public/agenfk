@@ -89,14 +89,24 @@ export function redactPair(before: unknown, after: unknown): { before: unknown; 
   return { before: w.b, after: w.a };
 }
 
+/**
+ * Row ids sort in the order rows were written, so newest-first holds within a
+ * millisecond too (two changes in one request land in the same one): the
+ * time, then a per-process sequence, then randomness for uniqueness across
+ * hub processes.
+ */
+let seq = 0;
+const auditId = (at: string) => `${at}-${(seq++ % 1e9).toString().padStart(9, '0')}-${randomUUID().slice(0, 8)}`;
+
 /** Appends one row. Never throws into the change it records: a failed write is logged, not fatal. */
 export async function recordAudit(db: DB, e: AuditEntry): Promise<void> {
   const { before, after } = redactPair(e.before ?? null, e.after ?? null);
+  const at = e.at ?? new Date().toISOString();
   try {
     await db.run(
       `INSERT INTO config_audit (id, org_id, at, actor_user_id, actor_email, source, ip, area, action, target, before_json, after_json, link)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [randomUUID(), e.orgId, e.at ?? new Date().toISOString(), e.actor?.userId ?? null, e.actor?.email ?? null, e.source, e.ip,
+      [auditId(at), e.orgId, at, e.actor?.userId ?? null, e.actor?.email ?? null, e.source, e.ip,
         e.area, e.action, e.target, before === null || before === undefined ? null : JSON.stringify(before),
         after === null || after === undefined ? null : JSON.stringify(after), e.link ?? null],
     );
