@@ -126,7 +126,7 @@ describe('CardDetailModal', () => {
 
     it('is visible on every tab, not only Overview', () => {
       renderModal(mockItem);
-      for (const name of [/^History/, /^Tests/, /^Plan/, /^Overview/]) {
+      for (const name of [/^History/, /^Test Results/, /^Plan/, /^Usage/, /^Overview/]) {
         fireEvent.click(tab(name));
         expect(screen.getByRole('heading', { name: 'Test Story' })).toBeDefined();
       }
