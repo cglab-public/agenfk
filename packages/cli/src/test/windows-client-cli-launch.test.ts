@@ -28,6 +28,8 @@ import { spawnSync } from 'child_process';
 import { runTool as scriptsRunTool, windowsCommandLine as scriptsWindowsCommandLine, resolveWindowsTool as scriptsResolve } from '../../../../scripts/client-cli.mjs';
 import { runTool as cliRunTool, windowsCommandLine as cliWindowsCommandLine, resolveWindowsTool as cliResolve } from '../runTool';
 import { runInstall, runUninstall, cleanupHome } from './helpers/runInstaller';
+import { claudeMcpServerCommand as scriptsMcpCommand } from '../../../../scripts/install-helpers.mjs';
+import { claudeMcpServerCommand as cliMcpCommand } from '../mcpCommand';
 
 const { home } = vi.hoisted(() => ({ home: { dir: '' } }));
 vi.mock('os', async (importOriginal) => {
@@ -298,7 +300,12 @@ describe('the installer and uninstaller reach the client CLIs', () => {
       const { dbPath } = JSON.parse(fs.readFileSync(path.join(h, '.agenfk', 'config.json'), 'utf8'));
       expect(add).toContain(`AGENFK_DB_PATH=${dbPath}`);
       // claude is also handed the installed bin, under a HOME with a space and '&'.
-      if (client === 'claude') expect(add).toContain(`agenfk ${path.join(h, '.local', 'bin', isWin ? 'agenfk.cmd' : 'agenfk')} mcp`);
+      // On Windows the bin is a .cmd, which Claude Code (spawning without a
+      // shell) cannot start: it goes through `cmd /c`, as Claude Code's docs
+      // ask for npx on native Windows (BUG 3a939855).
+      if (client === 'claude') expect(add).toContain(isWin
+        ? `agenfk cmd /c ${path.join(h, '.local', 'bin', 'agenfk.cmd')} mcp`
+        : `agenfk ${path.join(h, '.local', 'bin', 'agenfk')} mcp`);
     }, 120_000);
   }
 
@@ -356,4 +363,41 @@ describe('agenfk configure-ide reaches claude', () => {
     expect(add, bin.calls().join('\n')).toBeDefined();
     expect(add).toContain(`AGENFK_DB_PATH=${path.join(home.dir, '.agenfk', 'db.sqlite')}`);
   });
+
+  it('registers the bin the installer wrote, in a form this platform can start (BUG 3a939855)', async () => {
+    const { program } = await import('../index');
+
+    await program.parseAsync(['node', 'agenfk', 'configure-ide']);
+
+    const add = bin.calls().find((c) => c.startsWith('claude: mcp add'));
+    expect(add, bin.calls().join('\n')).toBeDefined();
+    // The installer writes agenfk.cmd on Windows and a bare agenfk elsewhere;
+    // a .cmd needs cmd.exe to run it.
+    expect(add!.endsWith(isWin
+      ? ` -- agenfk cmd /c ${path.join(home.dir, '.local', 'bin', 'agenfk.cmd')} mcp`
+      : ` -- agenfk ${path.join(home.dir, '.local', 'bin', 'agenfk')} mcp`), add).toBe(true);
+  });
+});
+
+describe('claudeMcpServerCommand: what Claude Code is told to start', () => {
+  // Both sides take the platform explicitly, so a Linux run pins the Windows
+  // shape too; the windows-compat CI job then runs the end-to-end specs above
+  // on a real Windows.
+  for (const impl of [
+    { side: 'installer (scripts/install-helpers.mjs)', fn: scriptsMcpCommand },
+    { side: 'CLI (packages/cli/src/mcpCommand.ts)', fn: cliMcpCommand },
+  ]) {
+    describe(impl.side, () => {
+      it('runs the bare shim on POSIX', () => {
+        expect(impl.fn('linux', '/home/a b/.local/bin/agenfk')).toEqual(['/home/a b/.local/bin/agenfk', 'mcp']);
+        expect(impl.fn('darwin', '/Users/x/.local/bin/agenfk')).toEqual(['/Users/x/.local/bin/agenfk', 'mcp']);
+      });
+      it('wraps a Windows .cmd in cmd /c', () => {
+        expect(impl.fn('win32', 'C:\\Users\\a b\\.local\\bin\\agenfk.cmd')).toEqual(['cmd', '/c', 'C:\\Users\\a b\\.local\\bin\\agenfk.cmd', 'mcp']);
+      });
+      it('starts a Windows .exe directly', () => {
+        expect(impl.fn('win32', 'C:\\tools\\agenfk.exe')).toEqual(['C:\\tools\\agenfk.exe', 'mcp']);
+      });
+    });
+  }
 });

@@ -60,6 +60,17 @@ export function buildClaudeHookCommand(destBase, { platform = process.platform, 
   return `${destBase}${suffix}`;
 }
 
+// The command + args `claude mcp add ... -- agenfk <these>` registers for the
+// agenfk MCP server (BUG 3a939855). Claude Code starts an MCP server without a
+// shell, and Node refuses a .cmd/.bat without one (CVE-2024-27980), so on
+// Windows the installer's agenfk.cmd goes through `cmd /c` - the wrapper Claude
+// Code's docs ask for on native Windows. `platform` is required: the caller's
+// choice is the thing that goes wrong. Mirrored in packages/cli/src/mcpCommand.ts.
+export function claudeMcpServerCommand(platform, bin) {
+  if (platform === 'win32' && /\.(cmd|bat)$/i.test(bin)) return ['cmd', '/c', bin, 'mcp'];
+  return [bin, 'mcp'];
+}
+
 // Body of the extensionless POSIX wrapper that forwards to a hook's .mjs. The
 // .mjs path uses forward slashes so no backslash survives anywhere in the chain.
 export function buildPosixWrapper(mjsPath) {

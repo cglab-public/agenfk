@@ -10,6 +10,7 @@ import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT, setTeleme
 import { checkClaudeCodeEnforcement, checkPiEnforcement } from './enforcement.js';
 import { execSync, execFileSync, spawn, spawnSync } from 'child_process';
 import { runTool } from './runTool.js';
+import { claudeMcpServerCommand, installedAgenfkBin } from './mcpCommand.js';
 import { chooseOpenTarget } from './openTarget.js';
 import { onlyApprovalBlocks, waitAllowed, waitForApproval, alreadySatisfied, commandWaitedOn, approvedAt, approvalNeededBlock, type BlockingCheck, type GatesSnapshot } from './approvalWait.js';
 import { parseCheckFlags } from './agentChecksFlag.js';
@@ -1287,8 +1288,9 @@ function configureClaudeCodeIde(rootDir: string, whenMissing: 'skip' | 'error'):
         return false;
     }
 
-    // The agenfk bin installed by the framework (symlink in ~/.local/bin)
-    const agenfkBin = path.join(os.homedir(), '.local', 'bin', 'agenfk');
+    // The agenfk launcher the installer wrote into ~/.local/bin, in a form
+    // Claude Code can start on this platform (BUG 3a939855).
+    const serverCommand = claudeMcpServerCommand(process.platform, installedAgenfkBin(process.platform, os.homedir()));
 
     // Remove any existing registration (idempotent; non-zero when there is none)
     runTool('claude', ['mcp', 'remove', 'agenfk'], { stdio: 'ignore' });
@@ -1301,7 +1303,7 @@ function configureClaudeCodeIde(rootDir: string, whenMissing: 'skip' | 'error'):
         '-e', `AGENFK_DB_PATH=${dbPath}`,
         '--',
         'agenfk',
-        agenfkBin, 'mcp'
+        ...serverCommand
     ], { stdio: 'inherit' });
 
     if (result.status !== 0) {

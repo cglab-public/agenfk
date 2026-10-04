@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import readline from 'readline';
 import { writePrivateFileSync } from './private-file.mjs';
 import { runTool } from './client-cli.mjs';
-import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, buildPosixWrapper, applyClaudeHooks, isDevCheckout } from './install-helpers.mjs';
+import { resolveRulesScope, shellSourceHint, buildCodexHooksConfig, shouldRegisterCodexMcp, isInstallableMarkdown, isRepoPrivateCommand, isMacMetadata, isAgenfkOwnedEntry, buildPosixWrapper, applyClaudeHooks, isDevCheckout, claudeMcpServerCommand } from './install-helpers.mjs';
 
 const GREEN = '\x1b[32m';
 const BLUE = '\x1b[34m';
@@ -1474,7 +1474,8 @@ async function run() {
                     '-e', `AGENFK_DB_PATH=${dbPath}`,
                     '--',
                     'agenfk',
-                    cliDest, 'mcp'
+                    // A .cmd needs cmd /c on Windows (BUG 3a939855).
+                    ...claudeMcpServerCommand(os.platform(), cliDest)
                 ], { stdio: childStdio, encoding: 'utf8', maxBuffer: childMaxBuffer });
                 if (result.status === 0) {
                     detail(`  ${GREEN}Registered agenfk MCP server (user scope).${NC}`);
