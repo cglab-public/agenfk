@@ -42,9 +42,11 @@ import { Switch } from './ui/switch';
 import {
   listAgentsFromBridge,
   readPrefsFromBridge, setAutoApproveOnBridge,
+  setDefaultAgentOnBridge, setAskBeforeOpeningOnBridge,
   canChooseSound, canNotifyAttention,
   currentSoundFromBridge, chooseSoundOnBridge, clearSoundOnBridge,
 } from './agentBridge';
+import { AgentPicker } from './AgentPicker';
 import { playAttentionSound, browserSoundDeps } from '../attentionSound';
 import { isNewerVersion } from '../versionCompare';
 import { describeHerdr, type HerdrView } from '../herdrSessions';
@@ -432,6 +434,45 @@ export function SettingsPanel(): React.ReactElement {
     onError: () => { void queryClient.invalidateQueries({ queryKey: ['desktop-prefs'] }); },
   });
   const autoApproveByDefault = prefs?.autoApprove ?? false;
+
+  const saveDefaultAgent = useMutation({
+    mutationFn: (agentId: string) => setDefaultAgentOnBridge(agentId),
+    /*
+     * The setter answers with the settled slice, so the cache is corrected from
+     * the write instead of re-read — and INVALIDATED on failure, so an id main
+     * refused does not leave the screen showing the choice as stored.
+     */
+    onSuccess: settled => { queryClient.setQueryData(['desktop-prefs'], settled); },
+    onError: () => { void queryClient.invalidateQueries({ queryKey: ['desktop-prefs'] }); },
+  });
+  const saveAskBeforeOpening = useMutation({
+    mutationFn: (value: boolean) => setAskBeforeOpeningOnBridge(value),
+    onSuccess: settled => { queryClient.setQueryData(['desktop-prefs'], settled); },
+    onError: () => { void queryClient.invalidateQueries({ queryKey: ['desktop-prefs'] }); },
+  });
+  const defaultAgentId = prefs?.defaultAgentId ?? '';
+
+  /*
+   * What the ROW shows: the stored choice, or the agent a dialog would pick when
+   * nobody has chosen — the first installed one, falling back to the same
+   * 'claude-code' the dialog has always used.
+   *
+   * PROPOSED, NOT IMPOSED, and that is the reason `defaultAgentId` is stored
+   * empty instead of pre-filled: showing the agent that will actually run is not
+   * the same as claiming somebody chose it, and writing it here would make
+   * "remembered" and "suggested" the same thing. The clone-dir row follows the
+   * same rule.
+   *
+   * Without this the picker renders an EMPTY label for '', because its trigger
+   * shows the chosen agent's name and there is none to show.
+   */
+  const shownAgentId = defaultAgentId || agents.find(a => a.installed)?.id || 'claude-code';
+  /*
+   * `!== false` rather than `?? true`: a preload older than this key answers
+   * undefined, and reading that as "off" would silently start skipping the
+   * confirmation screen for somebody who never turned it off.
+   */
+  const askBeforeOpening = prefs?.askBeforeOpening !== false;
 
   // ── Account ───────────────────────────────────────────────────────────────
 
@@ -849,7 +890,26 @@ export function SettingsPanel(): React.ReactElement {
       id: 'terminal',
       label: 'Terminal',
       icon: SquareTerminal,
-      rows: <HerdrRows />,
+      rows: (
+        <>
+          <SettingRow
+            testId="ask-before-opening-row"
+            title="Ask before opening a terminal"
+            /* Says what each side does, because "ask before opening" alone does
+               not tell a reader what is being asked, or what they give up. */
+            description="On, the dialog appears so you can confirm which agent runs. Off, the terminal opens straight away with the default agent from Agents — nothing to answer."
+            control={
+              <Switch
+                aria-label="Ask before opening a terminal"
+                checked={askBeforeOpening}
+                disabled={saveAskBeforeOpening.isPending}
+                onCheckedChange={next => saveAskBeforeOpening.mutate(next)}
+              />
+            }
+          />
+          <HerdrRows />
+        </>
+      ),
     },
     {
       // 7b640e64: one value for the whole server, whatever project is open.
@@ -884,6 +944,7 @@ export function SettingsPanel(): React.ReactElement {
       label: 'Agents',
       icon: Bot,
       rows: (
+        <>
         <SettingRow
           testId="auto-approve-row"
           title="Auto-approve by default"
@@ -909,6 +970,28 @@ export function SettingsPanel(): React.ReactElement {
             ? `${listAnd(ignoring)} will ignore this: ${ignoring.length === 1 ? 'it has' : 'they have'} no flag for it and always ask.`
             : undefined}
         />
+        <SettingRow
+          testId="default-agent-row"
+          title="Default agent"
+          /* What it DOES, like every row here: it answers a question before it
+             is asked. The second sentence is the part people want to know -
+             that this is also what makes a project's Open terminal instant. */
+          description="The agent a new terminal starts with. The dialog opens already answered, and whether it appears at all is the Terminal section's Ask before opening."
+          control={
+            /* The SAME picker the terminal dialog uses, so the two cannot
+               disagree about what is installed, what a mark looks like or what
+               an agent is called. Not-installed agents are refused by it. */
+            <AgentPicker
+              value={shownAgentId}
+              onChange={next => saveDefaultAgent.mutate(next)}
+              /* A LOADER, not the list: the picker owns its own loading state
+                 and its own fallback, which is what lets the same component
+                 serve the dialog. */
+              listAgents={listAgentsFromBridge}
+            />
+          }
+        />
+        </>
       ),
     },
   ];

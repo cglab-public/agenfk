@@ -31,6 +31,39 @@ export interface Prefs {
   autoApprove: boolean;
 
   /**
+   * The agent a new terminal starts with, or '' for "nobody has chosen one".
+   *
+   * HERE, and not in the server's `/settings`, for the reason this file exists:
+   * it decides WHICH BINARY every terminal the desktop spawns runs, and that is
+   * argv. The settings route is unauthenticated on loopback, so a value stored
+   * there would let any page open on this machine choose the program this app
+   * starts next — one step short of the shell string already behind
+   * VERIFY_TOKEN.
+   *
+   * '' rather than 'claude-code', deliberately. A value written to disk is a
+   * decision the person made, and answering with an agent they never picked
+   * would make "remembered" and "suggested" the same thing on the screen that
+   * reads it — the rule `cloneDir` already follows below. Empty means the dialog
+   * keeps the default it has today.
+   *
+   * `herdr` is not a value this can hold, and nothing here has to reject it: it
+   * is in `agentLabels.ts` only because it is rendered beside agents. It is an
+   * attach, not a CLI this app starts, and it brings its own tabs.
+   */
+  defaultAgentId: string;
+
+  /**
+   * Whether opening a terminal asks which agent runs.
+   *
+   * ON by default, and that default is a promise in the same direction as
+   * `tmuxByDefault`: every install that predates this feature got asked, so an
+   * upgrade must not start skipping the screen because of a default we chose
+   * for it. Turning it off is what makes a project's `+` open a terminal in one
+   * gesture instead of two.
+   */
+  askBeforeOpening: boolean;
+
+  /**
    * The notification sound the user chose, or '' for the built-in one.
    *
    * Here rather than in the server's `/settings` with the other notification
@@ -62,6 +95,16 @@ export interface Prefs {
 
 export const DEFAULT_PREFS: Prefs = {
   autoApprove: false,
+  /*
+   * Empty: nobody has chosen an agent yet, so the dialog behaves as it always
+   * did. See the field's own comment for why this is not 'claude-code'.
+   */
+  defaultAgentId: '',
+  /*
+   * On: exactly today's behaviour, and the only way it changes is somebody
+   * turning it off in this app.
+   */
+  askBeforeOpening: true,
   customSoundPath: '',
   customSoundName: '',
   /*
@@ -73,6 +116,33 @@ export const DEFAULT_PREFS: Prefs = {
    */
   cloneDir: '',
 };
+
+/**
+ * The slice of preferences the renderer may read.
+ *
+ * NOT the whole file. `customSoundPath` is a PATH, and the sounds surface goes
+ * to some trouble never to hand the renderer one — `sounds:read` answers with
+ * BYTES, with the comment "a path would be a string it can do nothing with".
+ * `prefs:get` was answering with the entire object, so that same string crossed
+ * here instead, through the side door.
+ *
+ * Narrowed at the source rather than only in the type: a type narrower than the
+ * value is a lie that hides precisely this, and the next field added to `Prefs`
+ * would leak the same way while every caller kept type-checking.
+ */
+export interface ReadablePrefs {
+  readonly autoApprove: boolean;
+  readonly defaultAgentId: string;
+  readonly askBeforeOpening: boolean;
+}
+
+export function readablePrefs(prefs: Prefs): ReadablePrefs {
+  return {
+    autoApprove: prefs.autoApprove,
+    defaultAgentId: prefs.defaultAgentId,
+    askBeforeOpening: prefs.askBeforeOpening,
+  };
+}
 
 /**
  * Where a clone should land: what they chose, or ~/agenfk proposed.

@@ -2294,3 +2294,77 @@ describe('AppShell — running verifies in the status bar', () => {
   });
 });
 
+/**
+ * The project row's hover button, and where "new card" went.
+ *
+ * The `+` used to call `requestNewItem` — it created a CARD. It now calls
+ * `requestProjectTerminal`, the same action the project page's Open terminal
+ * makes, so one gesture reaches a terminal from the row you are already looking
+ * at. The card action moved to the row's context menu rather than vanishing:
+ * that button was its only home in the sidebar.
+ */
+describe('the project row: terminal, and the menu that replaced the +', () => {
+  const rowButton = (): Promise<HTMLElement> =>
+    screen.findByRole('button', { name: /open terminal in agenfk/i });
+
+  it('opens a terminal on the PROJECT, not on a card', async () => {
+    renderShell();
+    await screen.findByRole('button', { name: 'agenfk' });
+    fireEvent.click(await rowButton());
+
+    // The agent dialog appears, named after the PROJECT: a project terminal has
+    // no card, so there is nothing else to name it after.
+    fireEvent.click(await screen.findByRole('button', { name: /^(create|continue)$/i }));
+    await waitFor(() => expect(ptyCalls.requests.length).toBeGreaterThan(0));
+    const req = ptyCalls.requests.at(-1) as { itemId?: string; projectId?: string };
+    expect(req.projectId, 'the terminal was not opened on the project').toBeTruthy();
+    // EXACTLY ONE of the two: main refuses both, and neither leaves it with no
+    // directory at all.
+    expect(req.itemId, 'a project terminal was opened on a card').toBeUndefined();
+  });
+
+  it('with Ask before opening off, one click and no dialog at all', async () => {
+    setBridge('darwin', { autoApprove: false, defaultAgentId: 'pi', askBeforeOpening: false } as never);
+    renderShell();
+    await screen.findByRole('button', { name: 'agenfk' });
+    fireEvent.click(await rowButton());
+
+    await waitFor(() => expect(ptyCalls.requests.length).toBeGreaterThan(0));
+    // No screen: the dialog's only question was which agent, and the preference
+    // already answered it.
+    expect(screen.queryByRole('button', { name: /^(create|continue)$/i })).toBeNull();
+    expect((ptyCalls.requests.at(-1) as { agentId?: string }).agentId)
+      .toBe('pi');
+  });
+
+  it('opens the dialog with the default agent already chosen', async () => {
+    // The whole point of the setting: the question is answered before it is
+    // asked, and the reader only has to confirm it.
+    setBridge('darwin', { autoApprove: false, defaultAgentId: 'pi' } as never);
+    renderShell();
+    await screen.findByRole('button', { name: 'agenfk' });
+    fireEvent.click(await rowButton());
+
+    const dialog = await screen.findByRole('button', { name: /^(create|continue)$/i });
+    const panel = dialog.closest('[role="dialog"]') ?? document.body;
+    expect(within(panel as HTMLElement).getByRole('button', { name: /pi/i })).toBeDefined();
+  });
+
+  it('offers "New card here" in the row menu, since the + no longer does', async () => {
+    renderShell();
+    fireEvent.contextMenu(await screen.findByRole('button', { name: 'agenfk' }));
+    const menu = await screen.findByRole('menu', { name: /agenfk actions/i });
+    expect(within(menu).getByRole('menuitem', { name: /new card here/i })).toBeDefined();
+    // And the pin, which was already on the row and stays reachable here.
+    expect(within(menu).getByRole('menuitem', { name: /pin/i })).toBeDefined();
+  });
+
+  it('dismisses that menu on Escape, so it is not a trap', async () => {
+    renderShell();
+    fireEvent.contextMenu(await screen.findByRole('button', { name: 'agenfk' }));
+    await screen.findByRole('menu', { name: /agenfk actions/i });
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+  });
+});
+

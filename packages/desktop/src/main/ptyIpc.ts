@@ -34,13 +34,13 @@
 import type { IpcMainInvokeEvent, WebContents } from 'electron';
 import { PtyRegistry } from './ptyRegistry.js';
 import type { ProposeRequest } from './propose.js';
-import { readPrefs, writePref, PREF_KEYS, DEFAULT_PREFS } from './prefs';
+import { readPrefs, writePref, readablePrefs, PREF_KEYS, DEFAULT_PREFS } from './prefs';
 import {
   SOUND_EXTENSIONS, storeCustomSound, readCustomSound, clearCustomSound,
 } from './customSound';
 import { detectEditors, editorUrlFor } from './editors';
 import { detectAgents, __resetAgentDetectionCache } from './detectAgents.js';
-import { SHELL_AGENT_ID } from './agents.js';
+import { SHELL_AGENT_ID, AGENT_IDS } from './agents.js';
 import { HIGH_WATERMARK } from './flowControl.js';
 
 /** Minimal shape of `ipcMain` so tests need no Electron. */
@@ -360,7 +360,7 @@ export function registerPtyIpc(
    * that route is unauthenticated, and `autoApprove` changes the argv of every
    * agent spawned afterwards. See main/prefs.ts.
    */
-  ipc.handle('prefs:get', async () => readPrefs(prefsDir()));
+  ipc.handle('prefs:get', async () => readablePrefs(readPrefs(prefsDir())));
 
   /*
    * Editors. The renderer names a CARD and an editor ID — never a path and
@@ -399,13 +399,58 @@ export function registerPtyIpc(
      * preference is set by the file picker, in this process, and there is no
      * route to it from the renderer at all.
      */
+    /*
+     * THE ONE STRING THAT MAY CROSS, and why it is not a hole in the rule that
+     * follows it.
+     *
+     * That rule exists because a non-boolean preference here is normally a PATH
+     * — `customSoundPath` reaches the filesystem — so a string supplied by the
+     * renderer must never become one. A default AGENT is a string too, and it is
+     * not a path: it is one of `AGENT_IDS`, this process's own table of the CLIs
+     * it can start, so what the renderer may choose is a fixed vocabulary that
+     * names no file. The argv is resolved from the id afterwards, here.
+     *
+     * Checked against the list rather than trusted as a string, and `herdr` is
+     * not in it -- deliberately, with the reason written down in agents.ts: it
+     * is an attach, not something to start on a card, and it brings its own
+     * tabs.
+     */
+    if (key === 'defaultAgentId') {
+      const value = req.value;
+      if (typeof value !== 'string' || !AGENT_IDS.includes(value)) {
+        throw new Error(`Preference "defaultAgentId" must be one of: ${AGENT_IDS.join(', ')}`);
+      }
+      return readablePrefs(writePref(prefsDir(), 'defaultAgentId', value));
+    }
+
     if (typeof DEFAULT_PREFS[key as keyof typeof DEFAULT_PREFS] !== 'boolean') {
       throw new Error(`Preference "${key}" cannot be set from the renderer.`);
+    }
+    /*
+     * `askBeforeOpening` is the one switch here whose default is ON, and that
+     * direction is exactly why it REFUSES a junk value instead of coercing it.
+     *
+     * `autoApprove` below coerces with `=== true`, which fails SAFE: a malformed
+     * value leaves an agent's prompts on. The same coercion on a default-true
+     * switch would turn the confirmation OFF -- the permissive direction -- for
+     * a value that was never a decision.
+     */
+    if (key === 'askBeforeOpening') {
+      if (typeof req.value !== 'boolean') {
+        throw new Error('Preference "askBeforeOpening" must be true or false.');
+      }
+      return readablePrefs(writePref(prefsDir(), 'askBeforeOpening', req.value));
     }
     // Strict === true, like pty:spawn's autoApprove and for the same reason:
     // this is the switch that takes an agent's safety prompts away, so a
     // truthy string must not be enough to flip it.
-    return writePref(prefsDir(), key as 'autoApprove', req.value === true);
+    /*
+     * `readablePrefs` on the way OUT too, and this half is easy to forget: the
+     * renderer's mutation writes whatever comes back straight into its query
+     * cache, so a raw `writePref` result would put `customSoundPath` there — the
+     * very leak `prefs:get` was just narrowed to close.
+     */
+    return readablePrefs(writePref(prefsDir(), key as 'autoApprove', req.value === true));
   });
 
   /*

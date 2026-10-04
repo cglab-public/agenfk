@@ -64,9 +64,35 @@ const bridge = (): TerminalBridgeApi | null =>
  * unauthenticated and reachable by anything on the machine. Here the only
  * caller is code running in this app's renderer.
  */
+/**
+ * The renderer's view of the desktop's preferences.
+ *
+ * Every field past `autoApprove` is OPTIONAL, and that is version skew rather
+ * than indecision: the renderer bundle and the preload are separate artifacts,
+ * so a desktop build made before these existed answers with an object that has
+ * only the old key. Reading a missing one as `undefined` and falling back is
+ * what keeps an upgrade from showing an empty settings screen.
+ */
 interface PrefsBridgeApi {
-  get(): Promise<{ autoApprove: boolean }>;
+  get(): Promise<{ autoApprove: boolean; defaultAgentId?: string; askBeforeOpening?: boolean }>;
   setAutoApprove(value: boolean): Promise<{ autoApprove: boolean }>;
+  setDefaultAgent?(agentId: string): Promise<{ defaultAgentId: string }>;
+  setAskBeforeOpening?(value: boolean): Promise<{ askBeforeOpening: boolean }>;
+}
+
+/**
+ * What this app can read from the desktop's preferences.
+ *
+ * In a browser nobody has chosen an agent (`''`) and the dialog asks
+ * (`askBeforeOpening: true`) — the same answers `DEFAULT_PREFS` gives, so a page
+ * and a fresh install behave alike rather than the page inventing a preference.
+ * A page has no terminals for either to apply to, which is why these are the
+ * honest values rather than a fallback.
+ */
+export interface DesktopPrefs {
+  readonly autoApprove: boolean;
+  readonly defaultAgentId: string;
+  readonly askBeforeOpening: boolean;
 }
 
 const prefsBridge = (): PrefsBridgeApi | null =>
@@ -79,10 +105,20 @@ const prefsBridge = (): PrefsBridgeApi | null =>
  * `typeof`, not `?.` — the object can be present while the method is not, which
  * is what an older preload looks like after an upgrade.
  */
-export const readPrefsFromBridge = (): Promise<{ autoApprove: boolean }> => {
+export const readPrefsFromBridge = async (): Promise<DesktopPrefs> => {
   const prefs = prefsBridge();
-  if (typeof prefs?.get !== 'function') return Promise.resolve({ autoApprove: false });
-  return prefs.get();
+  if (typeof prefs?.get !== 'function') return { autoApprove: false, defaultAgentId: '', askBeforeOpening: true };
+  const stored = await prefs.get();
+  return {
+    autoApprove: stored?.autoApprove === true,
+    // A preload older than this key answers undefined, which reads as "nobody
+    // chose" — the same thing the store says, so the screen is not blank and
+    // the dialog keeps the default it has always had.
+    defaultAgentId: typeof stored?.defaultAgentId === 'string' ? stored.defaultAgentId : '',
+    // Defaults to TRUE, so a mismatched preload cannot silently start skipping
+    // the confirmation screen for somebody who never turned it off.
+    askBeforeOpening: stored?.askBeforeOpening !== false,
+  };
 };
 
 export const setAutoApproveOnBridge = (value: boolean): Promise<{ autoApprove: boolean }> => {
@@ -93,6 +129,31 @@ export const setAutoApproveOnBridge = (value: boolean): Promise<{ autoApprove: b
     return Promise.reject(new Error('This build cannot store that preference.'));
   }
   return prefs.setAutoApprove(value);
+};
+
+/**
+ * The agent a new terminal starts with, or '' to clear the choice.
+ *
+ * Main checks the id against its own agent table, so a wrong one comes back as
+ * a rejection rather than being stored — which is why this does not validate
+ * here. Validating in both places would mean two lists to keep in step, and the
+ * one that matters is the process that has to spawn the thing.
+ */
+export const setDefaultAgentOnBridge = (agentId: string): Promise<unknown> => {
+  const prefs = prefsBridge();
+  if (typeof prefs?.setDefaultAgent !== 'function') {
+    return Promise.reject(new Error('This build cannot store that preference.'));
+  }
+  return prefs.setDefaultAgent(agentId);
+};
+
+/** Whether opening a terminal asks which agent runs. */
+export const setAskBeforeOpeningOnBridge = (value: boolean): Promise<unknown> => {
+  const prefs = prefsBridge();
+  if (typeof prefs?.setAskBeforeOpening !== 'function') {
+    return Promise.reject(new Error('This build cannot store that preference.'));
+  }
+  return prefs.setAskBeforeOpening(value);
 };
 
 /** Empty in a browser: there are no local CLIs to offer a page. */
