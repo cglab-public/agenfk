@@ -498,6 +498,54 @@ export function TerminalTab({
     });
   }, []);
 
+  /**
+   * The strip's own scroller (12e72602).
+   *
+   * ABOVE the empty-state return below, with the rest of the hooks, and NOT
+   * beside the strip markup it serves. That return runs the moment the last
+   * terminal is closed, so a hook declared after it is a hook that quietly does
+   * not run on that render - which React rejects outright as "Rendered fewer
+   * hooks than expected". It did, on three specs, until this moved.
+   */
+  const stripRef = React.useRef<HTMLDivElement | null>(null);
+
+  /*
+   * A VERTICAL WHEEL SCROLLS THE STRIP SIDEWAYS.
+   *
+   * A trackpad's horizontal swipe arrives as `deltaX`, and the browser scrolls
+   * that by itself - so this deliberately does nothing when deltaX leads, or the
+   * strip would move twice as far as the fingers did.
+   *
+   * The gesture people actually make is a two-finger VERTICAL scroll, which
+   * arrives as `deltaY`. Whether an engine maps that onto a container that can
+   * only scroll horizontally is not something to rely on across macOS, Windows
+   * and Linux, so the mapping is written down here instead of hoped for.
+   *
+   * `scrollLeft` rather than `scrollBy`: same move, and it is the one that
+   * cannot throw where there is no layout to scroll (see setup.ts).
+   */
+  const onStripWheel = (e: React.WheelEvent<HTMLDivElement>): void => {
+    if (Math.abs(e.deltaX) >= Math.abs(e.deltaY)) return;
+    e.currentTarget.scrollLeft += e.deltaY;
+  };
+
+  /*
+   * THE ACTIVE TAB IS THE ONE ON SCREEN. On mount as well as on change: a
+   * restored session list reopens in the middle of a long strip, and the other
+   * answer is a strip scrolled to the start while showing the terminal from the
+   * end.
+   *
+   * `inline: 'nearest'` - move the fewest pixels that reveal it rather than
+   * re-centring the strip every time the selection moves. The element asked is
+   * the tab itself, so the nearest scrollable ancestor is this strip and not the
+   * window.
+   */
+  React.useEffect(() => {
+    stripRef.current
+      ?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
+      ?.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+  }, [activeId]);
+
   // AFTER the hooks, never before: an early return above them would change how
   // many run between a render with sessions and one without, which React
   // rejects outright.
@@ -537,6 +585,27 @@ export function TerminalTab({
           titleBar?.reserveWindowControls && 'pl-8',
         )}
       >
+        {/*
+         * THE SCROLLER (12e72602). Only the tabs live inside it, so the
+         * warning chip and the + button stay put while the tabs move - and the
+         * + is the control you need precisely when the tabs are the problem, so
+         * inside here it would slide off the end with them.
+         *
+         * `min-w-0` is load-bearing and not decoration: a flex child refuses by
+         * default to go below its content width, so without it this strip grows
+         * past the window instead of scrolling, and takes the + off-screen with
+         * it.
+         *
+         * No `no-drag` here, deliberately. When this row IS the macOS title bar
+         * the empty stretch after the last tab is the window handle, and the
+         * drag region on the row above is what makes it one.
+         */}
+        <div
+          ref={stripRef}
+          data-testid="terminal-tab-strip"
+          onWheel={onStripWheel}
+          className="flex min-w-0 flex-1 items-stretch overflow-x-auto overscroll-x-contain scrollbar-none"
+        >
         {sessions.map((session, index) => {
           const selected = session.id === activeId;
           /*
@@ -580,7 +649,19 @@ export function TerminalTab({
                 onReorder(dropped, session.id, side);
               }}
               className={clsx(
-                'group relative flex max-w-[220px] items-center gap-2 border-r border-border-soft px-3 py-2',
+                /*
+                 * `shrink-0` and a floor, against the ceiling that was already
+                 * here (12e72602).
+                 *
+                 * A flex child shrinks by default, so extra tabs did not go
+                 * off the end - they SQUASHED. Ten terminals became ten
+                 * unreadable slivers, which is a worse answer than an
+                 * unreachable tab because it looks like it worked.
+                 *
+                 * 120px is the agent's name plus a couple of characters; 220px
+                 * stays the ceiling so one tab cannot eat the whole strip.
+                 */
+                'group relative flex min-w-[120px] max-w-[220px] shrink-0 items-center gap-2 border-r border-border-soft px-3 py-2',
                 selected ? 'bg-accent-fill text-accent-ink' : 'hover:bg-canvas/50',
               )}
             >
@@ -703,6 +784,7 @@ export function TerminalTab({
             </div>
           );
         })}
+        </div>
         {/*
          * THE REASON, ON SCREEN. The Split control is disabled with its reason
          * only in a tooltip, and a tooltip is not reachable for everybody - the

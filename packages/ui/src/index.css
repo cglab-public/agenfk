@@ -87,6 +87,15 @@ body {
 /* The little square where the two bars meet is pure chrome — hide it. */
 .scrollbar-slim::-webkit-scrollbar-corner { background: transparent; }
 
+/* And no scrollbar at all, for a strip scrolled by gesture rather than by
+ * dragging a bar (12e72602). The terminal tab strip is 36px tall and IS the
+ * window's title bar on macOS, so a bar under it would eat the row that whole
+ * change was about. The gesture is the affordance; a cut-off tab says "more". */
+.scrollbar-none {
+  scrollbar-width: none;                                  /* Firefox / standard */
+}
+.scrollbar-none::-webkit-scrollbar { display: none; }
+
 @keyframes search-highlight {
   0%, 100% { box-shadow: inset 0 0 0 2px var(--brand), 0 0 12px 2px rgba(4, 204, 152, 0.35); }
   50% { box-shadow: inset 0 0 0 2px var(--brand), 0 0 20px 4px rgba(4, 204, 152, 0.55); }

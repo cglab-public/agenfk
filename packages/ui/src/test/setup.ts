@@ -48,3 +48,13 @@ Object.defineProperty(window, 'matchMedia', {
 
 // Mock HTMLElement.prototype.scrollTo
 HTMLElement.prototype.scrollTo = vi.fn();
+
+/*
+ * jsdom implements no layout, so `scrollIntoView` is not merely a no-op here - it
+ * is ABSENT, and calling it THROWS. Anything that reveals an element (the board
+ * revealing a card, the tab strip revealing the active tab) would take down
+ * every spec that renders it, for a reason unrelated to what they test. Shimmed
+ * beside `scrollTo` for exactly that reason; a spec that needs to assert WHICH
+ * element was revealed stubs it again with its own recorder.
+ */
+HTMLElement.prototype.scrollIntoView = vi.fn();
