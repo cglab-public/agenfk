@@ -2,6 +2,13 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.31] — 2026-10-04
+
+Pre-release, cut from `feat/CGLAB-164_electron-desktop` (PR #194). It rejoins the two beta lines: everything in
+`2.0.0-beta.30` (the desktop changes and the Windows compat CI job from `main`) together with `2.0.0-beta.27`
+to `2.0.0-beta.29` (the visual system recolour, CGLAB-434, and the CGLAB-494 TODO sweep), which `2.0.0-beta.30`
+did not carry. No other changes; see those entries below.
+
 ## [2.0.0-beta.30] — 2026-10-04
 
 Pre-release, cut from the `feat/CGLAB-164_electron-desktop` line. It held the desktop changes below and `main`
