@@ -103,14 +103,25 @@ describe('the picker', () => {
     expect(document.activeElement).toBe(screen.getByRole('dialog'));
   });
 
-  it('draws no focus outline around the whole panel it focuses (BUG c02ff6a2)', () => {
-    // Focused only so the keyboard reaches it, and out of the Tab order: the
-    // browser's default ring (the OS accent colour, green on this Mac) said
-    // nothing but outlined the entire picker. Its controls keep their rings.
+  it('draws no focus ring around the whole panel it focuses (BUG c02ff6a2)', () => {
+    // The ring was the brand's own `:focus-visible` rule (brand/tokens.css,
+    // CGLAB-434), drawn around the entire picker because the panel takes focus
+    // so the keyboard reaches it. The panel is out of the Tab order and not a
+    // control: it opts out on purpose, and its controls keep their rings.
+    // jsdom applies no CSS, so this pins the opt-out marker, not the rendering.
     render(<CardPicker items={THREE} currentItemId="i1" onPick={vi.fn()} onClose={vi.fn()} />);
     const dialog = screen.getByRole('dialog');
     expect(document.activeElement).toBe(dialog);
-    expect(dialog.classList.contains('focus:outline-none')).toBe(true);
+    expect(dialog.classList.contains('focus:outline-hidden')).toBe(true);
+  });
+
+  it('opens on its search box when it has one, not on the panel (BUG c02ff6a2 review)', () => {
+    // The panel's focus ref ran AFTER the input's autoFocus and took focus
+    // back, so a long list opened on an invisible container one Tab away from
+    // the box the user was meant to type in.
+    const many = Array.from({ length: 8 }, (_, i) => card(`i${i}`, `Card ${i}`));
+    render(<CardPicker items={many} currentItemId="i0" onPick={vi.fn()} onClose={vi.fn()} />);
+    expect(document.activeElement).toBe(screen.getByRole('searchbox', { name: 'Search cards by name' }));
   });
 
   it('closes on Escape pressed wherever focus actually is', () => {

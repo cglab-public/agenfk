@@ -246,7 +246,9 @@ export function CardPicker({ items, currentItemId, projectNames, onPick, onClose
         role="dialog"
         aria-modal="true"
         aria-label="Open a terminal on which card"
-        ref={el => el?.focus()}
+        // Only when focus is not already inside: this ref runs after the search
+        // box's autoFocus, and focusing the panel took focus straight back off it.
+        ref={el => { if (el && !el.contains(document.activeElement)) el.focus(); }}
         // Focusable, or the handler below can never run: React dispatches
         // keydown along the fiber tree from the EVENT TARGET, and after
         // clicking `+` the focus is still on that button — which is not inside
@@ -255,7 +257,7 @@ export function CardPicker({ items, currentItemId, projectNames, onPick, onClose
         // at the dialog directly and so could not see that.
         tabIndex={-1}
         onKeyDown={e => { if (e.key === 'Escape') onClose(); }}
-        className="flex max-h-[70vh] w-full max-w-md animate-[popIn_140ms_cubic-bezier(0.2,0,0,1)] flex-col rounded-2xl border border-border-soft bg-surface shadow-2xl focus:outline-none motion-reduce:animate-none"
+        className="flex max-h-[70vh] w-full max-w-md animate-[popIn_140ms_cubic-bezier(0.2,0,0,1)] flex-col rounded-2xl border border-border-soft bg-surface shadow-2xl focus:outline-hidden motion-reduce:animate-none"
       >
         <div className="flex items-start gap-3 border-b border-border-soft px-5 py-4">
           <div className="min-w-0 flex-1">

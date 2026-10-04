@@ -267,7 +267,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
         // the app, so a screen reader had nothing to say about it at all.
         aria-label={isNew ? 'New item' : item.title}
         className={clsx(
-          "bg-surface rounded-2xl shadow-2xl w-full overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200 border border-border-soft focus:outline-none",
+          "bg-surface rounded-2xl shadow-2xl w-full overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200 border border-border-soft focus:outline-hidden",
           /*
            * A draft is sized to what a draft has (CGLAB-164).
            *
