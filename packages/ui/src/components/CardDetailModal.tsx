@@ -165,6 +165,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
    * back off whatever the user had just clicked.
    */
   const panelRef = React.useRef<HTMLDivElement>(null);
+  const titleId = React.useId();
   React.useEffect(() => {
     if (!isNew) panelRef.current?.focus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -265,7 +266,9 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
         tabIndex={-1}
         // Announced as SOMETHING when it opens. It was an unnamed <div> over
         // the app, so a screen reader had nothing to say about it at all.
-        aria-label={isNew ? 'New item' : item.title}
+        // Named by the visible heading when there is one, so the name and the
+        // heading cannot drift; a label otherwise (the draft, edit mode).
+        {...(!isNew && !isEditing ? { 'aria-labelledby': titleId } : { 'aria-label': isNew ? 'New item' : item.title })}
         className={clsx(
           "bg-surface rounded-2xl shadow-2xl w-full overflow-hidden flex flex-col animate-in fade-in zoom-in duration-200 border border-border-soft focus:outline-hidden",
           /*
@@ -397,6 +400,31 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
             </button>
           </div>
           </div>
+          {/* The title belongs to the card, not to a tab (d263ae8f): in the
+              Overview body it vanished on every other tab, and a running
+              verify's output pushed it down. Edit mode edits it here too. */}
+          {/* Capped: the header does not scroll with the body, so an
+              unbounded title (titles have no length limit) could squeeze the
+              body away and clip the footer. Past the cap it scrolls here. */}
+          {!isNew && (
+            <div className="mt-3 max-h-[25vh] overflow-y-auto">
+              {isEditing ? (
+                <input
+                  autoFocus
+                  type="text"
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                  aria-label="Title"
+                  data-testid="edit-title"
+                  className="w-full text-xl font-bold bg-canvas border border-accent/60 rounded-xl px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-focus-ring text-ink"
+                />
+              ) : (
+                <h2 id={titleId} className="text-xl font-bold text-ink leading-tight break-words">
+                  {item.title}
+                </h2>
+              )}
+            </div>
+          )}
           {!isNew && (
             <div className="mt-2 font-mono text-[11px] text-ink-tertiary flex flex-wrap items-center gap-x-2 gap-y-1">
               <span>{item.type}</span>
@@ -470,20 +498,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
                       className="w-full text-lg font-bold bg-canvas border border-border-soft rounded-xl px-4 py-2 text-ink focus:outline-none focus:ring-2 focus:ring-focus-ring"
                     />
                   </div>
-                ) : isEditing ? (
-                  <input
-                    autoFocus
-                    type="text"
-                    value={editTitle}
-                    onChange={(e) => setEditTitle(e.target.value)}
-                    data-testid="edit-title"
-                    className="w-full text-2xl font-bold bg-canvas border border-accent/60 rounded-xl px-4 py-2 focus:outline-none focus:ring-2 focus:ring-focus-ring text-ink mb-2"
-                  />
-                ) : (
-                  <h2 className="text-2xl font-bold text-ink leading-tight mb-2">
-                    {item.title}
-                  </h2>
-                )}
+                ) : null}
                 {!isNew && !isEditing && (
                   <div className="flex flex-wrap gap-4 text-sm text-ink-secondary">
                     <div className="flex items-center gap-1.5">
@@ -913,7 +928,7 @@ export const CardDetailModal: React.FC<CardDetailModalProps> = ({ item, allItems
         </div>
 
         {/* Modal Footer */}
-        <div className="px-6 py-4 border-t border-border-soft flex items-center justify-between gap-3 bg-canvas">
+        <div className="px-6 py-4 border-t border-border-soft flex items-center justify-between gap-3 bg-canvas shrink-0">
           <div>
             {/*
               * Where this draft lands, said out loud rather than left to be

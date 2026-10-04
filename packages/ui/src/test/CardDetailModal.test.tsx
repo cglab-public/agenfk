@@ -119,6 +119,77 @@ describe('CardDetailModal', () => {
     );
   };
 
+  // d263ae8f: the title lived in the Overview body, so another tab lost it and
+  // a running verify's output pushed it down. It belongs to the card, not a tab.
+  describe('the title stays in the header', () => {
+    const tab = (name: RegExp) => screen.getByRole('button', { name });
+
+    it('is visible on every tab, not only Overview', () => {
+      renderModal(mockItem);
+      for (const name of [/^History/, /^Test Results/, /^Plan/, /^Usage/, /^Overview/]) {
+        fireEvent.click(tab(name));
+        expect(screen.getByRole('heading', { name: 'Test Story' })).toBeDefined();
+      }
+    });
+
+    it("sits above the tabs, so a running verify's output never pushes it down", () => {
+      renderModal({ ...mockItem, activeRun: { runId: 'run-1', step: 'IN_PROGRESS', startedAt: new Date().toISOString() } });
+      const heading = screen.getByRole('heading', { name: 'Test Story' });
+      const follows = (a: Node, b: Node) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+      expect(follows(heading, tab(/^Overview/))).toBe(true);
+      expect(follows(heading, screen.getByTestId('verify-running'))).toBe(true);
+    });
+
+    it('keeps the title being edited on screen when you switch tabs', () => {
+      (api.getItem as any).mockResolvedValue(mockItem);
+      render(
+        <CardDetailModal
+          item={mockItem as any}
+          allItems={[]}
+          onClose={() => {}}
+          onSelectItem={() => {}}
+          onAddItem={async () => {}}
+          onDeleteItem={async () => {}}
+          onUpdateItem={async () => {}}
+        />,
+        { wrapper },
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Edit item' }));
+      fireEvent.change(screen.getByTestId('edit-title'), { target: { value: 'Renamed story' } });
+      fireEvent.click(tab(/^History/));
+      expect((screen.getByTestId('edit-title') as HTMLInputElement).value).toBe('Renamed story');
+    });
+
+    it('saves the edited title from any tab, not only Overview', async () => {
+      const onUpdateItem = vi.fn(async () => {});
+      (api.getItem as any).mockResolvedValue(mockItem);
+      render(
+        <CardDetailModal
+          item={mockItem as any}
+          allItems={[]}
+          onClose={() => {}}
+          onSelectItem={() => {}}
+          onAddItem={async () => {}}
+          onDeleteItem={async () => {}}
+          onUpdateItem={onUpdateItem}
+        />,
+        { wrapper },
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Edit item' }));
+      fireEvent.change(screen.getByTestId('edit-title'), { target: { value: 'Renamed story' } });
+      fireEvent.click(tab(/^History/));
+      fireEvent.click(screen.getByTestId('save-edit'));
+      await waitFor(() => expect(onUpdateItem).toHaveBeenCalled());
+      expect((onUpdateItem.mock.calls[0] as any[]).some(arg => JSON.stringify(arg).includes('Renamed story'))).toBe(true);
+    });
+
+    it('takes its accessible name from the visible title heading', () => {
+      renderModal(mockItem);
+      const heading = screen.getByRole('heading', { name: 'Test Story' });
+      expect(screen.getByRole('dialog', { name: 'Test Story' }).getAttribute('aria-labelledby')).toBe(heading.id);
+    });
+  });
+
   it('shows when the card was created and when it was last updated', async () => {
     const created = '2026-09-12T14:03:00Z';
     const updated = '2026-09-29T09:30:00Z';
