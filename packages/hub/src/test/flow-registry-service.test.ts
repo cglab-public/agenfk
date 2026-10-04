@@ -344,6 +344,25 @@ describe('writeRegistryFile', () => {
     expect(JSON.parse(put[1].body).sha).toBeUndefined();
   });
 
+  it('carries the target branch in the PUT body (CGLAB-495)', async () => {
+    // GitHub's create-or-update-file endpoint reads `branch` from the JSON
+    // body and defaults to the repo's DEFAULT branch; a `?ref=` query is only
+    // honoured on GET. Without the body branch, a copy into an org registry
+    // whose branch is not the repo default lands on the default branch and
+    // the configured-branch reads never see it.
+    const fn = vi.fn(async (url: string, init?: any) => {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'GET') return { ok: true, status: 200, json: async () => ({ sha: 'sha-old' }) } as any;
+      return { ok: true, status: 201, json: async () => ({ content: { sha: 's' } }) } as any;
+    });
+    await writeRegistryFile(fn as any, 'acme/flows', 'registry-v2', 'ghp', 'a.json', 'x', 'm');
+    const [putUrl, putInit] = fn.mock.calls.find((c: any[]) => (c[1]?.method ?? 'GET') === 'PUT')!;
+    expect(JSON.parse(putInit.body).branch).toBe('registry-v2');
+    // The sha pre-read is a GET, where ?ref= IS the right way to name the branch.
+    const [getUrl] = fn.mock.calls.find((c: any[]) => (c[1]?.method ?? 'GET') === 'GET')!;
+    expect(getUrl).toContain('ref=registry-v2');
+  });
+
   it('returns false when GitHub refuses the write', async () => {
     const fn = vi.fn(async (_url: string, init?: any) => {
       const method = (init?.method ?? 'GET').toUpperCase();
