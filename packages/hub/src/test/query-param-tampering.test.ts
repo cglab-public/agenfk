@@ -52,9 +52,13 @@ describe('single-valued query parameters on the query endpoints', () => {
     expect(r.body.error).toMatch(/\bto\b/);
   });
 
-  it('refuses a nested object from (?from[a]=b)', async () => {
+  // Express 5's default 'simple' query parser has no bracket syntax: `from[a]`
+  // is a key of its own, so a nested object can never reach the handler as
+  // `from`. Express 4's qs parser built one, and the handler refused it (400).
+  // Turning qs back on would bring that object back - this pins that it is off.
+  it('never sees ?from[a]=b as a nested from: it is an unknown key, answered normally', async () => {
     const r = await get('/v1/users?from[a]=b');
-    expect(r.status).toBe(400);
+    expect(r.status).toBe(200);
   });
 
   it('still refuses a repeated histogram bucket (a pin: the allow-list check already did)', async () => {

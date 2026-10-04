@@ -151,8 +151,8 @@ export function federationRouter(ctx: HubServerContext): Router {
         identityPolicy: effectiveIdentityPolicy(group?.identity_policy as any ?? null, null),
       });
     } catch (err) {
-      // express 4 does not forward a rejected promise, so without this the
-      // child would hang until timeout instead of seeing a 500.
+      // Forwarded explicitly, so the child sees a 500 rather than a hang on any
+      // express version (express 4 did not forward a rejected promise).
       next(err);
     }
   });

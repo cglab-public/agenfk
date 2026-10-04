@@ -276,8 +276,8 @@ export function connectRouter(ctx: HubServerContext): Router {
     if (!token) { res.status(400).json({ error: 'invite token already used' }); return; }
     res.json({ token, orgId: parsed.orgId, hubUrl: publicHubUrl(req) });
     } catch (err) {
-      // express 4 does not forward a rejected promise, so without this a DB
-      // failure here leaves the caller waiting for a timeout with no response.
+      // Forwarded explicitly, so a DB failure answers rather than hangs on any
+      // express version (express 4 did not forward a rejected promise).
       next(err);
     }
   });

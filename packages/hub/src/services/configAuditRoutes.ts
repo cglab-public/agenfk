@@ -1,4 +1,4 @@
-import type { Request, Response, NextFunction, Express } from 'express';
+import type { Request, Response, NextFunction, Express, RequestHandler } from 'express';
 import type { DB } from '../db.js';
 import { recordAudit, type AuditSource } from './configAudit.js';
 
@@ -179,12 +179,27 @@ export const AUDIT_EXEMPT_ROUTES: Record<string, string> = {
   'POST /v1/federation/deliver': "a child hub delivering its events, the hub's data, not configuration",
 };
 
-/** Express 4: a mounted router's path, from the regexp it was mounted with. */
+/**
+ * Where each router was mounted, by the layer `app.use` created. Express 5's
+ * router keeps no mount path on that layer (Express 4 kept a regexp it could
+ * be read back from), so the hub mounts its routers through `mountRouter` and
+ * the walker reads the path from here.
+ */
+const mountPaths = new WeakMap<object, string>();
+
+/** `app.use(at, router)`, remembering `at` for the route walker. */
+export function mountRouter(app: Express, at: string, router: RequestHandler): void {
+  app.use(at, router);
+  const stack: any[] = (app as any).router.stack;
+  mountPaths.set(stack[stack.length - 1], at === '/' ? '' : at.replace(/\/$/, ''));
+}
+
+/** A mounted router's path. Unknown is an error: guessing would audit the wrong paths, or none. */
 function mountPathOf(layer: any): string {
-  if (layer.regexp?.fast_slash) return '';
-  const src: string = layer.regexp?.source ?? '';
-  const m = src.match(/^\^((?:\\\/[^\\?()]+)+)\\\/\?\(\?=\\\/\|\$\)$/);
-  return m ? m[1].replace(/\\\//g, '/') : '';
+  if (layer.slash) return '';
+  const at = mountPaths.get(layer);
+  if (at === undefined) throw new Error('config audit: a router is mounted at a path the walker cannot see - mount it with mountRouter()');
+  return at;
 }
 
 /** Every mutating route the app serves, as "METHOD /full/path". */
@@ -270,7 +285,7 @@ function eachRoute(app: Express, visit: (route: any, fullPath: string) => void):
       else if (layer.name === 'router' && layer.handle?.stack) walk(layer.handle.stack, prefix + mountPathOf(layer));
     }
   };
-  walk((app as any)._router?.stack ?? [], '');
+  walk((app as any).router?.stack ?? [], '');
 }
 
 /**

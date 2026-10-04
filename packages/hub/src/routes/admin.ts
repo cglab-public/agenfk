@@ -277,7 +277,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   }));
 
   router.delete('/api-keys/:tokenHashPreview', guard, asyncRoute(async (req: Request, res: Response) => {
-    const preview = req.params.tokenHashPreview;
+    const preview = String(req.params.tokenHashPreview);
     // The segment fed straight into LIKE, so DELETE /api-keys/% revoked every
     // key in the org in one unconfirmed call — a fleet-wide kill switch nobody
     // asked for. Token hashes are hex, so anything else is not a prefix of one
@@ -375,7 +375,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   }));
 
   router.delete('/hidden-users/:userKey', guard, asyncRoute(async (req: Request, res: Response) => {
-    const userKey = decodeURIComponent(req.params.userKey).trim().toLowerCase();
+    const userKey = decodeURIComponent(String(req.params.userKey)).trim().toLowerCase();
     const r = await ctx.db.run(
       'DELETE FROM hidden_users WHERE org_id = ? AND user_key = ?',
       [req.session!.orgId, userKey],
@@ -529,7 +529,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   }));
 
   router.delete('/models/meta/:model', guard, asyncRoute(async (req: Request, res: Response) => {
-    const model = validModelId(decodeURIComponent(req.params.model));
+    const model = validModelId(decodeURIComponent(String(req.params.model)));
     if (!model) return res.status(400).json({ error: 'Invalid model id.' });
     const r = await ctx.db.run(
       'DELETE FROM model_meta WHERE org_id = ? AND model = ?',
@@ -599,7 +599,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   }));
 
   router.delete('/models/mappings/:aliasModel', guard, asyncRoute(async (req: Request, res: Response) => {
-    const aliasModel = validModelId(decodeURIComponent(req.params.aliasModel));
+    const aliasModel = validModelId(decodeURIComponent(String(req.params.aliasModel)));
     if (!aliasModel) return res.status(400).json({ error: 'Invalid alias model id.' });
     const r = await ctx.db.run(
       'DELETE FROM model_mappings WHERE org_id = ? AND alias_model = ?',
@@ -784,7 +784,7 @@ export function adminRouter(ctx: HubServerContext): Router {
    */
   router.post('/user-keys/merges/:id/revert', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
-    const id = req.params.id;
+    const id = String(req.params.id);
     const record = await ctx.db.get<{
       id: string; from_user_key: string; to_user_key: string; reverted_at: string | null;
     }>(
@@ -1311,7 +1311,7 @@ export function adminRouter(ctx: HubServerContext): Router {
 
   router.post('/installations/:id/retire', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
-    const id = req.params.id;
+    const id = String(req.params.id);
     const existing = await findInstallation(orgId, id);
     if (!existing) { res.status(404).json({ error: 'Unknown installation' }); return; }
 
@@ -1366,7 +1366,7 @@ export function adminRouter(ctx: HubServerContext): Router {
 
   router.delete('/installations/:id/retire', guard, asyncRoute(async (req: Request, res: Response) => {
     const orgId = req.session!.orgId;
-    const id = req.params.id;
+    const id = String(req.params.id);
     if (!(await findInstallation(orgId, id))) {
       res.status(404).json({ error: 'Unknown installation' });
       return;
@@ -1434,7 +1434,7 @@ export function adminRouter(ctx: HubServerContext): Router {
     if (removesAdminAccess && req.session!.userId === req.params.id) {
       return res.status(400).json({ error: 'You cannot demote or deactivate your own account; ask another admin.' });
     }
-    if (removesAdminAccess && await removalStrandsSignIn(orgId, req.params.id)) {
+    if (removesAdminAccess && await removalStrandsSignIn(orgId, String(req.params.id))) {
       return res.status(409).json({ error: STRANDS_SIGN_IN });
     }
     params.push(req.params.id, orgId);
@@ -1461,7 +1461,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   router.delete('/users/:id', guard, asyncRoute(async (req: Request, res: Response) => {
     if (req.session!.userId === req.params.id) return res.status(400).json({ error: 'Cannot delete the signed-in user' });
     const orgId = req.session!.orgId;
-    if (await removalStrandsSignIn(orgId, req.params.id)) return res.status(409).json({ error: STRANDS_SIGN_IN });
+    if (await removalStrandsSignIn(orgId, String(req.params.id))) return res.status(409).json({ error: STRANDS_SIGN_IN });
     const result = await ctx.db.run(
       `DELETE FROM users WHERE id = ? AND org_id = ? AND ${NOT_LAST_ACTIVE_ADMIN}`,
       [req.params.id, orgId, orgId, req.params.id],
@@ -2838,7 +2838,7 @@ export function adminRouter(ctx: HubServerContext): Router {
         });
         return;
       }
-      if (!(await findChildHub(orgId, req.params.id))) {
+      if (!(await findChildHub(orgId, String(req.params.id)))) {
         res.status(404).json({ error: 'Unknown child hub' });
         return;
       }
@@ -2854,7 +2854,7 @@ export function adminRouter(ctx: HubServerContext): Router {
   router.post('/child-hubs/:id/detach', guard, async (req: Request, res: Response, next) => {
     try {
       const orgId = req.session!.orgId;
-      if (!(await findChildHub(orgId, req.params.id))) {
+      if (!(await findChildHub(orgId, String(req.params.id)))) {
         res.status(404).json({ error: 'Unknown child hub' });
         return;
       }
@@ -2887,7 +2887,7 @@ export function adminRouter(ctx: HubServerContext): Router {
         revokedKeys = revoked.changes;
       });
 
-      const fresh = await findChildHub(orgId, req.params.id);
+      const fresh = await findChildHub(orgId, String(req.params.id));
       res.json({
         id: req.params.id,
         detached: true,
@@ -3197,7 +3197,7 @@ export function adminRouter(ctx: HubServerContext): Router {
         res.status(400).json({ error: "policy must be 'keep', 'pseudonymize' or null" });
         return;
       }
-      if (!(await findChildHub(orgId, req.params.id))) {
+      if (!(await findChildHub(orgId, String(req.params.id)))) {
         res.status(404).json({ error: 'Unknown child hub' });
         return;
       }
