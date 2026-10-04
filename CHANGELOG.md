@@ -2,6 +2,37 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.32] — 2026-10-04
+
+Pre-release, cut from `feat/CGLAB-164_electron-desktop` (PR #194). Cumulative over `2.0.0-beta.31`, which never
+reached production: its hub crash-looped on boot and ECS rolled back to `2.0.0-beta.28`.
+
+### Hub
+
+- **The hub runs on Express 5, as its image always did.** `packages/hub` declared `express ^4`, but the Docker
+  image copies only the repo-root `node_modules`, where express is 5 - so production ran Express 5 while the
+  tests ran 4. The config-audit route walker (new in beta.29) read Express 4's `app._router`, found no routes on
+  Express 5, and refused to boot. The hub now declares `express ^5` and `@types/express ^5`; routers are mounted
+  through `mountRouter`, which records their paths (Express 5 keeps none), and a test fails if any production
+  dependency is nested under a package the image ships without its own `node_modules`.
+- **Installs outside Docker (npx / the dist tarball) move from Express 4 to Express 5.** Query strings now use
+  the simple parser: `?from[a]=b` is an unknown key rather than a nested object. No board or CLI request relies
+  on bracket syntax.
+
+### Board
+
+- **The card title is always in the detail header** - on every tab, and above a running verify's output, which
+  used to push it down. Edit mode edits it there too; a very long title scrolls within the header instead of
+  squeezing the body.
+- **No focus ring around the whole card detail or card picker** when they open (the brand `:focus-visible` ring,
+  CGLAB-434, framed the focused panel). Fields and buttons keep their rings; forced-colors mode keeps an outline.
+- **The card picker opens on its search box** when it has one; the panel used to take focus back from it.
+
+### Deploy (private hub deploy repo)
+
+- A deploy now fails when ECS rolls it back: `services-stable` is satisfied by the rollback, which is how the
+  beta.31 run went green while production stayed on beta.28.
+
 ## [2.0.0-beta.31] — 2026-10-04
 
 Pre-release, cut from `feat/CGLAB-164_electron-desktop` (PR #194). It rejoins the two beta lines: everything in
