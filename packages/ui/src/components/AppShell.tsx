@@ -534,7 +534,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
      * a question.
      */
     if (desktopPrefs?.askBeforeOpening === false) {
-      openPendingTerminal({ projectId, title }, desktopPrefs.defaultAgentId || 'claude-code');
+      openPendingTerminal({ projectId, title }, desktopPrefs.defaultAgentId || 'shell');
       return;
     }
     enqueuePending({ projectId, title });
@@ -581,7 +581,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
      * agent for this card meant that card.
      */
     if (desktopPrefs?.askBeforeOpening === false) {
-      openPendingTerminal(entry, item.agentId || desktopPrefs.defaultAgentId || 'claude-code');
+      openPendingTerminal(entry, item.agentId || desktopPrefs.defaultAgentId || 'shell');
       return;
     }
     enqueuePending(entry);
@@ -1720,8 +1720,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           onOpenProject={projectId => { setPageProjectId(projectId); setActive('project'); }}
           onOpenFlows={() => setFlowsOpen(true)}
           onOpenTerminal={() => {
-            // Opened here, not through a dialog: the shell needs no agent and
-            // no target, so there is nothing to ask about.
+            /*
+             * THE SAME FLOW as the other two doors, when there is a project to
+             * open in: this becomes a terminal ON that project — the default
+             * agent, and the Ask before opening switch deciding whether the
+             * dialog appears. It used to bypass both and always hand back a
+             * bare shell, which is how the app grew two buttons called Open
+             * terminal that behaved differently.
+             *
+             * With NO project there is nothing to run in and no worktree to run
+             * it from, so it stays what it has always been: a shell in the
+             * user's home directory. That case is also why `shell` is the
+             * default agent — the one target needing no project, no card and no
+             * installed CLI.
+             */
+            const project = allProjects.find((p: Project) => p.id === activeProjectId);
+            if (project) { requestProjectTerminal(project.id, project.name); return; }
+            // Opened here, not through a dialog: with no project the shell needs
+            // no agent and no target, so there is nothing to ask about.
             sessionSeq.current += 1;
             const id = `${SHELL_AGENT_ID}#${sessionSeq.current}`;
             setSessions(prev => [...prev, {
