@@ -230,6 +230,109 @@ describe('prefs over IPC', () => {
     await handlers['prefs:set']({} as never, { key: 'autoApprove', value: true });
     expect((await handlers['prefs:get']({} as never, undefined)).autoApprove).toBe(true);
   });
+
+  it('accepts a default agent, but only from the closed vocabulary', async () => {
+    /*
+     * `defaultAgentId` is the FIRST exception this handler has to make to
+     * "Boolean preferences only". That rule exists because a non-boolean here is
+     * normally a PATH — `customSoundPath` reaches the filesystem — so the
+     * exception is bounded the way the rule is: the value must come from
+     * `TERMINAL_AGENT_IDS`, a fixed list that names no file.
+     */
+    const stored = await handlers['prefs:set']({} as never, { key: 'defaultAgentId', value: 'pi' });
+    expect(stored.defaultAgentId).toBe('pi');
+    expect((await handlers['prefs:get']({} as never, undefined)).defaultAgentId).toBe('pi');
+  });
+
+  it('refuses a default agent outside that vocabulary', async () => {
+    /*
+     * Every one of these is just a string, and every one of them would be
+     * honoured by a handler that trusted the renderer: a shell, a traversal, an
+     * attach that is not a CLI this app starts, and the empty string.
+     *
+     * The REASON is asserted, not merely that something threw. Before this
+     * exception existed the handler refused EVERY string, so a test that only
+     * checked "it threw" passed here for the wrong reason — the same trap the
+     * empty-string case is guarding against.
+     */
+    for (const bad of ['/bin/sh', '../../etc/passwd', 'herdr', 'bash', '']) {
+      let message = '';
+      try {
+        await handlers['prefs:set']({} as never, { key: 'defaultAgentId', value: bad });
+      } catch (e) { message = (e as Error).message; }
+      expect(message, `"${bad}" was accepted as a default agent`).toMatch(/must be one of/i);
+      // And the list it refused against does not mention herdr: it is an attach,
+      // not an agent this app starts.
+      expect(message, 'herdr is not an agent this app starts').not.toMatch(/herdr/);
+    }
+    expect((await handlers['prefs:get']({} as never, undefined)).defaultAgentId).toBe('');
+  });
+
+  it('still refuses the string preference that reaches the filesystem', async () => {
+    // The exception above must not become a door. This one passes the key
+    // allowlist and is refused by the rule, not by a list of names.
+    await expect(handlers['prefs:set']({} as never, { key: 'customSoundPath', value: '/tmp/x.wav' }))
+      .rejects.toThrow(/cannot be set from the renderer/i);
+  });
+
+  it('refuses a non-boolean for the switch, rather than coercing it off', async () => {
+    /*
+     * `autoApprove` coerces with `req.value === true`, and that direction is
+     * SAFE: a malformed value leaves the prompts on. The same coercion here
+     * would turn the confirmation OFF — the permissive direction — for a value
+     * that was never a decision. So this key refuses instead of coercing, and
+     * that difference is the whole point of the test.
+     */
+    for (const junk of ['no', 1, {}, []]) {
+      await expect(handlers['prefs:set']({} as never, { key: 'askBeforeOpening', value: junk }))
+        .rejects.toThrow(/askBeforeOpening/i);
+    }
+    expect((await handlers['prefs:get']({} as never, undefined)).askBeforeOpening).toBe(true);
+  });
+
+  it('round-trips the switch, both ways', async () => {
+    expect((await handlers['prefs:set']({} as never, { key: 'askBeforeOpening', value: false })).askBeforeOpening)
+      .toBe(false);
+    expect((await handlers['prefs:set']({} as never, { key: 'askBeforeOpening', value: true })).askBeforeOpening)
+      .toBe(true);
+  });
+
+  it('does not hand the renderer the custom sound path', async () => {
+    /*
+     * `prefs:get` used to answer with the WHOLE file. `customSoundPath` is a
+     * path, and the sounds surface refuses to give one out — `sounds:read`
+     * answers with BYTES, with the comment "a path would be a string it can do
+     * nothing with" — so it crossed here instead, through the side door.
+     *
+     * Written to the FILE rather than through this channel, because the channel
+     * refuses it. The point is what a READER can see, however the value got
+     * there.
+     */
+    fs.writeFileSync(path.join(prefsDir, 'prefs.json'), JSON.stringify({
+      autoApprove: true,
+      customSoundPath: '/Users/x/Library/sounds/custom.wav',
+    }));
+    const got = await handlers['prefs:get']({} as never, undefined);
+    expect(Object.keys(got).sort()).toEqual(['askBeforeOpening', 'autoApprove', 'defaultAgentId']);
+    expect(JSON.stringify(got), 'the path crossed to the renderer')
+      .not.toMatch(/customSound|\/Users\/x/);
+  });
+
+  it('does not leak the path back through a WRITE either', async () => {
+    /*
+     * The half that is easy to forget. The renderer's mutation takes whatever a
+     * setter RETURNS and writes it straight into its query cache — so a raw
+     * `writePref` result would put the path back in front of the renderer even
+     * with `prefs:get` narrowed. Same file written directly, for the same
+     * reason as above.
+     */
+    fs.writeFileSync(path.join(prefsDir, 'prefs.json'), JSON.stringify({
+      customSoundPath: '/Users/x/Library/sounds/custom.wav',
+    }));
+    const wrote = await handlers['prefs:set']({} as never, { key: 'autoApprove', value: true });
+    expect(Object.keys(wrote).sort()).toEqual(['askBeforeOpening', 'autoApprove', 'defaultAgentId']);
+    expect(JSON.stringify(wrote), 'the path came back on the write').not.toMatch(/customSound|\/Users\/x/);
+  });
 });
 
 /**

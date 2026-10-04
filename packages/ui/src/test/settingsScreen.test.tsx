@@ -959,3 +959,157 @@ describe('the section menu carries an icon', () => {
       .toEqual(['Account', 'App', 'Notifications', 'Terminal', 'Verification', 'Agents']);
   });
 });
+
+/**
+ * The default agent, and the switch that lets it skip the dialog.
+ *
+ * Both live in the DESKTOP's preferences rather than the server's settings, for
+ * the reason auto-approve does: the default agent decides WHICH BINARY every
+ * terminal the app spawns runs, and that route is unauthenticated on loopback.
+ * See packages/desktop/src/main/prefs.ts.
+ */
+describe('the default agent', () => {
+  const AGENTS = [
+    { id: 'claude-code', label: 'Claude Code', installed: true, supportsAutoApprove: true },
+    { id: 'pi', label: 'Pi', installed: true, supportsAutoApprove: false },
+  ];
+
+  /** The bridge, holding `stored`, and a log of every write that reaches it. */
+  const withPrefs = (stored: Record<string, unknown>): Array<[string, unknown]> => {
+    const wrote: Array<[string, unknown]> = [];
+    (window as unknown as Record<string, unknown>).agenfkDesktop = {
+      isDesktop: true, platform: 'darwin',
+      versions: { electron: '40', chrome: '1', node: '24' },
+      terminal: {
+        listAgents: async () => AGENTS,
+        sessionPersistence: async () => ({ available: true }),
+      },
+      prefs: {
+        get: async () => stored,
+        setAutoApprove: async () => stored,
+        setDefaultAgent: async (agentId: string) => {
+          wrote.push(['defaultAgentId', agentId]);
+          return { ...stored, defaultAgentId: agentId };
+        },
+        setAskBeforeOpening: async (value: boolean) => {
+          wrote.push(['askBeforeOpening', value]);
+          return { ...stored, askBeforeOpening: value };
+        },
+      },
+    };
+    return wrote;
+  };
+
+  const rowFor = async (id: string): Promise<HTMLElement> => {
+    // By `data-row`, which is what the row IS — the house rule on this screen.
+    // Matched on copy, "default agent" also hits the auto-approve row's
+    // "Auto-approve by default", which is the failure this avoids.
+    await waitFor(() => expect(document.querySelector(`[data-row="${id}"]`)).not.toBeNull());
+    return document.querySelector<HTMLElement>(`[data-row="${id}"]`)!;
+  };
+
+  it('is offered in the Agents section that already existed', async () => {
+    // No section was added for it: Agents already had one row, and this is the
+    // second. A new tab would have been a place to look for something that
+    // belongs beside the thing it is about.
+    withPrefs({ autoApprove: false, defaultAgentId: '', askBeforeOpening: true });
+    renderShell();
+    await openSettings('Agents');
+    expect(await rowFor('default-agent-row')).toBeDefined();
+  });
+
+  it('shows the agent already chosen', async () => {
+    withPrefs({ autoApprove: false, defaultAgentId: 'pi', askBeforeOpening: true });
+    renderShell();
+    await openSettings('Agents');
+    const row = await rowFor('default-agent-row');
+    // The trigger carries the chosen agent's name, which is how a reader knows
+    // the setting took without opening the list.
+    expect(within(row).getByRole('button', { name: /pi/i })).toBeDefined();
+  });
+
+  it('shows the agent a dialog would use when nobody has chosen', async () => {
+    /*
+     * The empty label trap. `''` means nobody chose, and the picker's trigger
+     * renders the CHOSEN agent's name — so passing the stored value straight
+     * through drew a control with no text at all.
+     *
+     * What it shows instead is the agent that will actually run: proposed, not
+     * imposed, exactly like the clone-directory row.
+     */
+    withPrefs({ autoApprove: false, defaultAgentId: '', askBeforeOpening: true });
+    renderShell();
+    await openSettings('Agents');
+    const row = await rowFor('default-agent-row');
+    expect(within(row).getByRole('button', { name: /claude code/i })).toBeDefined();
+  });
+
+  it('writes a choice made here through the desktop preference', async () => {
+    const wrote = withPrefs({ autoApprove: false, defaultAgentId: '', askBeforeOpening: true });
+    renderShell();
+    await openSettings('Agents');
+    const row = await rowFor('default-agent-row');
+    // The SAME picker the terminal dialog uses, so its trigger and its listbox
+    // are the ones under test here. Found by the name it displays.
+    fireEvent.click(within(row).getByRole('button', { name: /claude code/i }));
+    fireEvent.click(await screen.findByRole('option', { name: /pi/i }));
+    await waitFor(() => expect(wrote).toEqual([['defaultAgentId', 'pi']]));
+  });
+});
+
+describe('ask before opening a terminal', () => {
+  const withPrefs = (stored: Record<string, unknown>): Array<[string, unknown]> => {
+    const wrote: Array<[string, unknown]> = [];
+    (window as unknown as Record<string, unknown>).agenfkDesktop = {
+      isDesktop: true, platform: 'darwin',
+      versions: { electron: '40', chrome: '1', node: '24' },
+      terminal: { listAgents: async () => [], sessionPersistence: async () => ({ available: true }) },
+      prefs: {
+        get: async () => stored,
+        setAutoApprove: async () => stored,
+        setDefaultAgent: async () => stored,
+        setAskBeforeOpening: async (value: boolean) => {
+          wrote.push(['askBeforeOpening', value]);
+          return { ...stored, askBeforeOpening: value };
+        },
+      },
+    };
+    return wrote;
+  };
+
+  const switchFor = async (): Promise<HTMLElement> => {
+    await waitFor(() =>
+      expect(document.querySelector('[data-row="ask-before-opening-row"]')).not.toBeNull());
+    const row = document.querySelector<HTMLElement>('[data-row="ask-before-opening-row"]')!;
+    return within(row).getByRole('switch');
+  };
+
+  it('is offered in Terminal, and is ON for somebody who never chose', async () => {
+    // The promise an upgrade makes: an install that predates this answered the
+    // question, so it must not start skipping it because of a default we chose.
+    withPrefs({ autoApprove: false, defaultAgentId: '', askBeforeOpening: true });
+    renderShell();
+    await openSettings('Terminal');
+    expect(await switchFor()).toBeChecked();
+  });
+
+  it('turns off, and says so through the desktop preference', async () => {
+    const wrote = withPrefs({ autoApprove: false, defaultAgentId: '', askBeforeOpening: true });
+    renderShell();
+    await openSettings('Terminal');
+    fireEvent.click(await switchFor());
+    // Awaited: the mutation reaches the bridge on a later tick, and asserting
+    // synchronously reads an empty log rather than a missing write.
+    await waitFor(() => expect(wrote).toEqual([['askBeforeOpening', false]]));
+  });
+
+  it('does not read a preload that predates the key as "off"', async () => {
+    // Version skew: an older preload answers without this key entirely. Reading
+    // undefined as false would silently start skipping the confirmation for
+    // somebody who never turned it off — the permissive direction, by accident.
+    withPrefs({ autoApprove: false, defaultAgentId: '' });
+    renderShell();
+    await openSettings('Terminal');
+    expect(await switchFor()).toBeChecked();
+  });
+});
