@@ -81,7 +81,12 @@ describe('Admin → Audit log', () => {
     fireEvent.change(screen.getByLabelText('Actor'), { target: { value: 'ana' } });
     fireEvent.change(screen.getByLabelText('From'), { target: { value: '2026-09-01' } });
     fireEvent.change(screen.getByLabelText('To'), { target: { value: '2026-10-01' } });
-    await waitFor(() => expect(lastParams()).toMatchObject({ area: 'sign-in', actor: 'ana', from: '2026-09-01', to: '2026-10-01' }));
+    // The viewer's own days (BUG 91d2941d): the list shows local times, so the bounds are local midnights, sent as instants.
+    await waitFor(() => expect(lastParams()).toMatchObject({
+      area: 'sign-in', actor: 'ana',
+      from: new Date(2026, 8, 1, 0, 0, 0, 0).toISOString(),
+      to: new Date(2026, 9, 1, 23, 59, 59, 999).toISOString(),
+    }));
   });
 
   it('exports the filtered view as CSV', async () => {

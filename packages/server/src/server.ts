@@ -971,7 +971,9 @@ const syncParentStatus = async (parentId: string, how: RollUp = {}) => {
       .map(st => ({ step: st.name, disabled: disabledChecksOf(parentFlow.steps, st.name).filter(c => c.id === 'review-record') }))
       .filter(w => w.disabled.length > 0)
       .map(w => ({ step: w.step, kind: 'exit' as const, at: timestamp, walked: true, disabled: w.disabled }));
-    await storage.updateItem(parent.id, { status: newStatus, ...(walked.length ? { stepRecords: [...((parent as any).stepRecords ?? []), ...walked] } : {}) } as any);
+    // Read again for the append (BUG 91d2941d): a verify or record may have landed on the parent since it was read above.
+    const fresh: any = walked.length ? await storage.getItem(parent.id) : null;
+    await storage.updateItem(parent.id, { status: newStatus, ...(walked.length ? { stepRecords: [...((fresh ?? parent as any).stepRecords ?? []), ...walked] } : {}) } as any);
     io.emit('items_updated');
     recordMoveEvents(parent, parent.status, newStatus, parentFlow);
   }
@@ -4073,8 +4075,10 @@ const commandStateOf = (root: string, project: any): string | null => {
  * step too (ef1342b8) - while the record's filesState and command checks keep every file.
  * Null when the tree cannot be read, or nothing may be shared on it.
  */
-function suiteStateOf(root: string, setting: TestReportSetting | undefined, read?: TreeRead | null, outside: string | null = outsideContent(root)): string | null {
+function suiteStateOf(root: string, setting: TestReportSetting | undefined, read?: TreeRead | null, outsideGiven?: string | null): string | null {
   if (!setting) return null;
+  // Read only when asked for and not handed in (BUG 91d2941d): null handed in means "not shareable".
+  const outside = outsideGiven === undefined ? outsideContent(root) : outsideGiven;
   // de5e5a03: from the caller's read when it has one - a fenced run's, so the state is the content it ran on.
   const tree = read === undefined ? treeFiles(root, reportsOwned(root, setting)) : read;
   if (!tree || !tree.shareable) return null;
@@ -4440,24 +4444,38 @@ function outsideEntries(root: string, head: string): [string, string][] | null {
  * project at the repository's top, which has nothing beside it. Null when it
  * cannot be read: nothing is shared then.
  */
+// BUG 91d2941d (review): HEAD's tree outside a root, per root, for the HEAD it was read at. Listing the
+// whole repository is the costly part and HEAD rarely moves within a verify, which reads this several times.
+const outsideBaseCache = new Map<string, { head: string; files: Map<string, string>; hash: string }>();
+const OUTSIDE_BASE_CACHE_MAX = 16;
+
 function outsideContent(root: string): string | null {
   try {
     const run = (args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 256 * 1024 * 1024 });
     const prefix = run(['rev-parse', '--show-prefix']).trim();
     if (!prefix) return '';
     const head = run(['rev-parse', 'HEAD']).trim();
-    const files = new Map<string, string>();
-    // <mode> SP <type> SP <object> TAB <path>
-    for (const line of run(['ls-tree', '-r', '-z', '--full-tree', head]).split('\0')) {
-      const tab = line.indexOf('\t');
-      if (tab === -1) continue;
-      const rel = line.slice(tab + 1);
-      if (rel.startsWith(prefix)) continue;
-      const [mode, , object] = line.slice(0, tab).split(' ');
-      files.set(rel, `${mode}:${object}`);
+    let base = outsideBaseCache.get(root);
+    if (!base || base.head !== head) {
+      const files = new Map<string, string>();
+      // <mode> SP <type> SP <object> TAB <path>
+      for (const line of run(['ls-tree', '-r', '-z', '--full-tree', head]).split('\0')) {
+        const tab = line.indexOf('\t');
+        if (tab === -1) continue;
+        const rel = line.slice(tab + 1);
+        if (rel.startsWith(prefix)) continue;
+        const [mode, , object] = line.slice(0, tab).split(' ');
+        files.set(rel, `${mode}:${object}`);
+      }
+      base = { head, files, hash: hashEntries(files) };
+      if (outsideBaseCache.size >= OUTSIDE_BASE_CACHE_MAX) outsideBaseCache.clear();
+      outsideBaseCache.set(root, base);
     }
     const beside = outsideEntries(root, head);
     if (beside === null) return null;
+    // Nothing differs beside the root: HEAD's content there, already hashed.
+    if (!beside.length) return base.hash;
+    const files = new Map(base.files);
     for (const [rel, v] of beside) {
       if (v === 'absent') files.delete(rel);
       else files.set(rel, v);

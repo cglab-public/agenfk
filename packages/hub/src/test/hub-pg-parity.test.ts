@@ -153,6 +153,19 @@ describe('PG parity: config audit log (a89af514)', () => {
   beforeEach(async () => { fx = await bootHubOnPg(); });
   afterEach(async () => { try { await fx.db.close(); } catch { /* */ } });
 
+  it('the audit layer records a real change on Postgres, before -> after, with no secret (BUG 91d2941d)', async () => {
+    const r = await supertest(__server).put('/v1/admin/auth-config').set('Cookie', fx.cookie).send({
+      passwordEnabled: false, googleEnabled: true, google: { clientId: 'id.apps.googleusercontent.com', clientSecret: 'pg-shh' },
+    });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    const list = await supertest(__server).get('/v1/admin/audit?area=sign-in').set('Cookie', fx.cookie);
+    const row = list.body.rows[0];
+    expect(row).toMatchObject({ action: 'auth-config.update', actorEmail: 'admin@x', source: 'board' });
+    expect(Number(row.before.password_enabled)).toBe(1);
+    expect(Number(row.after.password_enabled)).toBe(0);
+    expect(JSON.stringify(list.body)).not.toContain('pg-shh');
+  });
+
   it('records, filters, pages and exports on Postgres', async () => {
     const { recordAudit } = await import('../services/configAudit');
     for (let i = 0; i < 3; i++) {

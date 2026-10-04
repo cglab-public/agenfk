@@ -48,18 +48,26 @@ export function auditRouter(ctx: HubServerContext): Router {
   router.get('/audit.csv', guard, asyncRoute(async (req: Request, res: Response) => {
     const f = filterOf(req.query);
     if ('error' in f) return res.status(400).json({ error: f.error });
-    const lines = [AUDIT_CSV_HEADER.join(',')];
-    let cursor: string | undefined;
-    let rows = 0;
-    do {
-      const page = await listAudit(ctx.db, req.session!.orgId, { ...f, limit: AUDIT_PAGE_MAX, cursor });
-      lines.push(...auditCsvLines(page.rows));
-      rows += page.rows.length;
-      cursor = page.next ?? undefined;
-    } while (cursor && rows < CSV_MAX_ROWS);
+    const cap = ctx.config.auditCsvMaxRows ?? CSV_MAX_ROWS;
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="hub-audit-${new Date().toISOString().slice(0, 10)}.csv"`);
-    res.send(`${lines.join('\r\n')}\r\n`);
+    // Streamed a page at a time (BUG 91d2941d): rows carry whole flow definitions, twice.
+    res.write(`${AUDIT_CSV_HEADER.join(',')}\r\n`);
+    let cursor: string | undefined;
+    let rows = 0;
+    let truncated = false;
+    for (;;) {
+      const page = await listAudit(ctx.db, req.session!.orgId, { ...f, limit: Math.min(AUDIT_PAGE_MAX, cap - rows), cursor });
+      const lines = auditCsvLines(page.rows);
+      if (lines.length) res.write(`${lines.join('\r\n')}\r\n`);
+      rows += page.rows.length;
+      cursor = page.next ?? undefined;
+      if (!cursor) break;
+      if (rows >= cap) { truncated = true; break; }
+    }
+    // Said in the file itself, where whoever opens it will see it.
+    if (truncated) res.write(`truncated: this export stops at ${cap} rows; narrow the filters to see the rest\r\n`);
+    res.end();
   }));
 
   return router;

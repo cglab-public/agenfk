@@ -18,6 +18,8 @@ export interface HubServerConfig {
    * hub whose SSO broke. Unset it once back in; each boot replaces the token.
    */
   resetAdminEmail?: string;
+  /** Most rows one audit CSV export carries (default 100000); set low by tests. */
+  auditCsvMaxRows?: number;
   /**
    * Express `trust proxy`: how many reverse proxies stand in front of the hub
    * (a hop count), or which addresses are proxies (a CIDR/`loopback` list).

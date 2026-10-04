@@ -13,9 +13,9 @@ import { jiraAdminRouter, jiraInstallationRouter } from './routes/jira.js';
 import { googleRouter } from './auth/google.js';
 import { entraRouter } from './auth/entra.js';
 import { ensureBootstrapToken } from './auth/bootstrapToken.js';
-import { configAuditMiddleware } from './services/configAuditRoutes.js';
+import { installConfigAudit } from './services/configAuditRoutes.js';
 import { auditRouter } from './routes/audit.js';
-import { mintAdminRecoveryToken } from './auth/adminRecovery.js';
+import { mintAdminRecoveryToken, withdrawExpiredRecoveryTokens } from './auth/adminRecovery.js';
 import { queriesRouter } from './routes/queries.js';
 import { connectRouter } from './routes/connect.js';
 import { federationRouter, federationInviteRouter } from './routes/federation.js';
@@ -195,8 +195,8 @@ export async function createHubApp(
   }
 
   // Admin recovery (STORY a44f3697): a token for the admin the operator named,
-  // logged like the bootstrap token. Each boot replaces the last; without the
-  // variable, any token a previous boot left is withdrawn.
+  // logged like the bootstrap token. A boot clears only expired tokens: another
+  // instance's boot must not withdraw the one being read off the log.
   if (config.resetAdminEmail) {
     const minted = await mintAdminRecoveryToken(db, config.defaultOrgId, config.resetAdminEmail);
     if ('token' in minted) {
@@ -216,7 +216,7 @@ export async function createHubApp(
       console.warn(`[HUB] AGENFK_HUB_RESET_ADMIN_EMAIL is set, but ${minted.refused}: no recovery token was minted.`);
     }
   } else {
-    await db.run('DELETE FROM admin_recovery_tokens', []);
+    await withdrawExpiredRecoveryTokens(db);
   }
 
   const ctx: HubServerContext = { db, config };
@@ -229,9 +229,6 @@ export async function createHubApp(
   app.locals.hubPublicUrl = config.publicUrl;
   app.use(express.json({ limit: '10mb' }));
   app.use(cookieParser());
-  // Config audit log (STORY a89af514): ahead of every router, so it sees each
-  // config route's state before its handler runs.
-  app.use(configAuditMiddleware(db, config.defaultOrgId));
 
   app.get('/healthz', (_req: Request, res: Response) => {
     // `service` lets spokes verify they're pointing at an agenfk hub (and not
@@ -257,6 +254,10 @@ export async function createHubApp(
   app.use('/hub', connectRouter(ctx));
   app.use('/hub/federation', federationInviteRouter(ctx));
   app.use('/v1/federation', federationRouter(ctx));
+  // Config audit log (STORY a89af514, BUG 91d2941d): an audit layer inside each
+  // audited route, after its guards. `config`, not its value: an org rename
+  // changes defaultOrgId at runtime.
+  installConfigAudit(app, db, config);
   // One-time rewrite of historical bare-osUser identity keys. Reported rather
   // than silent: it can SPLIT a key that two machines shared, which changes what
   // the dashboards show — deliberately, since those were never one person.
@@ -388,6 +389,10 @@ export async function createHubApp(
 export function hubErrorHandler(err: any, _req: Request, res: Response, _next: NextFunction): void {
   console.error('[HUB_ERROR]', err?.message ?? err);
   if (res.headersSent) return;
+  // A client error Express or body-parser raised (an undecodable %-escape in a
+  // path param, malformed JSON) keeps its 4xx; its message names no table.
+  const status = Number.isInteger(err?.status) && err.status >= 400 && err.status < 500 ? err.status : 500;
+  if (status < 500) { res.status(status).json({ error: err?.expose === false ? 'bad request' : (err?.message ?? 'bad request') }); return; }
   const body = process.env.NODE_ENV === 'production'
     ? 'internal error'
     : (err?.message ?? 'internal error');

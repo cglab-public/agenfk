@@ -4,10 +4,18 @@ import { recordAudit, type AuditSource } from './configAudit.js';
 
 /**
  * Which hub routes change configuration, and how each is audited (STORY
- * a89af514). One middleware reads this table, so a route's audit entry sits
- * next to every other's and the completeness test can hold the table against
- * the routers the hub actually serves: a mutating route is either here or in
+ * a89af514). The table is the one source: a route's audit entry sits next to
+ * every other's, and the completeness test holds it against the routers the
+ * hub actually serves - a mutating route is either here or in
  * AUDIT_EXEMPT_ROUTES with the reason it is not configuration.
+ *
+ * installConfigAudit puts an audit layer INTO each audited route's own stack,
+ * after its guards and right before its handler (BUG 91d2941d). Express has
+ * then matched the route (its case-insensitivity, its trailing-slash rule) and
+ * decoded the params, and a guard has said who is asking: nothing is read for
+ * a request that was refused, and the layer never parses a URL itself. The
+ * row is written before the reply goes out - res.end waits for it - so a
+ * client that hangs up cannot leave a committed change unrecorded.
  *
  * A row is written only when the change succeeded (2xx). `snapshot` reads the
  * target's state before the handler runs and again after, so the row says
@@ -36,6 +44,10 @@ export interface AuditedRoute {
   orgAfter?: (req: Request) => string | null;
   /** Who acted, when the request carries no session or key (a sign-in that creates one). */
   actorFromReply?: (body: any) => { userId: string | null; email: string | null } | null;
+  /** Who acted, from the request, when it carries no credential (the first admin's setup). */
+  actorFromRequest?: (req: Request) => { userId: string | null; email: string | null } | null;
+  /** Where the change came from when no credential says (default: system). */
+  source?: AuditSource;
 }
 
 const parse = (s: unknown) => { try { return typeof s === 'string' ? JSON.parse(s) : s ?? null; } catch { return s; } };
@@ -45,8 +57,9 @@ const flowSnap: Snapshot = async (db, orgId, p) => {
   const { definition_json, ...rest } = r;
   return { ...rest, org_available: Number(r.org_available), definition: parse(definition_json) };
 };
+// password_hash rides along so a reset reads "[secret: changed]"; recordAudit never stores it.
 const userSnap: Snapshot = async (db, orgId, p) =>
-  (await db.get('SELECT id, email, name, role, active, provider FROM users WHERE id = ? AND org_id = ?', [p.id, orgId])) ?? null;
+  (await db.get('SELECT id, email, name, role, active, provider, password_hash FROM users WHERE id = ? AND org_id = ?', [p.id, orgId])) ?? null;
 const authConfigSnap: Snapshot = async (db, orgId) => (await db.get('SELECT * FROM auth_config WHERE org_id = ?', [orgId])) ?? null;
 const registrySnap: Snapshot = async (db, orgId) =>
   (await db.get('SELECT registry_repo, registry_branch, registry_token_enc, identity_policy FROM org_settings WHERE org_id = ?', [orgId])) ?? null;
@@ -55,6 +68,20 @@ const assignmentsSnap: Snapshot = async (db, orgId) =>
 const childHubSnap: Snapshot = async (db, orgId, p) => (await db.get('SELECT * FROM child_hubs WHERE id = ? AND org_id = ?', [p.id, orgId])) ?? null;
 const identityPolicySnap: Snapshot = async (db, orgId) =>
   (await db.get('SELECT identity_policy FROM org_settings WHERE org_id = ?', [orgId])) ?? null;
+/** A param, or the same field of the body (a create names its key there). */
+const keyOf = (p: Params, req: Request, k: string) => (p[k] ?? (typeof req.body?.[k] === 'string' ? req.body[k] : '')).trim();
+const hiddenSnap: Snapshot = async (db, orgId, p, req) =>
+  (await db.get('SELECT user_key, hidden_by_email FROM hidden_users WHERE org_id = ? AND user_key = ?', [orgId, keyOf(p, req, 'userKey').toLowerCase()])) ?? null;
+const mappingSnap: Snapshot = async (db, orgId, p, req) =>
+  (await db.get('SELECT alias_model, canonical_model FROM model_mappings WHERE org_id = ? AND alias_model = ?', [orgId, keyOf(p, req, 'aliasModel')])) ?? null;
+const modelMetaSnap: Snapshot = async (db, orgId, p, req) =>
+  (await db.get('SELECT model, provider, license_class, license, source FROM model_meta WHERE org_id = ? AND model = ?', [orgId, keyOf(p, req, 'model')])) ?? null;
+const installationSnap: Snapshot = async (db, orgId, p) =>
+  (await db.get('SELECT * FROM installations WHERE id = ? AND org_id = ?', [p.id, orgId])) ?? null;
+const apiKeySnap: Snapshot = async (db, orgId, p) =>
+  (await db.get('SELECT label, created_at, revoked_at, installation_id FROM api_keys WHERE org_id = ? AND substr(token_hash, 1, length(?)) = ?', [orgId, p.tokenHashPreview, p.tokenHashPreview])) ?? null;
+const jiraSnap: Snapshot = async (db, orgId) =>
+  (await db.get('SELECT client_id, client_secret_enc, updated_at FROM org_jira WHERE org_id = ?', [orgId])) ?? null;
 
 const param = (k: string, label: string) => (p: Params) => `${label} ${p[k] ?? ''}`.trim();
 const bodyField = (k: string, label: string) => (_p: Params, req: Request) => (typeof req.body?.[k] === 'string' ? `${label} ${req.body[k]}` : label);
@@ -63,30 +90,30 @@ export const AUDITED_ROUTES: AuditedRoute[] = [
   // Sign-in
   { method: 'PUT', path: '/v1/admin/auth-config', area: 'sign-in', action: 'auth-config.update', target: () => 'sign-in settings', snapshot: authConfigSnap },
   { method: 'POST', path: '/auth/recover', area: 'sign-in', action: 'admin.recover', target: (_p, _r, b) => `admin ${b?.email ?? ''}`.trim(), noBody: true, actorFromReply: b => (b?.id ? { userId: b.id, email: b.email ?? null } : null) },
-  { method: 'POST', path: '/setup/initial-admin', area: 'users', action: 'admin.bootstrap', target: bodyField('email', 'admin'), noBody: true },
+  { method: 'POST', path: '/setup/initial-admin', area: 'users', action: 'admin.bootstrap', target: bodyField('email', 'admin'), noBody: true, source: 'board', actorFromRequest: req => (typeof req.body?.email === 'string' ? { userId: null, email: req.body.email } : null) },
   // API keys and installations
   { method: 'POST', path: '/v1/admin/api-keys', area: 'api-keys', action: 'api-key.issue', target: bodyField('label', 'API key'), noBody: true },
-  { method: 'DELETE', path: '/v1/admin/api-keys/:tokenHashPreview', area: 'api-keys', action: 'api-key.revoke', target: param('tokenHashPreview', 'API key') },
+  { method: 'DELETE', path: '/v1/admin/api-keys/:tokenHashPreview', area: 'api-keys', action: 'api-key.revoke', target: param('tokenHashPreview', 'API key'), snapshot: apiKeySnap },
   { method: 'POST', path: '/hub/device/approve', area: 'api-keys', action: 'device.approve', target: bodyField('userCode', 'device'), noBody: true },
   { method: 'POST', path: '/hub/invite/create', area: 'api-keys', action: 'invite.create', target: () => 'installation invite', noBody: true },
-  { method: 'POST', path: '/hub/invite/redeem', area: 'api-keys', action: 'invite.redeem', target: () => 'installation invite', noBody: true },
-  { method: 'POST', path: '/v1/admin/installations/:id/retire', area: 'installations', action: 'installation.retire', target: param('id', 'installation'), link: '/admin/installations' },
-  { method: 'DELETE', path: '/v1/admin/installations/:id/retire', area: 'installations', action: 'installation.restore', target: param('id', 'installation'), link: '/admin/installations' },
+  { method: 'POST', path: '/hub/invite/redeem', area: 'api-keys', action: 'invite.redeem', target: () => 'installation invite', noBody: true, source: 'cli' },
+  { method: 'POST', path: '/v1/admin/installations/:id/retire', area: 'installations', action: 'installation.retire', target: param('id', 'installation'), snapshot: installationSnap, link: '/admin/installations' },
+  { method: 'DELETE', path: '/v1/admin/installations/:id/retire', area: 'installations', action: 'installation.restore', target: param('id', 'installation'), snapshot: installationSnap, link: '/admin/installations' },
   // People
   { method: 'POST', path: '/v1/admin/users/invite', area: 'users', action: 'user.invite', target: bodyField('email', 'user') },
   { method: 'PUT', path: '/v1/admin/users/:id', area: 'users', action: 'user.update', target: param('id', 'user'), snapshot: userSnap },
   { method: 'DELETE', path: '/v1/admin/users/:id', area: 'users', action: 'user.delete', target: param('id', 'user'), snapshot: userSnap },
-  { method: 'POST', path: '/v1/admin/hidden-users', area: 'people', action: 'person.hide', target: bodyField('userKey', 'person') },
-  { method: 'DELETE', path: '/v1/admin/hidden-users/:userKey', area: 'people', action: 'person.unhide', target: param('userKey', 'person') },
+  { method: 'POST', path: '/v1/admin/hidden-users', area: 'people', action: 'person.hide', target: bodyField('userKey', 'person'), snapshot: hiddenSnap },
+  { method: 'DELETE', path: '/v1/admin/hidden-users/:userKey', area: 'people', action: 'person.unhide', target: param('userKey', 'person'), snapshot: hiddenSnap },
   { method: 'POST', path: '/v1/admin/user-keys/merge', area: 'identities', action: 'identity.merge', target: () => 'identity merge', link: '/admin/identities' },
   { method: 'POST', path: '/v1/admin/user-keys/merges/:id/revert', area: 'identities', action: 'identity.merge-revert', target: param('id', 'merge'), link: '/admin/identities' },
   { method: 'POST', path: '/v1/admin/repoint', area: 'identities', action: 'repoint.start', target: () => 'repoint', link: '/admin/repoint' },
   { method: 'POST', path: '/v1/admin/repoint/:id/close', area: 'identities', action: 'repoint.close', target: param('id', 'repoint'), link: '/admin/repoint' },
   // Models
-  { method: 'PUT', path: '/v1/admin/models/meta', area: 'models', action: 'model.classify', target: bodyField('model', 'model'), link: '/admin/models' },
-  { method: 'DELETE', path: '/v1/admin/models/meta/:model', area: 'models', action: 'model.unclassify', target: param('model', 'model'), link: '/admin/models' },
-  { method: 'POST', path: '/v1/admin/models/mappings', area: 'models', action: 'model.map', target: bodyField('aliasModel', 'alias'), link: '/admin/models' },
-  { method: 'DELETE', path: '/v1/admin/models/mappings/:aliasModel', area: 'models', action: 'model.unmap', target: param('aliasModel', 'alias'), link: '/admin/models' },
+  { method: 'PUT', path: '/v1/admin/models/meta', area: 'models', action: 'model.classify', target: bodyField('model', 'model'), snapshot: modelMetaSnap, link: '/admin/models' },
+  { method: 'DELETE', path: '/v1/admin/models/meta/:model', area: 'models', action: 'model.unclassify', target: param('model', 'model'), snapshot: modelMetaSnap, link: '/admin/models' },
+  { method: 'POST', path: '/v1/admin/models/mappings', area: 'models', action: 'model.map', target: bodyField('aliasModel', 'alias'), snapshot: mappingSnap, link: '/admin/models' },
+  { method: 'DELETE', path: '/v1/admin/models/mappings/:aliasModel', area: 'models', action: 'model.unmap', target: param('aliasModel', 'alias'), snapshot: mappingSnap, link: '/admin/models' },
   // Flows
   { method: 'POST', path: '/v1/admin/flows', area: 'flows', action: 'flow.create', target: (_p, req, b) => `flow ${req.body?.definition?.name ?? ''} (${b?.id ?? '?'})`, snapshot: flowSnap, createdId: b => b?.id ?? null },
   { method: 'PUT', path: '/v1/admin/flows/:id', area: 'flows', action: 'flow.update', target: param('id', 'flow'), snapshot: flowSnap },
@@ -117,11 +144,11 @@ export const AUDITED_ROUTES: AuditedRoute[] = [
   { method: 'DELETE', path: '/v1/admin/federation', area: 'federation', action: 'parent.leave', target: () => 'parent hub' },
   { method: 'PUT', path: '/v1/admin/federation/identity-policy', area: 'federation', action: 'identity-policy.update', target: () => 'identity policy', snapshot: identityPolicySnap },
   { method: 'POST', path: '/hub/federation/invite/create', area: 'federation', action: 'child-hub.invite', target: () => 'child hub invite', noBody: true },
-  { method: 'POST', path: '/v1/federation/enroll', area: 'federation', action: 'child-hub.join', target: (_p, req) => `child hub ${req.body?.name ?? ''}`.trim(), noBody: true },
+  { method: 'POST', path: '/v1/federation/enroll', area: 'federation', action: 'child-hub.join', target: (_p, req) => `child hub ${req.body?.name ?? ''}`.trim(), noBody: true, source: 'federation' },
   { method: 'POST', path: '/v1/federation/release-request', area: 'federation', action: 'child-hub.leave-request', target: () => 'child hub', noBody: true },
   // JIRA (the org's app) and the org itself
-  { method: 'PUT', path: '/v1/admin/jira', area: 'jira', action: 'jira.update', target: () => "the org's JIRA app" },
-  { method: 'POST', path: '/v1/admin/jira/disconnect-all', area: 'jira', action: 'jira.disconnect-all', target: () => 'every JIRA connection' },
+  { method: 'PUT', path: '/v1/admin/jira', area: 'jira', action: 'jira.update', target: () => "the org's JIRA app", snapshot: jiraSnap },
+  { method: 'POST', path: '/v1/admin/jira/disconnect-all', area: 'jira', action: 'jira.disconnect-all', target: () => 'every JIRA connection', noBody: true },
   { method: 'POST', path: '/v1/admin/orgs/rename', area: 'org', action: 'org.rename', target: () => 'org', orgAfter: req => (typeof req.body?.to === 'string' && req.body.to.trim() ? req.body.to.trim() : null) },
 ];
 
@@ -153,88 +180,120 @@ function mountPathOf(layer: any): string {
 /** Every mutating route the app serves, as "METHOD /full/path". */
 export function mutatingRoutesOf(app: Express): string[] {
   const out = new Set<string>();
-  const walk = (stack: any[], prefix: string) => {
-    for (const layer of stack ?? []) {
-      if (layer.route) {
-        const full = `${prefix}${layer.route.path === '/' ? '' : layer.route.path}` || '/';
-        for (const m of Object.keys(layer.route.methods)) {
-          const method = m.toUpperCase();
-          if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) out.add(`${method} ${full}`);
-        }
-      } else if (layer.name === 'router' && layer.handle?.stack) {
-        walk(layer.handle.stack, prefix + mountPathOf(layer));
-      }
+  eachRoute(app, (route, full) => {
+    for (const m of Object.keys(route.methods)) {
+      const method = m.toUpperCase();
+      if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) out.add(`${method} ${full}`);
     }
-  };
-  walk((app as any)._router?.stack ?? [], '');
+  });
   return [...out].sort();
 }
 
-const compiled = AUDITED_ROUTES.map(r => {
-  const names: string[] = [];
-  const re = new RegExp(`^${r.path.replace(/:([A-Za-z]+)/g, (_m, n) => { names.push(n); return '([^/]+)'; })}/?$`);
-  return { route: r, re, names };
-});
+const AUDIT_LAYER = 'configAuditLayer';
 
-function matchRoute(method: string, pathname: string): { route: AuditedRoute; params: Params } | null {
-  for (const c of compiled) {
-    if (c.route.method !== method) continue;
-    const m = c.re.exec(pathname);
-    if (!m) continue;
-    const params: Params = {};
-    c.names.forEach((n, i) => { params[n] = decodeURIComponent(m[i + 1]); });
-    return { route: c.route, params };
-  }
-  return null;
-}
-
-/** Who made a request, from what the guards set on it. */
-async function actorOf(db: DB, req: Request): Promise<{ orgId: string | null; source: AuditSource; actor: { userId: string | null; email: string | null } | null }> {
+/** Who made a request, from what its guard set on it. */
+async function actorOf(db: DB, req: Request): Promise<{ orgId: string | null; source: AuditSource | null; actor: { userId: string | null; email: string | null } | null }> {
   if (req.session) {
     const u = await db.get<{ email: string }>('SELECT email FROM users WHERE id = ?', [req.session.userId]);
     return { orgId: req.session.orgId, source: 'board', actor: { userId: req.session.userId, email: u?.email ?? null } };
   }
   if (req.hubApiKey) return { orgId: req.hubApiKey.orgId, source: 'cli', actor: { userId: null, email: req.hubApiKey.installationId ? `installation ${req.hubApiKey.installationId}` : 'API key' } };
   if (req.hubFederation) return { orgId: req.hubFederation.orgId, source: 'federation', actor: { userId: null, email: `child hub ${req.hubFederation.childHubId}` } };
-  return { orgId: null, source: 'federation', actor: null };
+  return { orgId: null, source: null, actor: null };
+}
+
+/** The org a request acts on: its credential's, else this hub's org as it is now (an org rename changes it). */
+const orgOf = (req: Request, config: { defaultOrgId: string }) =>
+  req.session?.orgId ?? req.hubApiKey?.orgId ?? req.hubFederation?.orgId ?? config.defaultOrgId;
+
+/** The audit layer of one route: before-snapshot now, the row once the handler answers 2xx, before the reply leaves. */
+function auditLayerFor(route: AuditedRoute, db: DB, config: { defaultOrgId: string }) {
+  const layer = async function configAuditLayer(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const params: Params = { ...(req.params as Params) };
+      let before: unknown = null;
+      if (route.snapshot && !route.createdId) {
+        try { before = await route.snapshot(db, orgOf(req, config), params, req); } catch { before = null; }
+      }
+      let replyBody: any = null;
+      const json = res.json.bind(res);
+      res.json = (b: any) => { replyBody = b; return json(b); };
+      const end = res.end.bind(res) as (...a: any[]) => Response;
+      let ended = false;
+      (res as any).end = (...args: any[]) => {
+        if (ended || res.statusCode < 200 || res.statusCode >= 300) return end(...args);
+        ended = true;
+        const record = async () => {
+          const who = await actorOf(db, req);
+          const orgId = route.orgAfter?.(req) ?? who.orgId ?? config.defaultOrgId;
+          const actor = who.actor ?? route.actorFromReply?.(replyBody) ?? route.actorFromRequest?.(req) ?? null;
+          const source: AuditSource = who.source ?? route.source ?? 'system';
+          let after: unknown = null;
+          if (route.snapshot) {
+            const id = route.createdId ? route.createdId(replyBody) : undefined;
+            try { after = id === null ? null : await route.snapshot(db, orgId, id ? { ...params, id } : params, req); } catch { after = null; }
+          } else if (!route.noBody && req.method !== 'DELETE') {
+            after = req.body && typeof req.body === 'object' && Object.keys(req.body).length ? req.body : null;
+          }
+          let target: string | null = null;
+          try { target = route.target ? route.target(params, req, replyBody) : null; } catch { target = null; }
+          await recordAudit(db, { orgId, actor, source, ip: req.ip ?? null, area: route.area, action: route.action, target, before, after, link: route.link ?? null });
+        };
+        record().catch(err => console.error('[HUB] audit:', (err as Error).message)).finally(() => end(...args));
+        return res;
+      };
+    } catch (err) {
+      console.error('[HUB] audit layer:', (err as Error).message);
+    }
+    next();
+  };
+  return layer;
+}
+
+/** Walks the app's routers: every route layer, with the path it is served at. */
+function eachRoute(app: Express, visit: (route: any, fullPath: string) => void): void {
+  const walk = (stack: any[], prefix: string) => {
+    for (const layer of stack ?? []) {
+      if (layer.route) visit(layer.route, `${prefix}${layer.route.path === '/' ? '' : layer.route.path}` || '/');
+      else if (layer.name === 'router' && layer.handle?.stack) walk(layer.handle.stack, prefix + mountPathOf(layer));
+    }
+  };
+  walk((app as any)._router?.stack ?? [], '');
 }
 
 /**
- * The audit middleware. Mounted before the routers: it reads the target's
- * state before the handler runs, then records the row once a 2xx response has
- * finished - by which time the guards have said who made the request.
+ * Puts the audit layer into every audited route, right before its handler -
+ * after the route's guards. Called once routers are mounted. Throws if a
+ * table entry names a route the hub does not serve: an audit that silently
+ * covers nothing is the failure this exists to prevent.
  */
-export function configAuditMiddleware(db: DB, defaultOrgId: string) {
-  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const hit = matchRoute(req.method, req.path);
-    if (!hit) return next();
-    const { route, params } = hit;
-    // The org is known only once a guard has run; the snapshot reads the default org's row, which is this hub's.
-    let before: unknown = null;
-    try { before = route.snapshot && !route.createdId ? await route.snapshot(db, defaultOrgId, params, req) : null; } catch { before = null; }
-    let replyBody: any = null;
-    const json = res.json.bind(res);
-    res.json = (b: any) => { replyBody = b; return json(b); };
-    res.on('finish', () => {
-      if (res.statusCode < 200 || res.statusCode >= 300) return;
-      void (async () => {
-        const who = await actorOf(db, req);
-        const orgId = route.orgAfter?.(req) ?? who.orgId ?? defaultOrgId;
-        const actor = who.actor ?? route.actorFromReply?.(replyBody) ?? null;
-        const source: AuditSource = who.actor ? who.source : route.actorFromReply ? 'board' : who.source;
-        let after: unknown = null;
-        if (route.snapshot) {
-          const id = route.createdId ? route.createdId(replyBody) : undefined;
-          const at = id ? { ...params, id } : params;
-          try { after = id === null ? null : await route.snapshot(db, orgId, at, req); } catch { after = null; }
-        } else if (!route.noBody && req.method !== 'DELETE') {
-          after = req.body && typeof req.body === 'object' && Object.keys(req.body).length ? req.body : null;
-        }
-        let target: string | null = null;
-        try { target = route.target ? route.target(params, req, replyBody) : null; } catch { target = null; }
-        await recordAudit(db, { orgId, actor, source, ip: req.ip ?? null, area: route.area, action: route.action, target, before, after, link: route.link ?? null });
-      })().catch(err => console.error('[HUB] audit middleware:', (err as Error).message));
-    });
-    next();
-  };
+export function installConfigAudit(app: Express, db: DB, config: { defaultOrgId: string }): number {
+  const byKey = new Map(AUDITED_ROUTES.map(r => [`${r.method} ${r.path}`, r]));
+  const installed = new Set<string>();
+  eachRoute(app, (route, full) => {
+    for (const m of Object.keys(route.methods)) {
+      const key = `${m.toUpperCase()} ${full}`;
+      const entry = byKey.get(key);
+      if (!entry || installed.has(key)) continue;
+      const stack: any[] = route.stack;
+      const handlerAt = stack.map(l => l.method).lastIndexOf(m);
+      if (handlerAt === -1) continue;
+      route[m](auditLayerFor(entry, db, config));
+      const added = stack.pop();
+      stack.splice(handlerAt, 0, added);
+      installed.add(key);
+    }
+  });
+  const missing = [...byKey.keys()].filter(k => !installed.has(k));
+  if (missing.length) throw new Error(`config audit: no served route for ${missing.join(', ')}`);
+  return installed.size;
+}
+
+/** The routes carrying an audit layer, as "METHOD /full/path" - for the completeness test. */
+export function auditedRoutesOf(app: Express): string[] {
+  const out = new Set<string>();
+  eachRoute(app, (route, full) => {
+    for (const l of route.stack ?? []) if (l.handle?.name === AUDIT_LAYER) out.add(`${String(l.method).toUpperCase()} ${full}`);
+  });
+  return [...out].sort();
 }

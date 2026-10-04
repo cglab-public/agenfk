@@ -136,15 +136,21 @@ describe('AGENFK_HUB_RESET_ADMIN_EMAIL', () => {
     expect((await recover(token)).status).toBe(200);
   });
 
-  it('a new boot replaces the earlier token', async () => {
+  // BUG 91d2941d (review): this used to pin "a new boot replaces the earlier token". On a hub run as
+  // several instances, or restarted mid-recovery, another boot then withdrew the token the operator was
+  // reading off the log. A token now lives until it is used or expires; boots clear only expired ones.
+  it("another boot does not withdraw a token already logged; an expired one is cleared", async () => {
     await ssoAdmin();
     await boot({ resetAdminEmail: 'sso-admin@x' });
     const first = printedToken();
+    await ctx.db.run('INSERT INTO admin_recovery_tokens (token_hash, user_id, expires_at) VALUES (?, ?, ?)', ['stale', 'nobody', new Date(Date.now() - 1000).toISOString()]);
     await boot({ resetAdminEmail: 'sso-admin@x' });
     const second = printedToken();
     expect(second).toBeTruthy();
     expect(second).not.toBe(first);
-    expect((await recover(first)).status).toBe(401);
+    await boot();
+    expect(await ctx.db.all("SELECT * FROM admin_recovery_tokens WHERE token_hash = 'stale'", [])).toHaveLength(0);
+    expect((await recover(first)).status).toBe(200);
     expect((await recover(second)).status).toBe(200);
   });
 

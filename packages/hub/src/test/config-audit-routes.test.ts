@@ -18,7 +18,7 @@ import { createHubApp } from '../server';
 import { createPasswordUser } from '../auth/password';
 import { issueApiKey } from '../auth/apiKey';
 import { listAudit, type AuditRow } from '../services/configAudit';
-import { AUDITED_ROUTES, AUDIT_EXEMPT_ROUTES, mutatingRoutesOf } from '../services/configAuditRoutes';
+import { AUDITED_ROUTES, AUDIT_EXEMPT_ROUTES, mutatingRoutesOf, auditedRoutesOf } from '../services/configAuditRoutes';
 import { installDispatchedFlow } from '../services/federation/federationSync';
 import { releaseParentFlows } from '../services/federation/parentFlows';
 import { loginAs } from './helpers/loginAs';
@@ -172,5 +172,9 @@ describe('completeness', () => {
     for (const [route, why] of Object.entries(AUDIT_EXEMPT_ROUTES)) expect(why.length, route).toBeGreaterThan(10);
     // Nothing listed that the hub does not serve: a stale entry would hide a renamed route.
     expect([...known].filter(r => !served.includes(r))).toEqual([]);
+  });
+
+  it('every audited route carries its audit layer, in the stack Express runs (BUG 91d2941d)', () => {
+    expect(auditedRoutesOf(app)).toEqual(AUDITED_ROUTES.map(r => `${r.method} ${r.path}`).sort());
   });
 });

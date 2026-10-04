@@ -309,7 +309,10 @@ export async function installDispatchedFlow(db: DB, orgId: string, directive: Fl
   const version = Number(directive.flowVersion ?? flow.version ?? 1);
   if (!Number.isFinite(version)) return false;
 
-  await db.run(
+  // BUG 91d2941d: what was here, so the row shows what a reclaim replaced.
+  const flowRow = () => db.get<any>('SELECT id, name, source, version, org_available FROM flows WHERE id = ?', [flow.id]);
+  const before = await flowRow();
+  const written = await db.run(
     `INSERT INTO flows (id, org_id, name, description, definition_json, source, version, org_available, updated_at)
      VALUES (?, ?, ?, ?, ?, 'parent', ?, 1, ?)
      ON CONFLICT(id) DO UPDATE SET
@@ -334,12 +337,16 @@ export async function installDispatchedFlow(db: DB, orgId: string, directive: Fl
     [flow.id, orgId, flow.name, flow.description ?? null,
      JSON.stringify(flow.definition), version, new Date().toISOString()],
   );
-  // STORY a89af514: a flow the parent placed here, locked to it.
-  await recordAudit(db, {
-    orgId, actor: null, source: 'federation', ip: null, area: 'federation', action: 'flow.dispatch-install',
-    target: `flow ${flow.name} (${flow.id}) v${version}`, before: null,
-    after: { id: flow.id, name: flow.name, version, dispatchId: directive.dispatchId ?? null, definition: flow.definition },
-  });
+  // STORY a89af514: a flow the parent placed here, locked to it - only when the
+  // upsert changed something (a redelivered or older version is a no-op).
+  if (Number(written.changes ?? 0) > 0) {
+    const after = await flowRow();
+    await recordAudit(db, {
+      orgId, actor: null, source: 'federation', ip: null, area: 'federation', action: 'flow.dispatch-install',
+      target: `flow ${flow.name} (${flow.id}) v${version}`, before: before ?? null,
+      after: after ? { ...after, dispatchId: directive.dispatchId ?? null } : null,
+    });
+  }
   return true;
 }
 
@@ -385,8 +392,10 @@ export async function reportFlowDispatch(
  * — the flows stay locked to a parent that is gone until an admin happens to
  * click Leave, which is the exact stranding the release exists to prevent.
  */
-async function revokeAndRelease(db: DB, secretKey: string): Promise<void> {
+async function revokeAndRelease(db: DB, secretKey: string, orgId: string): Promise<void> {
   await markBindingRevoked(db, secretKey);
+  // BUG 91d2941d: the parent letting this hub go is a change of its own, flows held or not.
+  await recordAudit(db, { orgId, actor: null, source: 'federation', ip: null, area: 'federation', action: 'parent.revoked', target: 'parent hub', before: { state: 'active' }, after: { state: 'revoked' } });
   await releaseParentFlows(db);
 }
 
@@ -412,7 +421,7 @@ export async function federationTick(args: TickArgs): Promise<TickResult> {
     pong = await transport.ping({ ...creds, hubVersion });
   } catch (err) {
     if (isRevocation(err)) {
-      await revokeAndRelease(db, secretKey);
+      await revokeAndRelease(db, secretKey, args.orgId ?? DEFAULT_ORG);
       return { ok: false, revoked: true, error: messageOf(err) };
     }
     return { ok: false, error: messageOf(err) };
@@ -425,6 +434,11 @@ export async function federationTick(args: TickArgs): Promise<TickResult> {
   const recognised = told === 'keep' || told === 'pseudonymize';
   if (recognised && told !== binding.identityPolicy) {
     await writeParentBinding(db, secretKey, { ...binding, identityPolicy: told as IdentityPolicy });
+    await recordAudit(db, {
+      orgId: args.orgId ?? DEFAULT_ORG, actor: null, source: 'federation', ip: null, area: 'federation',
+      action: 'identity-policy.parent-update', target: 'identity policy',
+      before: { identityPolicy: binding.identityPolicy ?? null }, after: { identityPolicy: told },
+    });
   }
 
   const result: TickResult = { ok: true, delivered: 0 };
@@ -471,6 +485,14 @@ export async function federationTick(args: TickArgs): Promise<TickResult> {
             db, args.orgId ?? DEFAULT_ORG, directive as UpgradeDispatch,
           );
           result.upgradeFanout = fanout;
+          if (fanout.outcome === 'applied') {
+            await recordAudit(db, {
+              orgId: args.orgId ?? DEFAULT_ORG, actor: null, source: 'federation', ip: null, area: 'upgrades',
+              action: 'upgrade.parent-dispatch', target: `upgrade to ${(directive as UpgradeDispatch).targetVersion ?? '?'}`,
+              before: null, after: { targetVersion: (directive as UpgradeDispatch).targetVersion ?? null, upgraded: fanout.upgraded, directiveId: (fanout as any).directiveId ?? null },
+              link: '/admin/upgrades',
+            });
+          }
           // A refusal is returned as a value, not thrown — but the parent
           // re-serves until the child reports, so a directive this hub will
           // never accept comes back every tick. Surfacing it here is what
@@ -496,7 +518,7 @@ export async function federationTick(args: TickArgs): Promise<TickResult> {
     }
   } catch (err) {
     if (isRevocation(err)) {
-      await revokeAndRelease(db, secretKey);
+      await revokeAndRelease(db, secretKey, args.orgId ?? DEFAULT_ORG);
       return { ok: false, revoked: true, error: messageOf(err) };
     }
     return { ok: false, error: messageOf(err) };
@@ -524,7 +546,7 @@ export async function federationTick(args: TickArgs): Promise<TickResult> {
   try {
     const outcome = await deliverBatch(db, transport, creds, rows);
     if (outcome.revoked) {
-      await revokeAndRelease(db, secretKey);
+      await revokeAndRelease(db, secretKey, args.orgId ?? DEFAULT_ORG);
       return { ok: false, revoked: true, error: outcome.error };
     }
     result.delivered = outcome.delivered;

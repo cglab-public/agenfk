@@ -48,8 +48,10 @@ export interface AuditRow {
   link: string | null;
 }
 
-// A key that names a secret. Booleans (passwordEnabled) and nulls are settings, not secrets.
-const SECRET_KEY = /(secret|password|passwd|token|private|credential|api[-_]?key)/i;
+// A key that names a secret - by name, not by any mention: password_enabled /
+// passwordEnabled are the setting that switches password sign-in, and must read
+// 1 -> 0 (BUG 91d2941d). Booleans and nulls are never secrets either.
+const SECRET_KEY = /(secret|passwd|token|private|credential|api[-_]?key|_enc$|^password$|password_?hash)/i;
 const isSecretValue = (v: unknown) => v !== null && v !== undefined && typeof v !== 'boolean';
 const isPlainObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 

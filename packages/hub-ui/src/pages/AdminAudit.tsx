@@ -98,8 +98,14 @@ export function AdminAudit() {
   const [actor, setActor] = useState('');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
+  // The list shows local times, so a day filter is the viewer's local day, sent as UTC instants (BUG 91d2941d).
+  const localBound = (day: string, end: boolean): string => {
+    const [y, m, d] = day.split('-').map(Number);
+    const t = end ? new Date(y, m - 1, d, 23, 59, 59, 999) : new Date(y, m - 1, d, 0, 0, 0, 0);
+    return Number.isNaN(t.getTime()) ? '' : t.toISOString();
+  };
   const filters: Record<string, string> = Object.fromEntries(
-    Object.entries({ area, actor: actor.trim(), from, to }).filter(([, v]) => v),
+    Object.entries({ area, actor: actor.trim(), from: from ? localBound(from, false) : '', to: to ? localBound(to, true) : '' }).filter(([, v]) => v),
   );
   const qs = new URLSearchParams(filters).toString();
 

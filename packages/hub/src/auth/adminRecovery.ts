@@ -13,8 +13,8 @@ import { findUserByEmail, hashPassword, type UserRow } from './password.js';
  * admin's password and signs them in, whatever the sign-in settings say.
  *
  * Access to the host - its environment and its logs - is the trust boundary;
- * nothing in the app can mint one. The token is single-use, expires, is kept
- * only as a hash, and each boot replaces the last.
+ * nothing in the app can mint one. The token is single-use, expires, and is
+ * kept only as a hash; a boot clears only expired ones.
  */
 export const RECOVERY_TTL_MS = 60 * 60 * 1000;
 export const MIN_PASSWORD_LENGTH = 8;
@@ -27,16 +27,22 @@ const activeAdmin = (user: UserRow | null, orgId: string): UserRow | null =>
 
 export type MintResult = { token: string; email: string; expiresAt: string } | { refused: string };
 
-/** Mints a recovery token for the admin `email` names, replacing any earlier one. */
+/** Mints a recovery token for the admin `email` names; tokens already logged stay until used or expired. */
 export async function mintAdminRecoveryToken(db: DB, orgId: string, email: string, now = Date.now()): Promise<MintResult> {
   const admin = activeAdmin(await findUserByEmail(db, email), orgId);
-  // Every earlier token goes, whoever it was for: one key at a time.
-  await db.run('DELETE FROM admin_recovery_tokens', []);
+  // Only expired tokens go (BUG 91d2941d): another hub instance's boot, or a
+  // restart mid-recovery, must not withdraw the token the operator is reading.
+  await withdrawExpiredRecoveryTokens(db, now);
   if (!admin) return { refused: `no active admin of this hub has the email ${JSON.stringify(email)}` };
   const token = randomBytes(32).toString('base64url');
   const expiresAt = new Date(now + RECOVERY_TTL_MS).toISOString();
   await db.run('INSERT INTO admin_recovery_tokens (token_hash, user_id, expires_at) VALUES (?, ?, ?)', [hashToken(token), admin.id, expiresAt]);
   return { token, email: admin.email, expiresAt };
+}
+
+/** Clears the tokens that can no longer be used. */
+export async function withdrawExpiredRecoveryTokens(db: DB, now = Date.now()): Promise<void> {
+  await db.run('DELETE FROM admin_recovery_tokens WHERE expires_at <= ?', [new Date(now).toISOString()]);
 }
 
 export type RedeemResult = { user: UserRow } | { status: 400 | 401; error: string };
