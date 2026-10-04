@@ -390,6 +390,15 @@ const SCHEMA_SQLITE = `
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- Admin recovery (STORY a44f3697): the token a boot mints for the admin
+  -- AGENFK_HUB_RESET_ADMIN_EMAIL names. Only its sha256 is kept; single-use,
+  -- expires_at an ISO timestamp. See packages/hub/src/auth/adminRecovery.ts.
+  CREATE TABLE IF NOT EXISTS admin_recovery_tokens (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  );
+
   -- People hidden by an admin (CGLAB-31), keyed on events.user_key
   -- (lowercased git email). Membership removes the person from selection
   -- surfaces (installation lists, upgrade targeting, admin actions) and

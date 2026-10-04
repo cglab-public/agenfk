@@ -369,6 +369,13 @@ const SCHEMA_PG = `
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
 
+  -- Admin recovery (STORY a44f3697). See the SQLite schema.
+  CREATE TABLE IF NOT EXISTS admin_recovery_tokens (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  );
+
   -- People hidden by an admin (CGLAB-31). See the SQLite schema for the
   -- full rationale — selection surfaces only, historical data untouched,
   -- reversible by row delete.

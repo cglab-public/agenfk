@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api, MeResponse, ProvidersResponse } from './api';
 import { LoginPage } from './pages/Login';
 import { SetupPage } from './pages/Setup';
+import { RecoverPage } from './pages/Recover';
 import { OrgPage } from './pages/Org';
 import { PrOverviewPage } from './pages/PrOverview';
 import { UserDetailPage } from './pages/UserDetail';
@@ -55,6 +56,7 @@ export function App() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/setup" element={<SetupPage />} />
+      <Route path="/recover" element={<RecoverPage />} />
       <Route path="/connect" element={<RequireAuth><ConnectPage /></RequireAuth>} />
       <Route path="/" element={<RequireAuth><Layout><OrgPage /></Layout></RequireAuth>} />
       <Route path="/prs" element={<RequireAuth><Layout><PrOverviewPage /></Layout></RequireAuth>} />

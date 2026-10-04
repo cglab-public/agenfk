@@ -2,7 +2,7 @@
 // the SQLite test files against the pg-mem backend so the dialect translator
 // gets full coverage of the SQL the hub actually emits at runtime.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import supertest from 'supertest';
 import { backfillUserKeyAliases } from '../services/backfillUserKeyAliases';
 import { createHubApp } from '../server';
@@ -118,6 +118,25 @@ describe('PG parity: auth + setup', () => {
     expect(r.status).toBe(200);
     expect(r.body.password).toBe(true);
     expect(r.body.requiresSetup).toBe(false);
+  });
+
+  it('admin recovery (a44f3697): a token minted at boot signs the admin in once, password sign-in off', async () => {
+    await fx.db.run('UPDATE auth_config SET password_enabled = 0 WHERE org_id = ?', ['org']);
+    const logs: string[] = [];
+    const log = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { logs.push(a.map(String).join(' ')); });
+    const out = await createHubApp({ dbPath: '/tmp/unused-pg-parity.sqlite', secretKey: SECRET, sessionSecret: 'sess-secret', defaultOrgId: 'org', db: fx.db, resetAdminEmail: 'admin@x' } as any);
+    log.mockRestore();
+    const token = logs.find(l => /admin recovery/i.test(l))?.match(/([A-Za-z0-9_-]{40,})/)?.[1];
+    expect(token, logs.join('\n')).toBeTruthy();
+    const srv = out.app.listen(0);
+    try {
+      const r = await supertest(srv).post('/auth/recover').send({ token, password: 'a-new-password-1' });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.headers['set-cookie']?.[0]).toBeTruthy();
+      expect((await supertest(srv).post('/auth/recover').send({ token, password: 'a-new-password-1' })).status).toBe(401);
+    } finally {
+      await new Promise<void>(res => srv.close(() => res()));
+    }
   });
 
   it('GET /auth/me requires session', async () => {

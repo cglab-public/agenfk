@@ -13,6 +13,7 @@ import { jiraAdminRouter, jiraInstallationRouter } from './routes/jira.js';
 import { googleRouter } from './auth/google.js';
 import { entraRouter } from './auth/entra.js';
 import { ensureBootstrapToken } from './auth/bootstrapToken.js';
+import { mintAdminRecoveryToken } from './auth/adminRecovery.js';
 import { queriesRouter } from './routes/queries.js';
 import { connectRouter } from './routes/connect.js';
 import { federationRouter, federationInviteRouter } from './routes/federation.js';
@@ -189,6 +190,31 @@ export async function createHubApp(
       '╚══════════════════════════════════════════════════════════════════════╝',
     ].join('\n');
     console.log(banner);
+  }
+
+  // Admin recovery (STORY a44f3697): a token for the admin the operator named,
+  // logged like the bootstrap token. Each boot replaces the last; without the
+  // variable, any token a previous boot left is withdrawn.
+  if (config.resetAdminEmail) {
+    const minted = await mintAdminRecoveryToken(db, config.defaultOrgId, config.resetAdminEmail);
+    if ('token' in minted) {
+      console.log([
+        '╔══════════════════════════════════════════════════════════════════════╗',
+        '║  AgEnFK Hub — admin recovery (AGENFK_HUB_RESET_ADMIN_EMAIL)          ║',
+        `║  For: ${minted.email.slice(0, 62).padEnd(62)} ║`,
+        '║  Open the hub at /recover and paste this token with a new password:  ║',
+        '║                                                                      ║',
+        `║      ${minted.token.padEnd(62)}  ║`,
+        '║                                                                      ║',
+        `║  Works once, until ${minted.expiresAt.padEnd(50)}║`,
+        '║  Unset AGENFK_HUB_RESET_ADMIN_EMAIL and restart once you are in.     ║',
+        '╚══════════════════════════════════════════════════════════════════════╝',
+      ].join('\n'));
+    } else {
+      console.warn(`[HUB] AGENFK_HUB_RESET_ADMIN_EMAIL is set, but ${minted.refused}: no recovery token was minted.`);
+    }
+  } else {
+    await db.run('DELETE FROM admin_recovery_tokens', []);
   }
 
   const ctx: HubServerContext = { db, config };
@@ -444,6 +470,7 @@ export function configFromEnv(): HubServerConfig & { backend?: HubBackend; pgUrl
     sessionSecret,
     defaultOrgId: process.env.AGENFK_HUB_ORG_ID || 'default',
     forcePasswordLogin: process.env.AGENFK_HUB_FORCE_PASSWORD_LOGIN === '1',
+    resetAdminEmail: process.env.AGENFK_HUB_RESET_ADMIN_EMAIL?.trim() || undefined,
     trustProxy: parseTrustProxy(process.env.AGENFK_HUB_TRUST_PROXY),
     publicUrl: parsePublicUrl(process.env.AGENFK_HUB_PUBLIC_URL),
     backend,
