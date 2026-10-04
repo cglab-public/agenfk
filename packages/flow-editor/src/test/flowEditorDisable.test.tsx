@@ -123,5 +123,17 @@ describe('flow editor: switching checks off (CGLAB-428)', () => {
     await waitFor(() => expect(createFlow).toHaveBeenCalled());
     for (const st of createFlow.mock.calls[0][0].steps as FlowStep[]) expect(st).not.toHaveProperty('disabledChecks');
   });
+
+  it("a hub admin's copy of a hub flow keeps its switched-off checks (890be63f)", async () => {
+    const hub = { ...flowOf(good().steps.map(st => (st.name === 'BUILD' ? { ...st, disabledChecks: ['suite-green'] } : st))), source: 'hub' } as Flow;
+    const createFlow = vi.fn(async (p: Partial<Flow>) => ({ ...hub, ...p, id: 'f2' } as Flow));
+    mount(hub, true, { canDisableChecks: true, flowClientOverrides: { createFlow } });
+    await ready();
+    fireEvent.click(await screen.findByTestId('clone-flow-btn-f1'));
+    fireEvent.click(await screen.findByTestId('save-flow-btn'));
+    await waitFor(() => expect(createFlow).toHaveBeenCalled());
+    const build = (createFlow.mock.calls[0][0].steps as FlowStep[]).find(st => st.name === 'BUILD');
+    expect(build?.disabledChecks).toEqual(['suite-green']);
+  });
 });
 

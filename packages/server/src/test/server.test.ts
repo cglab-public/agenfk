@@ -389,6 +389,20 @@ describe('JIRA Integration', () => {
     }
   });
 
+  // BUG cc26b206: files an older release wrote 0644 are tightened when the
+  // server starts, not only on their next write (a token may sit for months).
+  it.runIf(process.platform !== 'win32')('server start takes an existing config.json and token to 0600', async () => {
+    fs.writeFileSync(jiraTokenPath(), JSON.stringify(testToken));
+    fs.chmodSync(jiraTokenPath(), 0o644);
+    if (!fs.existsSync(jiraConfigPath())) fs.writeFileSync(jiraConfigPath(), '{}');
+    fs.chmodSync(jiraConfigPath(), 0o644);
+    // initStorage is the boot path (server.ts calls it before listening).
+    await initStorage();
+    expect(fs.statSync(jiraTokenPath()).mode & 0o777).toBe(0o600);
+    expect(fs.statSync(jiraConfigPath()).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(fs.readFileSync(jiraTokenPath(), 'utf8'))).toEqual(testToken);
+  });
+
   // ── mapJiraTypeToAgEnFK ──────────────────────────────────────────────────
   describe('mapJiraTypeToAgEnFK', () => {
     it('maps Epic → EPIC', () => expect(mapJiraTypeToAgEnFK('Epic')).toBe('EPIC'));
@@ -485,6 +499,20 @@ describe('JIRA Integration', () => {
       expect(oauthStateStore.size).toBe(1);
     });
 
+    // BUG cc26b206: an abandoned sign-in left its state behind forever, since
+    // only the callback with that same state removed it.
+    it('drops expired states when it issues a new one', async () => {
+      process.env.JIRA_CLIENT_ID = 'test-client-id';
+      process.env.JIRA_CLIENT_SECRET = 'test-secret';
+      oauthStateStore.set('abandoned', { expiresAt: Date.now() - 1 });
+      oauthStateStore.set('pending', { expiresAt: Date.now() + 60_000 });
+      const res = await agent().get('/jira/oauth/authorize');
+      expect(res.status).toBe(302);
+      expect(oauthStateStore.has('abandoned')).toBe(false);
+      expect(oauthStateStore.has('pending')).toBe(true);
+      expect(oauthStateStore.size).toBe(2);
+    });
+
     // ── CGLAB-361 ──────────────────────────────────────────────────────────
     // Atlassian's consent endpoint began returning HTTP 500
     // ({"failedToLoad":true,"error":{"category":"generic"}},
@@ -571,6 +599,34 @@ describe('JIRA Integration', () => {
       const saved = JSON.parse(fs.readFileSync(jiraTokenPath(), 'utf8'));
       expect(saved.cloudId).toBe('cloud-123');
       expect(saved.email).toBe('user@test.com');
+    });
+
+    // BUG cc26b206: the token file holds the access AND refresh token.
+    const connect = async () => {
+      process.env.JIRA_CLIENT_ID = 'cid';
+      process.env.JIRA_CLIENT_SECRET = 'csec';
+      oauthStateStore.set('mode-state', { expiresAt: Date.now() + 60000 });
+      const axios = (await import('axios')).default as any;
+      axios.post.mockResolvedValueOnce({ data: { access_token: 'at', refresh_token: 'rt' } });
+      axios.get.mockResolvedValueOnce({ data: [{ id: 'cloud-123', url: 'https://test.atlassian.net', name: 'Test Cloud' }] });
+      axios.get.mockResolvedValueOnce({ data: { emailAddress: 'user@test.com' } });
+      const old = process.umask(0o022);
+      try {
+        const res = await agent().get('/jira/oauth/callback?code=auth-code&state=mode-state');
+        expect(res.status).toBe(302);
+      } finally { process.umask(old); }
+    };
+
+    it.runIf(process.platform !== 'win32')('saves the token readable by its owner only', async () => {
+      await connect();
+      expect(fs.statSync(jiraTokenPath()).mode & 0o777).toBe(0o600);
+    });
+
+    it.runIf(process.platform !== 'win32')('tightens a token file an older release left 0644', async () => {
+      fs.writeFileSync(jiraTokenPath(), '{}');
+      fs.chmodSync(jiraTokenPath(), 0o644);
+      await connect();
+      expect(fs.statSync(jiraTokenPath()).mode & 0o777).toBe(0o600);
     });
 
     // With PKCE gone, the state nonce is the callback's only protection, so

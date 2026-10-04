@@ -540,7 +540,9 @@ describe('GET /releases/update/:jobId', () => {
 describe('GET /releases/latest', () => {
   it('returns 502 when GitHub API fails', async () => {
     const axios = (await import('axios')).default as any;
-    axios.get.mockRejectedValueOnce(new Error('Network Error'));
+    // Both GitHub requests (latest and the list, BUG 022b229a): either one
+    // alone failing still answers from the other.
+    axios.get.mockRejectedValueOnce(new Error('Network Error')).mockRejectedValueOnce(new Error('Network Error'));
     const res = await agent().get('/releases/latest');
     expect(res.status).toBe(502);
     expect(res.body).toHaveProperty('currentVersion');
@@ -866,6 +868,22 @@ describe('POST /jira/import (with token + mock axios)', () => {
       .post('/jira/import')
       .send({ projectId: p.id, items: [] });
     expect(res.status).toBe(400);
+  }));
+
+  // f36c8a42: an import under a project that does not exist used to mint
+  // cards every later verify failed on.
+  it('refuses a projectId no project has with 404, before asking JIRA for anything', withJiraToken(async () => {
+    await initStorage();
+    const axios = (await import('axios')).default as any;
+    axios.mockClear(); axios.get.mockClear();
+    const res = await agent()
+      .post('/jira/import')
+      .send({ projectId: 'no-such-project', items: [{ issueKey: 'TEST-1', type: 'TASK' }] });
+    expect(res.status).toBe(404);
+    expect(res.body.error).toContain('Project no-such-project not found');
+    expect(axios).not.toHaveBeenCalled();
+    expect(axios.get).not.toHaveBeenCalled();
+    expect(await storage.listItems({ projectId: 'no-such-project' } as any)).toHaveLength(0);
   }));
 
   it('imports a task item', withJiraToken(async () => {

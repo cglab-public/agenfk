@@ -53,11 +53,27 @@ export function toBashPath(p) {
 
 // The hook `command` string to register for Claude Code. `destBase` is the
 // extensionless path (e.g. ~/.local/bin/agenfk-mcp-enforcer); `args` is appended
-// outside the quotes. Off Windows the plain path is kept as-is.
+// outside the quotes. Off Windows a plain path is kept as-is (quoted when it needs it).
 export function buildClaudeHookCommand(destBase, { platform = process.platform, args = '' } = {}) {
   const suffix = args ? ` ${args}` : '';
   if (platform === 'win32') return `"${toBashPath(destBase)}"${suffix}`;
-  return `${destBase}${suffix}`;
+  // af174cdd: a home holding a space or a shell character split the bare path
+  // into words - "No such file or directory", which Claude Code treats as
+  // non-blocking, so every guard silently stopped. Single-quoted then; a plain
+  // path stays as it was.
+  if (/^[A-Za-z0-9_@%+=:,.\/-]+$/.test(destBase)) return `${destBase}${suffix}`;
+  return `'${destBase.replace(/'/g, `'\\''`)}'${suffix}`;
+}
+
+// The command + args `claude mcp add ... -- agenfk <these>` registers for the
+// agenfk MCP server (BUG 3a939855). Claude Code starts an MCP server without a
+// shell, and Node refuses a .cmd/.bat without one (CVE-2024-27980), so on
+// Windows the installer's agenfk.cmd goes through `cmd /c` - the wrapper Claude
+// Code's docs ask for on native Windows. `platform` is required: the caller's
+// choice is the thing that goes wrong. Mirrored in packages/cli/src/mcpCommand.ts.
+export function claudeMcpServerCommand(platform, bin) {
+  if (platform === 'win32' && /\.(cmd|bat)$/i.test(bin)) return ['cmd', '/c', bin, 'mcp'];
+  return [bin, 'mcp'];
 }
 
 // Body of the extensionless POSIX wrapper that forwards to a hook's .mjs. The

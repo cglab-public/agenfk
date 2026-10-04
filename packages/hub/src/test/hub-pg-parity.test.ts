@@ -2,7 +2,7 @@
 // the SQLite test files against the pg-mem backend so the dialect translator
 // gets full coverage of the SQL the hub actually emits at runtime.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import supertest from 'supertest';
 import { backfillUserKeyAliases } from '../services/backfillUserKeyAliases';
 import { createHubApp } from '../server';
@@ -120,12 +120,68 @@ describe('PG parity: auth + setup', () => {
     expect(r.body.requiresSetup).toBe(false);
   });
 
+  it('admin recovery (a44f3697): a token minted at boot signs the admin in once, password sign-in off', async () => {
+    await fx.db.run('UPDATE auth_config SET password_enabled = 0 WHERE org_id = ?', ['org']);
+    const logs: string[] = [];
+    const log = vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => { logs.push(a.map(String).join(' ')); });
+    const out = await createHubApp({ dbPath: '/tmp/unused-pg-parity.sqlite', secretKey: SECRET, sessionSecret: 'sess-secret', defaultOrgId: 'org', db: fx.db, resetAdminEmail: 'admin@x' } as any);
+    log.mockRestore();
+    const token = logs.find(l => /admin recovery/i.test(l))?.match(/([A-Za-z0-9_-]{40,})/)?.[1];
+    expect(token, logs.join('\n')).toBeTruthy();
+    const srv = out.app.listen(0);
+    try {
+      const r = await supertest(srv).post('/auth/recover').send({ token, password: 'a-new-password-1' });
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.headers['set-cookie']?.[0]).toBeTruthy();
+      expect((await supertest(srv).post('/auth/recover').send({ token, password: 'a-new-password-1' })).status).toBe(401);
+    } finally {
+      await new Promise<void>(res => srv.close(() => res()));
+    }
+  });
+
   it('GET /auth/me requires session', async () => {
     const r = await supertest(fx.app).get('/auth/me');
     expect(r.status).toBe(401);
     const r2 = await supertest(fx.app).get('/auth/me').set('Cookie', fx.cookie);
     expect(r2.status).toBe(200);
     expect(r2.body.role).toBe('admin');
+  });
+});
+
+describe('PG parity: config audit log (a89af514)', () => {
+  let fx: Fixture;
+  beforeEach(async () => { fx = await bootHubOnPg(); });
+  afterEach(async () => { try { await fx.db.close(); } catch { /* */ } });
+
+  it('the audit layer records a real change on Postgres, before -> after, with no secret (BUG 91d2941d)', async () => {
+    const r = await supertest(__server).put('/v1/admin/auth-config').set('Cookie', fx.cookie).send({
+      passwordEnabled: false, googleEnabled: true, google: { clientId: 'id.apps.googleusercontent.com', clientSecret: 'pg-shh' },
+    });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    const list = await supertest(__server).get('/v1/admin/audit?area=sign-in').set('Cookie', fx.cookie);
+    const row = list.body.rows[0];
+    expect(row).toMatchObject({ action: 'auth-config.update', actorEmail: 'admin@x', source: 'board' });
+    expect(Number(row.before.password_enabled)).toBe(1);
+    expect(Number(row.after.password_enabled)).toBe(0);
+    expect(JSON.stringify(list.body)).not.toContain('pg-shh');
+  });
+
+  it('records, filters, pages and exports on Postgres', async () => {
+    const { recordAudit } = await import('../services/configAudit');
+    for (let i = 0; i < 3; i++) {
+      await recordAudit(fx.db, { orgId: 'org', actor: { userId: 'u', email: 'admin@x' }, source: 'board', ip: null, area: i === 2 ? 'sign-in' : 'flows', action: `a${i}`, target: null, before: null, after: { clientSecret: 'shh', n: i }, at: `2026-10-0${i + 1}T00:00:00.000Z` });
+    }
+    const r = await supertest(__server).get('/v1/admin/audit?area=flows&limit=1').set('Cookie', fx.cookie);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.rows.map((x: any) => x.action)).toEqual(['a1']);
+    const next = await supertest(__server).get(`/v1/admin/audit?area=flows&limit=1&cursor=${encodeURIComponent(r.body.next)}`).set('Cookie', fx.cookie);
+    expect(next.body.rows.map((x: any) => x.action)).toEqual(['a0']);
+    expect(JSON.stringify(next.body)).not.toContain('shh');
+    expect((await supertest(__server).get('/v1/admin/audit?actor=ADMIN%40').set('Cookie', fx.cookie)).body.rows).toHaveLength(3);
+    expect((await supertest(__server).get('/v1/admin/audit?actor=nobody_100%25').set('Cookie', fx.cookie)).body.rows).toHaveLength(0);
+    const csv = await supertest(__server).get('/v1/admin/audit.csv?from=2026-10-02').set('Cookie', fx.cookie);
+    expect(csv.status).toBe(200);
+    expect(csv.text.trim().split(/\r?\n/)).toHaveLength(3);
   });
 });
 

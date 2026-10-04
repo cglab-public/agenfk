@@ -369,6 +369,31 @@ const SCHEMA_PG = `
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
 
+  -- Admin recovery (STORY a44f3697). See the SQLite schema.
+  CREATE TABLE IF NOT EXISTS admin_recovery_tokens (
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  );
+
+  -- Config audit log (STORY a89af514). See the SQLite schema.
+  CREATE TABLE IF NOT EXISTS config_audit (
+    id TEXT PRIMARY KEY,
+    org_id TEXT NOT NULL,
+    at TEXT NOT NULL,
+    actor_user_id TEXT,
+    actor_email TEXT,
+    source TEXT NOT NULL,
+    ip TEXT,
+    area TEXT NOT NULL,
+    action TEXT NOT NULL,
+    target TEXT,
+    before_json TEXT,
+    after_json TEXT,
+    link TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_config_audit_org_at ON config_audit(org_id, at, id);
+
   -- People hidden by an admin (CGLAB-31). See the SQLite schema for the
   -- full rationale — selection surfaces only, historical data untouched,
   -- reversible by row delete.

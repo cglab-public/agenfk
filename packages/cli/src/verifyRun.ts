@@ -1,8 +1,11 @@
-// Follow loop for async validate runs (CGLAB-10), shared by `agenfk verify`
-// and the MCP validate_progress path. Dependency-injected (poll/onOutput) so
+// Follow loop for async validate runs (CGLAB-10), used by `agenfk verify`.
+// The MCP server follows runs with its own loop (server/src/index.ts) on the
+// same poll schedule (core nextPollDelay, cc5e4943). Dependency-injected (poll/onOutput) so
 // it is unit-testable without HTTP. Deliberately has NO overall deadline — a
 // verifyCommand may legitimately run for an hour; only *consecutive* poll
 // failures abort, and that error says the run may still be in progress.
+
+import { nextPollDelay } from '@agenfk/core';
 
 export interface RunSnapshot {
   status: 'running' | 'passed' | 'failed';
@@ -18,8 +21,15 @@ export interface FollowOptions {
   poll: () => Promise<RunSnapshot>;
   /** Receives only the NEW portion of output on each poll. */
   onOutput: (chunk: string) => void;
-  /** Delay between polls (default 1500ms). */
+  /**
+   * The longest delay between polls (default 1500ms). A running run is polled
+   * after 100ms, then twice as long each time up to this (cc5e4943): a quick
+   * verify returns in a fraction of a second, a long one is not polled harder.
+   * A poll error always waits this long before the retry.
+   */
   intervalMs?: number;
+  /** Test seam: how a delay is waited. */
+  sleep?: (ms: number) => Promise<void>;
   /** Consecutive poll failures tolerated before giving up (default 10). */
   maxConsecutiveErrors?: number;
 }
@@ -28,6 +38,8 @@ const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 export async function followValidateRun(opts: FollowOptions): Promise<RunSnapshot> {
   const intervalMs = opts.intervalMs ?? 1500;
+  const wait = opts.sleep ?? sleep;
+  let nextDelay = nextPollDelay(undefined, intervalMs);
   const maxConsecutiveErrors = opts.maxConsecutiveErrors ?? 10;
   let emitted = 0;
   let consecutiveErrors = 0;
@@ -52,7 +64,7 @@ export async function followValidateRun(opts: FollowOptions): Promise<RunSnapsho
           `The run may still be in progress on the server — check the item's comments before re-running verify.`,
         );
       }
-      await sleep(intervalMs);
+      await wait(intervalMs);
       continue;
     }
 
@@ -62,6 +74,7 @@ export async function followValidateRun(opts: FollowOptions): Promise<RunSnapsho
       emitted = output.length;
     }
     if (snapshot.status !== 'running') return snapshot;
-    await sleep(intervalMs);
+    await wait(nextDelay);
+    nextDelay = nextPollDelay(nextDelay, intervalMs);
   }
 }

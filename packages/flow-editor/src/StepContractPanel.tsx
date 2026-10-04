@@ -125,7 +125,8 @@ export const StepContractPanel: React.FC<StepContractPanelProps> = ({ step, step
     return c.id === 'human-approval' && c.params.signature === 'passkey' ? `${must}, signed with a passkey` : must;
   }).filter(Boolean);
   const warns = preview.filter(c => c.severity === 'warn').map(c => titleOf(c.id));
-  const notRun = (stepContract?.disabled ?? []).map(c => titleOf(c.id.split(':')[0]));
+  // 890be63f: the terminal step is never left, so the checks every step runs never run there - switched off or not.
+  const notRun = (stepContract?.disabled ?? []).filter(c => !(terminal && c.source === 'universal')).map(c => titleOf(c.id.split(':')[0]));
   // The same rule the gatekeeper and verify give the agent (CGLAB-388), from
   // the server's contract: it knows where the move ends the flow and the
   // close commit takes the work instead.

@@ -8,10 +8,15 @@ export default defineConfig({
     __AGENFK_VERSION__: JSON.stringify('test'),
   },
   test: {
+    // The root run's project name for the board (4ac25844).
+    name: 'ui',
     // HOME isolation (item 9c297075) — defense in depth: the UI specs do no
     // home fs writes today, but a future one would land in the sandbox.
     env: testEnv(),
     environment: 'jsdom',
+    // Never concurrent within a file (4ac25844 -> core vitestParallelism.test.ts): the specs share one
+    // jsdom document, so concurrent tests collide renders. Pinned here now that the root run carries it.
+    sequence: { concurrent: false },
     setupFiles: ['./src/test/setup.ts'],
     globals: true,
     /*

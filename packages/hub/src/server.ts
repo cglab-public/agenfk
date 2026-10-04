@@ -13,6 +13,9 @@ import { jiraAdminRouter, jiraInstallationRouter } from './routes/jira.js';
 import { googleRouter } from './auth/google.js';
 import { entraRouter } from './auth/entra.js';
 import { ensureBootstrapToken } from './auth/bootstrapToken.js';
+import { installConfigAudit } from './services/configAuditRoutes.js';
+import { auditRouter } from './routes/audit.js';
+import { mintAdminRecoveryToken, withdrawExpiredRecoveryTokens } from './auth/adminRecovery.js';
 import { queriesRouter } from './routes/queries.js';
 import { connectRouter } from './routes/connect.js';
 import { federationRouter, federationInviteRouter } from './routes/federation.js';
@@ -191,6 +194,31 @@ export async function createHubApp(
     console.log(banner);
   }
 
+  // Admin recovery (STORY a44f3697): a token for the admin the operator named,
+  // logged like the bootstrap token. A boot clears only expired tokens: another
+  // instance's boot must not withdraw the one being read off the log.
+  if (config.resetAdminEmail) {
+    const minted = await mintAdminRecoveryToken(db, config.defaultOrgId, config.resetAdminEmail);
+    if ('token' in minted) {
+      console.log([
+        '╔══════════════════════════════════════════════════════════════════════╗',
+        '║  AgEnFK Hub — admin recovery (AGENFK_HUB_RESET_ADMIN_EMAIL)          ║',
+        `║  For: ${minted.email.slice(0, 62).padEnd(62)} ║`,
+        '║  Open the hub at /recover and paste this token with a new password:  ║',
+        '║                                                                      ║',
+        `║      ${minted.token.padEnd(62)}  ║`,
+        '║                                                                      ║',
+        `║  Works once, until ${minted.expiresAt.padEnd(50)}║`,
+        '║  Unset AGENFK_HUB_RESET_ADMIN_EMAIL and restart once you are in.     ║',
+        '╚══════════════════════════════════════════════════════════════════════╝',
+      ].join('\n'));
+    } else {
+      console.warn(`[HUB] AGENFK_HUB_RESET_ADMIN_EMAIL is set, but ${minted.refused}: no recovery token was minted.`);
+    }
+  } else {
+    await withdrawExpiredRecoveryTokens(db);
+  }
+
   const ctx: HubServerContext = { db, config };
 
   const app = express();
@@ -221,10 +249,15 @@ export async function createHubApp(
   app.use('/setup', setupRouter(ctx));
   app.use('/v1/admin', adminRouter(ctx));
   app.use('/v1/admin', orgRenameRouter(ctx));
+  app.use('/v1/admin', auditRouter(ctx));
   app.use('/v1', queriesRouter(ctx));
   app.use('/hub', connectRouter(ctx));
   app.use('/hub/federation', federationInviteRouter(ctx));
   app.use('/v1/federation', federationRouter(ctx));
+  // Config audit log (STORY a89af514, BUG 91d2941d): an audit layer inside each
+  // audited route, after its guards. `config`, not its value: an org rename
+  // changes defaultOrgId at runtime.
+  installConfigAudit(app, db, config);
   // One-time rewrite of historical bare-osUser identity keys. Reported rather
   // than silent: it can SPLIT a key that two machines shared, which changes what
   // the dashboards show — deliberately, since those were never one person.
@@ -276,7 +309,7 @@ export async function createHubApp(
   const stopFederation = startFederationSync({
     db, secretKey: config.secretKey, hubVersion: HUB_VERSION,
     // Which org a flow dispatched by the parent lands in: this hub's own.
-    orgId: config.defaultOrgId,
+    orgId: () => config.defaultOrgId,
     // Both undefined in production, where the worker builds its own HTTP
     // transport and ticks once a minute.
     transport: config.federationTransport as any,
@@ -355,7 +388,12 @@ export async function createHubApp(
  */
 export function hubErrorHandler(err: any, _req: Request, res: Response, _next: NextFunction): void {
   console.error('[HUB_ERROR]', err?.message ?? err);
-  if (res.headersSent) return;
+  // An audited reply whose row is still being written has been sent as far as the handler knows (BUG 915f76ed).
+  if (res.headersSent || res.locals?.auditReplyPending) return;
+  // A client error Express or body-parser raised (an undecodable %-escape in a
+  // path param, malformed JSON) keeps its 4xx; its message names no table.
+  const status = Number.isInteger(err?.status) && err.status >= 400 && err.status < 500 ? err.status : 500;
+  if (status < 500) { res.status(status).json({ error: err?.expose === false ? 'bad request' : (err?.message ?? 'bad request') }); return; }
   const body = process.env.NODE_ENV === 'production'
     ? 'internal error'
     : (err?.message ?? 'internal error');
@@ -444,6 +482,7 @@ export function configFromEnv(): HubServerConfig & { backend?: HubBackend; pgUrl
     sessionSecret,
     defaultOrgId: process.env.AGENFK_HUB_ORG_ID || 'default',
     forcePasswordLogin: process.env.AGENFK_HUB_FORCE_PASSWORD_LOGIN === '1',
+    resetAdminEmail: process.env.AGENFK_HUB_RESET_ADMIN_EMAIL?.trim() || undefined,
     trustProxy: parseTrustProxy(process.env.AGENFK_HUB_TRUST_PROXY),
     publicUrl: parsePublicUrl(process.env.AGENFK_HUB_PUBLIC_URL),
     backend,

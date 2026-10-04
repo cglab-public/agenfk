@@ -17,6 +17,7 @@ import {
 } from '../auth/session.js';
 import { rateLimit, FailedAttemptTracker, sessionUserKey } from '../util/rateLimit.js';
 import { asyncRoute } from '../util/asyncRoute.js';
+import { redeemAdminRecoveryToken } from '../auth/adminRecovery.js';
 
 // Brute-force defences for password login (Security: bug 210b3d34):
 //  - per-IP rate limit so one source can't fire unlimited attempts
@@ -116,6 +117,21 @@ export function authRouter(ctx: HubServerContext): Router {
     await recordLogin(ctx.db, user.id);
     const token = signSession({ userId: user.id, orgId: user.org_id, role: user.role }, ctx.config.sessionSecret);
     setSessionCookie(res, token);
+    res.json({ id: user.id, email: user.email, role: user.role, orgId: user.org_id });
+  }));
+
+  // Admin recovery (STORY a44f3697): the token a boot logged for the admin
+  // AGENFK_HUB_RESET_ADMIN_EMAIL names. Deliberately ahead of the sign-in
+  // settings - it exists for when they lock everyone out.
+  const recoverRateLimit = rateLimit({ windowMs: LOGIN_WINDOW_MS, max: 20, message: 'Too many recovery attempts, try again later.' });
+  router.post('/recover', recoverRateLimit, asyncRoute(async (req: Request, res: Response) => {
+    const { token, password } = req.body ?? {};
+    const out = await redeemAdminRecoveryToken(ctx.db, ctx.config.defaultOrgId, token, password);
+    if ('status' in out) return res.status(out.status).json({ error: out.error });
+    const user = out.user;
+    await recordLogin(ctx.db, user.id);
+    setSessionCookie(res, signSession({ userId: user.id, orgId: user.org_id, role: user.role }, ctx.config.sessionSecret));
+    console.warn(`[HUB] Admin recovery: ${user.email} signed in with a recovery token and set a new password.`);
     res.json({ id: user.id, email: user.email, role: user.role, orgId: user.org_id });
   }));
 

@@ -17,7 +17,7 @@ import { retainSuperseded, withRecordRetention } from './recordRetention';
 import { compactAuthored, expandAuthored } from './authoredRecord';
 import { pruneStepRecords } from './pruneRecords';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { readProjectFile, approvalFor, commandFingerprint, hiddenCharacters, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
+import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, approvalFor, commandFingerprint, hiddenCharacters, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -960,7 +960,20 @@ const syncParentStatus = async (parentId: string, how: RollUp = {}) => {
   if (newStatus) {
     const timestamp = new Date().toISOString();
     console.log(`[${timestamp}] [AUTO_SYNC] Updating parent ${parent.id} (${parent.title}) to ${newStatus}`);
-    await storage.updateItem(parent.id, { status: newStatus });
+    // 890be63f: the walk stops at the parent's review (above), so a review the
+    // hub switched off is what let it through. It leaves the exit row verify
+    // would, so the PR lists it for the parent too. Only that check: the walk
+    // never runs a step's other checks, switched off or not. No head or actor:
+    // nothing ran and nobody advanced it.
+    const from = orderOf(parent.status);
+    const to = orderOf(newStatus);
+    const walked = from === null || to === null ? [] : ordered.slice(from, to)
+      .map(st => ({ step: st.name, disabled: disabledChecksOf(parentFlow.steps, st.name).filter(c => c.id === 'review-record') }))
+      .filter(w => w.disabled.length > 0)
+      .map(w => ({ step: w.step, kind: 'exit' as const, at: timestamp, walked: true, disabled: w.disabled }));
+    // Read again for the append (BUG 91d2941d): a verify or record may have landed on the parent since it was read above.
+    const fresh: any = walked.length ? await storage.getItem(parent.id) : null;
+    await storage.updateItem(parent.id, { status: newStatus, ...(walked.length ? { stepRecords: [...((fresh ?? parent as any).stepRecords ?? []), ...walked] } : {}) } as any);
     io.emit('items_updated');
     recordMoveEvents(parent, parent.status, newStatus, parentFlow);
   }
@@ -1430,6 +1443,7 @@ export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null
 // ── Storage initialisation ───────────────────────────────────────────────────
 
 const initStorage = async () => {
+  tightenSecretFiles();
   // Priority: env var → ~/.agenfk/config.json → default
   if (process.env.AGENFK_DB_PATH) {
     dbPath = process.env.AGENFK_DB_PATH;
@@ -4040,7 +4054,8 @@ const reportOwnedOf = (root: string, project: any): string[] => reportsOwned(roo
  */
 const treeStateOf = (root: string, project: any): string | null => {
   const t = treeFiles(root, reportOwnedOf(root, project));
-  return t && t.shareable ? t.hash : null;
+  // 19e660ac: and what lies beside a subdirectory project's root.
+  return t && t.shareable ? sharedState(t.hash, outsideContent(root)) : null;
 };
 /**
  * The state a command check's pass is shared at (3ffc9651 review): the files,
@@ -4056,12 +4071,14 @@ const commandStateOf = (root: string, project: any): string | null => {
 /**
  * 32045202: the state capture REUSE compares - the tree's files with the
  * report aside AND the project's reuse-ignore globs (default: every Markdown
- * file) left out, except a file some test names. Only reuse reads it; the
- * record's filesState, the final step and command checks keep every file.
+ * file) left out, except a file some test names. Reuse reads it - at the final
+ * step too (ef1342b8) - while the record's filesState and command checks keep every file.
  * Null when the tree cannot be read, or nothing may be shared on it.
  */
-function suiteStateOf(root: string, setting: TestReportSetting | undefined, read?: TreeRead | null): string | null {
+function suiteStateOf(root: string, setting: TestReportSetting | undefined, read?: TreeRead | null, outsideGiven?: string | null): string | null {
   if (!setting) return null;
+  // Read only when asked for and not handed in (BUG 91d2941d): null handed in means "not shareable".
+  const outside = outsideGiven === undefined ? outsideContent(root) : outsideGiven;
   // de5e5a03: from the caller's read when it has one - a fenced run's, so the state is the content it ran on.
   const tree = read === undefined ? treeFiles(root, reportsOwned(root, setting)) : read;
   if (!tree || !tree.shareable) return null;
@@ -4083,7 +4100,8 @@ function suiteStateOf(root: string, setting: TestReportSetting | undefined, read
       }
     } catch { return null; }
   }
-  return hashEntries(Object.entries(tree.files).filter(([rel]) => !ignored.has(rel)));
+  // 19e660ac: what lies beside a subdirectory project's root is content too.
+  return sharedState(hashEntries(Object.entries(tree.files).filter(([rel]) => !ignored.has(rel))), outside);
 }
 /**
  * How a record's tree states were hashed (de5e5a03). Before `--relative`, a
@@ -4268,7 +4286,8 @@ export async function stampCloseGreen(itemId: string, root: string, sha: string)
   const runs = (item.stepRecords ?? []).filter((r: any) => isOwnRun(r, setting, root) && stateOfRecord(r) !== null);
   if (!runs.length) return null;
   if (readCleanTreeSha(root, gitRun) !== sha) return null;
-  const files = treeFilesState(root, reportsOwned(root, setting));
+  // 19e660ac: compared with a stamped filesState, so the content beside the root counts the same way.
+  const files = sharedState(treeFilesState(root, reportsOwned(root, setting)), outsideContent(root));
   if (!files) return null;
   const last = [...runs].reverse().find((r: any) => stateOfRecord(r) === files);
   if (!last || !capturedGreen(last)) return null;
@@ -4377,18 +4396,24 @@ const OUTSIDE_MAX_FILES = 2000;
  * taken with that work beside it.
  */
 function outsideState(root: string, head: string): string | null {
+  const beside = outsideEntries(root, head);
+  return beside === null ? null : beside.length ? hashEntries(beside) : '';
+}
+
+/** outsideState's entries, by repository path: `<mode>:<blob>`, `160000:<commit>`, or 'absent'. [] when nothing differs. */
+function outsideEntries(root: string, head: string): [string, string][] | null {
   try {
     const run = (args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 64 * 1024 * 1024 });
     const prefix = run(['rev-parse', '--show-prefix']).trim();
     // c03ae9f7: a project at the repository's top has nothing beside it.
-    if (!prefix) return '';
+    if (!prefix) return [];
     const top = run(['rev-parse', '--show-toplevel']).trim();
     const names = new Set([
       // --no-relative (c03ae9f7): a user's diff.relative would list only what is under `root`.
       ...run(['diff', '--no-relative', '--no-renames', '--name-only', '-z', head]).split('\0'),
       ...run(['ls-files', '-z', '--others', '--exclude-standard', '--full-name', '--', ':/']).split('\0'),
     ].filter(f => f && !f.startsWith(prefix)).map(f => (f.endsWith('/') ? f.slice(0, -1) : f)));
-    if (!names.size) return '';
+    if (!names.size) return [];
     if (names.size > OUTSIDE_MAX_FILES) return null;
     const entries: [string, string][] = [];
     for (const f of names) {
@@ -4405,10 +4430,67 @@ function outsideState(root: string, head: string): string | null {
         entries.push([f, `160000:${sub(['rev-parse', 'HEAD']).trim()}`]);
       } else return null;   // anything else cannot be told apart from itself changed: no partial run
     }
-    return hashEntries(entries);
+    return entries;
   } catch {
     return null;
   }
+}
+
+/**
+ * 19e660ac — the content OUTSIDE a subdirectory project's root, as one hash:
+ * HEAD's tree there, overlaid with the work beside the root (outsideEntries),
+ * so it names bytes, not commits - another agent committing exactly what it
+ * had leaves it unchanged, a commit of anything else changes it. '' for a
+ * project at the repository's top, which has nothing beside it. Null when it
+ * cannot be read: nothing is shared then.
+ */
+// BUG 91d2941d (review): HEAD's tree outside a root, per root, for the HEAD it was read at. Listing the
+// whole repository is the costly part and HEAD rarely moves within a verify, which reads this several times.
+const outsideBaseCache = new Map<string, { head: string; files: Map<string, string>; hash: string }>();
+const OUTSIDE_BASE_CACHE_MAX = 16;
+
+function outsideContent(root: string): string | null {
+  try {
+    const run = (args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 256 * 1024 * 1024 });
+    const prefix = run(['rev-parse', '--show-prefix']).trim();
+    if (!prefix) return '';
+    const head = run(['rev-parse', 'HEAD']).trim();
+    let base = outsideBaseCache.get(root);
+    if (!base || base.head !== head) {
+      const files = new Map<string, string>();
+      // <mode> SP <type> SP <object> TAB <path>
+      for (const line of run(['ls-tree', '-r', '-z', '--full-tree', head]).split('\0')) {
+        const tab = line.indexOf('\t');
+        if (tab === -1) continue;
+        const rel = line.slice(tab + 1);
+        if (rel.startsWith(prefix)) continue;
+        const [mode, , object] = line.slice(0, tab).split(' ');
+        files.set(rel, `${mode}:${object}`);
+      }
+      base = { head, files, hash: hashEntries(files) };
+      if (outsideBaseCache.size >= OUTSIDE_BASE_CACHE_MAX) outsideBaseCache.clear();
+      outsideBaseCache.set(root, base);
+    }
+    const beside = outsideEntries(root, head);
+    if (beside === null) return null;
+    // Nothing differs beside the root: HEAD's content there, already hashed.
+    if (!beside.length) return base.hash;
+    const files = new Map(base.files);
+    for (const [rel, v] of beside) {
+      if (v === 'absent') files.delete(rel);
+      else files.set(rel, v);
+    }
+    return hashEntries(files);
+  } catch {
+    return null;
+  }
+}
+
+/** 19e660ac: a root's files state with what lies beside it folded in; unchanged for a top-level project (outside ''). */
+function sharedState(files: string | null | undefined, outside: string | null): string | null {
+  if (!files || outside === null) return null;
+  if (outside === '') return files;
+  return crypto.createHash('sha256').update(`${files}\0outside\0${outside}`).digest('hex');
 }
 
 /**
@@ -4552,6 +4634,8 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
   const stateBefore = treeContentState(root, owned);
   // de5e5a03/83c1cbca: the work beside `root` as the run starts - read on both sides, so a change meanwhile counts.
   const besideBefore = typeof record.head === 'string' ? outsideState(root, record.head) : null;
+  // 19e660ac: and the content beside the root, which the shared states fold in - only when it held still.
+  const outsideBefore = outsideContent(root);
   // The plan was made before the run was fenced: the tree must still be what it saw.
   if (lazy && JSON.stringify(changedSinceEntry(root, lazy.entry, owned)) !== JSON.stringify({ inside: lazy.changed, outside: false })) return null;
   if (lazy) {
@@ -4574,7 +4658,11 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
         throw new Error('the tree changed while the command ran, so the results cannot be tied to it');
       }
       // What the run saw, without HEAD: a close that commits exactly this can re-stamp it (e99b5015).
-      record.filesState = stateAfter.slice(stateAfter.indexOf(':') + 1);
+      // 19e660ac: with the content beside a subdirectory root, when it did not change during the run; else no state.
+      const outsideAfter = outsideContent(root);
+      const outsideHeld = outsideBefore !== null && outsideBefore === outsideAfter ? outsideAfter : null;
+      const filesState = sharedState(stateAfter.slice(stateAfter.indexOf(':') + 1), outsideHeld);
+      if (filesState) record.filesState = filesState;
       record.stateVersion = STATE_VERSION;
       // 6e0d2fd6: which file held what, for the next step's partial run.
       record.fileShas = after!.tree.files;
@@ -4582,7 +4670,7 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
       const besideAfter = typeof record.head === 'string' ? outsideState(root, record.head) : null;
       if (besideBefore !== null && besideBefore === besideAfter) record.outsideState = besideAfter;
       // 32045202: what reuse compares, docs no test names aside.
-      const suite = suiteStateOf(root, setting, after!.tree);
+      const suite = suiteStateOf(root, setting, after!.tree, outsideHeld);
       if (suite) record.suiteState = suite;
       // Each report the command should have written, read as one run's results.
       // One that is missing says which: a suite that crashed before writing its
@@ -6911,6 +6999,10 @@ export const buildExternalRefUpdates = async (
   return { updates, warning };
 };
 
+/** f36c8a42: the one refusal for a card asked to live under a project that does not exist. */
+const unknownProjectError = (projectId: string) =>
+  `Project ${projectId} not found. Run \`agenfk list-projects\` for the ids that exist.`;
+
 app.post("/items", asyncHandler(async (req: any, res: any) => {
   console.log(`[API_DEBUG] POST /items body keys: ${Object.keys(req.body).join(', ')}`);
   const { type, title, description, parentId, status, implementationPlan, projectId } = req.body;
@@ -6922,14 +7014,21 @@ app.post("/items", asyncHandler(async (req: any, res: any) => {
   if (!projectId) {
     return res.status(400).json({ error: "ProjectId is required" });
   }
+  if (typeof projectId !== 'string') {
+    return res.status(400).json({ error: "ProjectId must be a string" });
+  }
+
+  // f36c8a42: a card under a project that does not exist cannot be verified -
+  // refuse it here rather than mint a card every later verify chokes on.
+  const createProject: any = await storage.getProject(projectId);
+  if (!createProject) {
+    return res.status(404).json({ error: unknownProjectError(projectId) });
+  }
 
   // A brand-new id can have no descendants, so pass itemId=null: existence and
   // project-match still apply, the cycle walk is skipped as impossible.
   // Resolve the project's flow so a create cannot mint a completed item.
-  const createFlowForStatus = getActiveFlow(
-    (await storage.getProject(projectId) as any)?.flowId,
-    await storage.listFlows(),
-  );
+  const createFlowForStatus = getActiveFlow(createProject.flowId, await storage.listFlows());
 
   const createParentError = await validateParentAssignment(null, projectId, parentId);
   if (createParentError) return res.status(400).json({ error: createParentError });
@@ -8178,6 +8277,35 @@ export function ownCaptureGreenOf(capture: any, command: string, root: string | 
   return state !== null && treeStateOf(root, project) === state ? capture : null;
 }
 
+/**
+ * ef1342b8: a green of this tree's content already on record that stands for
+ * the verify command on the move that ends the flow, or null. The card's own
+ * earlier capture, a sibling's, the previous card's close: a whole, fenced,
+ * per-test green of the same command in the same root, matched on every file
+ * or on every file but the reuse-ignored ones (the user's call, 2026-10-03:
+ * a docs-only card closes without a run). Read afresh from the tree, so a
+ * capture reused earlier on this move counts only if the tree still matches.
+ * Like a capture's green, it needs a report with paths (only fenced runs
+ * carry a state) and the report's command to BE the verify command.
+ */
+async function closeGreenOnRecord(item: any, project: any, root: string | null | undefined, command: string): Promise<{ green: any; state: string; sha: string | null } | null> {
+  const setting: TestReportSetting | undefined = project?.testReport;
+  if (!root || !setting || reportPathsOf(setting).length === 0) return null;
+  if (effectiveVerifyCommand(project).command !== command) return null;
+  // ONE read of the tree: the state matched and the state recorded must be the same content (review: an agent
+  // sharing the tree could save a file between two reads, and the close would record its untested edit as green).
+  const sha = readCleanTreeSha(root, gitRun);
+  const read = treeFiles(root, reportOwnedOf(root, project));
+  // HEAD read again after the files: a commit between the two reads would tie this content to the wrong commit.
+  if (!read || !read.shareable || readCleanTreeSha(root, gitRun) !== sha) return null;
+  // 19e660ac: one read of what lies beside a subdirectory root, for both states.
+  const outside = outsideContent(root);
+  const state = sharedState(read.hash, outside);
+  if (!state) return null;
+  const green = await reusableCapture(item, project, root, sha, state, suiteStateOf(root, setting, read, outside));
+  return green && green.available === true && capturedGreen(green) ? { green, state, sha } : null;
+}
+
 async function entryCaptureOf(item: any, sorted: any[], index: number): Promise<any | null> {
   const prevStep = sorted[index - 1];
   if (!prevStep || ['testing', 'refactoring'].includes((sorted[index] as any)?.role)) return null;
@@ -8304,9 +8432,9 @@ async function leavePlanFor(item: any, flow: { steps: any[]; verifyAt?: unknown 
   else if (refuses === 'NO_VERIFY_COMMAND') parts.push(`Leaving ${step} needs the project's verify command, and none is set: verify will refuse until one is (\`agenfk update-project <id> --verify-command "<cmd>"\`).`);
   else if (refuses === 'NO_TREE') parts.push(`Leaving ${step} runs the suite, but this card has no tree to run it in: verify will refuse until the project root is set or the card has a worktree.`);
   else if (runs === 'suite') {
-    parts.push(`Leaving ${step} runs the project's suite${q(captureCommand)} for you${why}${entry}${thenCommand ? `, then the project's verify command${q(thenCommand)}, which gates the close` : ''}${closesOnCapture ? '; it is the verify command, so its green closes the card (after a partial run, a reused green, or a tree that moved, the whole command runs too)' : ''}.${dontPreRun}${smaller}`);
+    parts.push(`Leaving ${step} runs the project's suite${q(captureCommand)} for you${why}${entry}${thenCommand ? `, then the project's verify command${q(thenCommand)}, which gates the close` : ''}${closesOnCapture ? '; it is the verify command, so its green closes the card (a green of this tree already on record does too; after a partial run, or a tree that moved, the whole command runs)' : ''}.${dontPreRun}${smaller}`);
     if (toParent) parts.push(`The suite's green itself is deferred to the parent [${String(toParent.id).slice(0, 8)}] "${toParent.title}", whose final verify runs it.`);
-  } else if (runs === 'verify-command') parts.push(`Leaving ${step} runs the project's verify command${q(gateCommand)} for you, and the card moves only if it passes.${dontPreRun}`);
+  } else if (runs === 'verify-command') parts.push(`Leaving ${step} runs the project's verify command${q(gateCommand)} for you, and the card moves only if it passes${leavingEndsFlow(sorted as any, index) ? ' (a green of this tree already on record stands for it instead)' : ''}.${dontPreRun}`);
   else if (toParent) parts.push(`Leaving ${step} runs no tests on this card: the project's suite is deferred to the parent [${String(toParent.id).slice(0, 8)}] "${toParent.title}", whose final verify runs it.`);
   else parts.push(`Leaving ${step} runs no tests. If its exit criteria ask for passing tests, running them is yours${handRunnable ? ` (\`${handRunnable}\`, or only the tests your change affects)` : ''}.`);
   if (held) parts.push(`${runs === 'suite' ? 'After that, verify' : 'Verify'} will hold the card: ${held}.`);
@@ -8331,8 +8459,8 @@ export interface LeavePrediction {
   reusedFrom?: { itemId: string; step: string };
   /** The sibling whose green of this tree a final verify would propagate. */
   sibling?: { id: string; title: string };
-  /** On a final move with a capture: the verify command that runs after it. */
-  command?: { mode: 'full' | 'sibling-green'; sibling?: { id: string; title: string } };
+  /** On a final move with a capture: the verify command that runs after it - or the green that stands for it. */
+  command?: { mode: 'full' | 'sibling-green' | 'reuse'; sibling?: { id: string; title: string }; reusedFrom?: { itemId: string; step: string } };
   advice: string;
 }
 
@@ -8352,19 +8480,26 @@ async function predictLeave(item: any, plan: LeavePlan, flow: { steps: any[] }, 
   const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
   const sorted = sortedFlowSteps(flow as any);
   const index = sorted.findIndex(st => st.name === item.status);
-  const commandLeg = async (command: string): Promise<{ mode: 'full' | 'sibling-green'; sibling?: { id: string; title: string } }> => {
+  // The close's order: a sibling's green of this tree, then a green of it on record (ef1342b8), then the command.
+  const commandLeg = async (command: string): Promise<{ mode: 'full' | 'sibling-green' | 'reuse'; sibling?: { id: string; title: string }; reusedFrom?: { itemId: string; step: string } }> => {
     if (item.parentId && leavingEndsFlow(sorted as any, index)) {
       const { pass } = await siblingGreenOf(item, await storage.listItems({ parentId: item.parentId }), flow as TransitionFlow, project, root, command);
       if (pass) return { mode: 'sibling-green', sibling: { id: pass.sibling.id, title: pass.sibling.title } };
+    }
+    if (leavingEndsFlow(sorted as any, index) && !stepHasCommandChecks(flow, item.status)) {
+      const onRecord = await closeGreenOnRecord(item, project, root, command);
+      if (onRecord) return { mode: 'reuse', reusedFrom: { itemId: String(onRecord.green.reusedFrom?.itemId ?? item.id), step: String(onRecord.green.reusedFrom?.step ?? '') } };
     }
     return { mode: 'full' };
   };
   const sayCommand = (c: { mode: string; sibling?: { id: string; title: string } }, command: string) => c.mode === 'sibling-green'
     ? `would not run \`${command}\`: [${String(c.sibling!.id).slice(0, 8)}] "${c.sibling!.title}" already verified this very tree, and its green carries over`
-    : `would run \`${command}\` in full`;
+    : c.mode === 'reuse'
+      ? `would not run \`${command}\`: a green of this tree's content is on record, and it closes the card`
+      : `would run \`${command}\` in full`;
   if (plan.runs === 'verify-command') {
     const c = await commandLeg(plan.command!);
-    return { mode: c.mode, ...(c.sibling ? { sibling: c.sibling } : {}), advice: `On this tree it ${sayCommand(c, plan.command!)}.` };
+    return { mode: c.mode, ...(c.sibling ? { sibling: c.sibling } : {}), ...(c.reusedFrom ? { reusedFrom: c.reusedFrom } : {}), advice: `On this tree it ${sayCommand(c, plan.command!)}.` };
   }
   // The capture leg. With no tree there is nothing to diff or reuse against (and the tree readers need one).
   let capture: Omit<LeavePrediction, 'advice' | 'command'> & { said: string };
@@ -8385,7 +8520,8 @@ async function predictLeave(item: any, plan: LeavePlan, flow: { steps: any[] }, 
   }
   const { said, ...rest } = capture;
   if (plan.refuses) return { ...rest, advice: `On this tree it ${said}, and then verify refuses (${plan.refuses}): set a verify command first, and the suite is not spent for nothing.` };
-  // 36c5ca25: a partial run, or a green reused rather than run, cannot stand for the verify command: the whole command follows it.
+  // 36c5ca25: a partial run, or a green reused rather than run, is not this move's own green: the command leg follows it -
+  // and (ef1342b8) a green of this tree on record may still stand for the command there.
   const then = plan.thenCommand ?? (plan.closesOnCapture && rest.mode !== 'full' ? plan.command : undefined);
   if (!then) return { ...rest, advice: `On this tree it ${said}${plan.closesOnCapture ? ', and its green closes the card' : ''}.` };
   const c = await commandLeg(then);
@@ -8802,6 +8938,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   if (answered.length && !opts?.gate) {
     const ids = resolveStepChecks(activeFlow.steps, item.status).map(c => c.id);
     const unknown = answered.filter(a => !ids.includes(a));
+    // 890be63f: a check the org's hub switched off is the step's, but it does not run - there is nothing to answer.
+    const off = disabledChecksOf(activeFlow.steps, item.status).map(c => c.id).filter(id => unknown.includes(id));
+    if (off.length) return res.status(400).json({ error: `On step ${item.status}, ${off.map(n => `'${n}'`).join(', ')} ${off.length === 1 ? 'was' : 'were'} switched off by your org's hub: it does not run, so there is nothing to answer.` });
     if (unknown.length) return res.status(400).json({ error: `Step ${item.status} has no check ${unknown.map(n => `'${n}'`).join(', ')} to answer. Its checks: ${ids.join(', ') || 'none'}.` });
   }
   // efcacdeb: a report must name one of THIS step's agent checks.
@@ -9322,6 +9461,25 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     }
   }
 
+  // ── A green of this tree on record (ef1342b8) ────────────────────────────
+  // Same conditions as closing on this move's capture: the move that ends the flow, no command check after the gate.
+  // A capture of this move that ran and was NOT green is never outvoted by an older green (as stampCloseGreen refuses).
+  const gateRanRed = !!gate?.capture && gate.capture.kind === 'capture' && !gate.capture.reusedFrom && !capturedGreen(gate.capture);
+  if (endsFlow && resolvedCommand && !gateRanRed && !stepHasCommandChecks(activeFlow, item.status)) {
+    const onRecord = await closeGreenOnRecord(item, project, effectiveRoot, resolvedCommand);
+    // The state it matched, still the tree's: a tree that moved since runs the command.
+    if (onRecord && treeStateOf(effectiveRoot!, project) === onRecord.state) {
+      const from = onRecord.green.reusedFrom ?? {};
+      const source = `${from.itemId === itemId ? 'this card' : `card \`${String(from.itemId ?? '').slice(0, 8)}\``}${from.step ? ` at ${from.step}` : ''}${from.at ? ` (${from.at})` : ''}`;
+      // The tree that closes: on a docs-only change, not the content the green ran on.
+      const green = { ...(onRecord.sha ? { commit: onRecord.sha } : {}), treeState: onRecord.state, treeStateVersion: STATE_VERSION, commitRoot: effectiveRoot };
+      return closeOnGreen(res, {
+        how: 'a green of this tree on record', output: 'Green on record', recordOutput: `Green on record: ${source} ran this command green on this tree's content`, green, stampAt: onRecord.state,
+        note: `\`${resolvedCommand}\` already ran green on this tree's content (${source}), so it was not run again.${passedChecks ? `\n\n${passedChecks}` : ''}`,
+      });
+    }
+  }
+
   // No command on an intermediate step — advance directly without running anything.
   if (!resolvedCommand) {
     const exitNote = exitCriteria ? `\n**Exit criteria acknowledged**: ${exitCriteria}` : '';
@@ -9391,6 +9549,8 @@ async function handleValidateProgress(itemId: string, command: string | undefine
   const statusBeforeRun = gateRoot ? readTreeStatus(gateRoot, gitRun) : null;
   // 3ffc9651: and every file's content, so a green on a DIRTY tree can be tied to a state too.
   const filesBeforeRun = gateRoot && endsFlow ? treeFiles(gateRoot, reportOwnedOf(gateRoot, project)) : null;
+  // 19e660ac: and what lies beside a subdirectory root, which the stamped state folds in.
+  const outsideBeforeRun = gateRoot && endsFlow ? outsideContent(gateRoot) : null;
 
   // try/finally around the spawn, not just the awaited result: spawn() throws
   // SYNCHRONOUSLY on a bad argument (a NUL byte in the command, a non-string
@@ -9556,7 +9716,9 @@ async function handleValidateProgress(itemId: string, command: string | undefine
          * sibling reading the same state propagates it.
          */
         const filesNow = filesBeforeRun ? treeFiles(gateRoot, reportOwnedOf(gateRoot, project)) : null;
-        const treeState = filesNow && filesBeforeRun && filesNow.shareable && filesNow.hash === filesBeforeRun.hash ? filesNow.hash : null;
+        const outsideNow = filesNow ? outsideContent(gateRoot) : null;
+        const treeState = filesNow && filesBeforeRun && filesNow.shareable && filesNow.hash === filesBeforeRun.hash && outsideNow === outsideBeforeRun
+          ? sharedState(filesNow.hash, outsideNow) : null;
         if (verifiedSha || treeState) {
           const current = await storage.getItem(itemId);
           const tests = testRecords(current?.tests).map((t: any) =>
@@ -9906,8 +10068,18 @@ app.post("/items/:id/validate", limitExpensive, asyncHandler(async (req: any, re
   if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
     return res.status(403).json({ error: "Forbidden: validate endpoint requires internal token." });
   }
+  // f36c8a42: a card whose project is gone has no flow, root or verify command
+  // to check it against. Say so - left to run, the root-learning below threw
+  // on the missing project and the caller saw a bare 500.
+  const validatedItem = await storage.getItem(req.params.id);
+  if (validatedItem && !(await storage.getProject(validatedItem.projectId))) {
+    return res.status(409).json({
+      error: `Refusing to verify: card ${validatedItem.id} belongs to project ${validatedItem.projectId}, which does not exist. `
+        + `Move it to a project that does: \`agenfk move ${validatedItem.id} <projectId>\` (\`agenfk list-projects\` lists them).`,
+    });
+  }
   const cwd: string | undefined = typeof req.body.cwd === 'string' && req.body.cwd ? req.body.cwd : undefined;
-  const cwdItem = cwd ? await storage.getItem(req.params.id) : null;
+  const cwdItem = cwd ? validatedItem : null;
   if (cwd && cwdItem) {
     const item = cwdItem;
     const projRoot = (await storage.getProject(item.projectId) as any)?.projectRoot as string | undefined;
@@ -10378,11 +10550,24 @@ const loadJiraToken = (): JiraTokenData | null => {
 export let jiraValidationCache: { valid: boolean; checkedAt: number } | null = null;
 const JIRA_VALIDATION_TTL = 60_000; // 60 seconds
 
+// The token file holds the access AND refresh token: owner-only (BUG cc26b206).
 const saveJiraToken = (data: JiraTokenData): void => {
-  const dir = path.dirname(jiraTokenPath());
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(jiraTokenPath(), JSON.stringify(data, null, 2));
+  writePrivateFileSync(jiraTokenPath(), JSON.stringify(data, null, 2));
   jiraValidationCache = null;
+};
+
+/**
+ * Files an older release wrote 0644 (BUG cc26b206) are tightened at boot, not
+ * only on their next write: a refresh token can sit unwritten for months.
+ * config.json carries the JIRA clientSecret. A failure costs the warning, not
+ * the boot.
+ */
+export const tightenSecretFiles = (): void => {
+  for (const file of [path.join(os.homedir(), '.agenfk', 'config.json'), jiraTokenPath()]) {
+    try { tightenPrivateFile(file); } catch (e: any) {
+      console.warn(`[SERVER_START] Could not make ${file} owner-only (${e?.code ?? e?.message}); it may be readable by other local users.`);
+    }
+  }
 };
 
 const deleteJiraToken = (): void => {
@@ -10642,7 +10827,10 @@ app.get("/jira/oauth/authorize", limitExpensive, asyncHandler(async (req: any, r
   }
   const redirectUri = jiraConfig.redirectUri || `http://localhost:3000/jira/oauth/callback`;
   const { state } = generateOAuthState();
-  oauthStateStore.set(state, { expiresAt: Date.now() + 10 * 60 * 1000 });
+  // An abandoned sign-in never reaches the callback that deletes its state.
+  const now = Date.now();
+  for (const [key, entry] of oauthStateStore) if (entry.expiresAt <= now) oauthStateStore.delete(key);
+  oauthStateStore.set(state, { expiresAt: now + 10 * 60 * 1000 });
   const params = new URLSearchParams({
     audience: 'api.atlassian.com',
     client_id: jiraConfig.clientId,
@@ -10864,6 +11052,11 @@ app.post("/jira/import", asyncHandler(async (req: any, res: any) => {
   const { projectId, items } = req.body;
   if (!projectId || !Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: "projectId and items[] are required" });
+  }
+  // f36c8a42: the same refusal as POST /items - no cards under a missing project.
+  if (typeof projectId !== 'string') return res.status(400).json({ error: "projectId must be a string" });
+  if (!(await storage.getProject(projectId))) {
+    return res.status(404).json({ error: unknownProjectError(projectId) });
   }
 
   const imported: any[] = [];
@@ -11146,6 +11339,9 @@ app.post("/github/import", async (req: any, res: any) => {
   try {
     const { projectId, items } = req.body;
     if (!projectId || !items?.length) return res.status(400).json({ error: 'projectId and items[] required' });
+    if (typeof projectId !== 'string') return res.status(400).json({ error: 'projectId must be a string' });
+    // f36c8a42: a GitHub config outlives its project - check the project, not just the config.
+    if (!(await storage.getProject(projectId))) return res.status(404).json({ error: unknownProjectError(projectId) });
 
     const config = loadGitHubConfig(projectId);
     if (!config) return res.status(400).json({ error: 'GitHub not configured for this project.' });
@@ -11510,7 +11706,7 @@ app.get("/releases/update/:jobId", (req: any, res: any) => {
 
 /*
  * 4aac7076: the notes of the release that is INSTALLED - what What's New shows.
- * /releases/latest is GitHub's latest stable (the CLI's tier gate and the
+ * /releases/latest is the newest framework stable (the CLI's tier gate and the
  * update reminder rely on it), so on a beta What's New showed an older
  * stable's notes. A version with no published release (a local build) answers
  * published:false with the releases page, never another version's notes.
@@ -11561,53 +11757,55 @@ app.get("/releases/latest", asyncHandler(async (_req: any, res: any) => {
   if (token) headers.Authorization = `Bearer ${token}`;
 
   try {
-    const { data } = await axios.get(`https://api.github.com/repos/${repo}/releases/latest`, { headers });
-    let tagName: string = data.tag_name;
-    let meta: any = data;
-
-    // A hub build (`hub-v*`, CGLAB-8) is not a framework release, and this
-    // endpoint is what feeds the CLI's upgrade nag AND its tier gate. GitHub's
-    // /releases/latest can hand one back: when hub-v1.1.19-beta.1 was created
-    // without --prerelease it became GitHub's "latest stable", and every CLI
-    // read version "hub-v1.1.19-beta.1" from here. Re-query the list and answer
-    // with the newest real framework release.
-    if (isHubRelease(tagName)) {
-      const { data: list } = await axios.get(
-        `https://api.github.com/repos/${repo}/releases?per_page=30`,
-        { headers },
-      );
-      meta = ((Array.isArray(list) ? list : []) as any[])
-        .filter((r) => typeof r?.tag_name === 'string' && r.tag_name && !isHubRelease(r.tag_name) && !r.prerelease)
-        .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())[0];
-      tagName = meta?.tag_name ?? '';
-      if (!tagName) {
-        // Nothing to report. An empty version is what the CLI reads as "no
-        // upgrade available"; a hub tag must never reach it, and must never
-        // arrive with a tier attached — `mandatory` exits(1) every CLI call.
-        return res.json({
-          version: '',
-          tagName: null,
-          name: null,
-          body: '',
-          publishedAt: null,
-          url: null,
-          upgradeTier: 'optional',
-          currentVersion,
-        });
-      }
+    // BUG 022b229a: GitHub's /releases/latest picks by DATE (and can hand back
+    // a hub build published without --prerelease, CGLAB-8). This feeds the
+    // CLI's tier gate and upgrade nag, so it must name the release `agenfk
+    // upgrade` installs: the newest framework stable by VERSION (core's
+    // releaseChannel, shared with the CLI's own fallback). Latest is one
+    // candidate beside the list; either failing leaves the other. Both run at
+    // once, bounded: the CLI waits 3s and the MCP notice 2s for this route.
+    const [latestRes, listRes] = await Promise.allSettled([
+      axios.get(`https://api.github.com/repos/${repo}/releases/latest`, { headers, timeout: 4000 }),
+      axios.get(`https://api.github.com/repos/${repo}/releases?per_page=100`, { headers, timeout: 4000 }),
+    ]);
+    if (latestRes.status === 'rejected' && listRes.status === 'rejected') throw latestRes.reason;
+    const candidates: any[] = [
+      ...(latestRes.status === 'fulfilled' ? [latestRes.value?.data] : []),
+      ...(listRes.status === 'fulfilled' && Array.isArray(listRes.value?.data) ? listRes.value.data : []),
+    ];
+    const meta: any = newestFrameworkStable(candidates);
+    const tagName: string = meta?.tag_name ?? '';
+    if (!tagName) {
+      // Nothing to report. An empty version is what the CLI reads as "no
+      // upgrade available"; a hub tag must never reach it, and must never
+      // arrive with a tier attached — `mandatory` exits(1) every CLI call.
+      return res.json({
+        version: '',
+        tagName: null,
+        name: null,
+        body: '',
+        publishedAt: null,
+        url: null,
+        upgradeTier: 'optional',
+        currentVersion,
+      });
     }
 
-    // Fetch upgradeTier from the raw CLI package.json for this tag
-    let upgradeTier: 'mandatory' | 'recommended' | 'optional' = 'optional';
-    try {
-      const rawUrl = `https://raw.githubusercontent.com/${repo}/${tagName}/packages/cli/package.json`;
-      const { data: cliPkg } = await axios.get(rawUrl, { timeout: 5000 });
-      if (cliPkg?.agenfkUpgradeTier === 'mandatory' || cliPkg?.agenfkUpgradeTier === 'recommended') {
-        upgradeTier = cliPkg.agenfkUpgradeTier;
+    // The tier is the strongest among the stables newer than this install
+    // (user decision, 022b229a review): a mandatory hotfix on an older line
+    // still gates, and `agenfk upgrade` - installing the newest - satisfies it.
+    // Read from each tag's raw CLI package.json; a failed read counts optional.
+    const tierOf = async (tag: string): Promise<unknown> => {
+      try {
+        const rawUrl = `https://raw.githubusercontent.com/${repo}/${tag}/packages/cli/package.json`;
+        return (await axios.get(rawUrl, { timeout: 2000 })).data?.agenfkUpgradeTier; // bounded: the CLI waits 3s
+      } catch {
+        return undefined; // non-fatal: optional
       }
-    } catch {
-      // If fetch fails, default to optional — non-fatal
-    }
+    };
+    const newer = newerFrameworkStables(candidates, currentVersion);
+    const tagsToRead = newer.length ? newer.map((r: any) => r.tag_name as string) : [tagName];
+    const upgradeTier = strongestTier(await Promise.all(tagsToRead.map(tierOf)));
 
     const releaseData = {
       version: tagName.replace(/^v/, ''),
@@ -11763,6 +11961,17 @@ if (process.env.AGENFK_SERVE_UI) {
   else console.warn(`[UI] AGENFK_SERVE_UI is set but no index.html was found — serving API only.`);
 }
 /* v8 ignore stop */
+
+// BUG 345e0701: last in the chain, so an error no route caught reaches the CLI
+// and MCP as JSON with its message - Express's default answers an HTML page.
+// The stack stays in the server log, never in the body.
+app.use((err: any, _req: any, res: any, next: any) => {
+  if (res.headersSent) return next(err);
+  const status = Number.isInteger(err?.status) && err.status >= 400 && err.status < 600 ? err.status : 500;
+  if (status >= 500) console.error('[HTTP] Unhandled route error:', err);
+  const message = typeof err?.message === 'string' && err.message ? err.message : 'Internal server error';
+  res.status(status).json({ error: message });
+});
 
 // ── WebSocket ────────────────────────────────────────────────────────────────
 /* v8 ignore start */

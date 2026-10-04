@@ -56,21 +56,11 @@ jobs:
       - name: Test
         run: npm test
 
-      #
-      # THE UI SPECS, in their own step (BUG 66dee896).
-      #
-      # They were excluded from `npm test` by a performance commit (218s -> 58s)
-      # and the exclusion became a coverage hole: the terminal panes, the split,
-      # the fleet sheet and the shell itself ran only when somebody remembered
-      # to `cd packages/ui`, while the workflow reported a green suite over a
-      # surface it never entered.
-      #
-      # Their OWN config, not the root one: the ui package sets `environment:
-      # jsdom`, its own setup file and the react plugin, and under the root's
-      # node environment these files fail in the hundreds. The package already
-      # had a `test` script - nothing ran it.
-      - name: Test UI (packages/ui)
-        run: npm test -w packages/ui
+      # THE UI SPECS (BUG 66dee896) run inside `npm test` above: the root
+      # vitest config carries packages/ui as its own project, under its own
+      # config (jsdom, react plugin, setup file), since 4ac25844 - the same run
+      # every agenfk gate reads, so a card can no longer break a board spec
+      # and pass.
 
       - name: Home-integrity verify (item 9c297075)
         run: node scripts/home-integrity.mjs verify
@@ -84,12 +74,12 @@ jobs:
   # space and accents so the characters that broke real Windows users are hit on
   # every run. `*.xplat.test.ts` specs are shared with the Linux job.
   #
-  # Advisory (`continue-on-error`) while the subset proves stable; remove that
-  # line, then mark this job as a required check, once it has.
+  # Blocking: a failure fails the run. It is the only place the win32-only cases
+  # run (BUG ad57c267 passed every local run and still needed it). Making it a
+  # required check on main's "Protect main" ruleset is the repo owner's step.
   windows-compat:
     name: Windows compat
     runs-on: windows-latest
-    continue-on-error: true
     defaults:
       run:
         # Git Bash, which is what Claude Code uses to run hooks on Windows.

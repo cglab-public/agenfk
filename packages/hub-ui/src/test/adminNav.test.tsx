@@ -21,7 +21,7 @@ vi.mock('../api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn() } })
 const get = api.get as unknown as ReturnType<typeof vi.fn>;
 
 // Every section App.tsx mounts under /admin.
-const ROUTES = ['auth', 'keys', 'users', 'flows', 'upgrades', 'installations', 'repoint', 'identities', 'models', 'jira', 'org'];
+const ROUTES = ['auth', 'keys', 'users', 'flows', 'upgrades', 'installations', 'repoint', 'identities', 'models', 'jira', 'org', 'audit'];
 
 const NOW = Date.now();
 const daysAgo = (d: number) => new Date(NOW - d * 86_400_000).toISOString();

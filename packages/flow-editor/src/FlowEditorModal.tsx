@@ -123,12 +123,13 @@ function makeFreshAnchors(): [FlowStep, FlowStep] {
   ];
 }
 
-function cloneFlow(source: Flow, newName: string): Omit<Flow, 'id' | 'createdAt' | 'updatedAt'> & { id?: undefined } {
+function cloneFlow(source: Flow, newName: string, keepDisabledChecks: boolean): Omit<Flow, 'id' | 'createdAt' | 'updatedAt'> & { id?: undefined } {
   const [todo, done] = makeFreshAnchors();
   const middle = source.steps
     .filter(s => !s.isAnchor)
-    // CGLAB-428 review: a local copy cannot keep the hub's switched-off checks (the server refuses them).
-    .map(({ disabledChecks: _hubOnly, ...s }, i) => ({ ...s, id: generateUUID(), order: i + 1 }));
+    // CGLAB-428 review: a local copy cannot keep the hub's switched-off checks (the server refuses them);
+    // the hub admin's copy is a hub flow, which may (890be63f).
+    .map(({ disabledChecks, ...s }, i) => ({ ...s, ...(keepDisabledChecks && disabledChecks ? { disabledChecks } : {}), id: generateUUID(), order: i + 1 }));
   done.order = middle.length + 1;
   return {
     name: newName,
@@ -1540,7 +1541,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
 
   const handleCommunityClone = (installed: Flow) => {
     queryClient.invalidateQueries({ queryKey: ['flows'] });
-    const copy = cloneFlow(installed, installed.name);
+    const copy = cloneFlow(installed, installed.name, canDisableChecks);
     setActiveTab('my-flows');
     setClonedFlow(copy);
     setIsNewFlow(false);
@@ -1560,7 +1561,7 @@ const FlowEditorModalInner: React.FC<Props> = (props) => {
 
 
   const handleClone = (source: Flow, sourceName: string) => {
-    const copy = cloneFlow(source, `Copy of ${sourceName}`);
+    const copy = cloneFlow(source, `Copy of ${sourceName}`, canDisableChecks);
     setClonedFlow(copy);
     setIsNewFlow(false);
     setSelectedFlowId(null);

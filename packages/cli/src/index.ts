@@ -2,13 +2,15 @@ import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { harnessActor, resolveFromOptions } from './harnessModel.js';
 import axios from 'axios';
-import { readProjectFile, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
+import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
 import { findUpdateNotice } from './updateNotice.js';
 import { writeActiveWork } from './activeWork.js';
 import { resolveItemIdPrefix } from './resolveItemId.js';
 import { TelemetryClient, getApiUrl, readServerPort, DEFAULT_API_PORT, setTelemetryEnabled } from '@agenfk/telemetry';
 import { checkClaudeCodeEnforcement, checkPiEnforcement } from './enforcement.js';
 import { execSync, execFileSync, spawn, spawnSync } from 'child_process';
+import { runTool } from './runTool.js';
+import { claudeMcpServerCommand, installedAgenfkBin } from './mcpCommand.js';
 import { chooseOpenTarget } from './openTarget.js';
 import { onlyApprovalBlocks, waitAllowed, waitForApproval, alreadySatisfied, commandWaitedOn, approvedAt, approvalNeededBlock, type BlockingCheck, type GatesSnapshot } from './approvalWait.js';
 import { parseCheckFlags } from './agentChecksFlag.js';
@@ -18,7 +20,7 @@ import path from 'path';
 import os from 'os';
 import { stageJsonMigration } from './db-migration.js';
 import { followValidateRun } from './verifyRun.js';
-import { buildPrBody, prRegisterComment, type GateEvent, type CustomCheckRow, type TreeWarningRow, type DisabledCheckRow } from './humanGates.js';
+import { buildPrBody, prRegisterComment, readDisabledChecks, type GateEvent, type CustomCheckRow, type TreeWarningRow } from './humanGates.js';
 import { registryFlowToLocal } from './registryFlowFile.js';
 import { buildUiOpenUrl, resolveDashboardUrl } from './uiUrl.js';
 import { registerHubCommands } from './commands/hub.js';
@@ -246,7 +248,18 @@ function isDevCheckout(root: string): boolean {
 
 async function resolveReleaseTag(repo: string, opts: { version?: string; beta?: boolean }): Promise<string> {
   if (opts.version) return fetchReleaseTagByVersion(repo, opts.version);
-  return fetchLatestReleaseTag(repo, !!opts.beta);
+  if (!opts.beta) return fetchLatestReleaseTag(repo, false);
+  // --beta INCLUDES pre-releases, it does not exclude stable: on 2.0.0-beta.23
+  // once 2.0.0 ships, the newest beta is older than the stable that graduates
+  // it, and the update notice already points there (3a261573 review).
+  let beta: string | null = null;
+  let stable: string | null = null;
+  let betaError: unknown = null;
+  try { beta = await fetchLatestReleaseTag(repo, true); } catch (e) { betaError = e; }
+  try { stable = await fetchLatestReleaseTag(repo, false); } catch { /* the beta alone decides */ }
+  if (beta && stable) return compareSemver(stable, beta) > 0 ? stable : beta;
+  if (beta ?? stable) return (beta ?? stable)!;
+  throw betaError;
 }
 
 /**
@@ -276,7 +289,10 @@ function newestChannelRelease(refs: ReleaseRef[], beta: boolean): string | null 
   // 2.0.0-beta.13 would otherwise be "the latest beta" - and `upgrade --beta`
   // would downgrade to it. An unparseable tag sorts below any parseable one.
   const match = refs
-    .filter((r) => r.tag && !isHubRelease(r.tag) && r.prerelease === beta)
+    // A beta published without --prerelease still names itself one: stable
+    // never takes a tag with a prerelease part (3a261573 review).
+    .filter((r) => r.tag && !isHubRelease(r.tag) && r.prerelease === beta
+      && (beta || !(parseSemver(r.tag)?.pre.length)))
     .sort((a, b) => {
       const pa = parseSemver(a.tag), pb = parseSemver(b.tag);
       if (pa && pb) {
@@ -310,7 +326,9 @@ const GH_KEYS = { tag: 'tagName', date: 'createdAt', pre: 'isPrerelease' };
 const GH_API_HEADERS = { 'Accept': 'application/vnd.github+json', 'User-Agent': 'agenfk-cli' };
 
 export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promise<string> {
-  const listUrl = `https://api.github.com/repos/${repo}/releases?per_page=20`;
+  // 100, GitHub's page maximum: a long beta run (23 betas since the last
+  // stable, at 2.0.0-beta.23) would push every stable out of a page of 20.
+  const listUrl = `https://api.github.com/repos/${repo}/releases?per_page=100`;
   // Try GitHub REST API first — no auth required for public repos
   try {
     if (beta) {
@@ -322,13 +340,19 @@ export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promis
         headers: GH_API_HEADERS,
         timeout: 10000,
       });
-      const tag = resp.data?.tag_name;
-      if (tag && !isHubRelease(tag)) return tag;
-      // The single-object endpoint cannot be trusted on its own: a hub release
+      // The single-object endpoint cannot be trusted on its own. A hub release
       // published without --prerelease IS "the latest stable" as far as it is
-      // concerned (observed in production). Re-query the list and pick from it.
-      const listResp = await axios.get(listUrl, { headers: GH_API_HEADERS, timeout: 10000 });
-      const stable = newestChannelRelease(toReleaseRefs(listResp.data, REST_KEYS), false);
+      // concerned (observed in production), and it picks by DATE: a 1.1.21
+      // hotfix published after 2.0.0 is "latest" (BUG 3a261573). So it is one
+      // candidate among the list's stables, and the newest by version wins.
+      const latest = typeof resp.data?.tag_name === 'string'
+        ? [{ tag: resp.data.tag_name as string, publishedAt: 0, prerelease: false }] : [];
+      // A failed list (rate limit, timeout) must not throw away a good latest.
+      let listed: ReleaseRef[] = [];
+      try {
+        listed = toReleaseRefs((await axios.get(listUrl, { headers: GH_API_HEADERS, timeout: 10000 })).data, REST_KEYS);
+      } catch { /* latest alone decides */ }
+      const stable = newestChannelRelease([...latest, ...listed], false);
       if (stable) return stable;
     }
   } catch {
@@ -346,7 +370,7 @@ export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promis
     // config file a shell.
     const out = execFileSync(
       'gh',
-      ['release', 'list', '--repo', repo, '--limit', '30', '--json', 'tagName,isPrerelease,createdAt'],
+      ['release', 'list', '--repo', repo, '--limit', '100', '--json', 'tagName,isPrerelease,createdAt'],
       // A bounded wait: this also runs from bare `agenfk`, which must not hang on a stalled gh.
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000 },
     ).trim();
@@ -356,7 +380,7 @@ export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promis
   if (beta) {
     const tag = newestChannelRelease(ghReleases(), true);
     if (tag) return tag;
-    throw new Error(`No pre-release found for ${repo} (checked the 30 most recent releases).`);
+    throw new Error(`No pre-release found for ${repo} (checked the 100 most recent releases).`);
   }
 
   const viewTag = execFileSync(
@@ -364,10 +388,13 @@ export async function fetchLatestReleaseTag(repo: string, beta: boolean): Promis
     ['release', 'view', '--repo', repo, '--json', 'tagName', '--template', '{{.tagName}}'],
     { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000 },
   ).trim();
-  if (viewTag && !isHubRelease(viewTag)) return viewTag;
-  // Same recovery as the REST path — `gh release view` reports the newest
-  // release, hub or not.
-  const stable = newestChannelRelease(ghReleases(), false);
+  // Same rule as the REST path: `gh release view` reports the newest release by
+  // date, hub or not, so it is one candidate and the newest stable by version
+  // wins (BUG 3a261573).
+  const viewed = viewTag ? [{ tag: viewTag, publishedAt: 0, prerelease: false }] : [];
+  let listed: ReleaseRef[] = [];
+  try { listed = ghReleases(); } catch { /* the viewed tag alone decides */ }
+  const stable = newestChannelRelease([...viewed, ...listed], false);
   // Deliberately NOT `return viewTag` as a last resort: handing back the hub tag
   // would reintroduce exactly the bug this function exists to prevent, and the
   // caller would try to install a Docker image as the framework.
@@ -431,7 +458,7 @@ function setPausedIntegrations(list: string[]): void {
     try { cfg = JSON.parse(fs.readFileSync(agenfkConfigPath(), 'utf8')); } catch {}
   }
   cfg.pausedIntegrations = list;
-  fs.writeFileSync(agenfkConfigPath(), JSON.stringify(cfg, null, 2), 'utf8');
+  writePrivateFileSync(agenfkConfigPath(), JSON.stringify(cfg, null, 2));
 }
 
 export { program };
@@ -476,7 +503,7 @@ export function frameworkUpgradeInfo(payload: any): { version: string; tier: 'ma
   return { version: rawVersion, tier };
 }
 
-async function checkUpgradeTier(): Promise<void> {
+export async function checkUpgradeTier(): Promise<void> {
   const cacheFile = path.join(os.homedir(), '.agenfk', 'upgrade-tier-cache.json');
 
   // Try the local cache first
@@ -504,23 +531,34 @@ async function checkUpgradeTier(): Promise<void> {
     const resp = await axios.get(`${API_URL}/releases/latest`, { timeout: 3000 });
     ({ tier, version: latestVersion } = frameworkUpgradeInfo(resp.data));
   } catch {
-    // Server unavailable — fall back to GitHub API directly
+    // Server unavailable — fall back to GitHub API directly, with the server's
+    // rule (core releaseChannel, BUG 022b229a): newest framework stable by
+    // version, tier = the strongest among stables newer than this install.
     try {
       const repo = 'cglab-public/agenfk';
-      const releaseResp = await axios.get(
-        `https://api.github.com/repos/${repo}/releases/latest`,
-        { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'agenfk-cli' }, timeout: 5000 },
-      );
-      const tagName: string = releaseResp.data?.tag_name ?? '';
+      const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'agenfk-cli' };
+      const [latestRes, listRes] = await Promise.allSettled([
+        axios.get(`https://api.github.com/repos/${repo}/releases/latest`, { headers, timeout: 5000 }),
+        axios.get(`https://api.github.com/repos/${repo}/releases?per_page=100`, { headers, timeout: 5000 }),
+      ]);
+      if (latestRes.status === 'rejected' && listRes.status === 'rejected') return;
+      const candidates: any[] = [
+        ...(latestRes.status === 'fulfilled' ? [latestRes.value?.data] : []),
+        ...(listRes.status === 'fulfilled' && Array.isArray(listRes.value?.data) ? listRes.value.data : []),
+      ];
+      const winner: any = newestFrameworkStable(candidates);
+      const tagName: string = winner?.tag_name ?? '';
       let rawTier: unknown;
-      // Don't even fetch package.json for a hub tag: it would resolve the CLI
-      // manifest at a Docker-image tag and honour whatever tier it declares.
-      if (tagName && !isHubRelease(tagName)) {
-        const rawResp = await axios.get(
-          `https://raw.githubusercontent.com/${repo}/${tagName}/packages/cli/package.json`,
-          { timeout: 5000 },
-        );
-        rawTier = rawResp.data?.agenfkUpgradeTier;
+      // Never fetch package.json for a hub tag (newestFrameworkStable already
+      // excludes them): it would honour whatever tier a Docker-image tag declares.
+      if (tagName) {
+        const newer = newerFrameworkStables(candidates, CURRENT_VERSION);
+        const tags = newer.length ? newer.map((r: any) => r.tag_name as string) : [tagName];
+        rawTier = strongestTier(await Promise.all(tags.map(async (tag) => {
+          try {
+            return (await axios.get(`https://raw.githubusercontent.com/${repo}/${tag}/packages/cli/package.json`, { timeout: 2000 })).data?.agenfkUpgradeTier;
+          } catch { return undefined; }
+        })));
       }
       ({ tier, version: latestVersion } = frameworkUpgradeInfo({ tag_name: tagName, upgradeTier: rawTier }));
     } catch {
@@ -700,7 +738,7 @@ program
 program
   .command('upgrade')
   .description('Check for updates and upgrade to the latest version if available')
-  .option('-f, --force', 'Force upgrade even if versions match')
+  .option('-f, --force', 'Reinstall even if already on the target version (never downgrades: use --version)')
   .option('-b, --beta', 'Include beta/pre-release versions')
   .option('--version <ver>', 'Pin to a specific release version instead of latest (e.g. 0.3.0-beta.22)')
   .option('--json', 'Emit a single JSON line {status, fromVersion, toVersion, error?} on stdout (status: noop|upgraded|failed)')
@@ -763,6 +801,21 @@ program
       if (targetVersion === CURRENT_VERSION && !options.force) {
         emitResult({ status: 'noop', fromVersion: CURRENT_VERSION, toVersion: targetVersion });
         log(chalk.green(`AgEnFK is already on ${CURRENT_VERSION} (use --force to reinstall)`));
+        return;
+      }
+
+      // Never a silent downgrade (BUG 3a261573): on a beta, the stable channel's
+      // answer is older, and plain `upgrade` used to install it. Only --version,
+      // which names the release on purpose, goes backwards.
+      // --force stays "reinstall the same version": the shipped /agenfk-upgrade
+      // command passed it on every run, so letting it also mean "downgrade"
+      // brought the bug straight back (3a261573 review).
+      if (!options.version && targetVersion !== CURRENT_VERSION && !isUpgrade(targetVersion, CURRENT_VERSION)) {
+        emitResult({ status: 'noop', fromVersion: CURRENT_VERSION, toVersion: targetVersion });
+        log(chalk.yellow(`AgEnFK ${CURRENT_VERSION} is newer than the latest ${options.beta ? '' : 'stable '}release (${targetVersion}); not downgrading.`));
+        const onBeta = (parseSemver(CURRENT_VERSION)?.pre.length ?? 0) > 0;
+        if (!options.beta && onBeta) log(chalk.gray('  This install is on the beta line: agenfk upgrade --beta'));
+        log(chalk.gray(`  To install ${targetVersion} anyway: agenfk upgrade --version ${targetVersion}`));
         return;
       }
 
@@ -1166,6 +1219,16 @@ program
     }
   });
 
+/** Whether the install opted into MCP (`withMcp` in ~/.agenfk/config.json, written by install.mjs). CLI-only is the default. */
+function installChoseMcp(): boolean {
+    try {
+        const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.agenfk', 'config.json'), 'utf8'));
+        return cfg?.withMcp === true;
+    } catch {
+        return false;
+    }
+}
+
 /**
  * Configure Claude Code IDE integration for an AgEnFK project directory.
  * Registers the agenfk MCP server via `claude mcp add --scope user` (the official
@@ -1174,12 +1237,23 @@ program
  *
  * Returns true on success, false if claude CLI is unavailable or dbPath cannot
  * be determined.
+ *
+ * `whenMissing` is required, because the right answer depends on the caller
+ * (BUG 5cc7de1e): after `agenfk init` the step is optional - CLI-only is the
+ * default and a Codex, Cursor or pi machine has no `claude` - so it is skipped
+ * with one grey line; `agenfk configure-ide` asked for exactly this, so a
+ * missing `claude` stays an error there. A db path that cannot be found is
+ * treated the same way: a warning after init, an error for configure-ide.
+ * init calls this only on a --with-mcp install (BUG 98aab7b6).
  */
-function configureClaudeCodeIde(rootDir: string): boolean {
-    // Require the claude CLI
-    try {
-        execSync('claude --version', { stdio: 'ignore' });
-    } catch {
+function configureClaudeCodeIde(rootDir: string, whenMissing: 'skip' | 'error'): boolean {
+    // Require the claude CLI. Every launch of claude goes through runTool: on
+    // Windows it is a .cmd shim or a native .exe, found on PATH only (BUG ad57c267).
+    if (runTool('claude', ['--version'], { stdio: 'ignore' }).status !== 0) {
+        if (whenMissing === 'skip') {
+            console.log(chalk.gray('Claude Code (the claude CLI) was not found, so its IDE setup was skipped; the agenfk CLI works without it. To add its MCP integration later, run: agenfk configure-ide'));
+            return false;
+        }
         console.error(chalk.red('Error: claude CLI not found in PATH.'));
         console.error(chalk.gray('Install Claude Code from https://claude.ai/download and try again.'));
         return false;
@@ -1205,28 +1279,31 @@ function configureClaudeCodeIde(rootDir: string): boolean {
         }
     }
     if (!dbPath) {
+        if (whenMissing === 'skip') {
+            console.log(chalk.yellow('Claude Code\'s MCP setup was skipped: could not determine AGENFK_DB_PATH. Run "agenfk up", then: agenfk configure-ide'));
+            return false;
+        }
         console.error(chalk.red('Could not determine AGENFK_DB_PATH.'));
         console.error(chalk.gray('Run "agenfk up" first to complete the installation.'));
         return false;
     }
 
-    // The agenfk bin installed by the framework (symlink in ~/.local/bin)
-    const agenfkBin = path.join(os.homedir(), '.local', 'bin', 'agenfk');
+    // The agenfk launcher the installer wrote into ~/.local/bin, in a form
+    // Claude Code can start on this platform (BUG 3a939855).
+    const serverCommand = claudeMcpServerCommand(process.platform, installedAgenfkBin(process.platform, os.homedir()));
 
-    // Remove any existing registration (idempotent)
-    try {
-        execSync('claude mcp remove agenfk', { stdio: 'ignore' });
-    } catch {}
+    // Remove any existing registration (idempotent; non-zero when there is none)
+    runTool('claude', ['mcp', 'remove', 'agenfk'], { stdio: 'ignore' });
 
     // Register via the official claude mcp add CLI (user scope = available in all projects)
-    const result = spawnSync('claude', [
+    const result = runTool('claude', [
         'mcp', 'add',
         '--transport', 'stdio',
         '--scope', 'user',
         '-e', `AGENFK_DB_PATH=${dbPath}`,
         '--',
         'agenfk',
-        agenfkBin, 'mcp'
+        ...serverCommand
     ], { stdio: 'inherit' });
 
     if (result.status !== 0) {
@@ -1373,7 +1450,23 @@ program
         console.log(chalk.green(`\n✨ Initialized project in ${projFile}`));
         console.log(chalk.gray('You can now start creating items with "agenfk create <type> [title]"'));
 
-        configureClaudeCodeIde(rootDir);
+        /*
+         * BUG 98aab7b6: only a --with-mcp install gets the MCP server at init.
+         * CLI-only is the default, and install.mjs removes the registration
+         * for it ("Ensuring CLI-only mode"); registering here, at user scope,
+         * undid that for every project. configure-ide still does it on demand.
+         */
+        if (!installChoseMcp()) {
+            console.log(chalk.gray('CLI-only install: Claude Code\'s agenfk MCP server was not registered. To add it to this project: agenfk configure-ide; to opt the whole install into MCP (every project and client): agenfk integration install claude --with-mcp'));
+            return;
+        }
+        // Past this point the project exists: a failure is the IDE step's,
+        // never the API server's, which the catch below would claim.
+        try {
+            configureClaudeCodeIde(rootDir, 'skip');
+        } catch (ideErr: any) {
+            console.log(chalk.yellow(`The project was initialized, but Claude Code's MCP setup failed: ${ideErr?.message ?? ideErr}. To retry: agenfk configure-ide`));
+        }
 
     } catch (e: any) {
         console.error(chalk.red(`Could not connect to API server at ${API_URL}. Is it running?`));
@@ -1385,7 +1478,7 @@ program
 
 program
   .command('configure-ide')
-  .description('Fix Claude Code MCP integration for an already-initialized project. Creates .mcp.json and updates .claude/settings.json. Safe to re-run.')
+  .description('Set up the Claude Code MCP integration for an already-initialized project: registers the agenfk MCP server with `claude mcp add` and its permissions in .claude/settings.local.json. Safe to re-run.')
   .action(() => {
     const rootDir = process.cwd();
     const projFile = path.join(rootDir, '.agenfk', 'project.json');
@@ -1397,13 +1490,12 @@ program
     }
 
     console.log(chalk.blue('Configuring Claude Code IDE integration...'));
-    const ok = configureClaudeCodeIde(rootDir);
+    const ok = configureClaudeCodeIde(rootDir, 'error');
 
-    if (!ok) {
-        console.error(chalk.red('Could not find agenfk MCP config in ~/.claude/settings.json.'));
-        console.error(chalk.gray('The agenfk MCP server must be registered in ~/.claude/settings.json under mcpServers.'));
-        process.exit(1);
-    }
+    // Each failure inside configureClaudeCodeIde already printed its own cause
+    // (no claude CLI, no db path, `claude mcp add` failed); a generic line here
+    // named a legacy settings.json mechanism that is not the cause (5cc7de1e review).
+    if (!ok) process.exit(1);
 
     console.log(chalk.green('\n✓ IDE configuration complete.'));
     console.log(chalk.gray('Restart Claude Code for the changes to take effect.'));
@@ -2032,7 +2124,7 @@ program
   .option('--test-report-path <path>', 'Where that command writes the report, relative to the project root; several reports (one per suite) as a comma list')
   .option('--test-report-surface <paths>', 'Comma-separated test paths (files or directories) the report cannot name, so test-surface-frozen can see them; "none" clears them')
   .option('--test-report-related-command <cmd>', 'The runner\'s related-tests command with {files} (e.g. "npx vitest related --run {files}"): a step that changed code runs only the tests it affects; "none" clears it')
-  .option('--test-report-reuse-ignore <globs>', 'Comma-separated globs a re-run skips when only they changed, unless a test names the file (default: **/*.md); "none" ignores nothing')
+  .option('--test-report-reuse-ignore <globs>', 'Comma-separated globs a re-run skips when only they changed, unless a test names the file (default: **/*.md); "none" ignores nothing. The final step skips the verify command for them too: do not cover files that command checks (a markdown lint, prettier --check)')
   .option('--test-report <none>', 'Pass "none" to clear the test report setting')
   .action(async (id, options) => {
     try {
@@ -2567,7 +2659,7 @@ jiraCommand
         config.jira = { clientId, clientSecret, redirectUri };
         const agenfkDir = path.join(os.homedir(), '.agenfk');
         if (!fs.existsSync(agenfkDir)) fs.mkdirSync(agenfkDir, { recursive: true });
-        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+        writePrivateFileSync(configPath, JSON.stringify(config, null, 2));
 
         console.log(chalk.green('\nJIRA integration configured successfully!'));
         console.log(chalk.gray(`  Client ID:    ${clientId}`));
@@ -2786,7 +2878,7 @@ githubCommand
 
     const agenfkDir = path.join(os.homedir(), '.agenfk');
     if (!fs.existsSync(agenfkDir)) fs.mkdirSync(agenfkDir, { recursive: true });
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+    writePrivateFileSync(configPath, JSON.stringify(config, null, 2));
 
     console.log(chalk.green(`\nGitHub import configured for project ${projectId}!`));
     console.log(chalk.gray(`  Repository: ${owner}/${repo}`));
@@ -2870,7 +2962,7 @@ githubCommand
         if (Object.keys(config.github.repos).length === 0) {
           delete config.github;
         }
-        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+        writePrivateFileSync(configPath, JSON.stringify(config, null, 2));
         console.log(chalk.green('GitHub import configuration removed for this project.'));
       } else {
         console.log(chalk.yellow('No GitHub configuration found for this project.'));
@@ -2997,7 +3089,7 @@ configSetCommand
         config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       }
       config.flowRegistry = value;
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+      writePrivateFileSync(configPath, JSON.stringify(config, null, 2));
       console.log(chalk.green(`Flow registry set to: ${value}`));
     } catch (err: any) {
       console.error(chalk.red('Error updating config:'), err.message);
@@ -3505,7 +3597,7 @@ rulesCommand
         config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       }
       config.rulesScope = scope;
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+      writePrivateFileSync(configPath, JSON.stringify(config, null, 2));
 
       console.log(chalk.green(`Workflow rules & skills installed (${scope}):`));
       installed.forEach(l => console.log(l));
@@ -3586,7 +3678,7 @@ rulesCommand
       }
       if (config.rulesScope === scope) {
         delete config.rulesScope;
-        fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+        writePrivateFileSync(configPath, JSON.stringify(config, null, 2));
       }
 
       if (removed.length) {
@@ -3692,10 +3784,10 @@ async function postCheckHistory(itemId: string, prNumber: number, repo: string):
     console.warn(chalk.yellow('⚠️  Could not read the cards\' check history from the server; nothing was posted on the PR.'));
     return;
   }
-  // CGLAB-428: an older server has no such route; the rest of the history still goes on.
-  const disabled = await read<DisabledCheckRow>('disabled-checks');
-  if (!disabled) console.warn(chalk.yellow('⚠️  Could not read the checks the org\'s hub switched off; the PR comment will not list them.'));
-  const comment = prRegisterComment(events, custom, warnings, disabled ?? []);
+  // CGLAB-428: an older server has no such route (a 404, silent); the rest of the history still goes on.
+  const disabled = await readDisabledChecks(() => axios.get(`${API_URL}/items/${itemId}/disabled-checks`));
+  if (disabled.failed) console.warn(chalk.yellow(`⚠️  Could not read the checks the org's hub switched off (${disabled.failed}); the PR comment will not list them.`));
+  const comment = prRegisterComment(events, custom, warnings, disabled.rows);
   if (!comment) return;
   if (!checkGhCli()) { console.warn(chalk.yellow('⚠️  gh is not installed: the check history was not posted on the PR.')); return; }
   // Once per PR: a second pr-register (a re-run) does not post it again.
@@ -4726,10 +4818,9 @@ prCmd
         console.warn(chalk.yellow(`⚠️  Could not read the card's warnings (${e?.response?.status ?? e?.message}); the PR body will not list them.`));
       }
       // CGLAB-428: the checks the org's hub switched off, which never ran.
-      let disabledChecks: DisabledCheckRow[] = [];
-      try { disabledChecks = (await axios.get(`${API_URL}/items/${itemId}/disabled-checks`)).data ?? []; } catch (e: any) {
-        console.warn(chalk.yellow(`⚠️  Could not read the checks the org's hub switched off (${e?.response?.status ?? e?.message}); the PR body will not list them.`));
-      }
+      const disabled = await readDisabledChecks(() => axios.get(`${API_URL}/items/${itemId}/disabled-checks`));
+      if (disabled.failed) console.warn(chalk.yellow(`⚠️  Could not read the checks the org's hub switched off (${disabled.failed}); the PR body will not list them.`));
+      const disabledChecks = disabled.rows;
       args.push('--body', buildPrBody(options.body || item.description || '', gateEvents, customChecks, warnings, disabledChecks));
       if (options.draft) args.push('--draft');
 

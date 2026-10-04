@@ -175,3 +175,21 @@ describe('a client that is already running', () => {
     expect(sent, 'opting back in did not resume capture').toHaveBeenCalled();
   });
 });
+
+describe.runIf(process.platform !== 'win32')('the config file holds secrets (BUG cc26b206)', () => {
+  // config.json also carries the JIRA clientSecret, so whichever writer creates
+  // it first decides who can read it.
+  it('creates config.json readable by its owner only', () => {
+    const old = process.umask(0o022);
+    try { setTelemetryEnabled(false); } finally { process.umask(old); }
+    expect(fs.statSync(configFile()).mode & 0o777).toBe(0o600);
+  });
+
+  it('tightens an existing 0644 config.json', () => {
+    fs.mkdirSync(path.join(sandbox, '.agenfk'), { recursive: true });
+    fs.writeFileSync(configFile(), JSON.stringify({ jira: { clientSecret: 's' } }), { mode: 0o644 });
+    fs.chmodSync(configFile(), 0o644);
+    setTelemetryEnabled(true);
+    expect(fs.statSync(configFile()).mode & 0o777).toBe(0o600);
+  });
+});

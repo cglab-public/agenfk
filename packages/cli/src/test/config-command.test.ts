@@ -44,11 +44,14 @@ vi.mock('fs', () => ({
   readFileSync: mockReadFileSync,
   writeFileSync: mockWriteFileSync,
   mkdirSync: mockMkdirSync,
+  // config.json is written 0600 via a temp file renamed over it (BUG cc26b206).
+  chmodSync: vi.fn(), renameSync: (from: string, to: string) => { const c = mockWriteFileSync.mock.calls.find((x: any[]) => x[0] === from); if (c) mockWriteFileSync(to, c[1], c[2]); }, unlinkSync: vi.fn(),
   default: {
     existsSync: mockExistsSync,
     readFileSync: mockReadFileSync,
     writeFileSync: mockWriteFileSync,
     mkdirSync: mockMkdirSync,
+    chmodSync: vi.fn(), renameSync: (from: string, to: string) => { const c = mockWriteFileSync.mock.calls.find((x: any[]) => x[0] === from); if (c) mockWriteFileSync(to, c[1], c[2]); }, unlinkSync: vi.fn(),
   },
 }));
 
@@ -80,7 +83,8 @@ describe('agenfk config set telemetry', () => {
     expect(mockWriteFileSync).toHaveBeenCalledWith(
       CONFIG_PATH,
       expect.stringContaining('"telemetry": true'),
-      'utf8'
+      // Owner-only: the same file holds the JIRA clientSecret (BUG cc26b206).
+      expect.objectContaining({ mode: 0o600 })
     );
     // Preserves existing keys
     const written = JSON.parse(

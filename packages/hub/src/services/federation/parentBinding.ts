@@ -86,6 +86,9 @@ for (const [a, bits] of [
 const PRIVATE_V6 = new net.BlockList();
 for (const [a, bits] of [
   ['::', 128], ['::1', 128], ['fc00::', 7], ['fe80::', 10], ['fec0::', 10], ['ff00::', 8],
+  // RFC 8215 local-use NAT64: a local network by definition, whatever IPv4 it
+  // carries, so it is NOT unwrapped like 64:ff9b::/96 (fa4f7dbd).
+  ['64:ff9b:1::', 48],
 ] as const) PRIVATE_V6.addSubnet(a, bits, 'ipv6');
 
 /** An IPv6 address as eight 16-bit groups, or null. Zone ids are dropped. */
@@ -114,7 +117,8 @@ const v4From = (hi: number, lo: number) => [hi >> 8, hi & 0xff, lo >> 8, lo & 0x
  * The IPv4 address an IPv6 one carries, where the network will actually
  * deliver to it: IPv4-mapped (::ffff:a.b.c.d), IPv4-translated
  * (::ffff:0:a.b.c.d), IPv4-compatible (::a.b.c.d), NAT64 (64:ff9b::/96 - a
- * NAT gateway turns it back into that IPv4) and 6to4 (2002::/16).
+ * NAT gateway turns it back into that IPv4) and 6to4 (2002::/16). Local-use
+ * NAT64 is judged separately (localUseNat64IPv4s).
  */
 function embeddedIPv4(g: number[]): string | null {
   const zero = (from: number, to: number) => g.slice(from, to).every((x) => x === 0);
@@ -125,6 +129,56 @@ function embeddedIPv4(g: number[]): string | null {
   if (zero(0, 6) && (g[6] !== 0 || g[7] > 1)) return v4From(g[6], g[7]);
   return null;
 }
+
+/**
+ * Addresses that are never a federation parent, opt-in or not (BUG 9afde47e).
+ * AGENFK_HUB_ALLOW_PRIVATE_PARENT exists for a parent on the LAN; what these
+ * reach instead is the cloud's metadata (credential) service or a link-local
+ * neighbour. All but Azure's WireServer (a public address) are also in the
+ * private ranges above, so without the opt-in those were already refused.
+ */
+const NEVER_PARENT_V4 = new net.BlockList();
+NEVER_PARENT_V4.addSubnet('169.254.0.0', 16, 'ipv4');        // link-local, incl. AWS/GCP/Azure/OCI metadata at .169.254
+NEVER_PARENT_V4.addAddress('100.100.100.200', 'ipv4');       // Alibaba Cloud metadata
+// BUG fa4f7dbd. WireServer is a PUBLIC address (Azure's host agent, a known
+// SSRF target), so without this it passed even with the opt-in unset.
+NEVER_PARENT_V4.addAddress('168.63.129.16', 'ipv4');         // Azure WireServer
+NEVER_PARENT_V4.addAddress('192.0.0.192', 'ipv4');           // OCI Classic metadata
+const NEVER_PARENT_V6 = new net.BlockList();
+NEVER_PARENT_V6.addSubnet('fe80::', 10, 'ipv6');              // link-local
+NEVER_PARENT_V6.addAddress('fd00:ec2::254', 'ipv6');         // AWS IMDS over IPv6
+NEVER_PARENT_V6.addAddress('fd20:ce::254', 'ipv6');          // GCP metadata over IPv6
+NEVER_PARENT_V6.addAddress('fd00:c1::a9fe:a9fe', 'ipv6');    // OCI IMDS over IPv6 (cloud-init #6849)
+
+/**
+ * RFC 8215 local-use NAT64 (64:ff9b:1::/48), BUG fa4f7dbd. An operator picks
+ * the prefix length, and RFC 6052 puts the IPv4 in a different place for each
+ * (bits 64-71, the "u" octet, are always skipped). Within a /48 the possible
+ * placements are /48, /56, /64 and /96, so every reading is returned and the
+ * caller refuses if ANY is a never-a-parent address. Null outside the range.
+ */
+function localUseNat64IPv4s(g: number[]): string[] | null {
+  if (!(g[0] === 0x64 && g[1] === 0xff9b && g[2] === 1)) return null;
+  const b = g.flatMap((x) => [x >> 8, x & 0xff]);
+  const v4 = (...i: number[]) => i.map((k) => b[k]).join('.');
+  return [v4(6, 7, 9, 10), v4(7, 9, 10, 11), v4(9, 10, 11, 12), v4(12, 13, 14, 15)];
+}
+
+/** Is this IP address (any spelling) one that is never a federation parent? */
+export function isNeverParentAddress(ip: string): boolean {
+  const bare = ip.replace(/^\[|\]$/g, '');
+  if (net.isIPv4(bare)) return NEVER_PARENT_V4.check(bare, 'ipv4');
+  const g = ipv6Groups(bare);
+  if (!g) return false; // isPrivateAddress already refuses it without the opt-in
+  const local = localUseNat64IPv4s(g);
+  if (local) return local.some((v4) => NEVER_PARENT_V4.check(v4, 'ipv4'));
+  const v4 = embeddedIPv4(g);
+  if (v4 !== null) return NEVER_PARENT_V4.check(v4, 'ipv4');
+  return NEVER_PARENT_V6.check(g.map((x) => x.toString(16)).join(':'), 'ipv6');
+}
+
+export const NEVER_PARENT_MESSAGE =
+  'points at a link-local or cloud-metadata address. No federation parent lives there, so it is refused even with AGENFK_HUB_ALLOW_PRIVATE_PARENT=1.';
 
 /** Is this IP address (v4 or v6, any spelling) in a range that is never a public host? */
 export function isPrivateAddress(ip: string): boolean {
@@ -158,6 +212,10 @@ export function assertHttpUrl(raw: string, opts: { allowPrivate?: boolean } = {}
     throw new Error(
       'parentUrl points at a private or loopback address. Set AGENFK_HUB_ALLOW_PRIVATE_PARENT=1 if the parent hub really is on this network.',
     );
+  }
+  const literal = u.hostname.replace(/^\[|\]$/g, '');
+  if (net.isIP(literal.replace(/%.*$/, '')) && isNeverParentAddress(literal)) {
+    throw new Error(`parentUrl ${NEVER_PARENT_MESSAGE}`);
   }
   // One definition of the final form, shared with the invite-token decoder
   // so what an admin is shown is what gets dialled.

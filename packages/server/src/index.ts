@@ -14,7 +14,7 @@ import { v4 as uuidv4 } from "uuid";
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
-import { toToon } from "@agenfk/core";
+import { toToon, nextPollDelay, POLL_CAP_MS } from "@agenfk/core";
 import { getApiUrl } from "@agenfk/telemetry";
 import { createApiClient } from "./apiClient.js";
 import { execSync, execFileSync, spawnSync, spawn } from "child_process";
@@ -45,11 +45,14 @@ const api = createApiClient();
 // short per-request timeouts and NO overall deadline.
 async function followValidateRunViaApi(runId: string): Promise<any> {
   let consecutiveErrors = 0;
+  // cc5e4943: poll fast first, back off to 1.5s - the same schedule as `agenfk verify`. A poll error waits the cap.
+  let delay: number | undefined;
   for (;;) {
     try {
       const { data: run } = await api.get(`/items/validate-runs/${runId}`, { headers: { 'x-agenfk-internal': VERIFY_TOKEN }, timeout: 10000 });
       consecutiveErrors = 0;
       if (run.status !== 'running') return run;
+      delay = nextPollDelay(delay);
     } catch (e: any) {
       // 404 is definitive (run expired / server restarted mid-run) — surface
       // the server's guidance immediately instead of burning retries.
@@ -59,8 +62,10 @@ async function followValidateRunViaApi(runId: string): Promise<any> {
       if (++consecutiveErrors >= 10) {
         throw new Error(`Lost contact with the validation run (${e?.message || e}). The run may still be in progress — check the item's comments before re-running validate_progress.`);
       }
+      await new Promise(r => setTimeout(r, POLL_CAP_MS));
+      continue;
     }
-    await new Promise(r => setTimeout(r, 1500));
+    await new Promise(r => setTimeout(r, delay));
   }
 }
 

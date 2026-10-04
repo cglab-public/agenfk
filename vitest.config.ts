@@ -12,7 +12,8 @@ import { sharedResolve, sharedTest } from './scripts/vitest-shared-config.mjs';
  * that mock `os.homedir()` per file, and serialising those was most of the
  * wall clock. These packages qualify:
  *   - core: workflow/flow/semver/gatekeeper logic, zero fs access
- *   - hub-ui, ui, flow-editor: jsdom component specs
+ *   - hub-ui, flow-editor: jsdom component specs (the board, packages/ui, is
+ *     its own project below)
  *   - storage-sqlite, telemetry: fs-touching, but each file uses its own
  *     mkdtemp dir or a mocked `os.homedir()`, so there is no cross-file
  *     contention
@@ -23,7 +24,6 @@ const PARALLEL_INCLUDE = [
   'packages/storage-sqlite/src/test/**/*.{test,spec}.{ts,tsx}',
   'packages/telemetry/src/test/**/*.{test,spec}.{ts,tsx}',
   'packages/hub-ui/src/test/**/*.{test,spec}.{ts,tsx}',
-  'packages/ui/src/test/**/*.{test,spec}.{ts,tsx}',
   'packages/flow-editor/src/test/**/*.{test,spec}.{ts,tsx}',
   'packages/desktop/src/test/**/*.{test,spec}.{ts,tsx}',
   // The TDD harness's pure logic; the harness itself runs in Docker (npm run e2e:tdd).
@@ -65,6 +65,12 @@ export default defineConfig({
         },
         resolve: sharedResolve,
       },
+      // The board (4ac25844), under its OWN config: jsdom, the react plugin,
+      // its setup file and timeout - under the shared node settings its specs
+      // fail in the hundreds. It used to run only from `cd packages/ui`, so the
+      // project's verify command and test report - every agenfk gate's view of
+      // the suite - never saw a board spec, and a card could break one and pass.
+      'packages/ui/vitest.config.ts',
     ],
   },
 });

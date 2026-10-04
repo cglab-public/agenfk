@@ -38,18 +38,66 @@ if (gitCheck.status !== 0) {
 const shouldRebuild = process.argv.includes('--rebuild');
 const REPO_NAME = 'cglab-public/agenfk';
 
-// Fetch latest release tag — curl (no auth) first, gh CLI as fallback
+// The stable release to install (BUG 4bd98e16). GitHub's /releases/latest and
+// `gh release view` pick by DATE and include hub image releases (`hub-v*`)
+// published without --prerelease, so either is only one candidate beside the
+// release list; the newest framework stable by VERSION wins. Same rule as the
+// CLI's newestChannelRelease and bin/version-utils.mjs's newestChannelTag -
+// copied, because this published package is a single file.
+function parseSemver(v) {
+  const m = String(v || '').trim().replace(/^v/, '').match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/);
+  return m ? { core: [+m[1], +m[2], +m[3]], pre: m[4] ? m[4].split('.') : [] } : null;
+}
+function compareSemver(a, b) {
+  const pa = parseSemver(a), pb = parseSemver(b);
+  for (let i = 0; i < 3; i += 1) if (pa.core[i] !== pb.core[i]) return pa.core[i] - pb.core[i];
+  if (!pa.pre.length || !pb.pre.length) return pb.pre.length - pa.pre.length;
+  for (let i = 0; i < Math.max(pa.pre.length, pb.pre.length); i += 1) {
+    const x = pa.pre[i], y = pb.pre[i];
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    if (x === y) continue;
+    const xn = /^\d+$/.test(x), yn = /^\d+$/.test(y);
+    if (xn && yn) return Number(x) - Number(y);
+    if (xn !== yn) return xn ? -1 : 1;
+    return x.localeCompare(y);
+  }
+  return 0;
+}
+function newestStableTag(tags) {
+  const stable = tags.filter((t) => t && !/^hub-v/i.test(t) && parseSemver(t) && parseSemver(t).pre.length === 0);
+  return stable.sort((a, b) => compareSemver(b, a))[0] || null;
+}
 function fetchLatestTag(repo) {
-  try {
-    const json = execSync(
-      `curl -fsSL "https://api.github.com/repos/${repo}/releases/latest" -H "Accept: application/vnd.github+json" -H "User-Agent: agenfk-installer"`,
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
-    );
-    const tag = JSON.parse(json).tag_name;
-    if (tag) return tag;
-  } catch {}
-  // Fallback: gh CLI
-  return execSync(`gh release view --repo ${repo} --json tagName --template '{{.tagName}}'`, { encoding: 'utf8' }).trim();
+  // GitHub's own answer first, the list best-effort (the CLI's order): a list
+  // that fails never throws away a good /releases/latest. maxBuffer: the
+  // 100-release list grows with every release's notes; the default is 1 MB.
+  const run = (cmd) => execSync(cmd, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 32 * 1024 * 1024 });
+  const curlJson = (url) => JSON.parse(run(`curl -fsSL "${url}" -H "Accept: application/vnd.github+json" -H "User-Agent: agenfk-installer"`));
+  const viaApi = () => {
+    const tags = [];
+    try { tags.push(curlJson(`https://api.github.com/repos/${repo}/releases/latest`).tag_name); } catch { /* the list decides */ }
+    try {
+      const list = curlJson(`https://api.github.com/repos/${repo}/releases?per_page=100`);
+      for (const r of Array.isArray(list) ? list : []) if (r && !r.prerelease) tags.push(r.tag_name);
+    } catch { /* latest decides */ }
+    return newestStableTag(tags);
+  };
+  const viaGh = () => {
+    const tags = [];
+    try { tags.push(run(`gh release view --repo ${repo} --json tagName --template '{{.tagName}}'`).trim()); } catch { /* the list decides */ }
+    try {
+      const rows = JSON.parse(run(`gh release list --repo ${repo} --limit 100 --exclude-drafts --json tagName,isPrerelease`) || '[]');
+      for (const r of rows) if (r && !r.isPrerelease) tags.push(r.tagName);
+    } catch { /* the viewed tag decides */ }
+    return newestStableTag(tags);
+  };
+  const tag = viaApi() || viaGh();
+  if (!tag) {
+    throw new Error(`Could not resolve a stable framework release for ${repo}: `
+      + 'the GitHub API and gh both failed, or the repo lists only hub releases.');
+  }
+  return tag;
 }
 
 // Download release asset — direct curl URL (no auth) first, gh CLI as fallback
