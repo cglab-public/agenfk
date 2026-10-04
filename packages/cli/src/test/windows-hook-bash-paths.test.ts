@@ -46,6 +46,10 @@ describe('buildClaudeHookCommand', () => {
     expect(buildClaudeHookCommand('C:\\Users\\A B\\.local\\bin\\agenfk-pr-hook', { platform: 'win32' }))
       .toBe('"C:/Users/A B/.local/bin/agenfk-pr-hook"');
   });
+  it('non-win32: a path holding a space or a quote is one single-quoted word (af174cdd)', () => {
+    expect(buildClaudeHookCommand("/Users/A B/it's/.local/bin/agenfk-pr-hook", { platform: 'darwin', args: '--client claude-code' }))
+      .toBe("'/Users/A B/it'\\''s/.local/bin/agenfk-pr-hook' --client claude-code");
+  });
   it('non-win32: unchanged from the plain path', () => {
     expect(buildClaudeHookCommand('/home/u/.local/bin/agenfk-pr-hook', { platform: 'linux', args: '--client claude-code' }))
       .toBe('/home/u/.local/bin/agenfk-pr-hook --client claude-code');
