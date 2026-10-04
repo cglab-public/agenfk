@@ -13,7 +13,7 @@ import { jiraAdminRouter, jiraInstallationRouter } from './routes/jira.js';
 import { googleRouter } from './auth/google.js';
 import { entraRouter } from './auth/entra.js';
 import { ensureBootstrapToken } from './auth/bootstrapToken.js';
-import { installConfigAudit } from './services/configAuditRoutes.js';
+import { installConfigAudit, mountRouter } from './services/configAuditRoutes.js';
 import { auditRouter } from './routes/audit.js';
 import { mintAdminRecoveryToken, withdrawExpiredRecoveryTokens } from './auth/adminRecovery.js';
 import { queriesRouter } from './routes/queries.js';
@@ -239,21 +239,21 @@ export async function createHubApp(
 
   // Org-wide JIRA (CGLAB-412). Ahead of the broad /v1 routers so neither the
   // admin router's limiter nor any /v1 fallthrough sees these paths first.
-  app.use('/v1/admin/jira', jiraAdminRouter(ctx));
-  app.use('/v1/jira', jiraInstallationRouter(ctx));
-  app.use('/v1', eventsRouter(ctx));
-  app.use('/v1', flowsRouter(ctx));
-  app.use('/auth', authRouter(ctx));
-  app.use('/auth/google', googleRouter(ctx));
-  app.use('/auth/entra', entraRouter(ctx));
-  app.use('/setup', setupRouter(ctx));
-  app.use('/v1/admin', adminRouter(ctx));
-  app.use('/v1/admin', orgRenameRouter(ctx));
-  app.use('/v1/admin', auditRouter(ctx));
-  app.use('/v1', queriesRouter(ctx));
-  app.use('/hub', connectRouter(ctx));
-  app.use('/hub/federation', federationInviteRouter(ctx));
-  app.use('/v1/federation', federationRouter(ctx));
+  mountRouter(app, '/v1/admin/jira', jiraAdminRouter(ctx));
+  mountRouter(app, '/v1/jira', jiraInstallationRouter(ctx));
+  mountRouter(app, '/v1', eventsRouter(ctx));
+  mountRouter(app, '/v1', flowsRouter(ctx));
+  mountRouter(app, '/auth', authRouter(ctx));
+  mountRouter(app, '/auth/google', googleRouter(ctx));
+  mountRouter(app, '/auth/entra', entraRouter(ctx));
+  mountRouter(app, '/setup', setupRouter(ctx));
+  mountRouter(app, '/v1/admin', adminRouter(ctx));
+  mountRouter(app, '/v1/admin', orgRenameRouter(ctx));
+  mountRouter(app, '/v1/admin', auditRouter(ctx));
+  mountRouter(app, '/v1', queriesRouter(ctx));
+  mountRouter(app, '/hub', connectRouter(ctx));
+  mountRouter(app, '/hub/federation', federationInviteRouter(ctx));
+  mountRouter(app, '/v1/federation', federationRouter(ctx));
   // Config audit log (STORY a89af514, BUG 91d2941d): an audit layer inside each
   // audited route, after its guards. `config`, not its value: an org rename
   // changes defaultOrgId at runtime.

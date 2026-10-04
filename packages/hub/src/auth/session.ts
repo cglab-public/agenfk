@@ -72,8 +72,8 @@ export function requireSession(secret: string, db: DB) {
     if (!token) { res.status(401).json({ error: 'Not signed in' }); return; }
     const session = verifySession(token, secret);
     if (!session) { res.status(401).json({ error: 'Session expired or invalid' }); return; }
-    // express 4 does not forward a rejected middleware promise: catch it here,
-    // or a DB error leaves the request with no response at all.
+    // This promise is not returned to express, so nothing forwards its
+    // rejection: catch it here, or a DB error leaves the request unanswered.
     db.get<{ role: SessionPayload['role']; active: number; org_id: string }>(SESSION_USER_SQL, [session.userId]).then((user) => {
       // A throw in here would otherwise escape as an unhandled rejection
       // (downstream handlers are covered by express's own try/catch).
