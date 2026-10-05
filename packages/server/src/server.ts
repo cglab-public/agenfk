@@ -7869,6 +7869,31 @@ interface StepGate {
   deferredTo?: string;
 }
 
+/** Same directory once symlinks are resolved (/tmp vs /private/tmp on macOS); unreadable paths compare as written. */
+function sameDir(a: string, b: string): boolean {
+  const real = (p: string) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+  return real(a) === real(b);
+}
+
+/** aa98ccf4: live cards other than this one whose resolved tree is the card's own tree. */
+async function liveTreeMatesOf(item: any, root: string | null, projectRoot: string | null | undefined, anchorNames: Set<string>): Promise<Array<{ id: string; title: string; status: string }>> {
+  if (!root || !item.projectId) return [];
+  const items = (await storage.listItems({ projectId: item.projectId } as any)) as any[];
+  const out: Array<{ id: string; title: string; status: string }> = [];
+  for (const other of items) {
+    if (!other?.id || other.id === item.id) continue;
+    const status = String(other.status ?? '').toUpperCase();
+    // A card on an anchor (TODO, DONE, or a flow's own names) holds no work in
+    // the tree; neither does an inactive one.
+    if (status === 'DONE' || anchorNames.has(status) || INACTIVE_STATUSES.has(status)) continue;
+    const otherRoot = resolveCommitRoot(await withEffectiveWorktree(other), projectRoot).root;
+    if (otherRoot && sameDir(otherRoot, root)) {
+      out.push({ id: other.id, title: String(other.title ?? other.id), status });
+    }
+  }
+  return out;
+}
+
 /** The branch a card works on: its own, else its nearest ancestor's (branches live on top-level items). */
 async function branchOfCard(item: any): Promise<string | null> {
   let cur: any = item;
@@ -8662,6 +8687,8 @@ async function runStepGate(item: any, flow: { steps: any[] }, root: string | nul
     cardKeys: await keysOfCard(item),
     testPaths: Array.isArray(project?.testReport?.surface) ? project.testReport.surface : [],
     ignoredPaths: reportPath && root ? reportsOwned(root, project?.testReport) : [],
+    // aa98ccf4: a dirty tree shared with live cards warns instead of blocking.
+    ...(resolved.some(c => c.applicable && c.id === 'tree-clean') && root ? { liveTreeMates: await liveTreeMatesOf(item, root, project?.projectRoot, new Set(((flow as any)?.steps ?? []).filter((st: any) => st?.isAnchor || st?.isSpecial).map((st: any) => String(st.name).toUpperCase()))) } : {}),
     deferToCommand,
     ...(deferToApproval.length ? { deferToApproval } : {}),
     ...(upstream ? { upstream } : {}),

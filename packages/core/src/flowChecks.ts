@@ -80,7 +80,7 @@ const def = (d: Omit<CheckDef, 'params' | 'produces' | 'requires' | 'needsCaptur
 
 export const CHECK_CATALOGUE: Record<string, CheckDef> = {
   'tree-clean': def({ id: 'tree-clean', group: 'git', defaultSeverity: 'block',
-    description: 'The working tree has no uncommitted changes when work starts, so the card begins from a known commit.' }),
+    description: 'The working tree has no uncommitted changes when work starts, so the card begins from a known commit. A tree shared with other live cards warns instead of blocking: the dirt is not attributable (aa98ccf4).', }),
   'tree-in-sync': def({ id: 'tree-in-sync', group: 'git', defaultSeverity: 'block', network: true,
     description: "The card's tree is in sync with its remote when work starts - not behind it, not diverged from it - so work is never built on stale code. Ahead (unpushed work) is fine; a tree with no remote passes; an unreachable remote only warns." }),
   'on-card-branch': def({ id: 'on-card-branch', group: 'git', defaultSeverity: 'block',

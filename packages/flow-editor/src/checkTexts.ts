@@ -15,7 +15,7 @@ export interface CheckText {
 }
 
 export const CHECK_TEXTS: Record<string, CheckText> = {
-  'tree-clean': { title: 'Clean working tree', stops: 'starting on top of someone else\'s half-finished edits', must: 'Start with no uncommitted changes' },
+  'tree-clean': { title: 'Clean working tree', stops: 'starting on top of someone else\'s half-finished edits (a tree shared with live cards warns instead of blocking)', must: 'Start with no uncommitted changes' },
   'tree-in-sync': { title: 'In sync with its remote', stops: 'building on a checkout that is behind (or has diverged from) its remote', must: 'Start from a tree that is not behind its remote: git pull --ff-only' },
   'on-card-branch': { title: 'On the card\'s branch', stops: 'working on the wrong branch', must: 'Be on the card\'s own branch' },
   'jira-key-valid': { title: 'Linked to a JIRA item', stops: 'work nobody can trace back to an issue', must: 'Link the card to a valid JIRA key that its branch carries' },
