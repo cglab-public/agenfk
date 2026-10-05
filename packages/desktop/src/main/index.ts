@@ -30,11 +30,11 @@ import { registerPtyIpc } from './ptyIpc.js';
 import { resolveWorktree } from './worktree.js';
 import { cardPrompt } from './cardPrompt.js';
 import { httpPost } from './httpPost.js';
-import { captureLoginPath } from './ptyEnv.js';
+import { captureLoginPath, mergePath, pathKeyOf } from './ptyEnv.js';
 import { adoptFailureChoice, resolveBrowserUi } from './adoptFailure.js';
 import { EDITORS } from './editors.js';
 import { detectTmux, type TmuxStatus } from './tmux.js';
-import { whichOnPath, setAgentDetectionDeps } from './detectAgents.js';
+import { whichOnPath, setAgentDetectionDeps, locateExecutable } from './detectAgents.js';
 import { makeEmit } from './windowEmit.js';
 import { wireFullScreen, answerFullScreenQuery } from './windowFullScreen.js';
 import { makeLoginPathCache } from './loginPathCache.js';
@@ -370,7 +370,7 @@ async function boot(): Promise<void> {
       // Kick it off now, so the value is usually ready before anything asks.
       void currentLoginPath();
 
-      setAgentDetectionDeps({ which: whichOnPath, loginPath: currentLoginPath });
+      setAgentDetectionDeps({ which: whichOnPath, loginPath: currentLoginPath, forgetLoginPath: currentLoginPath.forget });
       /*
        * Probed against the LOGIN PATH, like agent detection one line above.
        *
@@ -477,6 +477,9 @@ async function boot(): Promise<void> {
       const port = new URL(server.url).port ? Number(new URL(server.url).port) : DEFAULT_API_PORT;
       ptyRegistry = new PtyRegistry({
         spawn: spawnPty as never,
+        // The lookup that marks an agent Installed, so the picker and the
+        // terminal cannot disagree about where it is (story 1b9d622e).
+        locate: file => locateExecutable(file),
         /*
          * The card, in its own words, as the first thing the agent is told.
          * Read from the server here so the text is the CARD's — the renderer
@@ -873,57 +876,70 @@ async function boot(): Promise<void> {
           return res.body;
         },
         printCommand: printCommandFor,
-        run: (file, args, opts) => new Promise((resolve, reject) => {
-          // execFile, never a shell: the objective is a sentence a person
-          // typed, and it reaches argv as one argument rather than as
-          // something a shell gets to interpret.
-          const child = execFile(file, [...args], {
-            cwd: opts.cwd,
-            timeout: opts.timeoutMs,
-            maxBuffer: 16 * 1024 * 1024,
-            env: process.env,
-            windowsHide: true,
-          }, (err: Error | null, stdout: string, stderr: string) => {
-            // A non-zero exit still carries output worth reading: the answer
-            // may be on stdout and the reason on stderr.
-            if (err && !String(stdout ?? '').trim()) {
-              reject(new Error(String(stderr ?? '').trim() || err.message));
-              return;
-            }
-            resolve({ stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
-          });
-
-          /*
-           * EOF ON STDIN, IMMEDIATELY. execFile opens a pipe and leaves it
-           * open, so a CLI that reads stdin before answering waits on input
-           * that is never coming — the run looks identical to a slow model
-           * until the timeout fires minutes later. A one-shot question has
-           * nothing to type; saying so is what lets the agent get on with it.
-           */
-          child.stdin?.end();
-
-          /*
-           * What it is saying WHILE it says it. The screen used to show a
-           * spinner and the word "working", which cannot distinguish thinking
-           * from stuck from a login prompt nobody can see.
-           */
-          const forward = (stream: 'stdout' | 'stderr') => (chunk: unknown) => {
-            for (const line of String(chunk).split(/[\r\n]+/)) {
-              if (!line.trim()) continue;
-              /*
-               * To the window that asked. There is exactly one for this
-               * question — the panel that started it — and if it has gone,
-               * nobody is waiting for these lines.
-               */
-              const target = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents.id : null;
-              if (target !== null) {
-                emitToWindow(target, 'agents:proposeOutput', { stream, line: line.trim() });
+        run: async (file, args, opts) => {
+          // Where the terminal would find it, opened the way the terminal
+          // opens it: on Windows an npm .cmd needs cmd.exe (story 1b9d622e).
+          const located = await locateExecutable(file);
+          const launchAs = located ? platform.launch(located, args, process.env) : { file, args, commandLine: undefined };
+          // And with that same PATH: an npm-installed agent is a script that
+          // finds `node` on PATH, and the app's own PATH may not have it.
+          const pathKey = pathKeyOf(process.env);
+          const freshPath = await currentLoginPath();
+          const env = freshPath ? { ...process.env, [pathKey]: mergePath(freshPath, process.env[pathKey]) } : process.env;
+          return new Promise((resolve, reject) => {
+            // execFile, never a shell: the objective is a sentence a person
+            // typed, and it reaches argv as one argument rather than as
+            // something a shell gets to interpret. The one exception is a .cmd,
+            // whose command line `launch` has already escaped for cmd.exe.
+            const child = execFile(launchAs.file, launchAs.commandLine ? [launchAs.commandLine] : [...launchAs.args], {
+              cwd: opts.cwd,
+              timeout: opts.timeoutMs,
+              maxBuffer: 16 * 1024 * 1024,
+              env,
+              windowsHide: true,
+              windowsVerbatimArguments: Boolean(launchAs.commandLine),
+            }, (err: Error | null, stdout: string, stderr: string) => {
+              // A non-zero exit still carries output worth reading: the answer
+              // may be on stdout and the reason on stderr.
+              if (err && !String(stdout ?? '').trim()) {
+                reject(new Error(String(stderr ?? '').trim() || err.message));
+                return;
               }
-            }
-          };
-          child.stdout?.on('data', forward('stdout'));
-          child.stderr?.on('data', forward('stderr'));
-        }),
+              resolve({ stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
+            });
+
+            /*
+             * EOF ON STDIN, IMMEDIATELY. execFile opens a pipe and leaves it
+             * open, so a CLI that reads stdin before answering waits on input
+             * that is never coming — the run looks identical to a slow model
+             * until the timeout fires minutes later. A one-shot question has
+             * nothing to type; saying so is what lets the agent get on with it.
+             */
+            child.stdin?.end();
+
+            /*
+             * What it is saying WHILE it says it. The screen used to show a
+             * spinner and the word "working", which cannot distinguish thinking
+             * from stuck from a login prompt nobody can see.
+             */
+            const forward = (stream: 'stdout' | 'stderr') => (chunk: unknown) => {
+              for (const line of String(chunk).split(/[\r\n]+/)) {
+                if (!line.trim()) continue;
+                /*
+                 * To the window that asked. There is exactly one for this
+                 * question — the panel that started it — and if it has gone,
+                 * nobody is waiting for these lines.
+                 */
+                const target = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents.id : null;
+                if (target !== null) {
+                  emitToWindow(target, 'agents:proposeOutput', { stream, line: line.trim() });
+                }
+              }
+            };
+            child.stdout?.on('data', forward('stdout'));
+            child.stderr?.on('data', forward('stderr'));
+          });
+        },
       }),
       // No one-shot door any more: choosing a folder must not BE the
       // decision. See folderDoor below.
