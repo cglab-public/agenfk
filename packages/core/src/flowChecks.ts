@@ -475,14 +475,23 @@ export interface FlowContractWarning {
 }
 
 // An independent review, however a flow words it - "review it in a separate adversarial agent", "an
-// independent reviewer" - within one clause, and naming a review: "a separate agent per task" is not one.
-const QUALIFIER = String.raw`\b(?:independent|adversarial|separate|outside|peer|second[- ]pair)\b`;
+// independent reviewer", "reviewed independently", "a second pair of eyes" - within one clause, and naming
+// a review: "a separate agent per task" is not one, nor is "a separate test step".
+const QUALIFIER = String.raw`\b(?:independent|independently|adversarial|separate|outside|peer|second[- ]pair)\b`;
 const REVIEW_NOUN = String.raw`\b(?:review|reviews|reviewed|reviewer|reviewers)\b`;
 // "Review ... in a separate agent" counts only when the qualifier names who reviews - not "a separate test step".
-const REVIEWER = String.raw`\b(?:agent|agents|reviewer|reviewers|model|session|engineer|person)\b`;
-const ASKS_REVIEW = new RegExp(`${QUALIFIER}[^.,;]{0,60}${REVIEW_NOUN}|${REVIEW_NOUN}[^.,;]{0,60}${QUALIFIER}[^.,;]{0,30}${REVIEWER}`, 'i');
-// A step named for review: REVIEW, CODE_REVIEW - not PREVIEW.
-const REVIEW_NAME = /(?:^|[^a-z])review/i;
+const REVIEWER = String.raw`\b(?:agent|agents|reviewer|reviewers|model|models|session|engineer|engineers|person|people|party|parties|someone|somebody)\b`;
+const ASKS_REVIEW = new RegExp([
+  `${QUALIFIER}[^.,;]{0,60}${REVIEW_NOUN}`, // "an independent review", "a separate reviewer"
+  `${REVIEW_NOUN}[^.,;]{0,60}${QUALIFIER}[^.,;]{0,30}${REVIEWER}`, // "review it in a separate agent"
+  `${REVIEW_NOUN}[^.,;]{0,40}${REVIEWER}[^.,;]{0,20}${QUALIFIER}`, // "reviewed by someone independent"
+  `${REVIEW_NOUN}[^.,;]{0,15}\\bindependently\\b`, // "reviewed independently"
+  `\\bindependently\\b[^.,;]{0,40}${REVIEW_NOUN}`, // "independently review"
+  `${REVIEW_NOUN}\\s+(?:must|should|needs?\\s+to|has\\s+to|is|are|be)\\s+(?:be\\s+)?(?:an?\\s+)?${QUALIFIER}`, // "the reviewer must be independent"
+  String.raw`\bsecond\s+pair\s+of\s+eyes\b`, // the idiom, not naming a review
+].join('|'), 'i');
+// A step named for review: REVIEW, CODE_REVIEW, CodeReview, PeerReview - not PREVIEW or OVERVIEW (the 'p' before it).
+const REVIEW_NAME = /(?<![Pp])review/i;
 // A person's go-ahead: "the user must give you the go-ahead", "a human signs off" - not "developer-approved", and
 // not "ask the user to confirm the key", which asks for information.
 const ASKS_APPROVAL = /\b(?:user|person|human|developer)(?:'s)?\s[^.,;]{0,60}\b(?:go-ahead|approv\w*|sign(?:s|ed)?[- ]off)\b|\bgo-ahead\b/i;

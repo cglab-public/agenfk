@@ -46,6 +46,14 @@ describe('flowContractWarnings', () => {
     expect(ws).toEqual([expect.objectContaining({ step: 'CODE_REVIEW', kind: 'review' })]);
   });
 
+  it('reads a CamelCase step named for review as one too, and still not PREVIEW or OVERVIEW', () => {
+    const named = (name: string) => flowContractWarnings([step('START', 0, { isAnchor: true }), step(name, 1), step('END', 2, { isAnchor: true, role: 'closing' })]);
+    expect(named('CodeReview')).toEqual([expect.objectContaining({ step: 'CodeReview', kind: 'review' })]);
+    expect(named('PeerReview')).toEqual([expect.objectContaining({ step: 'PeerReview', kind: 'review' })]);
+    expect(named('Preview')).toEqual([]);
+    expect(named('Overview')).toEqual([]);
+  });
+
   it('takes a review-record check the flow lists as enforcement, without the role', () => {
     const ws = flowContractWarnings([step('START', 0, { isAnchor: true }), step('REVIEW', 1, { checks: [{ id: 'review-record' }] }), step('END', 2, { isAnchor: true, role: 'closing' })]);
     expect(ws).toEqual([]);
@@ -76,6 +84,19 @@ describe('flowContractWarnings', () => {
     expect(crit('Spawn a separate agent per task to implement in parallel.')).toEqual([]);
     expect(crit('Install peer dependencies so the agent can build.')).toEqual([]);
     expect(crit('Have the change reviewed by an independent reviewer.')).toEqual([expect.objectContaining({ kind: 'review' })]);
+  });
+
+  it('reads the other ways a flow asks for an independent review, and still not a self-review (review finding)', () => {
+    const crit = (exitCriteria: string) => flowContractWarnings([step('START', 0, { isAnchor: true }), step('BUILD', 1, { role: 'coding', exitCriteria }), step('END', 2, { isAnchor: true, role: 'closing' })]);
+    for (const asks of [
+      'The change must be reviewed by someone independent.',
+      'The implementation must be reviewed independently.',
+      'Independently review the change before shipping.',
+      'Reviewed by an independent party.',
+      'The reviewer must be independent.',
+      'Get a second pair of eyes on the diff.',
+    ]) expect(crit(asks), asks).toEqual([expect.objectContaining({ kind: 'review' })]);
+    expect(crit('Review your own diff before handing off to a separate test step.')).toEqual([]);
   });
 
   it('tells a step that has another role to add the check, not to swap its role', () => {

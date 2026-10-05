@@ -3798,7 +3798,9 @@ async function reviewRangeOf(item: any, root: string): Promise<{ from: string; t
 function reportPathTest(root: string, project: any): (repoPath: string) => boolean {
   let prefix = '';
   try { prefix = gitRun.run(['-C', root, 'rev-parse', '--show-prefix']).trim(); } catch { /* the root is the top */ }
-  const reports = reportOwnedOf(root, project).map(r => `${prefix}${r}`.replace(/^\.\//, '').replace(/\/+$/, ''));
+  // Normalize the report path first (it is named relative to the card's root), then prefix it, so a leading
+  // './' or trailing '/' can never end up in the middle of the repository path.
+  const reports = reportOwnedOf(root, project).map(r => `${prefix}${r.replace(/^\.\//, '').replace(/\/+$/, '')}`);
   return f => reports.some(r => f === r || f.startsWith(`${r}/`));
 }
 
@@ -3993,6 +3995,8 @@ app.get("/items/:id/review-brief", limitExpensive, asyncHandler(async (req: any,
     '## Report',
     'Reply with your findings as JSON - [] when you found nothing:',
     JSON.stringify([{ title: '...', file: 'path', line: 1, severity: 'high|medium|low', confidence: 'confirmed|speculative', detail: '...' }]),
+    '',
+    'The author maps each finding to the record command above: `title` stays, and the finding is recorded as `state: "fixed"|"rejected"` with a `reason` for a rejection.'
   ].join('\n');
 
   res.json({ itemId: item.id, step: item.status, range, files, filesComplete, exitCriteria, treeWarnings, evidence, tests, leavePlan, rules: REVIEWER_RULES(leavePlan), findingsSchema: FINDINGS_SCHEMA, recordCommand, text });
@@ -8003,17 +8007,31 @@ const nowOn = (status: string) => `\n\nItem is now on ${status}.`;
  */
 async function nextLeaveNote(itemId: string): Promise<{ text: string; field: { leavePlan?: LeavePlan } }> {
   const plan = await leavePlanOf(itemId).catch(() => null);
-  const unchecked = await uncheckedStepNote(itemId).catch(() => '');
-  const brief = await reviewBriefNote(itemId).catch(() => '');
-  return { text: `${unchecked}${brief}${plan ? `\n\n${plan.advice}` : ''}`, field: plan ? { leavePlan: plan } : {} };
+  const notes = await leaveStepNotes(itemId).catch(() => ({ unchecked: '', brief: '' }));
+  return { text: `${notes.unchecked}${notes.brief}${plan ? `\n\n${plan.advice}` : ''}`, field: plan ? { leavePlan: plan } : {} };
+}
+
+/**
+ * CGLAB-457 (review): the two notes a move can carry, read from the card, its
+ * project and its flow once - they are on every move, and reading them again
+ * for each note tripled the storage work of a verify that touches neither.
+ */
+async function leaveStepNotes(itemId: string): Promise<{ unchecked: string; brief: string }> {
+  const item: any = await storage.getItem(itemId);
+  if (!item) return { unchecked: '', brief: '' };
+  const project: any = await storage.getProject(item.projectId);
+  const flow: any = getActiveFlow(project?.flowId, await storage.listFlows());
+  // Each note on its own: one that fails leaves the other, so a lint fault never hides the review hint.
+  const [unchecked, brief] = await Promise.all([
+    uncheckedStepNote(item, flow).catch(() => ''),
+    reviewBriefNote(item, flow).catch(() => ''),
+  ]);
+  return { unchecked, brief };
 }
 
 /** CGLAB-457: the card has just landed on the step its own review is recorded on: say how to brief the reviewer. */
-async function reviewBriefNote(itemId: string): Promise<string> {
-  const item: any = await storage.getItem(itemId);
-  if (!item) return '';
-  const project: any = await storage.getProject(item.projectId);
-  if (await reviewStepRefusal(item, getActiveFlow(project?.flowId, await storage.listFlows()))) return '';
+async function reviewBriefNote(item: any, flow: any): Promise<string> {
+  if (await reviewStepRefusal(item, flow)) return '';
   return `\n\n🔎 ${item.status} is this card's review step. Give a separate agent the reviewer's brief: agenfk review brief ${item.id}. When it reports, check each finding against the code, fix or reject it, then record the review: agenfk review record ${item.id} --transcript <the reviewer's session log> --findings '<json>'.`;
 }
 
@@ -8023,11 +8041,7 @@ async function reviewBriefNote(itemId: string): Promise<string> {
  * is still asked for - only nothing holds the card to it - so the agent is
  * told to do it anyway, and who can make the flow check it.
  */
-async function uncheckedStepNote(itemId: string): Promise<string> {
-  const item: any = await storage.getItem(itemId);
-  if (!item) return '';
-  const project: any = await storage.getProject(item.projectId);
-  const flow: any = getActiveFlow(project?.flowId, await storage.listFlows());
+async function uncheckedStepNote(item: any, flow: any): Promise<string> {
   const owner = flow?.source === 'hub'
     ? "This flow came from your org's hub: ask a hub admin to change it."
     : 'Change it with `agenfk flow edit` or the flow editor.';

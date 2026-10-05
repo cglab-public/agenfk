@@ -116,6 +116,24 @@ describe('CGLAB-457: GET /items/:id/review-brief', () => {
     expect(res.body.text).toContain(`git diff ${base}`);
   });
 
+  it("leaves the run's report out of the files when the card's tree sits below the repository root (review finding)", async () => {
+    const { dir, base, pid } = await setup();
+    const sub = path.join(dir, 'sub');
+    fs.mkdirSync(sub, { recursive: true });
+    // The tree is `sub`: the report is named relative to it, git prints paths from the repository root, so the
+    // prefix has to line the two up or the report reads as the card's own change.
+    await storage.updateProject(pid, { projectRoot: sub, testReport: { format: 'junit-xml', command: 'true', reportPath: '.reports/report.xml' } } as never);
+    const id = await cardAt(pid, base);
+    fs.mkdirSync(path.join(sub, '.reports'), { recursive: true });
+    fs.writeFileSync(path.join(sub, '.reports', 'report.xml'), '<tests/>');
+    fs.writeFileSync(path.join(sub, 'real.txt'), 'real\n');
+    const res = await brief(id);
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const paths = res.body.files.map((f: any) => f.path);
+    expect(paths).toContain('sub/real.txt');
+    expect(paths.some((p: string) => p.includes('.reports'))).toBe(false);
+  });
+
   it('carries the step\'s exit criteria, what leaving it runs, and the rules that keep the reviewer independent', async () => {
     const { base, pid } = await setup();
     const id = await cardAt(pid, base);
