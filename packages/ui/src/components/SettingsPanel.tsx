@@ -40,7 +40,7 @@ import { UserRound, AppWindow, Bell, Bot, SquareTerminal, Gauge, type LucideIcon
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Switch } from './ui/switch';
 import {
-  listAgentsFromBridge,
+  listAgentsFromBridge, refreshAgentsFromBridge,
   readPrefsFromBridge, setAutoApproveOnBridge,
   setDefaultAgentOnBridge, setAskBeforeOpeningOnBridge,
   canChooseSound, canNotifyAttention,
@@ -983,6 +983,7 @@ export function SettingsPanel(): React.ReactElement {
                  and its own fallback, which is what lets the same component
                  serve the dialog. */
               listAgents={listAgentsFromBridge}
+              refreshAgents={refreshAgentsFromBridge}
             />
           }
         />

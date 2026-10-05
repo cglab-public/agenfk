@@ -67,6 +67,8 @@ export interface NewTerminalDialogProps {
   readonly onCreate: (req: NewTerminalRequest) => Promise<void>;
   readonly onClose: () => void;
   readonly listAgents: () => Promise<AgentInfo[]>;
+  /** Detect again; the picker's "Check again". */
+  readonly refreshAgents?: () => Promise<AgentInfo[]>;
 }
 
 export function NewTerminalDialog({
@@ -76,6 +78,7 @@ export function NewTerminalDialog({
   onCreate,
   onClose,
   listAgents,
+  refreshAgents,
 }: NewTerminalDialogProps): React.ReactElement {
   // Claude Code only as the first-run default, when the card has never been
   // worked. After that the card itself is the source of truth.
@@ -177,7 +180,7 @@ export function NewTerminalDialog({
         <div className="space-y-4 px-5 py-5">
           <div>
             <label className="mb-1.5 block text-xs font-semibold text-ink-secondary">Agent</label>
-            <AgentPicker value={agentId} onChange={chooseAgent} listAgents={listAgents} />
+            <AgentPicker value={agentId} onChange={chooseAgent} listAgents={listAgents} refreshAgents={refreshAgents} />
           </div>
 
           {error && (

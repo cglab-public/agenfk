@@ -168,3 +168,42 @@ describe('when the capture fails', () => {
     await expect(cache()).resolves.toBeNull();
   });
 });
+
+describe('forgetting the captured PATH (story 1b9d622e)', () => {
+  it('captures again on the next ask, inside the memo window', async () => {
+    // "Check again" after installing an agent: the point is the PATH as it is
+    // NOW, so a capture from twenty seconds ago will not do.
+    let t = 0;
+    const capture = vi.fn(async () => `/capture/${capture.mock.calls.length}`);
+    const cache = makeLoginPathCache({ capture, now: () => t });
+    expect(await cache()).toBe('/capture/1');
+    t += LOGIN_PATH_MEMO_MS / 2;
+    cache.forget();
+    expect(await cache()).toBe('/capture/2');
+    expect(capture).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('a capture that finishes after it was forgotten', () => {
+  it('does not overwrite the newer capture', async () => {
+    // A slow capture started before the install, a "Check again" in between:
+    // if the old one lands last, the pre-install PATH would be trusted for the
+    // whole memo window.
+    const resolvers: Array<(v: string) => void> = [];
+    const capture = vi.fn(() => new Promise<string | null>(resolve => { resolvers.push(resolve); }));
+    let t = 0;
+    const cache = makeLoginPathCache({ capture, now: () => t });
+
+    const old = cache();
+    cache.forget();
+    const fresh = cache();
+    resolvers[1]('/after-install');
+    expect(await fresh).toBe('/after-install');
+    resolvers[0]('/before-install');
+    await old;
+
+    t += 1;
+    expect(await cache()).toBe('/after-install');
+    expect(capture).toHaveBeenCalledTimes(2);
+  });
+});

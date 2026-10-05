@@ -7,7 +7,7 @@ import {
   type ReviewedProposal,
 } from '../proposalTree';
 import { extractProposal } from '../agentAnswer';
-import { listAgentsFromBridge, onProposeOutputFromBridge, proposeFromBridge } from './agentBridge';
+import { listAgentsFromBridge, refreshAgentsFromBridge, onProposeOutputFromBridge, proposeFromBridge } from './agentBridge';
 import { AddProjectDialog } from './AddProjectDialog';
 import { X } from 'lucide-react';
 import { AgentPicker } from './AgentPicker';
@@ -470,7 +470,7 @@ export function AskAgenfk({ projectId, onCreated, onProjectAdded, onClose }: Ask
           <label className="flex items-center gap-2 text-[11px] text-ink-tertiary">
             Agent
             <span data-testid="ask-agent">
-              <AgentPicker value={agentId} onChange={setAgentId} listAgents={listAgentsFromBridge} />
+              <AgentPicker value={agentId} onChange={setAgentId} listAgents={listAgentsFromBridge} refreshAgents={refreshAgentsFromBridge} />
             </span>
           </label>
         </div>
