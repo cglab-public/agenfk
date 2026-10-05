@@ -10,14 +10,14 @@ This repo ships through two channels backed by two branches:
  (stable)                   (pre-release)
                            │
                            ▼
-              hub deploy (private hub deploy repo) + dist releases
+              hub deploy (private deploy repo) + dist releases
 ```
 
 | | `main` | `beta` |
 |---|---|---|
 | Channel | Stable | Pre-release |
 | What ships from it | `v*` tags (full framework dist) | `v2.0.0-beta.N` tags (framework dist) + hub Docker image |
-| Who runs it | End users on stable | The production hub (via `private hub deploy repo`) and anyone on `--beta` |
+| Who runs it | End users on stable | The production hub (via the private deploy repo) and anyone on `--beta` |
 | PRs that target it | Dependabot/security bumps that must reach stable fast, hotfixes | Every feature, fix and dependency bump by default |
 | Protected by | CI on PRs | CI on PRs (pushes are kept green the same way) |
 
@@ -65,12 +65,12 @@ git commit -m "chore: bump version to 2.0.0-beta.<N+1>"
 
 ### 3. Deploying the hub
 
-The hub ships from the **sibling deploy repo** `cglab-PRIVATE/private hub deploy repo`,
-whose `deploy.yml` (workflow_dispatch) builds the hub image from an explicit
-`agenfk_ref` and rolls ECS:
+The hub ships from the **private hub deploy repo** (infra + CI only; not in this public repo).
+Its `deploy.yml` (workflow_dispatch) builds the hub image from an explicit `agenfk_ref`
+and rolls ECS:
 
 ```bash
-gh workflow run deploy.yml --repo cglab-PRIVATE/private hub deploy repo \
+gh workflow run deploy.yml --repo <private-hub-deploy-repo> \
   --ref main -f agenfk_ref=v2.0.0-beta.<N>
 ```
 
