@@ -181,6 +181,26 @@ export const ContractProblems: React.FC<{
   );
 };
 
+/**
+ * CGLAB-457: what the steps' words ask for and their checks do not enforce -
+ * an independent review, a person's go-ahead. Never blocks Save: the flow is
+ * valid, only weaker than it reads.
+ */
+export const ContractWarnings: React.FC<{ contract: FlowContract }> = ({ contract }) => {
+  const warnings = contract.warnings ?? [];
+  if (!warnings.length) return null;
+  return (
+    <div data-testid="flow-contract-warnings" className="rounded-xl border border-status-warn-text/40 bg-status-warn-bg px-4 py-3 space-y-2">
+      {warnings.map((w, i) => (
+        <div key={`${w.step ?? 'flow'}-${w.kind}-${i}`} className="flex gap-2 text-body text-status-warn-text">
+          <AlertTriangle size={16} className="shrink-0 mt-0.5" aria-hidden /> {w.message}
+        </div>
+      ))}
+      <div className="text-small text-status-warn-text">The flow can still be saved: these say what it asks for and does not check.</div>
+    </div>
+  );
+};
+
 /** One-click starting points: they replace the steps, roles and checks included. */
 export const TemplatePicker: React.FC<{ onApply: (steps: FlowStep[]) => void }> = ({ onApply }) => {
   const [open, setOpen] = useState(false);

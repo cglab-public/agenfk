@@ -4,7 +4,7 @@ import mermaid from 'mermaid';
 import type { Flow, FlowStep, RegistryFlow, FlowClient, RegistryClient } from './types';
 import { extractApiError } from './apiError';
 import { flowDefinitionIssues, stepIssue, withStepIds } from './flowDefinition';
-import { ContractProblems, RecordsLane, StepContractButton, StepContractDialog, TemplatePicker } from './FlowContractSection';
+import { ContractProblems, ContractWarnings, RecordsLane, StepContractButton, StepContractDialog, TemplatePicker } from './FlowContractSection';
 import { ExitCriteriaEditorModal } from './ExitCriteriaEditorModal';
 import { estimateTokenCount } from './estimateTokens';
 
@@ -1038,6 +1038,7 @@ const EditorPanel: React.FC<EditorPanelProps> = ({
           {hasContract && contract && (
             <div className="space-y-3 mt-3">
               <ContractProblems steps={steps} contract={contract} disabled={isReadOnly} onRemoveCheck={removeCheck} onAddWritingTestsBefore={addWritingTestsBefore} />
+              <ContractWarnings contract={contract} />
               <RecordsLane steps={steps} contract={contract} />
             </div>
           )}

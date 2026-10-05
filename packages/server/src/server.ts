@@ -17,7 +17,7 @@ import { retainSuperseded, withRecordRetention } from './recordRetention';
 import { compactAuthored, expandAuthored } from './authoredRecord';
 import { pruneStepRecords } from './pruneRecords';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, approvalFor, commandFingerprint, hiddenCharacters, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
+import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, tightenPrivateFile, approvalFor, commandFingerprint, hiddenCharacters, describeProjectSettings, decompositionContract, reviewProposal, StorageProvider, ItemType, buildBranchName, Status, AgEnFKItem, Project, ReviewRecord, migrateCardsToFlow, Flow, DEFAULT_FLOW, getActiveFlow, getActiveStepItems, isBoundaryStep, computeSizingFromItems, SizingCounts, normalizeFlowSteps, DEFAULT_APP_SETTINGS, isLegalSettingValue, type AppSettings, TERMINAL_AGENT_IDS, isPersistableProjectRoot, parseGitStatus, isInsideRoot, containedPath, resolveThroughLinks, EXPENSIVE_ROUTE_LIMIT, EXPENSIVE_ROUTE_WINDOW_MS, planPrImport, isValidPrNumber, leavingEndsFlow, canTransition, isTerminal, recordFailure, isHubRelease, type DispatchState, flowChecksErrors, flowContractWarnings, mergeStepContracts, resolveStepChecks, disabledStepChecks, describeFlowContract, stepContractFields, wouldStripContracts, STRIPPED_PUBLISH_MESSAGE, registryInstallSteps, commitOnLeaveNote, stepCommitsOnLeave, verifyAtError, flowVerifyAt, INACTIVE_STATUSES } from "@agenfk/core";
 import { TelemetryClient, getInstallationId, isTelemetryEnabled, setTelemetryEnabled, getInstallSource, findAvailablePort, writeServerPortFile, removeServerPortFile, DEFAULT_API_PORT } from "@agenfk/telemetry";
 import { HubClient, Flusher, loadHubConfig, PENDING_ORG } from "./hub/index.js";
 import type { RecordEventInput } from "./hub/index.js";
@@ -3762,6 +3762,46 @@ function unreviewedAfter(root: string, from: string, since: number, mine: Set<st
   }
 }
 
+/**
+ * CGLAB-457: the range a review of this card must cover - from where the work
+ * of its TREE began to HEAD, which holds every descendant's close commit.
+ * Uncommitted work is pinned by the record's tree snapshot, so a card with no
+ * commits yet reviews `<start>..<start>`.
+ *
+ * The tree, not the card alone (review): a parent the roll-up moved has no
+ * exit record of its own, and a child may have committed before its parent
+ * was first verified. The start is where the card and its descendants each
+ * began (their first exit heads), merged back to the commit all of them share.
+ */
+async function reviewRangeOf(item: any, root: string): Promise<{ from: string; to: string } | { error: string }> {
+  const firstHead = (card: any): string | null => (card.stepRecords ?? []).find((r: any) => r?.kind === 'exit' && typeof r.head === 'string')?.head ?? null;
+  const heads = [...new Set([item, ...(await descendantsOf(item))].map(firstHead).filter((h): h is string => !!h))];
+  if (!heads.length) return { error: `[${String(item.id).slice(0, 8)}] and its cards have no recorded start commit (none left its first step with a tree to read one from), so the range cannot be worked out: record the review with an explicit --range <from>..<to>.` };
+  const git = (args: string[]) => gitRun.run(['-C', root, ...args]).trim();
+  let from = heads[0];
+  if (heads.length > 1) {
+    // Starts recorded in another worktree's history may share no base here: keep the card's own, else the first.
+    try { from = git(['merge-base', '--octopus', ...heads]) || from; } catch { from = firstHead(item) ?? heads[0]; }
+  }
+  try {
+    return { from, to: git(['rev-parse', 'HEAD']) };
+  } catch (e: any) {
+    return { error: `git could not read HEAD in ${root} (${String(e?.message ?? e).split('\n')[0]}): record the review with an explicit --range <from>..<to>.` };
+  }
+}
+
+/**
+ * What in the tree is not the card's work: the reports a run writes. Judged on
+ * repository paths (as git prints them), so the reports, named relative to the
+ * card's root, are prefixed with where that root sits in the repository.
+ */
+function reportPathTest(root: string, project: any): (repoPath: string) => boolean {
+  let prefix = '';
+  try { prefix = gitRun.run(['-C', root, 'rev-parse', '--show-prefix']).trim(); } catch { /* the root is the top */ }
+  const reports = reportOwnedOf(root, project).map(r => `${prefix}${r}`.replace(/^\.\//, '').replace(/\/+$/, ''));
+  return f => reports.some(r => f === r || f.startsWith(`${r}/`));
+}
+
 app.post("/items/:id/review-records", asyncHandler(async (req: any, res: any) => {
   if (req.headers['x-agenfk-internal'] !== VERIFY_TOKEN) {
     return res.status(401).json({ error: "Unauthorized" });
@@ -3777,10 +3817,16 @@ app.post("/items/:id/review-records", asyncHandler(async (req: any, res: any) =>
   } catch (e: any) {
     return res.status(400).json({ error: e?.message ?? String(e) });
   }
-  const m = typeof body.range === 'string' ? /^\s*([^\s.]+)\.\.([^\s.]+)\s*$/.exec(body.range) : null;
-  if (!m) return res.status(400).json({ error: 'range must be <from>..<to>: the commits the review covered' });
   const project: any = await storage.getProject(item.projectId);
   const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
+  // CGLAB-457: left out (or `auto`), the range is the one the review-record check asks for.
+  const auto = body.range === undefined || body.range === null || body.range === 'auto';
+  if (auto && !root) return res.status(400).json({ error: 'This card has no tree to read the range from: set the project root or give the card a worktree.' });
+  const computed = auto ? await reviewRangeOf(item, root!) : null;
+  if (computed && 'error' in computed) return res.status(400).json({ error: computed.error });
+  const spec = computed ? `${computed.from}..${computed.to}` : body.range;
+  const m = typeof spec === 'string' ? /^\s*([^\s.]+)\.\.([^\s.]+)\s*$/.exec(spec) : null;
+  if (!m) return res.status(400).json({ error: 'range must be <from>..<to>: the commits the review covered (or leave it out: the server uses where the card began, up to HEAD)' });
   if (!root) return res.status(400).json({ error: 'This card has no tree to read the range from: set the project root or give the card a worktree.' });
   const git = (args: string[]) => gitRun.run(['-C', root, ...args]).trim();
   let from: string;
@@ -3791,24 +3837,19 @@ app.post("/items/:id/review-records", asyncHandler(async (req: any, res: any) =>
     to = git(['rev-parse', '--verify', `${m[2]}^{commit}`]);
     tipAt = git(['show', '-s', '--format=%cI', to]);
   } catch {
-    return res.status(400).json({ error: `range ${body.range} names a commit this card's tree (${root}) does not have` });
+    return res.status(400).json({ error: `range ${spec} names a commit this card's tree (${root}) does not have` });
   }
   try { git(['merge-base', '--is-ancestor', from, to]); } catch {
-    return res.status(400).json({ error: `range ${body.range}: ${m[1]} is not an ancestor of ${m[2]}` });
+    return res.status(400).json({ error: `range ${spec}: ${m[1]} is not an ancestor of ${m[2]}` });
   }
   // Both the records' own clock and the file's: either written before the
   // tip means the transcript cannot have reviewed it.
   const last = [reviewer.lastAt, reviewer.mtime].map(t => (t ? Date.parse(t) : NaN));
   if (last.some(t => Number.isNaN(t) || t < Date.parse(tipAt))) {
-    return res.status(400).json({ error: `The transcript was last written ${reviewer.lastAt ?? 'at no recorded time'} (file: ${reviewer.mtime}), before the range's tip commit (${tipAt}): it cannot have reviewed it.` });
+    return res.status(400).json({ error: `The transcript was last written ${reviewer.lastAt ?? 'at no recorded time'} (file: ${reviewer.mtime}), before the range's tip commit (${tipAt}): it cannot have reviewed it. Send the same reviewer a new message to read the newer work (it reads again from its newest prompt), or give a new reviewer the brief (agenfk review brief ${item.id}), then record again.` });
   }
   const recId = uuidv4();
-  // What in the tree is not this card's: the reports a run writes.
-  const under = (f: string, p: string) => { const q = p.replace(/^\.\//, '').replace(/\/+$/, ''); return f === q || f.startsWith(`${q}/`); };
-  let prefix = '';
-  try { prefix = git(['rev-parse', '--show-prefix']); } catch { /* the root is the top */ }
-  const reports = reportOwnedOf(root, project).map(r => `${prefix}${r}`);
-  const notOurs = (f: string) => reports.some(r => under(f, r));
+  const notOurs = reportPathTest(root, project);
   // The card's own work: itself and its descendants (reviews happen at the parent).
   const mine = new Set<string>([item.id, ...(await descendantsOf(item)).map((d: any) => d.id)]);
   const rec = {
@@ -3818,7 +3859,7 @@ app.post("/items/:id/review-records", asyncHandler(async (req: any, res: any) =>
       ? (() => { const u = unreviewedAfter(root, from, Date.parse(reviewer.startedAt!), mine, notOurs); return 'notJudged' in u ? { unreviewedNotJudged: u.notJudged } : { unreviewed: u }; })()
       : { unreviewedNotJudged: 'the transcript carries no timestamps, so when the reviewer began is not known' }),
     reviewer: { client: reviewer.client, sessionId: reviewer.sessionId, agentId: reviewer.agentId, transcript: reviewer.transcript, edits: reviewer.edits, advancedCards: reviewer.advancedCards },
-    range: { from, to }, findings,
+    range: { from, to, ...(auto ? { auto: true } : {}) }, findings,
     // The tree as reviewed, uncommitted work included: a change after this
     // needs the review recorded again (CGLAB-381 review). The report a run
     // writes is not the card's work (d26832d6): a capture after the review
@@ -3829,6 +3870,132 @@ app.post("/items/:id/review-records", asyncHandler(async (req: any, res: any) =>
   await storage.updateItem(item.id, { reviewRecords: [...(fresh?.reviewRecords ?? []), rec] } as any);
   io.emit('items_updated');
   res.status(201).json(rec);
+}));
+
+/**
+ * CGLAB-457: is `item` on a step where its own review is recorded? The step
+ * runs review-record, and the card is not one reviewed with its parent.
+ * Returns why not, for a refusal, or null when it is.
+ */
+async function reviewStepRefusal(item: any, flow: { steps: any[] }): Promise<string | null> {
+  const review = resolveStepChecks(flow.steps as any, item.status).find(c => c.id === 'review-record' && c.applicable);
+  if (!review) return `${item.status} is not a review step of this card's flow: it has no 'review' role or review-record check, so no review is recorded there (agenfk flow show lists what each step checks).`;
+  if (review.params?.appliesTo !== 'every-card' && item.parentId && !(await storage.listItems({ parentId: item.id } as any)).length) {
+    const parent: any = await storage.getItem(item.parentId);
+    return `[${String(item.id).slice(0, 8)}] is reviewed with its parent [${String(item.parentId).slice(0, 8)}]${parent?.title ? ` "${parent.title}"` : ''}: ask for the parent's brief (agenfk review brief ${item.parentId}) when it reaches its review step.`;
+  }
+  return null;
+}
+
+/** The rules a reviewer keeps to stay independent - the same acts the review-record check counts as authorship. */
+const REVIEWER_RULES = (leave: string) => [
+  'Stay read-only: do not edit, create, stage, commit, stash or delete anything in the tree. Write a probe outside it if you need one.',
+  'Do not run `agenfk verify`, `agenfk update --status` or `agenfk review record`: running them makes you an author, and voids this review.',
+  'You are not starting or resuming a task, so the Clean Start and gatekeeper rules are not yours to follow.',
+  `Do not run the full suite. ${leave} A red result refuses the move, so a broken suite cannot land. Run a single targeted test only to confirm a specific finding, and only one that writes nothing into the tree: a file it leaves behind changes the tree this review is recorded against.`,
+  'Review the range below, not the whole repository: read outside it only to judge a change inside it.',
+  'Separate confirmed defects from speculation.',
+];
+
+const FINDINGS_SCHEMA = {
+  type: 'array',
+  items: {
+    type: 'object',
+    properties: {
+      title: { type: 'string' }, file: { type: 'string' }, line: { type: 'number' },
+      severity: { type: 'string', enum: ['high', 'medium', 'low'] },
+      confidence: { type: 'string', enum: ['confirmed', 'speculative'] },
+      detail: { type: 'string' },
+    },
+    required: ['title', 'severity', 'confidence', 'detail'],
+  },
+};
+
+const EVIDENCE_PREFIX = /^\*\*Evidence \[([^\]]+)\]:\*\*\s*/;
+
+/**
+ * CGLAB-457: the reviewer's brief. Everything in it is already on the card or
+ * in its tree; what it saves is a reviewer rediscovering it - and the author
+ * improvising a prompt that leaves out the range, the tree's warnings, or that
+ * the server runs the suite itself. A read: it changes nothing on the card.
+ */
+app.get("/items/:id/review-brief", limitExpensive, asyncHandler(async (req: any, res: any) => {
+  const item: any = await storage.getItem(req.params.id);
+  if (!item) return res.status(404).json({ error: 'Item not found' });
+  const project: any = await storage.getProject(item.projectId);
+  const flow: any = getActiveFlow(project?.flowId, await storage.listFlows());
+  const refusal = await reviewStepRefusal(item, flow);
+  if (refusal) return res.status(409).json({ error: refusal });
+  const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
+  if (!root) return res.status(409).json({ error: 'This card has no tree to brief a review of: set the project root or give the card a worktree.' });
+  const range = await reviewRangeOf(item, root);
+  if ('error' in range) return res.status(409).json({ error: range.error });
+
+  // Every change since the card began, committed or not, and the files not yet tracked - not the reports a run writes.
+  const git = (args: string[]) => gitRun.run(['-C', root, ...args]);
+  const isReport = reportPathTest(root, project);
+  const ours = (f: string) => !isReport(f);
+  const files: Array<{ path: string; lines: number }> = [];
+  // Each listing on its own: one that fails leaves the list partial, and the brief says so.
+  let filesComplete = true;
+  try {
+    for (const entry of git(['diff', '--numstat', '--no-renames', '-z', range.from]).split('\0').filter(Boolean)) {
+      const [added, deleted, ...rest] = entry.split('\t');
+      const file = rest.join('\t');
+      if (file && ours(file)) files.push({ path: file, lines: (added === '-' ? 1 : Number(added) || 0) + (deleted === '-' ? 0 : Number(deleted) || 0) });
+    }
+  } catch { filesComplete = false; }
+  try {
+    for (const file of git(['ls-files', '--others', '--exclude-standard', '--full-name', '-z']).split('\0').filter(Boolean)) {
+      if (ours(file) && !files.some(f => f.path === file)) files.push({ path: file, lines: 0 });
+    }
+  } catch { filesComplete = false; }
+
+  const treeWarnings = await treeWarningsOf(item);
+  const tree = [item, ...(await descendantsOf(item))];
+  // The most recent 30 claims across the tree, by when they were made, oldest first.
+  const evidence = tree.flatMap((card: any) => (card.comments ?? [])
+    .filter((c: any) => typeof c?.content === 'string' && EVIDENCE_PREFIX.test(c.content))
+    .map((c: any) => ({ at: Date.parse(String(c.timestamp ?? '')) || 0, entry: { ...(card.id === item.id ? {} : { itemId: card.id }), step: String(c.content.match(EVIDENCE_PREFIX)![1]), text: c.content.replace(EVIDENCE_PREFIX, '').slice(0, 600) } })))
+    .sort((a: any, b: any) => a.at - b.at).slice(-30).map((e: any) => e.entry);
+  // The latest run with per-test results on the card, else on its tree.
+  const captures = tree.flatMap((card: any) => (card.stepRecords ?? []).filter((r: any) => r?.kind === 'capture' && r.available === true && Array.isArray(r.tests)));
+  const latest = captures.sort((a: any, b: any) => String(a.at ?? '').localeCompare(String(b.at ?? ''))).pop();
+  const count = (st: string) => (latest?.tests ?? []).filter((t: any) => t?.status === st).length;
+  const tests = latest ? { step: String(latest.step), at: String(latest.at ?? ''), passed: count('passed'), failed: count('failed'), skipped: count('skipped') } : null;
+  const plan = await leavePlanOf(item.id).catch(() => null);
+  const leavePlan = plan?.advice ?? 'The server runs the project\'s verify command when the card closes.';
+  const step: any = sortedFlowSteps(flow).find((st: any) => st.name === item.status);
+  const exitCriteria = typeof step?.exitCriteria === 'string' ? step.exitCriteria : '';
+  const recordCommand = `agenfk review record ${item.id} --transcript <the reviewer's session log> --findings '<json: [{"title", "state": "fixed"|"rejected", "reason"}]>'`;
+  const short = (sha: string) => sha.slice(0, 12);
+  const LISTED_FILES = 200;
+
+  const text = [
+    `# Independent review of [${String(item.id).slice(0, 8)}] "${item.title}"`,
+    '',
+    'You are an independent reviewer of this card\'s change. You did not write it; hunt for defects in it.',
+    '',
+    '## Rules',
+    ...REVIEWER_RULES(leavePlan).map(r => `- ${r}`),
+    '',
+    '## What to review',
+    `Range: ${short(range.from)}..${short(range.to)} - from where the card's work began to HEAD, uncommitted work included.`,
+    `- \`git diff ${range.from}\` - every change since the card began, committed and not`,
+    '- `git ls-files --others --exclude-standard` - new files not yet tracked',
+    ...(!filesComplete ? ['The list of files below is partial: git could not list them all. The commands above show every change.'] : []),
+    ...(files.length ? [`Files changed (${files.length}):`, ...files.slice(0, LISTED_FILES).map(f => `- ${f.path}${f.lines ? ` (${f.lines} lines)` : ''}`), ...(files.length > LISTED_FILES ? [`- ...and ${files.length - LISTED_FILES} more`] : [])] : []),
+    ...(exitCriteria ? ['', `## What the ${item.status} step asks for (the flow's text)`, exitCriteria] : []),
+    ...(treeWarnings.length ? ['', "## Warnings the card's tree raised, with their answers", describeTreeWarnings(treeWarnings)] : []),
+    ...(evidence.length ? ['', "## The author's claims (check one only when a finding depends on it)", ...evidence.map((e: any) => `- [${e.step}${e.itemId ? ` ${String(e.itemId).slice(0, 8)}` : ''}] ${e.text}`)] : []),
+    ...(tests ? ['', '## Tests already run', `On ${tests.step}${tests.at ? ` (${tests.at})` : ''}: ${tests.passed} passed, ${tests.failed} failed, ${tests.skipped} skipped.`] : []),
+    '',
+    '## Report',
+    'Reply with your findings as JSON - [] when you found nothing:',
+    JSON.stringify([{ title: '...', file: 'path', line: 1, severity: 'high|medium|low', confidence: 'confirmed|speculative', detail: '...' }]),
+  ].join('\n');
+
+  res.json({ itemId: item.id, step: item.status, range, files, filesComplete, exitCriteria, treeWarnings, evidence, tests, leavePlan, rules: REVIEWER_RULES(leavePlan), findingsSchema: FINDINGS_SCHEMA, recordCommand, text });
 }));
 
 /** A card's step records: what each step left behind (exit) and any captured reports. */
@@ -5918,7 +6085,8 @@ app.post("/flows", limitFlowWrites, asyncHandler(async (req: any, res: any) => {
 
   const created = await storage.createFlow(flow);
   io.emit('flow:updated', { flowId: created.id });
-  res.status(201).json(created);
+  // CGLAB-457: what its steps ask for and do not check - in the reply, never stored.
+  res.status(201).json({ ...created, contractWarnings: flowContractWarnings(created.steps) });
 }));
 
 app.get("/flows/:id", asyncHandler(async (req: any, res: any) => {
@@ -5956,7 +6124,7 @@ app.put("/flows/:id", limitFlowWrites, asyncHandler(async (req: any, res: any) =
 
     const updated = await storage.updateFlow(req.params.id, updates);
     io.emit('flow:updated', { flowId: updated.id });
-    res.json(updated);
+    res.json({ ...updated, contractWarnings: flowContractWarnings(updated.steps) });
   } catch (error) {
     res.status(404).json({ error: "Flow not found" });
   }
@@ -6154,7 +6322,7 @@ app.post("/registry/flows/install", limitExpensive, asyncHandler(async (req: any
       updatedAt: new Date(),
     });
 
-    res.json(newFlow);
+    res.json({ ...newFlow, contractWarnings: flowContractWarnings(newFlow.steps) });
   } catch (e: any) {
     const status = e?.response?.status ?? 502;
     res.status(status).json({ error: 'Failed to install flow', detail: e?.message });
@@ -7835,7 +8003,40 @@ const nowOn = (status: string) => `\n\nItem is now on ${status}.`;
  */
 async function nextLeaveNote(itemId: string): Promise<{ text: string; field: { leavePlan?: LeavePlan } }> {
   const plan = await leavePlanOf(itemId).catch(() => null);
-  return plan ? { text: `\n\n${plan.advice}`, field: { leavePlan: plan } } : { text: '', field: {} };
+  const unchecked = await uncheckedStepNote(itemId).catch(() => '');
+  const brief = await reviewBriefNote(itemId).catch(() => '');
+  return { text: `${unchecked}${brief}${plan ? `\n\n${plan.advice}` : ''}`, field: plan ? { leavePlan: plan } : {} };
+}
+
+/** CGLAB-457: the card has just landed on the step its own review is recorded on: say how to brief the reviewer. */
+async function reviewBriefNote(itemId: string): Promise<string> {
+  const item: any = await storage.getItem(itemId);
+  if (!item) return '';
+  const project: any = await storage.getProject(item.projectId);
+  if (await reviewStepRefusal(item, getActiveFlow(project?.flowId, await storage.listFlows()))) return '';
+  return `\n\n🔎 ${item.status} is this card's review step. Give a separate agent the reviewer's brief: agenfk review brief ${item.id}. When it reports, check each finding against the code, fix or reject it, then record the review: agenfk review record ${item.id} --transcript <the reviewer's session log> --findings '<json>'.`;
+}
+
+/**
+ * CGLAB-457: the card has just landed on a step whose exit criteria ask for an
+ * independent review or a person's go-ahead the flow does not check. The work
+ * is still asked for - only nothing holds the card to it - so the agent is
+ * told to do it anyway, and who can make the flow check it.
+ */
+async function uncheckedStepNote(itemId: string): Promise<string> {
+  const item: any = await storage.getItem(itemId);
+  if (!item) return '';
+  const project: any = await storage.getProject(item.projectId);
+  const flow: any = getActiveFlow(project?.flowId, await storage.listFlows());
+  const owner = flow?.source === 'hub'
+    ? "This flow came from your org's hub: ask a hub admin to change it."
+    : 'Change it with `agenfk flow edit` or the flow editor.';
+  const role = (flow?.steps ?? []).find((st: any) => st.name === item.status)?.role;
+  const reviewFix = (step: string) => (role ? `The flow should add the review-record check to ${step} (its '${role}' role stays).` : `The flow should give ${step} role 'review'.`);
+  const notes = flowContractWarnings(flow?.steps).filter(w => w.step === item.status).map(w => (w.kind === 'review'
+    ? `⚠️ ${w.step} asks for an independent review that this flow does not check: review independently all the same, and record it (agenfk review record). ${reviewFix(w.step!)} ${owner}`
+    : `⚠️ ${w.step} asks for a person's go-ahead that this flow does not check: get it before you advance, all the same. The flow should give ${w.step} the human-approval check. ${owner}`));
+  return notes.length ? `\n\n${notes.join('\n')}` : '';
 }
 const staysOn = (status: string) => `\n\nThe advance was refused. Item stays on ${status}.`;
 
@@ -8015,7 +8216,11 @@ async function reviewEvidence(item: any, root: string | null, depth = 0): Promis
       } catch { /* no history to read: nothing to require */ }
     }
   }
+  // CGLAB-457: the start the range defaults to, for the refusal to name (the card's tree, not the card alone).
+  const range = root && depth === 0 ? await reviewRangeOf(item, root) : null;
   const evidence = {
+    itemId: item.id,
+    ...(range && !('error' in range) ? { rangeFrom: range.from } : {}),
     hasParent: !!item.parentId,
     childCount: children.length,
     childrenReviewed: 0,

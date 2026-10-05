@@ -8,14 +8,16 @@
  */
 import { stepCommitsOnLeave } from './gatekeeper';
 import {
-  CHECK_CATALOGUE, ROLE_BUILTINS, STEP_ROLES, checkDef, disabledStepChecks, flowChecksErrors, resolveStepChecks,
-  type CheckParamDef, type CheckSeverity, type RecordName, type ResolvedCheck, type StepCheckRef, type StepRole,
+  CHECK_CATALOGUE, ROLE_BUILTINS, STEP_ROLES, checkDef, disabledStepChecks, flowChecksErrors, flowContractWarnings, resolveStepChecks,
+  type CheckParamDef, type FlowContractWarning, type CheckSeverity, type RecordName, type ResolvedCheck, type StepCheckRef, type StepRole,
 } from './flowChecks';
 
 export interface FlowContract {
   valid: boolean;
   /** What a save would be refused with, one per problem. */
   errors: string[];
+  /** What the steps' words ask for and their checks do not enforce (CGLAB-457): never a refusal. */
+  warnings: FlowContractWarning[];
   /**
    * `checks`: the step's own contract. `onLeave`: exactly what verify runs to
    * leave it - the terminal step's checks land on the step before it, and a
@@ -60,6 +62,7 @@ export function describeFlowContract(steps: unknown): FlowContract {
   return {
     valid: errors.length === 0,
     errors,
+    warnings: flowContractWarnings(list),
     steps: described,
     roles: STEP_ROLES.map(id => ({ id, builtins: ROLE_BUILTINS[id] })),
     catalogue: Object.values(CHECK_CATALOGUE).map(d => ({

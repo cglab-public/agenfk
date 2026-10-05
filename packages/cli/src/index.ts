@@ -2,7 +2,7 @@ import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import { harnessActor, resolveFromOptions } from './harnessModel.js';
 import axios from 'axios';
-import { readProjectFile, writePrivateFileSync, newestFrameworkStable, newerFrameworkStables, strongestTier, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
+import { readProjectFile, writePrivateFileSync, flowContractWarnings, newestFrameworkStable, newerFrameworkStables, strongestTier, decompositionContract, decompositionRules, ItemType, Status, buildBranchName, decideGatekeeperAuthorization, detectCrossProjectItem, findDuplicateProjectRoots, compareSemver, isHubRelease, isUpgrade, parseSemver, prunableWorktrees, dispatchDriftNotice, driftTargets } from '@agenfk/core';
 import { findUpdateNotice } from './updateNotice.js';
 import { writeActiveWork } from './activeWork.js';
 import { resolveItemIdPrefix } from './resolveItemId.js';
@@ -20,6 +20,7 @@ import path from 'path';
 import os from 'os';
 import { stageJsonMigration } from './db-migration.js';
 import { followValidateRun } from './verifyRun.js';
+import { subagentTranscripts } from './reviewTranscripts.js';
 import { buildPrBody, prRegisterComment, readDisabledChecks, type GateEvent, type CustomCheckRow, type TreeWarningRow } from './humanGates.js';
 import { registryFlowToLocal } from './registryFlowFile.js';
 import { buildUiOpenUrl, resolveDashboardUrl } from './uiUrl.js';
@@ -4184,7 +4185,7 @@ reviewCmd
   .command('record <id>')
   .description('Record an independent review of a card. The server reads the reviewer\'s identity from --transcript (a session log under ~/.claude/projects, ~/.pi/agent/sessions or ~/.codex/sessions), so the reviewer must not be the author. MCP: record_review.')
   .requiredOption('--transcript <path>', 'The REVIEWER\'s session log, e.g. a Claude Code sub-agent\'s <session>/subagents/agent-<id>.jsonl')
-  .requiredOption('--range <from..to>', 'The commits the review covered')
+  .option('--range <from..to>', 'The commits the review covered. Leave it out (or pass auto) and the server uses where the card began, up to HEAD - uncommitted work included')
   .requiredOption('--findings <json>', 'JSON list of { "title", "state": "fixed"|"rejected", "reason"? } ([] when nothing was found)')
   .action(async (id, options) => {
     let findings: unknown;
@@ -4202,10 +4203,35 @@ reviewCmd
     const verifyToken = fs.readFileSync(tokenPath, 'utf8').trim();
     try {
       const { data } = await axios.post(`${API_URL}/items/${id}/review-records`,
-        { transcript: options.transcript, range: options.range, findings },
+        { transcript: options.transcript, range: options.range ?? 'auto', findings },
         { headers: { 'x-agenfk-internal': verifyToken } });
       const who = data?.reviewer ? `${data.reviewer.client} session ${data.reviewer.sessionId}${data.reviewer.agentId ? `, agent ${data.reviewer.agentId}` : ''}` : 'the reviewer';
-      console.log(chalk.green(`✅ Review recorded for [${String(id).slice(0, 8)}] by ${who}: ${(data?.findings ?? []).length} finding(s).`));
+      const over = data?.range?.from && data?.range?.to ? ` over ${String(data.range.from).slice(0, 12)}..${String(data.range.to).slice(0, 12)}` : '';
+      console.log(chalk.green(`✅ Review recorded for [${String(id).slice(0, 8)}] by ${who}${over}: ${(data?.findings ?? []).length} finding(s).`));
+    } catch (e: any) {
+      const error = String(e.response?.data?.error || e.message);
+      console.error(chalk.red(`❌ ${error}`));
+      // CGLAB-457: refused over the transcript - list this session's sub-agent logs to choose from. Never pick one.
+      const session = process.env.CLAUDE_CODE_SESSION_ID;
+      if (session && /transcript|session folder|names no session|layout|not a file/i.test(error)) {
+        const candidates = subagentTranscripts(os.homedir(), session);
+        if (candidates.length) {
+          console.error(chalk.yellow("This session's sub-agent transcripts, newest first - pass the reviewer's as --transcript:"));
+          for (const c of candidates) console.error(`  ${c.path}${c.prompt ? `\n      "${c.prompt}"` : ''}`);
+        }
+      }
+      process.exit(1);
+    }
+  });
+
+reviewCmd
+  .command('brief <id>')
+  .description('Print the brief for an independent reviewer of a card on its review step (CGLAB-457): the range, the files changed, the tree\'s warnings, the author\'s evidence as claims, the tests already run, what leaving the step runs, and the rules that keep the reviewer independent. Give its text to the reviewer as its prompt. Read-only. MCP: review_brief.')
+  .option('--json', 'Print the whole brief as JSON')
+  .action(async (id, options) => {
+    try {
+      const { data } = await axios.get(`${API_URL}/items/${id}/review-brief`);
+      console.log(options.json ? JSON.stringify(data, null, 2) : data.text);
     } catch (e: any) {
       console.error(chalk.red(`❌ ${e.response?.data?.error || e.message}`));
       process.exit(1);
@@ -5023,8 +5049,10 @@ flowCommand
         if (byStep.size) flow = { ...flow, steps: (flow.steps ?? []).map((st: any) => byStep.has(st.name) ? { ...st, leavePlan: byStep.get(st.name) } : st) };
         if (plansFailed && !(program.opts().toon || options.json)) console.error(chalk.yellow('⚠️  Could not read what leaving each step runs; the table shows the flow without it.'));
       }
+      // CGLAB-457: what its steps ask for and do not check, worked out here from the steps it was given.
+      const contractWarnings = flowContractWarnings(flow?.steps);
       if (program.opts().toon || options.json) {
-        console.log(structuredOutput(flow));
+        console.log(structuredOutput({ ...flow, contractWarnings }));
         return;
       }
       console.log(chalk.blue(`\nFlow: ${flow.name}`));
@@ -5043,6 +5071,13 @@ flowCommand
         ...(sorted.some((x: any) => x.leavePlan) ? { 'On leave': s.leavePlan ? ({ suite: 'runs the suite', 'verify-command': 'runs the verify command', nothing: 'runs no tests' } as Record<string, string>)[s.leavePlan.runs] ?? '-' : '-' } : {}),
         'Exit Criteria': s.exitCriteria ? s.exitCriteria.substring(0, 50) : '-',
       })));
+      if (contractWarnings.length) {
+        console.log();
+        for (const w of contractWarnings) console.log(chalk.yellow(`⚠️  ${w.message}`));
+        console.log(chalk.gray(flow.source === 'hub'
+          ? "This flow came from your org's hub: a hub admin can change it."
+          : 'Change it with agenfk flow edit, or in the flow editor.'));
+      }
     } catch (error: any) {
       console.error(chalk.red('Error showing flow:'), error.response?.data?.error || error.message);
     }
