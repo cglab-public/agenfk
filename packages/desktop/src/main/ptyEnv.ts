@@ -22,7 +22,7 @@
  */
 import { execFile } from 'child_process';
 import * as os from 'os';
-import { platform, accountShell } from './platform.js';
+import { platform, accountShell, type FreshPath, type PlatformProfile } from './platform.js';
 
 /**
  * Marks a login shell spawned BY the capture, so a user whose rc file launches
@@ -114,15 +114,37 @@ const shouldStrip = (key: string): boolean =>
  * current directory" to some shells, which is a real hazard in a directory an
  * agent is writing to.
  */
-export function mergePath(recovered: string | null | undefined, inherited: string | null | undefined): string {
+export function mergePath(
+  recovered: string | null | undefined,
+  inherited: string | null | undefined,
+  delimiter: string = platform.pathDelimiter,
+): string {
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const part of [...(recovered ?? '').split(':'), ...(inherited ?? '').split(':')]) {
+  for (const part of [...(recovered ?? '').split(delimiter), ...(inherited ?? '').split(delimiter)]) {
     if (!part || seen.has(part)) continue;
     seen.add(part);
     out.push(part);
   }
-  return out.join(':');
+  return out.join(delimiter);
+}
+
+/**
+ * The name this environment keeps PATH under.
+ *
+ * Windows spells it Path and matches names case-insensitively, so writing PATH
+ * beside an inherited Path leaves two, and which one a child sees is up to
+ * whoever reads the block. On a Unix they are simply different variables.
+ */
+export function pathKeyOf(env: NodeJS.ProcessEnv, profile: Pick<PlatformProfile, 'envKeysIgnoreCase'> = platform): string {
+  if (!profile.envKeysIgnoreCase) return 'PATH';
+  return Object.keys(env).find(k => k.toUpperCase() === 'PATH') ?? 'Path';
+}
+
+/** The PATH out of what the profile's fresh-PATH command printed, or null. */
+export function readFreshPath(output: FreshPath['output'], stdout: string): string | null {
+  const value = output === 'env' ? parseEnvDump(stdout).PATH : stdout.trim();
+  return value ? value : null;
 }
 
 /** Read `env` output into a map. */
@@ -143,9 +165,9 @@ export function parseEnvDump(dump: string): Record<string, string> {
   return out;
 }
 
-/** The shell whose login environment is captured - the user's, as the terminal opens it. */
+/** What the fresh PATH is captured with - the user's own shell, as the terminal opens it. */
 export function loginShell(): string {
-  return platform.shell(process.env, accountShell()).file;
+  return platform.freshPath.command(process.env, accountShell()).file;
 }
 
 /**
@@ -155,19 +177,18 @@ export function loginShell(): string {
  * PATH, never stop the app from opening one.
  */
 export function captureLoginPath(timeoutMs = 5000): Promise<string | null> {
-  if (!platform.capturesLoginPath) return Promise.resolve(null);
   // The guard, actually read. It was previously set into the child and
   // stripped from the result but never checked, so the comment promised a
   // safeguard that did not exist — and its test only asserted the constant was
   // non-empty, which passed with the mechanism entirely absent.
   if (process.env[LOGIN_CAPTURE_GUARD] === '1') return Promise.resolve(null);
-  const shell = loginShell();
+  const { file, args } = platform.freshPath.command(process.env, accountShell());
   return new Promise(resolve => {
     execFile(
-      shell,
-      ['-lic', 'env'],
-      { env: { ...process.env, [LOGIN_CAPTURE_GUARD]: '1' }, timeout: timeoutMs, maxBuffer: 1024 * 1024 },
-      (err, stdout) => resolve(err ? null : (parseEnvDump(String(stdout)).PATH ?? null)),
+      file,
+      [...args],
+      { env: { ...process.env, [LOGIN_CAPTURE_GUARD]: '1' }, timeout: timeoutMs, maxBuffer: 1024 * 1024, windowsHide: true },
+      (err, stdout) => resolve(err ? null : readFreshPath(platform.freshPath.output, String(stdout))),
     );
   });
 }
@@ -179,14 +200,21 @@ export function captureLoginPath(timeoutMs = 5000): Promise<string | null> {
  * Passing it here is the whole point: detecting an agent with one PATH and
  * spawning it with another is how "installed" turns into ENOENT.
  */
-export function buildPtyEnv(base: NodeJS.ProcessEnv, loginPath?: string | null): NodeJS.ProcessEnv {
+export function buildPtyEnv(
+  base: NodeJS.ProcessEnv,
+  loginPath?: string | null,
+  profile: Pick<PlatformProfile, 'pathDelimiter' | 'envKeysIgnoreCase'> = platform,
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(base)) {
     if (value === undefined || shouldStrip(key)) continue;
     env[key] = value;
   }
 
-  if (loginPath) env.PATH = mergePath(loginPath, base.PATH);
+  if (loginPath) {
+    const key = pathKeyOf(env, profile);
+    env[key] = mergePath(loginPath, env[key], profile.pathDelimiter);
+  }
 
   // Forced, not defaulted. See the header: an inherited TERM describes whoever
   // launched us, and there may not be one at all.
