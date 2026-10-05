@@ -10,7 +10,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import * as path from 'path';
-import { resolveDbPath } from '../main/serverEnv.js';
+import { resolveDbPath, buildServerEnv } from '../main/serverEnv.js';
+import { profileFor } from '../main/platform.js';
 
 const HOME = '/home/dev';
 const CONFIG = path.join(HOME, '.agenfk', 'config.json');
@@ -87,5 +88,38 @@ describe('resolveDbPath', () => {
       fs: files({ [CONFIG]: JSON.stringify({ dbPath: '/from/config.sqlite' }) }),
     });
     expect(chosen).toBe('/from/config.sqlite');
+  });
+});
+
+/*
+ * The server's PATH (BUG 474a8240).
+ *
+ * Settings said "The GitHub CLI is not installed" with gh in
+ * /opt/homebrew/bin: the server runs `gh` by name, and it was forked with the
+ * PATH launchd hands an app opened from the Finder - /usr/bin:/bin:/usr/sbin:/sbin.
+ */
+describe('buildServerEnv', () => {
+  const base = { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: '/Users/me' };
+
+  it('puts the fresh PATH ahead of the inherited one', () => {
+    const env = buildServerEnv(base, { uiDir: '/ui', dbPath: '/db.sqlite', freshPath: '/opt/homebrew/bin:/usr/bin' }, profileFor('darwin'));
+    expect(env.PATH).toBe('/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin');
+  });
+
+  it('keeps the inherited PATH when no fresh one could be captured', () => {
+    expect(buildServerEnv(base, { uiDir: '/ui', dbPath: '/db', freshPath: null }, profileFor('darwin')).PATH).toBe(base.PATH);
+  });
+
+  it('still names the UI and the database, whatever the PATH', () => {
+    const env = buildServerEnv(base, { uiDir: '/ui', dbPath: '/db.sqlite', freshPath: '/x' }, profileFor('linux'));
+    expect(env.AGENFK_SERVE_UI).toBe('/ui');
+    expect(env.AGENFK_DB_PATH).toBe('/db.sqlite');
+    expect(env.HOME).toBe('/Users/me');
+  });
+
+  it('writes Windows\' Path, not a second PATH beside it', () => {
+    const env = buildServerEnv({ Path: 'C:\\Windows' }, { uiDir: 'C:\\ui', dbPath: 'C:\\db', freshPath: 'C:\\Program Files\\GitHub CLI' }, profileFor('win32'));
+    expect(Object.keys(env).filter(k => k.toUpperCase() === 'PATH')).toEqual(['Path']);
+    expect(env.Path).toBe('C:\\Program Files\\GitHub CLI;C:\\Windows');
   });
 });

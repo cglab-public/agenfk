@@ -17,7 +17,7 @@ import { readServerPort, DEFAULT_API_PORT } from '@agenfk/telemetry';
 import { resolveServer, type ResolvedServer } from './serverLifecycle.js';
 import { resolveDesktopPaths } from './paths.js';
 import { printCommandFor, listAgents, reopenNotice } from './agents.js';
-import { resolveDbPath } from './serverEnv.js';
+import { resolveDbPath, buildServerEnv } from './serverEnv.js';
 import { isAgenfkServer, servesUiBundle, httpGet } from './probes.js';
 import { agentRunSourcePath } from './agentRunSource.js';
 import { PtyRegistry } from './ptyRegistry.js';
@@ -73,6 +73,30 @@ let ptyRegistry: PtyRegistry | null = null;
  * capture still in flight. Null means no successful capture yet.
  */
 let loginPath: string | null = null;
+/*
+ * The captured PATH, re-captured when the memo is no longer trustworthy.
+ *
+ * Both halves of that sentence are scar tissue. A single memoised promise
+ * turned a boot optimisation into a session-long pin, so a PATH that
+ * changed while the app was open was never seen again — hence the expiry.
+ * And the expiry without a single flight meant N concurrent spawns each
+ * forked their own login shell — hence loginPathCache.
+ *
+ * Module-level since BUG 474a8240: the server is forked with it too, and the
+ * server starts before anything else in boot.
+ */
+const currentLoginPath = makeLoginPathCache({
+  capture: () => captureLoginPath().then(p => { loginPath = p; return p; }),
+});
+// Comfortably past captureLoginPath's own 5s timeout; this is a backstop
+// for the spawn paths, not a second policy.
+const LOGIN_PATH_DEADLINE_MS = 8_000;
+/** The fresh PATH, or null once the deadline passes - never a hang. */
+const loginPathWithin = (): Promise<string | null> => {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), LOGIN_PATH_DEADLINE_MS); });
+  return Promise.race([currentLoginPath(), deadline]).finally(() => clearTimeout(timer));
+};
 /**
  * Whether sessions can survive the app closing.
  *
@@ -114,7 +138,7 @@ function fail(title: string, detail: string): void {
   dialog.showErrorBox(title, detail);
 }
 
-function startServer(): void {
+async function startServer(): Promise<void> {
   const { serverEntry, uiDir } = resolveDesktopPaths({
     dirname: __dirname,
     resourcesPath: process.resourcesPath,
@@ -122,18 +146,14 @@ function startServer(): void {
   });
   const dbPath = resolveDbPath();
   weSpawnedTheServer = true;
+  // Before the fork: the server runs tools like `gh` by name (BUG 474a8240).
+  const freshPath = await loginPathWithin();
 
   serverChild = utilityProcess.fork(serverEntry, [], {
     // cwd is explicit because the server's own fallback derives the database
     // from it. Launched from Finder that would be "/" — see serverEnv.ts.
     cwd: path.dirname(serverEntry),
-    env: {
-      ...process.env,
-      // One origin for everything (CGLAB-165).
-      AGENFK_SERVE_UI: uiDir,
-      // Never let the database location depend on how the app was launched.
-      AGENFK_DB_PATH: dbPath,
-    },
+    env: buildServerEnv(process.env, { uiDir, dbPath, freshPath }),
     stdio: 'inherit',
   });
   console.log(`[DESKTOP] Starting AgEnFK server (db: ${dbPath})`);
@@ -273,6 +293,12 @@ function openExternally(raw: string): void {
 }
 
 async function boot(): Promise<void> {
+  /*
+   * The fresh PATH, started FIRST so it is captured while the adopt probes
+   * run: a server we fork waits for it (BUG 474a8240), and starting it inside
+   * startServer put the whole login shell in front of a cold launch.
+   */
+  void currentLoginPath();
   try {
     server = await resolveServer({
       readPort: readServerPort,
@@ -337,7 +363,9 @@ async function boot(): Promise<void> {
     // does not start".
     try {
       /*
-       * ONE capture, shared, and the window does not wait for it.
+       * ONE capture, shared. The window waits for it only when this app forks
+       * the server, which needs it (BUG 474a8240) - and it was started at the
+       * top of boot, so it has been running during the adopt probes.
        *
        * Both halves were wrong before. The comment here claimed detection and
        * spawning shared one capture — spawning did, detection did not: it fell
@@ -352,22 +380,7 @@ async function boot(): Promise<void> {
        * and detection is handed the same one. Otherwise a terminal opened in
        * the first second would get a degraded PATH.
        */
-      // Comfortably past captureLoginPath's own 5s timeout; this is a backstop
-      // for the spawn path, not a second policy.
-      const LOGIN_PATH_DEADLINE_MS = 8_000;
-      /*
-       * The captured PATH, re-captured when the memo is no longer trustworthy.
-       *
-       * Both halves of that sentence are scar tissue. A single memoised promise
-       * turned a boot optimisation into a session-long pin, so a PATH that
-       * changed while the app was open was never seen again — hence the expiry.
-       * And the expiry without a single flight meant N concurrent spawns each
-       * forked their own login shell — hence loginPathCache.
-       */
-      const currentLoginPath = makeLoginPathCache({
-        capture: () => captureLoginPath().then(p => { loginPath = p; return p; }),
-      });
-      // Kick it off now, so the value is usually ready before anything asks.
+      // Started at the top of boot; this joins it, or reuses its value.
       void currentLoginPath();
 
       setAgentDetectionDeps({ which: whichOnPath, loginPath: currentLoginPath, forgetLoginPath: currentLoginPath.forget });
@@ -623,10 +636,7 @@ async function boot(): Promise<void> {
          * failure from "the spawn has the wrong PATH", and not one to inherit
          * silently.
          */
-        loginPath: () => Promise.race([
-          currentLoginPath(),
-          new Promise<null>(resolve => setTimeout(() => resolve(null), LOGIN_PATH_DEADLINE_MS)),
-        ]),
+        loginPath: loginPathWithin,
         tmux: { available: tmuxStatus.available },
         // To that window only, and never to a destroyed one. See windowEmit.ts
         // for why the guard matters more than it looks: this runs inside a
