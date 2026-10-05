@@ -109,6 +109,40 @@ describe('CGLAB-380: the check engine in verify', () => {
       expect((await item(id)).status).toBe('START');
     });
 
+    it('warns instead of blocking when the dirty tree is shared with another live card (aa98ccf4)', async () => {
+      const dir = makeRepo();
+      const pid = await project(await flow(codingFlow()), { projectRoot: dir });
+      // A live sibling holds uncommitted work in the SAME tree: not attributable,
+      // so the start warns and names it instead of blocking.
+      await card(pid, 'MAKE', { title: 'gateway-review' });
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'src/other.ts'), 'sibling work');
+      const id = await card(pid, 'START');
+      const res = await validate(id);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      const got = await item(id);
+      const tc = byId(got.lastChecks.results, 'tree-clean');
+      expect(tc.outcome).toBe('fail');
+      expect(tc.severity).toBe('warn');
+      expect(tc.detail).toMatch(/gateway-review/);
+      expect(got.status).toBe('MAKE');
+    });
+
+    it('still blocks on a dirty tree when the only other card in the tree is on a boundary step (aa98ccf4)', async () => {
+      const dir = makeRepo();
+      // isSpecial-only boundary (what `agenfk flow create` emits): a card parked
+      // there holds no work, so it must not downgrade the block.
+      const pid = await project(await flow([s('START', 0, { isAnchor: true }), s('MAKE', 1, { role: 'coding' }), s('END', 2, { isSpecial: true, role: 'closing' })]), { projectRoot: dir });
+      await card(pid, 'END');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'src/other.ts'), 'leftover');
+      const id = await card(pid, 'START');
+      const res = await validate(id);
+      expect(res.status).toBe(422);
+      expect(byId(res.body.checks, 'tree-clean')).toMatchObject({ outcome: 'fail', severity: 'block' });
+      expect((await item(id)).status).toBe('START');
+    });
+
     it('advances from a clean first step and records the results on the card and on the exit record', async () => {
       const dir = makeRepo();
       const id = await card(await project(await flow(codingFlow()), { projectRoot: dir }), 'START');
