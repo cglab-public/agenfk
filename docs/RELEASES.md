@@ -2,15 +2,20 @@
 
 This repo ships through two channels backed by two branches:
 
-```
-                feature PRs (each feature = its own PR)
-                           │
-                           ▼
-  main ──── graduation PR ─► beta ──── v2.0.0-beta.N tags
- (stable)                   (pre-release)
-                           │
-                           ▼
-              hub deploy (private deploy repo) + dist releases
+```mermaid
+flowchart LR
+    dev([Developer])
+    main["main (stable)"]
+    beta["beta (pre-release)"]
+    tags["v2.0.0-beta.N tags"]
+    ship["hub deploy (private deploy repo)\n+ dist releases"]
+    stable([v* stable release])
+
+    dev -- "feature PRs\n(each feature = its own PR)" --> beta
+    beta -- "every beta: bump + tag" --> tags
+    tags -- "deploy / release" --> ship
+    beta -- "graduation PR\n(when the cycle is done)" --> main
+    main -- "tag after graduation" --> stable
 ```
 
 | | `main` | `beta` |
