@@ -104,5 +104,6 @@ The old version is read from the root `package.json`; commit the manifest change
 - `AFK_ARCHITECTURE.md` — system architecture, multi-agent orchestration, client enforcement matrix.
 - `MULTI_AGENT.md` — **read before touching worktrees or the close commit.** Several agents share ONE worktree; a branch-and-worktree per child was tried and withdrawn, and so were claims (per-card owned paths). Carries why staging is each agent's own job and what was verified against Orca.
 - `SDLC.md` — the lifecycle the framework enforces on its users (also describes rules this repo dogfoods on itself).
+- `docs/RELEASES.md` — how releases work in this repo: the `beta`/`main` branch model, cutting betas, hub deploys and graduation to stable. Read before tagging anything.
 - `SKILL.md` — the master skill file installed across clients; mirror changes here when editing `commands/` or `skills/`.
 - `AGENFK_COMPARISON.md`, `AFK_PROJECT_SCOPE.md` — design context.

@@ -29,6 +29,7 @@ Welcome to **AgEnFK**, a high-reliability, measurable, and visual framework desi
 - [GitHub Issues Sync](#github-issues-sync)
 - [Corporate Hub](#corporate-hub)
 - [Architecture Deep Dive](#architecture-deep-dive)
+- [Release Channels (`beta` and `main`)](docs/RELEASES.md)
 - [Custom Workflow Flows](#custom-workflow-flows)
 - [Quick Start](#quick-start)
 - [Operation Modes](#operation-modes)
