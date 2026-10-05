@@ -9,6 +9,8 @@ import type { AgentInfo } from './AgentPicker';
 
 interface TerminalBridgeApi {
   listAgents(): Promise<AgentInfo[]>;
+  /** Detect afresh rather than answer from memory. Optional for an older preload. */
+  refreshAgents?(): Promise<AgentInfo[]>;
   /**
    * Optional in the TYPE, required in the current preload.
    *
@@ -258,6 +260,18 @@ export const cloneRepositoryFromBridge = (url: string, name: string):
 
 export const listAgentsFromBridge = (): Promise<AgentInfo[]> =>
   bridge()?.listAgents() ?? Promise.resolve([]);
+
+/**
+ * Look again, after the person installed something (story 1b9d622e).
+ *
+ * A preload older than `refreshAgents` still answers - with a plain listing,
+ * which is the best that host can do - rather than throwing.
+ */
+export const refreshAgentsFromBridge = (): Promise<AgentInfo[]> => {
+  const host = bridge();
+  if (typeof host?.refreshAgents === 'function') return host.refreshAgents();
+  return host?.listAgents() ?? Promise.resolve([]);
+};
 
 /**
  * Whether a terminal here outlives the app.

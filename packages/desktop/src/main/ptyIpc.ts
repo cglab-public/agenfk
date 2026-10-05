@@ -39,7 +39,7 @@ import {
   SOUND_EXTENSIONS, storeCustomSound, readCustomSound, clearCustomSound,
 } from './customSound';
 import { detectEditors, editorUrlFor } from './editors';
-import { detectAgents, __resetAgentDetectionCache } from './detectAgents.js';
+import { detectAgents, refreshAgentDetection } from './detectAgents.js';
 import { SHELL_AGENT_ID, AGENT_IDS } from './agents.js';
 import { HIGH_WATERMARK } from './flowControl.js';
 
@@ -555,7 +555,7 @@ export function registerPtyIpc(
   // After the user installs a CLI, so the picker updates without an app
   // restart. Also takes no input.
   ipc.handle('agents:refresh', async () => {
-    __resetAgentDetectionCache();
+    refreshAgentDetection();
     return detectAgents();
   });
 }

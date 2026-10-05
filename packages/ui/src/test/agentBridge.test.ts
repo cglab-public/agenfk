@@ -19,7 +19,7 @@
  * older, or absent entirely.
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { listAgentsFromBridge, sessionPersistenceFromBridge } from '../components/agentBridge';
+import { listAgentsFromBridge, refreshAgentsFromBridge, sessionPersistenceFromBridge } from '../components/agentBridge';
 
 const setHost = (terminal: unknown): void => {
   (window as unknown as Record<string, unknown>).agenfkDesktop = { terminal };
@@ -66,5 +66,22 @@ describe('when the host is current', () => {
     await expect(sessionPersistenceFromBridge()).resolves.toEqual({
       available: false, warning: 'tmux_unsupported_on_windows',
     });
+  });
+});
+
+describe('checking again for installed agents (story 1b9d622e)', () => {
+  it('asks the host to detect afresh, not to answer from memory', async () => {
+    const found = [{ id: 'claude-code', label: 'Claude Code', installed: true, supportsAutoApprove: true }];
+    setHost({ listAgents: async () => [], refreshAgents: async () => found });
+    await expect(refreshAgentsFromBridge()).resolves.toEqual(found);
+  });
+
+  it('falls back to listing on a host older than refresh', async () => {
+    setHost({ listAgents: async () => [{ id: 'pi', label: 'Pi', installed: true, supportsAutoApprove: false }] });
+    await expect(refreshAgentsFromBridge()).resolves.toHaveLength(1);
+  });
+
+  it('reports no agents where there is no host', async () => {
+    await expect(refreshAgentsFromBridge()).resolves.toEqual([]);
   });
 });

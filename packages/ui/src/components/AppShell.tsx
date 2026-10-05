@@ -49,7 +49,7 @@ import type { PaneTree, DropZone, SplitDirection } from '../splitTree';
 import { withItemBranches } from '../sessionBranch';
 import { NewTerminalDialog } from './NewTerminalDialog';
 import {
-  listAgentsFromBridge, readPrefsFromBridge,
+  listAgentsFromBridge, refreshAgentsFromBridge, readPrefsFromBridge,
   listEditorsFromBridge, openInEditorFromBridge,
 } from './agentBridge';
 import { SettingsPanel } from './SettingsPanel';
@@ -2263,6 +2263,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             return { agentId: live.agentId, where } as const;
           })()}
           listAgents={listAgentsFromBridge}
+          refreshAgents={refreshAgentsFromBridge}
           // Shift, never clear: dismissing ONE question must not throw away the
           // rest of the wave. Clearing here was the single-slot habit surviving
           // the queue - and it fails in the direction that loses work silently.

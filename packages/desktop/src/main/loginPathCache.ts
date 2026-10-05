@@ -46,7 +46,16 @@ export interface LoginPathCacheDeps {
  * waits for the capture already running rather than being handed null and a
  * degraded PATH — which is the very thing the capture exists to prevent.
  */
-export function makeLoginPathCache(deps: LoginPathCacheDeps): () => Promise<string | null> {
+export interface LoginPathCache {
+  (): Promise<string | null>;
+  /**
+   * Drop the remembered PATH, so the next ask captures it again (story
+   * 1b9d622e). "Check again" after an install wants the PATH as it is now.
+   */
+  forget(): void;
+}
+
+export function makeLoginPathCache(deps: LoginPathCacheDeps): LoginPathCache {
   const now = deps.now ?? Date.now;
   const memoMs = deps.memoMs ?? LOGIN_PATH_MEMO_MS;
 
@@ -54,8 +63,11 @@ export function makeLoginPathCache(deps: LoginPathCacheDeps): () => Promise<stri
   let inFlight: Promise<string | null> | null = null;
   let value: string | null = null;
   let capturedAt = 0;
+  /** Bumped by forget(): a capture from an older generation must not land. */
+  let generation = 0;
 
   const start = (): Promise<string | null> => {
+    const startedIn = generation;
     const run = deps.capture()
       /*
        * A rejection answers null rather than escaping. This is awaited on the
@@ -64,8 +76,13 @@ export function makeLoginPathCache(deps: LoginPathCacheDeps): () => Promise<stri
        */
       .catch(() => null)
       .then(captured => {
-        value = captured;
-        capturedAt = now();
+        // Answered to whoever asked, but remembered only if nothing was
+        // forgotten meanwhile: a pre-install PATH landing late would otherwise
+        // be trusted for the whole memo window.
+        if (startedIn === generation) {
+          value = captured;
+          capturedAt = now();
+        }
         return captured;
       })
       .finally(() => {
@@ -77,7 +94,7 @@ export function makeLoginPathCache(deps: LoginPathCacheDeps): () => Promise<stri
     return run;
   };
 
-  return () => {
+  const read = (): Promise<string | null> => {
     // Someone is already doing this. Join them — the whole point.
     if (inFlight) return inFlight;
 
@@ -91,4 +108,14 @@ export function makeLoginPathCache(deps: LoginPathCacheDeps): () => Promise<stri
     if (value !== null && now() - capturedAt < memoMs) return Promise.resolve(value);
     return start();
   };
+
+  return Object.assign(read, {
+    forget: (): void => {
+      generation += 1;
+      value = null;
+      // A capture already running started before whatever prompted this, so
+      // it is not joined either. Its late `finally` cannot clear a newer one.
+      inFlight = null;
+    },
+  });
 }

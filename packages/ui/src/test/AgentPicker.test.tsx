@@ -340,3 +340,41 @@ describe('pressing outside the menu', () => {
     }
   });
 });
+
+/*
+ * "Check again" (story 1b9d622e).
+ *
+ * A person who just installed an agent - from PowerShell, with the app open,
+ * as in the report - had no way to make the picker look again short of
+ * restarting the app.
+ */
+describe('checking again', () => {
+  it('offers it under Not installed and moves a newly found agent to Installed', async () => {
+    const refreshed = AGENTS.map(a => (a.id === 'codex' ? { ...a, installed: true } : a));
+    const refreshAgents = vi.fn(async () => refreshed);
+    renderPicker({ refreshAgents });
+    const menu = await openMenu();
+    const notInstalled = within(menu).getByRole('group', { name: /not installed/i });
+    fireEvent.click(within(notInstalled).getByRole('button', { name: /check again/i }));
+    expect(refreshAgents).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      const installed = within(screen.getByRole('listbox')).getByRole('group', { name: /^installed$/i });
+      expect(within(installed).getByText('Codex')).toBeDefined();
+    });
+  });
+
+  it('does not choose an agent or close the menu', async () => {
+    const onChange = vi.fn();
+    renderPicker({ onChange, refreshAgents: async () => AGENTS });
+    const menu = await openMenu();
+    fireEvent.click(within(menu).getByRole('button', { name: /check again/i }));
+    await waitFor(() => expect(screen.getByRole('listbox')).toBeDefined());
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('is absent where nothing can check again', async () => {
+    renderPicker();
+    const menu = await openMenu();
+    expect(within(menu).queryByRole('button', { name: /check again/i })).toBeNull();
+  });
+});
