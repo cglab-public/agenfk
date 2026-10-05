@@ -2,6 +2,19 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.33] — 2026-10-05
+
+Pre-release, cut from the `beta` line (carried by PR #194). Cumulative over `2.0.0-beta.32`.
+
+### Hub
+
+- **Registry copies land on the org's configured registry branch (CGLAB-495).** `writeRegistryFile` sent the
+  target branch only as a `?ref=` query on the Contents-API PUT; GitHub reads the branch from the JSON body
+  (default = the repo's default branch) and ignores `ref` on PUT — so `copyCommunityFlows` into an org registry
+  whose configured branch is not the repo default wrote every flow to the default branch, while browse/install
+  read the configured branch and never saw them. The PUT now carries `branch` in its body, the misleading query
+  is gone from its URL, and a test pins the body.
+
 ## [2.0.0-beta.32] — 2026-10-04
 
 Pre-release, cut from `feat/CGLAB-164_electron-desktop` (PR #194). Cumulative over `2.0.0-beta.31`, which never
