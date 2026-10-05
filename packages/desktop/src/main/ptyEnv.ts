@@ -184,12 +184,15 @@ export function captureLoginPath(timeoutMs = 5000): Promise<string | null> {
   if (process.env[LOGIN_CAPTURE_GUARD] === '1') return Promise.resolve(null);
   const { file, args } = platform.freshPath.command(process.env, accountShell());
   return new Promise(resolve => {
-    execFile(
+    const child = execFile(
       file,
       [...args],
       { env: { ...process.env, [LOGIN_CAPTURE_GUARD]: '1' }, timeout: timeoutMs, maxBuffer: 1024 * 1024, windowsHide: true },
       (err, stdout) => resolve(err ? null : readFreshPath(platform.freshPath.output, String(stdout))),
     );
+    // EOF on stdin at once: an rc file that reads input would otherwise hold
+    // the capture - and, since BUG 474a8240, a cold launch - until the timeout.
+    child.stdin?.end();
   });
 }
 
