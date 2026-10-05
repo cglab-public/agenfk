@@ -2,6 +2,25 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.34] — 2026-10-05
+
+Pre-release, cut from the `beta` line (PR #205). Cumulative over `2.0.0-beta.33`.
+
+### Board / verify
+
+- **A dirty tree shared with live cards warns instead of blocking a card's start (aa98ccf4).** `tree-clean`
+  counted every uncommitted file in the tree as the starting card's own, so a live sibling's work in a shared
+  tree forced serializing siblings — the starting card stayed blocked until the other closed. When the server
+  resolves other live cards in the same tree (anchors, DONE, inactive and `isSpecial` boundaries excluded),
+  `tree-clean` now warns and names them instead of blocking; the dirt is not attributable, and the post-claims
+  stance (26c059f6) never blocks a card on its siblings. The exit side stays guarded by the ownerless-staged
+  close refusal.
+
+### Docs
+
+- `docs/RELEASES.md`: how the `beta`/`main` release model works — channels, cutting betas, hub deploys,
+  graduation to stable, hotfix rules.
+
 ## [2.0.0-beta.33] — 2026-10-05
 
 Pre-release, cut from the `beta` line (carried by PR #194). Cumulative over `2.0.0-beta.32`.
