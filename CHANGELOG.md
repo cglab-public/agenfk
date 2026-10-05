@@ -2,6 +2,41 @@
 
 All notable changes to AgEnFK are documented here.
 
+## [2.0.0-beta.30] — 2026-10-04
+
+Pre-release, cut from the CGLAB-164 desktop line. This entry documents the desktop changes it carries, and the
+Windows CI work merged into it from `main`.
+
+### The macOS title bar: gone in full screen, and over a terminal the tabs are it (e7ad8020)
+
+`titleBarStyle: 'hiddenInset'` removes the native bar, so the shell draws its own - a strip whose only jobs were
+to be dragged and to leave room for the traffic lights. In full screen there are neither, and the strip was dead
+space over the terminal, so it is gone there and the terminals rise by its height. Windowed with a terminal
+open, the tab strip becomes the title bar the way a browser's tabs are: clicking a tab works, and the stretch
+after the last tab moves the window. On the board, windowed, with the sidebar collapsed, the row stays - it is
+the only place left to grab the window.
+
+### The rail is wider, and its icons are labelled (6dfb0152)
+
+The collapsed sidebar goes 40 to 56px and its icons 14 to 18px, each centred in a 40px square, with the Settings
+gear and the collapse control scaled to match. The traffic-light reserve in the column beside it falls from 48 to
+32px, because the rail now covers 16px more of the lights - the two numbers move together, and the arithmetic is
+written beside the constant that drives it. Every control on the rail also gained a real hover hint, shown on
+keyboard focus as well: the OS tooltip it replaces arrives about a second late, which on a column of four similar
+glyphs reads as no tooltip at all.
+
+### Terminal tabs scroll, and stop squashing (12e72602)
+
+With many terminals open the tabs did not overflow - they compressed, because a flex child shrinks by default, and
+ten terminals became ten unreadable slivers. They now hold a 120px floor, and the strip scrolls: two fingers
+sideways, or a vertical wheel mapped to horizontal movement, which is the gesture people actually make. The `+`
+sits outside the scroller so it cannot scroll out of reach, and the active tab is brought into view on mount and
+on every change.
+
+### From `main`: the Windows compatibility job (#201, #202)
+
+A lightweight parallel Windows job, a unicode HOME sandbox and `.gitattributes`, merged into this line.
+
 ## [2.0.0-beta.24] — 2026-10-02
 
 Pre-release. Beta, cumulative over `2.0.0-beta.23`: everything in beta.23 and beta.22 (below) and the CGLAB-164
