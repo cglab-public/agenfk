@@ -94,7 +94,7 @@ const run = (file: string, args: string[], env?: NodeJS.ProcessEnv): Promise<str
   new Promise(resolve => {
     // execFile with an argv array — never a shell string. These arguments are
     // from the closed set, but the habit is what keeps it true after an edit.
-    execFile(file, args, { env: env ?? process.env, timeout: 5000 }, (err, stdout) => {
+    execFile(file, args, { env: env ?? process.env, timeout: 5000, windowsHide: true }, (err, stdout) => {
       resolve(err ? null : String(stdout).trim() || null);
     });
   });

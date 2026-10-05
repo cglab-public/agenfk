@@ -166,7 +166,7 @@ export function captureLoginPath(timeoutMs = 5000): Promise<string | null> {
     execFile(
       shell,
       ['-lic', 'env'],
-      { env: { ...process.env, [LOGIN_CAPTURE_GUARD]: '1' }, timeout: timeoutMs, maxBuffer: 1024 * 1024 },
+      { env: { ...process.env, [LOGIN_CAPTURE_GUARD]: '1' }, timeout: timeoutMs, maxBuffer: 1024 * 1024, windowsHide: true },
       (err, stdout) => resolve(err ? null : (parseEnvDump(String(stdout)).PATH ?? null)),
     );
   });

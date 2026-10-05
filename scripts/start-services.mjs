@@ -59,7 +59,8 @@ const apiProcess = spawn('node', [path.join(rootDir, 'packages/server/dist/serve
         ...(servesUi ? { AGENFK_SERVE_UI: uiDist } : {}),
     },
     detached: true,
-    stdio: ['ignore', apiLog, apiLog]
+    stdio: ['ignore', apiLog, apiLog],
+    windowsHide: true
 });
 apiProcess.unref();
 
@@ -99,10 +100,10 @@ if (process.env.AGENFK_NO_OPEN_BROWSER || !servesUi) {
 }
 
 if (process.platform === 'win32') {
-    spawn('cmd.exe', ['/c', 'start', '', uiUrl], { detached: true, stdio: 'ignore' }).unref();
+    spawn('cmd.exe', ['/c', 'start', '', uiUrl], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
 } else {
     const openCmd = process.platform === 'darwin' ? 'open' : 'xdg-open';
-    spawn(openCmd, [uiUrl], { detached: true, stdio: 'ignore' }).unref();
+    spawn(openCmd, [uiUrl], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
 }
 
 process.exit(0);

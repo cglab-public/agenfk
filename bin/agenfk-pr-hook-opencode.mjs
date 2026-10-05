@@ -25,6 +25,7 @@ export default async function agenfkPrHookOpencode(_context) {
           input: JSON.stringify({ args: { command } }),
           encoding: 'utf8',
           timeout: 1500,
+          windowsHide: true,
         });
         const out = (result.stdout || '').trim();
         if (!out) return;

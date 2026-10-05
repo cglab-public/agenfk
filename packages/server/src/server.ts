@@ -233,7 +233,7 @@ async function warmProjectRemote(projectId: string): Promise<void> {
     // mount, credential prompt) would block the whole Node event loop. execFile
     // keeps it off-thread; the 1.5s timeout + closed stdin bound the wait.
     const out = await new Promise<string>((resolve) => {
-      execFile('git', ['remote', 'get-url', 'origin'], { cwd: root, timeout: 1500 }, (err, stdout) => {
+      execFile('git', ['remote', 'get-url', 'origin'], { cwd: root, timeout: 1500, windowsHide: true }, (err, stdout) => {
         resolve(err ? '' : (stdout || '').toString().trim());
       });
     });
@@ -1128,7 +1128,7 @@ export interface AutoGitCommitResult {
  * problem. execFile takes argv directly, like the rest of the server.
  */
 const git = (args: readonly string[], cwd: string): Promise<{ ok: boolean; out: string; err: string }> =>
-  new Promise((resolve) => execFile('git', args as string[], { cwd }, (e, stdout, stderr) =>
+  new Promise((resolve) => execFile('git', args as string[], { cwd, windowsHide: true }, (e, stdout, stderr) =>
     resolve({ ok: !e, out: stdout ?? '', err: (stderr || (e as any)?.message || '').trim() })));
 
 /** A merge, rebase, cherry-pick or revert the author has not finished. */
@@ -1424,7 +1424,7 @@ export const autoGitCommit = async (item: AgEnFKItem, projectRoot: string | null
   const result = commitStagedForCard(
     item as any,
     root,
-    { run: args => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) },
+    { run: args => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }) },
     { message },
   );
   if (result.committed) {
@@ -1655,7 +1655,7 @@ if (hubDisabledForTests) {
     // down/up restart — leaving the upgrade landed on disk while the
     // in-memory process keeps executing the old code.
     spawnImpl: (cmd, args) => new Promise((resolve) => {
-      const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
       let stdout = '';
       child.stdout?.on('data', (d) => { stdout += d.toString(); });
       child.stderr?.on('data', () => { /* ignore — agenfk upgrade --json puts everything on stdout */ });
@@ -1968,7 +1968,7 @@ async function frozenTestsRollbackRefusal(item: any, toStatus: string, flow: Tra
   const project: any = await storage.getProject(item.projectId);
   const root = resolveCommitRoot(await withEffectiveWorktree(item), project?.projectRoot).root;
   if (!root) return null;
-  const listTree = () => execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, maxBuffer: 256 * 1024 * 1024 }).split('\0').filter(Boolean);
+  const listTree = () => execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, maxBuffer: 256 * 1024 * 1024, windowsHide: true }).split('\0').filter(Boolean);
   const owned = reportsOwned(root, project?.testReport);
   // A brand-new test file is a change too (d26832d6 re-review): with no declared
   // paths, the entry's own files alone would never look at it.
@@ -2869,6 +2869,7 @@ app.get("/items/:id/diff", limitExpensive, asyncHandler(async (req: any, res: an
   const MAX = 400_000;
   const run = (args: string[]): string => execFileSync('git', ['-C', root, ...args], {
     encoding: 'utf8', maxBuffer: MAX * 2, stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
   });
 
   try {
@@ -3290,7 +3291,7 @@ app.put("/projects/:id/test-report", asyncHandler(async (req: any, res: any) => 
   // own checks leave the report (and a directory holding only it) alone; git
   // does not, and a person reading `git status` sees it every run.
   const root = (before as any).projectRoot;
-  const unignored = next && root ? reportPathsOf(next).filter(p => spawnSync('git', ['-C', root, 'check-ignore', '-q', p], { stdio: 'ignore', timeout: 5000 }).status === 1) : [];
+  const unignored = next && root ? reportPathsOf(next).filter(p => spawnSync('git', ['-C', root, 'check-ignore', '-q', p], { stdio: 'ignore', timeout: 5000, windowsHide: true }).status === 1) : [];
   res.json(unignored.length ? { ...updated, warning: `${unignored.join(', ')} ${unignored.length === 1 ? 'is' : 'are'} not ignored by git. agenfk's checks leave the report alone, but git status will show it after every run: add ${unignored.length === 1 ? 'it' : 'them'} (or the directory) to .gitignore.` } : updated);
 }));
 
@@ -3847,13 +3848,20 @@ function runForExitCode(command: string, cwd: string, maxMs: number, onOutput?: 
     // Its own process group, killed whole: a runner's workers outlive a killed
     // shell, and a leftover one could write the NEXT capture's report.
     // 9569b4d7: its output streams to whoever follows the run - the agent's chat and the card - when asked.
-    const child = spawn(command, { shell: true, cwd, stdio: onOutput ? ['ignore', 'pipe', 'pipe'] : 'ignore', detached: true });
+    // Not detached on Windows: there it means DETACHED_PROCESS, which voids
+    // CREATE_NO_WINDOW, and cmd.exe then gives every console grandchild
+    // (npx, npm, node) a visible window (GH #200). Process groups are POSIX-only anyway.
+    const child = spawn(command, { shell: true, cwd, stdio: onOutput ? ['ignore', 'pipe', 'pipe'] : 'ignore', detached: process.platform !== 'win32', windowsHide: true });
     if (onOutput) for (const s of [child.stdout, child.stderr]) {
       // Whole characters only: a chunk can end inside a multi-byte one.
       const decoder = new StringDecoder('utf8');
       s?.on('data', (d: Buffer) => { const text = decoder.write(d); if (text) onOutput(text); });
     }
-    const killGroup = () => { try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ } };
+    // A negative pid is a group only on POSIX; on Windows it throws and the shell itself is killed.
+    const killGroup = () => {
+      try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); }
+      catch { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
+    };
     let grace: ReturnType<typeof setTimeout> | undefined;
     let settled = false;
     const finish = (code: number | null) => {
@@ -3892,7 +3900,7 @@ function treeContentState(root: string, excludeRel: TreeExclude): string | null 
 /** treeContentState with the read it hashed: what a fenced run records must come from this one read (de5e5a03). */
 function treeContentRead(root: string, excludeRel: TreeExclude): { state: string; tree: TreeRead } | null {
   try {
-    const head = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+    const head = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).toString().trim();
     if (!head) return null;
     const tree = treeFiles(root, excludeRel);
     return tree === null ? null : { state: `${head}:${tree.hash}`, tree };
@@ -3952,7 +3960,7 @@ function hashEntries(entries: Iterable<[string, string]>): string {
 function treeFiles(root: string, excludeRel: TreeExclude): TreeRead | null {
   const excluded = excludedBy(excludeRel);
   try {
-    const git = (args: string[], cwd = root) => execFileSync('git', ['-C', cwd, ...args], { maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+    const git = (args: string[], cwd = root) => execFileSync('git', ['-C', cwd, ...args], { maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).toString();
     const staged = git(['ls-files', '-z', '-s']);
     // --relative (6e0d2fd6): ls-files names paths from `root`, a bare diff from the repository's top - in a project
     // that is a subdirectory they never matched, and a modified tracked file kept its stale index hash.
@@ -4030,7 +4038,7 @@ export function reportOwned(root: string, reportRel: string | null, surface: rea
   const underSurface = surface.some(p => { const d = toPosixPath(path.posix.normalize(p)).replace(/\/$/, ''); return d === '.' || d === '' || dir === d || dir.startsWith(`${d}/`) || d.startsWith(`${dir}/`); });
   if (!reportish || underSurface) return [reportRel];
   try {
-    const tracked = execFileSync('git', ['-C', root, 'ls-files', '-z', '--', dir], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000 }).toString();
+    const tracked = execFileSync('git', ['-C', root, 'ls-files', '-z', '--', dir], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, windowsHide: true }).toString();
     return tracked ? [reportRel] : [reportRel, dir];
   } catch {
     return [reportRel];
@@ -4365,7 +4373,7 @@ const LAZY_MAX_FILES = 200;
 function changedSince(root: string, head: string, reportRel: TreeExclude): { inside: string[]; outside: boolean } | null {
   const excluded = excludedBy(reportRel);
   try {
-    const run = (args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 64 * 1024 * 1024 });
+    const run = (args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 64 * 1024 * 1024, windowsHide: true });
     const prefix = run(['rev-parse', '--show-prefix']).trim();
     // --no-relative (c03ae9f7): a user's diff.relative would list only what is under `root`, relative to it.
     const diff = run(['diff', '--no-relative', '--no-renames', '--name-only', '-z', head]).split('\0');
@@ -4403,7 +4411,7 @@ function outsideState(root: string, head: string): string | null {
 /** outsideState's entries, by repository path: `<mode>:<blob>`, `160000:<commit>`, or 'absent'. [] when nothing differs. */
 function outsideEntries(root: string, head: string): [string, string][] | null {
   try {
-    const run = (args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 64 * 1024 * 1024 });
+    const run = (args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 64 * 1024 * 1024, windowsHide: true });
     const prefix = run(['rev-parse', '--show-prefix']).trim();
     // c03ae9f7: a project at the repository's top has nothing beside it.
     if (!prefix) return [];
@@ -4425,7 +4433,7 @@ function outsideEntries(root: string, head: string): [string, string][] | null {
       else if (st.isDirectory() && fs.existsSync(path.join(abs, '.git'))) {
         // c03ae9f7: a submodule or nested repository - by its commit. 62f87741: its own uncommitted work is not
         // hashed (its status names files, not content), so with any, no partial run.
-        const sub = (args: string[]) => execFileSync('git', ['-C', abs, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 64 * 1024 * 1024 });
+        const sub = (args: string[]) => execFileSync('git', ['-C', abs, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 64 * 1024 * 1024, windowsHide: true });
         if (sub(['status', '--porcelain', '-z'])) return null;
         entries.push([f, `160000:${sub(['rev-parse', 'HEAD']).trim()}`]);
       } else return null;   // anything else cannot be told apart from itself changed: no partial run
@@ -4451,7 +4459,7 @@ const OUTSIDE_BASE_CACHE_MAX = 16;
 
 function outsideContent(root: string): string | null {
   try {
-    const run = (args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 256 * 1024 * 1024 });
+    const run = (args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000, maxBuffer: 256 * 1024 * 1024, windowsHide: true });
     const prefix = run(['rev-parse', '--show-prefix']).trim();
     if (!prefix) return '';
     const head = run(['rev-parse', 'HEAD']).trim();
@@ -4723,7 +4731,7 @@ async function runAndRead(item: any, root: string, setting: TestReportSetting | 
       const ambiguous = new Set(parsed.duplicateNames);
       // The project's declared test paths are the surface (9afdba7d); the tree is listed only to suggest some
       // when a name is no file and none are declared. The report this run wrote is never hashed.
-      const listTree = () => execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, maxBuffer: 256 * 1024 * 1024 }).split('\0').filter(Boolean);
+      const listTree = () => execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, maxBuffer: 256 * 1024 * 1024, windowsHide: true }).split('\0').filter(Boolean);
       const surface = surfaceOf(root, [...new Set([...parsed.tests.map(t => t.file), ...parsed.brokenFiles.map(b => b.file)])], setting.surface ?? [], { listTree, exclude: owned });
       record.available = true;
       record.tests = parsed.tests.filter(t => !ambiguous.has(t.name));
@@ -4811,7 +4819,7 @@ function resurfacedGreen(candidates: any[], setting: TestReportSetting, root: st
   for (const card of candidates) for (const r of [...(card.stepRecords ?? []), ...(card.supersededRecords ?? [])]) if (sameRun(r) && (!best || String(r.at) > String(best.r.at))) best = { card, r };
   if (!best) return null;
   const { supersededAt: _s, rolledBackTo: _t, surfaceMissing: _m, surfaceSuggested: _g, ...green } = best.r;
-  const listTree = () => execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, maxBuffer: 256 * 1024 * 1024 }).split('\0').filter(Boolean);
+  const listTree = () => execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, maxBuffer: 256 * 1024 * 1024, windowsHide: true }).split('\0').filter(Boolean);
   const files = [...new Set([...(green.tests ?? []).map((t: any) => t.file), ...(green.brokenFiles ?? []).map((b: any) => b.file)])];
   const surface = surfaceOf(root, files, setting.surface ?? [], { listTree, exclude: reportsOwned(root, setting) });
   return {
@@ -5372,7 +5380,7 @@ const RUN_EVENT_KINDS = new Set(['dispatch', 'think', 'tool', 'result', 'diff', 
  * whole server.
  */
 const runGitSync = (args: readonly string[]): string =>
-  execFileSync('git', args as string[], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5_000 });
+  execFileSync('git', args as string[], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5_000, windowsHide: true });
 const gitRun = { run: runGitSync };
 
 app.post("/agent-runs", asyncHandler(async (req: any, res: any) => {
@@ -6180,7 +6188,7 @@ async function reportedPublisher(): Promise<string> {
       try {
         // Pinned to github.com - the registry PR lives there - so a GH_HOST
         // pointing at GitHub Enterprise does not credit a different identity.
-        execFile('gh', ['api', '--hostname', 'github.com', 'user', '--jq', '.login'], { timeout: GH_LOGIN_TIMEOUT_MS }, (err, stdout) => {
+        execFile('gh', ['api', '--hostname', 'github.com', 'user', '--jq', '.login'], { timeout: GH_LOGIN_TIMEOUT_MS, windowsHide: true }, (err, stdout) => {
           const login = err ? '' : String(stdout ?? '').trim();
           resolve(login !== 'null' && GITHUB_LOGIN.test(login) ? login : null);
         });
@@ -6316,20 +6324,20 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
   }
 
   // Require gh CLI
-  try { execSync('gh --version', { stdio: 'pipe' }); } catch {
+  try { execSync('gh --version', { stdio: 'pipe', windowsHide: true }); } catch {
     return res.status(503).json({ error: 'gh CLI is not installed on the server.' });
   }
 
   // gh must already be authenticated — get current user login (= author)
   let ghUser: string;
   try {
-    ghUser = execSync('gh api user --jq .login', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    ghUser = execSync('gh api user --jq .login', { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim();
   } catch {
     return res.status(503).json({ error: 'gh CLI is not authenticated. Run `gh auth login` on the server.' });
   }
 
   // Get token from gh for git operations
-  const ghToken = execSync('gh auth token', { stdio: 'pipe' }).toString().trim();
+  const ghToken = execSync('gh auth token', { stdio: 'pipe', windowsHide: true }).toString().trim();
 
   const [registryOwner, registryRepo] = registry
     ? (registry as string).split('/')
@@ -6354,17 +6362,17 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
   // below use argv form (no shell) so flow.name, registry and the embedded gh
   // token can never be interpreted as shell. (Security: bugs 6d0a982f, 57b4d95b.)
   if (!isOwner) {
-    execFileSync('gh', ['repo', 'fork', `${registryOwner}/${registryRepo}`, '--clone=false'], { stdio: 'pipe' });
+    execFileSync('gh', ['repo', 'fork', `${registryOwner}/${registryRepo}`, '--clone=false'], { stdio: 'pipe', windowsHide: true });
   }
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agenfk-registry-'));
   try {
     // Shallow-clone the upstream to check for name clashes
-    execFileSync('git', ['clone', '--depth', '1', '--quiet', `https://oauth2:${ghToken}@github.com/${registryOwner}/${registryRepo}.git`, tmpDir], { stdio: 'pipe' });
+    execFileSync('git', ['clone', '--depth', '1', '--quiet', `https://oauth2:${ghToken}@github.com/${registryOwner}/${registryRepo}.git`, tmpDir], { stdio: 'pipe', windowsHide: true });
 
     // Non-owners switch the push remote to their fork
     if (!isOwner) {
-      execFileSync('git', ['-C', tmpDir, 'remote', 'set-url', 'origin', `https://oauth2:${ghToken}@github.com/${ghUser}/${registryRepo}.git`], { stdio: 'pipe' });
+      execFileSync('git', ['-C', tmpDir, 'remote', 'set-url', 'origin', `https://oauth2:${ghToken}@github.com/${ghUser}/${registryRepo}.git`], { stdio: 'pipe', windowsHide: true });
     }
 
     const flowsDir = path.join(tmpDir, 'flows');
@@ -6419,19 +6427,19 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
       // Non-owners commit on a feature branch; owners commit directly on the cloned main
       const branchName = isOwner ? null : `flow/${slug}-${Date.now()}`;
       if (branchName) {
-        execFileSync('git', ['-C', tmpDir, 'checkout', '-b', branchName], { stdio: 'pipe' });
+        execFileSync('git', ['-C', tmpDir, 'checkout', '-b', branchName], { stdio: 'pipe', windowsHide: true });
       }
 
       fs.writeFileSync(targetPath, content + '\n');
-      execFileSync('git', ['-C', tmpDir, 'add', `flows/${filename}`], { stdio: 'pipe' });
-      execFileSync('git', ['-C', tmpDir, 'commit', '-m', commitMsg], { stdio: 'pipe' });
+      execFileSync('git', ['-C', tmpDir, 'add', `flows/${filename}`], { stdio: 'pipe', windowsHide: true });
+      execFileSync('git', ['-C', tmpDir, 'commit', '-m', commitMsg], { stdio: 'pipe', windowsHide: true });
 
       if (isOwner) {
-        execFileSync('git', ['-C', tmpDir, 'push', 'origin', 'main'], { stdio: 'pipe' });
+        execFileSync('git', ['-C', tmpDir, 'push', 'origin', 'main'], { stdio: 'pipe', windowsHide: true });
         const fileUrl = `https://github.com/${registryOwner}/${registryRepo}/blob/main/flows/${filename}`;
         return res.json({ url: fileUrl, kind: 'direct', version, repo: `${registryOwner}/${registryRepo}` });
       } else {
-        execFileSync('git', ['-C', tmpDir, 'push', 'origin', branchName!], { stdio: 'pipe' });
+        execFileSync('git', ['-C', tmpDir, 'push', 'origin', branchName!], { stdio: 'pipe', windowsHide: true });
         const prBody = [`Published from AgEnFK Flow Editor.`, '', `**Flow**: ${flow.name}`, flow.description ? `**Description**: ${flow.description}` : ''].filter(Boolean).join('\n');
         const prUrl = execFileSync('gh', [
           'pr', 'create',
@@ -6440,7 +6448,7 @@ app.post("/registry/flows/publish", asyncHandler(async (req: any, res: any) => {
           '--base', 'main',
           '--title', commitMsg,
           '--body', prBody,
-        ], { stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim();
+        ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }).toString().trim();
         return res.json({ url: prUrl, kind: 'pr', version, repo: `${registryOwner}/${registryRepo}` });
       }
     }
@@ -8185,7 +8193,7 @@ type UpstreamState = { none: true } | { name: string; fetchError: string } | { n
 async function readUpstream(root: string): Promise<UpstreamState> {
   const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', GIT_ASKPASS: '', SSH_ASKPASS: '', GIT_SSH_COMMAND: 'ssh -o BatchMode=yes -o ConnectTimeout=10' };
   const git = (args: string[], timeoutMs = 5000) => new Promise<{ ok: boolean; out: string; err: string }>(resolve => {
-    const child = spawn('git', ['-C', root, '-c', 'credential.interactive=never', ...args], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    const child = spawn('git', ['-C', root, '-c', 'credential.interactive=never', ...args], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true, windowsHide: true });
     let out = '';
     let err = '';
     let done = false;
@@ -8818,7 +8826,7 @@ async function noTestReportFix(item: any, gate: StepGate): Promise<{ line: strin
   const s = suggestTestReport(String(project?.verifyCommand ?? ''), scripts);
   const fix = s ? `agenfk update-project ${item.projectId} --test-report-format ${s.format} --test-report-command "${s.command.replace(/(["\\$`])/g, '\\$1')}" --test-report-path ${s.reportPath}` : null;
   // check-ignore exits 1 for "not ignored"; anything else (not a repository, git failed) says nothing.
-  const ignored = !(s && root) || spawnSync('git', ['-C', root, 'check-ignore', '-q', s.reportPath], { stdio: 'ignore', timeout: 5000 }).status !== 1;
+  const ignored = !(s && root) || spawnSync('git', ['-C', root, 'check-ignore', '-q', s.reportPath], { stdio: 'ignore', timeout: 5000, windowsHide: true }).status !== 1;
   const line = fix
     ? `🔧 NO_TEST_REPORT: per-test results are needed (by these checks, or by the step the card is entering) and this project records none. Set a test report, then run the same agenfk verify again:\n   ${fix}${ignored ? '' : `\n   ⚠️ ${s!.reportPath} is not ignored by git: add it to .gitignore, or every report leaves the tree dirty.`}`
     : `🔧 NO_TEST_REPORT: per-test results are needed (by these checks, or by the step the card is entering) and this project records none. Set a test report for its runner - agenfk update-project ${item.projectId} --test-report-format vitest-json|junit-xml --test-report-command "<a command that writes the report>" --test-report-path <where it is written> - then run the same agenfk verify again.`;
@@ -9591,7 +9599,7 @@ async function handleValidateProgress(itemId: string, command: string | undefine
     return await new Promise<{
       captured: CapturedOutput; code: number | null; timedOut?: boolean; signal?: NodeJS.Signals | null; spawnError?: string;
     }>((resolve) => {
-    const child = spawn(resolvedCommand, { shell: true, cwd: runRoot, env: { ...process.env, FORCE_COLOR: '1' } });
+    const child = spawn(resolvedCommand, { shell: true, cwd: runRoot, env: { ...process.env, FORCE_COLOR: '1' }, windowsHide: true });
     let killed = false;
     let settled = false;
     let grace: ReturnType<typeof setTimeout> | undefined;
@@ -9972,7 +9980,7 @@ function remoteRefFor(repoRoot: string, branchName: string): string | undefined 
   const ref = `refs/remotes/origin/${branchName}`;
   try {
     execFileSync('git', ['-C', repoRoot, 'rev-parse', '--verify', '--quiet', ref],
-      { stdio: ['ignore', 'pipe', 'pipe'] });
+      { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     return ref;
   } catch {
     return undefined;
@@ -9993,7 +10001,9 @@ function remoteRefFor(repoRoot: string, branchName: string): string | undefined 
  * direct child, and a compound setup (a bootstrap script plus the package
  * manager, exactly what Orca's `scripts.setup` is) would otherwise survive the
  * timeout in its children while the card says the install failed. The kill
- * targets the group.
+ * targets the group. Not on Windows: there detached means DETACHED_PROCESS,
+ * which voids CREATE_NO_WINDOW and gives the install's console grandchildren
+ * visible windows (GH #200); the kill falls back to the shell itself.
  */
 function startWorktreeSetup(item: any, decision: SetupDecision, worktreePath: string): void {
   if (!decision.command) {
@@ -10003,8 +10013,9 @@ function startWorktreeSetup(item: any, decision: SetupDecision, worktreePath: st
   const child = spawn(decision.command, {
     shell: true,
     cwd: worktreePath,
-    detached: true,
+    detached: process.platform !== 'win32',
     env: { ...process.env, FORCE_COLOR: '0' },
+    windowsHide: true,
   });
   let output = '';
   let timedOut = false;
@@ -11218,7 +11229,7 @@ function loadGitHubConfig(projectId: string): { owner: string; repo: string } | 
 
 function verifyGhCli(): boolean {
   try {
-    execSync('gh auth status', { stdio: 'pipe' });
+    execSync('gh auth status', { stdio: 'pipe', windowsHide: true });
     return true;
   } catch {
     return false;
@@ -11242,6 +11253,7 @@ const runGh = (args: readonly string[]): string =>
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 8000,
+    windowsHide: true,
   });
 
 /**
@@ -11348,6 +11360,7 @@ app.get("/github/issues", async (req: any, res: any) => {
     const result = execFileSync('gh', ghArgs, {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
     });
     const issues = JSON.parse(result);
     res.json(issues.map((i: any) => ({
@@ -11389,7 +11402,7 @@ app.post("/github/import", async (req: any, res: any) => {
         const result = execFileSync(
           'gh',
           ['issue', 'view', String(issueNum), '-R', `${config.owner}/${config.repo}`, '--json', 'number,title,body,state,url'],
-          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }
+          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }
         );
         const issue = JSON.parse(result);
 
@@ -11457,7 +11470,7 @@ app.post("/projects/:id/tasks-from-pr", limitExpensive, asyncHandler(async (req:
       'gh',
       ['pr', 'view', String(Number(prNumber)), '-R', `${config.owner}/${config.repo}`,
        '--json', 'number,title,body,url,headRefName,state,isCrossRepository'],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
     );
     pr = JSON.parse(out);
   } catch (e: any) {
@@ -11574,7 +11587,7 @@ app.post("/projects/:id/tasks-from-pr", limitExpensive, asyncHandler(async (req:
     // it. `--` and an argv array, because the ref came off an API rather than
     // out of thin air and that is exactly where "it is ours" stops holding.
     execFileSync('git', ['-C', project.projectRoot, 'fetch', 'origin', '--', `${plan.branchName}:refs/remotes/origin/${plan.branchName}`],
-      { stdio: ['ignore', 'pipe', 'pipe'] });
+      { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
     const result = createWorktree({
       repoRoot: project.projectRoot,
       root: defaultWorktreeRoot(),
@@ -11652,7 +11665,7 @@ const getGitHubRepo = (): string => 'cglab-public/agenfk';
 const getGitHubToken = (): string | null => {
   if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN;
   try {
-    return execSync('gh auth token 2>/dev/null', { encoding: 'utf8' }).trim() || null;
+    return execSync('gh auth token 2>/dev/null', { encoding: 'utf8', windowsHide: true }).trim() || null;
   } catch { return null; }
 };
 
@@ -11699,7 +11712,7 @@ app.post("/releases/update", asyncHandler(async (req: any, res: any) => {
   const command = 'npx -y github:cglab-public/agenfk';
   const cwd = os.homedir();
 
-  const child = (releasesUpdateExecImpl ?? exec)(command, { cwd, env: { ...process.env, FORCE_COLOR: '0' } });
+  const child = (releasesUpdateExecImpl ?? exec)(command, { cwd, env: { ...process.env, FORCE_COLOR: '0' }, windowsHide: true });
   child.stdout?.on('data', (d) => job.output.push(d.toString()));
   child.stderr?.on('data', (d) => job.output.push(d.toString()));
   child.on('close', (code) => {
@@ -11717,6 +11730,7 @@ app.post("/releases/update", asyncHandler(async (req: any, res: any) => {
       const restarter = spawn('sh', ['-c', `sleep 2 && node ${JSON.stringify(serverBin)}`], {
         detached: true,
         stdio: 'ignore',
+        windowsHide: true,
       });
       restarter.unref();
       setTimeout(() => process.exit(0), 5000);
